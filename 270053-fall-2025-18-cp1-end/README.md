@@ -14,10 +14,10 @@ what makes the faster corner exit pay.**
 TMX map [270053](https://trackmania.exchange/maps/270053) · author **in-.-** ·
 973 recorded runs.
 
-Equalling rather than beating is the honest description: the tape reaches 4.492,
-the author's own validation lap reached 4.492, and nobody in 973 recorded
-attempts has done either. This is the most-hunted map in the collection and the
-best human is 0.003 short.
+The tape matches the author time exactly, which takes the author medal — the
+game awards it at or under the time. Nobody in 973 recorded attempts has managed
+either: this is the most-hunted map in the collection and the best human is
+0.003 short.
 
 ## The map in one paragraph
 

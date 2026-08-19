@@ -28,25 +28,26 @@ The point is the technique, written up so a human can practise it.**
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **4 in the climb → 7.514** |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **14 → 8.075** |
 | [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **23 → 6.323** (or the WR + 1) |
-| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | 45 → 6.591 |
+| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | **19 → 6.595** |
 | [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **12 → 3.848** (the WR + 2 keys) |
 | [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **12 → 13.986** |
 | [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | — |
 | [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | — |
 | [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 163 | 49.282 | 49.446 | **49.275** | **−0.007** | — |
 | [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | — |
-| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | 114 → 5.347 (15 *equals* the AT) |
+| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | **15 → 5.350** |
 | [Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end) | 903 | 4.831 | 4.834 | **4.830** | **−0.001** | — |
 | [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 973 | 4.492 | 4.495 | **4.492** | **±0** | — |
 
 All times in **seconds**. "Best human" is the online world record at the time of
 the run; every author time in both tables had **never** been beaten by a human.
 
-**"Fewest inputs under the AT"** is the smallest number of input change events in
-any run here that is inside the author time — an input change event being any
-tick where steering, throttle or brake differs from the tick before. A dash
-means no such count is published for that map, usually because the only run
-under the author time is a dense analog tape. **Fewest is not easiest**: on
+**"Fewest inputs under the AT"** is the smallest number of input change events
+in any run here that takes the author medal — an input change event being any
+tick where steering, throttle or brake differs from the tick before. *Matching*
+the author time takes the medal, so a run level with it counts. A dash means no
+such count is published for that map, usually because the only qualifying run is
+a dense analog tape. **Fewest is not easiest**: on
 several maps the sparsest tape is the *least* forgiving of mistimings, so each
 map's page names the run actually worth practising. See
 [`FINDINGS.md`](FINDINGS.md).
