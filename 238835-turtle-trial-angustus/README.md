@@ -1,10 +1,17 @@
-# [Turtle Trial] Angustus — author time beaten by 200.075 s
+# [Turtle Trial] Angustus — author time beaten by 223.849 s
 
 | run | time | vs AT |
 |---|---|---|
 | author time | 462.982 | — |
 | the only human record (Quantiks, 1 of 1) | 1964.933 | +1501.951 |
-| **this TAS, validated** | **262.907** | **−200.075 (−43.2%)** |
+| **the author's lap, retries cut, then optimised** | **239.133** | **−223.849 (−48.3%)** |
+| the author's own lap, retries cut only — **watchable** | 246.602 | −216.380 (−46.7%) |
+| our human-derived search tape | 262.907 | −200.075 (−43.2%) |
+
+**The 246.602 is watchable** — `replays/AUTHORCUT_246602_watchable.Ghost.Gbx`
+loads in the game. It is the map author's own author-time validation lap,
+recovered from inside the `.Map.Gbx`, with the fourteen attempts they failed at
+one obstacle cut out of it. No TAS driving at all.
 
 TMX map [238835](https://trackmania.exchange/maps/238835) · author **Bald_tm** ·
 tags **Trial, Turtle** · 5 checkpoints · **1 recorded run**.

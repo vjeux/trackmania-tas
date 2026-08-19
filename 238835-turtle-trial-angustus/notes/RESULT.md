@@ -1,4 +1,4 @@
-# 238835 — `[Turtle Trial] Angustus` — AUTHOR TIME BEATEN by 3m 20s (43.2 %)
+# 238835 — `[Turtle Trial] Angustus` — AUTHOR TIME BEATEN by 223.849 s (48.3 %)
 
 **uid** `KHmZyqOJ9oTOvTFIRkxGNTTK1D8` · author **Bald_tm** (BALDFROMSPB) · tags
 **Trial, Turtle** · 5 checkpoints (4 intermediate + finish)
@@ -7,7 +7,7 @@
 |---|---|---|
 | author time (AT) | 462.982 s | — |
 | only human record (Quantiks, 1 of 1) | 1 964.933 s (32m 45s) | +1 501.951 s |
-| **this work, validated** | **262.907 s** | **−200.075 s (−43.2 %)** |
+| **this work, validated** | **239.133 s** | **−223.849 s (−48.3 %)** |
 
 All times are the plain oracle's (`TrackmaniaServer /nodaemon /validatepath=`)
 against the untouched Nadeo-served `map.Map.Gbx`
@@ -388,3 +388,65 @@ sits at 1.75 km/h for 3.0 s and the author passes at 34 km/h. Deleting tape
 cannot fix it (1 194 candidates, cut lengths to 3 s, **zero finishers** — it is
 a physical stall). It needs either a driving search over ticks ~1 700–5 890, or
 the author's own tape made to re-simulate.
+
+---
+
+## 10. SOLVED: the embedded author ghost DOES re-simulate — and it is the better lap
+
+**§4's "third outcome" was a bug, not a property, and the fix is two chunks.**
+The 286279 agent found (and refuted their own container hypothesis proving) that
+a foreign input archive re-simulates exactly in another run's container **only if
+`0x0309202D` and `0x0309202B` travel with it**. Both are present in this
+`.Map.Gbx` — they just were not being carried.
+
+One caveat for anyone repeating this: `all_skip_chunks` **cannot find them in a
+map**. It walks the body hopping over each chunk it accepts, so a single false
+positive early on makes it skip a huge region; on `map.Map.Gbx` it reports no
+`0x0309…` chunks at all while a plain linear scan finds all six. `tmcut` now has
+`--chunks` (linear-scan report) and `--carry 0x…,0x…`.
+
+```
+tmcut --in <any ghost> --inputs-from map.Map.Gbx \
+      --carry 0x0309202D,0x0309202B --out AUTHOR_AT.Ghost.Gbx
+tmtas validate --map map.Map.Gbx AUTHOR_AT.Ghost.Gbx   ->  462982
+```
+
+**462 982, the author time, exactly.** Positive control in the same batch: the
+human's own archive through the identical carry path returns 1 964.933.
+
+### Stripping the author's own retries
+
+The author's AT has 20 respawns in three clusters. Three splices, each
+phase-swept until `base − deleted` was exact:
+
+| cut | what it removes | result |
+|---|---|---|
+| `del 26747:42864` | the 14-attempt grind at (914, 97, 604) | 301.812 |
+| `del 17798:21164` | one failed attempt in CP3→CP4 | 268.152 |
+| `del 11299:13454` | the CP2-area retries (2 hard, 1 soft) | **246.602** |
+
+Then `tmdec`, 14 rounds, ~9 500 candidates each, plain-oracle scored:
+**246.602 → 239.133**, at which point the neighbourhood was empty (round 14:
+121 finishers, 0 improvements).
+
+### THE RESULT
+
+| | seconds | vs AT |
+|---|---|---|
+| author time | 462.982 | — |
+| best human-derived tape (§3) | 262.907 | −200.075 |
+| **best author-derived tape** | **239.133** | **−223.849 (−48.3 %)** |
+
+The author's *driving* really is better than the human's — 23.8 s of it, almost
+all in segment 1 as §6 predicted from the `chase`. Their lap was never slow; it
+was buried under nineteen crashes.
+
+### A bug of mine, recorded because it wastes hours
+
+`tmcut` applies ops **in the order given**, so a cut list must be **descending**
+by tick. I passed a chain with a low cut before a high one; every later index was
+stale and 897 candidates DNF'd across two sweeps. It looks exactly like "this
+splice is impossible" — I nearly wrote up the CP3→CP4 attempt as uncuttable. The
+correct chain found it on the first try, and the first candidate tested was
+exact. **When a whole sweep comes back empty, suspect the harness before the
+physics.**

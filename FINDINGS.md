@@ -625,3 +625,52 @@ And the corollary that caught two of these: **when a sweep comes back empty,
 suspect the enumeration before the hypothesis.** A negative from a hand-listed
 set is worth nothing — one such negative was published here as a hard limit, and
 the answer was the two items never on the list.
+
+## When a whole sweep comes back empty, suspect the harness before the physics
+
+Twice tonight, on two maps, a sweep returned an unbroken wall of failures that
+looked exactly like a law of nature — and both times it was the tooling.
+
+On [Angustus](238835-turtle-trial-angustus) a checkpoint-to-checkpoint sweep
+came back empty across **897 candidates in two independent forms**, over the
+whole segment. It was one step from being written up as "this attempt is
+uncuttable". The cause: the cut tool applies operations in the order given, so a
+cut list must be **descending by tick** — a low cut ordered before a high one
+makes every later index stale. Reordered, the very first candidate tested was
+exact.
+
+On [284238](https://trackmania.exchange/maps/284238) a deletion sweep over a
+3-second stall produced **zero finishers in 1,194 candidates**, and was recorded
+as a physical stall. That one may be genuine — but it was swept in the direction
+that finds nothing (see the trial-cutting rules: sweep the *cut point*, not the
+graft point), so the negative does not mean what it appears to.
+
+Both have the same shape as the container-portability false negative, where a
+hand-enumerated list of fourteen chunks omitted exactly the two that mattered,
+and the result was published as a hard limit.
+
+**A negative that looks like a law of nature is the one to distrust.** Before
+filing it: does the harness reproduce a known-good case? Is the sweep in the
+direction that can find the answer? Was the enumeration exhaustive or
+hand-listed? All three are minutes of work against hours of misdirection.
+
+## The pattern, restated: five instruments and two enumerations
+
+The recurring failure on this project is not a wrong answer. It is **a
+confidently right-looking answer from an instrument that could only ever have
+given that answer.** Five of them, all found in one night:
+
+| costume | what it looked like | what caught it |
+|---|---|---|
+| shared staging root | improvements that did not exist | re-validating every banked best |
+| foreign evaluation template | "the target is a needle" (~144k DNFs) | relocating the gates onto the spawn — proving it *can* finish |
+| alphabet constraint not applied | a healthy "keyboard" search | the zero ladder — demanding `finish 0%` |
+| gate probe that swaps the model | a discovery worth 10 seconds | returning the gate to its origin |
+| decode of a synthesised tape | plausible telemetry, wrong run | comparing against a re-simulation |
+
+And two enumeration failures with the same signature: a hand-listed chunk sweep
+that missed the answer, and an operation-ordering bug that made 897 valid
+candidates fail.
+
+**The defence is always the same and always cheap: make the instrument say the
+other thing, on purpose, before you trust it.**

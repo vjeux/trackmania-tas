@@ -7,10 +7,10 @@ the author time beaten by 136.369 s (−38.4%), the world record by 222.190 s.**
 |---|---|---|---|---|---|
 | [`BEST_218812`](replays/BEST_218812.Ghost.Gbx) | **218.812** | **−136.369** | −222.190 | **3 — keyboard** | 904 |
 | [`KEYBOARD_218877`](replays/KEYBOARD_218877.Ghost.Gbx) | 218.877 | −136.304 | −222.125 | 3 — keyboard | 918 |
-| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391.Ghost.Gbx) | 220.391 | −134.790 | −220.611 | the author's own | **cuts only, no TAS driving** |
+| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391_watchable.Ghost.Gbx) | 220.391 | −134.790 | −220.611 | the author's own | **cuts only, no TAS driving — watchable** |
 | [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | 235.625 | −119.556 | −205.377 | 26 | 964 |
 | [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | 3 — keyboard | 941 |
-| the human WR's own inputs, retries deleted | 236.972 | −118.209 | −204.030 | 3 — keyboard | 943 |
+| [the human WR's own inputs, retries deleted](replays/HUMANCUT_236972_watchable.Ghost.Gbx) | 236.972 | −118.209 | −204.030 | 3 — keyboard | 943 — **watchable** |
 | human WR, Bald_tm *(control)* | 441.002 | +85.821 | — | 3 — keyboard | 1811 |
 
 unbeaten.at MapId 286279 · uid `p0tVjdmb1DfkCVrDE_DfQN84kq8` · author
@@ -226,6 +226,18 @@ DNFs at CP1, which for an hour looked like a hard limit and was written up as
 one; bisection found the pair. **Best-of-field splicing is available**, and so
 is re-simulating an author ghost pulled out of a `.Map.Gbx` — which is where
 this map's headline 220.391 comes from.
+
+## Watchable replays
+
+Most tapes in this project are input streams the validator can re-simulate but
+the game will not load — a `.Ghost.Gbx` also carries recorded telemetry samples,
+and cutting the inputs leaves the samples describing the uncut run.
+
+The two pure-cut results here have been rebuilt with their sample data cut to
+match, so **they load and play**: `AUTHORCUT_220391_watchable` and
+`HUMANCUT_236972_watchable`. The searched tapes cannot be made watchable this
+way and are validator-only — a mutation search changes steer values, so the tape
+is not a subsequence of any recorded run and no samples of it exist anywhere.
 
 ## Files
 
