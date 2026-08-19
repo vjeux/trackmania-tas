@@ -1,10 +1,12 @@
-# Spaghetti Nights 2 — the world record falls by 0.763 s, and the jump that looked decisive is dead
+# Spaghetti Nights 2 — a full second under the world record, and the seed came from a different map
 
-**Author time 38.530 · human world record 40.223 · best validated 39.430.**
+**Author time 38.530 · human world record 40.223 · best validated 39.183.**
 
 | tape | validated | vs human WR | vs AT | steer values | steer events |
 |---|---|---|---|---|---|
-| [`TAS_39430`](replays/TAS_39430.Ghost.Gbx) | **39.430** | **−0.793** | +0.900 | — | — |
+| [`TAS_39183`](replays/TAS_39183.Ghost.Gbx) | **39.183** | **−1.040** | +0.653 | 189 | 489 |
+| [`KEYBOARD_39706`](replays/KEYBOARD_39706.Ghost.Gbx) | **39.706** | **−0.517** | +1.176 | **3** | **101 presses** |
+| [`TAS_39430`](replays/TAS_39430.Ghost.Gbx) | 39.430 | −0.793 | +0.900 | — | — |
 | [`TAS_39460`](replays/TAS_39460.Ghost.Gbx) | 39.460 | −0.763 | +0.930 | — | — |
 | [`TAS_39478`](replays/TAS_39478.Ghost.Gbx) | 39.478 | −0.745 | +0.948 | — | — |
 | [`TAS_39748`](replays/TAS_39748.Ghost.Gbx) | 39.748 | −0.475 | +1.218 | — | — |
@@ -25,6 +27,69 @@ re-validated on the untouched map (sha256 `c6cca762…`) with both human records
 exact in the same batch.*
 
 ---
+
+## The seed came from a different map
+
+This map's own field is 181 records deep and had been mined out. The tape that
+broke it open descends from **a human's lap on a sibling map** — 98.1 % identical
+geometry, the same finish and checkpoint gates — grafted into a carrier of this
+one.
+
+It clears all five checkpoints, and it reaches **CP5 324 ms faster than the best
+of this map's own 181 records.** A stranger's lap, on a map this stranger was not
+driving, is a better start than anything 181 people have set here.
+
+> **When a map's field is exhausted, the best seed may be a human's lap on
+> another map.**
+
+The lossless control was reproduced *before* the seed was believed, which on this
+map matters more than usual — see the section below on how the sibling series was
+written off once already, on evidence that turned out to mean something else
+entirely.
+
+## The repair that worked: look three stations ahead
+
+Having a seed is not having a lap; the grafted line has to be repaired station by
+station. Two repair methods ran on the same ladder, and the comparison is
+decisive:
+
+| method | st06 | st09 | st21 | finish |
+|---|---|---|---|---|
+| **lookahead beam** — score arrival at station *k+3*, keep the best 3 | −0.740 | −0.915 | −0.956 | **−1.038** |
+| greedy crawl — take the best arrival at each station | −0.501 | | | **+2.601** |
+
+The greedy crawl **led at the start and lost three seconds by the finish.** The
+beam's lead held and grew at every station measured.
+
+This is the ladder-shaped form of the rule this page already teaches: **a faster
+arrival is not a faster lap.** Scoring at the station you are standing on rewards
+the state that arrives soonest, which is repeatedly not the state that leaves
+best; looking three stations ahead prices the exit as well as the entry, and
+keeping three candidates means a locally-second-best state can still win.
+
+## And the driver is keyboard-native
+
+The donor human drives on **three steer values and 87 presses**, so the entire
+line is keyboard-shaped from the start rather than being reduced to keyboard
+afterwards. Constraining the repair to the same alphabet costs only **523 ms**:
+
+**39.706, on 101 key presses, still half a second under the world record.**
+
+That is a genuinely human-shaped deliverable — a keyboard lap, a hundred presses,
+faster than anyone has driven this map — and it means the low-input follow-up
+here is **satisfied by construction** rather than by a separate search.
+
+## Where the remaining 653 ms is
+
+Not where anyone would guess, and two candidates are ruled out by measurement:
+
+* **Not sector 5.** Ours is **421 ms faster than any of the 181 humans** through
+  it.
+* **Not the jump.** It is real, and it is dead — 558 ms earlier at CP5 and
+  **1.038 s slower at the line**. See below.
+
+It is **sector 3, re-scored for CP4 exit speed rather than for its own split** —
+a trade no human on this map makes, because no human is scored on it.
 
 ## How a lap gets built here: score at the NEXT checkpoint, not at this one
 
@@ -242,6 +307,11 @@ the road, airborne**. Which is also how this page's earlier retraction happened:
 > relocated gate is a plane, so it fired anyway. Make the rung as narrow as the
 > road, and decode every march winner's own trajectory before believing its
 > number.
+
+The retraction is worth reading twice, because **the decoy rule landed on its own
+author.** The agent that wrote *a wide rung is a decoy generator* had already
+published a number produced by exactly that mechanism, and found it by applying
+its own rule to its own result. A rule you only point outwards is not a rule.
 
 **And on the fleet's reward-shaping notice:** shaping was genuinely live here (the
 incumbent does not finish) and the finish rate was still 0 % over 207 000

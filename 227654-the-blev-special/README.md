@@ -1,11 +1,13 @@
 # The Blev Special — the author time falls, and the trick is to arrive at a dead stop *sooner*
 
-**Author time 57.853 · best validated 57.503 · the same human's own driving,
+**Author time 57.853 · best validated 57.493 · the same human's own driving,
 retries removed, 64.871.**
 
 | tape | validated | vs AT | what it is |
 |---|---|---|---|
-| [`TAS_57503`](replays/TAS_57503.Ghost.Gbx) | **57.503** | **−0.350** | reach the wedge ~7 s early, then replay the human's own escape |
+| [`TAS_57493`](replays/TAS_57493.Ghost.Gbx) | **57.493** | **−0.360** | reach the wedge ~7 s early, then replay the human's own escape |
+| [`TAS_57498`](replays/TAS_57498.Ghost.Gbx) | 57.498 | −0.355 | |
+| [`TAS_57503`](replays/TAS_57503.Ghost.Gbx) | 57.503 | −0.350 | the figure this page carried before the chain past the weld ran |
 | [`TAS_57518`](replays/TAS_57518.Ghost.Gbx) | 57.518 | −0.335 | |
 | [`TAS_57537`](replays/TAS_57537.Ghost.Gbx) | 57.537 | −0.316 | |
 | [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | 57.573 | −0.280 | the first tape to beat the author time here, and the independently re-verified figure |
@@ -158,9 +160,12 @@ whether the tape can be edited.
 
 ```
 map sha256 a5768448d61edfc32da243a74c098b18314724342f9e0ce1895a872eb05b8d82
-TAS_57503  sha256 3df9108d6d94b1f325be71c4ba8c8b2c790c15f99838763618c5d19ad024f50c
+TAS_57493  sha256 27479f3910a656b75434c34b2e12004d9b80763be41a9dd3231a59b4fd03d29f
+TAS_57498  sha256 4a9225025c716a41169a2359b843e55b6870f6aa55fd5ef57cf12a993417a202
 
-blev2_tas_57503_v1.Ghost.Gbx     57503      <- the result
+blev2_tas_57493_v1.Ghost.Gbx     57493      <- the result
+blev2_tas_57498_v1.Ghost.Gbx     57498
+blev2_tas_57503_v1.Ghost.Gbx     57503
 blev2_tas_57518_v1.Ghost.Gbx     57518
 blev2_tas_57537_v1.Ghost.Gbx     57537
 blev2_tas_57573_v1.Ghost.Gbx     57573
@@ -224,7 +229,8 @@ the route does not exist in this family.
 > **"We didn't find one" and "it isn't there" are different claims, and the
 > difference is a sweep plus a control that could have failed.**
 
-The published time is unaffected: **57.503 stands**, from the analog family.
+The published time is unaffected: **the analog family holds the record**, now
+at 57.493.
 
 ### Why the zero is the expected answer here
 

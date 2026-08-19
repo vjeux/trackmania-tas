@@ -106,7 +106,7 @@ remaining follow-up gap sits on a handful of maps, all with work in flight.
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
 | [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.907** | **−0.351** | 20.070 (16 values, 47 events) |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** | **−0.318** | — |
-| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.503** | **−0.350** | — |
+| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.493** | **−0.360** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **8.075** (14 inputs) |
 | [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **6.323** (23 inputs) |
@@ -129,7 +129,7 @@ of writing, and where they beat the human world record that is said too.
 
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
-| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.430** ‡‡ | 0.900 | **−0.793** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. What works instead is scoring at the *next* checkpoint: arriving at CP5 earliest is not arriving best |
+| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.183** ‡‡ | 0.653 | **−1.040** | **a full second under the world record**, from a seed that came off a *different map* — a human's lap on a 98.1 %-identical sibling reaches CP5 324 ms faster than any of this map's own 181 records. The remaining 653 ms is not sector 5 (ours is 421 ms faster than any human) and not the jump (dead: 558 ms earlier at CP5, 1.038 s slower at the line) — it is sector 3 re-scored for CP4 **exit speed** rather than its own split |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void. But **the field's own per-sector minima sum to 91.826 — 2.651 UNDER the author time** (93.847 after discarding every sector that could have inherited speed): every sector of a winning lap has been driven, nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by arithmetic** — it reduces to one inequality with one calibrated constant and no free x or z, and the budget fails term by term: 31.0 mm of body gap plus 5.3 mm of attitude against 71.6 mm required, with two unrelated instruments agreeing on the deficit to 1.6 mm. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |

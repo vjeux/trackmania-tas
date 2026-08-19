@@ -2855,39 +2855,78 @@ This is the same standard as *an audit that has only ever returned zero isn't an
 audit*, applied forwards instead of backwards: build the falsifier before you
 report the zero, not after someone doubts it.
 
-## A 0.001 s gain over 186 300 evaluations at a HEALTHY finish rate is a window, not a wall
+## A finish rate tells you how fragile the ticks under your operators are, and that is ALL
 
-The same map produced the cleanest calibration of a failure mode that has cost
-this project real hours: a search that looks converged and is actually just
-pinned against the edges of the box it was allowed to move in.
+**This entry has been corrected three times in one session, each time by a ladder
+that refuted the previous version.** What follows is the surviving statement,
+which is much weaker than any of the claims it replaces — and that weakness is
+the finding.
 
-The numbers: **57.503 → 57.502 in 186 300 evaluations, at a 28 % finish rate.**
+The observations, all from 227654:
 
-Read those two figures together, because either alone is uninformative:
+| chain | window | finish rate | rate | result |
+|---|---|---|---|---|
+| A | — | 28 % | — | 57.503 → 57.502 in **186 300** evaluations |
+| B | `--lo 4300`, 70 %, **spans the weld** | **16 %** | 130 eval/s | 57.502 → 57.500 → 57.498 |
+| C | `--lo 5100`, 83 %, **past the weld** | **48 %** | 65 eval/s | 57.500 → 57.497 → **57.493** |
 
-* **A healthy finish rate rules out the ordinary explanation.** At 28 % the
-  search is not failing to produce valid runs — it is producing them by the tens
-  of thousands. Nothing is broken, nothing is on a cliff edge, more compute is
-  not the missing ingredient.
-* **So the tiny gain is not the map's resistance.** If 186 300 valid, scored,
-  distinct evaluations buy one millisecond, the search has already found the
-  best run *available inside its parameterisation* and is now spending its whole
-  budget re-deriving it.
+Every reading anyone took off those finish rates was wrong.
 
-> **High finish rate + large evaluation count + micro improvement = you are
-> measuring your window, not the map.** The fix is never more iterations; it is
-> to move, widen, or re-parameterise the window — a different anchor tick, a
-> different seed, a different segment of the run left free.
+* A **28 %** rate with 186 300 evaluations for one millisecond was published here
+  as proof the search was pinned against its own parameterisation — *"high finish
+  rate + micro improvement means you are measuring your window, not the map"*.
+  Then chain C found 7 ms.
+* Chain C's **48 %** was predicted, by the arm that ran it, to mean its operators
+  were landing in inert ticks — the worst available choice. It ran at **half**
+  chain B's evaluation rate, was **silent for fifteen minutes**, and finished
+  **5 ms ahead on a third of the evaluations**.
 
-The contrast case matters as much: a **low** finish rate with a small gain means
-the opposite — the search is barely producing valid runs, it is on a boundary,
-and more evaluations or a gentler neighbourhood genuinely will help. The two
-situations look identical on a convergence plot and want opposite responses,
-which is why the finish rate belongs in every search report next to the best
-time.
+> **A finish rate tells you how fragile the ticks under your operators are, and
+> that is all. It does not predict yield in either direction.** Judge a window by
+> what it **finds**, not by its finish rate — and do not judge either before an
+> hour.
 
-*(Source: the map's own closing arm, banked as
-`FLEET_NOTICE_a_REAL_low_input_negative_and_the_COLD_CHAIN_calibration_v1.md`.)*
+The actionable instruction is narrower than all three claims it replaces, and it
+is the only part that has survived contact with the data: **do not kill a joint
+chain early, and do not use its finish rate to decide whether to keep it alive.**
+Both chains above looked dead at the point where a busy operator kills things.
+
+### A mostly-inert window is not wasted — the few live ticks in it are the ones that matter
+
+The intuition behind the wrong prediction was reasonable: a window where most
+ticks do nothing is a window where most mutations do nothing, so it should be
+poor ground. What that misses is that **yield is not the density of live ticks,
+it is what the live ones control.** The handful of live ticks past the weld are
+the ones that aim a 717 m arc. A window can be almost entirely inert and still
+contain the only inputs that decide the run.
+
+### And a correct premise can carry a wrong conclusion
+
+The argument against searching past the weld was that **the weld is already
+optimal by construction.** That premise is true — it still is, and nothing here
+overturns it. The conclusion drawn from it, that the window past the weld
+therefore had nothing in it, was false: there were 7 ms in it.
+
+> Check that your conclusion follows from your premise and not merely alongside
+> it. A true fact about one part of the run says nothing about the part next to
+> it, however natural the inference feels.
+
+### Three predictions, one arm, one session, all refuted by its own ladders
+
+Worth stating plainly, because the pattern is the transferable part. The same arm
+predicted that gates never fire mid-air, that a finish rate reads temperature,
+and that the window past the weld was inert. **All three were refuted by ladders
+it ran itself**, and it reported each refutation.
+
+The shape is identical every time: **a plausible mechanism, one run of evidence,
+and a conclusion that outran both.** That is not a failing peculiar to one agent
+— it is the default failure of anyone reasoning quickly about a system they
+mostly understand, and the only defence that has worked here is running the
+ladder anyway, especially when you are confident it will show nothing.
+
+*(Sources: the map's closing arm, banked as
+`FLEET_NOTICE_a_REAL_low_input_negative_and_the_COLD_CHAIN_calibration_v1.md`,
+and its own subsequent refutations.)*
 
 ## Two flags in one night lied about what they constrained — so read the alphabet off the TAPE
 
@@ -3352,3 +3391,91 @@ locally first and the empty result reads as *the map is finished*; run them side
 by side and the same empty result reads as *the time is somewhere else*, which is
 a direction. The cost of the local arm was not wasted either — it is what makes
 the wide window's twelve improvements interpretable rather than lucky.
+
+## A bare `DNF` with no checkpoint count is a BINDING failure, not a driving failure
+
+The single biggest lever found on 146612 had been sitting behind a
+misread error string for hours.
+
+A sibling map's human ghost, grafted onto this map, returned `DNF`. An arm read
+that as *the series does not transfer* and moved on — a reasonable reading, and
+wrong. **The DNF carried no checkpoint count**, and that is the distinction that
+matters:
+
+| what the oracle prints | what it means |
+|---|---|
+| `DNF cps=3` | the tape **drove**, reached three checkpoints, then failed |
+| `DNF cps=0` | the tape drove and failed immediately — a real driving failure |
+| **bare `DNF`, no count** | **the ghost was never bound to the map** — a UID mismatch, a refused file, a container the server would not accept |
+
+The third case is not a fact about physics at all. It is the harness declining to
+run, and it looks exactly like a total failure if you only read the first three
+letters.
+
+Once the binding was fixed, that same sibling human's line cleared **all five
+checkpoints** and reached CP5 **324 ms faster than the best of this map's own 181
+records**. The verdict went from *this series is useless* to *this series holds
+the best seed anyone has*, with no change to the driving whatsoever.
+
+> **Read the whole failure string.** A negative that came from a bare `DNF` is
+> not a negative about the world; it is a negative about your plumbing, and it
+> should be re-run before it is believed — let alone written down.
+
+This is the same family as the failure anchors on 285885: knowing *in advance*
+what each kind of failure prints is what lets a later zero mean anything.
+
+## When a field is exhausted, the best seed may be a human's lap on a DIFFERENT map
+
+146612 has 181 recorded runs and they had been mined out. What broke it open was
+**a stranger's lap from a sibling map** — 98.1 % identical geometry, same finish
+and checkpoint gates — grafted into a carrier of this one.
+
+That single seed reached CP5 faster than any of the 181 native records, and the
+lap built from it is **a full second under the world record**.
+
+The reason it works is causal independence. Every tape this project owned on that
+map descended from the same handful of native records; they share their mistakes.
+A human on the sibling map has never seen this leaderboard, was optimising a
+different finish, and arrives at the shared geometry with a genuinely different
+line. **A new basin beats a longer run in an old one** — 24 690 evaluations from
+the foreign seed beat 143 610 from the native one, earlier on the same map.
+
+> Before concluding a field is exhausted, ask whether it is the only field. A
+> map with a sibling has a second population of humans who solved the same
+> geometry for a different objective.
+
+Two conditions, both cheap to check and both non-negotiable:
+
+* **Reproduce the lossless control before believing the seed.** A graft that
+  scores well because it is subtly not the map you think it is has produced
+  wrong headline numbers in this project before.
+* **A sibling ghost does not transfer as a *lap*.** All 21 of them DNF as
+  complete runs here. It transfers as a **line to seed a window**, which is a
+  much weaker and much more useful claim. An occupied-cell similarity percentage
+  never licenses the strong version — only a transfer test does.
+
+## Look three stations ahead: the beam that beat the greedy crawl by 3.6 s
+
+Repairing a grafted line station by station is the standard move, and the obvious
+scoring rule — take the best arrival at each station — is measurably the wrong
+one.
+
+Same ladder, same map, same seed:
+
+| method | st06 | st09 | st21 | finish |
+|---|---|---|---|---|
+| **lookahead beam** — score arrival at station *k+3*, keep the best 3 | −0.740 | −0.915 | −0.956 | **−1.038** |
+| greedy crawl — best arrival at each station | −0.501 | | | **+2.601** |
+
+**The greedy crawl led at station 6 and lost 3.6 s relative to the beam by the
+line.** The beam's advantage grew monotonically at every station measured.
+
+This is the ladder-shaped form of a rule this project keeps rediscovering: **a
+faster arrival is not a faster lap.** Scoring at the station you are standing on
+rewards whichever state gets there soonest, which is repeatedly not the state
+that *leaves* best. Looking three stations ahead prices the exit as well as the
+entry, and keeping three candidates lets a locally-second-best state survive
+long enough to win.
+
+> If your per-station scores are improving and your finish is not, your horizon
+> is one station. Extend it before you tune anything else.
