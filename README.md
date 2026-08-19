@@ -20,7 +20,7 @@ The point is the **technique**, written up so a human can practise it.
 | [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.638 | **22.072** | **−1.253** | 23.125 (40 ms grain) |
 | [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** § | **−0.694** | **10.743** (14 presses) |
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 24.164 |
-| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.230** | **−0.413** | 15.290 (86 events) |
+| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **15.217** (keyboard from 4.56 s) |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.573** | **−0.280** | — |
@@ -49,7 +49,7 @@ of writing, and where they beat the human world record that is said too.
 | [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.961** ‡‡ | 1.431 | **−0.262** | a 190 m gap jump nobody takes is worth **1.128 s to checkpoint 5** — validated. The *exit* from it is unsolved: the car overshoots the road |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void; and there is no author ghost in the map — `atSetByPlugin: true` |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
-| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | a route ~2 s under the AT misses the sunken finish trigger by **64 mm**, and the trigger tests a point on the car's *roof* — all three humans finish upside down |
+| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by measurement** — it tests a point on the car's *roof*, and every source of the ~26° tilt it needs costs 5.5× the time budget. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 † | **67.404** | 8.717 | **−1.038** | a 1/127 steer error e-folds in 0.7 s; the AT is 4.8 s below the field's best-sector splice, the 2022 WR, *and* our own per-sector optima |
 | [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | 24.854 ‡ | 4.596 | −0.048 | the map's decisive sector does not order the field; published for the pre-registered experiment that **failed** here |
 | [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | — | the map is one module ×4; a **sibling map where a human beats the author time on the same obstacle** is now the answer key |
@@ -66,9 +66,12 @@ headline control ghost archived, but not the wider *field* behind their
 field-reproduction claims, so those claims are not reproducible from our archive
 alone. The times themselves were validated with a control when they were found
 and are carried forward unchanged.
-‡‡ **146612 is moving.** Its sector work advanced substantially while this
-snapshot was being taken and its arms are still running; that row is a lower
-bound and is expected to be revised.
+‡‡ **146612 is moving fast.** Its sector work advanced substantially while this
+snapshot was being taken and three arms are still live. The best **segment sum**
+is now **39.229** against the author time — +0.699, down from +1.431 — but that
+is a sum of separately-searched sectors, **not a lap**, and the assembly is
+unproven. The table states only the validated lap; the segment sum is where the
+map is heading, not where it is.
 ¶ **147.031 is not the gap on 227654.** That record contains eleven respawns; the
 same human's own driving with the retries spliced out is **64.871**, and that is
 the number the −0.280 should be read against. See that page.
@@ -135,13 +138,18 @@ and a restricted value alphabet — pure keyboard (`left / nothing / right`) or 
 small action-key ladder. The alphabet is read off the human world record's own
 tape rather than assumed.
 
-On two maps the keyboard-only run beats the author time outright:
+On three maps the keyboard-only run beats the author time outright:
 
+- **idm ruinin ur day #460 — 15.217** on `{-127, 0, +127}` from race 4.56 s (AT 15.643)
 - **Training - 10 Long — 13.075** on `{-127, 0, +127}` (AT 13.080)
 - **Great wtf of what #165 — 8.075** on `{-127, 0, +127}`, 14 input changes (AT 8.127)
 
 Those are the most useful artefacts here: same input device, comparable input
 budget, faster than anyone has driven.
+
+And on 165922 the keyboard tape is not a concession — it is **the fastest run on
+the map**, ahead of the analog champion at 15.224. Restricting the alphabet found
+time rather than costing it.
 
 **Counting convention.** "Input change events" means *any tick where steer, gas or
 brake differs from the previous tick*, counted over the whole tape including

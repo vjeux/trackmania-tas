@@ -1,7 +1,16 @@
-# finish is on the roof to your right — the author time did not fall, and here is exactly what stands in the way
+# finish is on the roof to your right — the endgame is closed, and the map is now an ordinary search problem
 
 **Author time 43.079 · human world record 61.229 · best validated run 50.229 —
 11.000 s faster than any human, 7.150 s short of the author time.**
+
+> **Status: the hard half is provably closed and the easy half is untouched.**
+> Every route through this map's finish trigger now has a measured price and none
+> fits the budget — but rank 1's inverted flip is a human-demonstrated, validated
+> way to finish, it costs 11.2 s, and the approach it needs has **never been
+> searched**. Measurement says ~6 s is sitting unclaimed in one fourteen-second
+> stretch. Two arms are on it now. Jump to
+> [the endgame closure](#the-endgame-is-now-closed-by-measurement-not-by-exhaustion)
+> and [what replaced it](#which-turns-this-into-an-ordinary-search-problem).
 
 | tape | validated | vs human WR | vs AT |
 |---|---|---|---|
@@ -194,22 +203,94 @@ What has been thrown at that 70 mm:
 - a five-rung **lateral ladder** that stalls exactly on the measured footprint
   boundary
 
-The crossing geometry of this route is **locked**: fixed clearance, fixed ~37 ms
-inside the footprint, immune to local mutation. The last 70 mm is not a gradient
-that can be walked down.
+The crossing geometry of this route is **expensive rather than locked** — see the
+1 mm ladder correction above — and every one of these probes was an attempt to
+arrive *lower*, which is the wrong currency. What the trigger wants is tilt.
 
-## The one idea nobody has run
+## The endgame is now closed by measurement, not by exhaustion
 
-Stop trying to arrive *lower*. **Arrive along the footprint diagonal and buy
-time inside it instead** — a different currency, and one the clearance
-trade-curve says is available.
+*(This section supersedes "The one idea nobody has run" and the speculative parts
+of the section below it. Both are kept because the reasoning is still worth
+reading, but the questions they pose have since been answered — and the answers
+are all negative.)*
 
-That needs a search whose objective is **time-in-footprint with arrival as a
-constraint**: a different climb line, not a perturbation of this one. Every
-ladder built here scores arrival *at* a station; this one has to score *duration
-between two stations*.
+Every route through this trigger now has a **price in seconds**, against a budget
+of `43.079 − arrival` = **2.042 s** at the current arrival:
 
-## Where the remaining time is, if someone takes it further
+| what the trigger needs | why it is unavailable |
+|---|---|
+| arrive lower | the deficit is **144.092 ± 0.024 for every fast line whatever it does** — 7 tapes, 3 families, 0.913 m of spread, slope +0.003 m/m |
+| tilt ≥ 26° on the approach | the car takes the surface normal; full lock *flattens* it; suspension gives ≤ 5 mm |
+| leave the surface and rotate | the ramp radius is ~1500 m, so leaving it needs 440 km/h against 190 — and a launched car is 1.23 m *under* the rising roof after 0.5 s |
+| clip an edge or a step | the roof is flat to **0.026 m/m** over x ∈ [405, 428] on three lines, and the corridor above the finish is the **same plane**, extrapolated and confirmed (mean −0.123 m, sd 0.160, n = 12) |
+| flip early and drive on | **11.2 s** — rank 1's own route; inverted, the car crosses at 20–45 km/h against 190 |
+| flip on the wall | **19.4 s**, and the wall blocks the only usable approach |
+
+The last row is the one that closed it. The 28.3° "bank" that looked like a
+tiltable surface is **the face of the wall that stops you**:
+
+| t | position | speed |
+|---|---|---|
+| 60.500 | (404.20, 148.095, 1666.50) | **273.7 km/h** |
+| **60.550** | (405.14, 148.432, 1667.40) | **76.0 km/h** |
+| 60.600 | (405.85, 149.030, 1667.56) | 60.8 km/h |
+
+**274 → 76 km/h in one 50 ms tick.** The 28.3° reading is the car's attitude
+*during* the impact, not the slope of anything it was driving on. It does flip
+the car fast — 3.8 rad/s, twice the ramp-edge rate — but the tilt and the speed
+loss are the same event, and the wall sits square across the mouth of the one
+corridor whose geometry would otherwise work.
+
+> **285885 is characterised, not merely unbeaten.** The finish tests a point
+> 0.84 m above the origin in the car's body frame. Every upright crossing of the
+> footprint, by any line, misses by 70–140 mm. Closing it needs ~26° of body
+> tilt, the map contains exactly three sources of tilt, and the cheapest costs
+> 5.5× the entire time budget.
+
+## …which turns this into an ordinary search problem
+
+Here is the part that matters, and it is optimistic rather than the reverse.
+
+**Rank 1's flip is a human-demonstrated, fully validated way to finish this map.**
+It costs 11.2 s and needs nothing new — no undiscovered physics, no new
+technique, no gate surgery. It just needs the approach driven in **31.9 s instead
+of 41.0**.
+
+And the approach has never been searched. An earlier note on this page said the
+first 35 s is "within a metre of the world record's line — the world record
+drives that part essentially optimally". **The first clause is a measurement; the
+second does not follow from it**, and nobody had tested it. Matching a human's
+line is evidence about the line, not about whether the line is fast.
+
+Measured properly — for each sample of the fast route, the nearest point of the
+human's whole path and the human's time there, giving the TAS's *lead along the
+route*:
+
+| phase | what the TAS is doing | lead gained |
+|---|---|---|
+| 0–14 s, the highway | on the human's line within 0–11 m | **+0.36 s in fourteen seconds** |
+| 14–20 s, the loop | a genuinely different line, 55–96 m off | **+3.4 s** |
+| **20–34 s, the westbound run** | **back on the human's line, 0.6–1.9 m away** | **flat at +3.74 → +3.87 — nothing** |
+
+That third row is fourteen seconds and ~1075 m at an average of **276 km/h**, on
+a car that reaches 639 km/h on the highway. **43 % of every sample before 36 s is
+below half of peak speed.** The section is acceleration-limited rather than
+skill-limited, so the lever is not the straight itself but the speed it is
+*entered* with — the loop spits the car out at 144 km/h. Carrying 400 km/h in
+instead would cover those 1075 m in roughly 8 s rather than 14.
+
+**That is ~6 s available in the one part of the run nobody has searched, next
+door to the loop, which is the only place a TAS has ever beaten this human.** The
+flip route needs 9.1 s.
+
+So the recommendation on this map has inverted: **reopen it on the approach, not
+the finish.** Everything difficult is in the last 40 m and the last 40 m is now
+known to be impossible; the time is in the first 35 s, and the first 35 s is
+untouched. It is a normal arrival-time search with an objective that already
+works, no trigger subtleties, no attitude, and no gate surgery. Two arms are on
+it now.
+
+## Where the remaining time is — the earlier station analysis
 
 An arrival-time ladder — 16 stations along the route, with a control that aborts
 unless returning the gate to its origin reproduces the untouched map — gives:
@@ -279,3 +360,10 @@ control.
 | `notes/LADDER.md` | the arrival-time ladder and the hairpin finding |
 | `notes/CLEARANCE.md` | the 70 mm / 0.42 m clearance and its trade curve |
 | `notes/FINDINGS.md` | the route half: search, negatives, telemetry trap |
+| `notes/TRIGGER_IS_A_BODY_POINT.md` | the corrected trigger model: the tested point is on the car's roof |
+| `notes/TILT_SOURCES.md` | where tilt can and cannot be obtained, measured |
+| `notes/HEIGHT_LADDER.md` | the 1 mm ladder that turned the 70 mm wall into a cost curve |
+| `notes/ENDGAME_CLOSED.md` | **the closure** — the wall face, the corridor plane, every route priced |
+| `notes/NEXT_LEVER_THE_APPROACH.md` | **what to do instead** — the fourteen seconds nobody has searched |
+| `notes/INVERTED_ARRIVAL.md` | the flip's value and its 11.2 s cost |
+| `notes/DISPLACEMENT_IS_INERT.md` | a lever that was retired by measurement |

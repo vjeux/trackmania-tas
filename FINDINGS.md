@@ -1560,3 +1560,156 @@ Zero wrong-time divergences with a cluster of DNFs is the healthy pattern.
 
 > **Check the `git=` build string on the failing ghosts before condemning a
 > map.**
+
+## Our tape's fragility is not the map's fragility — measure the human's too
+
+Perturbation tolerance is normally reported as one number per tape: shift every
+input-change boundary by one tick, re-simulate, count survivors. That number is
+close to useless on its own, in two separate ways.
+
+**It has to be read per region.** On one map the whole-run figure is **94.2 %**
+(1 261 of 1 338 shifts survive), which reads as a comfortably forgiving run. By
+window:
+
+| window | shifts | survive |
+|---|---|---|
+| race 0.00-2.96 s | 52 | **0 %** |
+| race 2.96-3.96 s | 30 | 30 % |
+| race 3.96-4.96 s | 54 | 93 % |
+| after race 4.96 s | 1 202 | **100 %** |
+
+The same shape on all four tapes of that map, and inside the opening window
+**0 of 1 300 two-boundary pairs** survive either. So the honest description is
+"precision-bound in one two-second window and free everywhere else" — which is
+a thing you can hand a player, where "94 % tolerant" is not.
+
+**And it is a fact about the tape, not about the map.** Run the identical
+instrument on the human record's own winning attempt and **17 of 42 boundary
+shifts survive — 40.5 %** (three of them faster). A launch program with real
+one-tick tolerance exists on that map. Every tape our search produced has none,
+because a search minimising finish time has no reason to keep any.
+
+Tolerance is also partly purchasable, and the curve can be measured. Coarsening
+the launch to a keyboard alphabet gives a third point:
+
+| tape | time | launch tolerance |
+|---|---|---|
+| our fastest | 15.2 | 0 % |
+| coarse keyboard launch | 16.3 | 10 % |
+| the human's attempt | 18.8 | 40.5 % |
+
+> **The fast program and the forgiving program are different programs, and a
+> driven author time usually sits between them.** Publishing only the fast one
+> and calling the map "frame-perfect" describes our search, not the map.
+
+The follow-up that this implies, and which is still open: seed a tolerance
+search from **the human's** inputs rather than from any tape of ours, and score
+the perturbation a player actually makes — a correlated timing error across the
+whole launch — rather than one boundary at a time. Scoring pass/fail directly
+does not work: everything scores 0 and there is no gradient. Grade the failures
+(finished / reached the pad / cleared the chute / died) and evaluate every shift
+deterministically, or a hill climber freezes on the noise.
+
+## A constraint can find time rather than cost it
+
+The standing rule in this project is that converting a finished analog tape to a
+restricted alphabet does not work — five maps and counting — and that low-input
+runs must be *searched for* under the constraint. True, and there is a second
+half to it that is easy to miss.
+
+On one map the keyboard-constrained search did not merely produce a drivable
+tape at some cost. It produced **the fastest tape on the map**:
+
+| keyboard steering from | result |
+|---|---|
+| race 13.56 s | 15.224 (free) |
+| race 6.56 s | 15.220 |
+| **race 4.56 s** | **15.217 — best of the session** |
+| race 3.56 s | 15.292 |
+| race 2.56 s | 15.285 (70 input events in the whole run) |
+| race 1.56 s | 16.276 |
+
+against a pure-analog champion of 15.224. A restricted alphabet is a smaller
+search space with a coarser neighbourhood, and on a map whose payoff is
+dominated by a few large decisions that is an advantage, not a handicap.
+
+Two mechanics that made it work, both reusable:
+
+**Grow the constrained window backward from the finish.** The fragile end of a
+run is usually the start, so extending the constraint from the finish backwards
+keeps the incumbent a *finisher* at every rung. A ladder that starts at the
+fragile end has a DNF seed and therefore no gradient at all.
+
+**Apply the alphabet only inside the window.** The naive quantiser projects the
+whole steer array, which destroys the prefix the search was told not to touch —
+and then the identity control dies for a reason that has nothing to do with the
+constraint under test. Two separate tools in this project had that bug.
+
+And the resourcing note: **a rung that reports "no finisher" is not a negative
+until it is resourced.** The 1.56 s rung above returned nothing at 2 minutes on
+60 workers and produced a finisher at 8 minutes on 90.
+
+## An instrument that reuses a worker directory silently validates the wrong map
+
+Worth recording as a specimen, because the symptom was a confident, plausible,
+completely wrong physical conclusion — and because the failure lives in the
+harness, not in the physics.
+
+A tolerance sweep validated one tape against several relocated-gate maps under
+one root, naming its oracle workers `w{:03}`. The worker's setup creates the
+`UserData/Maps` symlink **only if it is missing**. So every map after the first
+was silently validated **against the first map**.
+
+What it produced: "0 of 52 one-tick-shifted variants even get down the start
+chute" — a clean, dramatic result that was published in two write-ups. The
+corrected reading is **52 of 52 clear the chute**, and they crash later, on the
+booster ramp. Same data, opposite localisation, and the corrected version made
+the human story better rather than worse.
+
+> **If a sweep reuses a working directory across configurations, put the
+> configuration in the directory name.** And when a sweep returns a suspiciously
+> uniform answer across configurations that ought to differ, check that the
+> configurations reached the oracle at all.
+
+## Closing the hard half can turn a map into an ordinary search problem
+
+A map can be worth reopening precisely *because* a long investigation ended in a
+negative — if the negative is sharp enough to redirect the effort.
+
+On one map, three agents spent a night on a finish trigger that no upright car
+can fire. The endgame is now closed by measurement rather than by exhaustion:
+every route to the trigger has a price, the cheapest is 5.5× the time budget, and
+the "bank" that looked like a tiltable surface turned out to be the face of the
+wall that stops you (274 -> 76 km/h in one 50 ms tick — the tilt and the speed
+loss are the same event).
+
+That sounds like the end of the map. It is the opposite, because one of those
+priced routes is **a human-demonstrated, fully validated finish** — rank 1's own
+flip, costing 11.2 s — which needs no new physics at all if the approach can be
+driven 9.1 s faster.
+
+And the approach had never been searched, because of a sentence in an earlier
+write-up: *"the first 35 s is within a metre of the world record's line — the
+world record drives that part essentially optimally."* The first clause is a
+measurement. **The second does not follow from it.** Matching a human's line is
+evidence about the line, not about whether the line is fast.
+
+Measured as *lead along the route* — for each sample, the nearest point of the
+human's whole path and the human's time there, which is immune to the two runs
+being in different places at the same instant:
+
+| phase | how close to the human's line | lead gained |
+|---|---|---|
+| the highway | 0-11 m | +0.36 s in fourteen seconds |
+| the loop | 55-96 m — a different line | **+3.4 s** |
+| **the long westbound run** | **0.6-1.9 m** | **flat — nothing, over fourteen seconds** |
+
+That third phase is 1075 m at an average of 276 km/h on a car that reaches
+639 km/h, with 43 % of samples below half peak speed. It is acceleration-limited,
+so the lever is the speed it is *entered* with, and a crude bound puts ~6 s in
+it.
+
+> **When a map's hard half closes, re-price the whole run before abandoning it.**
+> The budget is `author_time − arrival`, so every second saved upstream is a
+> second of slack downstream — and the part of a run that matches a human's line
+> is the part most likely never to have been searched.

@@ -133,3 +133,19 @@ objective crossed this DNF basin.
 * [`GATE_PLANE_ORIENTATION.md`](notes/GATE_PLANE_ORIENTATION.md) — a relocated gate is a plane and
   its axis is a byte; this is why a third of well-chosen probe placements are silent
 * [`SECTOR_AUDIT.md`](notes/SECTOR_AUDIT.md)
+
+## Update: the segment sum is now 39.229
+
+Later the same night, with three search arms live, the **sum of separately
+searched sectors** stands at **39.229** against the author time of 38.530 —
++0.699, down from the +1.431 at the top of this page.
+
+**That is a segment sum, not a lap.** Each sector was searched against its own
+objective, and nothing has yet driven them end to end: the assembly is unproven,
+and on this map the assembly is exactly the hard part — the jump reaches
+checkpoint 5 a full second ahead and then cannot use its own speed. A sum of
+sector optima is an upper bound on what the route is worth, not a time anyone
+has driven.
+
+The validated lap is still **39.961**, and that is what the index states. This
+note records the direction of travel. The arms are still running.
