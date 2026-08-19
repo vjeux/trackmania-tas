@@ -13,7 +13,7 @@ The point is the **technique**, written up so a human can practise it.
 Every beaten map here is required to end its investigation with a
 **classification of the technique** — is this a route nobody found, a technique
 the field already has but does not use here, or something that needs precision a
-person cannot hold? Twenty-six maps in, eighteen carry an explicit
+person cannot hold? Twenty-six maps in, nineteen carry an explicit
 classification, and the answer is lopsided:
 
 | classification | count | maps |
@@ -87,7 +87,7 @@ family a person could actually drive. Current coverage over the 26 beaten maps:
 (b) low-input family                20 present / 2 partial / 3 missing
 ```
 
-Eight beaten maps do not yet carry an explicit classification sentence, and the
+Seven beaten maps do not yet carry an explicit classification sentence, and the
 newest beat's low-input family is owed rather than absent — marked open on its
 page. Every remaining follow-up gap sits on a handful of maps, all with work in
 flight.
