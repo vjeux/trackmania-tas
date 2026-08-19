@@ -87,7 +87,10 @@ the kicker commit worst (10 ms early = +90 ms, 10 ms late = DNF).
   ones). Everything evaluated against the real oracle.
 * `tmsearch --qlevels N` — low-input mode for BOTH search paths: every candidate
   is snapped onto a ladder of N levels per side after mutation, so the search
-  only ever emits tapes a human's input device could produce.
+  only ever emits tapes a human's input device could produce. **Read the flag
+  carefully: `N` counts positive steps, so the alphabet has `2N+1` values.**
+  `--qlevels 1` is keyboard (`{−127, 0, +127}`); `--qlevels 3` is seven values,
+  not three. See "an off-by-one in a flag's units" below.
 * `pred_core.rs` — the sub-tick plane accepts a negative value meaning "z-plane
   at |v|, crossed with z increasing", for maps whose run axis is z.
 
@@ -421,6 +424,28 @@ properly the result is often startling: on 145875 the keyboard tape reaches
 This matters because "there is no low-input family on this map" is a conclusion
 several searches have reached *by conversion*, which is exactly the method that
 cannot find one.
+
+### But say over what RANGE, because over a ballistic one conversion can work
+
+"Conversion does not work" is a claim about a **lap**, and it should always name
+the range it was tested over. Over a genuinely ballistic stretch it can succeed
+outright.
+
+On one map, quantising the whole lap takes a 20.070 finisher to `DNF` before the
+first checkpoint. Quantising only the **reactor flight** — a window where the car
+is under gravity alone, vy decaying at a constant −26 m/s² — lands 11 values and
+40 events at **20.070, the same time**, and reaches the same place a
+36 000-evaluation constrained search did.
+
+The reason is mechanical rather than lucky: **inside a ballistic window the
+inputs are not doing anything a rounding error can destroy**, because they are
+barely doing anything at all. The steering that matters is the part that set the
+launch, and that is outside the window.
+
+> **Convert where the car is not being controlled; search under the constraint
+> where it is.** And when publishing a negative, write "conversion fails over the
+> lap" rather than "conversion fails" — the second sentence is false on any map
+> with a long flight in it.
 
 ## A negative result requires a positive control
 
@@ -2578,3 +2603,79 @@ suggests.
 The general form is worth keeping even away from altered maps: **any ordering you
 inherit encodes someone else's objective**, and the further your goal is from
 theirs, the less the top of their list is worth to you.
+
+## "Fewer inputs is easier to drive" — four maps, four mechanisms, and it is false on all of them
+
+This project publishes low-input tapes because a wall of per-tick analog
+micro-corrections is worthless to a human. The assumption smuggled in alongside
+that — **fewer inputs is therefore easier to drive** — has now been measured on
+four maps and is false on all four, for four *unrelated* reasons.
+
+| map | the low-input member | why it is not easier |
+|---|---|---|
+| **[228607](228607-torment-1-up)** | 11 values / 40 events, matching the analog time to the millisecond | the analog tape tolerates a 10 ms early slip **across a 600 ms window**; the low-input tape tolerates **nothing, in either direction, at any start point** — 12 of 12 lost |
+| **[279218](279218-fall-2025-22-reverse-cp1-end)** | 15 events, **7 %** two-sided tolerance | the 114-event analog tape is **62 %** — nine times more forgiving |
+| **[270053](270053-fall-2025-18-cp1-end)** | 10 events | cutting the events made it **six times MORE** forgiving — the *opposite* direction |
+| **[227654](227654-the-blev-special)** | keyboard prefix, costs 1.40 s | irrelevant either way: **the binding input is the launch**, which is keyboard in *every* family including both humans'. Its release window is **three ticks**, and of 355 measured bowl entries not one is wider |
+
+Three claims follow, and only the third is obvious in hindsight:
+
+**1. Input count does not predict tolerance.** Two of those maps move in
+*opposite* directions from the same intervention. There is no monotone rule to
+apply, in either direction, and a paper that only sampled 270053 would have
+concluded the reverse with equal confidence.
+
+**2. Alphabet size, event count and drivability are three independent axes.**
+Constraining the alphabet has *found* time (on
+[165922](165922-idm-ruinin-ur-day-460) the keyboard tape is the fastest run on
+the map) and cost almost nothing on others; cutting events has helped on one map
+and gutted robustness on another; and on 227654 neither axis touches the thing
+that actually decides the run. Knowing two of the three tells you nothing about
+the third.
+
+**3. Never publish a low-input tape as "the human-friendly one" without its own
+tolerance measurement.** On 228607 the sparse tape is measurably the *worse*
+thing to hand a person, and it looks like the better one.
+
+### The positive form, which is what to actually do
+
+> **Hand a human the most forgiving tape, not the shortest one.**
+
+The model deliverable in this repository is 279218's
+[`DRIVABLE_5351`](279218-fall-2025-22-reverse-cp1-end/replays/DRIVABLE_5351_5detents.Ghost.Gbx):
+**42 % two-sided tolerance on 19 events, four milliseconds inside the human world
+record.** It is neither the fastest tape on that map (5.347) nor the sparsest
+(11 events) nor the one with the smallest alphabet — and it is the one a person
+should be given.
+
+That is a different publication rule from the one this project started with. The
+old one was *produce a low-input variant*. The new one is **produce a family,
+measure every member's tolerance, and name which member is the deliverable** —
+because the fast one, the sparse one and the drivable one are routinely three
+different tapes.
+
+## Rank an official field by the property you consume, not by finish time
+
+A corollary of the altered-map work, and it generalises past it.
+
+When an official field is used as a source of seeds, the temptation is to take
+the top ranks. On one map the alteration moves the Goal *up*, so what the run
+consumes is **altitude** — and the official board ranks by finish time on a map
+where flying high is a penalty.
+
+Ranked by what the run actually needs:
+
+* the best seed is official **rank 10**, and it is **unique among 41 profiled**;
+* **rank 1** — the player the altered map's own title credits — is **8 m lower**;
+* **rank 18**, nearly 2 s slower, **flies as high as the top five**;
+* and nobody in the field reaches the author's line at all: he crosses at
+  y = 160.5 still climbing, and the best human is **14 m short**.
+
+There is a second lesson in the population size. The field is nominally 400 000,
+which sounds like an inexhaustible seed pool. It has a **1.08 s cliff after rank
+16** — so the usable population was **about twenty tapes**, and past that the
+runs are qualitatively different laps rather than variations on the same one.
+
+> **Profile the field on the quantity your route consumes, then rank on that.**
+> Finish position is a ranking for someone else's objective, and a nominally huge
+> field usually contains a small number of genuinely distinct lines.

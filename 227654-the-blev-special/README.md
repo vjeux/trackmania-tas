@@ -1,13 +1,14 @@
 # The Blev Special — the author time falls, and the trick is to arrive at a dead stop *sooner*
 
-**Author time 57.853 · best validated 57.518 · the same human's own driving,
+**Author time 57.853 · best validated 57.503 · the same human's own driving,
 retries removed, 64.871.**
 
 | tape | validated | vs AT | what it is |
 |---|---|---|---|
-| [`TAS_57518`](replays/TAS_57518.Ghost.Gbx) | **57.518** | **−0.335** | reach the wedge ~7 s early, then replay the human's own escape |
-| [`TAS_57537`](replays/TAS_57537.Ghost.Gbx) | 57.537 | −0.316 | the previous best from the same lineage |
-| [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | 57.573 | −0.280 | the first tape to beat the author time here |
+| [`TAS_57503`](replays/TAS_57503.Ghost.Gbx) | **57.503** | **−0.350** | reach the wedge ~7 s early, then replay the human's own escape |
+| [`TAS_57518`](replays/TAS_57518.Ghost.Gbx) | 57.518 | −0.335 | |
+| [`TAS_57537`](replays/TAS_57537.Ghost.Gbx) | 57.537 | −0.316 | |
+| [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | 57.573 | −0.280 | the first tape to beat the author time here, and the independently re-verified figure |
 | [`TAS_59912`](replays/TAS_59912_watchable.Ghost.Gbx) | 59.912 | +2.059 | the previous best, keyboard-only |
 | [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the world record with its eleven respawns spliced out** |
 | author time | 57.853 | — | — |
@@ -19,10 +20,6 @@ TMX map [227654](https://trackmania.exchange/maps/227654) · uid
 DesertCar / SnowCar / Bobsleigh.
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
-
-*Current best, not final. The owning search is still improving — 57.503 was
-validating as this was written — and a fully keyboard-only finishing tape is in
-the pipeline as the low-input artefact. Expect this page to be revised downward.*
 
 ---
 
@@ -161,18 +158,22 @@ whether the tape can be edited.
 
 ```
 map sha256 a5768448d61edfc32da243a74c098b18314724342f9e0ce1895a872eb05b8d82
-TAS_57518  sha256 6a4bdcbeaa07fcbd311768ad9133b46297189441e58098dad9d24c67d4e59d67
+TAS_57503  sha256 3df9108d6d94b1f325be71c4ba8c8b2c790c15f99838763618c5d19ad024f50c
 
-blev2_tas_57518_v1.Ghost.Gbx     57518      <- the result
+blev2_tas_57503_v1.Ghost.Gbx     57503      <- the result
+blev2_tas_57518_v1.Ghost.Gbx     57518
 blev2_tas_57537_v1.Ghost.Gbx     57537
 blev2_tas_57573_v1.Ghost.Gbx     57573
-blev2_tas_57577_v1.Ghost.Gbx     57577
-blev2_tas_57580_v1.Ghost.Gbx     57580
 clean_64871.Ghost.Gbx            64871      control (the record with retries cut)
 tas_59912.Ghost.Gbx              59912      control (previous best)
 rank00001_147031.Ghost.Gbx      147031      KNOWN-ANSWER CONTROL (human WR)
 rank00002_676640.Ghost.Gbx      676640      KNOWN-ANSWER CONTROL (human #2)
 ```
+
+Every decisive row was re-run **singly** — `--jobs 1`, one ghost per invocation,
+a fresh process each time — as well as in a batch, and the two agree on every
+row. Reproduced here on a separate toolchain the same way, with both human
+records exact.
 
 Nine of nine exact, on **three separate toolchains** built independently of one
 another: the claiming search, an auditor who worked from the archived files
@@ -186,14 +187,28 @@ author time had **not** fallen, which was true when they wrote it and was
 superseded within hours. The earlier note is preserved in the working record
 rather than deleted.
 
-## Still open
+## Still open — and stated as under-swept, not as a wall
 
-The low-input family. The previous best at 59.912 is already keyboard-only and
-the humans drive this map on three steer values, so the alphabet is not the
-question here — the question is the **event count** of the splice tape, which has
-not been minimised. `TAS_57518` is a search product, not a drivable script yet,
-and a fully keyboard-only finishing tape is in the pipeline as the artefact that
-will answer this.
+**There is no low-input finisher on this map yet, and that is a statement about
+how much we have searched rather than about the map.**
+
+436 keyboard grafts reach the bowl launch **6.16 s ahead of the human** and fail
+only on the arc. The analog family hit the *identical* wall — until the graft
+alignment was swept at one-tick resolution, which took **7 826 grafts**. The
+low-input search has not had that sweep.
+
+> **The low-input family here is under-swept in one dimension, not refuted.**
+
+Nor is the alphabet the interesting question on this map: the humans already
+drive it on three steer values, and so does the previous best at 59.912. And
+there is a reason the low-input family may not help even when it lands —
+**the binding input is the launch**, which is keyboard in *every* family
+including both humans'. Its release window is **three ticks**, and across 355
+measured bowl entries **not one is wider**. Making the rest of the tape sparser
+does not touch the input that decides the run.
+
+That makes this the fourth map where "fewer inputs is easier" fails, and the
+fourth *distinct* mechanism — see [`FINDINGS.md`](../FINDINGS.md).
 
 ## Notes
 

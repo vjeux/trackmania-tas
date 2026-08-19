@@ -24,7 +24,7 @@ The point is the **technique**, written up so a human can practise it.
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
 | [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.936** | **−0.322** | 20.070 (16 values, 47 events) |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
-| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.518** | **−0.335** | — |
+| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.503** | **−0.350** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **8.075** (14 inputs) |
 | [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **6.323** (23 inputs) |
@@ -34,7 +34,7 @@ The point is the **technique**, written up so a human can practise it.
 | [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | **13.075** |
 | [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 160 | 49.282 | 49.446 | **49.275** | **−0.007** | 49.475 |
 | [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | 10.606 (16 detents) |
-| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | — |
+| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | **5.350 — equals the AT** (15 inputs, 3 values) |
 | [Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end) | 903 | 4.831 | 4.834 | **4.830** | **−0.001** | 4.834 |
 | [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 973 | 4.492 | 4.495 | **4.492** | **±0** | — |
 
@@ -73,10 +73,7 @@ achievable and demonstrably breaks the next piece". The table states only what
 has been driven end to end.
 ¶ **147.031 is not the gap on 227654.** That record contains eleven respawns; the
 same human's own driving with the retries spliced out is **64.871**, and that is
-the number the −0.280 should be read against. See that page.
-
-**227654 is current best, not final** — the owning search is still improving and
-that row is expected to move down tonight.
+the number the −0.350 should be read against. See that page.
 
 All times in **seconds**.  "Best human" is the online world record at the time
 of the run. Every author time in both tables had **never** been beaten by a
@@ -141,11 +138,14 @@ and a restricted value alphabet — pure keyboard (`left / nothing / right`) or 
 small action-key ladder. The alphabet is read off the human world record's own
 tape rather than assumed.
 
-On three maps the keyboard-only run beats the author time outright:
+On three maps the keyboard-only run beats the author time outright, and on a
+fourth it equals it:
 
 - **idm ruinin ur day #460 — 15.217** on `{-127, 0, +127}` from race 4.56 s (AT 15.643)
 - **Training - 10 Long — 13.075** on `{-127, 0, +127}` (AT 13.080)
 - **Great wtf of what #165 — 8.075** on `{-127, 0, +127}`, 14 input changes (AT 8.127)
+- **Fall 2025 - 22 Reverse CP1 End — 5.350**, *equalling* the author time on 15
+  inputs and three values, and 5 ms inside the human world record
 
 Those are the most useful artefacts here: same input device, comparable input
 budget, faster than anyone has driven.
@@ -153,6 +153,13 @@ budget, faster than anyone has driven.
 And on 165922 the keyboard tape is not a concession — it is **the fastest run on
 the map**, ahead of the analog champion at 15.224. Restricting the alphabet found
 time rather than costing it.
+
+**But a low-input tape is not automatically the drivable one.** Measured on four
+maps, input count predicts nothing about how much timing error a tape forgives —
+on one of them the sparse tape tolerates *nothing* where the analog tape forgives
+a 10 ms slip across a 600 ms window. Each map's page names which member is the
+deliverable, and it is often neither the fastest nor the sparsest: the model is
+279218's 19-input, 42 %-tolerant tape. See [`FINDINGS.md`](FINDINGS.md).
 
 **Counting convention.** "Input change events" means *any tick where steer, gas or
 brake differs from the previous tick*, counted over the whole tape including
