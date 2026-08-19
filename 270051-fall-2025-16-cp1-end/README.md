@@ -2,12 +2,12 @@
 
 | | time | vs AT | vs human WR | slack on every input |
 |---|---|---|---|---|
-| TAS, unconstrained floor | **4830 ms** | **−1** | −4 | one-tick precision |
-| **TAS, human-shaped** | **4831 ms** | **±0** | **−3** | **±10 ms** |
-| TAS, one input change | 4832 ms | +1 | −2 | — |
-| TAS, keyboard only | 4834 ms | +3 | ±0 | — |
-| Author time (never beaten by a human) | 4831 ms | — | −3 | — |
-| Human WR — OriginalCJM | 4834 ms | +3 | — | — |
+| TAS, unconstrained floor | **4.830** | **−1** | −4 | one-tick precision |
+| **TAS, human-shaped** | **4.831** | **±0** | **−3** | **±10 ms** |
+| TAS, one input change | 4.832 | +1 | −2 | — |
+| TAS, keyboard only | 4.834 | +3 | ±0 | — |
+| Author time (never beaten by a human) | 4.831 | — | −3 | — |
+| Human WR — OriginalCJM | 4.834 | +3 | — | — |
 
 TMX map [270051](https://trackmania.exchange/maps/270051) · uid
 `vsiB0RwTzQeq5Loh21CuloIzjf9` · author **in-.-** · **903 recorded runs**.
@@ -42,7 +42,7 @@ decided which one came out.**
 484 race ticks (4.83 s), one checkpoint — the finish. **Full throttle
 throughout, no brake, ever.** The whole map is a steering problem.
 
-The last 620 ms is **ballistic flight**: the car leaves the ground at ~4210 ms
+The last 620 ms is **ballistic flight**: the car leaves the ground at ~4.210
 at 176.8 km/h on a 21° climb and never lands, crossing the finish in mid-air,
 still rising.
 
@@ -53,7 +53,7 @@ the field's 1.35 m corridor.
 
 Two consequences, both measured:
 
-1. **Inputs after ~4360 ms are worth at most 1 ms.** Overwrite every input from
+1. **Inputs after ~4.360 are worth at most 1 ms.** Overwrite every input from
    tick 436 with "steer 0" and the time changes by 0 or −1 ms. The car is in the
    air; steering only rotates it.
 2. **1 ms = 4.55 cm of travel at the finish plane.** The whole 3 ms between the
@@ -82,7 +82,7 @@ A 1 ms margin has to be airtight:
 - **Five cold re-validations** of the banked tape, each in a fresh directory with
   a fresh server process and the rank-1 human ghost as a known-answer control:
   5/5 returned 4830, control 4834 every time, `NbRespawns: 0`, `IsValid: true`.
-- A **second independent code path** driving the same server also returns 4830.
+- A **second independent code path** driving the same server also returns 4.830.
 - The map file is **sha256-identical to Nadeo's own copy**.
 - No `--fork`, a distinct `--root` per process, every tape re-validated. No
   phantoms.
@@ -99,7 +99,7 @@ two-tick pairs — found nothing better at 0.05 ms resolution.
   turning the 1 ms-quantised score into a 0.05 ms objective. Necessary when the
   entire gap is 13.6 cm of travel.
 - **A robustness objective** — score by the worst time over a placement window.
-  This is what produced the teachable 4831, and it is the technique most likely
+  This is what produced the teachable 4.831, and it is the technique most likely
   to transfer to other maps.
 
 One bug found and worth repeating: relocated gate maps keep the **original

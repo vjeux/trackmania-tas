@@ -2,11 +2,12 @@
 
 | | time | vs AT | vs human WR |
 |---|---|---|---|
-| **TAS, unconstrained** | **13074 ms** | **−6** | **−7** |
-| **TAS, keyboard only** | **13075 ms** | **−5** | **−6** |
-| TAS, 5-level pad | 13074 ms | −6 | −7 |
-| Author time (never beaten by a human) | 13080 ms | — | −1 |
-| Human WR — in-.- | 13081 ms | +1 | — |
+| **TAS, unconstrained** | **13.071** | **−0.009** | **−0.010** |
+| **TAS, keyboard only** | **13.075** | −0.005 | −0.006 |
+| TAS, 5-level pad | 13.074 | −0.006 | −0.007 |
+| **TAS, keyboard, no input shorter than the WR's own shortest** | **13.074** | −0.006 | −0.007 |
+| Author time (never beaten by a human) | 13.080 | — | −0.001 |
+| Human WR — in-.- | 13.081 | +0.001 | — |
 
 TMX map [191465](https://trackmania.exchange/maps/191465) · uid
 `kpOLuGFTMICPkW7gp383PEQ_0A2` · author **in-.-** · **856 recorded runs**.
@@ -19,12 +20,13 @@ The author time here is the author's own editor validation lap, and their best
 public attempt sits 1 ms behind it. 856 people have ground this map.
 
 The keyboard-only run — steering restricted to `{-127, 0, +127}`, nothing else —
-comes in at **13075 ms, five milliseconds under an author time that has never
+comes in at **13.075, five milliseconds under an author time that has never
 fallen**, using the exact input alphabet a keyboard player already has.
 
-A 5-level pad tape matches the unconstrained optimum exactly (13074). That is
-worth stating plainly: **the time was never hiding in analog resolution.** It is
-hiding in *what* you steer, not *how finely*.
+A 5-level pad tape matches 13.074. That is worth stating plainly: **the time was
+never hiding in analog resolution.** It is hiding in *what* you steer, not *how
+finely*. The unconstrained floor is 13.071, three milliseconds below that, and
+those three milliseconds are the only thing analog buys on this map.
 
 ## What it does differently
 
@@ -53,7 +55,7 @@ other work in this project never applied here.
 
 ## A note on the search
 
-A plain search reached 13080 in nine seconds and then sat there for 240,000
+A plain search reached 13.080 in nine seconds and then sat there for 240,000
 evaluations. The reason is that integer milliseconds are a hopelessly coarse
 score on this map — at the finish speed of 858 km/h, **1 ms is 24 cm of
 travel**, so almost every candidate reports the same millisecond and the search
@@ -61,7 +63,7 @@ has nothing to climb.
 
 Adding a **sub-tick timing plane** — reading the interpolated crossing of a
 fixed plane inside the tick, so finisher scores are microseconds rather than
-milliseconds — took the same seed from 13081 to 13077 in 77 seconds.
+milliseconds — took the same seed from 13.081 to 13.077 in 77 seconds.
 
 ## Files
 

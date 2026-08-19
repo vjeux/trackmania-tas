@@ -105,6 +105,88 @@ gave −0.100 s, and 49 minutes of search on the untouched map's own finish gave
 here (75–137 evals/s) — local search is. It polishes a line; it cannot delete a
 bowl.
 
+## The obstacle is reused on four other maps, and on one of them a human beats the author time
+
+**This is the most useful thing found on this map, and it did not come from
+searching it.**
+
+284238's obstacle — the 40-block module placed four times — is not unique to this
+map. Its author (Eating_My_Wings, 486 maps on TMX) reuses it byte-identically.
+**279008 "Keep dropping" is this map with the launchers changed**: 167 of its 186
+block records are identical — same block, same absolute position, same angles —
+and its four checkpoint gates sit at the *same world coordinates*. What differs
+is 19 records: 15 water ramps swapped for tech ramps, the start block, three ice
+blocks nudged under a metre, the finish net — and **six boost-pad items that
+279008 does not have**.
+
+Its author time is 52.461, and:
+
+> **Yhomas_TM holds 46.112 on it — a human, beating that map's author time,
+> driving OUR obstacle, in a clean single-life run.**
+
+That ghost is an answer key. It validates at 46.112 on its own map, it has **zero
+respawn packets** and a single vehicle entity holding 923 of 923 samples, so
+there is nothing to mis-decode. And it answers the questions this map had been
+stuck on:
+
+* it clears the 71 m gap **four times out of four**, at 314.2 / 323.1 / 300.9 /
+  304.0 km/h — confirming the ">= 300 km/h at the lip" figure from a source with
+  no connection to our decode of the 440.238 record;
+* its checkpoint crossings are 65.4 / 69.4 / 68.3 / 69.1 m/s against our record's
+  52.8 / 45.7 / 40.3 / 36.3. **His cycle is a high-energy fixed point; ours
+  decays.**
+* his cycle times are 11.257 / 10.417 / 10.870 — so the ~11.67 s per cycle that
+  50.459 requires **is a thing a human does, repeatedly, on this geometry.**
+
+### And it says what our field is doing wrong
+
+**The launch fails on sideways velocity, not on speed.** All three launches we
+can measure hit the ice kicker at 91–99 m/s. The two that work cross it drifting
+toward −z (vz −17.9 and −25.1) and land on the wall curve **low**, where the
+surface is tangent. The one that fails crosses at vz −3.2, flies past the tangent
+part and slams into the wall 21 m higher, losing 1 630 of specific energy instead
+of ~320.
+
+**Our record never steers on the launcher lane at all.** Yhomas holds steer −1
+for about 60 % of it.
+
+An earlier claim on this page — that the six extra boost pads force too much
+speed into a catch that wants to be met slowly — **is withdrawn**. The three
+measurable launches sit at 90.9 (works), 97.2 (fails) and 99.1 (works). Speed
+does not separate them; vz does. What survives is weaker: the pads deliver
++24 m/s inside about a second of lane, so the car spends the second half of the
+lane ~20 m/s faster than Yhomas's does at the same x, which leaves **less
+distance in which to yaw the car** before the kicker. And the counterfactual is
+built and controlled — with the pads parked elsewhere, our record cannot even
+reach CP2, so it *needs* them.
+
+### It is already worth time on the untouched map
+
+Sweeping a *constant, gentle* steer over the last 0.3–0.55 s of the water lane
+(190 tapes) puts our car on Yhomas's wall-contact line **on the untouched map,
+with the boost pads in place** — a probe that fires at 22.842–22.898 against his
+equivalent 22.68. So **93.914 s of clean driving is not a surface limit on this
+map; it is a line nobody drove.**
+
+### How the sibling was found — the method is the reusable part
+
+1. TMX v2 API by author id, paginated → 486 maps.
+2. Download each at ~1 request / 1.5 s with a descriptive User-Agent (never a
+   browser UA).
+3. **Fingerprint by block census** — the count of each block model in the file.
+   This map's module signature is distinctive enough to match on its own.
+4. Confirm geometrically: sort `name,x,y,z,pitch,yaw,roll` and diff the two
+   files. Identity of block *records*, not just of counts.
+
+Every instrument used here carried a two-sided control, including the important
+one: a probe at Yhomas's wall-curve contact point that **says no for our record
+and yes for Yhomas at 15.278 on the identical geometry of 279008.**
+
+> **A map author who reuses modules has published an answer key for every map
+> that contains one. Before concluding an obstacle cannot be driven a certain
+> way, look for a sibling map where somebody drives it well.** This one broke
+> open a map we had written off.
+
 ## A trap this map found that defeats one of our own safeguards
 
 A 14.7-minute search against a segment map reported **−13.975 s**. The winner
@@ -128,6 +210,8 @@ satisfy stays the map's own untouched trigger.
 | file | what |
 |---|---|
 | `replays/TAS_97325.Ghost.Gbx` | best validated run |
+| `notes/SIBLING_MAP_ANSWER_KEY.md` | **the sibling-map answer key** — how 279008 was found, Yhomas's cycle folded into module coordinates, and the launch diagnosis |
+| `notes/LAUNCH_STATE.md`, `notes/TUBE_REACHABLE_SET.md` | the launch-state work that followed from it |
 | `notes/RESULT-symmetry.md` | the four-copy derivation, the 115 transplants, the lossy-lap analysis |
 | `notes/RESULT-v1.md` | the original recon: respawn splicing, the car-model fit, the search-yield measurement |
 | `notes/GEOMETRY.md` | the independent block-graph derivation |

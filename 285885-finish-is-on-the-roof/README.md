@@ -25,9 +25,15 @@ run is measured to the millimetre.
 ## The map's joke, and it is a good one
 
 **The finish gate is an item sunk about a metre below the roof the car sits on.**
-The trigger fires only when the car's *origin* drops to or below
-`gate_y + 1.25 m` — so a car resting on the roof is above it, and driving over
-the finish does nothing at all.
+A car resting on the roof is above the trigger, and driving over the finish does
+nothing at all.
+
+*(The trigger's exact condition is **not** the obvious one. For most of this
+map's investigation it was modelled as "the car's origin drops to or below
+`gate_y + 1.25 m`", which fits every measurement made on an inverted car and is
+wrong. The real condition is a point fixed in the car's **body** — see
+"the tested point is on the roof of the car", below. Nothing in this section
+depends on which model you use.)*
 
 **All three humans drive over it repeatedly without finishing.** The world
 record's lowest point inside the gate's horizontal footprint is
@@ -79,7 +85,7 @@ record does.
 steering channel over 25 ticks, not a single key press. The durable claim is the
 tolerance result above, not that tape's literal contents.)*
 
-## The 70 mm is not a margin — no upright car can finish this map
+## The tested point is on the roof of the car, not at its origin
 
 *(This supersedes the earlier reading of this page. The "70 mm of clearance" was
 real as a measurement and wrong as an explanation.)*
@@ -111,17 +117,60 @@ envelope, measured rather than assumed:
 
 The roof under the finish is one clean plane (11.4°, rms 38 mm over 263 human
 samples), so on that plane the car's attitude *is* the plane's attitude. There is
-no other term. Therefore:
+no other term. That is why 1.6 M evaluations of steering, pedal and pulse
+perturbations found no gradient: **on the current route, the fast tape is already
+at the optimum for a car sitting flat on that plane.** All three humans finish
+upside down, and on this map that is a necessity rather than a fumble.
 
-> **No upright car can ever finish this map.** The fast route is already at the
-> optimum for an upright car — which is why 1.6 M evaluations found no gradient.
-> There was no room, not a stubborn number. **All three humans finish upside down
-> out of necessity.**
-
-What the map actually requires is **~26° of body tilt inside the footprint** —
+What the map actually asks for is **~26° of body tilt inside the footprint** —
 0.26 s of the 1.7 rad/s tumble that leaving any ramp edge produces. The open
-question is a **rotation source within ~2 s of the finish**, which is a different
-and better-posed problem than the one this page described before.
+question is a **rotation source within about 2 s of the finish**, which is a
+different and much better-posed problem than the one this page described before.
+
+## Correction: the 70 mm is not locked. It is a cost curve.
+
+*Added after a later session; this supersedes the "the crossing geometry is
+locked" reading above, which was written when the only evidence was a 10 mm
+rung.*
+
+Two agents established 144.070 as immovable across ~57 000 evaluations. **They
+were measuring with a 10 mm rung — and 10 mm is five to twenty-five rungs of the
+gradient that actually exists.** A search of the same class, scored on a **1 mm**
+height ladder, moved it:
+
+| clearance | gate y | evaluations to reach it | fire time |
+|---|---|---|---|
+| the two agents' wall | 144.070 | 0 finishers in ~57 000 | 41.074 |
+| ladder rung 1 | **144.068** | 384 | 41.084 |
+| ladder rung 2 | **144.067** | 2 304 | 41.059 |
+| ladder rung 3 | **144.066** | 5 376 | 41.059 |
+| ladder rung 4 | **144.064** | 12 672 | **41.069** |
+| — | 144.063 | not reached in 35 712 | — |
+
+Six millimetres, and **the depth was free in time** — the deepest tape fires
+*earlier* than the incumbent. The instrument carried nine controls, including a
+dead-window control (896/896 evaluations return the seed's exact score over a
+window before the race starts, zero "new best" events) and an independent
+re-measurement of the deepest tape by the other agent's separate binary.
+
+**The honest extrapolation is bad news and should be read as such.** Cost per
+millimetre roughly doubles: 384 → 1 920 → 3 072 → 7 296 evaluations for
+successive millimetres. At that rate the next 6 mm costs 10⁵–10⁶ evaluations and
+64 mm is out of reach *by this route*.
+
+The value of the result is that it converts a wall into a measured cost curve. It
+removes the reason to keep grinding local mutations at 10 mm granularity, and it
+says what a winning lever has to look like: **something that buys tens of
+millimetres at once** — which is exactly the shape of the tilt attack above. This
+ladder is the instrument that will grade it, at 1 mm.
+
+**Best validated time on the untouched map is unchanged at 50.229.** The fast
+route still DNFs, as it must at 64 mm of remaining clearance.
+
+> **The general lesson, which is not about this map: a negative from a rung the
+> population cannot reach in one mutation says nothing about the rungs in
+> between. Suspect the enumeration before the hypothesis — including the
+> enumeration hidden in your rung spacing.**
 
 ## The six probes that found nothing, and why
 

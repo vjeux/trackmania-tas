@@ -2,11 +2,11 @@
 
 | | time | vs AT | vs human WR | inputs |
 |---|---|---|---|---|
-| **TAS, unconstrained** | **6578 ms** | **−17** | **−26** | analog |
-| TAS, 7-value action keys | 6593 ms | −2 | −11 | — |
-| **TAS, keyboard only** | **6595 ms** | **±0** | **−9** | **19 change events, 3 values** |
-| Author time (never beaten by a human) | 6595 ms | — | −9 | — |
-| Human WR — jujumasterr | 6604 ms | +9 | — | — |
+| **TAS, unconstrained** | **6.578** | **−17** | **−26** | analog |
+| TAS, 7-value action keys | 6.593 | −2 | −11 | — |
+| **TAS, keyboard only** | **6.595** | **±0** | **−9** | **19 change events, 3 values** |
+| Author time (never beaten by a human) | 6.595 | — | −9 | — |
+| Human WR — jujumasterr | 6.604 | +9 | — | — |
 
 TMX map [279209](https://trackmania.exchange/maps/279209) · uid
 `uKd2hMaH4k0KekCMv1rZUbrKFag` · author **in-.-** · **334 recorded runs**.
@@ -62,8 +62,8 @@ Everything after 3.68 s is one held key. Across 16 sampled tapes spanning ranks
 ## Validation
 
 - **105 of 105 human ghosts** (ranks 1–45, 61–75, 101–115, 151–165, 251–265,
-  spanning 6604–7029 ms) re-simulate to their exact leaderboard millisecond.
-- The candidate factory round-trips rank 1 to 6604.
+  spanning 6.604–7.029) re-simulate to their exact leaderboard millisecond.
+- The candidate factory round-trips rank 1 to 6.604.
 - **Zero failed re-validations in the whole session**, so nothing was written to
   the project's phantom directory.
 - **Gate machinery identity control**: a relocatable-gate map with the item put

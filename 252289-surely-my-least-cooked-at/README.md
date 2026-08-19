@@ -2,21 +2,21 @@
 
 | tape | validated | vs AT | vs human WR | input changes | steer alphabet |
 |---|---|---|---|---|---|
-| human WR — KevinMagPizza | 3867 | +16 | — | 8 | `{-127,0,+127}` **keyboard** |
-| **WR + two key actions** | **3848** | **−3** | −19 | 12 | keyboard |
-| TAS, keyboard | **3844** | **−7** | −23 | 18 | keyboard |
-| TAS, 8-value | **3836** | **−15** | **−31** | 18 | 8 values |
+| human WR — KevinMagPizza | 3.867 | +0.016 | — | 8 | `{-127,0,+127}` **keyboard** |
+| **WR + two key actions** | **3.848** | **−0.003** | −0.019 | 12 | keyboard |
+| TAS, keyboard | **3.844** | **−0.007** | −0.023 | 18 | keyboard |
+| TAS, 8-value | **3.836** | **−0.015** | **−0.031** | 18 | 8 values |
 
 TMX map [252289](https://trackmania.exchange/maps/252289) · uid
 `eetemRii0Hscd6vEudBsy4mbMK3` · author **in-.-** · **706 recorded runs**.
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
-## The headline is not the 3836
+## The headline is not the 3.836
 
 > **Take KevinMagPizza's world-record run and add two keyboard actions in the
 > last corner — a single-tick right tap at 2.63 s and a 50 ms throttle lift at
-> 2.89 s — and it finishes in 3848 ms. That beats the author time by 3 ms with
+> 2.89 s — and it finishes in 3.848. That beats the author time by 3 ms with
 > nothing a human cannot do.**
 
 Nothing before 2.63 s changes at all. The lift on its own, added to the world
@@ -42,14 +42,14 @@ Slow in, fast out, on a corner the whole field drove flat out.
 
 Frozen, a one-tick error on our tape costs 280–1900 ms — which sounds
 unrepeatable until you run the same test on **the human world record's own
-tape**, where it costs 276–2871 ms. A person drove that. So frozen tolerance
+tape**, where it costs 0.276–2.871 s. A person drove that. So frozen tolerance
 measures open-loop replay, not human executability.
 
 The fair measure is tolerance **with repair** — mistime an input, then re-drive
 what follows, which is what a driver actually does:
 
-**40 of 40 mistimings recover to exactly 3836**, and every one tried on the
-keyboard tape recovers to exactly 3844.
+**40 of 40 mistimings recover to exactly 3.836**, and every one tried on the
+keyboard tape recovers to exactly 3.844.
 
 **The line is robust; the tape is not.** The only input that genuinely needs
 precision is the lift (start within ±1 tick, at least 50 ms long), and it has

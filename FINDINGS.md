@@ -8,25 +8,25 @@ with a known-answer human ghost as an identity control in every batch.
 
 ## 227969 — Great wtf of what #165 (uid `LtSUTxJ71u7ayvLj57wUdVPyH2h`)
 
-AT **8127** · human WR **8197** (Titoch_tm) · 42 recorded runs · gap 70 ms
+AT **8.127** · human WR **8.197** (Titoch_tm) · 42 recorded runs · gap 0.070
 
 **Author time beaten. Full write-up and driving guide: `227969/RESULT.md`.**
 
 | tape | time | vs AT | steer events | distinct steer values | device |
 |---|---|---|---|---|---|
-| keyboard, 14 inputs | **8075** | **−52** | 12 | 3 | keyboard |
-| keyboard | 8058 | −69 | 23 | 3 | keyboard |
-| action keys, 8 detents | 8050 | −77 | 54 | 15 | pad |
-| analog, event-thinned | 8021 | −106 | 62 | 50 | TAS |
-| analog, unconstrained | **7998** | **−129** | 185 | 111 | TAS |
-| (human WR, for scale) | 8197 | +70 | 11 | 3 | keyboard |
+| keyboard, 14 inputs | **8.075** | **−0.052** | 12 | 3 | keyboard |
+| keyboard | 8.058 | −0.069 | 23 | 3 | keyboard |
+| action keys, 8 detents | 8.050 | −0.077 | 54 | 15 | pad |
+| analog, event-thinned | 8.021 | −0.106 | 62 | 50 | TAS |
+| analog, unconstrained | **7.998** | **−0.129** | 185 | 111 | TAS |
+| (human WR, for scale) | 8.197 | +0.070 | 11 | 3 | keyboard |
 
 **Headline:** the author time falls **on a keyboard**, with the same three
 steering values and essentially the same number of key presses the human world
-record uses (12 steer events vs 11), 122 ms faster.
+record uses (12 steer events vs 11), 0.122 s faster.
 
-**Where the time is:** nothing over the first 6.5 s (we are +10 ms down there);
-all 187–199 ms in the last 1.4 s.
+**Where the time is:** nothing over the first 6.5 s (we are +0.010 s down there);
+all 0.187–0.199 s in the last 1.4 s.
 
 **The technique — verdict UNDISCOVERED:** the map ends with the car being thrown
 off a wall at 420 km/h, arcing ~270° along a curved wall, and being kicked into
@@ -53,31 +53,31 @@ the kicker commit worst (10 ms early = +90 ms, 10 ms late = DNF).
 ### Transferable findings
 
 * **A pad seed beats a keyboard seed for an unconstrained search.** Arms seeded
-  from the keyboard WR converged near 8.14; the arm seeded from the rank-2 *pad*
-  run (31 ms slower as a human run) produced everything below 8.13. A 3-value
+  from the keyboard WR converged near 8.140; the arm seeded from the rank-2 *pad*
+  run (0.031 s slower as a human run) produced everything below 8.130. A 3-value
   tape has almost no local neighbourhood for the operators to work in.
 * **Quantising an optimised analog tape does not work at any resolution.** Even
-  a 64-level ladder (max change ±1/127 per tick) makes the 7998 tape DNF. Low-
+  a 64-level ladder (max change ±1/127 per tick) makes the 7.998 tape DNF. Low-
   input tapes must be *searched for* under the constraint. Seeding the
   constrained search from a human keyboard run — already legal in every ladder —
-  reached 8102 in 80 s.
+  reached 8.102 in 80 s.
 * **Establish the input alphabet from the data.** The human WR's own tape
   contains exactly `{-127, 0, +127}`; that is ground truth for "keyboard", not
   an assumption.
 * **Greedy event deletion is cheap and effective within an alphabet**: 20 → 14
-  events for zero cost on the keyboard tape, 185 → 62 steer events for 23 ms on
+  events for zero cost on the keyboard tape, 185 → 62 steer events for 0.023 s on
   the analog one.
 * **Post-finish ticks are inert** and deleting them is free — worth doing first,
   it removes a third of the events on a tape.
 * **INCIDENT — the sub-tick plane surrogate requires the finish to be crossed
   with a repeatable attitude.** On this map (airborne finish, roll varying over
   1.5 rad across the field) the trigger is body-based and a fixed plane is wrong
-  by up to 1.30 m ≈ 19 ms. It produced a self-consistent 7990.705 that the plain
-  oracle calls 8004. Per-seed calibration was exact and the whole-tick guard
+  by up to 1.30 m ≈ 0.019 s. It produced a self-consistent 7.990705 that the plain
+  oracle calls 8.004. Per-seed calibration was exact and the whole-tick guard
   passed, so nothing internal catches it. Specimen in
   `tm-loop/phantoms/m165-subtick-plane-20260818-1752/`. Detail in
   `227969/RESULT.md` §7.
-* `p37` on this leaderboard (8610) re-simulates to **8477**. Flagged, unused.
+* `p37` on this leaderboard (8.610) re-simulates to **8.477**. Flagged, unused.
 
 ### Tooling added (Rust, in `tmtas-rs2`)
 
@@ -1203,3 +1203,360 @@ three agents had already worked.
 And the asymmetry worth carrying: **a firing rung is proof; a silent rung is not
 evidence.** Six of twelve rungs returned nothing on a map that provably
 validates, and a gate one cell along from a firing one may simply not fire.
+
+## A respawn is an input — and whether its state is canonical is a property of the map
+
+A respawn is not a break in a recording. It is a **packet in the input tape**,
+carried in **bit 31 of the packet's 34-bit state literal** (literal
+`0x80000002`). That matters twice over.
+
+**It is invisible to the obvious tool.** The ghost factory does not surface it,
+and counting discontinuities in the *telemetry* is not the same measurement: one
+record with 941 respawn presses shows 914 telemetry jumps. **Enumerate the
+packets, not the jumps.**
+
+**It is editable.** Which means a tape can be *constructed* around one, and that
+is what broke open a map where the only human record was a 2 h 26 m retry grind
+with no finish in it:
+
+```
+[ any prefix reaching race t = 1.670 s ] ++ [ respawn packet ] ++ [ the winning attempt ]
+```
+
+On that map the construction finishes at exactly `(K + L)·10 − 1540` ms for every
+prefix length K, swept across 4 700 ticks — perfectly linear, including from
+mid-flight at the speed cap. Mutate the prefix 3 000 times and 140 finish, **every
+one at the same millisecond**. The 1 885 ticks after the respawn replay
+identically regardless of what the car was doing before it. That produced the
+first finishing tape anyone had ever had on the map, which is what made a real
+search possible.
+
+**But that property does not travel.** On another map the same week, grafting a
+record's own last respawn and winning tail onto its own prefix works perfectly
+and lands exactly on the arithmetic — while grafting the *same tail* onto a
+searched line finishes **0 of 31 times**, and 0 of 124 over a (cut, shift) sweep.
+
+The difference is what "respawn" restores. On the first map it restores a fixed
+spawn state. On the second it restores **the run's own checkpoint crossing
+state**, which a different line does not have.
+
+> **Check which one you have before you plan around it.** One validation each
+> way: sweep the cut point and see whether the finish time is linear in it. If it
+> is, the state is canonical and transplants are free. If it is not, they are not
+> available at all.
+
+And a third thing follows: a respawn route can have a **hard floor**. If the
+respawn cannot be armed before race *t*, every tape built on one is bounded below
+by *t* plus the tail — on that first map, 16.1 s against an author time of
+15.643. **The construction was the instrument, not the deliverable.** It is worth
+saying because it is easy to mistake a legal finishing tape for progress toward
+the target when it is actually a scaffold you will throw away.
+
+## The oracle is ~1000× slower than it needs to be on a tape cut from a long recording
+
+Which is most tapes, on most maps. Measured on a 2 206-tick tape cut from an
+8 790 769 ms record:
+
+| | before | after |
+|---|---|---|
+| a finishing candidate | 2.7 s | **0.03 s** |
+| a DNF candidate | 32 s | **0.34 s** |
+| throughput, 150 workers | 14.5 cand/s | **~500 cand/s** |
+
+Three independent causes. All three are invisible: nothing warns you, the numbers
+are simply correct and slow.
+
+**1. The "strip the telemetry" flag strips nothing, and never could.** The
+recorded telemetry (`CPlugEntRecordData`, `0x0911F000`) is **not** a top-level
+skippable chunk. It is written inline inside the ghost chunk `0x03092000` as
+`id | version | uncompSize | compSize | zlib`. A top-level chunk walk that filters
+on class-id top bytes `{0x03, 0x0B, 0x24, 0x2E, 0x30}` can never match `0x09`, so
+the flag is a silent no-op. The blob inflates to 24 MB *per candidate* — memory
+bandwidth, so it gets *worse* with more workers. Check a "stripped" template's
+size before believing it.
+
+The fix is to re-encode the record with the same header, descriptors and notices
+but **zero samples**, then shrink the enclosing chunk header. 1 914 181 → 5 425
+bytes, same millisecond.
+
+**Do not just empty the blob.** Setting the uncompressed size to 0 with an empty
+zlib stream produces a file the server **refuses to load, silently**: the ghost
+vanishes from the batch, there is no diagnostic, and the caller reads no time at
+all — indistinguishable from a DNF.
+
+**2. A DNF is simulated all the way to the DECLARED race time.** A tape cut out
+of a 2.4-hour record still *declares* 2.4 hours, and a run that never crosses the
+line is simulated to that clock — **independent of the tape's own length** (a
+300-packet DNF cost 22.5 s; a 1985-packet DNF 17.7 s). The declared time lives in
+**four** places, and the race-time chunk everybody knows about is not the one
+that governs:
+
+```
+0x03092005              drives the walltime -- changing ONLY this leaves the DNF cost intact
+0x0309200B  +12
+0x0309201B  +10
+0x0309202B  +4 and +32  (the splits chunk)
+```
+
+Rewrite all four and a DNF goes 17.7 s → 0.34 s, finishers unchanged. Bonus:
+declare just above the incumbent and everything slower comes back DNF, which is
+free pruning for a minimising search.
+
+**3. The batch scheduler silently caps the worker count** at
+`min(workers, ceil(n / batch))`. With a default batch of 600, a 1 500-candidate
+round runs on **three** workers however many jobs you asked for. Symptom: 100
+jobs and a load average of 3.
+
+> **Time one candidate through the plain oracle — as a finisher and as a DNF —
+> before you size a search.** A short template that is 1.9 MB, or that declares a
+> race time from the recording it was cut out of, is costing you two to three
+> orders of magnitude.
+
+## A relocated gate is a PLANE, and the plane's axis is a byte
+
+This repairs the "relocating a gate is the safest map surgery available" finding
+above, and it explains a mystery this project had lived with for a while: *why do
+roughly a third of well-chosen probe placements simply not fire?*
+
+A goal gate relocated to cell `(cx, cy, cz)` does not fire when the car is *in*
+the cell. It fires when the car crosses **one plane** through the cell centre,
+and the block's `dir` byte — immediately before the three cell bytes in the same
+record — chooses which:
+
+| `dir` | trigger plane | fires at |
+|---|---|---|
+| 0, 2 | z-plane | `z = 32·cz + 16` |
+| 1, 3 | x-plane | `x = 32·cx + 16` |
+
+Predicted from a world record's own trajectory *before* the maps were built, then
+measured: −23 ms, −24 ms, −67 ms. The lead is the car's nose — 23 ms at 81 m/s is
+1.9 m — and it is consistent every time.
+
+So the silent rungs were never unlucky placements. **They were gates whose plane
+the car was running parallel to.** A silent rung now has a first hypothesis you
+can test in one run: flip `dir` and try again before you conclude anything about
+the tape.
+
+Two corollaries:
+
+**You may not need a model swap at all.** The volume question that makes gate
+surgery dangerous only arises if you *promote* a checkpoint into a finish. Look
+first for gates that are already goal-model: on one map a naive listing showed
+five waypoint blocks and the un-baked listing showed **nine**, four of them
+already tagged Goal and sitting on top of the finish road blocks. Relocating one
+of those is position-only — overwrite three cell bytes — with no promotion, no
+volume question, and no hole left in the track.
+
+**A wide rung is a decoy generator.** A 4-cell curtain produced a march winner
+316 ms ahead of the best known tape. It was the car **off the right-hand side of
+the road, airborne**, having left the track 40 m earlier. Nothing in the ladder
+output distinguished it; every internal control passed. Make the rung as narrow
+as the road, and **decode every march winner's own trajectory and check it
+against the road cell's x-span before you believe its number.** Two commands.
+
+> A gate ladder measures "did the car cross this plane". That is not the same
+> question as "did the car drive this track", and the gap between those two
+> questions is where a decoy lives.
+
+## A greedy per-station crawl locks in its own accidents
+
+A ladder turns "distance along a sector" into a millisecond, which makes an
+unsearchable plateau searchable: on one map, **0 finishers in 207 000
+evaluations** with only the finish as an objective, and **13 of 22 stations
+climbed** once each station became its own objective. The obvious way to use it
+is a crawl — optimise arrival at station *k*, take the winner, seed station
+*k+1*.
+
+Delta to the human world record, per station:
+
+| st02 | st03 | **st04** | st06 | st08 | st10 | st12 | st14 |
+|---|---|---|---|---|---|---|---|
+| −0.501 | −0.231 | **+1.232** | +1.416 | +1.728 | +1.891 | +2.161 | +2.601 |
+
+**The entire run is decided at one station.** st03 → st04 is 1.813 s for 28 m — a
+wall contact that dropped the car from 74.5 to 22.6 m/s. Every station after it
+inherits a dead run, and the crawl spends the rest of its budget nursing one. The
+tape that comes out at st14 is 2.601 s behind a run that was 0.501 s *ahead*
+twelve stations earlier.
+
+Nothing in the crawl notices. Each station reported an improvement over its own
+seed, every result validated, no phantom, no error. The greedy accept is doing
+exactly what it was told.
+
+Three fixes, cheapest first:
+
+1. **Watch the delta, not the absolute.** A jump in arrival-minus-reference is
+   the signal. Re-run any station whose delta jumps before continuing past it.
+2. **Keep the best *k* per station, not the best one.** A beam of 3–4 costs 3–4×
+   and is the difference between finding a line and polishing a crash.
+3. **Score arrival at station *k+2..3*, not at *k*.** This addresses the cause.
+   "Fastest to station *k*" is satisfiable by a tape that arrives fast and
+   pointing at the outside wall; "fastest to station *k+3*" is not, because a bad
+   exit cannot get there.
+
+The general form of (3) is worth stating on its own: **optimise arrival PAST a
+checkpoint, never at it.** On that map "fastest to CP5" bought a state 1.128 s
+ahead of the world record that could not use its own speed — it overshot the road
+entirely and came down on the outside wall. A ladder makes the better objective
+cost exactly the same to evaluate as the worse one.
+
+## Suspect the rung spacing before you believe the wall
+
+Two agents established a 70 mm clearance as immovable across ~57 000 evaluations,
+with every control passing. They were measuring against a **10 mm rung**.
+
+A search of the same class, scored on a **1 mm** ladder, moved it in 35 712
+evaluations:
+
+| clearance | evaluations to reach it |
+|---|---|
+| the wall | 0 finishers in ~57 000 |
+| −2 mm | 384 |
+| −3 mm | 2 304 |
+| −4 mm | 5 376 |
+| −6 mm | 12 672 |
+
+10 mm was five to twenty-five rungs of the gradient that actually existed. **A
+negative from a rung the population cannot reach in one mutation says nothing
+about the rungs in between.**
+
+This is the "suspect the enumeration before the hypothesis" rule one level down —
+the enumeration in question was hidden inside the *instrument's resolution*, not
+in the candidate set.
+
+It did not save the map: cost per millimetre roughly doubles, so the remaining
+64 mm is out of reach by that route. But converting a wall into a measured cost
+curve is itself the result. It says what a winning lever must look like —
+something that buys tens of millimetres at once — and it stops anyone else
+grinding local mutations at the wrong granularity.
+
+## A negative needs a detector proven able to say YES
+
+Sharper than "a negative result requires a positive control", and it caught a
+live error: the *instrument* has to be shown to fire on a tape that
+demonstrably does the thing.
+
+A slope-route negative reported "0 of 5 940 launch-sweep tapes reach any gate on
+the finish platform". The cheapest possible check — does the map's own **finishing
+tape** fire those gates?
+
+```
+finishing tape vs (1005,50,665) -> DNF     (1012,50,660) -> DNF
+               vs (1000,52,668) -> DNF     ( 996,56,690) -> DNF
+```
+
+A y-sweep explained it: the car crosses x = 1005 at y ∈ (50, 52), and only a gate
+at y = 54 brackets it. The two gates at y = 50 and y = 52 sat **on either side of
+a 6 m window without containing it** — about four metres out, which on that
+trigger is the whole window. A gate is a small asymmetric box, so one four metres
+off is **silent, not approximate**.
+
+Re-run with detectors that fire on the known-good tape, the negative *survived* —
+0 arrivals earlier than the incumbent's own out of 5 672 hits. But it became a
+negative about *perturbations of one line* rather than the sweeping claim that
+nothing can reach the platform. That is the difference the control buys even when
+the answer does not change.
+
+## "Trial" is sometimes a building style, not a respawn mechanic
+
+Several of the biggest margins in this repository come from deleting retries out
+of a recorded time, because on a Trial-family map the clock runs through
+respawns. It is tempting to reach for that on anything tagged Trial.
+
+One map tagged *Mini Trial* reports:
+
+```
+NbRespawns 0     NbCheckpoints 1
+```
+
+**One checkpoint** means the only waypoints are the spawn and the goal. There is
+nowhere to respawn *to* except the start, with the clock running. There are no
+retries to delete and the entire family of techniques is inapplicable — the tag
+described how the map was built, not how it is timed.
+
+> **Check `NbCheckpoints` before assuming a trial map's time is mostly retries.**
+
+`NbRespawns` is a first-class field in both the declared and validated result
+blocks, so a zero there is a fact about the run, not a limitation of the
+validator.
+
+## A map author who reuses modules has published an answer key
+
+One map here is a single 40-block module placed four times, with exactly one
+human record — 8.7× the author time, mostly retries — and no way to tell whether
+the author time's implied pace was achievable at all.
+
+Its author has 486 maps on TMX and **reuses the module byte-identically**. A
+sibling map turned out to share **167 of 186 block records** — same block, same
+absolute position, same angles — with its four checkpoint gates at the *same
+world coordinates*. And on that sibling, a human holds a time **under its author
+time**, in a clean single-life run, driving our obstacle.
+
+That ghost answered every question the map had been stuck on: it clears the
+critical gap four times out of four at 300–323 km/h; its checkpoint crossings are
+65–69 m/s where our record's decay 53 → 36; and its cycle times bracket the pace
+the author time needs. **The pace is a thing a human does, repeatedly, on this
+geometry.**
+
+It also produced the diagnosis. Our field's launch fails on **sideways velocity,
+not speed** — all three measurable launches hit the kicker at 91–99 m/s, and what
+separates the two that work from the one that does not is vz (−17.9 and −25.1
+versus −3.2). A previously published claim that the map's extra boost pads force
+too much speed into the catch was **withdrawn on that evidence**.
+
+The method is cheap and general:
+
+1. author's map list from the TMX API, paginated;
+2. download at ~1 request / 1.5 s with an honest User-Agent;
+3. **fingerprint by block census** — the count of each block model per file;
+4. confirm by sorting `name,x,y,z,pitch,yaw,roll` and diffing: identity of block
+   *records*, not just of counts.
+
+> **Before concluding an obstacle cannot be driven a certain way, look for a
+> sibling map where somebody drives it well.** A clean single-life run on
+> identical geometry is worth more than any amount of search on a map whose only
+> record is a retry grind.
+
+Two cautions from doing it. A relocated finish used as a probe is **a doorway,
+not a sphere** — 32 m wide and thin along its normal — so its yaw must be the
+travel direction or it is edge-on and never fires; and a probe placed *before* a
+kept checkpoint voids the run instead of timing it.
+
+## Measure a map's Lyapunov time before choosing a method
+
+On one map, changing **one steer unit on one 10 ms tick**:
+
+| gate | reference | +1 unit at 2.0 s |
+|---|---|---|
+| 1.9 s | 1.916 | 1.916 |
+| 2.9 s | 2.927 | **2.927 — exact** |
+| 8.0 s | 7.973 | 8.037 |
+| 9.6 s | 9.634 | **15.716 — the run is gone** |
+
+Errors e-fold every 0.6–0.8 s. Everything else about that map follows from this
+one number: a 40-second spread across 15 records, **0 of 319 input events
+deletable** at a 40 ms budget over 83 319 evaluations, and the fact that ten of
+its fifteen ghosts fail to re-simulate.
+
+It costs five perturbed candidates and one gate ladder, and it tells you up front
+whether splicing, event thinning and cross-run transplant are available to you at
+all. On a map like this they are not, and any plan built on them is dead before
+it starts.
+
+## A build-correlated reproduction failure is not a broken oracle
+
+On the same map, 10 of 15 leaderboard ghosts fail to re-simulate — a figure that
+elsewhere in this project was grounds for abandoning a map.
+
+**All ten are from one 2022 build.** All **5 of 5** from three different
+2025–2026 builds reproduce exactly, including a 101.259 run, and the state
+locator tracks a ghost's own telemetry to rms 0.008 m over 68 s.
+
+On a map with a sub-second Lyapunov time, any physics-build difference is fatal
+to a replay. That is a property of the map, not evidence against the instrument —
+and it is a completely different animal from the failure mode that *does* condemn
+a map, which is ghosts returning **wrong times** rather than not finishing.
+Zero wrong-time divergences with a cluster of DNFs is the healthy pattern.
+
+> **Check the `git=` build string on the failing ghosts before condemning a
+> map.**

@@ -23,11 +23,11 @@ If your horizon tips, you are driving the old line.
 
 | | time | vs AT | vs human WR |
 |---|---|---|---|
-| **TAS, unconstrained** | **7998 ms** | **−129** | **−199** |
-| **TAS, keyboard only** | **8075 ms** | **−52** | **−122** |
-| TAS, 8-level action keys | 8050 ms | −77 | −147 |
-| Author time (never beaten by a human) | 8127 ms | — | −70 |
-| Human WR — Titoch_tm | 8197 ms | +70 | — |
+| **TAS, unconstrained** | **7.998** | **−0.129** | **−0.199** |
+| **TAS, keyboard only** | **8.075** | **−0.052** | **−0.122** |
+| TAS, 8-level action keys | 8.050 | −0.077 | −0.147 |
+| Author time (never beaten by a human) | 8.127 | — | −0.070 |
+| Human WR — Titoch_tm | 8.197 | +70 | — |
 
 TMX map [227969](https://trackmania.exchange/maps/227969) · uid
 `LtSUTxJ71u7ayvLj57wUdVPyH2h` · author **FrankTheHamster** · 42 recorded runs,
@@ -90,9 +90,9 @@ waypoint pair so a checkpoint count proves nothing:
 ## Validation
 
 Three cold validations in fresh processes against a re-downloaded, byte-identical
-copy of the map: **8010, 8010, 8010** for the first banked tape; the later tapes
+copy of the map: **8.010, 8.010, 8.010** for the first banked tape; the later tapes
 were each re-validated the same way. A human ghost carried as a known-answer
-control returns **8197** every time.
+control returns **8.197** every time.
 
 Beyond that, **all 164 tapes any search arm wrote during this work** were
 re-validated through the plain oracle: 164/164 returned exactly the time in
