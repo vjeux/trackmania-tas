@@ -1713,3 +1713,162 @@ it.
 > The budget is `author_time − arrival`, so every second saved upstream is a
 > second of slack downstream — and the part of a run that matches a human's line
 > is the part most likely never to have been searched.
+
+## An audit that has only ever returned zero is not an audit
+
+This project applies known-answer controls to searches as a matter of course. The
+same discipline belongs on a **claim**, and it is easy to skip there because the
+claim's instrument looks trivial.
+
+A published tape asserted "zero respawns, one clean attempt from tick 0". The
+audit for that is an enumeration: walk every input packet and count the ones with
+bit 31 of the state literal set. Run it, get 0, publish.
+
+**Do not publish on that.** Run the identical enumeration on a tape *known* to
+contain respawns, in the same pass:
+
+```
+the six published tapes    packets 2109     0 with bit31
+the human record           packets 879231   941 with bit31
+```
+
+The control returns 941 on a recording independently known to contain 941 presses
+against 914 telemetry discontinuities. **Now the zero means something.** Without
+it, a counter that silently matched nothing — the wrong field, the wrong bit, an
+off-by-one in the packet walk, a parser that returned an empty list — is
+indistinguishable from a clean tape, and every one of those failures has actually
+happened in this project's tooling.
+
+> **An audit that has only ever returned zero is not an audit.** Apply the
+> positive control to claims, not only to searches: the cheapest possible check is
+> to run the instrument on an artefact whose answer you already know, in the same
+> batch, and show that it says yes.
+
+This is the same rule as "a negative result requires a positive control" and "a
+detector needs a yes-control before its zero means anything", pointed at
+verification rather than measurement. Four broken instruments were caught in one
+night by that family of checks.
+
+## A ballistic flight cannot rotate the velocity — check that before searching for a landing
+
+A search on one map spent two node-hours and two methods looking for "a launch
+that lands aligned with the road". The answer is that no such launch exists, and
+the argument is geometric rather than empirical.
+
+**A ballistic flight changes horizontal heading by exactly zero.** Measured:
+across 1.8 s of free flight the heading reads 29.4° at every sample, 0.0° of
+drift. It has to — there are no horizontal forces on an airborne car. The chassis
+can yaw in the air; **the direction the car is travelling cannot.** Only ground
+contact changes it, visible as a 29.1° → 41.6° step at a clip.
+
+On that map the flight's bearing is pinned at 32.5° by the requirement to reach
+the checkpoint, the landing surface runs at 82.2–98.1°, and the landing keeps
+`cos(mismatch)` of the speed. **A 52.8° mismatch that the flight supplies exactly
+0° of.** That single invariant explains a 74.5 → 22.6 m/s deceleration that had
+been measured but not attributed, and it closes the route in one paragraph.
+
+> **Before searching for a landing that arrives aligned, check whether the flight
+> is allowed to rotate the velocity at all.** If the answer is no, the launch
+> heading and the landing heading are the same free parameter, and no amount of
+> search will separate them.
+
+The same reasoning killed a jump that reached a checkpoint **1.128 s ahead of the
+world record** — a genuinely correct measurement that made the route look like
+two thirds of the map's answer. It repays the whole 1.128 s within 82 m of the
+checkpoint, at about +7 ms per metre, and no tape in the lineage has ever
+finished. A gain banked at a checkpoint is not banked.
+
+## A similarity percentage is not a transfer test
+
+The sibling-map technique — find a map that reuses the same geometry and read a
+human's clean run on it as an answer key — has now been applied on three maps.
+Two of them produced a specific, correctable mistake, and it is the same mistake
+both times.
+
+The tempting shortcut is to quantify similarity by diffing occupied cells and
+report a percentage: *98.1 % of block records identical*, or *the human's line
+first meets divergent geometry at t = 8.65 s, so this tape is valid as a
+reference for our first 8.65 seconds.*
+
+**That claim does not survive the obvious test.** Five sibling ghosts against the
+target's own `seg1` — the untouched map with CP1 promoted to finish, so a tape
+only has to survive 7.39 s, over a second *inside* the supposedly identical
+region:
+
+```
+two native ghosts (controls)   7311, 7295   exact
+five sibling ghosts            DNF, all five, before CP1
+```
+
+> **An occupied-cell diff is a statement about GEOMETRY, not about
+> DRIVABILITY.** Two maps can be byte-identical in every block a car touches for
+> 8.6 s and still put an open-loop tape somewhere else inside 7 s, because what
+> diverges first is not geometry — it is spawn pose, or one decoration's
+> collision, or a contact resolving a tick differently.
+
+And note which direction the error runs: counting a cell as divergent if *any*
+record differs there, decoration included, makes the bound conservative about
+geometry — which is the opposite of the direction that matters. **A conservative
+geometric bound is not a permissive driving bound.**
+
+The rule adopted across the sweep: **a similarity number is never reported
+alone.** It goes next to a transfer test — the sibling ghost against the target's
+own `seg1`, with a native ghost as an in-batch control — and the verdict is
+stated as *transfers* / *does not transfer*, not as a percentage.
+
+Three maps, three independent arrivals at the same conclusion:
+**an answer key tells you what to optimise, not what to copy.** Every graft
+attempted across those three maps failed — roughly 250 on one, 21 on another,
+5 of 5 on the third — while the *reference* use, measuring our line against a
+human's on shared geometry, produced the actual findings on all three.
+
+## A contact has a gain of about 60 — so an old ghost's depth is set by its ROUTE, not its age
+
+This settles a question the project had been guessing at for a week: why do some
+old ghosts re-simulate perfectly and others die in seconds?
+
++1 steer LSB at one tick:
+
+| where | divergence |
+|---|---|
+| free driving | 3 mm/s of drift |
+| **across one head-on impact** | **9 mm → 0.55 m in 200 ms** |
+| two impacts later | **35 m** |
+| the tick after a soft respawn | **exactly 0.00000 m** |
+
+Negative control: +40 steer while airborne is **0.00000 m over 150 s** — the
+engine read the input and the car simply has no steering authority in the air.
+
+> **A contact has a gain of about 60. A foreign-build tape's usable depth is
+> therefore set by its FIRST divergent contact — a property of the ROUTE, not of
+> the recording's age.** Two ghosts carrying the byte-identical build string can
+> honestly read 886 s and 137 s on the same server.
+
+There is no fidelity we can add that survives a ×60 amplifier applied hundreds of
+times to a recording that stores **quantised f32 telemetry rather than state**.
+
+Four controls say this is the contact and not our tools: a decode → re-encode →
+simulate round trip is 0.00000 m over 7 741 ticks; three fork pause points give
+0.00000 m over 15 432 ticks, so it is deterministic rather than noise; "hard
+impacts are unreproducible" is **false** — 4 of 6 hard head-on stops reproduce to
+sub-centimetre, one at 216 km/h to 4 mm; and a sibling with the byte-identical
+build string reproduces for 886 s.
+
+Two consequences worth acting on:
+
+**A rung ladder cannot measure tape depth, under either keying.** Raw keying
+over-credits (a cell entered early is credited to a late pass); first-visit
+keying under-credits (a late pass through an early-entered cell is invisible). A
+rung ladder measures **cell reachability**, which is real and useful — use a
+per-tick trajectory for faithfulness.
+
+**A respawn restores a MOVING state, so a segment map is not equivalent to a
+leg.** The wipe is exact, but the car can reappear hundreds of metres away at
+speed, on the piece of its own line it drove half a minute earlier. A segment map
+starts the car at a **standing spawn**, so a leg searched on one is solving a
+different problem. **If you attack legs on a respawn map, start them from a
+respawn in the real tape.**
+
+This reframes every "this old ghost does not re-simulate" note in the archive.
+The right question was never how old the recording is; it is where its first hard
+contact falls.

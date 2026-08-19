@@ -15,6 +15,16 @@ Wood.
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
+*A search arm is still live on this map and reports 96.065; that tape is not yet
+archived, so it is not published here. The figures above are what re-validated
+on an independent build with a human control in the same batch.*
+
+**The durable result on this map is not our lap time.** It is that **the sum of
+per-sector minima across the field is 91.826 — 2.651 UNDER the author time** —
+and that **93.847 survives** even after discarding every sector that could have
+inherited speed from the one before it. Every sector of a lap comfortably inside
+94.477 has already been driven by a human. Nobody has put them together.
+
 *Two agents worked this map; the second independently re-verified the first's
 96.078 in its own build tree with a human ghost in the same batch, and 48/48
 repeated runs of the same tapes returned identical times. The oracle is
@@ -22,10 +32,12 @@ deterministic on this map.*
 
 ---
 
-## This author time should probably not be called a driven lap
+## This author time has no ghost in the map — but that is not evidence it was never driven
 
-Every other map in this repository has an author time that a person sat down and
-hit. This one has three signals pointing the other way, and they agree:
+**A note published earlier on this page argued that 94.477 "should probably not
+be called a driven lap". That inference is retracted.** The three signals behind
+it are each still true, and they are worth stating, because they change what we
+can *read* off this map:
 
 1. **No author ghost in the map file**, though the header says `validated="1"`.
    Decompressing the 11 916 655-byte body and searching gives **zero** hits for
@@ -33,12 +45,60 @@ hit. This one has three signals pointing the other way, and they agree:
    id. Positive control with the same binary on another map: found at body offset
    607 759, and it decodes.
 2. **`atSetByPlugin: true`** on unbeaten.at.
-3. **The map's own author sits 4th on the leaderboard at 105.172** — 10.695 s
+3. **The map's own author sits 4th on the leaderboard at 105.172**, 10.695 s
    slower than the author time attributed to them.
 
-That does not change the target, and we are not claiming the time is impossible.
-It means the "how would a human do this" section below reconstructs a technique
-**from the field**, not from the author.
+What does not follow is the conclusion. A census of that author's **other**
+Pure Wet Icy Wood conversions settles it:
+
+| TMX | author time | human WR | by | margin |
+|---|---|---|---|---|
+| 205229 | 79.637 | **60.114** | tuduttuduu | −19.523 |
+| **208961** | 25.377 | **23.908** | **R4igekon — the author himself** | −1.469 |
+| **208800** | 47.167 | **46.566** | **R4igekon — the author himself** | −0.601 |
+| 210217 | 98.473 | **95.805** | kjszrqhczxn | −2.668 |
+| 208804 | 77.778 | **76.372** | n00bdax | −1.406 |
+| 208802 | 77.588 | **76.972** | A------------ar | −0.616 |
+| 208965 | 28.941 | **28.594** | n00bdax | −0.347 |
+| 208801 | 57.428 | **57.313** | iambeeen | −0.115 |
+| 208964 | 35.620 | **35.584** | thgiN_ | −0.036 |
+
+**Nine of nine of this author's other author times are beaten by a human, and on
+two of them the human who beats it is the author.** Those runs re-simulate — 9 of
+10 tested exact, including all five rank-1 author-time-beaters.
+
+So this author drives his own surfaces to within about 2 % of a good human, and
+**a 1.804 gap on 210218 is an ordinary margin for the series, not a freak.** His
+4th place online says how much he replayed *this* conversion, not whether he can
+drive its author time.
+
+> **The absence of an embedded ghost means we cannot READ the author's line off
+> this map — not that no such line exists. 94.477 is a normal target.**
+
+That is a correction worth making carefully, because the retracted version was
+the more dramatic claim and it was three-quarters right. Each signal was a real
+measurement; the inference stacked on top of them was not.
+
+## Five validated human runs on this exact surface — a reference, not a seed
+
+The same census banked five human runs on wet icy wood, all of them beating
+their own maps' author times, two of them by the author. Grafted onto 210218
+with controls, they **bind and drive and then die at `cps=1`**:
+
+| tape | on 210218 |
+|---|---|
+| the five translated sibling runs | **DNF `cps=1`** |
+| identity control (a native ghost grafted into another native ghost) | 102.601 exact |
+| native rank 1 | 96.281 exact |
+
+The checkpoint count is present in every row, so these are *driving* failures,
+not binding failures — as they must be, since each sibling is a different
+campaign layout wearing the same surface.
+
+**An answer key tells you what to optimise, not what to copy.** That is now the
+third map in this repository to reach that conclusion, after
+[YOU LOVE WATER](../284238-you-love-water) and
+[Spaghetti Nights 2](../146612-spaghetti-nights-2).
 
 ## What this map does to a TAS toolchain: nothing works
 

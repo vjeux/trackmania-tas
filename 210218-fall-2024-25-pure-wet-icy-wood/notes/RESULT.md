@@ -4,8 +4,8 @@ AT **94477** · human WR **96281** (iambeeen) · **30** records · gap **1804 ms
 · uid `VHalgyxHqys7loscd1RQhgqp3Fe` · tags Water, Altered Nadeo, Wood
 · `atSetByPlugin: true`
 
-*Live document. The search is still running; the analysis below is final unless
-marked otherwise.*
+*Final. Best validated time 96077 ms; the author time did not fall. A second
+agent (w218) continued the map afterwards and reached 96065.*
 
 ---
 
@@ -22,9 +22,16 @@ different finish time** — which is the 203072 failure mode, and it is absent.
 The exception, `r23_179463`, does not finish in the oracle. It was
 re-downloaded and is **byte-identical** (sha `63f73f12…`), so it is not the
 truncated-download trap; its ghost is structurally normal (one player record,
-17 checkpoints, 3590 samples). Flagged, excluded from the field statistics,
-unexplained. One anomalous ghost with no wrong-time divergences is the 227969
-pattern, not the 203072 pattern.
+17 checkpoints, 3590 samples).
+
+**Explained, by the second agent on this map (w218), after this section was
+first written and credited here:** the server prints, on *stderr*,
+`Invalid replay: r23_179463.Ghost.Gbx (#26.48x48Screen155Sunset.Script)` — the
+ghost references an embedded custom-item script the validator cannot resolve, so
+it **never simulated at all**. `tmtas validate` reports a load failure and a
+crash identically, as `DNF`. So field reproduction on this map is **29/29 of the
+ghosts that load, and the one that does not load is a loader failure, not a
+physics divergence.** §8 is a clean pass.
 
 Second control: the WR tape rebuilt through the search's own encoder
 re-validates at **96281**.
@@ -42,19 +49,37 @@ decode map.Map.Gbx` reports the chunk missing.
 found at body offset 607 759, and `tmtraj` decodes a 20 290 ms run from it. The
 tool works; this map really is empty.
 
-### Consequence: 94477 should not be called a driven lap
+### Consequence: what this does and does not say about 94477
 
-Three independent signals agree:
+Three signals point one way:
 
 1. no author ghost in the map file, though the map is marked validated;
 2. `atSetByPlugin: true` on unbeaten.at;
 3. **the map's own author, R4igekon, sits 4th on the leaderboard at 105172 —
    10 695 ms slower than the author time attributed to them.**
 
-Unlike every map this project has beaten so far, there is no evidence a human
-ever drove this time. That does not change the target, but it does mean the
-"how would a human do this" section below reconstructs a technique **from the
-field**, not from the author.
+**I first read this as "94477 was probably never driven". A third agent's
+sibling-map census, landed at 01:19 while this document was being finalised
+(`key_RESULT_v1_the_author_beats_his_own_ATs.md`), makes that reading wrong and
+I am withdrawing it.** R4igekon's author times on **nine of nine** of his other
+Pure-Wet-Icy-Wood conversions are beaten by humans, by margins of 36 ms to
+19.5 s — and on two of them **the human who beats the author time is the author
+himself** (208961: 25377 → 23908; 208800: 47167 → 46566). Those runs re-simulate
+exactly. So this author drives his own surfaces to within ~2 % of what a good
+human does, and a 1804 ms gap here is an **ordinary** margin for the series, not
+a freak.
+
+The corrected statement: **the absence of an embedded ghost means we cannot read
+the author's line off this map, not that no such line exists.** Being 4th on the
+online board says how much the author replayed *this* conversion, not whether he
+could drive its author time. 94477 should be treated as a normal target.
+
+That also means the "how would a human do this" work below is on firmer ground
+than I thought when I wrote it: the same agent banked **five validated human
+runs on this exact surface**, two by the author, all beating their own maps'
+author times, in `210218/key_siblings/`. They are a reference, not a seed — the
+census shows every one of them grafted onto 210218 binds and dies at `cps=1`,
+because each sibling is a different campaign layout wearing the same surface.
 
 ---
 
@@ -174,7 +199,9 @@ everywhere they stop.**
   either direction.** Per sector, |r| < 0.30 in 12 of 17, and the five that pass
   disagree on sign (s13 +0.49, s17 +0.40, s4 −0.54, s2 −0.46). The reason is
   that the field is stylistically homogeneous — 29 of 30 runs are within six
-  degrees of each other — so there is nothing to correlate against.
+  degrees of each other — so there is nothing to correlate against. **w218
+  measured what does order this leaderboard: respawn count, Spearman +0.874.
+  Slip orders it at +0.099.**
 * **A correction against myself, recorded because the trap is general.** My
   first pass used lateral velocity in **m/s** and found r = −0.90 … −0.50 in the
   early sectors, apparently saying *more* slip is *faster*. That was pure speed
@@ -186,6 +213,32 @@ So this is a **single-outlier contrast, n = 1**, not a correlational result. Its
 strength is the internal control: the same driver, in one run, drives one way
 for five sectors and another way for twelve, and the result switches with the
 technique.
+
+### Two controls added by w218 that close the obvious confounds
+
+Both independently measured on their own build, after this section was written:
+
+* **Sectors 12 and 15 are a controlled experiment, not an anecdote.** Both runs
+  at **identical 100 % throttle**, on the same line to within 8 m over
+  220–240 m, and in s12 **r21's path is 4.6 m LONGER** — yet r21 carries **17 %
+  and 9 % more mean speed, at 3° of slip against the WR's 10–16°.** Throttle and
+  route are both held constant; only slip differs. (This also corrects my
+  "3–5 % shorter line" above: r21's path is shorter in s6, s10, s11, s13 and
+  s16, and *longer* in s12 — so the shorter line is a consequence of the
+  technique in most places, not its mechanism.)
+* **The input-device confound is closed.** **15 of the 30 runs are 3-value
+  keyboard tapes**, and all fourteen non-r21 runs among them sit at
+  **23.7 – 30.4°** of slip. r21 alone is at 0.3 – 3.1°. Low slip is the driver,
+  not the controller.
+* **And my "7 distinct steer values" was telemetry, not inputs.** r21's actual
+  input tape holds **three**: `{−127, 0, +127}`. The intermediate values in the
+  telemetry are the game's own steering filter. **The fastest back half on this
+  map is driven on a keyboard, with three values.** The claim in §6.2 is
+  stronger than I wrote it.
+* Also worth knowing before anyone chases it: **respawning is arithmetically
+  excluded** as a route to the AT — w218 swept the respawn tick over the last
+  2.7 s (28 points) and the cheapest finishing respawn is 97865 against 96078, a
+  floor of **+1787 ms** against a total gap of 1601.
 
 ## 3. Map-shape fact: on this surface, input tapes are not transferable at all
 
@@ -288,17 +341,23 @@ run that holds the car straight. And the technique that goes faster is
 | 16 | **36 / 3** | 49 / 34 | 269 ms |
 | 17 | **4 / 3** | 16 / 14 | — |
 
-Over sectors 6–17 r21 uses **seven** distinct steering values in total —
+Over sectors 6–17 r21 uses **seven** distinct steering values in the telemetry —
 `{−127, −76, −50, 0, +50, +76, +127}` — and is at **0 (wheel centred) for 66 %
-of the samples**, with −127 for 12 % and +127 for 17 %. The world record uses
-**213** distinct values over the run and sits at full lock, one way or the
-other, for a third of it.
+of the samples**. **In its actual input tape it holds three: `{−127, 0, +127}`
+(w218) — r21 is a keyboard run**, and the intermediate telemetry values are the
+game's own steering filter. The world record uses **213** distinct values over
+the run and sits at full lock, one way or the other, for a third of it.
 
 **So the low-input family for this map was not produced by a quantiser — a
-human already drove it.** r21 is an action-key/pad ladder run: five values that
-matter, two to three times fewer input changes per sector than the world record,
-and faster in eight of the last twelve sectors. Anyone who has been avoiding
-this map because "you have to catch the slides" has it backwards.
+human already drove it, on a keyboard.** Three values, two to three times fewer
+input changes per sector than the world record, and faster in eight of the last
+twelve sectors. Anyone who has been avoiding this map because "you have to catch
+the slides" has it backwards.
+
+*(One caveat on robustness, measured by w218: the keyboard tape is not more
+forgiving of mistiming than the analog one — it dies on 55 % of single-unit
+steer perturbations against the incumbent's 69 %, the same order. Fewer inputs
+here means less to execute, not more slack per input.)*
 
 ### 6.3 Sector-by-sector, off visual cues
 
@@ -374,7 +433,78 @@ than being damped toward it, and let the shaped-DNF search rebuild the sector
 forward from there. The incumbent begins as a DNF at CP8 and the score ladder
 rewards depth, so the search has a gradient to climb even before it finishes.
 
-*(outcome recorded below)*
+*(outcome)* **Negative, and cleanly so.** 170 workers, 75 minutes,
+**660 000 candidates**. The search climbed from a DNF at CP8 to a DNF at CP9 in
+the first twenty seconds and then **did not improve again for 45 minutes**, and
+**not one candidate in 660 000 finished the map** (`finish 0%` throughout).
+Rebuilding a single sector forward from a centred-steering start is not
+something this optimiser can do here.
+
+So the answer to the open question, on this map, is no: **an optimiser cannot
+cross from the drifting regime into the gripping one, in either direction, by
+any operator this toolchain has.** Damping fails (§3), transplanting fails (§3),
+and rebuilding forward fails here. The low-slip lap exists — a human drove it —
+but it is not reachable from a tape that is not already in it.
+
+**Amended by w218, and this is the better statement.** They ran the same
+operator at shallower depths, seeding with r21's own inputs at a state-matched
+anchor instead of by centring, and graded it by *rungs of the DNF ladder to
+cross*:
+
+| destroy from | seed depth | rungs to a finish | outcome |
+|---|---|---|---|
+| CP16 (tick 9238) | `DNF cps 15` | 2 | **finished in 139 s / 3048 candidates** |
+| CP14 (tick 8418) | `DNF cps 14` | 3 | climbed one rung, no finish |
+| CP12 (tick 7313) | `DNF cps 12` | 5 | climbed one rung in 20 800 candidates, no finish |
+| my sector 11 (centred) | `DNF cps 8` | ~6 | climbed one rung in 660 000, no finish |
+
+**So the operator is not dead — it has a horizon, and the horizon is about two
+rungs.** My 660 000 candidates were six rungs out and did exactly what their
+five-rung attempt did. "Rebuilding forward fails" is wrong; **"rebuilding
+forward has a reach of about two checkpoints"** is right.
+
+The reason the horizon is so short is that **the ladder has only six rungs**:
+the oracle returns a checkpoint *count* and no checkpoint *time*, so every DNF
+at a given depth scores identically and within a rung the search is a flat
+random walk. And w218 calibrated something that bears directly on §7's barren
+front third: **on this map the server emits the "reached N of M checkpoints"
+clause only from N ≥ 6** (nine stop-tapes; `oracle.rs` claims N ≥ 2 from a
+different map). **Below CP6 a shaped search is completely blind, so my zero
+result on sectors 1–5 is partly an instrument limit and should not be read as
+"there is no time there."**
+
+### The endgame neighbourhood is provably empty
+
+Closing check, `tmsimp --mode kbx` on the 96077 tape over the last 1.8 s
+(ticks 9600–9782), every event shifted ±1…4, every segment re-valued to each
+alphabet symbol, every event deleted, an insertion at every tick with every
+symbol, each adjudicated by the plain oracle:
+
+> `kbx round 0: 161290 candidates, NO improvement on 96077 ms — the whole 1-move
+> keyboard neighbourhood is exhausted`
+
+The one region of this map that yielded anything to search is now closed at one
+move. (A larger sweep over ticks 9200–9782 at full 255-symbol resolution was
+started and did not complete a round inside the remaining lease; the 182-tick
+sweep above is the one that finished and the one that is claimed.)
+
+### A second agent, and the better number
+
+A second agent (**w218**) took this map at ~22:58 while my arms were running.
+They independently re-validated my 96078 in their own build tree (with a
+known-answer human ghost in the batch, 48/48 deterministic), and their own
+search has since reached **96068**, eleven milliseconds better than my 96077.
+**Their tape is the better one and the map is theirs to finish**; mine is banked
+as `best_96077.Ghost.Gbx` beside theirs.
+
+Two of their findings correct or extend mine and are credited above and here:
+the `r23` DNF is a **loader failure, not a physics divergence** (§0), and the
+car model explains only **1.6 %** of yaw-rate variance on this map, which voids
+every steering-based prior, corridor and predicate the project owns. Their
+enumeration of `--qlevels` ladders is the sharpest statement of §3's wall that
+exists: **every ladder from 1 to 32 levels DNFs at CP1, including a 65-value
+ladder whose worst error is ±2 of 127**, with the no-ladder identity control
+returning 96078.
 
 ## 8. Artefacts
 

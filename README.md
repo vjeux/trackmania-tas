@@ -46,8 +46,8 @@ of writing, and where they beat the human world record that is said too.
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
 | [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.859** | **0.091** | **−0.310** | the closest live target here — one session of search so far, and all 19 records re-simulate exactly |
-| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.961** ‡‡ | 1.431 | **−0.262** | a 190 m gap jump nobody takes is worth **1.128 s to checkpoint 5** — validated. The *exit* from it is unsolved: the car overshoots the road |
-| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void; and there is no author ghost in the map — `atSetByPlugin: true` |
+| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.478** ‡‡ | 0.948 | **−0.745** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. The remaining second is ordinary TAS headroom, and arms are live |
+| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void. But **the field's own per-sector minima sum to 91.826 — 2.651 UNDER the author time** (93.847 after discarding every sector that could have inherited speed): every sector of a winning lap has been driven, nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by measurement** — it tests a point on the car's *roof*, and every source of the ~26° tilt it needs costs 5.5× the time budget. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 † | **67.404** | 8.717 | **−1.038** | a 1/127 steer error e-folds in 0.7 s; the AT is 4.8 s below the field's best-sector splice, the 2022 WR, *and* our own per-sector optima |
@@ -66,12 +66,13 @@ headline control ghost archived, but not the wider *field* behind their
 field-reproduction claims, so those claims are not reproducible from our archive
 alone. The times themselves were validated with a control when they were found
 and are carried forward unchanged.
-‡‡ **146612 is moving fast.** Its sector work advanced substantially while this
-snapshot was being taken and three arms are still live. The best **segment sum**
-is now **39.229** against the author time — +0.699, down from +1.431 — but that
-is a sum of separately-searched sectors, **not a lap**, and the assembly is
-unproven. The table states only the validated lap; the segment sum is where the
-map is heading, not where it is.
+‡‡ **146612 is moving fast.** Several arms are live and the figures change hour
+by hour. `TAS_39478` re-validated on the untouched map with both human records
+exact in the same batch, but its own write-up had not been banked when this was
+published — the page says so. A **segment sum** of 39.229 also exists; it is a
+sum of separately searched sectors, **not a lap**, and on this map assembly is
+precisely the hard part, so the table states only what has been driven end to
+end.
 ¶ **147.031 is not the gap on 227654.** That record contains eleven respawns; the
 same human's own driving with the retries spliced out is **64.871**, and that is
 the number the −0.280 should be read against. See that page.
@@ -95,12 +96,16 @@ That makes "a computer went faster" the boring half of the result. The
 interesting half is *what the computer did differently*, and whether it can be
 handed back to the people grinding the map.
 
-(Two maps here are exceptions worth flagging honestly: on
+(Two maps here carry a caveat worth flagging honestly: on
 [210218](210218-fall-2024-25-pure-wet-icy-wood) and
 [267460](267460-impossible-mini-trial-2) there is no author ghost in the map
 file, unbeaten.at reports the time as plugin-set, and the map's own author sits
-well behind it on the leaderboard. Those author times should not be described as
-driven laps, and this repository does not.)
+well behind it on the leaderboard. **That means we cannot read the author's line
+off those maps — not that no such line exists**, and on 210218 a census of the
+author's other maps closes the question the other way: nine of his nine other
+author times are beaten by a human, two of them by the author himself. A
+1.804 gap there is an ordinary margin for that series. We initially drew the
+stronger conclusion on that page and have retracted it.)
 
 Four findings from this repo that generalise:
 
@@ -112,9 +117,9 @@ Four findings from this repo that generalise:
   the same three key values, and is **122 ms faster**.
 - **The part of a map that looks decisive usually is not.** On
   [279197](279197-fall-2025-01-reverse-cp1-end), intermediate gates across ranks
-  1 to 502 show the closing sweeper costs *everyone* the same 1100-1110 ms: a
-  198 ms field spread compressed into 10 ms. On
-  [270051](270051-fall-2025-16-cp1-end) the dramatic closing jump spreads 5 ms
+  1 to 502 show the closing sweeper costs *everyone* the same 1.100–1.110 s: a
+  0.198 s field spread compressed into 0.010. On
+  [270051](270051-fall-2025-16-cp1-end) the dramatic closing jump spreads 0.005
   across the field and correlates 0.07 with finishing order, while the quiet
   stretch at 2.4-3.7 s correlates 0.43. Both maps are won long before the part
   that looks hard.
