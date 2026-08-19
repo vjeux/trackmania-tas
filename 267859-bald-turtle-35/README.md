@@ -7,6 +7,7 @@
 | [`TAS_10759`](replays/TAS_10759.Ghost.Gbx) | **10.759** | **−0.009** | **−0.410** |
 | [`TAS_10768`](replays/TAS_10768.Ghost.Gbx) | 10.768 | ±0 — *equals* the author time | −0.401 |
 | [`TAS_10769`](replays/TAS_10769.Ghost.Gbx) | 10.769 | +0.001 | −0.400 |
+| [`KEYBOARD_10788`](replays/KEYBOARD_10788.Ghost.Gbx) | 10.788 | +0.020 | −0.381 |
 | [`TAS_10859`](replays/TAS_10859.Ghost.Gbx) | 10.859 | +0.091 | −0.310 |
 | [`KEYBOARD_10897`](replays/KEYBOARD_10897.Ghost.Gbx) | 10.897 | +0.129 | −0.272 |
 | author time | 10.768 | — | −0.401 |
@@ -83,9 +84,8 @@ someone already drives.
 not ask for a tighter input, it asks for the right *state* on arrival — and a
 state can be aimed for, felt, and practised in a way that a 10 ms window cannot.
 
-**Still owed: the low-input family.** No keyboard or reduced-alphabet member of
-this result has been found yet, and the fastest low-input tape on the map
-(10.897) is 0.129 outside the author time. Marked open rather than absent.
+**The low-input follow-up is complete**, and its answer is the record itself —
+see the section below.
 
 ---
 
@@ -130,6 +130,61 @@ it everywhere shows it at five contacts out of five.
 
 The same series produced a **failure** on [228607](../228607-torment-1-up), which
 is published alongside this one and is the more instructive of the two.
+
+## The low-input answer is "the record, unchanged" — and it loses on both axes
+
+Every beaten map here owes a low-input family: a version with a small alphabet
+and few input changes, on the standing assumption that such a tape is the one to
+hand a person. On this map that follow-up is now **complete**, and it came back
+inverted.
+
+Alphabets read back off the finished tapes, not taken from the flags that
+produced them:
+
+| tape | steer values | boundaries | events |
+|---|---|---|---|
+| keyboard 10.788 | **3** — `{−127: 451, 0: 491, +127: 205}` | 79 | 87 |
+| **analog record 10.759** | 116 | 236 | 230 |
+
+Tolerance, measured as one-tick boundary shifts with every variant validated:
+
+| tape | shifts tested | survive |
+|---|---|---|
+| keyboard 10.788 | 158 | **38.6 %** |
+| **analog record 10.759** | 472 | **76.1 %** |
+| human world record 11.169 | 74 | **24.3 %** |
+
+> **Hand a person the 10.759 analog record.** It is the fastest thing on the map
+> *and* three times more forgiving than the world record a human actually drove.
+
+The sparse tape loses on **both** axes at once: 29 ms slower and half as
+tolerant, despite having a third of the boundaries and three steer values. This
+is the fifth map's worth of evidence that event count predicts nothing about
+tolerance — and the first where the low-input member is worse in both directions
+simultaneously, which is about as flat a refutation of the intuition as the data
+can give.
+
+So the follow-up is **answered rather than outstanding**. "The deliverable is the
+record, unchanged" is a result, not an absence.
+
+**Credit where it belongs.** The keyboard tape is another arm's work
+(`m267859_KEYBOARD_10788_v2`), validated here on a different build at 10788 with
+its alphabet read back independently before it was used for anything. That arm
+also reached **within 0.030 of the author time** on this map by its own route:
+two arms converging on one map from different directions is worth saying out
+loud, because agreement between independent attacks is evidence of a kind that no
+single search can produce.
+
+**And the constrained search carries a control that fired.** Before the
+constrained chains started, the zero-ladder control was re-run *on that node and
+that build*: the incumbent becomes a DNF, `finish 0 %`, nothing banked. A
+constraint control that fires **before** the constrained run is the difference
+between a low-input result and a low-input hope — otherwise a search that
+silently ignored its constraint produces a tape you will describe with the wrong
+word (see [`FINDINGS.md`](../FINDINGS.md) on the two flags that lied tonight).
+
+*Not published: 10.758 has been seen independently on both nodes but has not
+cleared this map's protocol. **10.759 stands as the published time.***
 
 ## Validation
 

@@ -87,10 +87,8 @@ family a person could actually drive. Current coverage over the 26 beaten maps:
 (b) low-input family                20 present / 2 partial / 3 missing
 ```
 
-Seven beaten maps do not yet carry an explicit classification sentence, and the
-newest beat's low-input family is owed rather than absent — marked open on its
-page. Every remaining follow-up gap sits on a handful of maps, all with work in
-flight.
+Seven beaten maps do not yet carry an explicit classification sentence. Every
+remaining follow-up gap sits on a handful of maps, all with work in flight.
 
 ## Results — author time beaten
 
@@ -115,7 +113,7 @@ flight.
 | [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | **6.595** (19 inputs) |
 | [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **3.844** (WR+2 keys: 3.848) |
 | [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **13.986** (12 inputs) |
-| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | — †† |
+| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | 10.788 (3 values) †† |
 | [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | **13.075** |
 | [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 160 | 49.282 | 49.446 | **49.275** | **−0.007** | 49.475 |
 | [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | 10.606 (16 detents) |
@@ -142,9 +140,11 @@ of writing, and where they beat the human world record that is said too.
 † 63.546 is the all-time human record on 134672, set on a 2022 build; it does not
 re-simulate on a current one. 68.442 is the best human record set on a build the
 game still runs.
-†† **267859's low-input family is owed, not absent.** No keyboard or
-reduced-alphabet member of that result exists yet; the fastest low-input tape on
-the map is 10.897, still 0.129 outside the author time. Marked open on the page.
+†† **267859's low-input answer is the record itself.** Its keyboard member exists
+(10.788, three steer values) and is **worse on both axes** — 29 ms slower and
+half as tolerant, 38.6 % against the record's 76.1 % under one-tick shifts. The
+tape to hand a person on that map is the 10.759 analog record, which is also
+three times more forgiving than the human world record.
 § **The field behind this map's reproduction claim is not banked.** 238835 has
 its headline control ghost archived but not the wider *field*, so its
 field-reproduction claim is not reproducible from our archive alone; the time
@@ -263,12 +263,22 @@ And on 165922 the keyboard tape is not a concession — it is **the fastest run 
 the map**, ahead of the analog champion at 15.224. Restricting the alphabet found
 time rather than costing it.
 
-**But a low-input tape is not automatically the drivable one.** Measured on four
-maps, input count predicts nothing about how much timing error a tape forgives —
-on one of them the sparse tape tolerates *nothing* where the analog tape forgives
-a 10 ms slip across a 600 ms window. Each map's page names which member is the
-deliverable, and it is often neither the fastest nor the sparsest: the model is
-279218's 19-input, 42 %-tolerant tape. See [`FINDINGS.md`](FINDINGS.md).
+**But a low-input tape is not automatically the drivable one.** Measured on
+**five** maps now, input count predicts nothing about how much timing error a
+tape forgives — on one of them the sparse tape tolerates *nothing* where the
+analog tape forgives a 10 ms slip across a 600 ms window, and on
+[267859](267859-bald-turtle-35) the keyboard member is **worse on both axes at
+once**: 29 ms slower than the analog record and half as tolerant (38.6 % against
+76.1 %). Each map's page names which member is the deliverable, and it is often
+neither the fastest nor the sparsest — sometimes, as there, it is simply the
+record. See [`FINDINGS.md`](FINDINGS.md).
+
+**And a TAS can be the *more* forgiving object.** On two maps the tape we produced
+survives mistiming better than the human world record's own driven tape — 41 %
+against 18 % on [249521](249521-impossible-at-for-ssano), and 76.1 % against
+24.3 % on [267859](267859-bald-turtle-35). A tape that is both faster and three
+times more forgiving than the incumbent is not a curiosity to watch; it is a
+better thing to practise.
 
 **Counting convention.** "Input change events" means *any tick where steer, gas or
 brake differs from the previous tick*, counted over the whole tape including

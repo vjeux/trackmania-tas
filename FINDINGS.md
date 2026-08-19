@@ -2955,7 +2955,16 @@ own run is robust, because a person had to be able to repeat it. Measured on
 | **our keyboard TAS** | **41 %** |
 | the human world record | **18 %** |
 
-The TAS is more than twice as tolerant as the record it beats. That is not a
+And again on 267859, under one-tick boundary shifts with every variant validated:
+
+| tape | shifts tested | survives |
+|---|---|---|
+| **our analog record, 10.759** | 472 | **76.1 %** |
+| its keyboard sibling, 10.788 | 158 | 38.6 % |
+| the human world record, 11.169 | 74 | **24.3 %** |
+
+The TAS is more than twice as tolerant as the record it beats — three times, on
+the second map. That is not a
 quirk of one map — it is what happens when tolerance is *scored* rather than
 hoped for, and it reframes what a TAS is for. A tape that is both faster and
 more forgiving than the incumbent is not a curiosity to watch; it is a better
@@ -2971,7 +2980,13 @@ would usually happen.
 > is the only comparison that says whether you are handing someone something
 > easier or harder than what they already do.
 
-## Fewer inputs is easier to drive — now false on five maps, five mechanisms
+267859 is the sharpest version, because the low-input member lost on **both**
+axes at once — slower *and* half as tolerant as the analog record, despite three
+steer values and a third of the boundaries. The deliverable there is the record
+itself, and "hand them the record, unchanged" is a real answer to the low-input
+question rather than a failure to answer it.
+
+## Fewer inputs is easier to drive — now false on five maps, five mechanisms, and once in BOTH directions at once
 
 249521 is the fifth independent map to refute it, and the cleanest single
 demonstration: thinning the tape from **54 events to 30** made it **slower** and
@@ -2988,6 +3003,14 @@ quirk with four coincidences, it is a wrong prior.
 > **Input count predicts nothing about tolerance. Measure tolerance per tape and
 > publish the number next to the event count**, or the event count will be read
 > as a difficulty rating — because that is what everyone assumes it is.
+
+And the refutation is not one-directional. On 267859 the keyboard member is
+**29 ms slower AND half as tolerant** (38.6 % against 76.1 %) than the analog
+record, on three steer values against 116 and 79 boundaries against 236. Every
+quantity that is supposed to make a tape easier moved the right way, and both
+quantities that matter moved the wrong way. That is the cleanest available
+refutation: not "sparsity sometimes costs time", but "sparsity bought nothing on
+either axis".
 
 A related trade worth pricing before you run it: on the same map, a dedicated
 robustness re-placement pass bought **2 percentage points of survival for 130 ms**.
