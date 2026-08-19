@@ -742,3 +742,56 @@ candidates fail.
 
 **The defence is always the same and always cheap: make the instrument say the
 other thing, on purpose, before you trust it.**
+
+## Most of our replays were showing the wrong run — a fleet-wide survey
+
+A `.Ghost.Gbx` carries *two* things: the input stream the validator re-simulates,
+and recorded telemetry samples the game plays back. Every file this project
+synthesises rewrites the inputs and copies the samples verbatim, so **the replay
+you watch is the template's run, not the one the file validates as.**
+
+A survey of **194 tapes across the collection found 48 on 9 maps showing the host
+container's run rather than their own** — 286279 ×11, 238835 ×9, 199100 ×7,
+197047 ×6, 126859 ×6, 285885 ×5, 227654 ×2. It is not a mistake anyone made; it
+is what transplanting a tape into a host container does.
+
+**Eight files were repaired** by cutting the sample data to match the input cuts,
+and now play the run they claim (validated three times each, controls in every
+batch): both Leto author-cuts (220.391, 220.821), both Leto human-cuts (236.972,
+237.122), Angustus's author-cut (246.602) and its two earlier no-retry cuts
+(347.003, 407.463), and 227654's cut of rank 1 (59.912).
+
+**Three classes cannot be repaired, and the boundary is honest:**
+
+- **Searched tapes.** A mutation search changes steer values, so the tape is not
+  a subsequence of any recorded run and no samples of it exist anywhere. Leto's
+  218.812 and 218.877 stay validator-only.
+- **Cut + injected respawn.** Substituting a respawn press mid-tape sends the car
+  down a path nothing recorded. Angustus's 262.907 and 239.133 are in this class.
+- **Unmodified tape in a foreign container.** The tell is a cut spec with *zero*
+  drops — the aligner reports a "pure cut" that removes nothing.
+
+Making a searched tape watchable would need a simulator that emits telemetry,
+which is a different project.
+
+**A ghost's vehicle track is not always one entity.** 227654 records it as **27
+type-2 entities**, one per respawn segment. A scanner that takes the first
+matching entity reported that map's *healthy* files as running 145 seconds past
+their declared finish — wrong output from a new instrument on its first
+fleet-wide run. Merge all vehicle entities in time order.
+
+## Which recording in a multi-node ghost is the author's lap?
+
+A ghost can hold many recordings, and index 0 is not reliably the one you want.
+The rule, in order:
+
+1. Prefer a whole `CGameCtnGhost` blob if the file has one.
+2. Else match a recording's end time to the author time, or to **AT + ~2.96 s**
+   — the countdown lead-in, and the only two values observed across five maps.
+3. Else, **if the nodes start at different positions, they are not laps.**
+
+146612 has 25 nodes — 13 distinct recordings, the first twelve duplicated —
+starting at thirteen different places in six clusters, several mid-map, ending
+nowhere in common, and no end time matching either target. It has **no author
+lap**, and a file previously published for it on the index-0 assumption was
+withdrawn by its own author when the rule caught it.
