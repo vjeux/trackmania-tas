@@ -1165,3 +1165,41 @@ physical story attached.
 > **Before elevating a measured behaviour to a rule about the game, reproduce it
 > with a second implementation.** Especially when the behaviour is surprising:
 > surprise is exactly what a tool artefact looks like from the inside.
+
+## A diagnostic invented on one map can be a false negative on another
+
+The project needed to know whether a map that had never produced a single
+validated time was broken or merely badly seeded. The test: **relocate the finish
+onto the spawn and re-run the tape.** Still fails → the ghost is broken. Returns
+a time → the map is fine and the tape diverges later.
+
+Run on a **known-good** map as a control, minutes apart on the same machine:
+
+| | result |
+|---|---|
+| control map, untouched | `Time 886277`, `IsValid true` |
+| control map, **Goal only** moved next to the spawn | **`null`, `wrong simu`** |
+
+**A map that validates perfectly reproduces the failing map's exact signature
+under the test.** The reason is simple once seen: **a finish only counts once
+every checkpoint has been collected.** The recipe was invented on a map with *no
+checkpoints*; the maps it was being applied to have eleven and twelve.
+
+The repair is to relocate the checkpoints too — stacking eleven waypoint blocks
+in one cell is legal, and on the control map K relocated checkpoints report
+exactly K.
+
+Run correctly, the answer **inverted**: the map validates, and its tape
+simulates faithfully for at least 96 seconds — past two real checkpoints and its
+own first respawn — where the bare failure message had implied it died inside the
+first.
+
+**The lesson is not about gates.** It is that a diagnostic carries the
+assumptions of the map it was invented on, and those assumptions are usually
+invisible in the recipe. **Run a new diagnostic on a known-good case first** —
+the control here cost one validation and saved a wrong conclusion about a map
+three agents had already worked.
+
+And the asymmetry worth carrying: **a firing rung is proof; a silent rung is not
+evidence.** Six of twelve rungs returned nothing on a map that provably
+validates, and a gate one cell along from a firing one may simply not fire.
