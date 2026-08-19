@@ -1596,6 +1596,39 @@ Zero wrong-time divergences with a cluster of DNFs is the healthy pattern.
 > **Check the `git=` build string on the failing ghosts before condemning a
 > map.**
 
+### A timestamp is not a build — and splitting by one manufactures a trend
+
+The corollary, learned the expensive way. An auditor split the same
+reproduction data by **leaderboard upload time** and got a clean, plausible
+story: *the failures are recent and ongoing.* Split the identical data by the
+**build string recorded in the file**, and the trend vanished — the real
+structure is a bounded window that opened and closed.
+
+The reason is mundane and worth internalising: **a run made on one date can be
+uploaded at any time afterwards.** Upload time is a property of the player's
+behaviour, not of the physics the run was recorded under. Correlating a physics
+failure against it is correlating against noise with a date on it.
+
+> When a reproduction failure looks time-correlated, the time you need is the
+> one **inside the file**. A metadata date that lives on the leaderboard rather
+> than in the replay is a different variable wearing the same units.
+
+The false version was worse than no answer, because "recent and ongoing" implies
+a live regression and sends people to look at the current build, while "a
+bounded window, now closed" says the data is fine outside it and tells you
+exactly which seeds are usable.
+
+### And a map can make its own world record an invalid control
+
+On 203072 the human world record was set **inside** the bad build window, so it
+DNFs on a correct oracle. Reach for it as the obvious known-answer control — as
+anyone would — and a working harness reports itself broken. That map's
+validations use ranks 2 and 3 instead.
+
+> A known-answer control is only a control if you know its answer **on your
+> build**. Establish that before it is load-bearing, or the first thing your
+> control tells you will be a lie about your instrument.
+
 ## Our tape's fragility is not the map's fragility — measure the human's too
 
 Perturbation tolerance is normally reported as one number per tape: shift every
@@ -3210,3 +3243,54 @@ The general lesson, which has now cost this project twice in one night in
 different disguises: **the failure mode to fear is not the tool that breaks
 loudly, it is the tool that produces a well-formed wrong answer.** A crash gets
 fixed in minutes. A plausible number gets published.
+
+## An author time is a signature, not a proof — and the framing does not need it
+
+An arm wrote, in good faith, that *"the author time itself is proof a person
+drove this map faster than the field ever has"* — twenty lines after its own
+section establishing that the map **carries no embedded author ghost at all**.
+Two true paragraphs, mutually exclusive, in one document. It caught the
+contradiction itself and corrected it, which is the only reason this is a finding
+rather than a published error.
+
+What we actually have, on the maps where the record has been extracted, is a
+**signature**:
+
+* `validated="1"` on the record;
+* **round placeholder medals against a non-round author time** — 18 / 14 / 13 s
+  bronze/silver/gold against an author time with real milliseconds in it, which
+  means the author time was not derived from the medal ladder;
+* often the author sitting just behind their own published time on their own
+  leaderboard;
+* and `atSetByPlugin: null` — **absent**, which is not the same as `false`.
+
+That is a good circumstantial case that a person drove it. It is not proof, and
+on **five of five** map-extracted author records there is no input chunk at all,
+so the lap can never be replayed and the case can never be closed by checking.
+
+> **State the signature, not the conclusion.** *"The medal chain and the
+> validation flag are the driven-lap signature; the lap itself is unreplayable"*
+> is a sentence that survives scrutiny. *"The author time proves a human drove
+> it"* is not, and it is the kind of sentence a critical reader will find first.
+
+### The framing survives without it, on a stronger footing
+
+It would be uncomfortable if this project's headline — *"not humanly executable"
+is never the right answer* — rested on believing author times were driven. It
+does not, and the substitute is better because it is a measurement rather than an
+inference.
+
+**Compare our deliverable against the human seed's own driving under identical
+perturbation.** On 279218 the tape we hand a person survives **95 %** of
+single-input mistimings in at least one direction where the human's own lap
+survives **45 %**. On 267859 our record survives **76.1 %** of one-tick boundary
+shifts against the world record's **24.3 %**. On 249521, **41 %** against
+**18 %**.
+
+Those numbers say something about hands, directly: whatever a person managed to
+do on that map, the thing we are handing them tolerates more error than what they
+already did. No claim about who set the author time is required, and none of it
+depends on a record whose inputs nobody has.
+
+**Where a page rests its framing on the author, rest it on the tolerance
+instead.**

@@ -35,16 +35,29 @@ Two measurements that shaped everything:
   the corner and lose it all in the last 20 m — **the world record wins on
   exit**, not on the corner.
 
-## The author time is a driven lap
+## What the author time is, and what it is not
 
 Medals are 5350 / 6000 / 7000 / 9000 — the gold, silver and bronze are round
-thousands, i.e. placeholders, so the author time is not derived from them.
+thousands, i.e. placeholders, so the author time is **not** derived from them.
 Author `in-.-` also sits **rank 5 on their own board with 5358**, eight
 milliseconds slower than the time they published.
 
-So 5350 was driven, in the editor, by a person who could retry indefinitely —
-and it is 5 ms better than 339 players have managed online. A human-repeatable
-technique exists, because a human executed it.
+That is the **driven-lap signature**: a non-round author time against round
+medals, and an author whose own online record is close but not equal. It is
+strong circumstantial evidence that 5.350 was set in the editor by a person who
+could retry indefinitely — and it is *evidence*, not proof. The lap itself is not
+in the map file in replayable form, here or on most maps in this collection (see
+the front page on telemetry-only author records), so nobody can re-simulate it
+and check.
+
+**And nothing on this page depends on settling it.** The claim that matters —
+that a human-repeatable technique exists here — does not rest on who drove the
+author time. It rests on a measurement of our own tapes:
+`DRIVABLE_5351` survives **95 %** of single-boundary mistimings in at least one
+direction and **42 %** in both, against the human world record's 85 % and 24 %
+and our own human seed's 45 % and 27 %. **The tape we are handing a person is
+more forgiving than the driving a person actually did.** That is a measurement
+about hands, and it does not need an author's provenance to stand up.
 
 ## Validation
 

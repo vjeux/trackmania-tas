@@ -39,6 +39,21 @@ it.
 that window and does not re-simulate for us**, so every seed used here came from
 outside it.
 
+**A consequence worth naming, because it inverts the usual rule: on this map the
+world record cannot be used as a known-answer control.** It falls inside the bad
+build window and DNFs *legitimately* — a correct oracle produces the wrong-looking
+answer. Every validation here therefore used **ranks 2 and 3** as controls
+instead. Anyone re-running this map who reaches for rank 1 as the obvious control
+will conclude their harness is broken when it is working.
+
+**And the headline is now independently reproduced**, on a different node with a
+different build: **11.334 → 10.640**, with the build-window rate matching to half
+a percentage point inside the window and exactly outside it.
+
+*(One bookkeeping correction: the two banked tapes at that time are
+**byte-identical duplicates** produced by the ratchet, not two independent
+results. One tape, banked twice.)*
+
 ## What 272 people are missing: everybody climbs
 
 Our line sits **7.7 m from the world record's own path** — this is not a route

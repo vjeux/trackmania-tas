@@ -171,27 +171,32 @@ human.
 
 ## Why an unbeaten author time is interesting
 
-On these maps the author time is usually a **driven validation lap** — a real
-person sat down and hit it, often the map's own author. It is not a formula and
-not a theoretical bound. So when a map has hundreds of recorded runs and the AT
-still stands, something specific is going on: a line nobody tried, or a technique
-people know about and cannot hold.
+On these maps the author time usually carries the **driven-lap signature** — a
+non-round time against round placeholder medals, a `validated` flag set, and
+often the author sitting just behind it on their own leaderboard. It reads like
+a real person sat down and hit it, often the map's own author, rather than a
+formula or a theoretical bound. So when a map has hundreds of recorded runs and
+the AT still stands, something specific is going on: a line nobody tried, or a
+technique people know about and cannot hold.
 
 That makes "a computer went faster" the boring half of the result. The
 interesting half is *what the computer did differently*, and whether it can be
 handed back to the people grinding the map.
 
-**What an author record actually contains, though, is worth being exact about.**
-Where we have extracted the author's record out of the map file, **five of five
-were telemetry-only** — [145875](145875-unlucke-get-jiggy-with-it),
+**But that signature is circumstantial, and this repo does not treat it as
+proof.** Where we have extracted the author's record out of the map file, **five
+of five were telemetry-only** — [145875](145875-unlucke-get-jiggy-with-it),
 [203330](203330-get-in-the-hole-impossible),
 [285268](285268-pain-ft-mango-teuflum), [228607](228607-torment-1-up) and
 [228811](228811-torment-1-down) all carry the car's positions and no input
 chunk. You can watch the lap; **nobody can ever replay it**, because the inputs
 that produced it were never stored. On those maps the author time is a number
-the map *declares*, backed by telemetry of a lap someone drove.
+the map *declares*, backed by telemetry of a lap someone drove — and on several
+others there is no author ghost in the file at all.
 
-That weakens no result here — ours are game-validated laps re-simulated with
+So the honest statement is: **the medal chain and the validation flag are the
+driven-lap signature; the lap itself is unreplayable on most maps.** That
+weakens no result here — ours are game-validated laps re-simulated with
 known-answer controls — but it changes what the comparison *is*, and a reader
 should know. The one map that escapes it is the strongest object in the store:
 on [286279](286279-turtle-trial-leto) an arm **reconstructed** the missing
@@ -199,6 +204,19 @@ inputs, and the reconstruction finishes at **355.181 — the declared author tim
 to the millisecond.** A reconstruction that lands exactly on a number it was
 never given is about as good as evidence gets that the declared time is a lap
 that was really driven.
+
+**None of this project's framing depends on the author, though**, and that is
+worth stating plainly because it is easy to assume otherwise. The claim that
+these times are humanly reachable does not rest on the belief that a human
+already reached them. It rests on **tolerance measured on our own tapes against
+the human's own driving**: on [279218](279218-fall-2025-22-reverse-cp1-end) the
+tape we hand a person survives 95 % of single-input mistimings in at least one
+direction where the human seed's own lap survives 45 %; on
+[267859](267859-bald-turtle-35) our record survives 76.1 % of one-tick boundary
+shifts against the world record's 24.3 %; on
+[249521](249521-impossible-at-for-ssano) it is 41 % against 18 %. Those are
+measurements about what a pair of hands has to hit — not inferences about a
+record's provenance.
 
 (Two maps here carry a caveat worth flagging honestly: on
 [210218](210218-fall-2024-25-pure-wet-icy-wood) and
