@@ -908,3 +908,46 @@ placed beyond a real checkpoint so the trigger the candidate must satisfy is the
 map's own. And, as always, re-validate every improvement on the untouched map
 before believing it — that is what exposed the 14 seconds as two checkpoints out
 of four.
+
+## Fewer inputs is not automatically more drivable
+
+The low-input work in this repo rests on an assumption worth testing: that
+reducing input count makes a tape easier for a human. On
+[249521](249521-impossible-at-for-ssano) it was tested, and the assumption
+failed.
+
+Thinning that map's keyboard tape from 54 events to 30 made it **slower *and*
+less forgiving** — survival under ±1–4 tick mistiming fell from **41% to 10%**.
+The remaining inputs each had to do more work, so each one mattered more.
+
+A related bad trade from the same map: a robustness re-placement pass bought
+**2 percentage points of survival for 130 ms**.
+
+**So measure drivability, do not infer it from event count.** The right test is
+the one used there: perturb each input by ±1–4 ticks, let the rest re-time, and
+count what fraction still finishes — **with the human world record's own tape put
+through the identical test as the control.** On that map our 41% against the
+human's 18% is the statement worth publishing; "54 events" on its own says
+nothing.
+
+## Check what actually orders the field before naming a technique
+
+The visible difference between fast and slow runs on
+[249521](249521-impossible-at-for-ssano) is how hard the car is swung. Peak
+swing speed correlates **0.02** with finishing order across all 147 runs. "Swing
+harder" would have been a confident, plausible, useless piece of published
+advice.
+
+What does order the field is the car's *attitude at the moment of the throttle
+lift*: the field releases at 80–85° of heading, before the nose is square, and
+the boost pads give them 0–6 km/h; the fast line releases at 90–105°, past
+square, and the same pads give 25–35 km/h.
+
+This is the third map where the flashy quantity is not the causal one — the
+others being a closing corner that turned out to cost every run the same 1.1 s,
+and a lock-percentage correlation that inverted once the confound (slower
+drivers steer more because they are correcting) was removed.
+
+**Before publishing a technique, regress the candidate quantity against
+finishing order across the whole field.** If it does not order the field, it is
+not the technique, however large the difference looks.
