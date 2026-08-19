@@ -155,8 +155,13 @@ objective decided which one came out.
 
 ## Fewer inputs is not automatically easier
 
-Measured on five maps now, input count predicts nothing about how much timing
-error a tape forgives. On [249521](249521-impossible-at-for-ssano), thinning the
+Measured on six maps now, input count predicts nothing about how much timing
+error a tape forgives — and on
+[274191](274191-u10s-32-yeet-max-up) it is exactly backwards: the fastest,
+least-constrained tape survives **70.5 %** of one-tick displacements, the
+world record's own tape 71.9 %, and the tape with the fewest inputs **17.8 %**.
+Stripping a tape to its minimum deletes precisely the inputs that were absorbing
+error, so what is left has no slack anywhere. On [249521](249521-impossible-at-for-ssano), thinning the
 keyboard tape from 54 events to 30 made it **slower and less forgiving** —
 survival fell from 41 % to 10 %, because each remaining input had to do more
 work. On [267859](267859-bald-turtle-35) the keyboard version loses on both axes

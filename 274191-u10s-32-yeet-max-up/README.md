@@ -9,12 +9,17 @@ for 1.2 seconds and your launch attitude is already decided.**
 | **TAS** | **7.463** | **−0.241** | −0.430 | analog |
 | TAS, keyboard climb | 7.474 | −0.230 | −0.419 | 24 presses, 3 steering values |
 | **TAS, keyboard climb, 30 ms hold floor** | **7.476** | **−0.228** | −0.417 | **15 presses**, 3 values |
-| TAS, four-input climb | 7.514 | −0.190 | −0.379 | **the whole 4.5 s flight on 4 inputs, 2 values** |
+| TAS, four-input climb | 7.514 | −0.190 | −0.379 | 4 inputs, 2 values — the fewest, and the hardest to hold |
 | Author time | 7.704 | — | −0.189 | — |
 | Human WR — Whatever8319 | 7.893 | +0.189 | — | — |
 
 TMX map [274191](https://trackmania.exchange/maps/274191) · author
 **Everios96** · **3 recorded runs**.
+
+"Keyboard" here describes **the climb only**. Every run on this map, ours and
+the world record's alike, uses about 48 distinct steering values on the ground
+before the launch — restricting the ground phase to a keyboard alphabet does not
+finish at any resolution tried.
 
 ## The physics everything rests on
 
@@ -141,7 +146,7 @@ The 15-press keyboard tape, `replays/KEYBOARD_7476.Ghost.Gbx`. `L` = full left,
   7.490  L      hold to the gate
 ```
 
-**And the version to learn first, because it is barely a script at all.** The
+**And the fewest-input version, for reference — but do not learn this one.** The
 7.514 tape flies the whole climb on four inputs and two values, then holds the
 wheel centred for the last 2.3 seconds:
 
@@ -153,8 +158,8 @@ wheel centred for the last 2.3 seconds:
   5.160  —      and CENTRE all the way to the gate
 ```
 
-That is 0.190 inside the author time and 0.379 faster than the world record,
-using **one fewer ground input than the world record uses**.
+It is 0.190 inside the author time, and it is the least forgiving tape on the
+map — see below. Fewer inputs is not the same as easier.
 
 ## How forgiving it is
 
@@ -178,16 +183,33 @@ Anything up to +0.228 still beats the author time, and every number below does.
 **The first three presses return identical rows: they are one 400 ms phrase, and
 only the total rotation matters, not which of the three you were late on.** From
 5.160 the tape is comfortable, ±30–50 ms. **The last five presses cost literally
-nothing however you place them.** The four-input climb is the same story: its
-inputs tolerate ±30 ms, and several mistimings come out *faster* than the tape
-itself.
+nothing however you place them.**
+
+**Which tape to actually hold.** Displacing every input in turn by one tick and
+counting what still finishes, with the world record's own tape put through the
+identical test:
+
+| tape | time | survives |
+|---|---|---|
+| **the unconstrained floor** | **7.463** | **70.5 %** |
+| human WR (the control) | 7.893 | 71.9 % |
+| keyboard climb, 24 presses | 7.474 | 54.7 % |
+| four-input climb | 7.514 | **17.8 %** |
+
+**The fastest tape is also the most forgiving, within 1.4 points of the human's
+own — there is no speed-versus-forgiveness trade on this map.** And the tape
+with the fewest inputs is the worst of the four by a wide margin: stripping a
+tape down to its minimum deletes exactly the inputs that were absorbing error,
+so it ends up with no slack anywhere. Hand a person `TAS_7463`.
 
 **What will take real practice** is the feather in sector 2. Every input between
 2.580 and 2.850 is 10 ms-critical on a frozen tape — but so is the world
-record's own run, which dies on 98% of the same mistimings, because a recorded
-tape has no eyes and a driver does. In the air, where that measure means
-something, this keyboard climb survives mistimings the world record's flight
-does not: it is about five times more forgiving.
+record's own run, which dies on 98 % of the same mistimings, because a recorded
+tape has no eyes and a driver does. The useful version of that fact: **the last
+input in the whole lap a one-tick error can kill is at race 4.530 — all 92
+events after it survive being displaced either way.** On a map that is 63 %
+airborne, the flight looks like the hard part and is the only part you cannot
+get wrong.
 
 The change asked of you on that stretch of road is **not a new input, it is
 taking one away**: stop pinning the wheel into the lip.
@@ -196,7 +218,7 @@ taking one away**: stop pinning the wheel into the lip.
 
 | file | what |
 |---|---|
-| `replays/KEYBOARD_7476.Ghost.Gbx` | **fifteen presses, 7.476 — the one to learn** |
-| `replays/KEYBOARD_4input_7514.Ghost.Gbx` | the whole flight on four inputs, 7.514 |
+| `replays/TAS_7463.Ghost.Gbx` | **the fastest run, and the most forgiving — the one to learn** |
+| `replays/KEYBOARD_7476.Ghost.Gbx` | fifteen presses in the climb, 7.476 |
 | `replays/KEYBOARD_7474.Ghost.Gbx` | 24 presses, 7.474 |
-| `replays/TAS_7463.Ghost.Gbx` | the unconstrained floor |
+| `replays/KEYBOARD_4input_7514.Ghost.Gbx` | the whole climb on four inputs, 7.514 — the fewest inputs, the least slack |
