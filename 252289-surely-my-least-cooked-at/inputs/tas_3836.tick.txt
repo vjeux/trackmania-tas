@@ -1,0 +1,21 @@
+# SAFE_3836.Ghost.Gbx
+# 387 ticks, ghost start offset 0 ms, declared 3867 ms
+0 accel 0
+0 brake 1
+0 steer 3
+120 steer left
+290 steer -112
+300 steer left
+720 brake 0
+790 steer 0
+820 steer right
+840 accel 1
+1580 steer 80
+1630 steer right
+2440 steer 0
+2680 steer left
+2730 steer -112
+2740 steer left
+2760 steer 1
+2770 steer -80
+2780 steer left

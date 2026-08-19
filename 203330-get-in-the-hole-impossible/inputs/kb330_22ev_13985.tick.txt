@@ -1,0 +1,28 @@
+# kb330_13985.Ghost.Gbx
+# 1562 ticks, ghost start offset -1580 ms, declared 14031 ms
+0 accel 1
+0 brake 0
+0 steer left
+150 steer 0
+3180 steer right
+6690 steer 0
+6730 steer left
+7790 steer right
+7920 steer 0
+7940 steer left
+8110 brake 1
+10920 steer 0
+11000 brake 0
+11100 steer left
+11140 steer right
+11210 steer 0
+11280 steer right
+12090 steer 0
+12150 steer right
+13520 steer 0
+13570 steer right
+14650 steer 0
+14790 steer right
+14840 steer 0
+15080 steer left
+15120 steer 0

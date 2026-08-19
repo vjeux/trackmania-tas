@@ -1,0 +1,16 @@
+# min2_3848.Ghost.Gbx
+# 387 ticks, ghost start offset 0 ms, declared 3867 ms
+0 accel 0
+0 brake 1
+0 steer 0
+120 steer left
+720 brake 0
+790 steer 0
+820 steer right
+840 accel 1
+2440 steer 0
+2630 steer right
+2640 steer 0
+2680 steer left
+2890 accel 0
+2940 accel 1
