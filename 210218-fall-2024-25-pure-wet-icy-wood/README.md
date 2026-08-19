@@ -25,6 +25,14 @@ and that **93.847 survives** even after discarding every sector that could have
 inherited speed from the one before it. Every sector of a lap comfortably inside
 94.477 has already been driven by a human. Nobody has put them together.
 
+*(Those are sums of **real driven sector times**, each one a clock reading from a
+human's own lap. They are not a pointwise speed envelope, which is a different
+construction and one this project has since found to be biased — see
+[`FINDINGS.md`](../FINDINGS.md). What a sector-minima sum is vulnerable to is
+**separability**, which is why the 93.847 figure is given alongside: it is the
+same sum after discarding every sector that could have carried speed in from its
+predecessor.)*
+
 *Two agents worked this map; the second independently re-verified the first's
 96.078 in its own build tree with a human ghost in the same batch, and 48/48
 repeated runs of the same tapes returned identical times. The oracle is

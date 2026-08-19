@@ -2388,3 +2388,94 @@ The only thing that separates them is the control, run in the same batch, on the
 same recipe, every time. Not once when the pipeline was set up: **every batch**,
 because the correct choice changes from map to map and the wrong choice does not
 announce itself.
+
+## Projecting one run's speed onto another run's path credits speed without the radius that bought it
+
+A **pointwise envelope** asks what the fastest possible lap would be if you could
+take every point of the track at the best speed anyone in the field has ever
+carried through it. It is built by walking a reference arc and, in each bin,
+integrating `bin_width / v_best_donor(bin)`.
+
+That formula has no term for **the donor's own path length**, and the omission
+biases it in one direction only.
+
+A driver on a wider line covers more real ground while advancing *less* reference
+arc. Their speed therefore reads high in every bin they appear in — while they
+are genuinely slower. **On a curve, speed is bought with radius**, and projecting
+that speed onto a tighter reference credits the speed without charging for the
+radius.
+
+Corrected by dropping, per bin, any donor whose own travelled distance over a
+sliding window exceeds R × the reference's:
+
+| | total | vs an author time of 38.530 |
+|---|---|---|
+| unguarded, as originally circulated | 37.88 | −0.65 |
+| path-guarded at R ≤ 1.05 | **38.39** | **−0.14** |
+| path-guarded at R ≤ 1.02 | **38.64** | **+0.11** |
+
+**The corrected envelope straddles the author time.** What had been circulated as
+*"the field is pointwise capable of the author time with 0.34–0.69 s in hand"*
+became *"the recordings contain it to within ±0.15 s"* — and every plan built on
+that slack needed redoing.
+
+**The fix is biased too, and in the other direction**: dropping wide-line donors
+also discards real speed. So 38.39 and 38.64 **bracket** the answer rather than
+pinning it, and quoting either alone would repeat the original mistake in
+miniature.
+
+### The identity control is structurally blind to it
+
+This is the tenth control tonight that could not test the thing it was believed
+to test, and the subtlest of them.
+
+The natural control is to project a run against **itself** and check the envelope
+returns its own time. It does — 39.708, unguarded and at every guard threshold,
+*exactly* the same number.
+
+**It has to.** A run projected against itself has path ratio 1 in every bin by
+construction, so the guard can never remove anything and the bias can never
+appear. The control exercises the integration and the binning, both of which were
+correct, and is incapable of exercising the one property under test.
+
+> **A control whose input cannot exhibit the defect is not a control for that
+> defect.** Before trusting one, ask what value the suspect quantity takes in the
+> control's own input — if the answer is "the benign one, always", you have
+> tested everything except the thing you care about.
+
+### And the signal and the artefact were the same number
+
+The sector this audit ranked as the field's biggest opportunity was ranked on
+**path/chord 3.36 — the largest detour on the map**. But the bias scales with
+exactly how much a sector bends, because that is where radius is bought.
+
+So the quantity that identified the sector as interesting was the same quantity
+that inflated its score. Corrected, the ranking flips: what was 681 ms becomes
+≈193 ms, and a different sector at ≈251 ms is now the biggest hole.
+
+> **When your ranking metric and your bias term are the same physical quantity,
+> the top of the ranking is the least trustworthy part of it.** Check the leader
+> first, not last.
+
+On that map path/chord had by then pointed at three things that were not there —
+a cut, a seed, and now a sector ranking. A measure that keeps being *nearly*
+right is more dangerous than one that is obviously wrong.
+
+## A tarball that cannot be built from its own contents is not a published artefact
+
+A tools archive shipped a `main.rs` that calls `segments::make_all_ordered`
+without including the file that defines it. Everything in the write-up that used
+that path — including a documented, **mandatory** flag — was therefore not
+reproducible by anyone who had only the published artefact.
+
+Nothing was wrong with the code, the results or the write-up. The archive simply
+did not contain a compiling program, and nobody noticed because everyone who ran
+it ran it from the working tree where the missing file exists.
+
+> **Unpack your own tarball somewhere else and build it before you call it
+> banked.** One command, and it is the only check that distinguishes "the code
+> works" from "the code I published works".
+
+This is the same shape as the controls above: the thing being verified (does the
+tool produce the right answer?) is adjacent to the thing that matters (can the
+recipient reproduce the answer from what I gave them?).
