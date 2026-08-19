@@ -2016,3 +2016,96 @@ DNFs, often before the first checkpoint), but its line **transfers as a seed for
 a window**. Depth-check any such result against the *unpromoted* maps — a tape
 that satisfies the map's own CP1–CP3 triggers is not an enlarged-volume artefact
 of a promoted gate.
+
+## Hold the LINE fixed and vary the MAP, and a geometric difference gets a price
+
+Two maps in this collection differ by a handful of block records and share
+everything else. The usual way to talk about that difference is with an
+adjective: the water start is *slower*, the boost pads make the launch
+*harder*.
+
+There is a much better instrument available, and it costs one extra validation:
+**drive the same tape on both maps.**
+
+On one such pair, copy 0 of the module differs from its sibling by **exactly one
+block record** — the start block. Holding the line fixed and varying only the map
+prices it at **1.30 s, all of it paid in the first 1.4 s of the race**: standing
+acceleration 8.1 m/s² against 19.3, with the gap flat at +1.24…+1.31 from phase
+180 onward and the two cars matching acceleration exactly once moving.
+
+That single number turned an unanswerable question into arithmetic:
+
+```
+a human's validated 46.112 on the sibling  +  1.30  =  47.4
+                                          against an author time of  50.459
+```
+
+**The route that beats that author time exists and is 3.0 s better than it** —
+which is also the strongest evidence available that the author time was driven,
+and driven on essentially that route.
+
+> **A difference between two maps is measurable, not merely describable.** Same
+> tape, both maps, and read the phase profile to see *where* the difference is
+> paid. It converts "this launcher is worse" into "this launcher costs 1.30 s in
+> the first 1.4 s and nothing thereafter", which is the difference between an
+> opinion and a term in a budget.
+
+The same technique retired a claim on that map. An earlier write-up said six
+extra boost pads forced too much speed into a catch that wanted to be met slowly.
+Priced properly, the pads act **after** the aim is decided and the three
+measurable launches (90.9 works, 97.2 fails, 99.1 works) are not ordered by
+speed at all. The claim was withdrawn.
+
+## A detector must say yes, say no, AND resolve finer than the effect
+
+Two thirds of this rule are already in this document: an instrument needs a
+yes-control and a no-control before either of its answers means anything. The
+missing third cost a night's work.
+
+A rung ladder with **8 m** tolerance was used to march a search toward a target.
+It reported **depth 7 of 7** — a clean, monotone, fully-satisfied march. The
+winning tape was on the **wrong branch of a 9.5 m split**: the whole effect being
+measured was smaller than one rung's tolerance, so every rung said yes to both
+branches and the ladder could not tell the search it was going the wrong way.
+
+Re-run at 4 m and 2 m, the same march stalls at depth 3 and depth 1 — which is
+the honest answer, and it is the experiment that *confirmed* the map's account
+rather than breaking it.
+
+> **Calibrate a detector against what you want to EXCLUDE, not only against what
+> you want to find.** A yes-control proves it can fire. A no-control proves it can
+> refrain. Neither proves it can *distinguish* — for that, point it at two states
+> that differ by the size of the effect you care about and check that it separates
+> them.
+
+The general form: a control answers a question, and the question a tolerance
+answers is "how far apart must two things be before I can tell?" That is a third
+axis, independent of yes and no, and a march is exactly the shape of search that
+hides its absence — every rung reports success while the population walks away
+from the target.
+
+## `ghost::Factory` is blind to respawns
+
+Stated in the respawn section above from the direction of *constructing* a tape.
+It has a second consequence, for every search that does not think about respawns
+at all.
+
+A respawn lives in bit 31 of the input packet's state literal. The tape factory
+reads and writes **steer, gas and brake**. It does not surface the respawn bit, so
+a search that rewrites a template's inputs **silently inherits that template's
+retry schedule** — every respawn press, at every tick the donor pressed it.
+
+For a search perturbing a window between two respawns this is harmless, which is
+why it goes unnoticed. For a whole-tape search on a map where the clock runs
+through respawns it is not: the search is optimising a lap that contains a fixed,
+invisible set of retries it cannot remove, and its budget includes their cost.
+
+> **Before a whole-tape search on any map with respawns, strip them explicitly and
+> check the result** — a stripper with zero edits must reproduce the map's own
+> times, and on a tape whose respawns are load-bearing the stripped version must
+> DNF. Both controls are cheap and they pin the tool from each side.
+
+The audit is the enumeration, not the telemetry: on one record, **31 position
+jumps agreed exactly with 31 state-literal bit-31 packets, at the same ticks.**
+Counting discontinuities in a trajectory is a different measurement and it
+disagrees — on another map, 941 presses against 914 jumps.
