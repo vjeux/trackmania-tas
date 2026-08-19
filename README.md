@@ -13,7 +13,7 @@ The point is the **technique**, written up so a human can practise it.
 Every beaten map here is required to end its investigation with a
 **classification of the technique** — is this a route nobody found, a technique
 the field already has but does not use here, or something that needs precision a
-person cannot hold? Twenty-five maps in, seventeen carry an explicit
+person cannot hold? Twenty-six maps in, eighteen carry an explicit
 classification, and the answer is lopsided:
 
 | classification | count | maps |
@@ -21,6 +21,7 @@ classification, and the answer is lopsided:
 | **known but unheld** — the field already does this, somewhere else or almost | **12** | [145875](145875-unlucke-get-jiggy-with-it), [165922](165922-idm-ruinin-ur-day-460), [186935](186935-magnet-trial), [191465](191465-training-10-long), [197047](197047-welcome-to-wiggles), [199100](199100-spring-2023-24-2up), [203330](203330-get-in-the-hole-impossible), [238835](238835-turtle-trial-angustus), [249521](249521-impossible-at-for-ssano), [252289](252289-surely-my-least-cooked-at), [270051](270051-fall-2025-16-cp1-end), [270053](270053-fall-2025-18-cp1-end) |
 | **undiscovered route** — the line itself is somewhere the field never goes | 3 | [126859](126859-kacky-reloaded-290), [227969](227969-great-wtf-of-what-165), [274191](274191-u10s-32-yeet-max-up) |
 | **precision-bound** — and on both, the forgiving variant has been *measured* | 2 | [173636](173636-tap-water-01), [279218](279218-fall-2025-22-reverse-cp1-end) |
+| **precision-bound at the start, phase-bound at the finish** | 1 | [267859](267859-bald-turtle-35) |
 
 **Not one map has come back "not humanly executable."** That was the answer this
 project was set up to test for, and it has never been the right shape of answer,
@@ -35,25 +36,31 @@ field already does, done in a place or a combination nobody tried.
 > [238835](238835-turtle-trial-angustus). Take the recorded run, change two
 > things, and it is inside the author time.
 
-The two precision-bound maps are the exception that makes the point: both say so
-in their own words, and on both a **forgiving variant** — a tape that gives up
-some time to tolerate human-sized timing error — has been found and measured,
-not merely wished for. What "known but unheld" looks like in practice is
+The precision-bound maps are the exception that makes the point: both say so in
+their own words, and on both a **forgiving variant** — a tape that gives up some
+time to tolerate human-sized timing error — has been found and measured, not
+merely wished for. The hybrid is [267859](267859-bald-turtle-35), and it is
+worth a sentence of its own: its opening is 0 %-tolerant in three windows **for
+everybody**, and the human world record's own first seven seconds are *less*
+forgiving than our tape's — 0–25 % against 70.4 %. On that map the human is the
+tight one, and a person hit it anyway. What "known but unheld" looks like in practice is
 [249521](249521-impossible-at-for-ssano), where the world record's gas lifts
 land at the same race times as ours *to within 30 ms* and the entire margin is
 the car's attitude at the moment of the lift.
 
 Two mandatory follow-ups are demanded of every beaten map — (a) an investigation
 of the human technique, ending in that classification, and (b) a low-input
-family a person could actually drive. Current coverage over the 25 beaten maps:
+family a person could actually drive. Current coverage over the 26 beaten maps:
 
 ```
 (a) human-technique investigation   21 present / 2 partial / 2 missing
 (b) low-input family                20 present / 2 partial / 3 missing
 ```
 
-Eight beaten maps do not yet carry an explicit classification sentence; every
-remaining follow-up gap sits on four maps, all of them with work in flight.
+Eight beaten maps do not yet carry an explicit classification sentence, and the
+newest beat's low-input family is owed rather than absent — marked open on its
+page. Every remaining follow-up gap sits on a handful of maps, all with work in
+flight.
 
 ## Results — author time beaten
 
@@ -78,6 +85,7 @@ remaining follow-up gap sits on four maps, all of them with work in flight.
 | [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | **6.595** (19 inputs) |
 | [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **3.844** (WR+2 keys: 3.848) |
 | [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **13.986** (12 inputs) |
+| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | — †† |
 | [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | **13.075** |
 | [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 160 | 49.282 | 49.446 | **49.275** | **−0.007** | 49.475 |
 | [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | 10.606 (16 detents) |
@@ -93,11 +101,10 @@ of writing, and where they beat the human world record that is said too.
 
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
-| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.769** | **0.001** | **−0.400** | **the closest miss in the project — one millisecond, on the wrong side.** Four cold measurements across two separately compiled builds agree, and all 19 records re-simulate exactly |
 | [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.430** ‡‡ | 0.900 | **−0.793** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. What works instead is scoring at the *next* checkpoint: arriving at CP5 earliest is not arriving best |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void. But **the field's own per-sector minima sum to 91.826 — 2.651 UNDER the author time** (93.847 after discarding every sector that could have inherited speed): every sector of a winning lap has been driven, nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
-| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by measurement** — it tests a point on the car's *roof*, and every source of the ~26° tilt it needs costs 5.5× the time budget. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
+| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by arithmetic** — it reduces to one inequality with one calibrated constant and no free x or z, and the budget fails term by term: 31.0 mm of body gap plus 5.3 mm of attitude against 71.6 mm required, with two unrelated instruments agreeing on the deficit to 1.6 mm. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 † | **67.404** | 8.717 | **−1.038** | a 1/127 steer error e-folds in 0.7 s; the AT is 4.8 s below the field's best-sector splice, the 2022 WR, *and* our own per-sector optima |
 | [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | — | **characterised, not merely unbeaten**: a human's line on a byte-identical sibling map, priced onto ours, is **47.4 — 3.0 s inside the author time**. It needs a long flat run-up into each launch and **only copy 0 has one**; the tube gives copies 1–3 just 0.6 s of flat, which cannot build the lateral velocity the wall contact needs |
 | [P-Found - Pokeuuu](153527-p-found-pokeuuu) | 1 | 939.283 | 5661.335 | — | — | — | not a target: cutting every retry out of the only run still leaves 1214.585 against a 939.283 author time |
@@ -105,6 +112,9 @@ of writing, and where they beat the human world record that is said too.
 † 63.546 is the all-time human record on 134672, set on a 2022 build; it does not
 re-simulate on a current one. 68.442 is the best human record set on a build the
 game still runs.
+†† **267859's low-input family is owed, not absent.** No keyboard or
+reduced-alphabet member of that result exists yet; the fastest low-input tape on
+the map is 10.897, still 0.129 outside the author time. Marked open on the page.
 § **The field behind this map's reproduction claim is not banked.** 238835 has
 its headline control ghost archived but not the wider *field*, so its
 field-reproduction claim is not reproducible from our archive alone; the time

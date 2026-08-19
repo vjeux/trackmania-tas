@@ -31,7 +31,15 @@ construction and one this project has since found to be biased — see
 [`FINDINGS.md`](../FINDINGS.md). What a sector-minima sum is vulnerable to is
 **separability**, which is why the 93.847 figure is given alongside: it is the
 same sum after discarding every sector that could have carried speed in from its
-predecessor.)*
+predecessor. It also clears the **provenance** gate, which is the other thing an
+envelope-like figure has to pass: these are records set on this map's own uid,
+not times transferred in from a sibling or an original, and **29 of the 30
+re-simulate to their recorded times here** (the one exception is flagged and
+excluded from the field statistics below). That gate is not academic on this
+map — the official field of the map it was altered from returns `DNF cps=0` on
+this geometry, so those 29 274 times are inadmissible here no matter how similar
+the layout looks. **Re-simulation on the uid you are analysing is the test, not
+the Altered Nadeo tag.**)*
 
 *Two agents worked this map; the second independently re-verified the first's
 96.078 in its own build tree with a human ghost in the same batch, and 48/48

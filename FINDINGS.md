@@ -2491,6 +2491,37 @@ that inflated its score. Corrected, the ranking flips: what was 681 ms becomes
 > the top of the ranking is the least trustworthy part of it.** Check the leader
 > first, not last.
 
+### An envelope needs two gates, and the second one is about provenance
+
+The path guard above fixes how an envelope is *built*. It says nothing about
+where the donor times came from, and that turns out to be the other half of the
+problem. The rule the project now works to:
+
+| gate | question | test |
+|---|---|---|
+| **construction** | is the integration honest? | `ds/v` path-biased, crossing times clean |
+| **provenance** | are these times *on this map*? | **the records re-simulate to their recorded times on the uid you are analysing** |
+
+The second gate exists because several maps here are Altered Nadeo copies with a
+second, much larger official field on the original geometry, and it is very
+tempting to pour that field into an envelope for the altered map. Sometimes that
+is legitimate and sometimes it is a surface swap that changes the physics under
+every donor.
+
+**The operational test is re-simulation, not the tag.** "This map is an Altered
+copy" is a fact about its provenance, not a licence or a prohibition — it does
+not tell you whether a foreign field is admissible. What tells you is running the
+records through the oracle on the uid you are actually analysing: **a field whose
+records return their own recorded times on that uid is a field of times on that
+map**, whatever its origin, and a field that does not is not, however identical
+the geometry looks.
+
+That test has both outcomes in this repo. Twenty official tapes grafted onto our
+altered copies each returned their own official time or split to the millisecond
+— admissible, and the basis of real results. Elsewhere a graft returned
+`DNF cps=0` until the recipe was fixed. The tag was the same in both cases; only
+the re-simulation distinguished them.
+
 On that map path/chord had by then pointed at three things that were not there —
 a cut, a seed, and now a sector ranking. A measure that keeps being *nearly*
 right is more dangerous than one that is obviously wrong.
