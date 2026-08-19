@@ -293,35 +293,61 @@ recombined. Measured twice, independently: on
 [284238](https://trackmania.exchange/maps/284238) a sector optimised to cross
 CP4 95 ms earlier made the unchanged tail DNF outright.
 
-## Input tapes are not portable between ghost containers
+## Input tapes ARE portable between ghost containers — but only with two chunks
 
 A `.Ghost.Gbx` holds its per-tick inputs in an archive chunk (`0x0309201D`).
-Moving that archive into a *different* ghost file does not work:
+Moving that archive alone into a *different* ghost file DNFs at checkpoint 1,
+every time, while moving it into its own container reproduces its time exactly.
+That looked conclusive, and it was published here as "cross-run splicing is
+impossible". **It was wrong.** Bisection found the carrier — a minimal pair:
 
-| tape | container | result |
-|---|---|---|
-| rank 2's input archive | rank 2's own ghost file | **977.690 — exact** |
-| rank 4's input archive | rank 4's own ghost file | **1371.430 — exact** |
-| rank 2's input archive | rank 1's ghost file | **DNF at CP1** |
-| rank 4's input archive | rank 1's ghost file | **DNF at CP1** |
-| the author's AT archive, from the map file | rank 1's ghost file | **DNF at CP1** |
+| transplanted | result |
+|---|---|
+| the donor archive alone | DNF at CP1 |
+| + `0x0309202E` *(the obvious suspect: 4 bytes in one file, 69 in another)* | DNF at CP1 |
+| + `0x03092000` *(the recorded telemetry)* | DNF at CP1 |
+| + `0x0309202D` | DNF at CP2 — progress |
+| **+ `0x0309202D` and `0x0309202B`** | **exact** |
 
-The two identity rows prove the transplant machinery is correct. Copying the
-archive's `start_offset_ms` alignment does not help, and neither does copying
-**all fourteen** small `0x03092xxx` chunks from the donor, so the carrier is one
-of the large ones.
+Carry that pair and **every** foreign tape re-simulates exactly in another run's
+container. Cross-run splicing is available, and so is re-simulating an author
+ghost extracted from a `.Map.Gbx`.
 
-**Consequence: "best-of-field splice" — composing the best sector from each
-human's run — is not available.** Splice within one ghost file only. This is
-worth knowing before you spend a day on it: three agents on three different maps
-each hit an unexplained DNF-at-CP1 and misdiagnosed it as a respawn-state or
-physics problem before this was pinned down.
+**It paid immediately.** Leto's published run went from 235.625 to
+[**220.391**](286279-turtle-trial-leto) — the map author's own embedded
+author-time ghost, which an hour earlier could not be re-simulated at all, with
+its nine failed attempts cut out. 134.790 s inside the author time.
 
-It is also what currently blocks the biggest known prize on Leto. The author's
-own author-time ghost is embedded in the `.Map.Gbx` and decodes fine; with its
-nine failed attempts deleted it is worth **220.563 s**, another 15 seconds under
-the published run. It will not re-simulate, purely because it is a foreign
-container.
+Two things about how the wrong answer survived as long as it did:
+
+- **A negative from a hand-enumerated list is worth nothing.** Fourteen chunks
+  were swept by hand and the finding was written up as a hard limit; the answer
+  was the two chunks that were never on the list. Bisection settled it in three
+  validations. When a sweep comes back empty, suspect the enumeration before the
+  hypothesis.
+- `0x0309202D` **is the same size in every ghost**, which is exactly why a
+  size-diff sweep skipped it. "Looks identical across files" is not evidence of
+  "carries nothing".
+
+## The DNF at CP1 was never about CP1
+
+Three maps independently recorded the same unexplained failure — a synthesised
+respawn press splices in exactly at the later checkpoints and DNFs at CP1 — and
+all three filed it as respawn lore. The rule:
+
+> **You can cut TO a soft respawn but not to a hard one. The trap is the respawn
+> KIND, not the checkpoint index.**
+
+On Leto the CP3 trim that works lands on a soft respawn; the CP1 trim that never
+worked lands on a standing one. Nothing about CP1 is special.
+
+A cut to a hard respawn *does* work — but only at one exact phase, and **the
+phase is not periodic**: ticks 12376–12398 DNF, 12399 works, 12400 works,
+12401–12499 DNF, 12500 works. So **sweep the prefix, not the tail.** Sliding the
+tail finds nothing and invites an "impossible" conclusion; sliding the cut point
+at a fixed graft finds the phase. That is what `tmsimp --mode cutsweep` does,
+reporting each survivor's expected `base − 10·deleted` and whether the
+arithmetic is exact.
 
 ## Before you describe what a driver is doing in the air, check the air is live
 

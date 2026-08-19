@@ -1,12 +1,13 @@
-# [Turtle Trial] Leto — the author time falls by nearly two minutes
+# [Turtle Trial] Leto — the author time falls by 134.790 s
 
-**Author time 355.181 · human world record 441.002 · this run 235.625 —
-the author time beaten by 119.556 s (−33.7%), the world record by 205.377 s.**
+**Author time 355.181 · human world record 441.002 · this run 220.391 —
+the author time beaten by 134.790 s (−38.0%), the world record by 220.611 s.**
 
 | tape | time | vs AT | vs human WR | steer values | input events |
 |---|---|---|---|---|---|
-| [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | **235.625** | **−119.556** | −205.377 | 26 | 964 |
-| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | **235.939** | −119.242 | −205.063 | **3 — keyboard** | **941** |
+| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391.Ghost.Gbx) | **220.391** | **−134.790** | −220.611 | the author's own | the author's own |
+| [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | 235.625 | −119.556 | −205.377 | 26 | 964 |
+| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | **3 — keyboard** | **941** |
 | the human WR's own inputs, retries deleted | 236.972 | −118.209 | −204.030 | 3 — keyboard | 943 |
 | human WR, Bald_tm *(control)* | 441.002 | +85.821 | — | 3 — keyboard | 1811 |
 
@@ -18,18 +19,16 @@ Turtle · **5** recorded runs, all five analysed.
 
 ## The whole result in one sentence
 
-**Bald_tm has already driven a 237-second lap of this map.** He drove it in
-eleven pieces, over seven and a half minutes, and every piece of a
-sub-four-minute run is sitting inside his own recorded world record.
+**Nobody on this map has ever needed to drive better. They needed to fail less.**
+
+The fastest run here, 220.391, contains **no TAS driving at all**: it is the map
+author's own author-time lap, recovered from inside the `.Map.Gbx`, with the
+nine attempts they failed cut out of it. The second-fastest family is the human
+world record holder's own inputs, in his own order, with ten of *his* failed
+attempts cut out — 236.972, and not one tick of mutation.
 
 On a Trial map the clock keeps running through respawns, so a recorded time is
-clean driving *plus every failed attempt*. Delete the ten attempts he failed in
-sector 3 and his own tape — not one input changed, not one tick of TAS mutation
-— finishes in **236.972**. That is 118 seconds under an author time that had
-never been beaten.
-
-Nothing here was driven better than the human world record. It was driven
-*fewer times*.
+clean driving *plus every failed attempt*. On this map that is most of the clock.
 
 ## The leaderboard is a ranking of failures, not of pace
 
@@ -163,7 +162,7 @@ human tape it came from. The unconstrained tape reaches 235.625 with 26 values.
 **Keyboard costs 314 ms out of 236 seconds: 0.13%.** On this map the input
 device is irrelevant. Only failing is expensive.
 
-## The author's own run says the same thing, louder
+## The author's own run — and where the 220.391 comes from
 
 The author's author-time ghost is embedded inside the `.Map.Gbx` and decodes
 cleanly. It contains **eleven respawns**, nine of them failed attempts in
@@ -184,11 +183,18 @@ unbeaten.at flags it `inPlugin: true`, but a fabricated time does not contain
 nine failed attempts at the same obstacle everybody else fails at. 135 of its
 355 seconds are retries.
 
-Second, **220.563 is the next target**, and it is the same driver's own driving:
-their S1, S2 and S4 are all faster than the world record's, by 16.2 s in total,
-while their winning S3 and the WR's agree to within 0.6 s. That tape cannot be
-re-simulated yet — it lives in a different ghost container (see below) — so it
-is not a published result, only a known floor.
+Second, that tape is the published headline. For about an hour it could not be
+re-simulated at all — an embedded ghost lives in a foreign container, and moving
+an input archive between containers DNFs at CP1. That turned out to need two
+extra chunks carried along with the archive (`0x0309202D` and `0x0309202B`);
+with them, it re-simulates exactly. Cut its nine failures out and it validates
+at **220.391** — 134.790 s inside the author time, and 15.234 s inside the best
+tape any search had produced.
+
+It is worth being precise about what that run is: **the map's author already
+drove every metre of it.** Their S1, S2 and S4 are each faster than the world
+record's, by 16.2 s in total, and their one successful S3 agrees with the WR's
+to within 0.6 s. The 134.790 s is entirely their own retries.
 
 ## Two findings other maps need
 
@@ -206,13 +212,12 @@ input after the respawn was tuned for the old one. Respawn-anchored sectors are
 therefore **not independent** and cannot be optimised in parallel and
 recombined.
 
-**Input tapes are not portable between ghost containers.** Transplanting a
-run's input archive into a *different* ghost file DNFs at checkpoint 1, every
-time, while transplanting it into its own container reproduces its time exactly.
-Copying the archive alignment does not help, and neither does copying all
-fourteen small `0x03092xxx` chunks from the donor. So **"best-of-field splice" is
-not available** — splice within one ghost file only. This is also what blocks
-re-simulating the 220.563 s author run above.
+**Input tapes ARE portable between ghost containers** — provided you carry two
+chunks with the input archive, `0x0309202D` and `0x0309202B`. The archive alone
+DNFs at CP1, which for an hour looked like a hard limit and was written up as
+one; bisection found the pair. **Best-of-field splicing is available**, and so
+is re-simulating an author ghost pulled out of a `.Map.Gbx` — which is where
+this map's headline 220.391 comes from.
 
 ## Files
 

@@ -1,13 +1,13 @@
-# 238835 — `[Turtle Trial] Angustus` — AUTHOR TIME BEATEN by 3m 15s
+# 238835 — `[Turtle Trial] Angustus` — AUTHOR TIME BEATEN by 3m 20s (43.2 %)
 
 **uid** `KHmZyqOJ9oTOvTFIRkxGNTTK1D8` · author **Bald_tm** (BALDFROMSPB) · tags
 **Trial, Turtle** · 5 checkpoints (4 intermediate + finish)
 
 | run | time | vs AT |
 |---|---|---|
-| author time (AT) | 462 982 | — |
-| only human record (Quantiks, 1 of 1) | 1 964 933 | +1 501 951 |
-| **this work, validated** | **267 946** | **−195 036 (−42 %)** |
+| author time (AT) | 462.982 s | — |
+| only human record (Quantiks, 1 of 1) | 1 964.933 s (32m 45s) | +1 501.951 s |
+| **this work, validated** | **262.907 s** | **−200.075 s (−43.2 %)** |
 
 All times are the plain oracle's (`TrackmaniaServer /nodaemon /validatepath=`)
 against the untouched Nadeo-served `map.Map.Gbx`
@@ -176,7 +176,7 @@ retries.
 | 1 | splice out every failed attempt (5 splices, one per cluster, each length-swept until the arithmetic was exact) | **347 003** |
 | 2 | **inject a respawn on the tick after each checkpoint fires**, so the human's own first failed attempt in each segment disappears too | **276 393** |
 | 3 | delete slack ticks: 5.0 s where the car sits still at (1036, 137, 522), plus two smaller stalls | **268 554** |
-| 4 | automated tape decimation (`tmdec`), plain-oracle scored | **267 946** |
+| 4 | automated tape decimation (`tmdec`), plain-oracle scored, 14 rounds | **262 907** |
 
 **Step 2 is worth spelling out.** A checkpoint's saved state exists on the very
 next tick after the checkpoint fires — measured: injecting a respawn at tick
@@ -288,7 +288,7 @@ of value:
 
 ## 6. WHERE OUR REMAINING TIME IS
 
-Our 267 946 splits as **58.9 / 68.8 / 48.1 / 56.9 / 35.9 s**. Against the
+Our 267 646 (v7) splits as **58.9 / 68.8 / 48.1 / 56.9 / 35.9 s**. Against the
 author's *retry-stripped* driving (47.6 / 63.9 / ~43 / ~55.6 / 35.9 s) we are:
 
 * **level** in the last segment,
@@ -331,7 +331,60 @@ author's *retry-stripped* driving (47.6 / 63.9 / ~43 / ~55.6 / 35.9 s) we are:
 | `tapes/TAS_347003_noretry_v4.Ghost.Gbx` | step 1 complete |
 | `tapes/TAS_276393_v5.Ghost.Gbx` | step 2, checkpoint-respawn injection |
 | `tapes/TAS_268554_v6.Ghost.Gbx` | step 3 |
-| `tapes/TAS_267946_v7.Ghost.Gbx` | **step 4 — the reported result** |
+| `tapes/TAS_267646_v7.Ghost.Gbx` | step 4, first decimation pass |
+| `tapes/TAS_262907_v8.Ghost.Gbx` | **step 4 complete — the reported result, 262.907 s** |
 | `ops_final_v5.txt`, `ops_final_v3.txt` | the `tmcut` op lists that build them |
 | `analysis/` | difficulty profile, attempt tables, author decode |
 | `tools/` | `tmcut.rs`, `tmdec.rs`, `tmtas packets`, `t38` |
+
+---
+
+## 9. FINAL NUMBERS (all times in seconds, as validated)
+
+| tape | validated | vs AT |
+|---|---|---|
+| author time (AT) | 462.982 | — |
+| only human record | 1 964.933 | +1 501.951 |
+| `TAS_407463_noretry` | 407.463 | −55.519 |
+| `TAS_347003_noretry_v4` | 347.003 | −115.979 |
+| `TAS_276393_v5` | 276.393 | −186.589 |
+| `TAS_268554_v6` | 268.554 | −194.428 |
+| `TAS_267646_v7` | 267.646 | −195.336 |
+| **`TAS_262907_v8`** | **262.907** | **−200.075 (−43.2 %)** |
+
+Validation transcript: `VALIDATION.txt` — three cold passes over all seven
+tapes in fresh processes (identical every pass), the human record carried as the
+known-answer control in every batch (1 964.933 every time), plus a fourth pass
+against a **re-downloaded, sha256-identical** Nadeo map file. sha256 of every
+tape is in the same file.
+
+**Positive control:** distinct from the identity control, and satisfied here by
+construction — the evaluator is the unmodified plain oracle, seven different
+tapes validate through it, and 363–853 of every ~11 800 `tmdec` candidates per
+round return a real finish. It is not an instrument that can only say "no".
+
+### Corrections adopted from sibling agents (2026-08-18, same evening)
+
+* **Only the HARD respawn state is a per-checkpoint constant.** The SOFT state
+  is *your own* crossing state, so respawn-anchored sectors cannot be optimised
+  in parallel and recombined — work left to right. Cut-only work (all of this
+  result) is unaffected: a cut changes nothing upstream of itself, which is
+  exactly why `finish = base − deleted` stays valid.
+* **Input tapes carry a dependency on their ghost container.** This is the
+  leading explanation for §4's embedded-author-ghost failure, and it means the
+  "control" quoted there was weaker than stated: the container I transplanted
+  the human's archive into was itself derived from the human's own file, so it
+  was a round-trip control, not a cross-container one. Getting an embedded
+  author lap to run probably needs a container synthesised around it.
+* A synthesised respawn press is **not** portable between checkpoints in
+  general — it DNF'd at CP1 on another map. On 238835 it was exact at all four.
+  Validate each one individually.
+
+### The open item, and it is worth taking
+
+The author's *retry-stripped* driving on this map is worth **≈246 s** against
+our 262.907 s, and 11.3 s of that gap is one place in segment 1 where the human
+sits at 1.75 km/h for 3.0 s and the author passes at 34 km/h. Deleting tape
+cannot fix it (1 194 candidates, cut lengths to 3 s, **zero finishers** — it is
+a physical stall). It needs either a driving search over ticks ~1 700–5 890, or
+the author's own tape made to re-simulate.

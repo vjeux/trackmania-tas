@@ -1,10 +1,10 @@
-# [Turtle Trial] Angustus — author time beaten by 3m 15s
+# [Turtle Trial] Angustus — author time beaten by 200.075 s
 
 | run | time | vs AT |
 |---|---|---|
-| author time | 462 982 | — |
-| the only human record (Quantiks, 1 of 1) | 1 964 933 | +1 501 951 |
-| **this TAS, validated** | **265 159** | **−197 823 (−43 %)** |
+| author time | 462.982 | — |
+| the only human record (Quantiks, 1 of 1) | 1964.933 | +1501.951 |
+| **this TAS, validated** | **262.907** | **−200.075 (−43.2%)** |
 
 TMX map [238835](https://trackmania.exchange/maps/238835) · author **Bald_tm** ·
 tags **Trial, Turtle** · 5 checkpoints · **1 recorded run**.
@@ -87,7 +87,7 @@ The obstacle-by-obstacle guide is in `notes/RESULT.md`.
 
 | file | what |
 |---|---|
-| `replays/TAS_267646_v7.Ghost.Gbx` | the run (a later 265159 is still being validated) |
+| `replays/TAS_262907.Ghost.Gbx` | the run — 262.907, independently re-validated with the human record as a known-answer control in the same batch |
 | `replays/TAS_268554_v6.Ghost.Gbx` | the previous stage |
 | `replays/TAS_347003_noretry_v4.Ghost.Gbx` | an earlier, more conservative cut |
 | `notes/RESULT.md` | the full write-up, including the respawn bitstream analysis |
