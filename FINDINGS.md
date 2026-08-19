@@ -555,3 +555,73 @@ Three preconditions, each of which cost a cycle before it was understood:
 So "the search has converged" and "the search can no longer see" produce
 identical logs. Before concluding a map is at its floor, check what one
 millisecond is worth in metres.
+
+## A synthesised tape carries its template's telemetry, not its own
+
+Every ghost file this project makes — a search output, a splice, a transplant, a
+poke override — is the **template** with the *input bits* rewritten. The
+recorded entity data is copied verbatim and never updated, because nothing
+re-simulates the file in order to write it.
+
+So decoding a candidate returns the **seed's** position, velocity, attitude and
+ground contact. No error, no warning, entirely plausible numbers. A candidate on
+[285885](285885-finish-is-on-the-roof) decodes byte-identical to the human world
+record it was seeded from:
+
+```
+md5 32165f9fa47f41d4377b022d401545d2   decode(candidate).csv
+md5 32165f9fa47f41d4377b022d401545d2   decode(seed).csv
+```
+
+**What it cost, in one hour, in one case.** An agent read `vy = +9.2 m/s` off a
+candidate, derived a 10.7° climb through the finish trigger, concluded a lateral
+fix was a net loss, and was about to redirect the search. The truth was a
+**descent of 1.1 m/s** — the opposite sign. The telemetry was describing the
+world record parked at a hairpin 120 m away. A second agent hit the same trap
+from a different construction path and called it "a confident wrong answer,
+silently and self-consistently".
+
+**Why it is easy to fall for:** the decode succeeds, the splits and race time
+match the template so nothing looks odd, and it is wrong *only where the
+candidate diverges from its seed* — precisely the part under investigation. **The
+better the search, the more wrong the telemetry.** Downloaded human ghosts are
+fine; this is specific to files we made.
+
+**The rule: any state claim about a synthesised tape must come from a
+re-simulation, or from a probe that goes through the oracle.**
+
+**The substitute, which needs no re-simulation and works on a tape that DNFs:**
+use a gate as a ruler. Fix the horizontal position, sweep the gate's height, and
+read the fire times — they fall as the ceiling rises and then **saturate**.
+Saturation is footprint entry; the slope below it is the car's vertical speed.
+Two rungs 20 mm apart gave a sink rate to ±0.1 m/s in about 40 seconds of oracle
+time.
+
+## One disease, five costumes
+
+Everything above, plus the phantom incidents, is a single failure mode: **an
+instrument whose broken state is indistinguishable from its working state unless
+you deliberately make it say the other thing.**
+
+1. **A search that reports times it did not earn** — two processes sharing a
+   staging root swap candidate files. 7 phantoms in 13 shared runs, 0 in 8 with
+   distinct roots.
+2. **An evaluator that can only say no** — a foreign-template shortcut that could
+   never return a finish. ~144,000 DNFs read as "the target is a needle".
+3. **A constraint that silently does not bite** — a "keyboard" search producing
+   tapes with 150+ steer values.
+4. **A gate probe that fabricates discoveries** — a model swap that quadruples
+   the trigger volume, so everything fires early *including the null case*.
+5. **A decoder that answers about the wrong run** — the telemetry trap above.
+
+The defence never changes and is always cheap: **make the instrument say the
+other thing, on purpose, before you trust it.** A search must reproduce a known
+time. A constraint must fail a one-level ladder. A gate probe must return to its
+origin and reproduce the untouched map to the millisecond. An evaluator that
+cannot finish anything must be shown finishing something. A decode of a
+synthesised file must be checked against a re-simulation.
+
+And the corollary that caught two of these: **when a sweep comes back empty,
+suspect the enumeration before the hypothesis.** A negative from a hand-listed
+set is worth nothing — one such negative was published here as a hard limit, and
+the answer was the two items never on the list.
