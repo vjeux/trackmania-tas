@@ -238,12 +238,15 @@ accepted moves were single blocks of 364 and 181 events worth exactly 0 ms: the
 retry loop, deleted wholesale, because it was already erased. That is the
 cleanest available statement of where the author's time went.
 
-*(A symmetry offered as suggestive, not as a constant: the optimised run
-minimises to 832 events, the author's lap to 831. Two lineages 136 seconds apart
-in finishing time, reached by completely different routes, bottoming out within
-one input of each other — as if the irreducible part of this map is the
-balancing itself, and everything above that floor is retries on one side and
-optimisation slack on the other.)*
+*(An earlier version of this page offered the 832-vs-831 agreement as a
+suggestive symmetry between two lineages. **Retracted** — they are not two
+lineages. The 218.812 run **is** the author's lap, cut and then searched, so
+minimising it and minimising the raw author lap minimise the same inputs:
+identical steer counts, identical brake counts, two apart on accel, and the
+event sequences agree everywhere except about twelve events. Landing in the same
+place is arithmetic, not a property of the map. The correct, weaker statement is
+that **ddmin is reproducible along one lineage** — a good property of the
+minimiser and nothing about Leto.)*
 
 **The difficulty number, stated plainly:** of 104 sampled inputs on the minimal
 tape, **94 have a one-tick window** — shift by a single 10 ms tick either way and

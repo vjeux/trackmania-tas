@@ -654,10 +654,21 @@ that no version of the line can do without, the same nine fatal ticks appearing
 in two independent lineages — and **gracefully in its endgame**.
 
 **Two independent lineages converge on the same floor.** Minimising 203330's
-12-input tape and its 31-input optimum (a different line, 19 more inputs) both
-terminate at **twelve events**. That upgrades the driver's document from "this is
-the tape we happened to thin" to "the fast line on this map costs twelve inputs
-whichever end you approach it from".
+12-input tape and its 31-input optimum (a different line, 19 more inputs, one of
+them 2 ms faster) both terminate at **twelve events**. That upgrades the driver's
+document from "this is the tape we happened to thin" to "the fast line on this
+map costs twelve inputs whichever end you approach it from".
+
+**But check provenance before calling two starting points independent.** The same
+claim was made for Leto — 832 events from the optimised run, 831 from the
+author's raw lap — and retracted within the hour: the optimised run *is* the
+author's lap, cut and then searched, so both minimisations were consuming the
+same inputs. The tell was there to be read: identical steer counts, identical
+brake counts, two apart on accel, and event sequences agreeing everywhere except
+about twelve events out of 862. **Two genuinely independent minimisations of a
+220-second map do not agree that closely.** Near-identity means shared ancestry,
+not corroboration — so diff the surviving event sequences and compare event-class
+counts before publishing a convergent-floor claim.
 
 **And a minimiser measures MARGINAL freedom, not joint freedom.** Blanking ticks
 25290–25399 of Leto's author lap is free; blanking 25400–25834 is free; blanking
