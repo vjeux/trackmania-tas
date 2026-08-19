@@ -1,132 +1,129 @@
-# YEET Fall 2024 - 04 — the author time falls by 694 ms, on a map we had written off
+# YEET Fall 2024 - 04
 
-| | time | vs AT | vs human WR | alphabet |
+**Everybody climbs. The reactor fires out of the nose, so where the car points is
+where it goes — apex at 82 m and spend the boost going forwards, not at 99 m and
+spend a second and a half coming back down.**
+
+| run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|
 | **TAS** | **10.640** | **−0.694** | **−1.443** | analog |
-| **keyboard flight** | **10.743** | −0.591 | −1.340 | **3 values, 14 presses** |
-| action-key variant | 10.717 | −0.617 | −1.366 | small ladder |
-| Author time (never beaten by a human) | 11.334 | — | −0.749 | — |
-| Human WR | 12.083 | +0.749 | — | — |
+| action-key flight | 10.717 | −0.617 | −1.366 | 5 values, 22 events |
+| **keyboard flight** | **10.743** | **−0.591** | **−1.340** | **3 values, 14 presses** |
+| Author time | 11.334 | — | −0.749 | — |
+| Human WR — ayti__ | 12.083 | +0.749 | — | — |
 
-TMX map [203072](https://trackmania.exchange/maps/203072) · **272 recorded
-runs** · 1 checkpoint.
+TMX map [203072](https://trackmania.exchange/maps/203072) · **272 recorded runs**
+· one checkpoint.
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+This is an Altered Nadeo copy of **Fall 2024 - 04**, with geometry and surfaces
+preserved, so the 600 000 people on the official map are driving the same road.
 
----
+## What the map is
 
-## This map was on the abandoned list, and the verdict was wrong
-
-The project's own acquisition guide named 203072 as *the* canonical unusable
-map — human ghosts would not re-simulate, so it was declared unfalsifiable and
-no search was ever run on it. Re-examining that verdict was most of the work
-here, and it turned out to be wrong in three separate ways:
-
-- **The oracle is faithful on this map: 1.7 mm** position RMS against ghosts'
-  own telemetry, on three ghosts from three different game builds. (The
-  precedent that exonerated another map was 8 mm.)
-- **Nadeo's own map file is sha256-identical to ours**, which kills the "the map
-  was edited in place" theory outright.
-- **The failures are a bounded window of game builds**, 2026-01-18 → 2026-04-28.
-  Checked across the whole field, n=270 of 272: **outside the window, 80/80 —
-  100%. Inside it, 92/190.**
-
-The earlier "old builds fail, new builds pass" reading came from a **34-ghost
-sample in which the post-window builds had n=1.** The full-field check inverted
-it.
-
-**One structural caveat, stated plainly: the human world record was set inside
-that window and does not re-simulate for us**, so every seed used here came from
-outside it.
-
-**A consequence worth naming, because it inverts the usual rule: on this map the
-world record cannot be used as a known-answer control.** It falls inside the bad
-build window and DNFs *legitimately* — a correct oracle produces the wrong-looking
-answer. Every validation here therefore used **ranks 2 and 3** as controls
-instead. Anyone re-running this map who reaches for rank 1 as the obvious control
-will conclude their harness is broken when it is working.
-
-**And the headline is now independently reproduced**, on a different node with a
-different build: **11.334 → 10.640**, with the build-window rate matching to half
-a percentage point inside the window and exactly outside it.
-
-*(One bookkeeping correction: the two banked tapes at that time are
-**byte-identical duplicates** produced by the ratchet, not two independent
-results. One tape, banked twice.)*
-
-## What 272 people are missing: everybody climbs
-
-Our line sits **7.7 m from the world record's own path** — this is not a route
-discovery. It is what the car does in the air.
-
-Thrust on this map is **71–76% along the car's nose** (unlike the other YEET map
-in this collection, where it fires through the belly). So attitude decides
-whether the boost is spent going *up* or going *forwards*:
-
-| | apex | what the boost does |
+| phase | race | what |
 |---|---|---|
-| human WR | **99.3 m** | 1.5 s of it is spent coming back down |
-| this run | **81.8 m** | spent going forwards |
+| A | 0 → 4.4 | ground, accelerate to ~200 km/h |
+| B | 4.4 → 6.4 | two full-lock direction changes, then the launch |
+| C | **6.4 → finish** | **~4.2 s of powered flight**, 228 → 430 km/h |
 
-## The trick is a combination lock, which is why no human found it
+**71–76% of the boost lies along the car's own nose.** It is not a belly-mounted
+reactor pushing you upwards; it is a thrust vector you aim by pointing the car.
+That single fact is the map.
 
-The final tape differs from its predecessor in **three places**: a 40 ms
-throttle lift, a 10 ms throttle lift, and one wheel you *do not* unwind into the
-launch.
+## Where the time is: fly flatter
 
-A full 2³ factorial was run on those three changes:
+The line is not exotic — it sits a mean of 7.7 m from the world record's own
+path, closer than most of the field. What differs is the shape of the arc:
 
-> **Every proper subset either DNFs or is slower. All three together are worth
-> 566 ms.**
+| run | apex height | apex time |
+|---|---|---|
+| **this run** | **81.8 m** | **8.85** |
+| human WR | 99.3 m | 9.70 |
+| rank 2 | 97.2 m | 9.40 |
+| rank 5 | 120.1 m | 9.47 |
+| rank 3 | 130.3 m | 9.25 |
 
-No incremental refinement finds that, human or machine, because **the gradient
-points away from the answer in all three directions**. You have to make three
-apparently-wrong changes at once.
+**Every human in the sample climbs higher.** The world record is actually *ahead*
+through the middle of the flight and then spends 1.5 seconds converting height
+back into progress — it reaches the same point down-track at 9.95 against our
+10.69, and still loses 1.2 s by the line, because it bought altitude we never
+paid for.
 
-This is the third map in this collection where the winning move is a
-non-separable interaction — see [`FINDINGS.md`](../FINDINGS.md).
+### There is an 840 ms dead zone right after the launch
 
-## Also measured
+From about 6.44 to 7.20, steering does *literally* nothing: fifteen different
+constant steering values through that window return the identical millisecond,
+and a single-tick nudge anywhere inside it changes nothing either. Everywhere
+else on this map the same nudge usually ends the run.
 
-- **An 840 ms dead zone** in the early flight where steering does *literally*
-  nothing: 15 of 15 constant substitutions return the identical millisecond.
-  Everywhere else the map is hypersensitive.
-- **Best-of-field splicing does not work here** — 60 splices, 10 donors × 6
-  boundaries, all DNF. Not a container-portability problem: the lap is a single
-  integral, and no donor's state is compatible mid-flight.
+The window is tied to the flight rather than to a place or a clock — it starts at
+your own takeoff. **The attitude you carry into 6.44 is the attitude you have at
+7.20, and nothing you do in between matters.** What you set *going into* it is
+worth more than anything inside it.
 
-## Two mistakes worth publishing
+### The launch is a combination lock
 
-- **The search window was set from the telemetry rather than from the tape.** The
-  tape's clock offset is **−1560 ms**, so the finish is at tick 1380, not 1224 —
-  which **froze the last 1.5 seconds of every candidate for 45 minutes**.
-  Unlocking that region is what produced the breakthrough. The project's brief
-  warns about exactly this trap, and it still cost an hour.
-- `pkill -f` killed the agent's own shell twice — the second time because a
-  `sed` had put the script's own name onto its command line.
+The last three differences that produced the fastest tape are all in the 1.5 s
+before the launch: **40 ms off the throttle at 4.82 during the full-right lock**,
+**10 ms off the throttle at 5.49 during the full-left lock**, and **holding about
+10% left lock into the launch at 6.25 instead of unwinding to centre**. All three
+together are worth **0.566**. Every proper subset of them either misses the
+finish or is slower — the gradient points away from the answer in all three
+directions, which is a fair answer to what 272 people missed: nothing
+incremental.
 
-## Validation
+Honestly stated: those three edits are differences within one lineage, not a
+recipe to bolt onto someone else's run — grafted onto a human tape they do not
+finish. What transfers to a driver is the flat arc and the tape below.
 
-Every reported tape cold-re-validated in a second process with a different
-binary, known-answer controls in the same batch. **Zero phantoms all session.**
-Raw server output confirms `NbRespawns: 0`, `NbCheckpoints: 1`, correct MapUid.
+## The run as inputs
+
+The whole 4.2-second flight, on three keyboard values and fourteen presses.
+Throttle is full throughout except the two blips above; the brake taps at 3.01
+and 4.01 are ordinary ground driving.
+
+```
+  6.44   release the wheel   (into the dead zone — nothing matters until 7.20)
+  7.20   FULL LEFT
+  7.35   release
+  7.88   FULL LEFT
+  8.35   release
+  8.56   FULL LEFT   (brief)
+  8.59   FULL RIGHT
+  9.23   release     (brief)
+  9.25   FULL RIGHT  (brief)
+  9.28   release     (brief)
+  9.30   FULL RIGHT
+  9.98   release
+ 10.05   FULL RIGHT
+ 10.26   release
+ 10.64   finish
+```
+
+## How forgiving it is
+
+Mistime one press and re-time the ones after it — what a driver who is late
+actually does — and this tape holds up better than the human run it was seeded
+from:
+
+| tape | still finishes | still within 0.050 of its own base |
+|---|---|---|
+| **this one, 14 presses** | 88% | **85%** |
+| the human seed's own tape | 96% | 45% |
+
+**Twelve of the fourteen presses have ±30 ms of slack.** The exceptions:
+
+- the release at **6.44** is genuinely tight — one tick either way and you do not
+  finish. It is the entry to the dead zone, and it sets the attitude for the next
+  three quarters of a second.
+- the two full-lefts at **7.20** and **7.35** are fragile on the early side only.
+- the cluster at **9.23–9.30** is three flickers inside 70 ms. **That is the part
+  that will take real practice.**
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/TAS_10640.Ghost.Gbx` | the fastest run |
 | `replays/KEYBOARD_10743.Ghost.Gbx` | **3 values, 14 presses — the one to study** |
 | `replays/ACTIONKEY_10717.Ghost.Gbx` | small action-key ladder |
-| `notes/SECTION8-RESOLVED.md` | **why the map was wrongly abandoned, and the full-field build analysis** |
-| `notes/RESULT.md`, `notes/RESULT-amendment.md` | the write-up and the 10.640 amendment |
-
-## This map is an Altered Nadeo copy of **Fall 2024 - 04**
-
-Identified blind by cell occupancy against all 625 official seasonal campaign
-maps — see [`_altered/`](../_altered). The official map has a field of **600 000
-players** on this geometry.
-
-Geometry **and** surface are preserved (`name_agree` 0.9914), so those humans drove the same car over the same road: their times are directly comparable and their lines are usable as references.
-
-**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.
+| `replays/TAS_10640.Ghost.Gbx` | the fastest run |

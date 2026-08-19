@@ -1,48 +1,31 @@
-# [Turtle Trial] Leto — the author time falls by 136.369 s
+# [Turtle Trial] Leto
 
-**Author time 355.181 · human world record 441.002 · this run 218.812 —
-the author time beaten by 136.369 s (−38.4%), the world record by 222.190 s.**
+**Nobody on this map has ever needed to drive better — they needed to fail less.
+Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 
-| tape | time | vs AT | vs human WR | steer values | input events |
-|---|---|---|---|---|---|
-| [`BEST_218812`](replays/BEST_218812.Ghost.Gbx) | **218.812** | **−136.369** | −222.190 | **3 — keyboard** | 904 |
-| [`KEYBOARD_218877`](replays/KEYBOARD_218877.Ghost.Gbx) | 218.877 | −136.304 | −222.125 | 3 — keyboard | 918 |
-| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391_watchable.Ghost.Gbx) | 220.391 | −134.790 | −220.611 | the author's own | **cuts only, no TAS driving — watchable** |
-| [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | 235.625 | −119.556 | −205.377 | 26 | 964 |
-| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | 3 — keyboard | 941 |
-| [the human WR's own inputs, retries deleted](replays/HUMANCUT_236972_watchable.Ghost.Gbx) | 236.972 | −118.209 | −204.030 | 3 — keyboard | 943 — **watchable** |
-| human WR, Bald_tm *(control)* | 441.002 | +85.821 | — | 3 — keyboard | 1811 |
+| tape | time | vs author time | vs human WR | steering |
+|---|---|---|---|---|
+| [`BEST_218812`](replays/BEST_218812.Ghost.Gbx) | **218.812** | **−136.369** | −222.190 | 3 values — keyboard |
+| [`KEYBOARD_218877`](replays/KEYBOARD_218877.Ghost.Gbx) | 218.877 | −136.304 | −222.125 | 3 — keyboard |
+| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391_watchable.Ghost.Gbx) | 220.391 | −134.790 | −220.611 | the author's own driving, retries cut |
+| [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | 235.625 | −119.556 | −205.377 | 26 |
+| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | 3 — keyboard |
+| [`HUMANCUT_236972`](replays/HUMANCUT_236972_watchable.Ghost.Gbx) | 236.972 | −118.209 | −204.030 | the world record's own inputs, retries cut |
+| human world record, Bald_tm | 441.002 | +85.821 | — | 3 — keyboard |
 
-unbeaten.at MapId 286279 · uid `p0tVjdmb1DfkCVrDE_DfQN84kq8` · author
-**BALDFROMSPB / Bald_tm**, who also holds the human world record · tags Trial,
-Turtle · **5** recorded runs, all five analysed.
+Author time **355.181** — faster than the human world record, and set by the same
+person. unbeaten.at MapId 286279, uid `p0tVjdmb1DfkCVrDE_DfQN84kq8` · author
+**BALDFROMSPB / Bald_tm**, who also holds the world record · tags Trial, Turtle ·
+**5** recorded runs, all five analysed. Every time above was re-simulated against
+Nadeo's own map file with the world record as a control.
 
----
-
-## The whole result in one sentence
-
-**Nobody on this map has ever needed to drive better. They needed to fail less.**
-
-The 220.391 tape contains **no TAS driving at all**: it is the map author's own
-author-time lap, recovered from inside the `.Map.Gbx`, with the nine attempts
-they failed cut out of it. The 236.972 is the human world record holder's own
-inputs, in his own order, with ten of *his* failed attempts cut out — not one
-tick of mutation. Only the last 1.6 s of improvement, from 220.391 to 218.812,
-came from a search.
+## The leaderboard ranks failures, not pace
 
 On a Trial map the clock keeps running through respawns, so a recorded time is
-clean driving *plus every failed attempt*. On this map that is most of the clock.
-
-**And the fastest tape uses three steering values.** The unconstrained search,
-free to use all 254, converged to `{left, 0, right}` on its own and beat the
-keyboard-constrained arm. On a low-speed technical map, analog steering is not
-where the time is.
-
-## The leaderboard is a ranking of failures, not of pace
-
-Across the five recorded runs there are **272 failed attempts costing 76.8
-minutes** of race time. No two runs differ meaningfully in speed while the car
-is actually moving.
+clean driving *plus every failed attempt*. On this map the failures are most of
+the clock: across the five recorded runs there are **272 failed attempts costing
+76.8 minutes** of race time, and no two runs differ meaningfully in speed while
+the car is actually moving.
 
 | run | time | failed attempts (S1 / S2 / S3 / S4) |
 |---|---|---|
@@ -51,19 +34,37 @@ is actually moving.
 | rank 3 Ta__Da | 1271.692 | 0 / 9 / 42 / 1 |
 | rank 4 Schmaniol | 1371.430 | 0 / **45** / 2 / 5 |
 | rank 5 Max_heyu | 1961.645 | 0 / 52 / 28 / 38 |
-| **the author's own AT run** | **355.181** | 0 / 0 / **9** / 0 |
+| the author's own run | 355.181 | 0 / 0 / **9** / 0 |
 
 Nobody has ever failed sector 1.
+
+Two of the tapes above contain **no new driving at all**. The 220.391 is the map
+author's own author-time lap with their nine failed attempts cut out; the 236.972
+is the world record holder's own inputs, in his own order, with ten of *his*
+failures cut out. The author's own lap decomposes like this:
+
+| | time |
+|---|---|
+| S1, start → CP1, clean | 42.036 |
+| S2 → CP2, clean, no respawns | 79.882 |
+| **S3 — nine failed attempts** | **134.618 — wasted** |
+| S3, the attempt that worked | 45.961 |
+| S4 → finish, clean | 52.081 |
+| **the author time as recorded** | **355.181** |
+| **the same lap without its own retries** | **220.563** |
+
+Their S1, S2 and S4 are each faster than the world record's — 16.2 s in total —
+and their winning S3 agrees with his to within 0.582. All of the 134.790 is
+retries. Only the last 1.579, from 220.391 down to 218.812, came from anything a
+human did not already drive.
 
 ## What the map is
 
 3316 m, three checkpoints, about 237 s of clean driving. **The car spends 154.5
-of 235.3 seconds — 66% of the run — upside down.** That is not a mistake, it is
-the map: "Turtle" means you deliberately flip the car onto its roof and drive it
-there, rocking between roll +2.4 and −2.9 rad at 6–15 m/s with wheels leaving
-the ground on every swing.
-
-Only 37.6 s of the run is above 20 m/s. 98.2 s is under 10 m/s.
+of 235.3 seconds — 66% of the run — upside down.** That is the map: "Turtle"
+means you deliberately flip onto the roof and drive there, rocking between roll
++2.4 and −2.9 rad at 6–15 m/s with wheels leaving the ground on every swing.
+Only 37.6 s of the run is above 20 m/s; 98.2 s is under 10 m/s.
 
 | phase | race time | attitude | what happens |
 |---|---|---|---|
@@ -72,29 +73,28 @@ Only 37.6 s of the run is above 20 m/s. 98.2 s is under 10 m/s.
 | C | 41.3 → 53.2 | upright | drop to y≈39; **CP1 at 45.6**; standing respawn; blast to 36 m/s |
 | D | 53.2 → 117.9 | **inverted 58 s** | the long one, y≈35, out to x=1105 and back |
 | E | 117.9 → 134.1 | upright | down to the low point y≈9; **CP2 at 130.2**; accelerate to 28 m/s and flip |
-| F | 134.1 → 172.4 | **inverted 38 s** | the z≈1056 corridor |
+| F | 134.1 → 172.4 | **inverted 38 s** | the z≈1056 corridor, y≈25 |
 | G | 172.4 → 187.7 | upright | **CP3 at 176.6**; standing respawn; 58 m/s and a launch to y=74 |
 | H | 187.7 → 203.2 | upright | the high deck |
 | I | 203.2 → 225.6 | **inverted 22 s** | final turtle section, descending y 65 → 51 |
 | J | 225.6 → finish | upright | flip back onto the wheels, crawl to the booster, 66 m/s to the line |
 
-## How a human drives this
-
-### Where the field actually dies
+## Where the field dies
 
 Eight of the ten most expensive spots on the map are **slow-speed balance
-failures at roll 2.4–2.9 rad** — the car is on its roof and loses it, rocking
-past the balance point and landing back on wheels where there is no road under
-wheels. All at 5–12 m/s. Only one of the top ten is a fast crash.
+failures at roll 2.4–2.9 rad**: the car is on its roof, rocks past the balance
+point, and lands back on wheels where there is no road under wheels. All at
+5–12 m/s. Only one of the top ten is a fast crash.
 
-| # | sector | field time lost | tries | speed | roll |
-|---|---|---|---|---|---|
-| 1 | 3 | 606.350 | 17 | 10.0 | 2.41 |
-| 2 | 2 | 486.280 | 9 | 5.5 | 2.41 |
-| 3 | 3 | 364.220 | 29 | 8.4 | 2.57 |
-| 4 | 3 | 338.370 | 7 | 12.2 | 1.73 |
-| 5 | 3 | 216.460 | **40** | 6.9 | 2.39 |
-| 7 | 2 | 187.990 | 30 | **43.0** | 0.26 |
+| # | sector | where a clean run is | field time lost | tries | speed | roll |
+|---|---|---|---|---|---|---|
+| 1 | 3 | 159.9 | 606.350 | 17 | 10.0 | 2.41 |
+| 2 | 2 | 99.8 | 486.280 | 9 | 5.5 | 2.41 |
+| 3 | 3 | 140.6 | 364.220 | 29 | 8.4 | 2.57 |
+| 4 | 3 | 170.4 | 338.370 | 7 | 12.2 | 1.73 |
+| 5 | 3 | 134.8 | 216.460 | **40** | 6.9 | 2.39 |
+| 6 | 2 | 54.8 | 214.570 | 24 | 6.6 | 1.69 |
+| 7 | 2 | 52.4 | 187.990 | **30** | **43.0** | 0.26 |
 
 **The author's own nine failures are all in sector 3, five of them at the same
 place everybody else fails.** The best player on the map dies where you do.
@@ -103,30 +103,33 @@ place everybody else fails.** The best player on the map dies where you do.
 
 Through the z≈1056 corridor — the most expensive spot on the map, 606 seconds of
 field time burned there — the clean run holds **full left lock almost
-continuously for 2.6 s** and reaches 16.0 m/s, the fastest sustained inverted
-speed anywhere in the run. All 17 failures there are at 10 m/s.
+continuously for 2.6 s**, from 160.1 to 162.7, and reaches 16.0 m/s, the fastest
+sustained inverted speed anywhere in the run. All 17 failures there are at
+10 m/s.
 
 **Speed is what keeps you on the roof. Creeping is what tips you over.**
 
-### The flip-in — the most-attempted spot on the map (40 tries)
+## The run as inputs
 
-Just after CP2, race 132.6–135.0 s. This is where you deliberately turn the car
+### The flip-in — the most-attempted spot on the map, 40 tries
+
+Just after CP2, race 132.6–135.0. This is where you deliberately turn the car
 over, and it is the skill the whole map is built around.
 
 ```
-132.6 s   28.8 m/s   roll 0.07   gas 1    hit the ramp square and flat, full throttle
-133.0 s   27.4       roll 0.22   gas 0    RELEASE at the crest, nose 30° up
-133.4 s   19.4       roll 1.14   gas 0    airborne, rolling over
-133.8 s   15.4       roll 1.77   steer +0.80    feed the roll in
-134.2 s   12.1       roll 2.30   steer +1.00    full lock as the nose drops
-134.4 s    9.8       roll 2.74   ground         land on the roof
-134.8 s    5.3       roll −2.55                 settled; now drive
+132.6   28.8 m/s   roll 0.07   gas 1    hit the ramp square and flat, full throttle
+133.0   27.4       roll 0.22   gas 0    RELEASE at the crest, nose 30° up
+133.4   19.4       roll 1.14   gas 0    airborne, rolling over
+133.8   15.4       roll 1.77   steer +0.80    feed the roll in
+134.2   12.1       roll 2.30   steer +1.00    full lock as the nose drops
+134.4    9.8       roll 2.74   ground         land on the roof
+134.8    5.3       roll −2.55                 settled; now drive
 ```
 
-Arrive at 28–29 m/s **dead flat** (roll < 0.1), full throttle to the crest,
-release the throttle exactly at the crest, then feed progressively more steering
-lock into the air phase, and land on the roof at about 10 m/s. Throttle stays
-off from the crest until the car settles.
+Arrive at 28–29 m/s **dead flat** (roll under 0.1), full throttle to the crest,
+release the throttle exactly at the crest, feed progressively more steering lock
+into the air phase, and land on the roof at about 10 m/s. Throttle stays off from
+the crest until the car settles.
 
 Both hard parts are in the first 0.4 s: the entry has to be square, because any
 roll at the ramp becomes a bad landing 1.5 s later and there is no correction
@@ -140,187 +143,75 @@ A rocking oscillation, and **the successful pattern is a steady rhythm, not a
 hold**: full lock one way for 0.4–0.6 s, neutral through the rock, full lock the
 other way, throttle pulsed on the down-swing and off through the inversion. Roll
 magnitude never drops below about 2.3 — dropping below that is the car starting
-to come back onto its wheels, which is exactly what the 52 failures there look
-like.
+to come back onto its wheels, which is exactly what the 52 failures in this part
+of the map look like.
 
 ### The two standing respawns are a technique, not a mistake
 
 At CP1 and CP3 the world record crosses at 25 and 35 m/s, respawns about 250 ms
-later, and sits frozen for ~850 ms. It looks like waste. It is not: the
+later, and sits frozen for roughly 850 ms. It looks like waste. It is not: the
 alternative is braking to a controlled standstill, which costs more, and a
 standing respawn hands you a **perfectly known** entry state — square, level,
 stationary — for a section where attitude is everything. Every run on the
 leaderboard does it. Copy it.
 
+The freeze itself is inert: throttle, brake and full lock all do exactly nothing
+during it, so there is no input to get right there.
+
 ### The last obstacle is where the remaining time is
 
-The flip-back at race 225.6–231.5 s: the car arrives inverted at 9.5 m/s, unwinds
+The flip-back at race 225.6–231.5: the car arrives inverted at 9.5 m/s, unwinds
 to upright, and then spends **4.0 seconds rocking on the spot under 3 m/s**
 before it gets moving to the finishing booster. That is the largest single piece
 of dead time left in the run, and it is where ranks 2, 4 and 5 lost 83.8, 64.3
-and 59.2 seconds on single attempts.
+and 59.2 on single attempts.
 
 ## Keyboard costs almost nothing here
 
-`KEYBOARD_235939` is a keyboard-constrained search over the final sector, with
-steering snapped to `{left, nothing, right}` before every evaluation:
-**235.939 s, exactly three steer values, 941 input events** — two fewer than the
-human tape it came from. The unconstrained tape reaches 235.625 with 26 values.
+`KEYBOARD_235939` is the same run with steering restricted to
+`{left, nothing, right}`: **235.939 with exactly three steer values**, against
+235.625 for the unrestricted version. **Keyboard costs 0.314 out of 236 seconds —
+0.13%.** The fastest tape on the map is 3-valued as well, and so is every human
+tape on it, including the author's. On a low-speed technical map, analog steering
+is not where the time is.
 
-**Keyboard costs 314 ms out of 236 seconds: 0.13%.** On this map the input
-device is irrelevant. Only failing is expensive.
+## How forgiving it is
 
-## The author's own run — and where the 220.391 comes from
+The map itself is forgiving in the only way that matters on a Trial: a mistake
+costs a retry, never the run. What it punishes is *hesitating* about the retry.
+The one number to take away is that failing an attempt and respawning
+immediately is worth more than any line improvement anyone has found here.
 
-The author's author-time ghost is embedded inside the `.Map.Gbx` and decodes
-cleanly. It contains **eleven respawns**, nine of them failed attempts in
-sector 3:
+What is genuinely tight:
 
-| | time |
-|---|---|
-| S1, start → CP1, clean | 42.036 |
-| S2, respawn → CP2, clean, zero respawns | 79.882 |
-| **S3 — nine failed attempts** | **134.618 — wasted** |
-| S3, the attempt that worked | 45.961 |
-| S4, respawn → finish, clean | 52.081 |
-| **the author time as recorded** | **355.181** |
-| **the author time minus its own failed attempts** | **220.563** |
+- **The flip-in entry.** Roll under 0.1 at the ramp at 28–29 m/s. Any roll there
+  is a bad landing 1.5 s later, and nothing in the air will save it.
+- **The throttle release at the crest**, which sets the pitch for the whole
+  rollover.
+- **The corridor at z≈1056.** Carry 16 m/s; the field's 17 failures there are all
+  at 10.
 
-Two things follow. First, **the author time is a genuine driven lap** —
-unbeaten.at flags it `inPlugin: true`, but a fabricated time does not contain
-nine failed attempts at the same obstacle everybody else fails at. 135 of its
-355 seconds are retries.
+What will take real practice is the inverted crawl rhythm — 154 seconds of it,
+held between roll 2.3 and 2.9, where the failure mode is drifting *below* 2.3
+rather than anything dramatic. There is no shortcut for that section; the whole
+field grinds it.
 
-Second, that tape is the published headline. For about an hour it could not be
-re-simulated at all — an embedded ghost lives in a foreign container, and moving
-an input archive between containers DNFs at CP1. That turned out to need two
-extra chunks carried along with the archive (`0x0309202D` and `0x0309202B`);
-with them, it re-simulates exactly. Cut its nine failures out and it validates
-at **220.391** — 134.790 s inside the author time, and 15.234 s inside the best
-tape any search had produced.
-
-It is worth being precise about what that run is: **the map's author already
-drove every metre of it.** Their S1, S2 and S4 are each faster than the world
-record's, by 16.2 s in total, and their one successful S3 agrees with the WR's
-to within 0.6 s. The 134.790 s is entirely their own retries.
-
-## The tape will not compress, and that is the same fact as the 136 seconds
-
-The 218.812 tape reduces from 885 input events to
-[**832**](replays/MINIMAL_832ev_219581.Ghost.Gbx) at **219.581** — six per cent —
-and no further: **1-minimal**, every one of the 831 remaining single deletions
-tried and failing. Of 177 single-deletion positions, 171 kill the run and **not one merely
-costs time**.
-
-That is not because the driving is superhuman. Run the same probe on the
-author's own validation lap and **19 of 49 deletions survive** — but all 19 sit in
-one stretch, race 127–256 s, and every one returns *exactly* the author time.
-Blanking the whole stretch: **127 seconds hands-off, still exactly 355.181.** The
-author was looping one obstacle at 20–45 km/h, failing repeatedly, and at
-256.780 pressed respawn — which erased all of it.
-
-> **Free deletions live exactly where the run is already erased.** A big
-> trial-map improvement and an incompressible tape are the same fact: the
-> headroom was never slack in the driving, it was dead time inside a retry loop,
-> and cutting the retries harvested it.
-
-Two honest limits on that. **1-minimality is per lineage** — it says no input of
-*this* run is removable, not that no simpler run beats the author time. And the
-probe measures **marginal** freedom: on the author's lap, blanking ticks
-25290–25399 is free and blanking 25400–25834 is free, but blanking the **union**
-DNFs.
-
-**And the minimiser, run on the author's own lap, deletes its way past the
-author time.** 1453 events down to
-[**831**](replays/AUTHORMIN_831ev_354781.Ghost.Gbx) at **354.781** — 400 ms
-inside their own author time, with **no new driving at all**. The first two
-accepted moves were single blocks of 364 and 181 events worth exactly 0 ms: the
-retry loop, deleted wholesale, because it was already erased. That is the
-cleanest available statement of where the author's time went.
-
-*(An earlier version of this page offered the 832-vs-831 agreement as a
-suggestive symmetry between two lineages. **Retracted** — they are not two
-lineages. The 218.812 run **is** the author's lap, cut and then searched, so
-minimising it and minimising the raw author lap minimise the same inputs:
-identical steer counts, identical brake counts, two apart on accel, and the
-event sequences agree everywhere except about twelve events. Landing in the same
-place is arithmetic, not a property of the map. The correct, weaker statement is
-that **ddmin is reproducible along one lineage** — a good property of the
-minimiser and nothing about Leto.)*
-
-**The difficulty number, stated plainly:** of 104 sampled inputs on the minimal
-tape, **94 have a one-tick window** — shift by a single 10 ms tick either way and
-the run dies. Median tolerance is zero. This tape is not something a human
-executes; the *method* is what transfers, and the method is "respawn early".
-
-## Two findings other maps need
-
-**Respawn restores the state the car had when it crossed the checkpoint** —
-position, velocity *and* attitude, not a standstill and not a canned
-per-checkpoint state. Measured at the same checkpoint across five runs, each
-returns to its own crossing state (26.7 / 22.2 / 16.8 / 23.4 m/s). It is also
-history-free: splicing `WR[0..X) ++ WR[respawn..end)` and sweeping X across 200
-seconds gives `finish = 237.122 + 10·(X − 13169)` exactly, every time.
-
-Consequence: **a cut is safe, an optimisation upstream is not.** Deleting ticks
-entirely after a crossing changes nothing the respawn depends on. Change
-anything *before* the checkpoint and the crossing state moves with it, and every
-input after the respawn was tuned for the old one. Respawn-anchored sectors are
-therefore **not independent** and cannot be optimised in parallel and
-recombined.
-
-**Input tapes ARE portable between ghost containers** — provided you carry two
-chunks with the input archive, `0x0309202D` and `0x0309202B`. The archive alone
-DNFs at CP1, which for an hour looked like a hard limit and was written up as
-one; bisection found the pair. **Best-of-field splicing is available**, and so
-is re-simulating an author ghost pulled out of a `.Map.Gbx` — which is where
-this map's headline 220.391 comes from.
-
-## Watchable replays
-
-Most tapes in this project are input streams the validator can re-simulate but
-the game will not load — a `.Ghost.Gbx` also carries recorded telemetry samples,
-and cutting the inputs leaves the samples describing the uncut run.
-
-The two pure-cut results here have been rebuilt with their sample data cut to
-match, so **they load and play**: `AUTHORCUT_220391_watchable` and
-`HUMANCUT_236972_watchable`. The searched tapes cannot be made watchable this
-way and are validator-only — a mutation search changes steer values, so the tape
-is not a subsequence of any recorded run and no samples of it exist anywhere.
+The exact tapes here are not something a human executes: **90% of their inputs
+have a single-tick window — 10 ms early or late and the run dies.** Take the
+method and the map knowledge, not the timings.
 
 ## Files
 
-```
-replays/TAS_235625.Ghost.Gbx            the floor — 26 steer values, 964 events
-replays/KEYBOARD_235939.Ghost.Gbx       keyboard only — 3 values, 941 events
-replays/TAS_analog26_235814.Ghost.Gbx   235.814, kept as a specimen (see notes)
-notes/RESULT.md                         the full write-up: respawn semantics,
-                                        obstacle analysis, every control
-notes/AUTHOR_AT_355181_extracted_from_map.Ghost.Gbx
-                                        the author's AT run, recovered from the
-                                        map file — decodes, does not re-simulate
-```
+Most tapes in this project are input streams a validator re-simulates but the
+game will not load. The two pure-cut results have been rebuilt so they **load and
+play**.
 
-## Validation
-
-Field reproduction **5/5 exact** — all five human ghosts re-simulate to the
-millisecond (441.002, 977.690, 1271.692, 1371.430, 1961.645), so the map is
-healthy for this oracle.
-
-The headline tapes were cold-validated **three times each**, in a fresh
-throwaway directory with a fresh server process, against a re-downloaded
-byte-identical copy of the map, with the human world record as a known-answer
-control in every batch: 235.625 ×3, 235.939 ×2, 236.972 ×3, control 441.002
-every pass, all `IsValid: true`.
-
-Tape-editor identity controls were run before any edit was trusted: the WR
-re-encoded with every state word forced to a literal → 441.002; its CP1 respawn
-cleared and re-injected at the same tick → 441.002; each run's inputs
-transplanted into its own container → its own exact time.
-
-**Legitimacy.** The run crosses all three checkpoints in order and the finish.
-It is the human world record holder's own input stream. No geometry is skipped,
-nothing goes out of bounds, and the three respawns it uses are three of the
-thirteen he used himself — on a Trial map, respawning is the intended and only
-recovery mechanic. Nothing here has been or will be submitted to a Nadeo
-leaderboard.
+| file | what it is |
+|---|---|
+| [`replays/BEST_218812.Ghost.Gbx`](replays/BEST_218812.Ghost.Gbx) | the fastest run, 218.812, keyboard steering |
+| [`replays/AUTHORCUT_220391_watchable.Ghost.Gbx`](replays/AUTHORCUT_220391_watchable.Ghost.Gbx) | the author's own lap with its nine retries cut — watchable, and the best thing to study |
+| [`replays/HUMANCUT_236972_watchable.Ghost.Gbx`](replays/HUMANCUT_236972_watchable.Ghost.Gbx) | the world record's own inputs with ten retries cut — watchable |
+| [`replays/KEYBOARD_218877.Ghost.Gbx`](replays/KEYBOARD_218877.Ghost.Gbx) | keyboard-only version of the fastest run, 218.877 |
+| [`replays/TAS_235625.Ghost.Gbx`](replays/TAS_235625.Ghost.Gbx) | the world-record lineage, 26 steer values |
+| [`replays/KEYBOARD_235939.Ghost.Gbx`](replays/KEYBOARD_235939.Ghost.Gbx) | the same, keyboard-only — the 0.314 comparison |
+| [`replays/HUMANCUT_237122_watchable.Ghost.Gbx`](replays/HUMANCUT_237122_watchable.Ghost.Gbx) | the first cut of the world record, before the checkpoint trims |

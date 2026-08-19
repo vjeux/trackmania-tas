@@ -1,130 +1,132 @@
-# Fall 2025 - 16 CP1 End — author time beaten, and matched with inputs a human can hold
+# Fall 2025 - 16 CP1 End
 
-| | time | vs AT | vs human WR | slack on every input |
+**The author time, matched with two small trims on the world record's own line —
+each with ±10 ms of slack. 903 people have tried; the best of them is 0.003
+short.**
+
+| run | time | vs author time | vs human WR | slack |
 |---|---|---|---|---|
-| TAS, unconstrained floor | **4.830** | **−1** | −4 | one-tick precision |
-| **TAS, human-shaped** | **4.831** | **±0** | **−3** | **±10 ms** |
-| TAS, one input change | 4.832 | +1 | −2 | — |
-| TAS, keyboard only | 4.834 | +3 | ±0 | — |
-| Author time (never beaten by a human) | 4.831 | — | −3 | — |
-| Human WR — OriginalCJM | 4.834 | +3 | — | — |
+| **TAS, human-shaped** | **4.831** | **±0** | **−0.003** | **±10 ms on every input** |
+| TAS, one input change | 4.832 | +0.001 | −0.002 | 40 ms window |
+| TAS, keyboard only | 4.834 | +0.003 | ±0 | 18 key presses |
+| TAS, unconstrained floor | 4.830 | −0.001 | −0.004 | one-tick precision |
+| Author time | 4.831 | — | −0.003 | — |
+| Human WR — OriginalCJM | 4.834 | +0.003 | — | — |
 
-TMX map [270051](https://trackmania.exchange/maps/270051) · uid
-`vsiB0RwTzQeq5Loh21CuloIzjf9` · author **in-.-** · **903 recorded runs**.
-
-**Not submitted to any Nadeo leaderboard, and it never will be.**
-
-## Read this row, not the fastest one
-
-`replays/m270051_human_shaped_4831.Ghost.Gbx` **matches the author time with
-±10 ms of slack on every input.** That is the tape worth studying. It is two
-small trims on the human world record's own line:
-
-- **a light left brush at 2.90 s** — 7 % of lock, three ticks, with a 30 ms
-  window in which it works and a wide band of acceptable strength
-- **ease the left trim by 1.5 % at 3.35 s**
-
-That is it. No route change, no different jump.
-
-The 4830 exists and is real, but its last millisecond comes from a **one-tick
-75 %-lock stab** — a single 10 ms frame no human places deliberately. It is the
-floor, not the lesson.
-
-The difference between those two rows came from changing what the search
-optimises. Scoring candidates by their *worst* time over a ±1–2 tick placement
-window — rather than their best time — found the **same physical effect** as the
-one-tick stab, expressed as a forgiving three-tick brush. **The lottery ticket
-and the teachable input were the same discovery all along; only the objective
-decided which one came out.**
+TMX map [270051](https://trackmania.exchange/maps/270051) · author **in-.-** ·
+903 recorded runs.
 
 ## What the map is
 
-484 race ticks (4.83 s), one checkpoint — the finish. **Full throttle
-throughout, no brake, ever.** The whole map is a steering problem.
+484 race ticks, about 4.83 s, one waypoint — the finish. **Full throttle throughout, no
+brake, ever.** The whole map is a steering problem.
 
-The last 620 ms is **ballistic flight**: the car leaves the ground at ~4.210
-at 176.8 km/h on a 21° climb and never lands, crossing the finish in mid-air,
-still rising.
+The last 620 ms is **ballistic flight**: the car leaves the ground at about
+4.210 at 176.8 km/h and never lands, crossing the finish in mid-air, still
+rising. So the finish time is decided at the takeoff tick — **3.8 of our 4 ms is
+simply being 15.6 cm further along the track when the wheels leave the ramp.**
+Same jump, same arc, same attitude; the line stays within 12 cm of the world
+record's, well inside the field's own 1.35 m corridor.
 
-So the finish time is decided at the takeoff tick. **3.8 of our 4 ms is simply
-being 15.6 cm further along the track when the wheels leave the ramp.** Same
-jump, same attitude, line within 12 cm of the human world record's — well inside
-the field's 1.35 m corridor.
+Two consequences:
 
-Two consequences, both measured:
+1. **Inputs after about 4.360 are worth at most 0.001.** Overwrite every input
+   from there with "steer 0" and the time changes by 0 or −0.001. The car is in
+   the air; steering only rotates it.
+2. **0.001 = 4.55 cm of travel at the finish.** The whole 0.003 between the
+   world record and the author time is 13.6 cm of forward progress.
 
-1. **Inputs after ~4.360 are worth at most 1 ms.** Overwrite every input from
-   tick 436 with "steer 0" and the time changes by 0 or −1 ms. The car is in the
-   air; steering only rotates it.
-2. **1 ms = 4.55 cm of travel at the finish plane.** The whole 3 ms between the
-   human world record and the author time is **13.6 cm** of forward progress.
+Steering during the countdown does nothing at all.
 
-## Why nobody has done it — verdict: known but unheld
+## The run, as inputs
 
-Not a route discovery. **Invisible** is the better word.
+Negative = left, ±127 = full lock. The route is the world record's route; only
+the two marked inputs differ.
 
-Both inputs are small trims on sections that feel like nothing is happening, and
-their payoff is 15 cm at a ramp — which nothing in the cockpit shows you. There
-is no feedback loop a driver could use to find them.
+| race | what the car is doing |
+|---|---|
+| 0.0–1.8 | standing start, one long right-hand sweep at ~50–60 % lock |
+| 1.85–2.05 | left countersteer to ~72 % to straighten out of the sweep |
+| **2.90–2.93** | **① light left brush, ~7 % lock, 30 ms — on what looks like dead straight road at 157 km/h** |
+| 2.9–3.3 | long descent, 100 → 183 km/h, small left trim |
+| **3.35–3.38** | **② ease the left trim by ~1.5 % for 30 ms** |
+| 3.55–4.1 | progressive left to full lock, held about 300 ms |
+| 4.1–4.21 | unwind and climb the ramp at 177 km/h |
+| 4.21–4.83 | airborne, full right lock, crossing the finish still climbing |
 
-The sector analysis says the same thing. The closing jump, the dramatic part,
-spreads only **5 ms** across the field and correlates **0.07** with finishing
-order. The stretch at **2.4–3.7 s**, where both winning inputs sit, correlates
-**0.43 / 0.31**. The part of the map that looks decisive is not, and the part
-that decides it looks like nothing.
+**① The light left brush at 2.90** — about 7 % of lock for three ticks, on top
+of the world record's line. Worth 0.002 on its own (4.834 → 4.832), and it is
+not a knife edge:
 
-## Validation
+* **placement**: three consecutive tick offsets (2.890 / 2.900 / 2.910) all give
+  4.832 — a 30 ms window, and several other placements in the same second are
+  also worth −0.002
+* **strength**: anything from 5 % to 11 % of lock works, flat across the band
+* being outside the window costs 0 to +0.003, not a crash
 
-A 1 ms margin has to be airtight:
+**② The trim release at 3.35** — 1.5 % less left for three ticks. Worth nothing
+alone and −0.001 on top of ①. Four consecutive placements across 40 ms all give
+4.831.
 
-- **24 of 24** downloaded human ghosts re-simulate to their exact leaderboard
-  millisecond against this map file.
-- **Five cold re-validations** of the banked tape, each in a fresh directory with
-  a fresh server process and the rank-1 human ghost as a known-answer control:
-  5/5 returned 4830, control 4834 every time, `NbRespawns: 0`, `IsValid: true`.
-- A **second independent code path** driving the same server also returns 4.830.
-- The map file is **sha256-identical to Nadeo's own copy**.
-- No `--fork`, a distinct `--root` per process, every tape re-validated. No
-  phantoms.
+**If you only learn one thing:** carry 4 % more left for 12 ticks from 3.470.
+One input, 4.834 → 4.832, and four consecutive placements within 40 ms all give
+it. That is the single most forgiving 0.002 on the map.
 
-`sha256 8c7436a4afa4180f68a54b141738f47a759867a73b1c9f165677ef968bc4a579`
+The unconstrained 4.830 replaces ① with a **single-tick 75 %-lock stab** and
+adds two more trims that pay only at one exact tick — neighbouring placements
+cost +0.004. Keep it as the floor; do not practise it.
 
-Convergence: ~580,000 evaluations across every move class — all 254 steer values
-at every tick, spans out to 21 ticks, throttle lifts, brake taps, and 169,216
-two-tick pairs — found nothing better at 0.05 ms resolution.
+## How forgiving it is
 
-## Instruments built here
+Both decisive inputs are 30 ms long with 30–40 ms of placement slack and a wide
+band of acceptable strength. That is a practisable input, not a frame-perfect
+one, and the author drove 4.831, so a human-sized path exists.
 
-- **A vernier of relocated finish-gate maps** (`tmmaps gate`), 2–4 mm apart,
-  turning the 1 ms-quantised score into a 0.05 ms objective. Necessary when the
-  entire gap is 13.6 cm of travel.
-- **A robustness objective** — score by the worst time over a placement window.
-  This is what produced the teachable 4.831, and it is the technique most likely
-  to transfer to other maps.
+What will take real practice is not the inputs, it is **noticing**. Both trims
+sit on sections that feel like nothing is happening — ① on apparently straight
+road at 157 km/h, ② a 1.5 % release in the middle of a long trim. Neither is at
+a corner, a landing, or anywhere a driver's attention naturally goes, and the
+payoff is 15 cm at a ramp, which nothing in the cockpit shows you. A driver who
+happens to brush left at 2.9 gets 4.832 and has no way of knowing which of their
+thousand micro-inputs did it.
 
-One bug found and worth repeating: relocated gate maps keep the **original
-mapUid**, so a ladder plus the real map in one worker's `Maps/` directory
-silently measures the wrong map. Caught by the batch identity control.
+The sector numbers say the same thing. The closing jump — the dramatic part —
+spreads only 0.005 across the field and correlates 0.07 with finishing order.
+The stretch at 2.4–3.7, where both winning inputs sit, correlates 0.43 and 0.31.
+The part of the map that looks decisive is not, and the part that decides it
+looks like nothing.
+
+That is the honest reason 903 records stopped at 4.834: not a missing skill, a
+missing target. Supporting evidence that the field really is at the wall: of
+every single-tick steering change to the world record's tape (5172 of them),
+95.3 % are slower or fatal, 4.6 % give −0.001, and 5 give −0.002.
+
+## Keyboard
+
+Read off the ghosts: **ranks 7, 9 and 12 are pure keyboard runs** — three steer
+values, 11–15 key presses, running 4.843 / 4.845 / 4.847. Searched in that space
+directly, a keyboard tape reaches **4.834 with 18 key presses — the human world
+record, on a keyboard.**
+
+But three independent keyboard searches all stall at 4.834. **The author time
+does not appear to be reachable on keyboard; 4.831 needs the analog trims**,
+which is consistent with both decisive inputs being 5–7 % of lock.
+
+## The same geometry as an official campaign map
+
+This is a **CP1 End** cut-down of the official **Fall 2025 - 16**, whose field is
+**87 596 players**. The official map's opening *is* this entire race, so all of
+those players have driven exactly this sector, at full commitment, as the start
+of their own lap. Grafted onto this map, all five of the official top five
+return their own official CP1 splits to the millisecond: 4.951 / 4.951 / 4.962 /
+4.966 / 4.932. Every one of them is slower than the runs on this page.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/m270051_human_shaped_4831.Ghost.Gbx` | **the author time, with ±10 ms slack on every input** |
+| `replays/m270051_human_shaped_4831.Ghost.Gbx` | **the author time, with ±10 ms of slack on every input** |
+| `replays/m270051_one_input_4832.Ghost.Gbx` | one input change from the world record |
+| `replays/m270051_keyboard_4834.Ghost.Gbx` | keyboard only, ties the world record |
 | `replays/m270051_4830.Ghost.Gbx` | the unconstrained floor |
-| `replays/m270051_one_input_4832.Ghost.Gbx` | one input change from the human WR |
-| `replays/m270051_keyboard_4834.Ghost.Gbx` | keyboard only, ties the human WR |
-| `inputs/rob4_4831.json` | the robust tape's per-tick inputs |
-| `notes/RESULT.md` | the full write-up |
-
-## This map is an Altered Nadeo copy of **Fall 2025 - 16**
-
-Identified blind by cell occupancy against all 625 official seasonal campaign
-maps — see [`_altered/`](../_altered). The official map has a field of **87 596
-players** on this geometry.
-
-This is the best case of the ten. It is a **CP1 End** variant, so the official map's opening **is** our entire race — those humans have all driven exactly our sector, at full commitment, as the start of their own lap.
-
-**This is the map where official-tape transfer was demonstrated.** All five of the official top five, grafted onto this map, returned their own official CP1 splits to the millisecond — 4.951 / 4.951 / 4.962 / 4.966 / 4.932, with the lossless control exact at 4.831 in the same batch. Five foreign tapes, five exact predictions that could not have been tuned.
-
-**And it re-scores our own result. Our 4.830 beats every one of them**, against a field of 87 596 players rather than the 903 on the altered board. The recipe on this map is inputs-only (`--ids 0x0309201D`); the three-chunk form breaks it, because carrying the donor's result chunk declares nine official splits onto a map with one waypoint.
+| `inputs/rob4_4831.json` | the human-shaped tape's per-tick inputs |

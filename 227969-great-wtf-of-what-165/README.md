@@ -1,117 +1,179 @@
-# Great wtf of## The driving guide
+# Great wtf of what #165
 
-The full write-up, including the per-input timing tolerance table and a
-sector-by-sector guide with a cue for every input, is in
-[`notes/RESULT.md`](notes/RESULT.md).
+**The author time is 8.127 and no human has beaten it. It falls on a keyboard,
+with the same three steering values and one more key press than the world
+record holder uses.**
 
-The short version, if you only read one thing: **after the throw, do not hold
-the lock. Three taps — hooold, tap, tick (220 / 80 / 40 ms).** Release the first
-one at the bottom of the swing, the instant you stop sliding backwards and the
-car starts being flung forward up the corridor (speedo 292 km/h). Commit to the
-kicker when the nose stops rising, about two car lengths before the lip.
+| run | time | vs author time | vs human WR | inputs |
+|---|---|---|---|---|
+| **TAS, keyboard only** | **8.075** | **−0.052** | **−0.122** | 14 changes, 12 of them steering |
+| TAS, 8-level action keys | 8.050 | −0.077 | −0.147 | — |
+| TAS, unconstrained | **7.998** | −0.129 | −0.199 | analog, 111 steering values |
+| Author time | 8.127 | — | −0.070 | — |
+| Human WR — Titoch_tm | 8.197 | +0.070 | — | keyboard, 11 steering events |
 
-**And the cue that needs no instrument: the horizon must stay level.** Hold the
-lock and the car rides up the curved wall and rolls over — by the kicker the
-world record is nose-up 57° and nearly on its side. Our run never rolls past 5°.
-If your horizon tips, you are driving the old line.
+TMX map [227969](https://trackmania.exchange/maps/227969) · author
+**FrankTheHamster** · 42 recorded runs.
 
-## Files
+## What the whole field is doing wrong
 
-| file | what |
-|---|---|
-| `replays/best_7998#165 — author time beaten by 129 ms
+Nothing is won in the first 6.5 seconds — over the first 520 m this run is
+actually 0.010 behind the world record. **All of it is made in the last 1.4 s.**
 
-| | time | vs AT | vs human WR |
+The map ends with the car thrown off a wall at 420 km/h, arcing along a curved
+wall, then kicked into a ballistic flight through the finish gate.
+
+**Every one of the 42 recorded runs holds full lock through that wall-ride.**
+Holding it rides the car up the curve and rolls it over: by the kicker the world
+record is nose-up 57° and rolled almost onto its side. A tipped, crabbing car
+pays the kicker about a third of its speed.
+
+| | speed into the kicker | speed leaving it | speed toward the finish |
 |---|---|---|---|
-| **TAS, unconstrained** | **7.998** | **−0.129** | **−0.199** |
-| **TAS, keyboard only** | **8.075** | **−0.052** | **−0.122** |
-| TAS, 8-level action keys | 8.050 | −0.077 | −0.147 |
-| Author time (never beaten by a human) | 8.127 | — | −0.070 |
-| Human WR — Titoch_tm | 8.197 | +70 | — |
+| Human WR | 73.6 m/s | 61.5 m/s | **57.3 m/s** |
+| Best of all 42 humans | — | — | 59.8 m/s |
+| **TAS, keyboard** | 74.2 | 69.9 | **65.9** |
+| **TAS, analog** | 75.4 | 73.1 | **68.8** |
 
-TMX map [227969](https://trackmania.exchange/maps/227969) · uid
-`LtSUTxJ71u7ayvLj57wUdVPyH2h` · author **FrankTheHamster** · 42 recorded runs,
-all of them downloaded and analysed.
+Arriving **flat** (roll under 5°) and **square** (sideways speed 0.35 m/s)
+costs 3 m/s instead of 12. There are 43 m of gate to cover: at 57.7 m/s that is
+750 ms, at 69.2 m/s it is 625 ms.
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+The difference between the two is four key presses:
 
-## The interesting result is the keyboard run
+```
+Human WR through the corner — one long lock
+  6.69  LEFT ────────────────────────────── 7.08 release   (390 ms)
+  7.16  LEFT ──── 7.20 release                              (40 ms)
+  7.69  LEFT (hold into the kicker)
 
-`replays/kb_8075.Ghost.Gbx` uses steering values `{-127, 0, +127}` and nothing
-else — exactly what a keyboard produces — with **14 input change events, 12 of
-them steering**.
+Keyboard TAS — the same key, pumped
+  6.68  LEFT ───────────── 6.90 release                    (220 ms)
+  6.95  LEFT ──── 7.03 release                              (80 ms)
+  7.12  LEFT ── 7.16 release                                (40 ms)
+  7.39  LEFT (hold into the kicker)
+```
 
-The human world record holder is *also* on keyboard, using the same three
-values, with **11 steering events**.
+**The field holds one 390 ms lock where it should be pumping three short taps,
+and commits to the kicker 300 ms too late.** Everything before 5.24 s is
+identical between the two tapes.
 
-So: same device, one more input than the world record, and **122 ms faster**.
-This is not a run that wins on machine precision. It wins on doing a different
-thing with roughly the same number of key presses.
+The line never leaves the human racing corridor — at most 2.57 m from the world
+record's own trajectory over the whole run — and it takes the map's one
+collision, the wall throw, exactly as all 42 humans take it.
 
-## What it does differently
+## The run, as keys
 
-All of the gain is in the last 16 % of the course. Over the first 560 m of
-~680 m this run is actually **10 ms slower** than the reference human line —
-it inherits that prefix from a human tape. The entire 129–199 ms is made
-between 560 m and the finish.
+`replays/kb_8075.Ghost.Gbx`. Accelerate is held from the countdown to the line
+and never released; the brake goes on at 5.23 s and stays on. Everything else is
+steering.
 
-**The final wall-ride is where the field loses the time.** Everybody rolls the
-car onto its side (roll 0.9–1.5 rad) and pitches up ~55° through it. The kicker
-at the end then eats about a third of their speed — the world record goes
-73.6 → 61.3 m/s across it.
+```
+race  0.260  steer LEFT      | as the car starts rolling
+race  1.230  steer 0         | straighten, ~68 km/h
+race  2.450  steer RIGHT     | on the booster, ~186 km/h — hold through the ramp
+race  5.230  brake ON        | STILL IN THE AIR, ~120 ms before touchdown
+race  5.240  steer 0         | land straight
+race  6.680  steer LEFT      | commit into the wall throw
+race  6.900  steer 0         |  \
+race  6.950  steer LEFT      |   |  the PUMP: three taps
+race  7.030  steer 0         |   |  220 ms / 80 ms / 40 ms
+race  7.120  steer LEFT      |   |
+race  7.160  steer 0         |  /
+race  7.390  steer LEFT      | commit to the kicker, hold to the finish
+```
 
-This run arrives **flat** (roll 0.06 rad, pitch 30°) and **square**
-(lateral velocity 0.35 m/s), and loses only 3 m/s. Vertical speed into the
-finish plane: **69.2 m/s, against the best human's 59.8 and the world record's
-57.3.**
+## Sector by sector, off what you can see
 
-In the corner before it, the keyboard tape follows the world record's input
-script exactly up to 5.24 s and then **pumps** the steering — three taps of
-220 / 80 / 40 ms — where the world record holds one continuous 390 ms lock.
+**Start → the booster (0 → 2.4 s).** Identical to the current world record. Left
+off the line, straighten at about 68 km/h, then full right as the booster fires
+and hold it. Nothing to gain here; do not experiment.
 
-If you take one thing from this map: **stop holding the lock through the final
-corner, and get the car flat before the kicker.**
+**The big jump (3.55 → 5.35 s).** Keep full right lock through the entire
+flight. You are not steering, you are spinning the car so it lands pointing down
+the road. Every good run does this identically.
 
-## Is it a legitimate run?
+**The landing (5.23 s).** *Brake while you are still in the air*, about an
+eighth of a second before the wheels touch, and centre the wheel at the same
+moment. The world record brakes at 5.23 s too — this part is already right.
+Braking early is safe; braking late does not finish.
 
-Checked geometrically, not just by the clock, because the map declares a single
-waypoint pair so a checkpoint count proves nothing:
+**The straight (5.35 → 6.66 s).** Nothing to do. You coast 455 → 422 km/h. Get
+your hand ready.
 
-- The line **never leaves the human racing corridor**: maximum distance from the
-  human world record's own trajectory over the whole run is **2.57 m**.
-- At the decisive point (z = 855) its speed, vertical speed, pitch, roll and
-  lateral position are all **inside the range of the 42-run human field** — and
-  two human runs pass that point *faster* than this one does.
-- The map contains exactly one collision event, the wall throw at 6.68 s that
-  redirects the car ~100°. **Every human run takes it identically.** This run is
-  not exploiting it, it is surviving it better.
-- No respawns, no skipped geometry, no out-of-bounds flight.
+**THE CORNER — this is the whole map (6.68 → 7.16 s).** You cannot miss the
+throw: you are doing 420 km/h in a straight line and the car is slammed sideways
+and whipped through more than half a turn, speed collapsing to ~325. Commit
+**full left as it happens** — tie this input to the impact, not to a clock.
 
-## Validation
+Then **do not hold it.** Three taps, and the cue matters far more than the
+millisecond:
 
-Three cold validations in fresh processes against a re-downloaded, byte-identical
-copy of the map: **8.010, 8.010, 8.010** for the first banked tape; the later tapes
-were each re-validated the same way. A human ghost carried as a known-answer
-control returns **8.197** every time.
+| tap | cue to act on | speedo |
+|---|---|---|
+| **release tap 1** (~6.90) | **the bottom of the swing** — after the throw you travel *away* from the finish while the car swings round; release the instant that stops and the car starts being flung forward up the corridor | **292 km/h** |
+| **tap 2** (~6.95) | half a beat later, a short stab of ~80 ms | 289 |
+| **release tap 2** (~7.03) | as the car swings onto the corridor and the nose comes round | 283 |
+| **tap 3** (~7.12) | a flick, ~40 ms, as the car is nearly straight | 278 |
+| **release tap 3** (~7.16) | straight away — you are pointed at the finish | 276 |
 
-Beyond that, **all 164 tapes any search arm wrote during this work** were
-re-validated through the plain oracle: 164/164 returned exactly the time in
-their filename. Zero phantoms.
+Rhythm, in one phrase: after the throw, **hooold – tap – tick** (220 / 80 /
+40 ms), with a short gap between each.
 
-Raw transcript: `notes/validation_8010.txt`. Fuller working notes:
-`notes/RESULT.md`.
+**The cue that needs no instrument: the horizon must stay level.** Hold the lock
+and the car rides up the curved wall and the whole world tips. Our run never
+rolls past 5°; each release lets the car drop back flat. If your horizon rolls,
+you are driving the old line.
+
+**The kicker (7.39 s).** Full left again, hold it to the finish. Cue: **commit
+as the nose stops rising** — the car crests the curved wall onto the last ramp
+and the pitch stops climbing about two car lengths before the lip. The world
+record takes this input at 7.69 s, three tenths later, which is exactly why it
+launches steep and slow.
+
+**Check your run on the speedo** as you are thrown into the final flight
+(~7.4 s):
+
+* **221 km/h** — you drove it like the current world record (≈8.20)
+* **240 km/h** — about the author time
+* **252 km/h** — 8.075, the keyboard run
+* **263 km/h** — 7.998, the TAS floor
+
+## How forgiving it is
+
+Mistime one input and keep driving — the cost in seconds, against 8.075.
+Anything up to +0.052 still beats the author time. These are recoverable costs:
+you mistime one input and re-time the rest, which is what a driver actually
+does.
+
+| input | race | −0.020 | −0.010 | +0.010 | +0.020 | verdict |
+|---|---|---|---|---|---|---|
+| brake ON | 5.230 | +0.026 | +0.046 | DNF | DNF | early is fine, late is fatal |
+| straighten | 5.240 | +0.019 | +0.023 | +0.035 | +0.048 | forgiving both ways |
+| LEFT into the throw | 6.680 | DNF | DNF | DNF | +0.088 | **tight** |
+| release tap 1 | 6.900 | +0.023 | +0.070 | +0.023 | +0.023 | forgiving, ±0.030 |
+| release tap 2 | 7.030 | DNF | +0.012 | +0.023 | +0.016 | forgiving late |
+| tap 3 | 7.120 | +0.100 | +0.116 | DNF | DNF | tight |
+| LEFT into the kicker | 7.390 | +0.072 | +0.090 | DNF | DNF | **tightest** |
+
+**The two releases in the middle of the pump have 20–30 ms of room. The three
+commits — into the throw, into tap 3, and into the kicker — are the tight ones**,
+and the kicker commit is the worst: 10 ms early costs 0.090, 10 ms late does not
+finish.
+
+**Realistic expectation.** The pump is four key presses on a rhythm. A keyboard
+player who learns it and gets the kicker commit approximately right should land
+in the 8.05–8.12 range — under an author time that has stood since February
+2025. The last 0.050 to 7.998 is machine work: the analog run holds the car flat
+with 111 distinct steering values, and that part is not worth copying. Expect to
+grind the kicker commit; use the crest of the wall as the cue, not the clock.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/best_7998.Ghost.Gbx` | fastest run, unconstrained inputs |
-| `replays/kb_8075.Ghost.Gbx` | **keyboard only** — the one worth studying |
+| `replays/kb_8075.Ghost.Gbx` | **keyboard only, 14 inputs — the one worth studying** |
 | `replays/ak8_8050.Ghost.Gbx` | 8-level action-key steering |
-| `replays/best_8010.Ghost.Gbx` | the first tape to beat the AT |
-| `inputs/m165_TAS_8010ms.tick.txt` | that run as a TICK input script |
-
-Note the ghosts' *declared* header time is inherited from the human tape each
-was built from. The number that matters is the **validated** time — what the
-server produces when it re-simulates the inputs — which is the number in the
-filename.
+| `replays/best_7998.Ghost.Gbx` | fastest run, unconstrained |
+| `replays/best_8010.Ghost.Gbx` | the first tape to beat the author time |
+| `inputs/m165_TAS_8010ms.tick.txt` | that run as a readable input script |

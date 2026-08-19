@@ -1,168 +1,133 @@
-# Impossible Mini Trial 2 — the human record falls by 1.150 s; the author time does not
+# Impossible Mini Trial 2
 
-**Author time 16.888 · the only human record 23.068 · best validated 21.918.**
+**Do not brake onto the finish platform. The record holder is on the brake from
+20.0 s and crosses the line at 8.5 km/h, taking 0.829 for the last ten metres;
+carrying speed instead takes 0.258, and that decision alone is worth more than
+half a second.**
 
-| tape | validated | vs human WR | vs AT | steer values | input events |
+| run | time | vs human WR | vs author time | steer values | input events |
 |---|---|---|---|---|---|
-| [`TAS_21918_analog`](replays/TAS_21918_analog.Ghost.Gbx) | **21.918** | **−1.150** | +5.030 | 214 | 515 |
-| [`TAS_22290_thinned`](replays/TAS_22290_thinned.Ghost.Gbx) | 22.290 | −0.778 | +5.402 | 31 | 84 |
-| [`TAS_22698_lowinput`](replays/TAS_22698_lowinput.Ghost.Gbx) | 22.698 | −0.370 | +5.810 | **10** | **78** |
-| author time | 16.888 | — | — | — | — |
-| human WR, Wirtual *(control)* | 23.068 | — | +6.180 | 3 | 87 |
+| **TAS, analog** | **21.918** | **−1.150** | +5.030 | 214 | 515 |
+| TAS, thinned | 22.290 | −0.778 | +5.402 | 31 | 84 |
+| TAS, low-input | 22.698 | −0.370 | +5.810 | **10** | **78** |
+| Author time | 16.888 | −6.180 | — | — | — |
+| Human WR — Wirtual | 23.068 | — | +6.180 | 3 | 87 |
 
-TMX map [267460](https://trackmania.exchange/maps/267460) · uid
-`KLiIUnR3oNZTnfJwL3GImI1VtOl` · **exactly one recorded run** · 1 checkpoint.
+TMX map [267460](https://trackmania.exchange/maps/267460) · author
+**Mattlightning** · **exactly one recorded run**.
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+**The author time does not fall here.** 16.888 is more than five seconds faster
+than anything that can be built on this route, and where those five seconds
+would come from is an open question — see the end of this page.
 
-*Counting convention: an input change event is any tick where steer, gas or brake
-differs from the previous tick, counted over the whole tape including the
-pre-start ticks. Two agents measured this tape and got 30/82 and 31/84 with
-different rules — the numbers above are one ruler, applied consistently.*
-
----
-
-## "Trial" is a building style here, not a respawn mechanic
+## It is not a respawn map
 
 The obvious read of a 23-second run on a map called *Mini Trial* is that most of
-it is retries, the way it was on
-[`[Turtle Trial] Leto`](../286279-turtle-trial-leto) and
-[`YOU LOVE WATER`](../284238-you-love-water). It is not.
+it is failed attempts. It is not: the map has **one checkpoint**, which is the
+finish itself, so there is nowhere to respawn *to* except the start line with the
+clock running. The world record contains no respawns at all. "Trial" here is a
+building style — small floating platforms — not a checkpoint mechanic.
 
-```
-human WR:  NbRespawns 0     NbCheckpoints 1
-```
+## What the map is, and where the time goes
 
-**One checkpoint** means the only waypoints on the map are the Spawn block and
-the Goal gate. There is nowhere to respawn *to* except the start, with the clock
-running. There are no retries to delete, and the entire retry-cutting family of
-techniques is inapplicable.
+Twenty-two of the map's thirty-one blocks are big flat stadium screens rotated
+vertical into **two solid walls**, one behind the start and one between the
+flight and the finish. Every route question on this map is "which hole in which
+wall", and the answer is that there is only one of each. **The route is forced;
+there is no secret line.**
 
-> **Check `NbCheckpoints` before assuming a trial map's time is mostly retries.**
+The world record, gate by gate, with our run alongside:
 
-## Where the 1.150 s is: the last ten metres
-
-Nine of the map's 23 seconds are a crawl through tilted dirt platforms and four
-more are the endgame. **All of the time we found is in the endgame.** The human
-brakes from 20.0 s onward through a no-engine gate and crosses the line at
-8.5 km/h, taking **0.829 s for the last 10 m**. Ours takes **0.258 s**.
-
-The engine is dead after (1056, 49, 672), so any braking before that point is
-unrecoverable — you cannot accelerate back. The whole trick is to arrive at the
-kill-line carrying speed you are willing to keep.
-
-That is also the honest answer to "how would a human drive this": the
-low-input tape gets within **0.370** of the world record on **ten steer values**,
-against the record holder's three. This part is teachable.
-
-## Three routes to the author time that do not exist, all measured
-
-The author time needs another 5 s, and 5 s on this map means a different route,
-not a better line. Three were enumerated and closed:
-
-1. **Fly through the flag mid-dive.** The corridor stalls against the z = 686
-   wall after 414 000 evaluations. 49 tapes do get through the low doorway and
-   then hit nothing — because the doorway is at x > 976 and the flag is at
-   x = 990.
-2. **Drop off the start platform into the turbo gate.** 2 600 enumerated tapes,
-   0 hits; a second agent reproduced independently with 882 more.
-3. **A faster line through the pit.** Closed in `RESULT.md` §5.
-
-Plus, from the independent verification pass: **upward launch is closed too.**
-The y = 136 panel row at z = 686 covers only x ∈ [912, 1008], so a crossing above
-y = 120 west of x = 912 is geometrically open — 1 900 programs across six dive
-depths and five steer values reach **none** of the detectors. The flat ramp does
-not produce upward velocity.
-
-## The finding worth more than the time: a negative needs a positive control
-
-The slope-route negative — *"0 of 5 940 launch-sweep tapes reach any gate on the
-finish platform"* — was measured with gates at (1005, 50, 665), (1012, 50, 660)
-and (1000, 52, 668). The second agent checked the cheapest possible thing first:
-does the **finishing 21.918 tape** fire those gates?
-
-```
-21.918 tape vs (1005,50,665) -> DNF     (1012,50,660) -> DNF
-            vs (1000,52,668) -> DNF     ( 996,56,690) -> DNF
-```
-
-It does not. A y-sweep at the same x explains why, and confirms the trigger
-model rather than overturning it:
-
-| gate at x = 1005 | y window | 21.918 tape |
+| point on the route | human | ours |
 |---|---|---|
-| y = 46 | [40, 46] | DNF |
-| y = 50 | [44, 50] | DNF |
-| **y = 54** | **[48, 54]** | **21.546** |
-| y = 58 | [52, 58] | DNF |
+| flat out west on the ice, 167 km/h | 1.985 | 1.985 |
+| off the west end, airborne | 3.946 | 3.946 |
+| bottom of the pit, 69 km/h | 5.979 | 5.979 |
+| top of the climb back out | 9.825 | — |
+| back down, charging east | 12.969 | 12.969 |
+| **through the big turbo gate** | 15.239 | 15.239 |
+| mid-dive, 257 km/h | 18.018 | 18.015 |
+| on the finish platform | 22.239 | **21.660** |
+| finish | 23.068 | **21.918** |
 
-The car crosses x = 1005 at y ∈ (50, 52), and only a gate at y = 54 brackets it.
-The original gates at y = 50 and y = 52 sat **on either side of a 6 m window
-without containing it** — about four metres out, which on this trigger is the
-whole window.
+**Nine of the twenty-three seconds are the pit** — 151 m at 45–100 km/h on
+30°-rolled dirt, dropping in and climbing back out. **Four more are the
+endgame.** Everything we found is after 18.0 s, and it splits into two almost
+equal halves: 0.576 in a tighter landing and turn-around, and **0.574 in the
+final ten metres.**
 
-> **5 940 tapes reported "nothing reaches the platform", from an instrument that
-> answers DNF to the tape that demonstrably drives across it.**
+## The run, sector by sector
 
-Re-run with detectors proven able to say yes (y = 54, z = 656; the 21.918 tape
-fires all four), the negative **survives**: 2 × 720 programs per detector,
-5 672 hits, and **0 arrivals earlier than the incumbent's own**. But it is now a
-negative about *perturbations of this line*, not the sweeping claim that nothing
-can reach the platform early. That distinction is the whole point.
+1. **The ice, west (0 → 3.9 s).** Flat out to the west end and off it. You have
+   to go west past the wall's edge — that is the only gap — before you can get
+   anywhere.
+2. **The pit (3.9 → 12.9 s).** Unavoidable, and nine seconds long. Drop into the
+   tilted dirt cluster, cross the bottom, climb back out and come east onto the
+   run-up platform. It is the largest single block of time on the map and it is
+   the least explored.
+3. **The turbo gate and the dive (15.2 → 19.0 s).** Ballistic. Nothing you do in
+   the air changes where you land. **Do not try to steer toward the flag** — you
+   can see it out of the window and you cannot reach it; the screen is in the
+   way, and the only doorway through that wall puts you past the flag and four
+   metres below it.
+4. **The landing (about 19.0 s).** The record lands still pointed east, runs on
+   to the far end of the grass and turns around there. **That U-turn is about
+   half a second.** Land already turning.
+5. **The last ten metres — this is the whole map.** The engine dies as you cross
+   the no-engine gate, so **every km/h you brake away before that gate is gone
+   for good**: speed is the only thing you can still spend on the far side.
+   Carry it through the 32 m gap jump up onto the finish platform, thread the
+   four pillars at speed, and let the flag stop you. The record brakes from
+   20.0 s, holds it through the jump and the pillars, and arrives *into* the flag
+   structure at 8.5 km/h rather than through it — 0.829 for ten metres against
+   our 0.258.
 
-No blame attaches to anyone here — the first agent disclosed the flaw in their
-own gate tool unprompted and invited the re-run, which is how this was caught
-within minutes rather than being published.
+## How forgiving it is
 
-## Two more traps this map produced
+Per-input timing slack has not been measured on this map, so there is no honest
+table to give. What can be said:
 
-**A relocated gate is only a valid search *objective* if reaching it implies the
-route.** Otherwise it is a *probe*, valid only on tapes independently known to be
-on the route. This map produced three separate false positives from that one
-mistake — every one a car falling through a gate's 14 m half-width on the wrong
-side of a screen. Cross-check each new hit against a second gate the same tape
-must also fire.
+- **The one thing that matters is a decision, not a timing** — whether you brake
+  onto the finish platform. It needs no tape at all and it is worth roughly half
+  a second.
+- **The line simplifies a very long way.** The fastest tape is per-tick noise no
+  person could reproduce, but deleting 433 of its 515 input changes costs
+  nothing at all; the real structure is about eighty held segments. The
+  low-input version gets within **0.370** of the world record on ten steering
+  values, against the record holder's three. That part is teachable.
+- The pit is where the remaining time must be, and it repays practice more than
+  anything else on the map.
 
-**The item y cell is `floor(y/8) + 8`, not `floor(y/8)`** — the map's vertical
-origin sits 64 m below y = 0. A wrong y cell still loads and still usually fires,
-which makes a relocated gate built with it a silently inconsistent instrument.
+## Where the missing five seconds are not
 
-## What the map is made of
+The author time needs another five seconds, and five seconds here means a
+different route, not a better line. Three candidate routes were measured and
+closed:
 
-22 of its 31 blocks are `CanopyCenterFlatBase` — stadium screens rotated vertical
-into two solid walls at z = 740 and z = 686. Every route question on this map is
-"which hole in which wall". Free-block world positions live in chunk
-`0x0304305F` (pos + rot, 24 bytes each, the first N records in block order); the
-block record itself carries cell (−1, 0, −1) and tells you nothing.
+- **Flying through the flag mid-dive.** At 18.018 the car is level with the flag
+  and 56 m adrift of it in the wrong axis, with a solid screen between. Tapes do
+  get through the low doorway in that wall, but the doorway is east of the flag
+  and four metres below the platform, so they arrive already past it.
+- **Dropping straight off the start platform into the turbo gate.** It is 70 m
+  from the spawn and behind the near screen. Nothing reaches it.
+- **Landing on the dirt slope north of the finish platform.** Tapes reach the
+  slope in quantity, but the strip between its south edge and the platform is
+  void and nothing crosses the last 16 m.
+- **Launching upward** over the far wall is closed too: the flat ramp does not
+  produce upward velocity.
 
-The map header says `validated="1"` but there is **no embedded ghost of any
-kind** — checked properly, by decompressing the LZO body and scanning for
-`0x0911F000` / `0x0309201D` / `0x0303F005`, not by trusting the header. With one
-human record and no author ghost, the container cannot settle where 16.888 came
-from, and there is no field to cross-check it against.
+The best construction anyone has assembled out of a launch, a flight and an
+endgame is about 21.3, against a best actual of 21.918. So either there is a
+route nobody has found, or the author time was not driven. The map carries no
+author ghost of any kind, and with a single human record there is no field to
+cross-check it against.
 
-## Where this leaves it
+## Files
 
-**16.888 does not decompose into any launch + flight + endgame either of two
-independent agents can build.** Best construction ≈ 21.3; best actual 21.918.
-Two live possibilities remain: a route neither of us found, or an author time
-that was not driven — unbeaten.at reports `inPlugin: true` for this map, which is
-a reason to spend an hour on provenance before spending another day on search.
-
-Priority for whoever picks it up:
-
-1. **Re-run the remaining route negatives with yes-controlled detectors.** The
-   broken-detector failure was live in this map's evidence base for a whole
-   session. The hole-A doorway measurement and the aim ceiling have never been
-   re-measured with an instrument proven able to say yes.
-2. Settle the z = 686 screen's real extent by driving a slow tape into it and
-   bisecting, rather than inferring it from nulls.
-3. Treat the author time's provenance as an open question.
-
-## Notes
-
-* [`RESULT.md`](notes/RESULT.md) — the full session, all three closed routes, and the
-  new tools (`tmgen`, `tmsearch --ladder`, `mutate::redrive`)
-* [`GEOMETRY.md`](notes/GEOMETRY.md) — the block/item layout and the wall holes
-* [`VERIFICATION_v1.md`](notes/VERIFICATION_v1.md), [`VERIFICATION_v2.md`](notes/VERIFICATION_v2.md) —
-  the independent re-measurement and the broken-detector finding
+| file | what |
+|---|---|
+| `replays/TAS_21918_analog.Ghost.Gbx` | the fastest run |
+| `replays/TAS_22290_thinned.Ghost.Gbx` | the same line at 84 input changes |
+| `replays/TAS_22698_lowinput.Ghost.Gbx` | **ten steering values — the one worth studying** |
+| `inputs/m267460_TAS_lowinput_76inputs.script.txt` | the low-input run as a readable script |
+| `inputs/m267460_TAS_thinned_82inputs.script.txt` | the thinned run |

@@ -1,177 +1,202 @@
-# U10S_32 [Yeet] MAX-UP — the reactor flight is fifteen keyboard presses
+# U10S_32 [Yeet] MAX-UP
 
-**Author time 7.704 · human world record 7.893 · this run 7.463 — the author
-time beaten by 0.241 s, and a 15-press keyboard tape is still 0.228 inside it.**
+**Do not slam the wheel into the edge: feather out of the lock over the last two
+tenths of road, because the moment the wheels leave, the steering does nothing
+for 1.2 seconds and your launch attitude is already decided.**
 
-| tape | time | vs AT | inputs | alphabet |
+| run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
-| [`TAS_7463`](replays/TAS_7463.Ghost.Gbx) | **7.463** | **−0.241** | analog | 255 values |
-| [`KEYBOARD_7474`](replays/KEYBOARD_7474.Ghost.Gbx) | 7.474 | −0.230 | 24 presses | **3 — keyboard** |
-| [`KEYBOARD_7476`](replays/KEYBOARD_7476.Ghost.Gbx) | **7.476** | **−0.228** | **15 presses**, 30 ms hold floor | **3 — keyboard** |
-| [**`KEYBOARD_4input_7514`**](replays/KEYBOARD_4input_7514.Ghost.Gbx) | **7.514** | **−0.190** | **the whole 4.5 s climb on FOUR inputs** | **2 values** |
-| fewest inputs of all | 7.558 | −0.146 | **32 live events for the whole lap** | keyboard |
-| human WR — Whatever8319 *(control)* | 7.893 | +0.189 | — | — |
+| **TAS** | **7.463** | **−0.241** | −0.430 | analog |
+| TAS, keyboard climb | 7.474 | −0.230 | −0.419 | 24 presses, 3 steering values |
+| **TAS, keyboard climb, 30 ms hold floor** | **7.476** | **−0.228** | −0.417 | **15 presses**, 3 values |
+| TAS, four-input climb | 7.514 | −0.190 | −0.379 | **the whole 4.5 s flight on 4 inputs, 2 values** |
+| Author time | 7.704 | — | −0.189 | — |
+| Human WR — Whatever8319 | 7.893 | +0.189 | — | — |
 
-TMX map [274191](https://trackmania.exchange/maps/274191) · author **Everios96**
-· **3 recorded runs** — all three re-simulate exactly, so the field check here
-covers the entire recorded population.
-
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+TMX map [274191](https://trackmania.exchange/maps/274191) · author
+**Everios96** · **3 recorded runs**.
 
 ## The physics everything rests on
 
-This is a **Reactor** map. In the air the car is pushed at a constant **~44 m/s²
-along its own −up axis** and nothing else — 87% of the acceleration on one body
-axis, cosine −0.86, consistent across all three human tapes.
+This is a **Reactor** map. In the air the car is pushed at a constant
+**~44 m/s² (4.5 g) along its own −up axis** and nothing else — 87% of the
+non-gravity acceleration on that one body axis, on every human tape. The
+thruster is bolted to the car's belly: **where the belly points is where you
+go.** That is also why every run flies nearly inverted; that is what it takes to
+aim "out through the floor" at the sky.
 
-So **attitude is the only control**. The thruster is bolted to the car's belly:
-where the belly points is where you go.
-
-And there is a **dead zone — 1.2 seconds in which the steering wheel does
-nothing.** Measured at 20 ms resolution, 183 substitutions on each of two
-independent tapes, all returning the base millisecond. Both the world record and
+And there is a **dead zone: 1.2 seconds, from 2.890 to 4.100, in which the
+steering wheel does nothing.** Force any constant onto the wheel anywhere inside
+that window and the run returns the same millisecond. Both the world record and
 rank 2 spend that time holding full lock, which is the clearest possible sign
 that nobody knows.
 
-**The pedals are not dead there.** Gas and brake are live pitch controls in the
-air — this is a three-pedal map, not a steering-only one. (That distinction
-matters generally: the dead zone is a property of a *channel on a lineage*, not
-of the map. The fast tapes put brake taps inside the window and made it partly
-alive.)
+The pedals are *not* dead there — gas and brake are live pitch controls in the
+air. This is a three-pedal map, not a steering-only one.
 
-## The technique — undiscovered, and it happens on the ground
+## What the field does wrong
 
 Because the wheel is dead for 1.2 s, **the attitude at which you meet the
 launcher is fixed by the rotation you carry off the lip.** Nothing after the lip
 can change it.
 
-| | leaves at | arrives | keeps |
+| | leaves the lip at | arrives at the launcher | keeps |
 |---|---|---|---|
 | human WR | 3.80 rad/s | nose-up **58°** | 148 km/h |
-| this run | 3.58 rad/s, different axis | **35°** | **197 km/h** |
+| this run | 3.58 rad/s, about a different axis | **35°** | **197 km/h** |
 
 **All three humans slam to full lock and pin it into the edge.** The fast line
-does the opposite: **unwind ~15/127 of lock over the last 100 ms of road, and
-brake 20 ms later.** Worth 46 ms directly — and it unlocks 288 ms more, because
-from a better launch you can hold the thruster flat (+17…+25° against the
-human's +53°).
+does the opposite: it peaks just short of the stop and **unwinds about 15 of 127
+units of lock over the last 100 ms of road, braking 20 ms later.** That is worth
+0.046 directly — and it unlocks 0.288 more, because from a better launch you can
+hold the thruster flat: **+17 to +25° above horizontal against the human's
++53°**, which is 2% of the thrust wasted instead of 8%.
 
-## The driving guide
+At 5.000 the fast line is *lower* than the world record (33 m against 47 m) and
+40 km/h faster: **the climb is bought with speed, not with altitude, and the
+reactor buys the height back.**
 
-Full throttle from the line.
+| race | human WR | this run |
+|---|---|---|
+| 2.890 leaves the road | 257 km/h, y = 33 | 253 km/h, y = 33 |
+| **3.600 strikes the launcher** | **148 km/h** | **197 km/h** |
+| 5.000 | 391 km/h, y = 47 | **431 km/h, y = 33** |
+| 6.000 | 530 km/h, y = 100 | **612 km/h, y = 105** |
+| 7.000 | 668 km/h, y = 171 | **767 km/h, y = 195** |
 
-**Sector 1 — the road, 0 → 2.24 s.** Drive it exactly like the world record.
-Our tape *is* the world record's own inputs here, and one tick of difference
-anywhere does not finish.
+The launcher costs the human 109 km/h and costs this run 56.
 
-**Sector 2 — the last 0.65 s of road, 2.24 → 2.89 s. The only hard part.**
+## Sector by sector, off what you can see
+
+Full throttle from the line. The brake comes on at 2.810.
+
+**Sector 1 — the road, 0 → 2.240. Drive it exactly like the world record.**
+This tape *is* the world record's own inputs here, and one tick of difference
+anywhere does not finish. Left off the line at 0.520, straighten, the flicks at
+0.900 / 1.380 / 1.750, on to the booster.
+
+**Sector 2 — the last 0.65 s of road, 2.240 → 2.890. The only hard part.**
 You are turning left onto the edge at about 260 km/h.
 
-1. Turn in a fraction harder and earlier — about 10% more lock from 2.5 s than
-   feels natural.
-2. Do not fully unwind at 2.70 s; the world record goes to centre here, keep a
-   whisker of left in it.
-3. **Do not slam to full lock into the edge.** Reach peak lock at about 2.77 s,
-   *just short of the stop*, then **feather out of it all the way to the lip** —
-   roughly a tenth of the wheel unwound over the last two tenths of a second.
-   Brake as you begin unwinding, not before.
+1. **Turn in a fraction harder and earlier** — about 10% more lock from 2.500
+   than feels natural.
+2. **Do not fully unwind at 2.700.** The world record lets the wheel go to
+   centre here; keep a whisker of left in it.
+3. **The one that matters: do not slam to full lock into the edge.** Reach peak
+   lock at about 2.770, *just short of the stop*, then **feather out of it all
+   the way to the lip** — roughly a tenth of the wheel unwound over the last two
+   tenths of a second. Brake as you begin unwinding, not before.
 
 **The cue is the edge of the road, not a clock: you should be unwinding as the
 front wheels reach the lip, not fighting the stop.**
 
-**The check is a number on the speedo.** At the instant the launcher throws you,
-about 3.60 s:
+**The check is a number on the speedo,** at the instant the launcher throws you,
+about 3.600:
 
 | speed | what it means |
 |---|---|
-| 148 km/h | you drove it like the current world record → ≈ 7.89 |
+| 148 km/h | you drove it like the current world record → ≈ 7.893 |
 | 170 km/h | about the author time |
 | **197 km/h** | the fast line |
 
-**Sector 3 — the fall, 2.89 → 4.10 s.** Hands off the wheel; feet still working.
-Steering is ignored. The fast tapes let the brake off briefly at ~3.53 s and
-again into 3.83 s, straddling the launcher strike at 3.60 s, and those are
-10 ms-tight — if you want the simple version, hold the brake like the world
-record does and give up a few hundredths. The 0.228 s is not in these.
+**Sector 3 — the fall, 2.890 → 4.100. Hands off the wheel; feet still working.**
+Steering is ignored. The fast tapes let the brake off briefly at about 3.530 and
+again into 3.830, straddling the launcher strike at 3.600, and those two are
+10 ms-tight. If you want the simple version, hold the brake like the world
+record does and give up a few hundredths — the 0.228 is not in these.
 
-**Sector 4 — the climb, 4.10 → 5.90 s.** Fifteen presses in the optimum — but
-the whole climb also flies on **four inputs and two values** for 38 ms more
-(`KEYBOARD_4input_7514`, still 0.190 inside the author time), after which the
-wheel is simply held centred for the last 2.3 s. That version uses **27 ground
-inputs — one fewer than the world record** — and is 0.379 s faster than it.
-One idea:
+**Sector 4 — the climb, 4.100 → 5.900.** Control returns at 4.100, the moment
+the launcher has finished with you and the reactor takes over. One idea:
 
 > **Stop the car swinging nose-up. Point its belly at the far side of the map,
 > not at the sky.**
 
-The reactor pushes out through the floor at a constant 4.5 g. Belly aimed 50° up
-and half of it goes nowhere; aimed 20° up and it goes where the gate is. **The
-horizon is your instrument** — the field lets the nose keep climbing; you check
-it and hold it low.
+Belly aimed 50° up and half the thrust goes nowhere; aimed 20° up and it goes
+where the gate is. **The horizon is your instrument** — the field lets the nose
+keep climbing; you check it and hold it low.
+
+**Sector 5 — 5.900 to the gate. Already decided.** Freeze everything from 7.400
+and the time does not change.
+
+## The run, as keys
+
+The 15-press keyboard tape, `replays/KEYBOARD_7476.Ghost.Gbx`. `L` = full left,
+`R` = full right, `—` = centre.
 
 ```
-  4.10 s  R      as control returns — the catch
-  4.41 s  —
-  4.51 s  L
-  4.61 s  —      <-- the "check the nose" release
-  4.84 s  L      .......... 320 ms
-  5.16 s  —
-  5.25 s  R
-  5.31 s  —
-  5.39 s  L      .......... 490 ms, the long one
-  5.88 s  —      from here on nothing is worth more than a few ms
-  6.65 s  L      (30 ms tap)
-  6.68 s  —
-  7.15 s  R      (60 ms tap)
-  7.21 s  —
-  7.49 s  L      hold to the gate
+  4.100  R      as control returns — the catch
+  4.410  —
+  4.510  L
+  4.610  —      <-- the "check the nose" release
+  4.840  L      .......... 320 ms
+  5.160  —
+  5.250  R
+  5.310  —
+  5.390  L      .......... 490 ms, the long one
+  5.880  —      from here on nothing is worth more than a few thousandths
+  6.650  L      (30 ms tap)
+  6.680  —
+  7.150  R      (60 ms tap)
+  7.210  —
+  7.490  L      hold to the gate
 ```
 
-The first four are one phrase — *catch, check* — and only the total rotation
-matters, not which of them you were late on. From 5.16 s everything has ±30–50 ms
-of room. **From 5.88 s the lap is over: the last five presses cost zero however
-you place them.**
+**And the version to learn first, because it is barely a script at all.** The
+7.514 tape flies the whole climb on four inputs and two values, then holds the
+wheel centred for the last 2.3 seconds:
 
-**Sector 5 — already decided.** 98% of the gain is banked by 5.5 s. Freeze
-everything from 7.40 s and the time does not change.
+```
+  4.100  (R already held from before control returned)
+  4.500  L
+  4.610  —
+  4.840  L      .......... 320 ms
+  5.160  —      and CENTRE all the way to the gate
+```
 
-## Is this humanly realistic? Yes — and the hard part is the part they already do
+That is 0.190 inside the author time and 0.379 faster than the world record,
+using **one fewer ground input than the world record uses**.
 
-Sector 1 is the world record's own driving. Sector 3 needs no steering at all.
-Sector 4 is fifteen keyboard presses on quarter-second holds with tens of
-milliseconds of slack. The single demanding moment is the feather in sector 2,
-and it is a change of *habit* rather than of precision: stop pinning the wheel
-into the stop.
+## How forgiving it is
 
-## A false negative worth knowing about
+Mistime one press in the climb and keep driving — the cost against 7.476.
+Anything up to +0.228 still beats the author time, and every number below does.
 
-The first answer to "is there a low-input family here?" was **no** — sixteen
-configurations tried (keyboard, 5/9/17-level, hold floors from 20 to 50 ms), all
-sixteen DNF.
+| press | −50 ms | −30 | −20 | −10 | +10 | +20 | +30 | +50 |
+|---|---|---|---|---|---|---|---|---|
+| 4.100 / 4.410 / 4.510 | — | +0.091 | — | +0.024 | +0.006 | +0.014 | +0.014 | — |
+| 4.610 | — | — | +0.010 | +0.002 | — | +0.041 | — | — |
+| 4.840 | — | — | — | +0.034 | +0.006 | +0.010 | +0.014 | +0.028 |
+| 5.160 | +0.006 | +0.004 | +0.002 | +0.001 | +0.009 | +0.011 | +0.025 | +0.041 |
+| 5.250 | — | +0.006 | +0.009 | +0.000 | +0.001 | +0.001 | +0.002 | +0.004 |
+| 5.310 | — | — | — | +0.008 | +0.001 | +0.002 | +0.004 | +0.008 |
+| 5.390 | — | +0.042 | +0.012 | +0.000 | +0.001 | +0.002 | +0.002 | +0.005 |
+| 5.880 | +0.012 | +0.015 | +0.015 | +0.000 | +0.002 | +0.001 | +0.004 | +0.006 |
+| **6.650 / 6.680 / 7.150 / 7.210 / 7.490** | **+0** | **+0** | **+0** | **+0** | **+0** | **+0** | **+0** | **+0** |
 
-That conclusion was an artefact. **All sixteen also DNF when applied to the
-human world record's own tape** — the instrument could not say yes, so its "no"
-meant nothing. Projecting only the *steered climb* rather than the whole tape
-produced a keyboard tape **0.127 s inside the author time with no search at
-all.**
+(A dash is a mistiming that does not finish.)
 
-The difference between "impossible" and "free" was one flag, and the diagnostic
-was sitting in plain sight: when your test destroys a run three humans have on
-the board, you are measuring the test.
+**The first three presses return identical rows: they are one 400 ms phrase, and
+only the total rotation matters, not which of the three you were late on.** From
+5.160 the tape is comfortable, ±30–50 ms. **The last five presses cost literally
+nothing however you place them.** The four-input climb is the same story: its
+inputs tolerate ±30 ms, and several mistimings come out *faster* than the tape
+itself.
 
-## Validation
+**What will take real practice** is the feather in sector 2. Every input between
+2.580 and 2.850 is 10 ms-critical on a frozen tape — but so is the world
+record's own run, which dies on 98% of the same mistimings, because a recorded
+tape has no eyes and a driver does. In the air, where that measure means
+something, this keyboard climb survives mistimings the world record's flight
+does not: it is about five times more forgiving.
 
-Whole family re-validated in one batch on two independent binaries with the
-human world record as a known-answer control; 18 champions banked through an
-independent ratchet; **zero phantoms all session**. Field reproduction **3/3 —
-100% of the recorded population** (7.893 / 7.933 / 8.597, all exact).
+The change asked of you on that stretch of road is **not a new input, it is
+taking one away**: stop pinning the wheel into the lip.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/KEYBOARD_7476.Ghost.Gbx` | **fifteen presses, 7.476** — the one to learn |
-| `replays/TAS_7463.Ghost.Gbx` | the unconstrained floor |
+| `replays/KEYBOARD_7476.Ghost.Gbx` | **fifteen presses, 7.476 — the one to learn** |
+| `replays/KEYBOARD_4input_7514.Ghost.Gbx` | the whole flight on four inputs, 7.514 |
 | `replays/KEYBOARD_7474.Ghost.Gbx` | 24 presses, 7.474 |
-| `notes/RESULT.md` | the full write-up: physics, ablation, tolerance tables, negatives |
-| `notes/PLAN-v1.md` | pre-search analysis, with its predictions scored honestly afterwards |
+| `replays/TAS_7463.Ghost.Gbx` | the unconstrained floor |

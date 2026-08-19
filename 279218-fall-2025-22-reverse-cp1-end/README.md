@@ -1,193 +1,171 @@
-# Fall 2025 - 22 Reverse CP1 End — author time beaten by 3 ms, and equalled on a keyboard
+# Fall 2025 - 22 Reverse CP1 End
 
-| | time | vs AT | vs human WR |
-|---|---|---|---|
-| **TAS** | **5.347** | **−0.003** | **−0.008** |
-| TAS, earlier tape | 5.348 | −0.002 | −0.007 |
-| **TAS, keyboard — 15 inputs, 3 values** | **5.350** | **±0** | **−0.005** |
-| **the drivable one — 19 inputs, 42 % tolerant** | **5.351** | +0.001 | **−0.004** |
-| Author time (never beaten by a human) | 5.350 | — | −0.005 |
-| Human WR — Matik_K | 5.355 | +0.005 | — |
+**The author time falls on a keyboard, and it is the rank-5 human's own lap plus
+two things nobody does: flick the right key off for a single frame at 3.13 s,
+and lift the throttle for two frames at 3.91 s. They only pay as a pair.**
 
-TMX map [279218](https://trackmania.exchange/maps/279218) · uid
-`_Toadb_vTfXnT7PfAIpHypSJClk` · author **in-.-** · **339 recorded runs**.
+| run | time | vs author time | vs human WR | inputs |
+|---|---|---|---|---|
+| **TAS** | **5.347** | **−0.003** | **−0.008** | analog, 114 changes |
+| TAS, earlier tape | 5.348 | −0.002 | −0.007 | analog |
+| **TAS, keyboard only** | **5.350** | **±0** | **−0.005** | 15 changes, 3 steer values |
+| **the drivable one** | **5.351** | +0.001 | **−0.004** | 19 changes, 7 steer values |
+| TAS, keyboard, smallest | 5.352 | +0.002 | −0.003 | 11 changes, 3 values |
+| Author time | 5.350 | — | −0.005 | — |
+| Human WR — Matik_K | 5.355 | +0.005 | — | pad, 107 changes |
+| Human rank 5 | 5.358 | +0.008 | +0.003 | keyboard, 11 changes |
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+TMX map [279218](https://trackmania.exchange/maps/279218) · author **in-.-** ·
+339 recorded runs. It is a reversed copy of the official Fall 2025 - 22 layout.
 
 ## The map
 
-201.5 m, 5.355 s, a 559-tick tape. Two waypoints — a road start and a
-free-standing finish gate at (971.3, 50, 400) — and **no checkpoints**, so a
-failed run returns no information at all.
+201.5 m in 5.355 s. A road start, no checkpoints, and a free-standing finish
+gate. **Gas is on and the brake is off on every tick of all 40 downloaded human
+runs** — steering is the only control that does anything. The whole map is one
+long full-lock left-hander into a short straight.
 
-**Gas is on and the brake is off on every tick of all 40 downloaded human
-runs.** Steering is the only control. The map is one long full-lock left-hander
-into a short straight.
+Two measurements shape everything:
 
-Two measurements that shaped everything:
-
-- **The finish-gate vernier is exact and linear at 17.0 ms/m**, so **1 ms =
-  1.7 cm** and the whole 5 ms gap to the author time is **8.5 cm of reach**.
-  That converts a timing problem into a geometry problem.
+- **1 ms = 1.7 cm at the finish gate.** The gate times a plane crossing at
+  17.0 ms per metre, so the whole 0.005 gap to the author time is **8.5 cm of
+  reach**. This is a geometry problem, not a timing problem.
 - **All the dispersion is in the corner, 110–190 m.** Ranks 1 through 344 are
-  within a few milliseconds and about a metre of each other for the first 90 m.
-  Among the top 15, ranks 5 and 9 are ~2 ms *ahead* of the world record through
-  the corner and lose it all in the last 20 m — **the world record wins on
-  exit**, not on the corner.
+  within a few milliseconds and about a metre of each other over the first 90 m.
+  Nothing is to be gained in the first third of the map.
 
-## What the author time is, and what it is not
+## Where the time is
 
-Medals are 5350 / 6000 / 7000 / 9000 — the gold, silver and bronze are round
-thousands, i.e. placeholders, so the author time is **not** derived from them.
-Author `in-.-` also sits **rank 5 on their own board with 5358**, eight
-milliseconds slower than the time they published.
+Almost the whole field drives the corner at **full lock** — `steer = −1` held for
+about 165 consecutive ticks. Full lock at 200 km/h scrubs: the car pins at
+**203.15 km/h** for roughly a second in the middle of the turn, which is the
+grip/drag equilibrium *at that steering angle*. Less lock means less scrub and a
+higher plateau, as long as the car still makes the exit.
 
-That is the **driven-lap signature**: a non-round author time against round
-medals, and an author whose own online record is close but not equal. It is
-strong circumstantial evidence that 5.350 was set in the editor by a person who
-could retry indefinitely — and it is *evidence*, not proof. The lap itself is not
-in the map file in replayable form, here or on most maps in this collection (see
-the front page on telemetry-only author records), so nobody can re-simulate it
-and check.
+The world record is the one run that does not hold full lock — it uses
+intermediate steering values through the corner — and it does not win by being
+fast through the turn. **Among the top 15, ranks 5 and 9 are about 0.002 ahead
+of the record for most of the corner and give it all back in the last 20 m.**
+Slow in, fast out: the record wins on **exit**.
 
-**And nothing on this page depends on settling it.** The claim that matters —
-that a human-repeatable technique exists here — does not rest on who drove the
-author time. It rests on a measurement of our own tapes:
-`DRIVABLE_5351` survives **95 %** of single-boundary mistimings in at least one
-direction and **42 %** in both, against the human world record's 85 % and 24 %
-and our own human seed's 45 % and 27 %. **The tape we are handing a person is
-more forgiving than the driving a person actually did.** That is a measurement
-about hands, and it does not need an author's provenance to stand up.
+So the time lives in the last third of the corner and the run onto the finish
+straight, traded against how much lock you carry through the middle. Speed over
+the exit climbs 209 → 213 km/h into the gate plane.
 
-## Validation
+## The run, as inputs
 
-**40 of 40 human ghosts** — the top 15 plus five each from leaderboard offsets
-25 / 50 / 100 / 200 / 339, spanning rank 1 to rank 344 — re-simulate to their
-exact recorded millisecond. The candidate factory round-trips rank 1 to 5355.
-Rank 1 travels in every batch as the identity control, and every published tape
-re-validates on the untouched map.
+Full throttle from the lights, brake never touched, three keys total. This is
+the 5.350 keyboard tape.
 
-Worth recording: the node doing this work **died mid-investigation** with two
-hours of lease left. Everything survived because the map, the ghosts and the
-analysis had been banked to shared storage; the work resumed on a replacement
-box and the identity control was re-run from scratch there before anything was
-trusted.
+```
+race  0.120  RIGHT            | hold through the opening bend
+race  0.660  release          |
+race  0.850  RIGHT ~70 ms     | a short tap, then let go
+race  1.640  RIGHT ~50 ms     | the shortest tap of the run
+      ...                     | hands off for a full second down the descent
+race  2.760  RIGHT            | hold into the approach
+race  3.130  release 1 frame  | THE FLICKER — off and straight back on
+race  3.400  release          | coast ~100 ms
+race  3.500  FULL LEFT        | the corner — hold it to the line
+race  3.910  throttle off     | THE LIFT — 20 ms, steering unchanged
+race  5.360  release          | free either way
+```
 
-## The author time is reachable on a keyboard — 15 inputs, three values
+**Steps at 3.13 s and 3.91 s are worth 0.008 together and are a package.** The
+flicker alone is worth 0.003; the lift alone *loses* 0.018. Each half is
+punished when tried on its own, which is why a person grinding this map never
+stumbles onto them. Practise them as one move or not at all.
 
-**This does not beat the author time. It equals it.** The project's beat on this
-map is the analog 5.347 above; what is new is that **5.350 is reachable on
-`{−127, 0, +127}`**, which nobody had established.
+### Sector by sector, off what you can see
 
-| tape | validated | vs AT 5.350 | vs human WR 5.355 | events | values |
-|---|---|---|---|---|---|
-| analog floor (above) | 5.347 | −0.003 | −0.008 | 114 | 60 |
-| [`KEYBOARD_5350_equals_AT`](replays/KEYBOARD_5350_equals_AT.Ghost.Gbx) | **5.350** | **±0** | **−0.005** | **15** | **3** |
-| [`DRIVABLE_5351_5detents`](replays/DRIVABLE_5351_5detents.Ghost.Gbx) | 5.351 | +0.001 | −0.004 | 19 | 7 |
-| [`KEYBOARD_5352_11events`](replays/KEYBOARD_5352_11events.Ghost.Gbx) | 5.352 | +0.002 | −0.003 | 11 | 3 |
-| human WR, Matik_K | 5.355 | +0.005 | — | 107 | 59 |
-| human rank 5 — **our seed** | 5.358 | +0.008 | +0.003 | 11 | 3 |
+**Launch (0 → 1.75 s).** Standing start, straight and slightly falling,
+0 → 100 km/h. Two short right taps to hold the line. Nothing to win here.
 
-**Four constrained members all beat the human world record**, and the two
-smallest alphabets are the two fastest of them. On this map the alphabet is
-nearly free: keyboard costs 3 ms against the analog floor.
+**The descent (1.75 → 3.50 s).** Still straight, the road dropping away,
+100 → 176 km/h. The whole leaderboard is within a metre of each other here. Hands
+off after the 1.64 s tap, then the long right hold from 2.76 s as the corner
+comes up — with the single-frame flicker in the middle of it.
 
-### It is a real human's own lap plus two blips
+**The corner (3.50 → 5.20 s).** One continuous left-hander. The car dips, then
+climbs back, the heading swings through a quarter turn, and the speedo sticks at
+203 km/h. There is a brief moment of air at about 4.80 s. The throttle lift lands
+about 400 ms into this hold, steering unchanged.
 
-The keyboard tape descends from **rank 5's run — a human keyboard lap** — and
-differs from it in exactly two places:
+**The exit (5.20 → 5.355 s).** Straight, steering released, speed climbing again
+into the gate. This short stretch is where the record was won over ranks 5 and 9.
 
-| | the human (5.358) | ours (5.350) |
-|---|---|---|
-| 2.76 s | hold RIGHT, 64 ticks unbroken | hold 37, **release for one tick**, hold 26 more |
-| 3.91 s | full throttle throughout the left | **lift the throttle for two ticks**, steering unchanged |
+## How forgiving it is
 
-Everything else — the launch, all three early right taps, the turn-in, the final
-release — is byte-for-byte theirs.
+Measured the pessimistic way: move one input boundary by a single frame, change
+nothing else, and see whether the run still finishes within 0.050 of its own
+time. Recovering with the next input is not allowed, so these are floors.
 
-**And the two blips are a coupled pair, which is why nobody finds them:**
-
-| | validated | vs the human's 5.358 |
-|---|---|---|
-| both blips (ours) | **5.350** | −0.008 |
-| the one-tick release alone | 5.355 | −0.003 |
-| the throttle lift alone | **5.376** | **+0.018 — worse alone** |
-| both reverted *(control)* | **5.358** | reproduces the human exactly |
-
-The throttle lift is an 18 ms **mistake** by itself and becomes worth 5 ms only
-once the release precedes it. Each half is punished when tried alone — the same
-shape as [252289](../252289-surely-my-least-cooked-at), and the reason a human
-grinding this map never stumbles onto the pair.
-
-## Tolerance — and the tape to actually hand a person is neither of those
-
-Measured on the pessimistic rule: move one input boundary ±1 tick, no
-compensation, still finish within +0.050 of that tape's own time.
-
-| tape | events | survives **both** directions | at least one |
+| tape | inputs | survives **both** directions | at least one |
 |---|---|---|---|
-| **analog `5.347`** | 114 | **71 (62 %)** | 81 % |
-| **`DRIVABLE_5351`** | 19 | **8 (42 %)** | 95 % |
-| human WR | 107 | 26 (24 %) | 85 % |
-| human rank 5 (our seed) | 11 | 3 (27 %) | 45 % |
-| `KEYBOARD_5350` | 15 | 1 (7 %) | 60 % |
-| `KEYBOARD_5352` | 11 | 0 (0 %) | 82 % |
+| **TAS 5.347, analog** | 114 | **62 %** | 81 % |
+| **the drivable 5.351** | 19 | **42 %** | 95 % |
+| human WR 5.355 | 107 | 24 % | 85 % |
+| human rank 5, 5.358 | 11 | 27 % | 45 % |
+| keyboard 5.350 | 15 | 7 % | 60 % |
+| keyboard 5.352 | 11 | 0 % | 82 % |
 
-Two things fall out, and both correct something a reader might reasonably assume.
+Two things fall out. **The analog TAS line is the most forgiving thing on this
+map**, more than twice as tolerant as the world record — it is not a knife-edge.
+And **fewer inputs is not safer here**: the keyboard tapes are the twitchiest of
+the lot, and the fair comparison for them is the human keyboard lap they came
+from, which is only a little better. A keyboard lap on this map is intrinsically
+twitchy, for the human too.
 
-**The analog TAS tape is the most forgiving thing on this map — 62 %, more than
-twice the human world record's 24 %.** An earlier note on this page called our
-line a knife-edge that "a human will not reproduce"; that was written without a
-tolerance measurement, and the measurement says the opposite. **Retracted.**
+So the tape to actually learn is **the drivable 5.351** — 42 % two-sided on 19
+inputs, still 0.004 inside the human world record.
 
-**Fewer events is *less* safe here.** 15 events at 7 % against 114 at 62 %, and
-the fair comparison for the keyboard tape is its own human seed — 27 % on 11
-events against our 7 % on 15. **A keyboard lap on this map is intrinsically
-twitchy, for the human too.**
+### Which way to fail
 
-So the tape to hand a person is **`DRIVABLE_5351`**: 42 % two-sided on 19 events,
-still 4 ms inside the human world record.
-
-### Which way to fail — and it is *not* the same rule as 228607
+Every input of the 5.350 tape moved 10 ms each way:
 
 | moment | 10 ms EARLY | 10 ms LATE |
 |---|---|---|
-| 0.66 s release right | 5.733 | **DNF** |
-| 0.85 s tap right | **DNF** | 5.728 |
-| 2.76 s hold right | 5.391 | **DNF** |
-| 3.40 s release right | **DNF** | 5.386 |
-| 3.50 s turn in left | 6.288 | 5.371 |
-| 3.91 s throttle lift | 6.018 | 5.371 |
-| 5.36 s final release | 5.350 | 5.350 — free |
+| 0.660 release right | 5.733 | **DNF** |
+| 0.850 tap right | **DNF** | 5.728 |
+| 2.760 hold right | 5.391 | **DNF** |
+| 3.130 the flicker | 5.709 | 5.376 |
+| 3.400 release right | **DNF** | 5.386 |
+| 3.500 turn in left | 6.288 | 5.371 |
+| 3.910 the throttle lift | 6.018 | 5.371 |
+| 5.360 final release | 5.350 | 5.350 — free |
 
-> **The direction alternates.** The early right taps want to be *late*; the holds
-> want to be *early*. There is no single "when in doubt" rule on this map — do
-> **not** carry [Torment (1-UP)](../228607-torment-1-up)'s *early is free, late is
-> fatal* across to it.
+**The direction alternates**, so there is no single "when in doubt" rule on this
+map: the early right taps want to be late, the holds want to be early. What is
+worth carrying into muscle memory is the end of it — **the turn-in and the lift
+both cost about 0.65 s early and about 0.02 s late. At the corner, late is cheap
+and early is ruinous.**
 
-What *is* usable: the last two decisions — the turn-in and the lift — both cost
-about 0.65 s early and only about 0.02 s late. **At the corner, late is cheap and
-early is ruinous.**
+**Realistic expectation.** This is a 5.35-second sprint in which one mistimed
+frame costs 0.4 s or the run, and the two blips are one and two frames long. A
+keyboard player who gets everything but the blips still has the rank-5 lap of
+5.358, which is 11 inputs and already inside the field — **the blips are the last
+0.008, not the technique.**
+
+## Is the author time drivable?
+
+The medals are 5.350 / 6.000 / 7.000 / 9.000 — gold, silver and bronze are round
+thousands, i.e. placeholders, so the author time is not derived from them. The
+author also sits rank 5 on their own board with 5.358, eight milliseconds slower
+than the time they published. That reads as a lap driven in the editor by
+someone who could retry indefinitely, which is evidence rather than proof — the
+lap itself is not stored in replayable form, so nobody can check it.
+
+Nothing here depends on settling it: the drivable tape is measurably more
+forgiving than the driving humans have actually done on this map.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/best_pF_5347_32087.Ghost.Gbx` | the run |
-| `replays/best_pC_5348_32098.Ghost.Gbx` | an independent arm's 5348 |
+| `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
-| `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided tolerance, still inside the human WR |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |
-| `notes/LOWINPUT_AND_TOLERANCE.md` | the keyboard family, the ablation, and the tolerance table |
-| `notes/VALIDATION_family.txt` | the oracle transcript |
-| `notes/PLAN.md` | the full pre-search analysis, all measured on this map |
+| `replays/best_pF_5347_32087.Ghost.Gbx` | the fastest run, analog |
+| `replays/best_pC_5348_32098.Ghost.Gbx` | an independently produced 5.348 |
 
-## This map is an Altered Nadeo copy of **Fall 2025 - 22**
-
-Identified blind by cell occupancy against all 625 official seasonal campaign
-maps — see [`_altered/`](../_altered). The official map has a field of **44 128
-players** on this geometry.
-
-This is a **Reverse** variant: same physics, but those humans drove the route **backwards**. The official field gives you geometry and a corridor, **not a line** — and nobody has yet tried reversing it into one.
-
-**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.
+Every tape above re-simulates to the time in its filename.

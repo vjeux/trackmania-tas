@@ -1,192 +1,193 @@
-# Spring 2023 - 24 (2-UP) — the author time falls, and it falls on a keyboard
+# Spring 2023 - 24 (2-UP)
 
-| | time | vs AT | vs human WR | device |
+**One 10 ms brake tap, six tenths of a second into the reactor climb, is worth
+0.730 on a keyboard run — three quarters of everything on this page.**
+
+| run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
-| **TAS, unconstrained** | **49.778** | **−1.824** | −2.424 | analog |
-| **keyboard** | **51.062** | **−0.540** | −1.140 | **3 values** |
-| **a human keyboard run + seven actions** | **51.575** | **−0.027** | −0.627 | **keyboard** |
-| one brake tap + a re-aim | 51.598 | −0.004 | −0.604 | keyboard |
-| Author time (never beaten by a human) | 51.602 | — | −0.600 | — |
+| **TAS, unconstrained** | **49.778** | **−1.824** | **−2.424** | analog |
+| **keyboard** | **51.062** | **−0.540** | **−1.140** | **3 values** |
+| **a human keyboard run + seven actions** | **51.575** | **−0.027** | **−0.627** | **keyboard** |
+| Author time | 51.602 | — | −0.600 | — |
 | Human WR — JuntaoTM | 52.202 | +0.600 | — | pad |
 
-TMX map [199100](https://trackmania.exchange/maps/199100) · tags **Reactor,
-Plastic, Altered Nadeo** · **6 recorded runs** · 51 seconds.
+TMX map [199100](https://trackmania.exchange/maps/199100) · author **.ar** ·
+tags **Reactor, Plastic, Altered Nadeo** · **6 recorded runs**.
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+This is an Altered Nadeo copy of **Spring 2023 - 24**, with the geometry and the
+surfaces preserved, so the 200 000 people who drive the official map are driving
+the same road — their lines are directly usable here. That matters below.
 
 ## What the map is
 
-42.5 s of ordinary ground driving, then a **launcher captures the car** —
-300 → 121 km/h, inverted — and thrusts it airborne for about 7 seconds,
-climbing 180 m while re-accelerating to 400 km/h, into a finish gate hanging in
-the air.
+Nine checkpoints and 42.5 s of ordinary ground driving, then a **launcher
+captures the car**: horizontal speed collapses from 300 to 121 km/h in a tenth of
+a second, the car ends up inverted, and from there it is **under thrust while
+airborne for about seven seconds** — climbing 180 m while re-accelerating to
+400 km/h — before arcing over and diving through a finish gate hanging in the
+air. You cross it nose-down at about 320 km/h.
 
-Our fastest tape is **byte-identical to the world record for the first 4,383
-ticks**. **100% of the gain is air control.**
+The flight is powered and steerable, not ballistic, so air control is worth
+seconds. The fastest tape here is byte-identical to the world record for the
+whole ground run: **100% of its gain comes from inputs after 42.330.** The
+launcher is also the field's filter — two of the five clean records respawn
+there, at a cost of 3.2 and 4.7 seconds.
 
-## The technique: one brake tap, 0.6 s into the climb
+## Where the time is, part one: the brake tap
 
-The deliverable is stated as a modification of a run a human already drove —
+The technique is stated as a modification of a run a human already drove —
 **uelen.'s rank-3 keyboard run, 52.599**, three steering values, 190 input
-events, no respawn. Keep every one of their inputs and add seven actions:
+events, no respawn. Keep every one of those inputs and add seven actions:
 
 | # | race time | action | duration |
 |---|---|---|---|
-| 1 | **43.23 s** | **tap brake** | 10 ms |
-| 2 | 43.65 s | release gas | 110 ms |
-| 3 | 43.82 s | tap brake | 30 ms |
-| 4 | 47.80 s | tap right | 20 ms |
-| 5 | 48.28 s | tap right | 50 ms |
-| 6 | 49.17 s | hold brake | 90 ms |
-| 7 | 49.27 s | hold right | 470 ms |
+| 1 | **43.23** | **tap brake** | 10 ms |
+| 2 | 43.65 | release gas | 110 ms |
+| 3 | 43.82 | tap brake | 30 ms |
+| 4 | 47.80 | tap right | 20 ms |
+| 5 | 48.28 | tap right | 50 ms |
+| 6 | 49.17 | hold brake | 90 ms |
+| 7 | 49.27 | hold right | 470 ms |
 
-Cumulative, each validated:
+Cumulatively:
 
-| through action | validated | gain |
+| through action | time | gain |
 |---|---|---|
-| none (control) | 52.599 | — |
+| none | 52.599 | — |
 | **#1 alone — one 10 ms brake tap** | **51.869** | **−0.730** |
 | #1–#3 | 51.724 | −0.875 |
 | #1–#5 | 51.638 | −0.961 |
 | #1–#7 | **51.575** | −1.024 |
 
-**Three quarters of the gain is a single 10 ms brake tap**, 0.6 seconds into the
-reactor climb. The full keyboard tape (51.062) is the same idea taken further:
-**pump the brake through the first 900 ms of the climb**, then aim in the last
-two seconds.
+The tap is pitch control: it decides where the thrust points for the whole climb.
+And it is not a lottery ticket. Applied to the untouched human run across a grid
+of 217 start times and durations, **every variant that finishes lands between
+51.764 and 52.529** — a tap anywhere in a window of roughly 400 ms is worth 0.100
+to 0.800, typically about 0.700. Short taps are what work: 10–30 ms finish, 50 ms
+and longer usually miss the gate.
 
-## Is that tap a lottery ticket? No — measured two ways
+**A miss is recoverable.** Four tap times were tried, including two that miss the
+gate outright, with only the inputs after 44.0 s re-aimed: they land at 51.598,
+51.744, 51.748 and 51.795 — within 0.051 of each other. The exact tap time does
+not decide the run; the aiming afterwards does.
 
-**A 217-point grid** (start × duration, applied to the untouched human run):
-every finishing variant lands between 51.764 and 52.529, so **a tap anywhere in
-a ~400 ms window is worth 100–800 ms**, typically about 700.
+The full keyboard tape (51.062) is the same idea taken further: **pump the brake
+through the first 900 ms of the climb**, then aim in the last two seconds.
 
-**And a miss is recoverable.** Four different tap times — **including two that
-miss the gate outright** — all recover to 51.598–51.795 when only the inputs
-after 44.0 s are re-searched. Timing is loose; **re-aiming afterwards is
-mandatory**, which is exactly what a driver does and a recorded tape cannot.
+| race | action |
+|---|---|
+| 43.23 | brake 10 ms |
+| 43.48 | brake 20 ms |
+| 43.58 | brake 70 ms |
+| 43.65 | **gas off 110 ms** |
+| 43.79 | brake 60 ms |
+| 43.93 | brake 120 ms |
+| 44.10 | brake 20 ms |
+| 44.82 | release the brake 10 ms earlier than uelen. does |
+| 47.41 | let go of left 30 ms earlier |
+| 47.80 | right 20 ms |
+| 48.14 → 48.37 | right (uelen. holds 40 ms here; hold 230) |
+| 48.43 | left |
+| 48.57 | brake 40 ms |
+| 49.17 | brake 90 ms |
+| 49.37 → 49.85 | **hold right ~480 ms** |
+| 49.85 | left into the gate |
+| 49.88 | brake 70 ms |
 
-## There are two routes through sector 3, and every human here drives the slow one
+**Why the author time stood:** the same tap on the pad world record does nothing
+at all — it costs 0 to 0.060 and never misses. The two fastest humans here are on
+pads, where the technique is invisible, and the fastest keyboard player is rank 3.
 
-This is the most useful thing the project has found on this map, and it needed no
-search at all — only reading 88 recordings on the identical geometry.
+## Where the time is, part two: there are two roads through sector 3
 
-Sector 3 is CP2 → CP3, and the two checkpoints are **241 m apart in a straight
-line**. Split the 88 official records by whether they climb over the tower:
+Sector 3 runs CP2 → CP3, and those two checkpoints are **241 m apart in a
+straight line**. Split 88 recordings on this geometry by whether they climb over
+the tower:
 
 | line | n | mean sector 3 | best | mean path length |
 |---|---|---|---|---|
 | over the top | 27 | 5.664 | 5.516 | **710 m** |
 | **low and short** | **61** | **4.721** | **3.901** | **306 m** |
 
-**All five humans who have ever driven this map take the long one.** So does
-every tape in our own lineage. That is not a difference in driving quality — it
-is a different road.
+**All five humans who have driven this map take the long one**, and so does every
+tape in our own lineage. That is not driving quality, it is a different road.
 
-**The long line looks like the good one.** Off CP2 it turns hard left, drives
-*away* from the checkpoint, climbs a wall to y = 139, arcs over the top and drops
-back down the far side. It never goes below 350 km/h and averages **430 km/h**.
-It also covers **701 m** to travel 241 m of map.
+The long line looks like the good one: off CP2 it turns hard left, drives *away*
+from the checkpoint, climbs a wall, arcs over the top and drops down the far
+side, never going below 350 km/h and averaging 430. It also covers 701 m to
+travel 241 m of map. The short line carries straight on, leaves the ground and
+*falls* 21 m, lands already braking, scrubs down to **150 km/h** through a tight
+left, and then takes a boost from 150 to 501 km/h in 0.8 s. Its average speed is
+276 km/h — far slower — over 299 m, and it wins by **1.971**.
 
-**The short line carries straight on**, leaves the ground and *falls* 21 m,
-lands already braking, scrubs down to **150 km/h** through a tight left, and then
-takes a boost from **150 to 501 km/h in 0.8 s**. Its average speed is
-**276 km/h** — far slower — over **299 m**. It wins by **1.971 s**.
-
-> **A wider line reads faster and is slower.** Our whole lineage optimised speed
-> along a route nobody re-examined.
-
-### What it is worth, and why the number is credible
-
-Substitute the field's short-line sector 3 into our own world record's lap and
-change nothing else:
+Substitute the field's short line into the world record's lap and change nothing
+else:
 
 | | sector 3 | lap |
 |---|---|---|
-| our human WR as driven | 5.872 | 52.202 |
+| the human WR as driven | 5.872 | 52.202 |
 | WR + a **median** short line | 4.721 | **51.051** |
 | WR + the **best** short line | 3.901 | **50.231** |
-| author time | | 51.602 |
 
-> **A median execution of a route that 61 of 88 sampled players already drive
-> puts the human world record 0.551 INSIDE the author time** — no TAS, no
-> reactor trick, no frame-precise input, and nothing changed after CP3.
+A median execution of a route that 61 of 88 sampled players already drive puts
+the human world record 0.551 inside the author time, with no reactor trick and
+nothing changed after CP3. The two lines arrive at CP3 in the same place at the
+same speed, so the gain is additive rather than borrowed, and the slow phase is a
+braking phase — the most forgiving input there is.
 
-Three things make that publishable as advice rather than as analysis:
+**Stated plainly: nobody has driven this here.** It is two drivers' sectors added
+together, and a sector sum is a bound until someone drives it. One practical
+note if you try it: **the decision is made at CP2**, about 1.9 s before the low
+line's landing and brake, and by then it is too late to choose.
 
-1. **The slow phase is a braking phase**, which is the most forgiving input there
-   is. This is the opposite of a precision-bound finding — 61 different players
-   hit it, and an *ordinary* execution of the short line still beats the *best*
-   execution of ours by 0.8 s.
-2. **The two lines converge in state at CP3** — same position, same ~500 km/h
-   (501 against our 510). Nothing downstream changes, so the gain is **additive
-   rather than borrowed**. That is the separability question, answered in advance
-   rather than discovered later.
-3. **The route difference is categorical, not a skill difference.** 400 m of path
-   length is not driving quality, and the 61-vs-27 split is a fork in the road.
+## The run as inputs, sector by sector
 
-### Stated plainly: this is a prediction, not a validated lap
+Sectors 1–9 are exactly uelen.'s rank-3 run, unmodified: drive the keyboard run
+that already exists. Rank 4 does the same line 0.468 faster to CP9, so that time
+is on the table for a human too. What is new starts at CP9, and the cues are what
+you can see:
 
-**It is a sector sum measured from recordings, and the weld that would prove it
-is exactly the one that fails on this map** — 2 829 splice attempts, 0 finishers.
-So nobody has driven a tape that does this, and the number above is two humans'
-sectors added together. It carries the standard caveat that a sector sum is a
-bound until someone drives it.
+1. **CP9 → the launcher (40.6 → 42.6).** Off the fast deck, up the climb, slowing
+   to ~350 km/h. Nothing changes here.
+2. **The capture (42.6).** The launcher takes the car: speed collapses to
+   ~120 km/h and the car rolls inverted. uelen. is already holding **full left**
+   from 42.63 — keep holding. That rotation is what the next input acts on.
+3. **The brake tap (≈43.2 — about six tenths after you feel the grab, while the
+   nose is coming down through level and before the car starts swinging toward
+   the tower).** One short tap, 1–3 ticks. This is the 0.730. Anywhere in
+   43.05–43.45 works, and if it feels early or late, do not abandon the run.
+4. **Pump it (43.5 → 44.1).** For the full version: gas off around 43.65 for a
+   tenth, then three or four more short brake taps through 44.1. You are choosing
+   where the thrust points for the whole climb.
+5. **The climb (44 → 47.4).** As uelen. drives it: left releases, right at 44.16
+   and 44.77, the brake/gas pair at 44.52–44.83, then alternating left and right
+   through the apex at about 342 m, around 49 s.
+6. **The aim (47.4 → 49.9).** Two short rights, a left, brake at 48.57 and again
+   at 49.17, then **hold right for about half a second from 49.37** while the car
+   dives at the gate, flicking left into it. This is the part you steer by eye.
+7. **Finish** — airborne, nose-down, ~320 km/h.
 
-What makes this one unusually credible is point 2 above: the handoff that
-normally breaks a sector sum is not being asked to do anything, because the two
-lines arrive at CP3 in the same state. And a few tenths of the 1.971 will be
-ordinary skill difference between drivers — but the route part is not.
+## How forgiving it is
 
-One practical note for anyone trying it: **the decision is made at CP2.** The low
-line's landing and brake begin about 1.9 s later, and by then it is too late to
-choose.
+The aiming inputs at the end are genuinely loose, and the early climb is where
+the practice goes:
 
-**CLASSIFICATION: known-but-unheld**, in its purest form. 200 000 people drive
-this route on the unaltered copy of the map. It has never been driven *here*,
-because the six people who have played this version all learned it from each
-other.
+| input | usable window | cost at ±1 tick |
+|---|---|---|
+| #6, brake at 49.17 | **±60 ms, zero cost** | 0 / 0 |
+| #7, right hold from 49.27 | **±60 ms, zero cost** | 0 / 0 |
+| #4, right tap at 47.80 | 8 ticks | +0.019 / +0.039 |
+| #5, right tap at 48.28 | 1 tick | +0.077 / +0.432 |
 
-## Why the author time stood
+The finish is a gate you must hit in the air, so a recording replayed blind is
+brutally fragile — shift any single input by one tick and the car misses the
+gate, and that is just as true of the human's own tape as of ours. It is a
+statement about tapes, not about driving: what a driver does is watch the flight
+and correct it. **The timing of what you do is loose; the requirement to correct
+afterwards is absolute.**
 
-**The same brake tap on the pad world record does nothing** — 0 to 60 ms, never
-a DNF. The two fastest humans are on pads, and on a pad the technique is
-invisible. It only pays on a keyboard, and the fastest keyboard player is rank 3.
-
-## Tolerance, honestly
-
-On this map ±1 tick is a DNF for essentially every input — **including the
-human's own tape**, where shifting one of her presses by a single tick is worth
-up to 733 ms. That is a statement about replaying a recording blind, not about
-human capability; a driver is a closed loop. The aiming inputs in our tape are
-the forgiving ones (±60 ms at zero cost).
-
-## Field reproduction, and one honest caveat
-
-**5 of 6 records reproduce exactly.** The sixth is the only pre-2026 record
-(build 2023-03-31), and the failure is build-correlated rather than
-map-correlated: both respawn-heavy runs reproduce exactly, and **3/3 records on
-the build that failed elsewhere reproduce here**. Everything seeded from
-re-simulates to the millisecond.
-
-**There is no author ghost in this map** — no `0x0911F000` and no `0x0309201D`
-in the 2.8 MB decompressed body, with another map's author lap decoding in the
-same tool as a positive control. The author is also absent from their own
-six-run leaderboard, and this is an *Altered Nadeo* copy. **So unlike most maps
-in this collection, we do not claim the author time here was ever driven** — it
-may be inherited from the original map.
-
-## Validation
-
-Every tape through the plain oracle with a human ghost as a known-answer control
-in every batch, plus a cold re-validation against a separately downloaded
-sha256-identical copy of the map. 20 banked tapes re-validated from their
-durable copies at the end. **Zero phantoms**, guard on throughout, ~800,000
-evaluations over 13 arms.
-
-A defect found here and fixed: **`tmtas splice` is not faithful for a
-cross-splice** — 52.121 where two bit-identical tapes must give 52.202 — and its
-own diagonal control does not catch it. Replaced with a one-file-image mixer.
+A 10–30 ms tap is well inside what the field already does — uelen.'s own shortest
+steering hold is 10 ms, and the pad world record steers with a 20 ms median.
 
 ## Files
 
@@ -195,15 +196,5 @@ own diagonal control does not catch it. Replaced with a one-file-image mixer.
 | `replays/HUMANPLUS7_51575.Ghost.Gbx` | **the deliverable — a human's keyboard run plus seven actions** |
 | `replays/KEYBOARD_51062.Ghost.Gbx` | the full keyboard tape |
 | `replays/TAS_49778.Ghost.Gbx` | the unconstrained floor |
-| `replays/A2_50738.Ghost.Gbx`, `A3_50224.Ghost.Gbx` | validated intermediates |
-| `notes/RESULT.md` | full write-up: sector guide, tolerance study, negatives |
-
-## This map is an Altered Nadeo copy of **Spring 2023 - 24**
-
-Identified blind by cell occupancy against all 625 official seasonal campaign
-maps — see [`_altered/`](../_altered). The official map has a field of **200 000
-players** on this geometry.
-
-Geometry **and** surface are preserved (`name_agree` 1.0000), so those humans drove the same car over the same road: their times are directly comparable and their lines are usable as references.
-
-**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.
+| `replays/A2_50738.Ghost.Gbx` | an earlier tape in the analog lineage |
+| `replays/A3_50224.Ghost.Gbx` | a later one |

@@ -1,255 +1,145 @@
-# idm ruinin ur day #460 — the author time falls, and a respawn was the crowbar
+# idm ruinin ur day #460
 
-**Author time 15.643 · the only human record 8790.769 · best validated 15.217.**
+**The whole map is the first five seconds — get down the chute and take both
+booster gates. After that, hold the gas, let go of the wheel, and land long: nine
+of the fifteen seconds need no steering at all.**
 
-| tape | validated | vs AT | what it is |
+| run | time | vs author time | what it is |
 |---|---|---|---|
-| [`TAS_15217_clean`](replays/TAS_15217_clean.Ghost.Gbx) | **15.217** | **−0.426** | the best run on this map — **and its steering is keyboard-only from race 4.56 s** |
-| [`TAS_15224_analog`](replays/TAS_15224_analog.Ghost.Gbx) | 15.224 | −0.419 | the pure-analog champion, which the keyboard tape beats |
-| [`TAS_15285_keyboard`](replays/TAS_15285_keyboard.Ghost.Gbx) | **15.285** | −0.358 | keyboard from race 2.56 s — **70 input events in the whole run** |
-| [`TAS_15382_deep_landing`](replays/TAS_15382_deep_landing.Ghost.Gbx) | 15.382 | −0.261 | forced to land 40–80 m deeper into the pad |
-| [`KEYBOARD_16276_tolerant`](replays/KEYBOARD_16276_tolerant.Ghost.Gbx) | 16.276 | +0.633 | **over the author time on purpose** — a coarse keyboard launch, 10 % tolerant where every fast tape is 0 % |
-| author time | 15.643 | — | — |
-| human record, wschseng *(control)* | 8790.769 | — | 2 h 26 m — see below |
+| **TAS, keyboard steering from 4.56 s** | **15.217** | **−0.426** | the fastest run on the map |
+| TAS, analog | 15.224 | −0.419 | the analog champion, which the keyboard tape beats |
+| TAS, keyboard from 2.56 s | 15.285 | −0.358 | 70 input events in the whole run |
+| TAS, low input | 15.290 | −0.353 | 86 input changes, 39 distinct steering values |
+| TAS, deep landing | 15.382 | −0.261 | forced to land 40–80 m further into the pad |
+| Keyboard, coarse launch | 16.276 | +0.633 | outside the author time on purpose — the forgiving version |
+| Author time | 15.643 | — | — |
+| The only human record | 8790.769 | — | 2 h 26 m — see below |
 
-TMX map [165922](https://trackmania.exchange/maps/165922) · uid
-`mP8HzG68YxUY6yJcrQFx2inUjtk` · **one recorded run**.
-
-**Not submitted to any Nadeo leaderboard, and it never will be.**
-
-Every tape above carries **zero respawn packets** — audited, not assumed, by
-enumerating bit 31 of each input packet's state literal. The human record, run
-through the same audit as a positive control, reports **941**.
-
----
-
-## The leaderboard is one run, and it is not a lap
-
-The single human record on this map reads 2 hours 26 minutes. It is not a slow
-lap. It is **one session of 930 attempts and 941 respawn presses** with the clock
-running through all of them, and the driver never converted one: their best
-attempt landed **45 m short of the first gate row** and spent its last **3.77 s
-crawling** into a gate. Everything after that is a retry.
-
-So the classification is **known-but-unheld**. Nobody needs to discover the
-technique — one person performed it 930 times in a single sitting. What they
-never put together is the two things the author time needs: a clean launch, and
-a landing that reaches the pad instead of stopping short of it.
+TMX map [165922](https://trackmania.exchange/maps/165922) · **one recorded run**.
 
 ## The map in one paragraph
 
 You start on a platform 1.88 km up, drop through a narrow chute, cross the map's
 one checkpoint at about 1.7 s inside the start structure, ride a short booster
-ramp (all of it inside x ∈ [409, 690]) and leave it at ~5 s doing 180–200 m/s.
-Then there is **nothing** for 1.9 km: an unpowered ballistic glide onto a pad of
-132 finish gates on the ground, 88 m × 352 m. The map is a launch and a fall.
+ramp and leave it at about 5 s doing 180–200 m/s. Then there is **nothing** for
+1.9 km: an unpowered ballistic glide onto a pad of 132 finish gates on the
+ground, 88 m × 352 m. The map is a launch and a fall.
 
-## Three things a player can use tonight
+## Where the time is
 
-**The glide needs no input at all.** Force steering to zero from a given moment
-to the end of the fastest tape:
+The board's single record is not a slow lap. It is one session of 930 attempts
+with the clock running through all of them, and the driver never converted one.
+Their best attempt was worth 18.85 s on its own — and **45 m of that was spent
+crawling.** They landed short of the first gate row and dragged along the ground
+for the last **3.770 s** into a gate. The fast tapes cross the pad's near edge at
+the exact millisecond they finish.
 
-| steer zeroed from | finish |
+So nobody needs to discover the technique here — one person performed it 930
+times in a sitting. What they never put together is the two things the author
+time asks for: a clean launch, and a landing that reaches the pad instead of
+stopping short of it.
+
+The launch is the only lever that matters, because the glide is unpowered:
+
+| launch speed off the ramp | flight time to the pad |
 |---|---|
-| race 4.50 s | DNF |
-| race 5.50 s | 15.276 (+0.052) |
-| race 6.46 s | 15.231 (+0.007) |
-| race 8.46 s onward | 15.225 (+0.001) |
+| 140 m/s | 13.490 — the slowest launch that reaches the pad at all |
+| 182.5 m/s (what the human managed) | 10.470 |
+| 200 m/s | 9.930 |
+| 230 m/s | 9.040 |
 
-**Nine of the 15.2 seconds need no steering.** That is exactly what the human
-does: after ~6.4 s their tape is `steer 0, gas held` and never changes again.
-Holding the throttle from 4.46 s to the finish is likewise completely free.
+**A launch at 200 m/s instead of 182.5 buys 0.540 s for nothing.** The two
+booster gates are what set that number — they add the equivalent of 417 m of
+extra height during the first five seconds, in two discrete kicks. Everything
+after them is gravity and drag.
 
-**The board's only human plays on a keyboard, and so does our best tape.**
-Across all 879 231 ticks of the record, 94.2 % of steering values are exactly
-{0, −127, +127}; the winning attempt is 102 input events with the gas held
-throughout and one 20 ms brake tap — full lock right 2.7 s, full lock left 1.2 s,
-full right, then nothing.
+And the glide really is free. Force the steering to zero from a given moment to
+the finish, on the fastest tape:
 
-**Land on the pad, long rather than short.** The only finisher on this board lost
-3.77 s crawling the last 45 m. Our tape crosses the pad's near edge at the exact
-millisecond it finishes.
+| steering zeroed from | finish |
+|---|---|
+| race 4.50 | DNF |
+| race 5.50 | 15.276 (+0.052) |
+| race 6.46 | 15.231 (+0.007) |
+| race 8.46 onward | 15.225 (+0.001) |
 
-## The first three seconds decide it — and the human's version is forgiving
+Holding the throttle flat from 4.46 s to the finish is free in the same way.
 
-This is the most useful measurement on the map, and it needs to be read per
-region rather than as one number.
+## The run, as keys
 
-Move one input change by a single tick (10 ms), earlier or later, and
-re-simulate. Over the whole run of the 15.224 tape: **1 338 shifts, 1 261 survive
-— 94.2 %.** But they are not evenly spread:
+The board's only human plays on a keyboard, and so does the fastest tape here.
+Across the record, 94.2 % of steering values are exactly `0`, `−127` or `+127`,
+and the winning attempt is 102 input events with the gas held the whole way and
+one 20 ms brake tap:
 
-| window | shifts | still finish |
+```
+off the start block   full lock RIGHT ─────────── 2.7 s
+through the chute     full lock LEFT  ────── 1.2 s
+onto the ramp         full lock RIGHT
+after the boosters    nothing at all — hands off to the finish
+```
+
+That is the shape to copy. From about 6.4 s the human's tape reads `steer 0, gas
+held` and never changes again.
+
+### Sector by sector, off what you can see
+
+**The chute (0 → about 3.5 s).** The opening is close to free fall — 168 m of it
+— and it is a **feel** section, not a pattern. Do not try to memorise a
+millisecond-exact sequence; the fast tapes do not even transfer to themselves.
+Get down it cleanly and pointed at the ramp.
+
+**The ramp and the boosters (about 3.5 → 5 s).** This is where the run is won or
+lost, and it is the only part that punishes a small error. You want to leave the
+structure at 5 s doing as close to 200 m/s as you can hold.
+
+**The glide (5 s → the pad).** Hands off. Any steering input here is worth at
+most a thousandth of a second and can kill the run. The car is capped at
+277.55 m/s and covers 2 665 m, so it cannot go under about 9.600 s no matter
+what you do.
+
+**The landing.** Land **on** the pad, long rather than short. Short costs
+seconds, not tenths — that is the entire difference between the record and the
+author time.
+
+## How forgiving it is
+
+Move any one input a single tick (10 ms) earlier or later, and re-drive:
+
+| window | shifts tested | still finish |
 |---|---|---|
-| race 0.00–2.96 s | 52 | **0** |
-| race 2.96–3.96 s | 30 | 9 |
-| race 3.96–4.96 s | 54 | 50 |
-| after race 4.96 s | 1 202 | **1 202** |
+| race 0.00–2.96 | 52 | **0 %** |
+| race 2.96–3.96 | 30 | 30 % |
+| race 3.96–4.96 | 54 | 93 % |
+| after race 4.96 | 1 202 | **100 %** |
 
-Same shape on all four of our tapes. Inside that opening window the wall is
-absolute: **0 of 1 300 two-boundary pairs** survive either.
+Read the top row carefully: it is a fact about a frozen tape, not about a
+driver — a recorded tape cannot notice it is 30 cm off, and a player corrects by
+eye. Run the same test on the **human's own winning attempt** and 17 of 42 shifts
+survive, **40.5 %**, three of them faster than the original. A launch with real
+one-tick tolerance exists on this map.
 
-So the tape is **precision-bound in one two-second window and forgiving
-everywhere else** — and the shifted runs get down the chute perfectly well
-(52 of 52) before crashing on the **booster ramp**. The sensitive thing is the
-ramp entry and the boost sequence, not the chute walls and not the aim.
+What it costs: a coarser keyboard launch is about 10 % tolerant and runs 16.276.
+So there are three points on the curve — 15.2 s at no tolerance, 16.3 s at 10 %,
+the human's 18.8 s attempt at 40 %. **The forgiving program exists and it costs
+about a second**, which puts the author's 15.643 exactly where a driven
+validation lap should sit, between the two.
 
-**But that is a fact about a tape, not about a driver.** Run the same instrument
-on the human's own winning attempt:
+**What will take real practice:** the ramp entry and the boost sequence, and
+nothing else. The shifted runs get down the chute perfectly well — 52 of 52 —
+and then crash on the ramp. Everything after 5 s is ballistic and forgiving to
+the point of being free.
 
-> **42 boundary shifts tested, 17 survive — 40.5 %.** (Three of them are
-> *faster*; one returns 8787.643.)
+## Files
 
-A launch program with real one-tick tolerance **exists on this map** — theirs —
-and none of our fast tapes has any. And tolerance is partly buyable: a coarse
-keyboard launch is **10 % tolerant at 16.276**, so we have three points on the
-curve — 15.2 s at 0 %, 16.3 s at 10 %, the human's 18.8 s attempt at 40.5 %.
-
-> **The forgiving program exists, and it costs about a second.** The author's
-> 15.643 sits between our fast line and that forgiving one, which is exactly
-> where a driven validation lap should sit.
-
-That also says what to practise: the chute is a **feel** section — do not try to
-memorise a millisecond-exact pattern, ours does not even transfer to itself. The
-ramp entry is where the run is won. After that, hands off.
-
-## Low input: the constraint found time rather than costing it
-
-Straight quantisation DNFs here, and a whole-tape constraint from a DNF seed has
-no gradient. So the alphabet was applied **under search**, through a windowed
-ladder that grows backward from the finish — the chute is the fragile end, so the
-incumbent stays a finisher at every rung:
-
-| keyboard steering from | result |
+| file | what |
 |---|---|
-| race 13.56 s | 15.224 (free) |
-| race 6.56 s | 15.220 |
-| **race 4.56 s** | **15.217 — the session's fastest tape** |
-| race 3.56 s | 15.292 |
-| race 2.56 s | **15.285** — 70 input events in the whole run |
-| race 1.56 s | 16.276 — over the author time |
+| `replays/TAS_15217_clean.Ghost.Gbx` | **the fastest run — keyboard steering from 4.56 s** |
+| `replays/TAS_15224_analog.Ghost.Gbx` | the analog champion |
+| `replays/TAS_15285_keyboard.Ghost.Gbx` | keyboard from 2.56 s, 70 input events |
+| `replays/TAS_15290_lowinput.Ghost.Gbx` | 86 input changes, zero steering through the glide |
+| `replays/TAS_15382_deep_landing.Ghost.Gbx` | lands 40–80 m deeper into the pad |
+| `replays/KEYBOARD_16276_tolerant.Ghost.Gbx` | **the forgiving launch — the one to learn from** |
+| `inputs/tolerance_ramp.txt` | every launch input shifted ±80 ms, with what it costs |
 
-**The fastest run on this map is a keyboard run.** Constraining the alphabet did
-not cost time; it found time. Compare the analog champion at 15.224.
-
-One methodological note worth keeping: a rung that reports "no finisher" is not a
-negative until it is resourced. The 1.56 s rung returned nothing at 2 minutes on
-60 workers and produced a finisher at 8 minutes on 90.
-
-*Counting convention: an input change event is any tick where steer, gas or brake
-differs from the previous tick, counted over the whole tape including the
-pre-start ticks.*
-
-## How it was cracked: a respawn is a legal input
-
-Two earlier sessions established the deliverable had to be one clean no-respawn
-attempt from tick 0, and that the human's one winning attempt could not be
-transplanted there. Both are true, and both left the map stuck.
-
-The step that was missing is that **a respawn is an input, and on this map the
-state it restores is canonical**. It rides in bit 31 of the input packet's 34-bit
-state literal — a place `ghost::Factory` cannot see, which is why all 941 of them
-were invisible to the search. (A trajectory-based detector reported 914 for this
-record; that number is **not** a respawn count and has since been resolved — see
-[`FINDINGS.md`](../FINDINGS.md). The packet enumeration is authoritative and it
-says 941.) That turns the impossible
-transplant into two lines:
-
-```
-[ any prefix reaching race t = 1.670 s ] ++ [ respawn packet ] ++ [ the winning attempt ]
-```
-
-finishing at exactly `(K + L)·10 − 1540` ms. Swept over 4 700 ticks of prefix the
-arithmetic is perfectly linear, including from mid-flight at the speed cap.
-Mutate the prefix 3 000 times and **140 finish, every one at exactly the same
-millisecond**.
-
-That produced the field's **first finishing clean-start tape on this map**, at
-20.519. **It was never the deliverable** — the respawn cannot be armed before
-race t = 1.670 s, so the route floors near 16.1, always outside the author time.
-It was the *instrument*: having any finishing tape is what made a dense score, a
-calibrated gate ladder and a real search possible, and the ladder carried a
-genuinely respawn-free tape home.
-
-Whether a respawn's restored state is canonical is a **property of the map** —
-on [The Blev Special](../227654-the-blev-special) the same construction works on
-the run's own prefix and fails 0-for-31 on any other line. See
-[`FINDINGS.md`](../FINDINGS.md).
-
-## Where the 1.2 seconds is
-
-Station-by-station, the clean tape against the same tail on the respawn route:
-
-| station | x | clean tape | respawn route | Δ |
-|---|---|---|---|---|
-| p1 | 423 | 1.958 | 2.968 | −1.010 |
-| s1 | 505 | 4.118 | 5.206 | −1.088 |
-| launch | 713 | **5.550** | 6.656 | **−1.106** |
-| finish | 2300 | **15.246** | 16.461 | −1.215 |
-
-**−1.106 of it is the start.** The clean run reaches the state the respawn
-manufactures in 0.56 s; the respawn costs 1.670 s. **That difference is the
-author time.** The author's route was always a clean start.
-
-Two physical facts bound the map: the opening 3.5 s is free fall (168 m from
-about 7 m/s against 23.29 m/s² solves to 3.51 s, which is what the human
-achieves), and the glide is unpowered and capped at 277.55 m/s over a 2 665 m
-path — **≥ 9.6 s at the cap**, against our 9.70 s.
-
-## The ladder, and the trap it sprang on schedule
-
-Return-to-origin control first: rewriting the 132 gates onto their own lattice
-reproduces the human record at 8790.769 and the incumbent at 16.461, so the
-surgery is faithful and no model is swapped. Every station calibrated against the
-human's own winning attempt to ≤ 8 ms.
-
-Then the decoy fired as documented. Scoring on the **mid-course** rung at
-x = 1216 drove the crossing from 9.640 to **7.860** — 1.838 s ahead of the human
-— and those tapes reached neither the next station nor the finish. Optimising
-"time to a rung in the middle" buys a dive. Moving the objective to the **far**
-rung at x = 1822 fixed it in one round.
-
-## Validation
-
-Every tape re-validated on the untouched map (md5
-`1cc927bbb1d640c665ff69068352d4e6`) through the plain oracle, in a batch with the
-human record as a known-answer control:
-
-```
-vj4_best_15217.Ghost.Gbx        15217
-vj4_best_15224.Ghost.Gbx        15224
-vj4_clean_15230.Ghost.Gbx       15230
-vj4_keyboard_15285.Ghost.Gbx    15285
-vj4_padfar_15382.Ghost.Gbx      15382
-vj4_kb310_16276.Ghost.Gbx       16276
-rank00001_8790769.Ghost.Gbx   8790769   <- known-answer control, exact
-```
-
-Respawn audit on the same files, with the human record as the positive control
-that proves the auditor can say yes:
-
-```
-every published tape   packets 2109   0 with bit31
-human record           packets 879231   941 with bit31
-```
-
-The earlier 15.549 result was additionally re-measured on a third machine by a
-different agent with its own build fork and staging root.
-
-**Superseded:** this map was published earlier tonight at 15.240, and briefly at
-15.230. Both are superseded by 15.217. The tapes are kept.
-
-## Notes
-
-* [`HUMAN_TECHNIQUE.md`](notes/HUMAN_TECHNIQUE.md) — the player-facing write-up
-* [`RESULT_v2_tolerance_and_lowinput.md`](notes/RESULT_v2_tolerance_and_lowinput.md) — tolerance by
-  region, the human comparison, and the constraint ladder
-* [`RESULT_v1_superseded.md`](notes/RESULT_v1_superseded.md) — kept because its correction is
-  instructive: a tolerance reading was wrong because the measuring tool named
-  its oracle workers without the map name, so a sweep over several maps under one
-  root silently validated every map after the first **against the first map**
-* [`RESULT.md`](notes/RESULT.md) — the session that first beat the author time
-* [`VERIFICATION.md`](notes/VERIFICATION.md) — the independent third-node re-measurement
-* [`ORACLE_THROUGHPUT.md`](notes/ORACLE_THROUGHPUT.md) — three oracle defects found here, worth
-  ~1000× on any tape cut from a long recording
-* [`TOLERANCE_AND_CONSTRAINT_LADDERS.md`](notes/TOLERANCE_AND_CONSTRAINT_LADDERS.md) — the fleet notice
+`replays/` also holds three earlier tapes at 15.230, 15.240 and 15.549.

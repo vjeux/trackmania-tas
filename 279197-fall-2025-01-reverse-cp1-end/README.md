@@ -1,165 +1,145 @@
-# Fall 2025 - 01 Reverse CP1 End — author time beaten by 4 ms
+# Fall 2025 - 01 Reverse CP1 End
 
-| | time | vs AT | vs human WR |
-|---|---|---|---|
-| **TAS** | **10.594** | **−0.004** | **−0.008** |
-| earlier validated tapes | 10.595, 10.596, 10.597, 10.598 | — | — |
-| Author time (never beaten by a human) | 10.598 | — | −0.004 |
-| Human WR | 10.602 | +0.004 | — |
+**The dramatic-looking final corner is not where this map is won: 95% of the
+whole field's spread is already decided by 9.500, and the run home costs
+everybody the same.**
 
-TMX map [279197](https://trackmania.exchange/maps/279197) · uid
-`_jkbEKnkKNw1B_TOgzbm5IYlkfc` · author **in-.-** · **561 recorded runs**.
+| run | time | vs author time | vs human WR | inputs |
+|---|---|---|---|---|
+| **TAS** | **10.594** | **−0.004** | **−0.008** | analog |
+| TAS, 16 detents | 10.602 | +0.004 | ±0 | 264 events, 32 values |
+| TAS, action keys (20% detents) | 10.643 | +0.045 | +0.041 | 76 events, 11 values |
+| TAS, keyboard | 10.636 | +0.038 | +0.034 | 66 events, 3 values |
+| TAS, keyboard, 35 events | 10.646 | +0.048 | +0.044 | **35 events**, 3 values |
+| Author time (never beaten by a human) | 10.598 | — | −0.004 | — |
+| Human WR — ShcrTM | 10.602 | +0.004 | — | pad |
 
-**Not submitted to any Nadeo leaderboard, and it never will be.**
+TMX map [279197](https://trackmania.exchange/maps/279197) · author **in-.-** ·
+**561 recorded runs**.
 
-## The finding: the part that looks hard is not where the time is
+## The map
 
-Intermediate gates were placed across the whole field — every rank from 1 to
-502 — and the closing stretch timed:
+A 10.6 s, 597 m standing-start sprint. **Full throttle the whole way: no brake
+at all and no lift anywhere**, in the world record and in this run alike.
+Everything is in the steering.
+
+| race | what happens |
+|---|---|
+| 0 | launch, gear 1 |
+| 0.700–3.000 | a long left-hand bend |
+| **3.000–4.200** | the chicane: a hard flick from left to right at 3.200–3.600 |
+| 3.600–5.800 | downhill, gear 3, 160 → 235 km/h |
+| 5.800–7.800 | flat straight, gear 4, 235 → 281 km/h |
+| **7.800–10.600** | one 140 m-radius right-hand sweeper, flat out, 286 → 341.7 km/h |
+
+Speed rises monotonically and saturates at 341.7 km/h about 0.150 before the
+line — every one of the 27 measured humans is at exactly that speed at the gate.
+The endgame has no speed left to find: **time is distance, at 9.49 cm per
+millisecond.**
+
+This run differs from the world record on 339 of its 1061 ticks, and they are
+not spread evenly: **the chicane flick (3–4 s) and the whole sweeper (7 s to the
+flag)**. The bend, the downhill and the straight are driven exactly as the human
+drove them.
+
+## Where the time is — and is not
+
+Timing the whole field through intermediate gates, from rank 1 to rank 502:
 
 ```
 time from the z=655 plane to the flag:
-  human WR  1100 ms      rank 52   1103      rank 502  1102
-  rank 8    1103         rank 152  1110      this TAS  1103
-  rank 15   1103         rank 302  1106
+  human WR  1.100      rank 52   1.103      rank 502  1.102
+  rank 8    1.103      rank 152  1.110      this TAS  1.103
+  rank 15   1.103      rank 302  1.106
 ```
 
-**The closing sweeper costs everyone the same.** A 198 ms spread across the
-field compresses to 10 ms over the final 1.1 seconds. 95 % of the entire
-field's spread is already decided by t = 9.50 s — and this TAS's advantage is
-banked there too (10 ms up on the world record at z=655, 7 ms at the flag).
+**The closing sweeper costs everyone the same.** A 0.198 spread across the field
+compresses to 0.010 over the final 1.1 seconds.
 
-The dramatic-looking final corner is not worth practising. That is the useful
-result from this map.
+The same is true of this run's own margin. Against the world record it is level
+for the first 4.5 seconds and within 0.002 for the first eight, then:
 
-## The finish trigger has an invisible edge — but it is not the pace-setter
+| gate | human WR | this run |
+|---|---|---|
+| x = 640 (≈8.070) | 8.067 | 8.065 (−0.002) |
+| z = 672 (≈9.500) | 9.502 | 9.492 (**−0.010**) |
+| z = 717 | 10.058 | 10.051 (−0.007) |
+| z = 757 | 10.490 | 10.481 (−0.009) |
+| flag | 10.602 | **10.594 (−0.008)** |
 
-The Goal on these CP1-End maps is a relocatable item, and sliding it sideways
-brackets exactly where each run crosses. The trigger is a plane with a **finite
-lateral window**, and its inside edge here is at world **x = 772.18**. The human
-world record crosses 0.35 m outside it; one top-15 run passes only **5 cm**
-outside it. Cut inside and the run does not finish — no partial credit, no
-leaderboard entry, no feedback.
+**The entire advantage is made between 8.100 and 9.500** — the entry and first
+half of the closing sweeper — and 0.002 of it is handed back over the run home.
+The 85 rewritten ticks in the chicane buy no time at all on their own; they only
+set the car up for that entry.
 
-It is worth knowing that boundary exists. It is **not** where the time is:
-measuring the clean margin for all top-15 runs at 10 cm resolution gives times
-spanning 13 ms against margins spanning 1.40 m, **with no relationship**. The
-tightest run in the field (5 cm from the edge) is 12 ms *slower* than the world
-record; the widest (1.45 m) is 10 ms slower. This TAS crosses 0.24 m tighter
-than the world record and loses 3 ms over the last 1.1 s doing it.
+So: **practise the first 9.5 seconds — the chicane at 3.200 and the entry to the
+sweeper. The run home is free, and identical for everybody.**
 
-*(An earlier version of this page claimed "tighter is faster, ~10 ms per metre
-of arc". That was arithmetic about a circle, not a measurement, and the
-measurement contradicts it. Corrected.)*
+The sector-by-sector guide with visual cues for this map is not written yet.
 
-## This route has zero open-loop tolerance
+## The finish trigger has an invisible edge
 
-Quantising the steer trace to a step of 2 — a change of at most half of one of
-255 steering units per tick — makes the run DNF. So does sample-and-hold at
-2 ticks. **Both of those also kill the human world record's own tape**, and they
-kill it mid-route, well before the gate.
+The finish is a plane with a **finite lateral window**, and its inside edge is
+at world x = 772.18. The world record crosses 0.35 m outside it; one top-15 run
+passes only **5 cm** outside. Cut inside and the run simply does not finish — no
+partial credit, no leaderboard entry, no feedback. Runs killed that way never
+reach a leaderboard, so the public field cannot tell you how often it happens.
+There is no visible cue for the edge: it lines up with no seam, kerb or scenery
+edge anywhere in the map.
 
-That is a strong statement about the map: every input matters everywhere. It is
-**not** a statement that a human cannot drive it — a test that destroys a run
-561 people have on the board is measuring the fragility of a recorded tape
-replayed blind, not human skill. A driver is a closed loop; they see the car
-drift and correct on the next frame.
+**It is a hazard, not a pace-setter.** Measuring the clean margin of all fifteen
+of the top 15 gives 0.013 of time against 1.40 m of margin, with no relationship
+between them: the tightest run in the field (5 cm from the edge) is 0.012
+*slower* than the world record, and the widest (1.45 m) is 0.010 slower. Do not
+chase the edge — being tighter does not make you faster, it only makes you more
+likely to lose the run.
 
-### The low-input ladder — measured, and it does not close
+## How forgiving it is
 
-*(An earlier version of this page said no low-input family exists here. That was
-concluded by **converting** the finished analog tape, which is the one method
-measured not to work on any map in this collection. Searching **under** the
-constraint from a compatible seed does work, and the corrected answer is below —
-but keyboard still does not reach the author time, and this section says so.)*
+**This route has no open-loop tolerance anywhere.** Rounding the steering trace
+to even values — a change of at most half of one of 255 units per tick — makes
+the run fail, as does holding each input for two ticks instead of one, and both
+fail mid-route rather than at the gate. Every input matters everywhere.
 
-| rung | seed | time | vs AT | events | alphabet |
-|---|---|---|---|---|---|
-| analog | — | **10.594** | **−0.004** | — | 255 |
-| human WR, for scale | — | 10.602 | +0.004 | — | 255 |
-| [16 detents](replays/DETENT16_10602.Ghost.Gbx) | analog champion | **10.602** | +0.004 | 264 | 32 |
-| 8 detents | analog champion | 10.608 | +0.010 | 137 | 17 |
-| 8 detents, reduced | " | 10.618 | +0.020 | **85** | 17 |
-| [**5 detents = the real action-key ladder**](replays/ACTIONKEY_5detent_10643.Ghost.Gbx) | human r152 | 10.643 | +0.045 | 76 | 11 |
-| [**keyboard**](replays/KEYBOARD_10636.Ghost.Gbx) | human r301 | **10.636** | +0.038 | 66 | 3 |
-| [keyboard, 35 events](replays/KEYBOARD_35ev_10646.Ghost.Gbx) | human r152 | 10.646 | +0.048 | **35** | 3 |
-| 5 detents | analog champion | 10.702 | +0.104 | 162 | 10 |
-| keyboard / 4 detents | **converted** from the analog champion | **0% finish** | — | — | — |
+That is a statement about the map, not about you: **the same tests destroy the
+human world record's own tape**, because a recorded tape replayed blind has no
+eyes. A driver is a closed loop who sees the car drift and corrects on the next
+frame, and 561 people have this route on the board. What it means in practice is
+that this map needs continuous correction rather than a memorised script — there
+is no coasting stretch where a small error washes out.
 
-**The 5-detent rung is not an arbitrary choice.** Every digital human on this
-board uses only multiples of **20% lock** (observed 0.2 / 0.4 / 0.6 / 0.7961 /
-1.0), so five detents *is* the action-key setup people actually have. The 8- and
-16-detent rungs are finer than anything a human is observed to press — they are
-here to bound the cost of the alphabet, as measurement rather than advice.
+**What will take real practice** is the chicane flick and the sweeper entry,
+held to a standard the whole field already meets, plus the discipline to leave
+the last corner alone.
 
-**Why it does not close, and it is the opposite of another map in this
-collection.** This board is all pad at the top: ranks 1–15 have a median
-non-zero steer change of 0.02–0.08 per tick, and **every digital human sits at
-rank 152 or worse.** The digital deficit is diffuse carry — 1 to 4 km/h down at
-every station from t = 8 s, with no single corner to fix.
+## On a keyboard or action keys
 
-The 16-detent rung's 4 ms was checked against the sub-millisecond vernier rather
-than assumed to be a quantisation plateau: it is **genuinely 0.85 m behind along
-the finish axis**, so it would not have fallen to a ratchet. A further 2.7 hours
-and 1.66 M evaluations across three window widths bought **1 ms**.
+The top of this board is all pad: ranks 1–15 steer with small continuous
+corrections, and **every digital human sits at rank 152 or worse**. The deficit
+is diffuse — the digital runs are 1–4 km/h down at every station from 8 s
+onward, with no single corner to fix, because a coarse alphabet cannot hold the
+small steady steering angles the sweeper rewards.
 
-**Still useful to that leaderboard:** action keys at 10.643 is **15 ms faster
-than the best keyboard human on the board**, and pure keyboard at 10.646 is
-12 ms faster **in 35 inputs**. Both would place top-150 of 561. Neither is the
-author time.
+So the honest answer is that **a keyboard does not reach the author time here**.
+What is available is still worth having:
 
-## Other measurements
+- **Action keys (20% detents), 76 inputs: 10.643** — this is the rung that
+  matches a real bindable setup, and it is 0.015 faster than the best keyboard
+  human on the board.
+- **Pure keyboard, 35 inputs: 10.646** — 0.012 faster than the best keyboard
+  human, in half the inputs.
 
-- Exchange rate at the gate: **10.5 ms per metre** (1 ms = 9.49 cm). All 27
-  measured humans cross at the same terminal 341.7 km/h.
-- **No shaping signal exists**: one waypoint means every failed run returns the
-  same "reached 1 checkpoint", so a search cannot tell a near-miss from a
-  catastrophe and cannot cross a DNF valley.
-- Every single-tick throttle lift tested (ticks 2, 5, 10, 20, 40, 80, 150, 300,
-  500) causes a DNF, as does throttle on tick 0.
-
-## Validation
-
-**27 of 27** downloaded human ghosts re-simulate to their exact leaderboard
-millisecond. Every published tape returns exactly the time in its filename on
-the untouched map.
-
-The instrument used to get sub-millisecond resolution deserves a note: rather
-than modelling a finish plane, the map's own Goal item is physically relocated
-and the **plain oracle** re-run, so every number is the game's own body-based
-trigger firing on the game's own physics. The ratchet built on it predicted the
-untouched oracle correctly every cycle, including the ones that flipped the real map from 10.596
-to 10.595 to 10.594.
-
-**Why the ruler was necessary.** A plain search seeded with the human world
-record reached the author time in **28 seconds** and 10.596 in seven minutes,
-then stopped dead for 1.7 million evaluations. It had not run out of road, it
-had run out of *resolution*: the car crosses at its terminal 94.9167 m/s, so one
-reported millisecond is 9.49 cm, and the oracle's integer answer is quantised
-into uneven bins up to **15 cm** wide — 10.599 is unreachable entirely. Any real
-gain smaller than the current bin is invisible. The concurrent control makes the
-point: a real-map arm sat at 10.596 for **41.9 minutes and 1,337,400
-evaluations** while the ratchet went 10.596 → 10.595 → 10.594.
-
-This map's work used no fork-resume path and distinct search roots throughout,
-so none of the corruption defects found elsewhere in this project apply to it.
+Both would place top-150 of 561.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/real_10594.Ghost.Gbx` | **fastest validated run — 10.594** |
-| `replays/real_10595.Ghost.Gbx` | the 10.595 |
-| `replays/best_10596.Ghost.Gbx` … `best_10601.Ghost.Gbx` | the ladder of validated intermediates |
-| `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | the runs as readable input scripts |
-| `notes/RESULT.md`, `notes/NOTES.md`, `notes/PLAN.md` | full write-up and measurements |
-
-## This map is an Altered Nadeo copy of **Fall 2025 - 01**
-
-Identified blind by cell occupancy against all 625 official seasonal campaign
-maps — see [`_altered/`](../_altered). The official map has a field of **900 000
-players** on this geometry.
-
-This is a **Reverse** variant: same physics, but those humans drove the route **backwards**. The official field gives you geometry and a corridor, **not a line** — and nobody has yet tried reversing it into one. At 900 000 players it is the largest field attached to any map in this repository.
-
-**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.
+| `replays/real_10594.Ghost.Gbx` | **the fastest run — 10.594** |
+| `replays/real_10595.Ghost.Gbx` | the 10.595; identical until the final 40 m, where it crosses 3.5 cm wider |
+| `replays/best_10596.Ghost.Gbx`, `best_10597.Ghost.Gbx`, `best_10598.Ghost.Gbx` | earlier validated runs |
+| `replays/DETENT16_10602.Ghost.Gbx` | 16-detent steering, 10.602 |
+| `replays/ACTIONKEY_5detent_10643.Ghost.Gbx` | **the action-key run — 76 inputs on the 20% ladder people actually bind** |
+| `replays/KEYBOARD_10636.Ghost.Gbx` | pure keyboard, 66 events |
+| `replays/KEYBOARD_35ev_10646.Ghost.Gbx` | pure keyboard in **35 inputs** — the one to learn |
+| `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | those two runs as readable input scripts |
