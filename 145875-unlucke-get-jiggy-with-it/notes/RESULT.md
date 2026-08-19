@@ -2,14 +2,14 @@
 
 **The author time has fallen, and the fastest known tape needs no analog input.**
 
-| | ms | vs AT |
+| | time (s) | vs AT |
 |---|---|---|
-| Author time (unbeaten since 2023-12-09) | 6343 | — |
-| Best human online WR (xeap-.-, 46 records) | 6346 | +3 |
-| **Our best, re-validated** | **6322** | **−21** |
-| **Our best KEYBOARD-ONLY tape, re-validated** | **6323** | **−20** |
-| Our best keyboard tape reduced to **23 inputs** | 6323 | −20 |
-| The human WR's own tape with **ONE** input changed | 6342 | −1 |
+| Author time (unbeaten since 2023-12-09) | 6.343 | — |
+| Best human online WR (xeap-.-, 46 records) | 6.346 | +3 |
+| **Our best, re-validated** | **6.322** | **−21** |
+| **Our best KEYBOARD-ONLY tape, re-validated** | **6.323** | **−20** |
+| Our best keyboard tape reduced to **23 inputs** | 6.323 | −20 |
+| The human WR's own tape with **ONE** input changed | 6.342 | −1 |
 
 uid `_GsJKvxawnKoIgkiWCpy9tRIMM0` · Nadeo mapId `56c24403-891e-4ffc-a9f0-2bd9ff98ae27`
 · author **InfTM** · TMX id 145875. Nothing was submitted to any Nadeo
@@ -19,9 +19,9 @@ Artefacts in `~/persistent/private-30d/tm-unbeaten/145875/`:
 
 | path | what |
 |---|---|
-| `best/BEST_6322.Ghost.Gbx` | the floor, 6322 ms |
-| `best/BEST_KEYBOARD_6323.Ghost.Gbx` | 6323 ms, steering only ever −127 / 0 / +127 |
-| `tapes/KEYBOARD_23ev_6323.Ghost.Gbx` | **the one to hand a human**: 6323 ms, 23 inputs, 3 values |
+| `best/BEST_6322.Ghost.Gbx` | the floor, 6.322 s |
+| `best/BEST_KEYBOARD_6323.Ghost.Gbx` | 6.323 s, steering only ever −127 / 0 / +127 |
+| `tapes/KEYBOARD_23ev_6323.Ghost.Gbx` | **the one to hand a human**: 6.323 s, 23 inputs, 3 values |
 | `tapes/HUMANWR_plus_early_flick_6342.Ghost.Gbx` | the human WR + one changed input |
 | `tapes/relax0_33ev_6330.Ghost.Gbx`, `tapes/floor37_6330.Ghost.Gbx` | the analog family |
 | `map.Map.Gbx`, `ghosts/`, `btraj/`, `evidence/` | map, the 15 human seeds, decoded per-tick trajectories, every validation table |
@@ -32,32 +32,31 @@ Every number above was re-validated through the plain oracle, and again
 independently under the hardened build:
 
 ```
-tmtas validate --map …/map.Map.Gbx …/best/BEST_6322.Ghost.Gbx      -> 6322
-tmtas validate --map …/map.Map.Gbx …/tapes/KEYBOARD_23ev_6323…     -> 6323
+tmtas validate --map …/map.Map.Gbx …/best/BEST_6322.Ghost.Gbx      -> 6322  (= 6.322 s)
+tmtas validate --map …/map.Map.Gbx …/tapes/KEYBOARD_23ev_6323…     -> 6323  (= 6.323 s)
 ```
 
 ---
 
 ## 1. Headline findings
 
-1. **6322 ms**, 21 ms under an author time nobody had touched in 20 months.
-2. **A pure keyboard tape reaches 6323 ms** — 1 ms off the unconstrained floor.
+1. **6.322 s**, 21 ms under an author time nobody had touched in 20 months.
+2. **A pure keyboard tape reaches 6.323 s** — 1 ms off the unconstrained floor.
    This map does not need a pad. That is unusual and it is the most useful thing
    here: 8 of the 13 fastest humans are already on a keyboard, and the best of
    them is 37 ms slower than a keyboard can go.
 3. **The keyboard tape reduces to 23 change events for zero cost**, with the
    throttle held down for the entire run and the brake never touched.
-4. **One single changed input takes the human WR's own tape from 6346 to 6342**,
+4. **One single changed input takes the human WR's own tape from 6.346 to 6.342**,
    i.e. under the author time, and that input is the most forgiving one on the
    map. If you want the cheapest possible advice for the field, it is that.
-5. Both bests are **exhaustively 1-move optimal**: 249,747 candidates at full
-   tick and full 255-value resolution found nothing better than the analog
-   floor, and 2,448 candidates found nothing better than the keyboard 6323.
+5. Both bests are **exhaustively 1-move optimal**: 232,389 candidates at full tick and full 255-value resolution found nothing better than the analog
+   floor, and 2,448 candidates found nothing better than the keyboard 6.323.
 
 ## 2. Incident: phantom finishes — found, root-caused, fixed, reported
 
 The first pair of search arms produced five sub-AT bests of which **four did not
-re-validate** (three DNF, one that re-simulated to 6346 — the untouched
+re-validate** (three DNF, one that re-simulated to 6.346 — the untouched
 template's own time). Treated as a STOP; specimens preserved in
 `~/persistent/private-30d/tm-loop/phantoms/m145875_20260818/`.
 
@@ -86,8 +85,8 @@ lost — but the sign of that offset is a trap.
 **Third, checked and clean:** after the 252289 report of an alphabet transform
 being applied in the evaluator but not to the stored incumbent, every
 keyboard-constrained best produced here was re-validated. **13 of 13 returned
-the exact time in their filename** (6323, 6330, 6331, 6332, 6333, 6335, 6337,
-6338, …), and each best is byte-identical after re-snapping to
+the time their filename names** (6.323, 6.330, 6.331, 6.332, 6.333, 6.335, 6.337,
+6.338, …), and each best is byte-identical after re-snapping to
 {−127, 0, +127}. `--qlevels` does not have that defect on these runs.
 
 ## 3. What kind of map this is
@@ -99,10 +98,10 @@ So a DNF carries no information — there is no checkpoint ladder to fall back o
 — and the finish is a **trigger volume**, not a plane, which turns out to be
 where the time is.
 
-Medals: author 6343, gold **7000**, silver **8000**, bronze **10000**. Round
+Medals: author 6.343, gold **7.000**, silver **8.000**, bronze **10.000**. Round
 numbers to the second: the author hand-typed the lower three and left the author
 medal as what the TM2020 editor always makes it — the time they actually drove.
-6343 is a lap a person completed, 3 ms better than the best of 46 online
+6.343 is a lap a person completed, 3 ms better than the best of 46 online
 attempts by everybody else.
 
 The route (`fk btraj`, 10 ms per tick):
@@ -142,13 +141,13 @@ cross cleanly at 550+ km/h:
 
 | run | x at finish | y at finish | km/h |
 |---|---|---|---|
-| **ours (6330 tape)** | **1228.78** | **154.62** | **612** |
-| r13 6452 | 1229.49 | 154.80 | 552 |
-| r10 6440 | 1229.93 | 154.72 | 599 |
-| r08 6413 | 1229.92 | 153.39 | 600 |
-| r01 6346 (WR) | 1230.50 | 153.62 | 609 |
-| r07 6408 | 1230.45 | 153.85 | 619 |
-| r15 6478 | 1231.34 | 152.51 | 600 |
+| **ours (6.330 tape)** | **1228.78** | **154.62** | **612** |
+| r13 6.452 | 1229.49 | 154.80 | 552 |
+| r10 6.440 | 1229.93 | 154.72 | 599 |
+| r08 6.413 | 1229.92 | 153.39 | 600 |
+| r01 6.346 (WR) | 1230.50 | 153.62 | 609 |
+| r07 6.408 | 1230.45 | 153.85 | 619 |
+| r15 6.478 | 1231.34 | 152.51 | 600 |
 
 Across the field, each extra metre of height at the gate buys roughly a metre of
 x. Our run is 1.0 m higher and 4 km/h faster at the line than the human WR, and
@@ -163,12 +162,12 @@ our tape into the human WR's:
 
 | grafted | ms | vs WR |
 |---|---|---|
-| (nothing — the WR) | 6346 | +0 |
-| two brake taps at 0.58 s and 0.76 s | 6346 | **+0** |
-| final left→right flip fired 1 tick later | 6347 | +1 |
-| the 2.54 s right-hand flick, alone | 6373 | **+27** |
-| 98 % instead of 100 % left lock at 3.52 s, alone | 6347 | +1 |
-| **the 2.54 s flick AND the 3.52 s lock level, together** | **6330** | **−16** |
+| (nothing — the WR) | 6.346 | +0 |
+| two brake taps at 0.58 s and 0.76 s | 6.346 | **+0** |
+| final left→right flip fired 1 tick later | 6.347 | +1 |
+| the 2.54 s right-hand flick, alone | 6.373 | **+27** |
+| 98 % instead of 100 % left lock at 3.52 s, alone | 6.347 | +1 |
+| **the 2.54 s flick AND the 3.52 s lock level, together** | **6.330** | **−16** |
 
 The brake taps the search invented are worth exactly nothing — search noise, not
 technique. The whole 16 ms of the analog tape is a **non-separable interaction
@@ -203,7 +202,7 @@ fast the recorded steer value moves per 10 ms tick and splits the field cleanly:
 Two runs move from −127 to +127 inside a single tick, so TM2020 does not ramp a
 held key: `{−127, 0, +127}` is the real keyboard alphabet, not an idealisation
 (control: snapping r03's tape to those three values changes its time by 0 ms).
-Searching **under** that constraint from a keyboard seed reached **6323 ms** — 1
+Searching **under** that constraint from a keyboard seed reached **6.323 s** — 1
 ms off the unconstrained floor and 20 ms under the author time.
 
 So the honest classification is **known-but-unheld, plus one undiscovered
@@ -223,15 +222,15 @@ one.)*
 All re-validated through the plain oracle. "Events" counts input CHANGE events;
 a value held 40 ticks is one event.
 
-| tape | ms | vs AT | events | steer alphabet | notes |
+| tape | time (s) | vs AT | events | steer alphabet | notes |
 |---|---|---|---|---|---|
-| `BEST_6322` | **6322** | −21 | 186 | 125 analog values | the floor; 1-move optimal over 249,747 candidates at full resolution |
-| `BEST_KEYBOARD_6323` | **6323** | −20 | 47 | **3** | keyboard only; 1-move optimal over 2,448 candidates |
-| **`KEYBOARD_23ev_6323`** | **6323** | **−20** | **23** | **3** | **the drivable one — reduction cost 0 ms** |
-| `relax0_33ev_6330` | 6330 | −13 | 33 | 26 | analog, reduction cost 0 ms |
-| `floor37_6330` | 6330 | −13 | 37 | 29 | analog, zero-loss reduction of the raw search output |
-| `HUMANWR_plus_early_flick_6342` | 6342 | −1 | WR's + 0 | WR's | **one changed input on the human WR's own tape** |
-| (raw search output, for scale) | 6330 | −13 | 185 | 125 | 148 of those 185 events are deletable noise |
+| `BEST_6322` | **6.322** | −21 | 186 | 125 analog values | the floor; 1-move optimal over 232,389 candidates at full resolution |
+| `BEST_KEYBOARD_6323` | **6.323** | −20 | 47 | **3** | keyboard only; 1-move optimal over 2,448 candidates |
+| **`KEYBOARD_23ev_6323`** | **6.323** | **−20** | **23** | **3** | **the drivable one — reduction cost 0 ms** |
+| `relax0_33ev_6330` | 6.330 | −13 | 33 | 26 | analog, reduction cost 0 ms |
+| `floor37_6330` | 6.330 | −13 | 37 | 29 | analog, zero-loss reduction of the raw search output |
+| `HUMANWR_plus_early_flick_6342` | 6.342 | −1 | WR's + 0 | WR's | **one changed input on the human WR's own tape** |
+| (raw search output, for scale) | 6.330 | −13 | 185 | 125 | 148 of those 185 events are deletable noise |
 
 ### The cheapest advice in the whole document
 
@@ -241,22 +240,22 @@ enumeration of that single input, tick × value:
 
 ```
   fire\hold     90    100    110    118    124    127
-       -10    6342   6342   6343   6382   6356
-        -9    6343   6342   6342   6343   6348
-        -8    6343   6342   6342   6342   6342     <- a broad 6342 plateau
-        -7    6344   6343   6342   6342   6342
-        -6    6345   6343   6343   6343   6342
+       -10    6.342   6.342   6.343   6.382   6.356
+        -9    6.343   6.342   6.342   6.343   6.348
+        -8    6.343   6.342   6.342   6.342   6.342     <- a broad 6.342 plateau
+        -7    6.344   6.343   6.342   6.342   6.342
+        -6    6.345   6.343   6.343   6.343   6.342
         ...
-        +0    6348   6347   6347   6347   6346     <- what the WR does
+        +0    6.348   6.347   6.347   6.347   6.346     <- what the WR does
 ```
 
-6342 beats the author time, and it is reachable from a whole block of
+6.342 beats the author time, and it is reachable from a whole block of
 (timing, value) pairs spanning 50 ms and most of the top half of the stick. This
 is the single most forgiving input on the map.
 
 ## 6. Sector-by-sector guide — `KEYBOARD_23ev_6323`, off visual cues
 
-**6323 ms · 23 inputs · keyboard only · accelerate held from the countdown to
+**6.323 s · 23 inputs · keyboard only · accelerate held from the countdown to
 the line · brake never touched.** Everything below is steering.
 
 | # | when | input | the cue |
@@ -294,10 +293,10 @@ tenth of a second earlier.
 - **Multi-operator search does not beat single-operator here.** Motivated by the
   ablation (the analog gain is a two-part interaction that a single move cannot
   propose), `--nops -3` was run against a `--nops 1` control, concurrently, same
-  box, 45 min, 45 workers each, both seeded at 6330: **both ended at 6330, zero
+  box, 45 min, 45 workers each, both seeded at 6.330: **both ended at 6.330, zero
   improvements, ~540 k evaluations each.**
-- **A second seed basin is worse.** An arm seeded from r04 (6373), whose S4 line
-  reaches x = 1150 seventy ms earlier than the WR's, converged to 6353 while the
+- **A second seed basin is worse.** An arm seeded from r04 (6.373), whose S4 line
+  reaches x = 1150 seventy ms earlier than the WR's, converged to 6.353 while the
   r01-seeded arms were at 6330. Being further along x is not being closer to the
   gate.
 - **Searching only the final 1.9 s is barren.** An arm restricted to ticks
@@ -308,6 +307,11 @@ tenth of a second earlier.
   runs. Independently confirmed on 227969 down to a 64-level ladder.
 - **Robustness hill-climbing found nothing to buy.** Maximising total timing
   slack subject to the time budget converged in one round with no improvement.
+- **The floor is converged.** A final round of four arms (two analog from 6.322,
+  two keyboard from 6.323), 40 min and ~452 k evaluations each, produced **zero**
+  improvements — 1.8 M evaluations with nothing banked. Together with the
+  exhaustive 1-move results this is as close to "the neighbourhood is empty" as
+  this project gets.
 - **The fork server was not used.** On a 6.3 s map a full re-simulation is cheap
   (~1,400 evals/s across the box), all four defects found in this project's
   fork path were live during this work, and the classic path with distinct roots

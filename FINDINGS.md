@@ -265,6 +265,64 @@ waypoints are the spawn and the goal, so a respawn returns the car to the start
 and is never a recovery: "Trial" there is a *building style*, not a checkpoint
 mechanic, and the gap is a genuine route gap.
 
+**And the same method took [Leto](286279-turtle-trial-leto) 33.7% under its
+author time**, where the result is even starker: the first sub-AT tape was
+**100% the world record holder's own inputs**, in his own order, at his own
+resolution, with ten of his failed attempts deleted — 236.972 against a 355.181
+author time. Not one tick of TAS mutation. The map's own author failed nine
+times in the same sector, at the same obstacle everybody else fails at, and 135
+of the author time's 355 seconds are those retries.
+
+Leto also pins down exactly what a respawn restores: **the state the car had
+when it crossed the checkpoint** — position, velocity *and* attitude, each run
+returning to its own crossing state (measured at one checkpoint across five
+runs: 26.7 / 22.2 / 16.8 / 23.4 m/s). A *standing* respawn is different: a
+canonical reset to the checkpoint block's own spawn transform, bit-identical
+across runs on all 29 telemetry columns, at the price of the car being **frozen
+for 800–850 ms**. Top players use one deliberately at fast checkpoints, because
+braking to a controlled standstill costs more and the reset hands you a
+perfectly known attitude for a section where attitude is everything.
+
+**The corollary that bites: a cut is safe, an optimisation upstream is not.**
+Deleting ticks that lie entirely after a crossing changes nothing the respawn
+depends on, which is why `finish = base − deleted` holds exactly. Change
+anything *before* the checkpoint and the crossing state moves with it, and every
+input after the respawn was tuned for the old one. Respawn-anchored sectors are
+therefore **not independent** — they cannot be optimised in parallel and
+recombined. Measured twice, independently: on
+[284238](https://trackmania.exchange/maps/284238) a sector optimised to cross
+CP4 95 ms earlier made the unchanged tail DNF outright.
+
+## Input tapes are not portable between ghost containers
+
+A `.Ghost.Gbx` holds its per-tick inputs in an archive chunk (`0x0309201D`).
+Moving that archive into a *different* ghost file does not work:
+
+| tape | container | result |
+|---|---|---|
+| rank 2's input archive | rank 2's own ghost file | **977.690 — exact** |
+| rank 4's input archive | rank 4's own ghost file | **1371.430 — exact** |
+| rank 2's input archive | rank 1's ghost file | **DNF at CP1** |
+| rank 4's input archive | rank 1's ghost file | **DNF at CP1** |
+| the author's AT archive, from the map file | rank 1's ghost file | **DNF at CP1** |
+
+The two identity rows prove the transplant machinery is correct. Copying the
+archive's `start_offset_ms` alignment does not help, and neither does copying
+**all fourteen** small `0x03092xxx` chunks from the donor, so the carrier is one
+of the large ones.
+
+**Consequence: "best-of-field splice" — composing the best sector from each
+human's run — is not available.** Splice within one ghost file only. This is
+worth knowing before you spend a day on it: three agents on three different maps
+each hit an unexplained DNF-at-CP1 and misdiagnosed it as a respawn-state or
+physics problem before this was pinned down.
+
+It is also what currently blocks the biggest known prize on Leto. The author's
+own author-time ghost is embedded in the `.Map.Gbx` and decodes fine; with its
+nine failed attempts deleted it is worth **220.563 s**, another 15 seconds under
+the published run. It will not re-simulate, purely because it is a foreign
+container.
+
 ## Before you describe what a driver is doing in the air, check the air is live
 
 On [U10S_32 MAX-UP](274191-u10s-32-yeet-max-up) there is a **1.2-second dead
@@ -294,3 +352,46 @@ Both had been invisible for as long as every map looked like the first one. The
 habit that catches this class: **when you are the first into a regime — a faster
 car, a deeper map, a new surface — check the instrument before you trust the
 measurement.**
+
+## A constraint that silently does not bite
+
+Every low-input result in this repo depends on an alphabet constraint — "steer
+may only take these values" — actually being enforced during the search. Twice
+now the constraint was wired in wrongly and the search happily produced a
+"keyboard" tape with 150+ distinct steer values. The tape was *valid*; it was
+just not keyboard. This is the phantom problem inverted: an instrument quietly
+reporting a success it has not earned.
+
+The two ways it went wrong are both worth knowing. The constraint was applied in
+one of two near-identical `mutate → apply` sequences and not the other, so it
+did nothing for 140,000 candidates. And even in the right place, snapping only
+the mutated window **leaks**, because retime/shift operators move values from
+outside the window into it — the ladder has to be applied to the whole steer
+array after mutation.
+
+**The 90-second control that catches both: search with a one-level ladder.**
+Every steer value becomes zero, the car drives straight, and a healthy
+constraint must report `finish 0%` and no improvement. Before the fix this
+printed `finish 64%` and a new best. Paired with an ordinary identity run (no
+ladder → the template's own time) it pins the instrument from both sides: it can
+say yes, and the constraint really bites.
+
+## Do not convert an analog tape to keyboard — search under the constraint
+
+The obvious way to produce a keyboard run is to take the fast analog tape and
+round it. **It does not work anywhere**, and it has now been measured
+independently on four maps: replacing each analog sweep with the instantaneous
+step a keyboard physically produces (82 placements across four sweeps on
+[145875](145875-unlucke-get-jiggy-with-it)) produced **not one finishing run**;
+quantising a finished tape DNFs at every resolution tried, down to a 64-level
+ladder.
+
+The pad and keyboard lines are **different basins**. A keyboard strat has to be
+searched as one, from a keyboard seed, under the constraint. When that is done
+properly the result is often startling: on 145875 the keyboard tape reaches
+6.323 against an unconstrained floor of 6.322 — **one millisecond** — and on
+[Leto](286279-turtle-trial-leto) keyboard costs 314 ms out of 236 seconds, 0.13%.
+
+This matters because "there is no low-input family on this map" is a conclusion
+several searches have reached *by conversion*, which is exactly the method that
+cannot find one.
