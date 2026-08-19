@@ -989,3 +989,51 @@ drivers steer more because they are correcting) was removed.
 **Before publishing a technique, regress the candidate quantity against
 finishing order across the whole field.** If it does not order the field, it is
 not the technique, however large the difference looks.
+
+## A map declared unusable was beaten by 694 ms — check the verdict, not just the map
+
+[203072](203072-yeet-fall-2024-04) was named in this project's own notes as *the*
+canonical unfalsifiable map: human ghosts would not re-simulate, so no search was
+ever run on it. That verdict was wrong in three independent ways, and finding
+that out was most of the work:
+
+- **The oracle is faithful there — 1.7 mm** position RMS against ghosts' own
+  telemetry, across three game builds.
+- **Nadeo's own map file is sha256-identical to ours**, killing the "edited in
+  place" theory.
+- **The failures are a bounded window of game builds.** Outside the window,
+  **80/80 = 100%**. Inside, 92/190.
+
+**The original reading came from a 34-ghost sample in which the post-window
+builds had n = 1.** A full-field check (270 of 272) inverted the conclusion
+entirely.
+
+Two general rules from that. **A §8 field-reproduction failure has at least three
+distinct causes** — an old build, a *windowed* build range, and a genuinely
+unfalsifiable map — and they call for opposite responses, so identify which
+before condemning anything. And **sample sizes in a field check are not
+optional**: a category with n = 1 will happily support the wrong story.
+
+Worth knowing what it cost: this map's author time then fell by 694 ms, and its
+keyboard flight by 591 ms, on a map nobody had searched at all.
+
+## The winning move is often a combination that looks wrong in every direction
+
+On [203072](203072-yeet-fall-2024-04) the final tape differs from its predecessor
+in three places: a 40 ms throttle lift, a 10 ms throttle lift, and one wheel left
+un-unwound into the launch. A full 2³ factorial:
+
+> **Every proper subset DNFs or is slower. All three together are worth 566 ms.**
+
+The gradient points *away* from the answer in all three directions, so no
+incremental refinement finds it — human or machine.
+
+This is now the third instance. On [145875](145875-unlucke-get-jiggy-with-it) the
+whole margin is a non-separable pair of analog details, one of which is worth
++27 ms *alone*. On [252289](252289-surely-my-least-cooked-at) the two-press
+solution has a half that is catastrophic on its own (4.189 against 3.867).
+
+**So on a hunted map, after single-move search converges, run a small factorial
+over the candidate moves rather than more single moves.** A field grinding one
+variable at a time cannot find a pair or triple where the parts are individually
+bad — which is precisely what is left once everything separable has been found.
