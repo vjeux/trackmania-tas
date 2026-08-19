@@ -86,6 +86,17 @@ the lights to the line.
 
 Twelve inputs. **The world record uses 46 and is 32 ms slower.**
 
+**Twelve is the floor, not just where we stopped.** Delta debugging proves the
+tape **1-minimal** within the budget: all eleven single deletions refused, and no
+contiguous pair or run of five removable either. **No 11-input version of this
+line exists under 13.995.** And the same minimisation started from the 31-input
+optimum — a different line, 19 more inputs, 2 ms faster — converges to twelve
+events as well. Two starting points, one floor.
+
+One for the practice session: **an eleven-input version finishes at 13.996** —
+drop the input at race 13.2 s and the whole route survives, one millisecond
+outside the author time.
+
 **The brake is load-bearing, and it is the counter-intuitive part.** Holding it
 from 6.53 s through the cannon is what settles the car; **removing it entirely
 does not finish the map.** The timing is forgiving to about 70 ms, so it is a

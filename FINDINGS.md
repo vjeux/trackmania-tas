@@ -626,6 +626,63 @@ suspect the enumeration before the hypothesis.** A negative from a hand-listed
 set is worth nothing — one such negative was published here as a hard limit, and
 the answer was the two items never on the list.
 
+## What a minimiser can and cannot tell you
+
+Two maps were minimised with the same tool, and the contrast corrects a claim
+that was about to travel as a general law.
+
+**The claim.** On [Leto](286279-turtle-trial-leto), the 218.812 tape reduces from
+885 input events to 832 and no further — 1-minimal, every remaining single
+deletion tried and failing. Of 177 single-deletion positions, **171 killed the
+run and *zero* merely cost time**. That reads as "on a TAS tape a missing input
+does not cost you time, it kills the car".
+
+**The correction.** The same exhaustive test on
+[203330](203330-get-in-the-hole-impossible), a short map with 8 ms of headroom
+rather than 136 seconds:
+
+| tape | deletions that merely COST TIME | that KILL | in budget |
+|---|---|---|---|
+| Leto, 218.812 (136 s headroom) | **0 of 177** | 171 | 6 |
+| 203330, 12-input (8 ms headroom) | **2 of 11** | 9 | 0 |
+| 203330, 31-input | 3 of 30 | 9 | 18 |
+
+So lethal degradation is **not** a property of TAS tapes. It was a property of a
+turtle map whose headroom had already been harvested out of it by the
+author-cut. 203330 degrades lethally in its spine — seven inputs before 6.5 s
+that no version of the line can do without, the same nine fatal ticks appearing
+in two independent lineages — and **gracefully in its endgame**.
+
+**Two independent lineages converge on the same floor.** Minimising 203330's
+12-input tape and its 31-input optimum (a different line, 19 more inputs) both
+terminate at **twelve events**. That upgrades the driver's document from "this is
+the tape we happened to thin" to "the fast line on this map costs twelve inputs
+whichever end you approach it from".
+
+**And a minimiser measures MARGINAL freedom, not joint freedom.** Blanking ticks
+25290–25399 of Leto's author lap is free; blanking 25400–25834 is free; blanking
+**the union DNFs**. So "6 of 177 single deletions are in budget" says nothing
+about whether those six are jointly removable — and by symmetry, a position that
+looks dead may be alive in company. (Delta debugging is safe here because it
+evaluates cumulative prefixes and a bad combination simply fails to be accepted;
+a one-at-a-time probe is not.) The nearest available bound: 119 adjacent pairs on
+the 1-minimal tape, all 119 dead.
+
+**Three rules follow.**
+
+- **1-minimality is per lineage.** "No input of this run is removable" is not "no
+  simpler run beats the author time". A deliberately slow, simple line is ruled
+  out by nothing — testing it needs a search under an event-count penalty from a
+  *slow* seed, not a minimiser on a fast one.
+- **Report the failure mode, not just the count.** `reached_cps` on every death
+  is what distinguishes "the car needs that input" from "the deletion derailed
+  something downstream" — every dead run above reached exactly the checkpoints
+  before its deletion point and never one more.
+- **Prefer delta debugging to greedy thinning.** O(n log n) against O(n) passes
+  of O(n) evaluations, and it terminates 1-minimal — "no 11-input version of this
+  line exists within the budget" is a materially stronger published claim than
+  "greedy stopped at 12".
+
 ## When a whole sweep comes back empty, suspect the harness before the physics
 
 Twice tonight, on two maps, a sweep returned an unbroken wall of failures that

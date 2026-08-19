@@ -204,6 +204,36 @@ drove every metre of it.** Their S1, S2 and S4 are each faster than the world
 record's, by 16.2 s in total, and their one successful S3 agrees with the WR's
 to within 0.6 s. The 134.790 s is entirely their own retries.
 
+## The tape will not compress, and that is the same fact as the 136 seconds
+
+The 218.812 tape reduces from 885 input events to **832** — six per cent — and no
+further: **1-minimal**, every one of the 831 remaining single deletions tried and
+failing. Of 177 single-deletion positions, 171 kill the run and **not one merely
+costs time**.
+
+That is not because the driving is superhuman. Run the same probe on the
+author's own validation lap and **19 of 49 deletions survive** — but all 19 sit in
+one stretch, race 127–256 s, and every one returns *exactly* the author time.
+Blanking the whole stretch: **127 seconds hands-off, still exactly 355.181.** The
+author was looping one obstacle at 20–45 km/h, failing repeatedly, and at
+256.780 pressed respawn — which erased all of it.
+
+> **Free deletions live exactly where the run is already erased.** A big
+> trial-map improvement and an incompressible tape are the same fact: the
+> headroom was never slack in the driving, it was dead time inside a retry loop,
+> and cutting the retries harvested it.
+
+Two honest limits on that. **1-minimality is per lineage** — it says no input of
+*this* run is removable, not that no simpler run beats the author time. And the
+probe measures **marginal** freedom: on the author's lap, blanking ticks
+25290–25399 is free and blanking 25400–25834 is free, but blanking the **union**
+DNFs.
+
+**The difficulty number, stated plainly:** of 104 sampled inputs on the minimal
+tape, **94 have a one-tick window** — shift by a single 10 ms tick either way and
+the run dies. Median tolerance is zero. This tape is not something a human
+executes; the *method* is what transfers, and the method is "respawn early".
+
 ## Two findings other maps need
 
 **Respawn restores the state the car had when it crossed the checkpoint** —
