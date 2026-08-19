@@ -36,6 +36,36 @@ field already does, done in a place or a combination nobody tried.
 > [238835](238835-turtle-trial-angustus). Take the recorded run, change two
 > things, and it is inside the author time.
 
+### The clearest single case: a map with two roads, and everybody here takes the long one
+
+If you read one result in this repository, read
+[199100](199100-spring-2023-24-2up)'s. It needed no search, no TAS and no
+oracle — only reading 88 recordings of the same geometry.
+
+Between CP2 and CP3, 241 m apart, there are **two different routes**:
+
+| line | n | mean sector time | best | mean path length |
+|---|---|---|---|---|
+| over the top | 27 | 5.664 | 5.516 | **710 m** |
+| **low and short** | **61** | **4.721** | **3.901** | **306 m** |
+
+**All five humans who have ever driven this map take the long one**, and so did
+every tape we produced. The long line is genuinely fast — it averages 430 km/h —
+and it covers 701 m to travel 241 m of map. The short line averages **276 km/h**,
+brakes down to 150, and wins by **1.971 s**.
+
+> **A median execution of the short line puts the human world record at 51.051 —
+> 0.551 INSIDE the author time.** No TAS, no reactor trick, no frame-precise
+> input, nothing changed after CP3. Its slow phase is a *braking* phase, the most
+> forgiving input there is, and the two lines arrive at CP3 in the same state, so
+> the gain is additive rather than borrowed.
+
+Honest about what it is: a **sector sum measured from recordings**, not a
+validated lap — the weld that would prove it is the one that fails 2 829 times on
+this map. It is a strong prediction rather than a driven result, and it is still
+the best piece of coaching this project has produced. It is also the trap in
+physical form: **a wider line reads faster and is slower.**
+
 The precision-bound maps are the exception that makes the point: both say so in
 their own words, and on both a **forgiving variant** — a tape that gives up some
 time to tolerate human-sized timing error — has been found and measured, not

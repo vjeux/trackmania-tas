@@ -3108,3 +3108,82 @@ to 1.6 mm. An arithmetic close is worth an enormous amount more than an
 exhausted search, and it comes with its own reopening condition attached: name
 the assumption whose failure would overturn it, and a negative becomes a
 well-posed next experiment instead of a dead end.
+
+## Split a field by ROUTE before you compare times, or you will optimise the wrong road
+
+The most actionable result in this project came out of a field split, and it cost
+nothing: no search, no oracle, no simulation. Take every recording on the
+geometry, compute one geometric property per run, and see whether the field is
+one population or two.
+
+On 199100, between two checkpoints **241 m apart**, splitting 88 official records
+by whether they climb over a tower separates them cleanly:
+
+| line | n | mean sector time | best | mean path length |
+|---|---|---|---|---|
+| over the top | 27 | 5.664 | 5.516 | **710 m** |
+| **low and short** | **61** | **4.721** | **3.901** | **306 m** |
+
+Every human on the map's own leaderboard, and every tape in our lineage, was on
+the 27-run branch. Months of optimisation had gone into driving the slow road
+beautifully.
+
+**The long line is not badly driven — it is the wrong road.** It never drops
+below 350 km/h and averages 430; the winning line averages **276 km/h**, brakes
+to 150, and beats it by nearly two seconds on 400 fewer metres. Speed along the
+route was never the binding quantity. The route was.
+
+> Before optimising a sector, compute a **geometric** statistic per run — path
+> length, maximum height, which side of an obstacle — and check whether the field
+> is bimodal in it. If it is, you have two problems, and the interesting one is
+> which branch you are on.
+
+This is the wide-line trap in physical form: **a wider line reads faster and is
+slower**, because every pointwise speed sample flatters it and no sample charges
+it for distance. The same bias that inflates a pointwise envelope inflates a
+human's impression of their own sector, which is precisely why 27 players and
+five of five locals persisted with it.
+
+Two conditions make a finding like this immediately usable, and both are worth
+checking before publishing one:
+
+* **Does the alternative converge in state?** Here both lines reach CP3 at the
+  same place and the same ~500 km/h, so nothing downstream changes and the gain
+  is additive rather than borrowed. That is the separability question answered
+  *in advance* instead of discovered afterwards.
+* **Is the slow phase a braking phase?** Braking is the most forgiving input
+  there is. A route whose decisive moment is a brake is coachable; a route whose
+  decisive moment is a 10 ms tap is not — and here 61 different players hit it,
+  with an ordinary execution still beating the best execution of the fast-looking
+  road by 0.8 s.
+
+And state what it is. This one is a **sector sum measured from recordings**, and
+the splice that would turn it into a validated lap is the one that fails 2 829
+times on this map. It is a strong prediction, not a driven result. Saying so
+costs nothing and is the difference between advice a person can trust and a
+number they later discover was assembled.
+
+## `fmt_score` has two defects, and the second one prints a deep DNF as a plausible TIME
+
+A score formatter is the last place anyone looks for a bug, which is what makes
+this one expensive:
+
+1. **Below cps 6 the label is one short.** `DNF@cp5` means the run reached
+   **6** checkpoints, not 5. Every reader off by one, quietly.
+2. **At cps 6 and above the DNF score crosses the finisher guard** and renders as
+   an ordinary millisecond time. `15000000 ms` is not a 4-hour run; it decodes to
+   **cps 9**.
+
+So on any map with six or more checkpoints, **a deep DNF looks like a score** —
+not like an error, not like an outlier, like a number. A batch table full of
+implausible-but-parseable times is the visible symptom; a single such row in a
+results file is invisible.
+
+> A formatter that can turn a failure into a plausible success is a correctness
+> bug, not a cosmetic one. Validate the *domain* before formatting: if the value
+> cannot be a finish time, it must not be rendered as one.
+
+The general lesson, which has now cost this project twice in one night in
+different disguises: **the failure mode to fear is not the tool that breaks
+loudly, it is the tool that produces a well-formed wrong answer.** A crash gets
+fixed in minutes. A plausible number gets published.

@@ -66,6 +66,87 @@ miss the gate outright** — all recover to 51.598–51.795 when only the inputs
 after 44.0 s are re-searched. Timing is loose; **re-aiming afterwards is
 mandatory**, which is exactly what a driver does and a recorded tape cannot.
 
+## There are two routes through sector 3, and every human here drives the slow one
+
+This is the most useful thing the project has found on this map, and it needed no
+search at all — only reading 88 recordings on the identical geometry.
+
+Sector 3 is CP2 → CP3, and the two checkpoints are **241 m apart in a straight
+line**. Split the 88 official records by whether they climb over the tower:
+
+| line | n | mean sector 3 | best | mean path length |
+|---|---|---|---|---|
+| over the top | 27 | 5.664 | 5.516 | **710 m** |
+| **low and short** | **61** | **4.721** | **3.901** | **306 m** |
+
+**All five humans who have ever driven this map take the long one.** So does
+every tape in our own lineage. That is not a difference in driving quality — it
+is a different road.
+
+**The long line looks like the good one.** Off CP2 it turns hard left, drives
+*away* from the checkpoint, climbs a wall to y = 139, arcs over the top and drops
+back down the far side. It never goes below 350 km/h and averages **430 km/h**.
+It also covers **701 m** to travel 241 m of map.
+
+**The short line carries straight on**, leaves the ground and *falls* 21 m,
+lands already braking, scrubs down to **150 km/h** through a tight left, and then
+takes a boost from **150 to 501 km/h in 0.8 s**. Its average speed is
+**276 km/h** — far slower — over **299 m**. It wins by **1.971 s**.
+
+> **A wider line reads faster and is slower.** Our whole lineage optimised speed
+> along a route nobody re-examined.
+
+### What it is worth, and why the number is credible
+
+Substitute the field's short-line sector 3 into our own world record's lap and
+change nothing else:
+
+| | sector 3 | lap |
+|---|---|---|
+| our human WR as driven | 5.872 | 52.202 |
+| WR + a **median** short line | 4.721 | **51.051** |
+| WR + the **best** short line | 3.901 | **50.231** |
+| author time | | 51.602 |
+
+> **A median execution of a route that 61 of 88 sampled players already drive
+> puts the human world record 0.551 INSIDE the author time** — no TAS, no
+> reactor trick, no frame-precise input, and nothing changed after CP3.
+
+Three things make that publishable as advice rather than as analysis:
+
+1. **The slow phase is a braking phase**, which is the most forgiving input there
+   is. This is the opposite of a precision-bound finding — 61 different players
+   hit it, and an *ordinary* execution of the short line still beats the *best*
+   execution of ours by 0.8 s.
+2. **The two lines converge in state at CP3** — same position, same ~500 km/h
+   (501 against our 510). Nothing downstream changes, so the gain is **additive
+   rather than borrowed**. That is the separability question, answered in advance
+   rather than discovered later.
+3. **The route difference is categorical, not a skill difference.** 400 m of path
+   length is not driving quality, and the 61-vs-27 split is a fork in the road.
+
+### Stated plainly: this is a prediction, not a validated lap
+
+**It is a sector sum measured from recordings, and the weld that would prove it
+is exactly the one that fails on this map** — 2 829 splice attempts, 0 finishers.
+So nobody has driven a tape that does this, and the number above is two humans'
+sectors added together. It carries the standard caveat that a sector sum is a
+bound until someone drives it.
+
+What makes this one unusually credible is point 2 above: the handoff that
+normally breaks a sector sum is not being asked to do anything, because the two
+lines arrive at CP3 in the same state. And a few tenths of the 1.971 will be
+ordinary skill difference between drivers — but the route part is not.
+
+One practical note for anyone trying it: **the decision is made at CP2.** The low
+line's landing and brake begin about 1.9 s later, and by then it is too late to
+choose.
+
+**CLASSIFICATION: known-but-unheld**, in its purest form. 200 000 people drive
+this route on the unaltered copy of the map. It has never been driven *here*,
+because the six people who have played this version all learned it from each
+other.
+
 ## Why the author time stood
 
 **The same brake tap on the pad world record does nothing** — 0 to 60 ms, never
