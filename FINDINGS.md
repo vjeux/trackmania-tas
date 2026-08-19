@@ -520,6 +520,33 @@ been ground flat.
 the field already drives that gets under the author time?** Ablate down to it
 deliberately. It is usually a better artefact than the optimum.
 
+## Single-window findings do not compose — and neither do single-window searches
+
+Three maps have now hit the first half of this, and one map measured the second.
+
+**Findings.** On [203330](203330-get-in-the-hole-impossible) the brake is
+deletable over *every individual sub-window* at no cost, and removing it
+everywhere at once does not finish the map — it tolerates ~70 ms of slack, so
+each local deletion is absorbed by its neighbour. On
+[286279](286279-turtle-trial-leto) blanking one tick range is free, blanking the
+next is free, and blanking the **union** DNFs.
+
+**Searches.** The same map ran the two directions side by side for 49 minutes on
+one incumbent:
+
+| arm | candidates | gain |
+|---|---|---|
+| single operator, 20 µs resolution | 1,054,194 | **1 microsecond** |
+| up to four operators, 6 ms | 739,558 | **33 microseconds** |
+
+**A million single moves at fifteen times finer resolution bought one
+microsecond.** The only direction still producing anything was combinations.
+
+So when a map plateaus, the answer is not a finer single-move scan — it is pairs
+and triples of the operators that matter. (Honest footnote from the same
+measurement: the multi-move arm is not a rich seam either. 33 µs in its first 23
+minutes, 2 µs in the next 25, decelerating.)
+
 ## When a search stalls, suspect the ruler before the road
 
 On [279197](279197-fall-2025-01-reverse-cp1-end) a search seeded with the human
@@ -541,6 +568,17 @@ each cycle, so the smallest true gain reads as a whole millisecond.
 The concurrent control is the proof: a real-map arm sat at 10.596 for **41.9
 minutes and 1,337,400 evaluations** while the ratchet went 10.596 → 10.595 →
 10.594, and the ladder predicted the untouched oracle every single time.
+
+A second map found the same inversion from the other side, without moving
+anything: **the validator reports `ceil(t_true)`, so it is a 1 ms ruler — but if
+you know the incumbent's true crossing sits 0.304 ms above the integer boundary,
+then any candidate better by 0.304 ms reports one millisecond lower and
+everything else does not.** *A coarse ruler is precise when you know where on it
+you are standing.* That turned 590,370 perturbations into a floor argument
+adjudicated entirely by the plain oracle, with no surrogate in the acceptance
+path. **Precondition, and it is the part that will get dropped first: the
+crossing must be plane-verified, or there is no claim** — on a map that fails the
+crossing-spread test the diagnostic is uninformative in both directions.
 
 Three preconditions, each of which cost a cycle before it was understood:
 
