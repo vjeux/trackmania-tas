@@ -421,3 +421,66 @@ properly the result is often startling: on 145875 the keyboard tape reaches
 This matters because "there is no low-input family on this map" is a conclusion
 several searches have reached *by conversion*, which is exactly the method that
 cannot find one.
+
+## A negative result requires a positive control
+
+The most expensive class of bug on this project is not a search that reports a
+time it did not earn. It is an **evaluator that can only ever say no** — because
+nothing it produces is ever banked, so every re-validation guard is blind to it.
+
+Two instances, both caught only by deliberately making the instrument say yes:
+
+**A foreign evaluation template.** To avoid the 20-second DNF cost of an
+879,231-tick tape, an agent built a short template by patching the map's uid over
+a *different* map's ghost header. It loaded, it simulated, it ran 130× faster —
+and it could never have returned a finish. **~144,000 evaluations of "DNF" read
+as "the target is a needle."** Caught by relocating the finish gates onto the
+spawn: on that map the map's own ghost finishes in 2.024 s, while the template
+still reported `wrong simu`. The root cause was a `recon` mode added so an
+unknown map's base tape was *allowed* to DNF — deliberately removing the identity
+control at exactly the point it mattered most.
+
+**An alphabet constraint that silently did not bite** (above): the search
+reported healthy progress under a "keyboard" constraint while producing tapes
+with 150+ distinct steer values.
+
+The rule, and it is cheap: **before you believe an instrument saying no, prove it
+can say yes.** If the base tape cannot finish, build something that *must* —
+relocating the gates onto the spawn is one command. Pair it with the identity
+control (unconstrained → the template's own time) and the instrument is pinned
+from both sides.
+
+## An hours-long record is not evidence that a map is a joke
+
+`idm ruinin ur day #460` has a 2.44-hour world record, which reads as a troll
+map. It is not. The validator reports **`NbRespawns: 929`**, the telemetry has
+914 position discontinuities back to spawn, and there is a **50-minute
+motionless stretch** where the player was AFK. It is one session of 930 attempts
+with the clock never reset — the map's only waypoints are a spawn and a goal, so
+nothing ever resets it. **The final successful attempt lasted 18.819 s**, against
+an author time of 15.643.
+
+So the map is a ~16-second flight and its author time is an ordinary good run.
+**Compare against the author time, not the record, and check `NbRespawns` first.**
+
+The same map supplies the cheapest possible dead-ghost check, from a different
+direction: `NbRespawns: 4294967295` is `(u32)−1`, a field that was never written,
+and it reliably marks a ghost recorded on a build the current oracle cannot
+re-simulate. Two seconds to check, before spending a field download.
+
+## Relocating a gate is the safest map surgery available
+
+A **free block's position is not in its block record** — it lives in chunk
+`0x0304305F`, six f32 per free block (yaw, pitch, roll, x, y, z) in block order.
+That is why a block lister prints `pos=None` for a free waypoint: the position is
+knowable, just somewhere else.
+
+Rewriting those floats relocates a gate **with no lookback-table involvement, no
+size change and no re-encoding** — which matters because the Id table is what
+makes every other kind of map surgery dangerous. Measured: a relocated gate is
+caught at 16 m spacing and missed at 32 m, so 16 m is the ceiling for a shaping
+ladder.
+
+This is what makes intermediate-gate shaping practical on maps that have no
+checkpoints to score against — and gate relocation is also how you prove an
+evaluator can say yes (above).
