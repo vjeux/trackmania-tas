@@ -46,7 +46,7 @@ of writing, and where they beat the human world record that is said too.
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
 | [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.859** | **0.091** | **−0.310** | the closest live target here — one session of search so far, and all 19 records re-simulate exactly |
-| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.478** ‡‡ | 0.948 | **−0.745** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. The remaining second is ordinary TAS headroom, and arms are live |
+| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.460** ‡‡ | 0.930 | **−0.763** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. What works instead is scoring at the *next* checkpoint: arriving at CP5 earliest is not arriving best |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void. But **the field's own per-sector minima sum to 91.826 — 2.651 UNDER the author time** (93.847 after discarding every sector that could have inherited speed): every sector of a winning lap has been driven, nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by measurement** — it tests a point on the car's *roof*, and every source of the ~26° tilt it needs costs 5.5× the time budget. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
@@ -67,12 +67,13 @@ field-reproduction claims, so those claims are not reproducible from our archive
 alone. The times themselves were validated with a control when they were found
 and are carried forward unchanged.
 ‡‡ **146612 is moving fast.** Several arms are live and the figures change hour
-by hour. `TAS_39478` re-validated on the untouched map with both human records
-exact in the same batch, but its own write-up had not been banked when this was
-published — the page says so. A **segment sum** of 39.229 also exists; it is a
-sum of separately searched sectors, **not a lap**, and on this map assembly is
-precisely the hard part, so the table states only what has been driven end to
-end.
+by hour; every published tape re-validated on the untouched map with both human
+records exact in the same batch. A **segment sum** of 39.229 also exists, and on
+this map it is a weaker object than usual: **every sector boundary anyone has
+tested is inseparable** — a tape 0.263 s faster to CP4 than any human returns
+`DNF cps=4` — so it is not "these might not compose" but "each of these is
+achievable and demonstrably breaks the next piece". The table states only what
+has been driven end to end.
 ¶ **147.031 is not the gap on 227654.** That record contains eleven respawns; the
 same human's own driving with the retries spliced out is **64.871**, and that is
 the number the −0.280 should be read against. See that page.

@@ -1,10 +1,11 @@
-# Spaghetti Nights 2 — the world record falls by 0.745 s, and the jump that looked decisive is dead
+# Spaghetti Nights 2 — the world record falls by 0.763 s, and the jump that looked decisive is dead
 
-**Author time 38.530 · human world record 40.223 · best validated 39.478.**
+**Author time 38.530 · human world record 40.223 · best validated 39.460.**
 
 | tape | validated | vs human WR | vs AT | steer values | steer events |
 |---|---|---|---|---|---|
-| [`TAS_39478`](replays/TAS_39478.Ghost.Gbx) | **39.478** | **−0.745** | +0.948 | — | — |
+| [`TAS_39460`](replays/TAS_39460.Ghost.Gbx) | **39.460** | **−0.763** | +0.930 | — | — |
+| [`TAS_39478`](replays/TAS_39478.Ghost.Gbx) | 39.478 | −0.745 | +0.948 | — | — |
 | [`TAS_39748`](replays/TAS_39748.Ghost.Gbx) | 39.748 | −0.475 | +1.218 | — | — |
 | [`BEST_39961_v3`](replays/BEST_39961_v3.Ghost.Gbx) | 39.961 | −0.262 | +1.431 | 76 | 234 |
 | [`KEYBOARD_39996_v3`](replays/KEYBOARD_39996_v3.Ghost.Gbx) | **39.996** | −0.227 | +1.466 | **3** | **119** |
@@ -18,13 +19,46 @@ TMX map [146612](https://trackmania.exchange/maps/146612) · uid
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
-*This map is moving hour by hour and several arms are live. `TAS_39478` and
-`TAS_39748` re-validated here on the untouched map (sha256 `c6cca762…`) with
-both human records exact in the same batch; their own write-ups had not been
-banked when this page was updated, so the provenance below covers the map, not
-those two specific tapes.*
+*This map is moving hour by hour and several arms are live. Every row above
+re-validated on the untouched map (sha256 `c6cca762…`) with both human records
+exact in the same batch.*
 
 ---
+
+## How a lap gets built here: score at the NEXT checkpoint, not at this one
+
+The current lap is two arms' work joined at checkpoint 5, and the way it was
+built is more useful than the time.
+
+One arm searched **sectors 3 and 4 as a single joint window**, scored at
+**checkpoint 5** rather than at checkpoint 4, and delivered a tape reaching CP5
+at 33.158. The comparison that justifies the objective is stark:
+
+| objective | result |
+|---|---|
+| score the same window at **CP4** | a tape 0.263 s faster to CP4 that returns `DNF cps=4`; repairing sector 4 from it found **0 finishers in 21 870 evaluations** |
+| score it at **CP5** | first improvement in **60 evaluations** |
+
+Then the sector-5 arm took that delivery vehicle and re-drove the tail. And it
+measured something better than a time — **the coupling curve**, sector 5 as a
+function of how you arrive at checkpoint 5:
+
+| tape | CP5 | sector 4 | **sector 5** | finish |
+|---|---|---|---|---|
+| human WR | 33.584 | 5.750 | 6.639 | 40.223 |
+| `BEST_39961_v3` | 33.814 | 5.658 | 6.147 | 39.961 |
+| `TAS_39748` | 33.756 | 5.600 | **5.992** | 39.748 |
+| **`TAS_39460`** | **33.325** | **5.491** | 6.135 | **39.460** |
+| the 33.143 airborne entry | 33.143 | — | **7.073** | — |
+
+**Arriving at CP5 earliest is not arriving best.** The 33.143 entry is 0.317 s
+earlier at the checkpoint and 0.756 s slower at the line, because it crosses
+airborne. The corrected objective is not "earliest CP5" but **"fastest CP5 that
+still arrives planted and pointing down the road"**, which this curve puts around
+33.3 — and 39.460 arrives at 33.325, planted.
+
+That is the same lesson as the dead jump below, arriving from the other
+direction.
 
 ## The headline this page used to carry, and why it is now wrong
 
@@ -115,10 +149,11 @@ One coincidence is worth staring at: **133353's human world record is 38.532 and
 146612's author time is 38.530** — the same number to 2 ms, on maps sharing 76 %
 of their block records.
 
-**But the tapes do not transfer.** All 21 sibling ghosts DNF on 146612, and the
-sharp test is that five of them DNF **before checkpoint 1**, on 146612's own
-`seg1`, with two native ghosts exact in the same batch — 1.26 s *inside* a region
-that an occupied-cell diff said was identical.
+**But the tapes do not transfer as laps — and one of them transfers beautifully
+as a seed.** All 21 sibling ghosts DNF on 146612, and the sharp test is that five
+of them DNF **before checkpoint 1**, on 146612's own `seg1`, with two native
+ghosts exact in the same batch — 1.26 s *inside* a region an occupied-cell diff
+said was identical.
 
 > **An occupied-cell diff is a statement about geometry, not about drivability.**
 > Two maps can be byte-identical in every block a car touches for 8.6 s and still
@@ -131,10 +166,27 @@ that an occupied-cell diff said was identical.
 > an in-batch control — and the verdict is *transfers* / *does not transfer*, not
 > a number.
 
-That is the same conclusion [YOU LOVE WATER](../284238-you-love-water) reached
-and the same one [Pure Wet Icy Wood](../210218-fall-2024-25-pure-wet-icy-wood)
-reached independently: **an answer key tells you what to optimise, not what to
-copy.**
+And then the exception that makes the whole sweep worth it. Same sectors, same
+objective, two **seeds**:
+
+| seed | evaluations | s1+s2 |
+|---|---|---|
+| our own tape — the line every project tape here descends from | 143 610 | 12.688 |
+| **a human's line grafted from the sibling map** | **24 690** | **12.543** |
+
+**0.126 s better than the best pair any human on this map drives, in a sixth of
+the evaluations.** The basins are 145 ms apart, so 143 610 evaluations in the
+familiar basin were worth less than 24 690 in a new one.
+
+> **A sibling ghost does not transfer as a lap. Its line transfers as a seed for
+> a window** — and a second basin beats a longer run, precisely because a
+> sibling's human is causally independent of everything the project already owns.
+
+That refines rather than contradicts the conclusion
+[YOU LOVE WATER](../284238-you-love-water) and
+[Pure Wet Icy Wood](../210218-fall-2024-25-pure-wet-icy-wood) reached
+independently: **an answer key tells you what to optimise, not what to copy** —
+and sometimes where to start.
 
 ## Method findings, all reusable
 
@@ -211,6 +263,9 @@ evaluations. **"Shaping is live" is necessary, not sufficient.**
 ## Notes
 
 * [`JUMP_CLOSED.md`](notes/JUMP_CLOSED.md) — the station-by-station measurement that closed the jump
+* [`SECTOR5_COUPLING_CURVE.md`](notes/SECTOR5_COUPLING_CURVE.md) — sector 5 as a function of how you arrive at CP5, which is where 39.460 comes from
+* [`PROVENANCE_cp5_tape.md`](notes/PROVENANCE_cp5_tape.md) — how the CP5 delivery vehicle was built, seed and search parameters included
+* [`SECTOR_SEPARABILITY.md`](notes/SECTOR_SEPARABILITY.md) — the one-command test, and why a segment sum on this map is weaker than it looks
 * [`EXIT_UNSOLVABLE_ballistic_heading.md`](notes/EXIT_UNSOLVABLE_ballistic_heading.md) — the geometric invariant
 * [`RESULT_sector_audit.md`](notes/RESULT_sector_audit.md) — the gate-plane finding and the full sector audit
 * [`SIBLING_ANSWER_KEYS.md`](notes/SIBLING_ANSWER_KEYS.md) · [`SIBLING_TRANSFER_TEST_CORRECTION.md`](notes/SIBLING_TRANSFER_TEST_CORRECTION.md) — the sibling sweep and the correction that replaced a similarity number with a transfer test

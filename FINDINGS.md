@@ -1872,3 +1872,147 @@ respawn in the real tape.**
 This reframes every "this old ghost does not re-simulate" note in the archive.
 The right question was never how old the recording is; it is where its first hard
 contact falls.
+
+## The download criterion that follows from the contact gain
+
+The gain-of-60 result above was measured on one map from one ghost. It has since
+been confirmed general, and the confirmation is worth reading because of *how* it
+was done rather than what it found.
+
+Four author-time-beating ghosts on one map, each faithful for 78–109 s and then
+breaking:
+
+```
+ghost   time      faithful to    median over prefix   first divergent contact
+r001   433.228    109.140 s          6.42 mm          (1188.2, 130.05,  738.6)
+r002   496.804     78.080 s          7.18 mm          (1423.0, 112.01, 1005.9)
+r003   530.668     89.970 s          6.15 mm          (1429.8, 117.21, 1179.3)
+r004   556.107     84.070 s          6.02 mm          (1421.3, 114.82, 1166.1)
+r006   581.138    NEVER (581.16 s)   5.17 mm          yes-control, exact
+```
+
+**The discriminator is not that the four times differ. It is that each ghost
+drives through the OTHERS' break points at millimetre fidelity.** At r002's break
+point r001 passes 0.99 m away at **1.6 mm**, r003 at **4.1 mm**, r004 at
+**15.3 mm**, the control at **4.2 mm**. r003's and r004's break points are not on
+any other ghost's line at all. So it is not the map's geometry — it is each
+route's own first divergent contact, which is what the law predicts.
+
+Build age is excluded by an **internal** control rather than by analogy: three
+ghosts carry the byte-identical build string and split **2 fail / 1 exact**. And
+the yes-control says yes for 581 s with a ≤ 12 mm bucket median across 116
+buckets, in the same batch through the same path — an instrument that answers yes
+at 581 s and no at 78 s.
+
+> **Before you spend a download or a seed:**
+>
+> * **Do not write off a map's field because one old ghost failed.** Four of five
+>   failed here and the fifth was exact for 581 s.
+> * **Do not filter on build string, in either direction.** It is not the
+>   discriminator.
+> * **Expect a long clean prefix.** All four failures were faithful to 5–7 mm for
+>   78–109 s. A ghost that fails is still a millimetre-accurate reference up to
+>   its first divergent contact — use the prefix.
+> * **A route with fewer hard contacts is worth more as a seed than a faster one
+>   with many**, because depth is set by the first divergent contact.
+
+Two instrument defects fell out of doing this, both of the kind this document
+keeps returning to. A merge tool "dropped the largest vehicle entity" because on
+the map it was written for that entity was another player — on this map it *is*
+the player, so four of eight ghosts merged to **zero samples** and the rest
+silently lost the line. And a "first sustained divergence" threshold misread
+respawn seams as breaks; the bucket median is the honest measure. **A tool tuned
+on one map's quirk, applied blind to another, is a defect waiting for a
+deadline.**
+
+## Four controls that could not fail, in one night
+
+This is a pattern rather than four anecdotes, and naming it is the point.
+
+| the control | what it could not do |
+|---|---|
+| a detector sweep reporting "0 of 5 940 tapes reach the platform" | the gates could not be fired **by the tape that demonstrably drives across them** — they sat either side of a 6 m window without containing it |
+| a respawn audit reporting "0 respawn packets" | it had never been shown to return **non**-zero; a wrong bit, a wrong field, an off-by-one packet walk and an empty parse all look identical to a clean tape |
+| a gate probe whose **origin round-trip passed** | the round-trip exercised *position*, and the defect was in the trigger **volume** — a promoted gate's enlarged volume produced a −13.975 s "improvement" that collected two checkpoints on the real map |
+| an assertion checking a **count** | it assumed an **ordering** the data did not guarantee, so it passed on data that violated the property it was written to defend |
+
+The common shape: **each control tested a proposition adjacent to the one it was
+believed to test.** Position instead of volume. Count instead of order. Absence
+instead of the ability to detect presence. Reachability instead of faithfulness.
+
+Two habits catch all four, and neither is expensive:
+
+1. **Write down what your control cannot see, next to the control.** "A control
+   validates the property it exercises, and nothing else" is already in this
+   document; the operational form is a one-line note in the results table saying
+   which property that is.
+2. **Make every instrument answer YES on something before you trust its NO** —
+   including instruments that verify a *claim* rather than measure a quantity. A
+   yes-control on a detector, a known-answer ghost in the batch, a positive
+   control on an audit, and an identity round-trip on a writer are the same
+   discipline applied at four different layers.
+
+The cost of the missing half is not a wrong number. It is a **confident** wrong
+number, with every internal check green, which is the only kind that gets
+published.
+
+## Test whether your sectors are SEPARABLE before you sum them
+
+A segment sum — the best time for each sector, added up — is a tempting way to
+say how much a map is worth. It is usually reported as an optimistic bound: these
+times are individually achievable and might not compose.
+
+On one map, **every boundary anyone tested is inseparable**, which makes the sum
+a much weaker object than that:
+
+| boundary | evidence |
+|---|---|
+| 0 → 1 | a tape **29 ms faster at CP1** returns `DNF cps=1`; no tail shift rescues it |
+| 2 → 3 | the best-ever s1+s2 tape **dies in sector 3** with the donor's own sector-3 inputs — its CP3 state is 165 ms early and they cannot absorb it |
+| 3 → 4 | a tape **263 ms faster to CP4 than any human** returns `DNF cps=4`; **0 finishers in 21 870 evaluations** repairing sector 4 alone, against **60 evaluations** for the joint window |
+
+> **The test is one command: run your best sector-*k* tape on `seg_{k+1}`. If it
+> returns `cps=k`, that boundary is not separable** — the tape reaches the
+> checkpoint and dies in the next sector.
+>
+> And say which kind of sum you are quoting. Not "these might not compose" but
+> **"each of these is achievable and demonstrably breaks the next piece."**
+
+The physical tell is free to check: **is the car in ground contact at the
+checkpoint?** A boundary in or just before an air phase is the shape most likely
+to be inseparable, because a ballistic flight changes travel heading by exactly
+zero — so the state at that checkpoint fixes the direction of everything after it
+and the car has no authority to correct what it was handed.
+
+What works instead is **a backward chain of overlapping joint windows**, each
+scored at the checkpoint *after* the one it starts from and seeded from the state
+its predecessor actually produces. Same map: 328 ms in 53 seconds, against 0
+finishers in 21 870 evaluations for the same sector searched alone.
+
+## A second basin beats a longer run — and a sibling map's human is where to find one
+
+The sibling-map sections above conclude that an answer key tells you what to
+optimise, not what to copy, because every whole-lap graft failed. There is an
+important exception, and it is about **seeds** rather than tapes.
+
+Same map, same sectors, same objective, two seeds:
+
+| seed | evaluations | s1+s2 |
+|---|---|---|
+| our own tape — the line every project tape descends from | 143 610 | 12.688 |
+| **a human's line grafted from a SIBLING map** | **24 690** | **12.543** |
+
+**0.126 s better than the best pair any human on the map drives, in a sixth of
+the evaluations.** The basins are 145 ms apart, so 143 610 evaluations in the
+familiar basin were worth less than 24 690 in a new one.
+
+> **A second basin beats a longer run, and a sibling map's human is the best
+> source of one — precisely because it is causally independent of everything you
+> already own.** Every tape a project owns on a map usually descends from one
+> seed, and inherits that seed's basin along with its blind spots.
+
+The distinction to hold onto: a sibling ghost **does not transfer as a lap** (it
+DNFs, often before the first checkpoint), but its line **transfers as a seed for
+a window**. Depth-check any such result against the *unpromoted* maps — a tape
+that satisfies the map's own CP1–CP3 triggers is not an enlarged-volume artefact
+of a promoted gate.
