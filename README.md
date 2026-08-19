@@ -8,52 +8,6 @@ Every run here was found by search against the game's own physics — the headle
 untouched copy of the map before being published. **The point is not the replay.
 The point is the technique, written up so a human can practise it.**
 
-## These author times are within reach of what the field already does
-
-Every beaten map ends with a verdict on its technique: is this a route nobody
-found, something the field already does but not here, or something that needs
-precision a person cannot hold? The answer is lopsided — **twelve maps "known
-but unheld", three genuinely undiscovered routes, three needing real precision,
-and on every one of those three a forgiving variant has been measured.**
-
-**Not one map has come back "not humanly executable."** Not a different car, not
-a physics exploit, not a machine-only line: in the large majority of cases a
-small specific thing the field already does, done in a place or a combination
-nobody tried.
-
-> **On four maps the deliverable is a human's own lap plus one or two edits** —
-> [279218](279218-fall-2025-22-reverse-cp1-end),
-> [252289](252289-surely-my-least-cooked-at),
-> [199100](199100-spring-2023-24-2up) and
-> [238835](238835-turtle-trial-angustus). Take the recorded run, change two
-> things, and it is inside the author time.
-
-### The clearest case: a map with two roads, and everybody takes the long one
-
-If you read one result here, read [199100](199100-spring-2023-24-2up)'s. It
-needed no search and no TAS — only reading 88 recordings of the same geometry.
-
-Between CP2 and CP3, 241 m apart, there are **two different routes**:
-
-| line | n | mean sector time | best | mean path length |
-|---|---|---|---|---|
-| over the top | 27 | 5.664 | 5.516 | **710 m** |
-| **low and short** | **61** | **4.721** | **3.901** | **306 m** |
-
-**All five humans who have ever driven this map take the long one.** The long
-line is genuinely fast — it averages 430 km/h — and it covers 701 m to travel
-241 m of map. The short line averages 276 km/h, brakes down to 150, and wins by
-**1.971**.
-
-> **A median execution of the short line puts the human world record at 51.051 —
-> 0.551 inside the author time.** Nothing changes after CP3, its slow phase is a
-> braking phase (the most forgiving input there is), and the two lines arrive at
-> CP3 in the same state, so the gain is additive.
-
-That is a sector sum measured from recordings rather than a driven lap, and it
-is stated as a prediction. It is also the trap in physical form: **a wider line
-reads faster and is slower.**
-
 ## Results — author time beaten
 
 | map | records | author time | best human | **this TAS** | vs AT | keyboard-only |
