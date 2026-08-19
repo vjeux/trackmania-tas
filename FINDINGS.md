@@ -3294,3 +3294,61 @@ depends on a record whose inputs nobody has.
 
 **Where a page rests its framing on the author, rest it on the tolerance
 instead.**
+
+## Cite the number that survived an independent build, not the fastest one you have
+
+267859 ended with two tapes 1 ms apart and a genuine question about which one the
+repository should call the record. The answer the finding arm asked for — and got
+— was the **slower** one.
+
+| tape | evidence behind it |
+|---|---|
+| **10.759 — cited as the record** | rebuilt from the archive by a verification arm and re-run on **three separately compiled binaries** |
+| 10.758 — the arm's best, pending | full six-invocation protocol on **two nodes that share one toolchain** |
+
+Two nodes are independent in their operating systems, their servers and their
+scheduling. They are **not** independent in their binaries, and a defect in a
+shared build produces the same wrong answer twice with every appearance of
+replication. The finding arm flagged the shared toolchain itself, which is what
+made the distinction visible at all.
+
+> **Replication across machines tests the environment. Replication across builds
+> tests the code.** A result confirmed six times on one binary has been confirmed
+> once.
+
+Two practices follow, and both are cheap:
+
+* **Publish both numbers, labelled.** Hiding the faster one looks like caution
+  and reads like concealment when it later lands; publishing it as *pending
+  independent verification* is honest in both directions and costs a table row.
+* **Let the discoverer set the citation rule.** The arm here asked to be
+  understated. An arm that asks to be quoted conservatively is telling you
+  something true about the care behind the rest of its numbers — and the
+  distinction between 10.759 and 10.758 is legible rather than fussy precisely
+  because the reason for it is stated on the page.
+
+## Twelve improvements from the wide window, zero from 146 532 local variants
+
+267859's last two hours are as close to a controlled experiment on search
+strategy as this project has produced, because both strategies ran on the same
+map at the same time.
+
+| strategy | evaluations | improvements |
+|---|---|---|
+| hot **wide joint window** | — | **12** (10.859 → 10.758, 0.101 s) |
+| exhaustive **local** enumeration | 32 768 + 113 764 = **146 532** | **0** |
+
+Every single step of the descent came from the wide window. The exhaustive local
+searches were not sloppy and did not fail — they *completed*, over the
+neighbourhood of the incumbent, and correctly reported that it contains nothing.
+
+> **On a map where the time is not in the incumbent's neighbourhood, no amount of
+> enumerating that neighbourhood will tell you so.** An exhausted local search
+> returns the same "nothing here" whether you are one millisecond from the
+> optimum or a hundred.
+
+Which is the argument for running both concurrently rather than in sequence. Run
+locally first and the empty result reads as *the map is finished*; run them side
+by side and the same empty result reads as *the time is somewhere else*, which is
+a direction. The cost of the local arm was not wasted either — it is what makes
+the wide window's twelve improvements interpretable rather than lucky.

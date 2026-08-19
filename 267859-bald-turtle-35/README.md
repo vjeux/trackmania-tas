@@ -4,7 +4,8 @@
 
 | tape | validated | vs AT | vs human WR |
 |---|---|---|---|
-| [`TAS_10759`](replays/TAS_10759.Ghost.Gbx) | **10.759** | **−0.009** | **−0.410** |
+| [`TAS_10759`](replays/TAS_10759.Ghost.Gbx) — **the record** | **10.759** | **−0.009** | **−0.410** |
+| [`TAS_10758`](replays/TAS_10758.Ghost.Gbx) — the arm's best, *pending independent verification* | 10.758 | −0.010 | −0.411 |
 | [`TAS_10768`](replays/TAS_10768.Ghost.Gbx) | 10.768 | ±0 — *equals* the author time | −0.401 |
 | [`TAS_10769`](replays/TAS_10769.Ghost.Gbx) | 10.769 | +0.001 | −0.400 |
 | [`KEYBOARD_10788`](replays/KEYBOARD_10788.Ghost.Gbx) | 10.788 | +0.020 | −0.381 |
@@ -13,6 +14,19 @@
 | author time | 10.768 | — | −0.401 |
 | human WR, Schmaniol *(control)* | 11.169 | +0.401 | — |
 | human rank 2 *(control)* | 11.189 | +0.421 | +0.020 |
+
+**Why two numbers, and why the slower one is the record.** 10.759 is the tape a
+verification arm rebuilt from the archive and re-ran on **three separately
+compiled binaries**, so it is the independently verified figure and it is what
+this repository cites. 10.758 has cleared the full six-invocation protocol on two
+nodes — but **those two nodes share one toolchain**, which the finding arm
+flagged itself, so the two runs are independent in their operating systems and
+servers and not in their binaries. That is a real distinction and it is why the
+faster tape is published as *the arm's best, pending independent verification*
+rather than as the record.
+
+The arm asked to be cited the conservative way. That request is the reason to
+trust the rest of the numbers on this page.
 
 TMX map [267859](https://trackmania.exchange/maps/267859) · uid
 `auaaMFbt2cKnZPYjP11sySqEb_6` · author **Bald_tm / BALDFROMSPB** · tag **Turtle**
@@ -183,8 +197,33 @@ between a low-input result and a low-input hope — otherwise a search that
 silently ignored its constraint produces a tape you will describe with the wrong
 word (see [`FINDINGS.md`](../FINDINGS.md) on the two flags that lied tonight).
 
-*Not published: 10.758 has been seen independently on both nodes but has not
-cleared this map's protocol. **10.759 stands as the published time.***
+*Not published as the record: **10.758** has cleared this map's full protocol on
+both nodes and is in the table as the arm's best pending independent
+verification. **10.759 stands as the cited time.***
+
+## The descent, and where the time came from
+
+| | |
+|---|---|
+| 10.859 → 10.849 → 10.839 → 10.827 → 10.817 → 10.797 → 10.788 → 10.777 → 10.769 → 10.768 → 10.759 → 10.758 | **0.101 s in about two hours** |
+
+**Every one of those steps came from the hot wide joint window, and none from
+local repair.** Over the same period two exhaustive local enumerations — 32 768
+variants and 113 764 variants — found *nothing*. That is a clean natural
+experiment: the two strategies ran side by side on the same map at the same time,
+and one of them produced twelve improvements while the other produced zero after
+146 532 evaluations.
+
+The lesson is not that local search is useless. It is that **on this map the time
+was never in the neighbourhood of the incumbent**, and no amount of exhaustively
+enumerating that neighbourhood would have said so. Only running the wide window
+alongside it did.
+
+**And the margin has a symmetry worth noticing.** We are 0.010 under the author
+and **0.411 under the best of the nineteen humans** who have driven this map —
+which is slightly *more* than the margin the author held over that entire field
+when the map was first dispatched. The gap we opened over the humans is the same
+size as the gap that made this map interesting in the first place.
 
 ## Validation
 
@@ -208,9 +247,16 @@ against the untouched map:
 rank01_11169.Ghost.Gbx     11169   (control — the world record)
 rank02_11189.Ghost.Gbx     11189   (control)
 TAS_10759.Ghost.Gbx        10759   ×3
+TAS_10758.Ghost.Gbx        10758   ×2
 TAS_10769.Ghost.Gbx        10769
 TAS_10768.Ghost.Gbx        10768
+KEYBOARD_10788.Ghost.Gbx   10788
 ```
+
+`TAS_10758` sha256
+`f6566bcf3b5a531e9f66fb9541a7603a29d4f6558e5331eeb3cfc0899958382a`
+(md5 `26516780e145f8b6c02c8df8eda66d98`), zero respawns, 1147 packets — the same
+container as every other tape in the chain.
 
 **Provenance was checked rather than assumed**, which matters when a nine-ms
 result descends from a downloaded human tape:
