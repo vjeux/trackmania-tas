@@ -22,6 +22,7 @@ The point is the **technique**, written up so a human can practise it.
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 24.164 |
 | [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **15.217** (keyboard from 4.56 s) |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
+| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **20.070** | **−0.188** | — |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.518** | **−0.335** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
@@ -51,16 +52,12 @@ of writing, and where they beat the human world record that is said too.
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the finish trigger is **closed by measurement** — it tests a point on the car's *roof*, and every source of the ~26° tilt it needs costs 5.5× the time budget. But rank 1's flip is a validated human way to finish at 11.2 s, and the approach it needs has **never been searched**: ~6 s is unclaimed in one 14 s stretch |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 † | **67.404** | 8.717 | **−1.038** | a 1/127 steer error e-folds in 0.7 s; the AT is 4.8 s below the field's best-sector splice, the 2022 WR, *and* our own per-sector optima |
-| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | 24.854 ‡ | 4.596 | −0.048 | the map's decisive sector does not order the field; published for the pre-registered experiment that **failed** here |
 | [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | — | **characterised, not merely unbeaten**: a human's line on a byte-identical sibling map, priced onto ours, is **47.4 — 3.0 s inside the author time**. It needs a long flat run-up into each launch and **only copy 0 has one**; the tube gives copies 1–3 just 0.6 s of flat, which cannot build the lateral velocity the wall contact needs |
 | [P-Found - Pokeuuu](153527-p-found-pokeuuu) | 1 | 939.283 | 5661.335 | — | — | — | not a target: cutting every retry out of the only run still leaves 1214.585 against a 939.283 author time |
 
 † 63.546 is the all-time human record on 134672, set on a 2022 build; it does not
 re-simulate on a current one. 68.442 is the best human record set on a build the
 game still runs.
-‡ 228607's tape re-simulates on the untouched map, but no human ghost for that
-map was banked, so the re-validation could not carry a known-answer control. No
-replay is published for it — see that page.
 § **Not re-verified in the latest audit pass.** These three maps have their
 headline control ghost archived, but not the wider *field* behind their
 field-reproduction claims, so those claims are not reproducible from our archive
@@ -199,9 +196,10 @@ returns the millisecond in its filename.
 
 This discipline is not decoration. Silent-corruption bugs keep being found —
 searches that reported improvements which did not exist — and **every one of them
-was caught by that control**. The corollary is on the
-[Torment (1-UP)](228607-torment-1-up) page: where no human ghost exists to serve
-as a control, no replay is published, however well the tape re-simulates.
+was caught by that control**. Its sharpest form is on
+[Torment (1-UP)](228607-torment-1-up), where fifteen *foreign* human tapes,
+grafted from the official map this one is a copy of, each returned their own
+official time to the millisecond.
 
 ## Maps
 
