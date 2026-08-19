@@ -1,10 +1,11 @@
 # Torment (1-UP) — the author time falls, and the technique was on a leaderboard nobody had connected to the map
 
-**Author time 20.258 · human world record 24.902 · best validated 19.927.**
+**Author time 20.258 · human world record 24.902 · best validated 19.910.**
 
 | tape | validated | vs AT | vs human WR |
 |---|---|---|---|
-| [`TAS_19927`](replays/TAS_19927.Ghost.Gbx) | **19.927** | **−0.331** | **−4.975** |
+| [`TAS_19910`](replays/TAS_19910.Ghost.Gbx) | **19.910** | **−0.348** | **−4.992** |
+| [`TAS_19927`](replays/TAS_19927.Ghost.Gbx) | 19.927 | −0.331 | −4.975 |
 | [`TAS_19936`](replays/TAS_19936.Ghost.Gbx) | 19.936 | −0.322 | −4.966 |
 | [`TAS_20070`](replays/TAS_20070.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
 | [`LOWINPUT_20070_16values`](replays/LOWINPUT_20070_16values.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
@@ -14,11 +15,15 @@
 | human WR, on the altered board | 24.902 | +4.644 | — |
 | [**the author's own lap**](replays/AUTHOR_LAP_20258_watchable.Ghost.Gbx) | *20.258* | — | *watchable only — see below* |
 
-**The basin around 19.93 looks flat, and that is a stronger statement than the
-tape.** Two search islands converged on 19.927 **independently, from different
-mutation windows**, and a third line sits at 19.940. A single best tape can be a
-lucky corner of the landscape; three arrivals from three directions at the same
-place is evidence about the landscape itself.
+**Two independent official seeds land 17 ms apart, and that says more than either
+tape.** 19.910 descends from official **rank 1**'s line (a separate search
+island, 236 320 evaluations); 19.927 descends from **rank 10**. A third line sits
+at 19.940, and two earlier islands converged on 19.927 from different mutation
+windows.
+
+A single best tape can be a lucky corner of the landscape. **Four arrivals from
+four directions — two of them from different human seeds — is evidence about the
+map's floor**, and it puts that floor at about 19.91–19.93.
 
 
 TMX map [228607](https://trackmania.exchange/maps/228607) · **23 recorded runs**
@@ -206,9 +211,64 @@ rung was the whole untouched map with the four `GateFinish` blocks relocated
 position-only and every other waypoint left required. The gap bites only on
 things cut from a *segment* map, and nothing here is.
 
+## What our time is being compared *against*, stated precisely
+
+The author time on this map is **a declaration**, and a reader should know both
+halves of that before reading the −0.348.
+
+**Nobody can re-simulate the author's lap.** The record embedded in the map is
+**telemetry only — there is no input archive** — so it can be watched and
+measured but never re-driven, by us or anyone. unbeaten.at also reports
+`atSetByPlugin: true`.
+
+**But the declaration is consistent with a genuinely driven recording**, and that
+is the stronger half:
+
+* 406 samples at 50 ms, spawning at t = 0.040;
+* ending on the 1-UP Goal block at (405.5, 172.9, 715.0) at **20.290** —
+  **32 ms past the declared 20.258**, which is exactly the post-finish rolling
+  window every ghost on every map shows.
+
+A fabricated number would have no reason to land 32 ms inside that window on the
+correct Goal block. So the comparison this page is making is: **our validated,
+re-simulable lap against a declared time backed by a driven telemetry record we
+cannot replay.**
+
+That does not weaken the result — 19.910 is a game-scored lap on the untouched
+map through a single-file gate on three independently built toolchains. It
+changes what the *author* side of the comparison is, and it is why everything
+this page says about his flight is **inferred from telemetry rather than
+reconstructed from inputs**. It is also why the official field matters so much
+here: 15 official human tapes **can** be re-simulated on this geometry, and every
+one returns its own official time to the millisecond.
+
+## The corner is not available — and that is a result
+
+An earlier reading of this map's launch/coast decomposition suggested about 12 m
+above the author's line was available, at the corner of the two knobs. **It is
+not, and the reason is mechanical.**
+
+Two search islands were seeded from the field's extremes:
+
+| seed | launch | coast | converged at |
+|---|---|---|---|
+| official rank 8 — the steepest launch | vy **101.6** | −45.5 | **20.000** |
+| official rank 3 — the best coast | vy 74.6 | **−26.3** | **20.007** |
+
+Neither approached the implied corner at y ≈ 173. And they could not, because
+**the two knobs are coupled at the launcher**: what makes rank 8's launch steep is
+the same attitude that carries the roll past inverted (−2.49, wrapping to +2.25).
+**You cannot keep that launch angle and acquire rank 3's coast** — the input that
+buys one spends the other.
+
+So the "corner" was an artefact of treating two coupled quantities as independent
+axes. Publishing it as a bound would have sent the next arm after something that
+does not exist, which is why the correction sits here beside the analysis rather
+than replacing it quietly.
+
 ## Validation — and the strongest yes-control in the project
 
-`TAS_19927` sha256 `3c99172830e5c35cecba6656212e450f9f698d8349342076b9b240f1631b63b3`,
+`TAS_19910` sha256 `f9ea0b209db48b36140c845963c0ee26396bc1a1f5ec64ec352db367782edd3b`,
 map sha256 `2c6d500aa73e3e86c1b9c64c61e5801c04b1b9d757687a9054ecc0fb118976e5`
 (md5 `65b6b7bcf4808070383e6e9ff9de28f1`).
 
@@ -219,15 +279,15 @@ the scheduler or a neighbouring tape can contribute to the number. Reproduced
 here on a separate toolchain, one file at a time:
 
 ```
+tor_BEST_19910.Ghost.Gbx      19910
 tor_BEST_19927.Ghost.Gbx      19927
-tor_BEST_19936.Ghost.Gbx      19936
 CTRL_ident_24854.Ghost.Gbx    24854
 CTRL_splice_24854.Ghost.Gbx   24854
 ```
 
 with the controls' own hashes matching the archive byte for byte
-(`2188261a…e62db`, `86eb254f…6371a`). The 19.927 tape carries **zero respawn
-packets**, audited by enumerating bit 31 rather than assumed.
+(`2188261a…e62db`, `86eb254f…6371a`). Both the 19.910 and 19.927 tapes carry
+**zero respawn packets**, audited by enumerating bit 31 rather than assumed.
 
 Before that, **13 of 13 tapes exact and both controls exact** on an auditor's
 independently built tree, store-only inputs, hashes taken before validation. That

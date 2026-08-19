@@ -1,10 +1,11 @@
 # Spaghetti Nights 2 — the world record falls by 0.763 s, and the jump that looked decisive is dead
 
-**Author time 38.530 · human world record 40.223 · best validated 39.460.**
+**Author time 38.530 · human world record 40.223 · best validated 39.430.**
 
 | tape | validated | vs human WR | vs AT | steer values | steer events |
 |---|---|---|---|---|---|
-| [`TAS_39460`](replays/TAS_39460.Ghost.Gbx) | **39.460** | **−0.763** | +0.930 | — | — |
+| [`TAS_39430`](replays/TAS_39430.Ghost.Gbx) | **39.430** | **−0.793** | +0.900 | — | — |
+| [`TAS_39460`](replays/TAS_39460.Ghost.Gbx) | 39.460 | −0.763 | +0.930 | — | — |
 | [`TAS_39478`](replays/TAS_39478.Ghost.Gbx) | 39.478 | −0.745 | +0.948 | — | — |
 | [`TAS_39748`](replays/TAS_39748.Ghost.Gbx) | 39.748 | −0.475 | +1.218 | — | — |
 | [`BEST_39961_v3`](replays/BEST_39961_v3.Ghost.Gbx) | 39.961 | −0.262 | +1.431 | 76 | 234 |
@@ -262,6 +263,7 @@ evaluations. **"Shaping is live" is necessary, not sufficient.**
 
 ## Notes
 
+* [`FINAL_LAP_39430.md`](notes/FINAL_LAP_39430.md) — the closing lap and its splits
 * [`JUMP_CLOSED.md`](notes/JUMP_CLOSED.md) — the station-by-station measurement that closed the jump
 * [`SECTOR5_COUPLING_CURVE.md`](notes/SECTOR5_COUPLING_CURVE.md) — sector 5 as a function of how you arrive at CP5, which is where 39.460 comes from
 * [`PROVENANCE_cp5_tape.md`](notes/PROVENANCE_cp5_tape.md) — how the CP5 delivery vehicle was built, seed and search parameters included
