@@ -79,7 +79,51 @@ record does.
 steering channel over 25 ticks, not a single key press. The durable claim is the
 tolerance result above, not that tape's literal contents.)*
 
-## Why the author time still stands: 70 millimetres
+## The 70 mm is not a margin — no upright car can finish this map
+
+*(This supersedes the earlier reading of this page. The "70 mm of clearance" was
+real as a measurement and wrong as an explanation.)*
+
+**The trigger does not test the car's origin. It tests a point fixed in the
+car's body, about 0.84 m above the origin — roughly the roof.**
+
+The control is model-free: one ghost, one gate, two crossings of the same
+footprint 20 mm apart in gate height.
+
+| crossing | gate y | fires at | **origin y at the fire** | attitude |
+|---|---|---|---|---|
+| rank 2 | 144.34 | 68.608 | **145.521** | upside down |
+| rank 2 | 144.36 | 51.019 | **143.937** | upright |
+
+**The crossing that fires with its origin 1.585 m HIGHER is the inverted one.**
+No function of the origin can produce that. The `car_y ≤ gate_y + 1.25` model
+held for hours because it was fitted entirely on inverted tapes.
+
+Turning the car over moves the tested point **1.7 m down**. So the achievable
+envelope, measured rather than assumed:
+
+| term | contribution |
+|---|---|
+| **attitude** | **±1.7 m** — by far the largest, and nobody had it |
+| suspension | **≤ 5 mm** — no grounded sample in any human run is more than 2/255 below the resting damper value |
+| steering | **< 1° of body roll** — full lock for 0.8 s at 190 km/h leaves the car *flatter* than unperturbed |
+| going airborne | **impossible here** — the ramp's radius is ~1500 m, so leaving it needs 440 km/h; the route crosses at 190 |
+
+The roof under the finish is one clean plane (11.4°, rms 38 mm over 263 human
+samples), so on that plane the car's attitude *is* the plane's attitude. There is
+no other term. Therefore:
+
+> **No upright car can ever finish this map.** The fast route is already at the
+> optimum for an upright car — which is why 1.6 M evaluations found no gradient.
+> There was no room, not a stubborn number. **All three humans finish upside down
+> out of necessity.**
+
+What the map actually requires is **~26° of body tilt inside the footprint** —
+0.26 s of the 1.7 rad/s tumble that leaving any ramp edge produces. The open
+question is a **rotation source within ~2 s of the finish**, which is a different
+and better-posed problem than the one this page described before.
+
+## The six probes that found nothing, and why
 
 A search seeded from the world record found a genuinely faster route — full
 throttle up the roofs at 150–190 km/h where the field lifts to 30–100 —
