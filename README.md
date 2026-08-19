@@ -47,10 +47,10 @@ in any run here that takes the author medal — an input change event being any
 tick where steering, throttle or brake differs from the tick before. *Matching*
 the author time takes the medal, so a run level with it counts. A dash means no
 such count is published for that map, usually because the only qualifying run is
-a dense analog tape. **Fewest is not easiest**: on
-several maps the sparsest tape is the *least* forgiving of mistimings, so each
-map's page names the run actually worth practising. See
-[`FINDINGS.md`](FINDINGS.md).
+a dense analog tape. **Fewest is not easiest**: on several maps the sparsest
+tape is the *least* forgiving of mistimings, so each map's page names the run
+actually worth practising, and [`FINDINGS.md`](FINDINGS.md) collects what
+carried over from one map to another.
 
 On [The Blev Special](227654-the-blev-special) the human record of 147.031
 contains eleven respawns; 64.871 is that same driver's own driving with the
@@ -74,86 +74,6 @@ Where it beats the human world record, that is said too.
 63.546 is the all-time human record on [134672](134672-kekl-sausage-ice), set on
 a 2022 build; it does not re-simulate on a current one, so 68.442 — the best
 record set on a build the game still runs — is used instead.
-
-## Why an unbeaten author time is interesting
-
-On these maps the author time usually carries the **driven-lap signature**: a
-non-round time against round placeholder medals, a validated flag, and often the
-author sitting just behind it on their own leaderboard. It reads like a real
-person sat down and hit it, rather than a formula or a theoretical bound. So
-when a map has hundreds of recorded runs and the author time still stands,
-something specific is going on: a line nobody tried, or a technique people know
-about and cannot hold.
-
-That signature is circumstantial and this repo does not treat it as proof — on
-most maps the author's lap is stored as telemetry only, so you can watch it but
-nobody can ever replay it. The one map that escapes that is
-[286279](286279-turtle-trial-leto), where the missing inputs were reconstructed
-and the reconstruction finishes at **355.181 — the declared author time, to the
-millisecond.**
-
-**And none of the framing here depends on the author anyway.** The claim that
-these times are humanly reachable rests on tolerance measured against the
-human's own driving: on [279218](279218-fall-2025-22-reverse-cp1-end) the tape
-we hand a person survives 95 % of single-input mistimings where the human seed's
-lap survives 45 %; on [267859](267859-bald-turtle-35) it is 76.1 % against
-24.3 %; on [249521](249521-impossible-at-for-ssano), 41 % against 18 %. Those
-are measurements about what a pair of hands has to hit.
-
-## Low-input runs
-
-A tape of per-tick analog micro-corrections is worthless to a human. Where
-possible each map also gets a **drivable** version: fewer input *change events*
-and a restricted value alphabet — pure keyboard (`left / nothing / right`) or a
-small action-key ladder. The alphabet is read off the human world record's own
-tape rather than assumed.
-
-On three maps the keyboard-only run beats the author time outright, and on a
-fourth it equals it:
-
-- **idm ruinin ur day #460 — 15.217** on `{−127, 0, +127}` from race 4.56 s (AT 15.643)
-- **Training - 10 Long — 13.075** (AT 13.080)
-- **Great wtf of what #165 — 8.075**, 14 input changes (AT 8.127)
-- **Fall 2025 - 22 Reverse CP1 End — 5.350**, *equalling* the author time on 15
-  inputs and three values, and 0.005 inside the human world record
-
-On 165922 the keyboard tape is not a concession — it is **the fastest run on the
-map**, ahead of the analog one at 15.224. Restricting the alphabet found time
-rather than costing it.
-
-**But fewer inputs does not mean easier.** Measured on five maps, input count
-predicts nothing about how much timing error a tape forgives; on
-[267859](267859-bald-turtle-35) the keyboard version is worse on both axes at
-once — 0.029 slower and half as tolerant. Each map's page names which run is the
-one to practise, and it is often neither the fastest nor the sparsest.
-
-**And a TAS can be the *more* forgiving object.** On two maps our tape survives
-mistiming better than the human world record's own driven tape. A run that is
-both faster and three times more forgiving than the incumbent is not a curiosity
-to watch; it is a better thing to practise.
-
-## What transfers between maps
-
-[`FINDINGS.md`](FINDINGS.md) — the handful of things that turned out to be true
-on more than one map, and are therefore about the game rather than about one
-leaderboard.
-
-[`_altered/`](_altered) — ten of these maps are Altered Nadeo copies of official
-campaign maps, and we can now name which. That gives each of them a second
-field, on identical geometry, of 29,274 to 900,000 players. Two results follow
-immediately: our 270051 tape beats every one of the official top five on an
-87,596-player field, and on 228607 the official top 15 all fire a launcher that
-none of the 23 players on the altered board ever found.
-
-## Layout
-
-```
-<mapid>-<slug>/
-  README.md      what the run does and how a human would drive it
-  replays/       .Ghost.Gbx replays — the validated time is in the filename
-  inputs/        the same runs as input tapes (tick scripts / per-tick JSON)
-  notes/         raw oracle validation transcripts, where they exist
-```
 
 ## Validation
 
