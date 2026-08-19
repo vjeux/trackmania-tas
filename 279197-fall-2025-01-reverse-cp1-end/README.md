@@ -65,9 +65,48 @@ That is a strong statement about the map: every input matters everywhere. It is
 replayed blind, not human skill. A driver is a closed loop; they see the car
 drift and correct on the next frame.
 
-No low-input family is published for this map, because none of the
-simplifications survive. Saying so is better than dressing up a tape that does
-not work.
+### The low-input ladder — measured, and it does not close
+
+*(An earlier version of this page said no low-input family exists here. That was
+concluded by **converting** the finished analog tape, which is the one method
+measured not to work on any map in this collection. Searching **under** the
+constraint from a compatible seed does work, and the corrected answer is below —
+but keyboard still does not reach the author time, and this section says so.)*
+
+| rung | seed | time | vs AT | events | alphabet |
+|---|---|---|---|---|---|
+| analog | — | **10.594** | **−0.004** | — | 255 |
+| human WR, for scale | — | 10.602 | +0.004 | — | 255 |
+| [16 detents](replays/DETENT16_10602.Ghost.Gbx) | analog champion | **10.602** | +0.004 | 264 | 32 |
+| 8 detents | analog champion | 10.608 | +0.010 | 137 | 17 |
+| 8 detents, reduced | " | 10.618 | +0.020 | **85** | 17 |
+| [**5 detents = the real action-key ladder**](replays/ACTIONKEY_5detent_10643.Ghost.Gbx) | human r152 | 10.643 | +0.045 | 76 | 11 |
+| [**keyboard**](replays/KEYBOARD_10636.Ghost.Gbx) | human r301 | **10.636** | +0.038 | 66 | 3 |
+| [keyboard, 35 events](replays/KEYBOARD_35ev_10646.Ghost.Gbx) | human r152 | 10.646 | +0.048 | **35** | 3 |
+| 5 detents | analog champion | 10.702 | +0.104 | 162 | 10 |
+| keyboard / 4 detents | **converted** from the analog champion | **0% finish** | — | — | — |
+
+**The 5-detent rung is not an arbitrary choice.** Every digital human on this
+board uses only multiples of **20% lock** (observed 0.2 / 0.4 / 0.6 / 0.7961 /
+1.0), so five detents *is* the action-key setup people actually have. The 8- and
+16-detent rungs are finer than anything a human is observed to press — they are
+here to bound the cost of the alphabet, as measurement rather than advice.
+
+**Why it does not close, and it is the opposite of another map in this
+collection.** This board is all pad at the top: ranks 1–15 have a median
+non-zero steer change of 0.02–0.08 per tick, and **every digital human sits at
+rank 152 or worse.** The digital deficit is diffuse carry — 1 to 4 km/h down at
+every station from t = 8 s, with no single corner to fix.
+
+The 16-detent rung's 4 ms was checked against the sub-millisecond vernier rather
+than assumed to be a quantisation plateau: it is **genuinely 0.85 m behind along
+the finish axis**, so it would not have fallen to a ratchet. A further 2.7 hours
+and 1.66 M evaluations across three window widths bought **1 ms**.
+
+**Still useful to that leaderboard:** action keys at 10.643 is **15 ms faster
+than the best keyboard human on the board**, and pure keyboard at 10.646 is
+12 ms faster **in 35 inputs**. Both would place top-150 of 561. Neither is the
+author time.
 
 ## Other measurements
 

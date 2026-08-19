@@ -1086,3 +1086,40 @@ write-up, not after somebody asks.
 Related, and cheap: **check downloaded ghosts are complete before use.** A
 truncated download validates as `DNF cps=1` and reads as a genuine field-check
 failure — which is how a healthy map gets condemned.
+
+## You pay for the alphabet, not the input count
+
+The clearest measurement anyone has produced of what a low-input tape actually
+costs, from the ladder on
+[279197](279197-fall-2025-01-reverse-cp1-end):
+
+- **Within a rung, fewer events is nearly free.** 66 → 57 keyboard events costs
+  4 ms; going all the way down to 35 events costs 10 ms.
+- **Across rungs, the value alphabet is expensive.** 30 distinct steer values →
+  3 costs **33 ms**.
+
+**If you want a tape someone can hold in their head, the price is in the
+alphabet.** Event count is close to free once the alphabet is fixed.
+
+**And the seed matters more than the constraint.** Same alphabet, different
+starting tape: 5 detents from the analog champion is 10.702; from a human
+action-key run it is 10.643. **A 59 ms swing with the constraint held fixed** —
+larger than most of the margins in this repo. Seed a constrained search from a
+run that already uses that alphabet, not from your fastest analog tape.
+
+Which is the same finding as "conversion does not work", stated positively: the
+analog champion is not merely a bad seed for a keyboard search, it is 59 ms
+worse than the obvious alternative even when the search is done correctly.
+
+## Verifying a low-input claim: do not use the trajectory decoder
+
+A trap that will catch the next person who checks one of these claims.
+`tmtraj decode` on a synthesised candidate reads the **template's** stale
+telemetry, so decoding a quantised tape reports the *seed's* steering alphabet —
+in one case 86 analog values on a tape that genuinely contained 3. The agent
+nearly reported their own working ladder as broken.
+
+**Read the input archive, not the telemetry.** `tmsimp` does this and confirmed
+17 values for the 8-detent arms and 3 for keyboard. This is the same
+synthesised-tape telemetry trap documented above, in the place where somebody
+auditing a published number is most likely to hit it.
