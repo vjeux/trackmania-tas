@@ -872,3 +872,39 @@ identical clearance, dwell ranged from 6 to 33, and the two tapes sharing the
 best rung had dwells of 20 and 37. Twenty minutes of checking a proposed metric
 against tapes whose answers are already known is cheap against a multi-hour
 search pointed the wrong way.
+
+## A control validates the property it exercises, and nothing else
+
+The origin round-trip — move a gate back to where it started, confirm the
+untouched map reproduces to the millisecond — was adopted as *the* standard for
+trusting a gate probe, after a model-swapping mover fabricated a ten-second
+discovery on one map and deleted the finish on another.
+
+It is necessary. It is **not sufficient**, and here is the case that proves it.
+
+A 14.7-minute search against a segment map reported **−13.975 s**. The winning
+tape collects only CP1 and CP2 on the untouched map. It had not found a route —
+it had found the promoted gate's **enlarged trigger volume**.
+
+**The origin control passed the entire time.** The gate's *position* was restored
+correctly, so the round-trip reproduced exactly. The defect was in the *volume*,
+and a control that exercises position cannot see volume.
+
+| control | catches | misses |
+|---|---|---|
+| origin round-trip | a mover that shifts, rotates or deletes the gate | **a gate whose trigger volume differs from the one it replaces** |
+
+This is the seventh instrument failure catalogued on this project and **the first
+to defeat a countermeasure built for exactly its family.** It also produces the
+most attractive kind of wrong answer: not a subtle error, a *fourteen-second
+improvement*.
+
+> **When you adopt a control, write down what it cannot see — and check whether
+> the thing you are actually worried about is on that list.**
+
+The fix is to make the substitution incapable of the defect rather than to add
+another check: a position-only mover that never touches the model, or a finish
+placed beyond a real checkpoint so the trigger the candidate must satisfy is the
+map's own. And, as always, re-validate every improvement on the untouched map
+before believing it — that is what exposed the 14 seconds as two checkpoints out
+of four.

@@ -36,6 +36,7 @@ The point is the **technique**, written up so a human can practise it.
 | map | records | author time | best human | **this TAS** | short by | what blocks it |
 |---|---|---|---|---|---|---|
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | a route ~2 s under the AT misses the sunken finish trigger by **70 mm** |
+| [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | the map is one module ×4; the field's lap loses 16 m/s per copy and misses a 300 km/h jump |
 
 All times in **seconds**.  "Best human" is the online world record at the time
 of the run. Every author time in this table had **never** been beaten by a
