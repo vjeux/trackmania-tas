@@ -127,6 +127,29 @@ six distinct steer values, throttle held almost throughout:
 > held** — the reactor's thrust points up out of the inverted car and cancels
 > gravity, so you glide from y = 53 to the line without ever touching the wall.
 
+> ### ⚠ This instruction is specific to **1-DOWN**, and it is wrong on 1-UP
+>
+> **"Keep the lock held" only works because this map's Goal is low**, so the car
+> is *supposed* to go broadside and shed speed on the way down to it. On the
+> sibling map [Torment (1-UP)](../../228607-torment-1-up) — the **same official
+> map with the Goal moved 64 m** — following this sentence sends you broadside at
+> 562 km/h and you will not reach the finish.
+>
+> The two author laps are **identical up to the launcher**: same contact state
+> (pitch 0.26, roll 0.06, ~330 km/h, y = 50.4), and both leave at vy 92–94. The
+> launch is not what separates them. What happens next is:
+>
+> | | 1-DOWN *(this map)* | 1-UP |
+> |---|---|---|
+> | after the launch | **holds full lock to the end** | holds the lock ~200 ms, **releases to centre at 18.740**, then counter-steers progressively to full left by 19.390 |
+> | roll | runs to −3.1 — the car goes broadside | stops at −1.6 and **returns to −0.18** |
+> | speed | 751 → **562 km/h** | 769 → **720 km/h** |
+> | vy | 94 → **22** | 92 → **68** |
+> | why | the Goal is low; shedding speed is the point | the nose falls in line with the 25°-up flight path, and the height is the point |
+>
+> Both hold throttle and brake together throughout. **The difference between the
+> two maps is entirely in what you do with the lock after the launcher.**
+
 The commit at 18.15 s is a *hold*, not a stab: the author holds that one input
 for the final 2.4 seconds of the run.
 

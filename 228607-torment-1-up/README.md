@@ -88,3 +88,28 @@ Geometry and surface are identical (`name_agree` 1.0000); the alteration is the 
 **All fifteen** grafted official Fall 2024 - 08 humans return **their own official times to the millisecond** on this map's rung geometry — fifteen foreign tapes, fifteen exact, untunable. The recipe here is the three-chunk form, chosen by which lossless control passed in the same batch.
 
 That field also answers the technique question this map poses. The official top 15 **all** fire the launcher, at 692–997 km/h — while **0 of the 23** players on the altered board ever found it.
+
+## Do not follow 1-DOWN's driving guide on this map
+
+[Torment (1-DOWN)](../228811-torment-1-down) is the **same official map with the
+Goal moved 64 m**, and its write-up ends with a driving instruction: after the
+launcher, *keep the lock held*. **That is correct there and wrong here**, and a
+player who carries it across goes broadside at 562 km/h and does not reach the
+finish.
+
+The two author laps are **identical up to the launcher** — same contact state
+(pitch 0.26, roll 0.06, ~330 km/h, y = 50.4), both leaving at vy 92–94. The
+launch is not what separates them:
+
+| | 1-DOWN | **1-UP (this map)** |
+|---|---|---|
+| after the launch | holds full lock to the end | **holds the lock ~200 ms, releases to centre at 18.740**, then counter-steers progressively to full left by 19.390 |
+| roll | runs to −3.1 — the car goes broadside | stops at −1.6 and **returns to −0.18** |
+| speed | 751 → **562 km/h** | 769 → **720 km/h** |
+| vy | 94 → **22** | 92 → **68** |
+| why | the Goal is low, so shedding speed is the point | the nose falls in line with the 25°-up flight path, and **height** is the point |
+
+Both hold throttle and brake together throughout. **The entire difference between
+the two maps is what you do with the lock after the launcher** — and it is a good
+illustration of why a technique note has to name the map it belongs to. The
+correction is also carried on 1-DOWN's own page.

@@ -126,7 +126,7 @@ a single number. Written up separately as a reusable control.
 | file | what |
 |---|---|
 | `replays/TAS_20237.Ghost.Gbx` | the run |
-| `notes/TECHNIQUE.md` | **the driver's guide** — the line, the condition, the gate, the tolerance |
+| `notes/TECHNIQUE.md` | **the driver's guide** — the line, the condition, the gate, the tolerance. Its closing instruction (*keep the lock held*) is **specific to this map's low Goal**; carried across to [Torment (1-UP)](../228607-torment-1-up) it sends the car broadside at 562 km/h. The guide now carries that warning inline. |
 | `notes/RESULT.md` | the full write-up, including the three failed objectives |
 
 ## This map is an Altered Nadeo copy of **Fall 2024 - 08**

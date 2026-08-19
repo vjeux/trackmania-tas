@@ -2352,8 +2352,9 @@ Two rules come out of it, and the second is the general one:
 > **When a recipe has options, pick the option by which control passes — in that
 > same batch — rather than assuming.** The right recipe here is *map-dependent*:
 > one map needs inputs-only and breaks on the three-chunk form, another breaks
-> its own control on inputs-only and needs all three. Three measured cases, two
-> different answers.
+> its own control on inputs-only and needs all three. Five measured cases now,
+> and both answers occur — including one map where the choice inverts again
+> (see below).
 
 > **A control built from your own artefacts cannot test the thing that makes a
 > foreign artefact foreign.** If the input under test differs from your control's
@@ -2366,3 +2367,24 @@ demonstrated: twenty foreign tapes across two maps, each returning **its own**
 official time or split to the millisecond. Twenty independent predictions that
 could not be tuned, validating an identification, a graft and an oracle in one
 measurement.
+
+### The danger is not that a wrong recipe fails — it is that it succeeds plausibly
+
+A fifth measured case arrived after the rule above was written, and it inverts
+the choice again: on one map the **inputs-only** control fails at `DNF cps=3`
+while the three-chunk form returns 40.226 exactly. So the right recipe is
+per map **and per carrier**, and there is no default.
+
+Look at what the wrong form returned, though. Not a crash, not an empty result:
+**`cps=3` for a donor whose true answer is `cps=1`.** A checkpoint count that is
+*better than the truth*, in exactly the range a plausible partial run occupies,
+on a map where nobody would blink at a foreign tape dying three checkpoints in.
+
+> **A wrong recipe that fails loudly costs you ten minutes. A wrong recipe that
+> returns a plausible number costs you the conclusion you build on it** — and
+> there is no signal in the number itself that tells the two apart.
+
+The only thing that separates them is the control, run in the same batch, on the
+same recipe, every time. Not once when the pipeline was set up: **every batch**,
+because the correct choice changes from map to map and the wrong choice does not
+announce itself.
