@@ -49,8 +49,7 @@ the author time takes the medal, so a run level with it counts. A dash means no
 such count is published for that map, usually because the only qualifying run is
 a dense analog tape. **Fewest is not easiest**: on several maps the sparsest
 tape is the *least* forgiving of mistimings, so each map's page names the run
-actually worth practising, and [`FINDINGS.md`](FINDINGS.md) collects what
-carried over from one map to another.
+actually worth practising.
 
 On [The Blev Special](227654-the-blev-special) the human record of 147.031
 contains eleven respawns; 64.871 is that same driver's own driving with the
