@@ -1,10 +1,11 @@
-# bald turtle #35 — the human record falls by 0.310 s; the author time is 0.091 away
+# bald turtle #35 — the human record falls by 0.400 s, and the author time survives by one millisecond
 
-**Author time 10.768 · human world record 11.169 · best validated 10.859.**
+**Author time 10.768 · human world record 11.169 · best validated 10.769.**
 
 | tape | validated | vs human WR | vs AT |
 |---|---|---|---|
-| [`TAS_10859`](replays/TAS_10859.Ghost.Gbx) | **10.859** | **−0.310** | +0.091 |
+| [`TAS_10769`](replays/TAS_10769.Ghost.Gbx) | **10.769** | **−0.400** | **+0.001** |
+| [`TAS_10859`](replays/TAS_10859.Ghost.Gbx) | 10.859 | −0.310 | +0.091 |
 | [`KEYBOARD_10897`](replays/KEYBOARD_10897.Ghost.Gbx) | **10.897** | −0.272 | +0.129 |
 | author time | 10.768 | — | — |
 | human WR, Schmaniol *(control)* | 11.169 | — | +0.401 |
@@ -17,9 +18,16 @@ re-simulated exactly**.
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
-**This is the closest live target in the repository.** 0.091 s, on a map where the
-oracle reproduces all nineteen records to the millisecond and the search has had
-one session. Search arms were still running when this was written.
+**This is the closest miss in the project.** One millisecond, on the wrong side
+of an author time that no human has beaten — on a map where the oracle
+reproduces all nineteen records to the millisecond. The figure is not a single
+lucky run: **four cold measurements across two separately compiled builds agree
+on 10.769**, and the whole chain of tapes it descends from reproduces. It has
+been re-validated again for this page against the untouched map, with the human
+world record and rank 2 exact in the same pass.
+
+A millisecond is one tick of the simulation at 100 Hz. There is no smaller unit
+to lose by.
 
 ---
 
@@ -64,6 +72,27 @@ it everywhere shows it at five contacts out of five.
 
 The same series produced a **failure** on [228607](../228607-torment-1-up), which
 is published alongside this one and is the more instructive of the two.
+
+## Validation
+
+`TAS_10769` sha256
+`5211fa9c3cdd82255c7bc1b38c91b0273c2cf0f1094b9a667c384910df534f09`, map sha256
+`a2bb4b9eafce011584297a69880f808378ef8fc3e894c19de7f1edadf1599215`.
+
+Re-validated for publication against the untouched map, one file per invocation
+in a fresh process, with two human records carried as known-answer controls in
+the same pass:
+
+```
+rank01_11169.Ghost.Gbx    11169   (control — the world record)
+rank02_11189.Ghost.Gbx    11189   (control)
+TAS_10769.Ghost.Gbx       10769
+```
+
+The tape carries **zero respawn packets**. The map is the same untouched copy on
+which all 19 recorded runs re-simulate exactly — which is itself the strongest
+available check that it has not been tampered with, since an edited map does not
+return nineteen strangers' times to the millisecond.
 
 ## Notes
 

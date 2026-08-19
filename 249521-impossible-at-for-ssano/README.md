@@ -81,11 +81,29 @@ mid-field DNF at rank 76. The top 75 are all exact.** Every reported tape passed
 3+ cold passes in fresh processes with the human world record carried as a
 known-answer control, returning 15.039 every time.
 
+**Then the two headline tapes were re-verified independently**, on a separately
+compiled build fed only from the archive: **14.289 and 14.349, both exact**, with
+three human records as controls (15.039 / 15.196 / 15.199, all exact) and zero
+respawns under both respawn keys. The control could have failed and was shown to
+be capable of failing — the brake anchor was deliberately broken at three depths
+and the run died each time. Re-checked once more against the untouched map for
+publication, and the two files published here are **byte-identical** to the ones
+that were verified.
+
 **A trap found here and patched:** `--quant` is a **silent no-op in the classic
 search path** (it is implemented only in the fork path). Three runs here were
 reported as keyboard while actually being unconstrained analog before it was
 caught. Any pre-fix `--quant` result from the classic path is suspect — the
 classic-path ladder is `--qlevels`.
+
+**The keyboard claim survived that trap the only way a claim can**: the verifier
+read the alphabet **off the tape** instead of trusting the flag that produced it,
+and all three keyboard tapes are exactly `{−127, 0, +127}`. The no-op never
+reached anything shipped here.
+
+And the comparison on this map is unusually clean, because **the human world
+record is itself a pure-keyboard run** — three values, 38 change events. Like
+against like: same device, same alphabet, 0.690 s apart.
 
 ## Files
 

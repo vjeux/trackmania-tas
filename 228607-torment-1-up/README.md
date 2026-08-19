@@ -1,10 +1,12 @@
 # Torment (1-UP) — the author time falls, and the technique was on a leaderboard nobody had connected to the map
 
-**Author time 20.258 · human world record 24.902 · best validated 19.910.**
+**Author time 20.258 · human world record 24.902 · best validated 19.907.**
 
 | tape | validated | vs AT | vs human WR |
 |---|---|---|---|
-| [`TAS_19910`](replays/TAS_19910.Ghost.Gbx) | **19.910** | **−0.348** | **−4.992** |
+| [`TAS_19907`](replays/TAS_19907.Ghost.Gbx) | **19.907** | **−0.351** | **−4.995** |
+| [`FORGIVING_19948`](replays/FORGIVING_19948.Ghost.Gbx) | 19.948 | −0.310 | −4.954 |
+| [`TAS_19910`](replays/TAS_19910.Ghost.Gbx) | 19.910 | −0.348 | −4.992 |
 | [`TAS_19927`](replays/TAS_19927.Ghost.Gbx) | 19.927 | −0.331 | −4.975 |
 | [`TAS_19936`](replays/TAS_19936.Ghost.Gbx) | 19.936 | −0.322 | −4.966 |
 | [`TAS_20070`](replays/TAS_20070.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
@@ -32,9 +34,13 @@ TMX map [228607](https://trackmania.exchange/maps/228607) · **23 recorded runs*
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
-*Current best, not final. The searches were still improving when this was
-published, and the low-input family is in progress.*
-
+**This map is closed.** Four revisions of the headline, four independent
+arrivals, and a final pair of multi-knot searches that could not find anything
+better than 19.907 — the detail is in *The corner is not available*, below. The
+tape to hand a person is not the fastest one:
+[`FORGIVING_19948`](replays/FORGIVING_19948.Ghost.Gbx) has the *same* 37 %
+tolerance as the record tape but with its window re-centred — 18 ticks of slack
+early and 15 late, instead of a grid pinned against one edge — for 41 ms.
 ---
 
 ## The technique was never undiscovered. It was on a leaderboard nobody had connected to the map.
@@ -234,7 +240,7 @@ correct Goal block. So the comparison this page is making is: **our validated,
 re-simulable lap against a declared time backed by a driven telemetry record we
 cannot replay.**
 
-That does not weaken the result — 19.910 is a game-scored lap on the untouched
+That does not weaken the result — 19.907 is a game-scored lap on the untouched
 map through a single-file gate on three independently built toolchains. It
 changes what the *author* side of the comparison is, and it is why everything
 this page says about his flight is **inferred from telemetry rather than
@@ -246,7 +252,10 @@ one returns its own official time to the millisecond.
 
 An earlier reading of this map's launch/coast decomposition suggested about 12 m
 above the author's line was available, at the corner of the two knobs. **It is
-not, and the reason is mechanical.**
+not.** That was a true statement about the arithmetic of the field's per-axis
+range and a false one about what can be driven, and the difference has now been
+settled by measurement rather than argued. A reader who followed the old reading
+would spend a night chasing a corner that does not exist.
 
 Two search islands were seeded from the field's extremes:
 
@@ -261,13 +270,47 @@ the same attitude that carries the roll past inverted (−2.49, wrapping to +2.2
 **You cannot keep that launch angle and acquire rank 3's coast** — the input that
 buys one spends the other.
 
-So the "corner" was an artefact of treating two coupled quantities as independent
+Then the last phase that had never had a multi-knot control got one. Two
+approach searches, each about **147 000 evaluations**, reached **19.908 and
+19.907** — no different flight, nothing anywhere near y ≈ 173. Put together with
+the scrub attractor and the two extreme-seed islands, **every phase of this run
+has now been searched with a multi-knot control, and the corner does not open.**
+
+So the page can say plainly *why* 400 000 players trade launch angle against
+coast quality and not one of them does both: the attitude that steepens the
+launch is the attitude that rolls the car past inverted. **That is an answer, not
+a shrug** — the coupling is physical, and the negative is a mechanism rather than
+an exhaustion.
+
+The "corner" was an artefact of treating two coupled quantities as independent
 axes. Publishing it as a bound would have sent the next arm after something that
 does not exist, which is why the correction sits here beside the analysis rather
 than replacing it quietly.
 
+## One map, six findings that outlived it
+
+Unusual enough to say in the repo's own voice: **more transferable methodology
+came out of this one map than any other in the project.** Six results here are
+general rather than local, and all six are in [`FINDINGS.md`](../FINDINGS.md):
+
+1. **The corner method** — decompose a field into per-axis extremes to price
+   what is theoretically available, *and* the decoupling test that has to be run
+   before that price is real.
+2. **The scrub attractor** — independent searches converging on the same
+   physical behaviour from unrelated seeds.
+3. **"Early is free, late is fatal"** — the direction of a timing error matters
+   more than its size, stated here with a measured bound.
+4. **A forgiving variant is not a slower tape.** The deliverable came from
+   *re-centring* the tolerance window, not from giving up time.
+5. **Rank an official field by the property you consume**, not by finish time —
+   the rule for mining official records on a Goal-moved map, where the board's
+   own ordering answers a different question.
+6. **"Fewer inputs is easier to drive" is false**, measured twice on this map
+   alone.
+
 ## Validation — and the strongest yes-control in the project
 
+`TAS_19907` sha256 `7af61820ebc9c73a7d98641d3cab9e7e136e1f0914c9a49db80498551d889d6c`;
 `TAS_19910` sha256 `f9ea0b209db48b36140c845963c0ee26396bc1a1f5ec64ec352db367782edd3b`,
 map sha256 `2c6d500aa73e3e86c1b9c64c61e5801c04b1b9d757687a9054ecc0fb118976e5`
 (md5 `65b6b7bcf4808070383e6e9ff9de28f1`).
@@ -279,6 +322,8 @@ the scheduler or a neighbouring tape can contribute to the number. Reproduced
 here on a separate toolchain, one file at a time:
 
 ```
+tor_BEST_19907.Ghost.Gbx      19907
+tor_FORGIVING_19948.Ghost.Gbx 19948
 tor_BEST_19910.Ghost.Gbx      19910
 tor_BEST_19927.Ghost.Gbx      19927
 CTRL_ident_24854.Ghost.Gbx    24854
@@ -286,7 +331,7 @@ CTRL_splice_24854.Ghost.Gbx   24854
 ```
 
 with the controls' own hashes matching the archive byte for byte
-(`2188261a…e62db`, `86eb254f…6371a`). Both the 19.910 and 19.927 tapes carry
+(`2188261a…e62db`, `86eb254f…6371a`). The 19.907, 19.910 and 19.927 tapes carry
 **zero respawn packets**, audited by enumerating bit 31 rather than assumed.
 
 Before that, **13 of 13 tapes exact and both controls exact** on an auditor's
