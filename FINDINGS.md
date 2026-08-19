@@ -1037,3 +1037,52 @@ solution has a half that is catastrophic on its own (4.189 against 3.867).
 over the candidate moves rather than more single moves.** A field grinding one
 variable at a time cannot find a pair or triple where the parts are individually
 bad — which is precisely what is left once everything separable has been found.
+
+## An objective that can be maximised without achieving the goal is a decoy
+
+On [Torment (1-DOWN)](228811-torment-1-down) the search had to find a launcher
+that fires only on a specific *attitude*. Scoring the state rather than the time
+was the right idea, and it took **four objectives**, because the first three
+could each be maximised without firing anything:
+
+| objective | what the search did instead |
+|---|---|
+| downward velocity alone | ran to the corner of the box |
+| body-lateral speed alone | slid **along** the trigger line |
+| progress along the author's line | plateaued at 86.9%, launching at the sky |
+
+Two related traps from the same map: **peak speed is useless as a launch
+detector** — the human world record itself hits 151 m/s without launching — and
+**a near miss can outscore an arrival**, which inverts the ranking precisely
+where it matters.
+
+This is the instrument disease applied to the *objective*. The defence is the
+same shape as everywhere else in this file: **before running a search, ask what
+the best possible score looks like for a candidate that does not do the thing.**
+If that score is competitive, the objective is a decoy.
+
+A second instance from the same session: a proposed objective of "maximise the
+dwell time inside a trigger volume" was caught before implementation, because a
+candidate that sinks *faster* leaves sooner — the metric moves backwards exactly
+when the run improves. Measured afterwards, dwell ranged 6 to 33 at identical
+clearance: no information at all.
+
+## Bank the control ghosts, not just the tapes
+
+Twice tonight a map's result arrived with every claim validated and **no human
+ghosts in the durable directory** — the controls had been used from `/tmp` and
+lost with the node.
+
+The distinction is load-bearing. Re-simulating a banked tape proves *a filename
+matches a simulation*. It does not prove **the oracle was answering correctly on
+that map at that moment**, which is what a known-answer control is for, and it is
+the difference between a result and a plausible number.
+
+The standard, from the map that did it properly: **30 human ghosts and all 15
+tapes in one batch, 45/45 exact**, from rank 1 to rank 470, reproducible by
+anyone with the directory in a single command. Bank the ghosts with the first
+write-up, not after somebody asks.
+
+Related, and cheap: **check downloaded ghosts are complete before use.** A
+truncated download validates as `DNF cps=1` and reads as a genuine field-check
+failure — which is how a healthy map gets condemned.
