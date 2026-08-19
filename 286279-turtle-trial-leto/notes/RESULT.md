@@ -1,7 +1,13 @@
-# [Turtle Trial] Leto — the author time falls by nearly two minutes
+# [Turtle Trial] Leto — the author time falls by 38 %
 
-**AT 355.181 s · human WR 441.002 s · validated TAS **235.625 s** — the author
-time beaten by 119.556 s (33.7 %), and the human world record by 205.377 s.**
+**AT 355.181 s · human WR 441.002 s · validated TAS **218.812 s** — the author
+time beaten by 136.369 s (38.4 %), and the human world record by 222.190 s.**
+
+> **READ THE ADDENDUM AT THE END FIRST if you are here for the method.** The
+> body of this document records the first result (235.625 s, built from the
+> human world record) and one WRONG conclusion in section 1.5. The addendum
+> corrects it, and the correction is what produced 218.812 s — built from the
+> map author's own author-time ghost, recovered from inside the .Map.Gbx.
 
 unbeaten.at MapId **286279**, uid `p0tVjdmb1DfkCVrDE_DfQN84kq8`, author
 **BALDFROMSPB / Bald_tm** (one account, `5f6148ac-…`, who also holds the human
@@ -11,12 +17,18 @@ map file. Nothing here has been or will be submitted to a Nadeo leaderboard.
 
 | tape | validated | vs AT | vs human WR | steer alphabet | events |
 |---|---|---|---|---|---|
+| **`m286279_BEST_218812_v7`** | **218.812 s** | **−136.369** | −222.190 | **3 — keyboard** | 904 |
+| `m286279_KEYBOARD_218877_v7` | 218.877 s | −136.304 | −222.125 | 3 — keyboard | 918 |
+| `m286279_AUTHORCUT_220391_v6` | 220.391 s | −134.790 | −220.611 | 3 — keyboard | the author's own driving, cuts only |
 | `m286279_TAS_235625_v3` | **235.625 s** | **−119.556** | −205.377 | 26 values | 964 |
 | `m286279_KEYBOARD_235939_v4` | **235.939 s** | **−119.242** | −205.063 | **3 — keyboard** | **941** |
 | `m286279_HUMAN_keyboard_236972_v1` | **236.972 s** | −118.209 | −204.030 | 3 — keyboard | 943 |
 | — human WR, Bald_tm (control) | 441.002 s | +85.821 | — | 3 — keyboard | 1811 |
 
-The third tape is the interesting one: **every input in it is Bald_tm's own,
+The top three came from the AUTHOR'S OWN author-time ghost (addendum); the
+four below them from the human world record.
+
+The last of those is the interesting one: **every input in it is Bald_tm's own,
 unmodified, in his own order.** Nothing was driven better than the human world
 record. Ten of his failed attempts were deleted.
 
@@ -498,3 +510,129 @@ tools/    mt_main.rs      the tape surgery used here (Rust; splice, setrespawn,
                           clearrespawn, insert, pad, declare, transplant,
                           extract, attempts, deaths, obstacles, sectors)
 ```
+
+---
+
+# ADDENDUM (same session, two hours later): 218.812 s — the AT falls by 38 %
+
+Everything above is correct and still validates. It is also **superseded**, by a
+finding that began as a correction to my own §1.5.
+
+## A1. §1.5 was WRONG. Input tapes ARE portable — two small chunks carry it
+
+The bisection §1.5 asks for costs three validations, and I should have run it
+before writing that section. Transplanting rank 2's input archive into rank 1's
+container, one candidate chunk at a time:
+
+| carried with the archive | result |
+|---|---|
+| nothing | DNF cp1 |
+| `0x0309202E` (the 4-vs-69-byte suspect I named) | DNF cp1 |
+| `0x03092000` (the recorded telemetry) | DNF cp1 |
+| `0x0309202D` | DNF **cp2** — progress |
+| **`0x0309202D` + `0x0309202B`** | **EXACT** |
+
+`0x0309202B` is the checkpoint-split list; `0x0309202D` is 209 bytes and **the
+same size in every ghost on this map** — which is exactly why the equal-size
+`copychunk` sweep in §1.5 missed it. I enumerated fourteen chunks by hand and
+the answer was two I had not listed.
+
+**The general lesson is worth more than the fact: a negative from a
+hand-enumerated list is worth nothing.** Bisect.
+
+With that pair carried, every foreign tape re-simulates exactly in rank 1's
+container — 977690, 1271692, 1371430, 1961645 — and so does **the author's own
+author-time ghost, extracted from the map: 355181, exact.** The §7 "third §9
+outcome" (decodes but will not validate) was never a property of the ghost; it
+was two missing chunks.
+
+> **CAVEAT for anyone reusing a transplanted tape: `0x03092000` stays the HOST's.**
+> The recorded telemetry in the container is the host ghost's, not the
+> simulation the transplanted inputs produce, so `tmtraj decode` on such a file
+> describes the wrong run. Decode the donor for telemetry; use the transplant
+> only to obtain a time.
+
+## A2. Which unlocked the author's own run — and it is much faster driving
+
+`tapes/AUTHOR_AT_355181_PLAYABLE.Ghost.Gbx` re-simulates to 355181. Its clean
+sectors are faster than the world record holder's in all four:
+
+| sector | the AUTHOR | human WR | delta |
+|---|---|---|---|
+| S1 start → CP1 | **42.036 s** | 45.597 | −3.561 |
+| S2 → CP2 | **79.882 s** | 84.322 | −4.440 |
+| S3 → CP3 (each one's successful attempt) | **45.961 s** | 46.543 | −0.582 |
+| S4 → finish | **52.081 s** | 60.409 | **−8.328** |
+
+Cutting their nine failed attempts out, then trimming the dead ticks at each of
+the three respawns, then a 25-minute search on the final sector:
+
+| tape | validated | vs AT 355.181 |
+|---|---|---|
+| author's AT as recorded | 355.181 s | — |
+| cut of the nine failed attempts | 220.821 s | −134.360 |
+| + CP3 trim | 220.511 s | −134.670 |
+| + CP1 trim (`m286279_AUTHORCUT_220391_v6`) | 220.391 s | −134.790 |
+| **+ search on the last sector (`m286279_BEST_218812_v7`)** | **218.812 s** | **−136.369 (38.4 %)** |
+| keyboard-constrained arm (`m286279_KEYBOARD_218877_v7`) | 218.877 s | −136.304 |
+
+Cold-validated three times, fresh processes, re-downloaded byte-identical map,
+human WR as control in every batch, all `IsValid: true`, `NbRespawns: 3`.
+
+## A3. The two respawn rules the cutting produced
+
+**A3.1 — You can cut TO a soft respawn but NOT to a standing one.** This, and
+not the checkpoint index, is what "CP1 is special" has been on three maps across
+three agents. rank 1's CP3 trim that worked lands on a soft respawn; its CP1
+trim that never worked, at every deletion length 1…24 and every insertion
+1…100, lands on a standing one. Same on the author's tape: the cut to its single
+soft respawn worked first try.
+
+**A3.2 — A cut to a standing respawn works at ONE EXACT PHASE, and the phase is
+not periodic.** Holding the graft at the respawn press and sliding the cut
+point:
+
+```
+ticks 12376…12398   DNF
+tick  12399         WORKS  -> 220821
+tick  12400         WORKS  -> 220831
+ticks 12401…12499   DNF
+tick  12500         WORKS  -> 221831
+```
+
+Once on phase the arithmetic is exact again: `220821 + 10·(X − 12399)`.
+**Sweep the CUT POINT, not the graft point** — I swept the graft first, got
+fifteen DNFs, and wrongly concluded a standing respawn could not be cut to at
+all. The same sweep at the other two respawns then paid 310 ms and 120 ms.
+
+## A4. The unconstrained search chose the keyboard alphabet by itself
+
+The final search arm was given the whole ±127 steering range, 100 080
+evaluations over 25 minutes, no ladder. Its winning tape's steer alphabet:
+
+```
+{left, 0, right}
+```
+
+The keyboard-constrained arm, run in parallel, finished 65 ms behind — the
+constraint costing nothing, the arm simply converging slightly worse.
+
+So the cost of restricting this map to a keyboard is not merely small: **an
+unconstrained optimiser, free to use 254 steering values, declines to.** Every
+human tape on the map is 3-valued too — the author's AT ghost, the world record,
+and our best. Analog steering is not where the time is on a low-speed technical
+map, and this is the strongest form of that evidence in the project so far.
+
+## A5. What is left
+
+* **72 % of the run is still driven upside down**, and 9.45 s of it is still
+  under 3 m/s. The 4.0 s flip-back stall at (608, 51, 538) survives into this
+  lineage.
+* The three respawns are structural and each hard one costs an ~850 ms freeze
+  that no input can shorten.
+* The theoretical floor for pure cutting on this lineage was 220.563 s
+  (the author's AT minus its own retries); we are 1.75 s under it, all of it
+  from the last sector.
+* Sector-by-sector search on S1–S3 remains unproductive for the reason in §7:
+  perturbing a chaotically sensitive inverted crawl diverges everything after
+  it.

@@ -1,11 +1,11 @@
-# Fall 2025 - 01 Reverse CP1 End — author time beaten by 3 ms
+# Fall 2025 - 01 Reverse CP1 End — author time beaten by 4 ms
 
 | | time | vs AT | vs human WR |
 |---|---|---|---|
-| **TAS** | **10595 ms** | **−3** | **−7** |
-| earlier validated tapes | 10596, 10597, 10598 | — | — |
-| Author time (never beaten by a human) | 10598 ms | — | −4 |
-| Human WR | 10602 ms | +4 | — |
+| **TAS** | **10.594** | **−0.004** | **−0.008** |
+| earlier validated tapes | 10.595, 10.596, 10.597, 10.598 | — | — |
+| Author time (never beaten by a human) | 10.598 | — | −0.004 |
+| Human WR | 10.602 | +0.004 | — |
 
 TMX map [279197](https://trackmania.exchange/maps/279197) · uid
 `_jkbEKnkKNw1B_TOgzbm5IYlkfc` · author **in-.-** · **561 recorded runs**.
@@ -89,8 +89,18 @@ The instrument used to get sub-millisecond resolution deserves a note: rather
 than modelling a finish plane, the map's own Goal item is physically relocated
 and the **plain oracle** re-run, so every number is the game's own body-based
 trigger firing on the game's own physics. The ratchet built on it predicted the
-untouched oracle correctly four times out of four, including the cycle where
-pushing past the real plane correctly flipped the real map from 10596 to 10595.
+untouched oracle correctly every cycle, including the ones that flipped the real map from 10.596
+to 10.595 to 10.594.
+
+**Why the ruler was necessary.** A plain search seeded with the human world
+record reached the author time in **28 seconds** and 10.596 in seven minutes,
+then stopped dead for 1.7 million evaluations. It had not run out of road, it
+had run out of *resolution*: the car crosses at its terminal 94.9167 m/s, so one
+reported millisecond is 9.49 cm, and the oracle's integer answer is quantised
+into uneven bins up to **15 cm** wide — 10.599 is unreachable entirely. Any real
+gain smaller than the current bin is invisible. The concurrent control makes the
+point: a real-map arm sat at 10.596 for **41.9 minutes and 1,337,400
+evaluations** while the ratchet went 10.596 → 10.595 → 10.594.
 
 This map's work used no fork-resume path and distinct search roots throughout,
 so none of the corruption defects found elsewhere in this project apply to it.
@@ -99,7 +109,8 @@ so none of the corruption defects found elsewhere in this project apply to it.
 
 | file | what |
 |---|---|
-| `replays/real_10595.Ghost.Gbx` | fastest validated run |
+| `replays/real_10594.Ghost.Gbx` | **fastest validated run — 10.594** |
+| `replays/real_10595.Ghost.Gbx` | the 10.595 |
 | `replays/best_10596.Ghost.Gbx` … `best_10601.Ghost.Gbx` | the ladder of validated intermediates |
-| `inputs/real_10595.tick.txt` | the run as a readable input script |
+| `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | the runs as readable input scripts |
 | `notes/RESULT.md`, `notes/NOTES.md`, `notes/PLAN.md` | full write-up and measurements |

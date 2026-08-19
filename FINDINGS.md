@@ -519,3 +519,39 @@ been ground flat.
 **So the last step of every map should be: what is the smallest edit to a run
 the field already drives that gets under the author time?** Ablate down to it
 deliberately. It is usually a better artefact than the optimum.
+
+## When a search stalls, suspect the ruler before the road
+
+On [279197](279197-fall-2025-01-reverse-cp1-end) a search seeded with the human
+world record reached the author time in **28 seconds**, reached 10.596 in seven
+minutes, and then stopped dead for **1.7 million evaluations**.
+
+It had not run out of road. It had run out of *resolution*. The car crosses the
+line at its terminal 94.9167 m/s, so one reported millisecond is **9.49 cm** —
+and the oracle's integer answer is quantised into uneven bins up to **15 cm**
+wide, with 10.599 unreachable entirely. Any true gain smaller than the current
+bin is simply invisible to the search: it looks like no improvement, forever.
+
+The fix is to make a finer ruler. A "CP1 End" map has exactly one waypoint and
+it is a **relocatable item**, so the finish plane is ours to place — and
+re-timing through the game's own trigger means no model and no calibration. A
+**ratchet** then re-aims the plane a hair past the champion's staircase edge
+each cycle, so the smallest true gain reads as a whole millisecond.
+
+The concurrent control is the proof: a real-map arm sat at 10.596 for **41.9
+minutes and 1,337,400 evaluations** while the ratchet went 10.596 → 10.595 →
+10.594, and the ladder predicted the untouched oracle every single time.
+
+Three preconditions, each of which cost a cycle before it was understood:
+
+- **Auto-calibrate the ladder on the incumbent every round.** A fixed ladder goes
+  blind after one edit — measured on another map: 1,724 improving candidates,
+  then 0.
+- **Make it two-sided.** A one-sided vernier cannot distinguish "worse" from
+  "equal", and a beam then sorts by array index straight into full lock.
+- **Resolution decides whether a gradient exists at all.** Same sweep: 0
+  improving candidates at 28 µs rungs, 1,964 at 1.9 µs.
+
+So "the search has converged" and "the search can no longer see" produce
+identical logs. Before concluding a map is at its floor, check what one
+millisecond is worth in metres.

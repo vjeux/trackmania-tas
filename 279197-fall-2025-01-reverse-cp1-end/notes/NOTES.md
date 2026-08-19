@@ -5,15 +5,15 @@ Companion to `PLAN.md`. Chronological, evidence first. Times are local
 
 ## Status
 
-| | ms | how |
+| | time | how |
 |---|---|---|
-| human online WR (ShcrTM) | 10602 | leaderboard, re-simulated exactly |
-| **author time (AT)** | **10598** | the thing to beat |
-| **our best, validated on the untouched map** | **10596** | `tmsearch` from the WR seed, 7 min |
+| human online WR (ShcrTM) | 10.602 s | leaderboard, re-simulated exactly |
+| **author time (AT)** | **10.598 s** | the thing to beat |
+| **our best, validated on the untouched map** | **10.594 s** | vernier ratchet, from a plain search seeded with the WR |
 
-`tmtas validate --map <ABS>/map.Map.Gbx <ABS>/best/best_10596.Ghost.Gbx`
-→ 10596, reproduced on demand, with the human WR alongside it as an identity
-control returning 10602 in the same batch.
+`tmtas validate --map <ABS>/map.Map.Gbx <ABS>/best/real_10594.Ghost.Gbx`
+→ 10.594 s, reproduced on demand in separate processes, with the human WR
+alongside as an identity control returning 10.602 s in the same batch.
 
 ## Controls that are passing
 
@@ -44,7 +44,7 @@ monotonically the whole way and saturates at 341.7 km/h (94.9167 m/s) about
 the gate. So the endgame has no speed left to find: **time is distance, at
 9.49 cm per millisecond.**
 
-## Finding 1 — the finish gate's inside edge is what limits the racing line
+## Finding 1 — the finish trigger has an invisible inside edge (but it is a DNF trap, not the pace-setter)
 
 `tmmaps probe --axis x` slides the gate sideways and asks which runs still
 trigger it. The gate registers over a 23 m window in x, and the window's lower
@@ -57,13 +57,52 @@ end moves run by run — exactly with where each run crosses:
 | r301 (10724) | 775.05 | ~801.5 |
 | r503 (10800) | 778.72 | ~805.5 |
 
-Consistent to the 0.5 m grid: the trigger's inside (low-x) edge sits at world
-**x ≈ 772.0**, and the human WR crosses it at 772.54 — **about half a metre of
-margin**. Tighter is faster (the sweeper's radius is ~140 m, so shaving the
-radius is worth ~10 ms per metre of arc), but tighter than the edge and the run
-does not finish at all and never appears on a leaderboard. **The 561-strong
-human field is stacked against a trigger boundary they cannot see.** That, not
-grip, is what makes the line look ground-flat.
+Refined to 2 cm, the trigger's inside (low-x) edge sits at world **x ≈ 772.18**
+and the human WR crosses it with **0.35 m of clean margin**. Cut inside and the
+run does not finish, so those attempts never reach a leaderboard and the public
+field cannot show how often it happens. That is a real, invisible hazard.
+
+**What it is NOT.** My first reading of the four runs above was that the whole
+field is stacked against this edge and that tighter is faster (~16.5 ms per
+metre of arc on a 140 m sweeper). Measuring the clean margin for all fifteen of
+the top 15 kills that:
+
+```
+r001 10602: 0.35 m   r006 10608: 1.15 m   r011 10612: 1.45 m
+r002 10603: 0.15     r007 10608: 0.25     r012 10613: 1.35
+r003 10605: 0.35     r008 10608: 0.85     r013 10614: 0.05
+r004 10606: 0.45     r009 10611: 0.75     r014 10614: 0.55
+r005 10607: 0.35     r010 10611: 0.35     r015 10615: 0.15
+```
+
+13 ms of time against 1.40 m of margin, with no relationship: the tightest run
+in the field (r013, 5 cm from the edge) is 12 ms *slower* than the WR, the widest
+(r011) is 10 ms slower. Our own tapes agree — best_10596 crosses *wider* than
+the WR and is 6 ms faster, and real_10595 crosses 0.24 m tighter and gives 3 ms
+back over the final 1.1 s. **Where you cross laterally does not predict your
+time.** The "~10 ms per metre" figure was arithmetic about a circle, not a
+measurement, and the measurement contradicts it. Corrected in RESULT.md and sent
+upstream before it was propagated to the other CP1-End maps.
+
+## Finding 1b — 95% of the field's spread is decided before t = 9.5 s
+
+Intermediate planes (`tmmaps places`) at z = 655/680/700/720/740, whole
+population:
+
+| run | z=655 | → flag |
+|---|---|---|
+| r001 (WR) 10602 | 9502 | **1100 ms** |
+| r008 10608 | 9505 | 1103 |
+| r015 10615 | 9512 | 1103 |
+| r052 10628 | 9525 | 1103 |
+| r152 10658 | 9548 | 1110 |
+| r302 10724 | 9618 | 1106 |
+| r502 10800 | 9698 | 1102 |
+| our 10595 | 9492 | 1103 |
+
+From rank 1 to rank 502 — 198 ms of spread — the last 1.1 s costs everybody
+1100-1110 ms. The closing sweeper is worth nothing to practise; it is all
+decided earlier.
 
 ## Finding 2 — the reported millisecond is a coarse, uneven quantiser
 

@@ -1,13 +1,15 @@
-# [Turtle Trial] Leto — the author time falls by 134.790 s
+# [Turtle Trial] Leto — the author time falls by 136.369 s
 
-**Author time 355.181 · human world record 441.002 · this run 220.391 —
-the author time beaten by 134.790 s (−38.0%), the world record by 220.611 s.**
+**Author time 355.181 · human world record 441.002 · this run 218.812 —
+the author time beaten by 136.369 s (−38.4%), the world record by 222.190 s.**
 
 | tape | time | vs AT | vs human WR | steer values | input events |
 |---|---|---|---|---|---|
-| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391.Ghost.Gbx) | **220.391** | **−134.790** | −220.611 | the author's own | the author's own |
+| [`BEST_218812`](replays/BEST_218812.Ghost.Gbx) | **218.812** | **−136.369** | −222.190 | **3 — keyboard** | 904 |
+| [`KEYBOARD_218877`](replays/KEYBOARD_218877.Ghost.Gbx) | 218.877 | −136.304 | −222.125 | 3 — keyboard | 918 |
+| [`AUTHORCUT_220391`](replays/AUTHORCUT_220391.Ghost.Gbx) | 220.391 | −134.790 | −220.611 | the author's own | **cuts only, no TAS driving** |
 | [`TAS_235625`](replays/TAS_235625.Ghost.Gbx) | 235.625 | −119.556 | −205.377 | 26 | 964 |
-| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | **3 — keyboard** | **941** |
+| [`KEYBOARD_235939`](replays/KEYBOARD_235939.Ghost.Gbx) | 235.939 | −119.242 | −205.063 | 3 — keyboard | 941 |
 | the human WR's own inputs, retries deleted | 236.972 | −118.209 | −204.030 | 3 — keyboard | 943 |
 | human WR, Bald_tm *(control)* | 441.002 | +85.821 | — | 3 — keyboard | 1811 |
 
@@ -21,14 +23,20 @@ Turtle · **5** recorded runs, all five analysed.
 
 **Nobody on this map has ever needed to drive better. They needed to fail less.**
 
-The fastest run here, 220.391, contains **no TAS driving at all**: it is the map
-author's own author-time lap, recovered from inside the `.Map.Gbx`, with the
-nine attempts they failed cut out of it. The second-fastest family is the human
-world record holder's own inputs, in his own order, with ten of *his* failed
-attempts cut out — 236.972, and not one tick of mutation.
+The 220.391 tape contains **no TAS driving at all**: it is the map author's own
+author-time lap, recovered from inside the `.Map.Gbx`, with the nine attempts
+they failed cut out of it. The 236.972 is the human world record holder's own
+inputs, in his own order, with ten of *his* failed attempts cut out — not one
+tick of mutation. Only the last 1.6 s of improvement, from 220.391 to 218.812,
+came from a search.
 
 On a Trial map the clock keeps running through respawns, so a recorded time is
 clean driving *plus every failed attempt*. On this map that is most of the clock.
+
+**And the fastest tape uses three steering values.** The unconstrained search,
+free to use all 254, converged to `{left, 0, right}` on its own and beat the
+keyboard-constrained arm. On a low-speed technical map, analog steering is not
+where the time is.
 
 ## The leaderboard is a ranking of failures, not of pace
 
