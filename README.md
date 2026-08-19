@@ -30,6 +30,12 @@ The point is the **technique**, written up so a human can practise it.
 | [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 973 | 4.492 | 4.495 | **4.492** | **±0** | — |
 
 
+### Not beaten, but bounded
+
+| map | records | author time | best human | **this TAS** | short by | what blocks it |
+|---|---|---|---|---|---|---|
+| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | a route ~2 s under the AT misses the sunken finish trigger by **70 mm** |
+
 All times in **seconds**.  "Best human" is the online world record at the time
 of the run. Every author time in this table had **never** been beaten by a
 human.
