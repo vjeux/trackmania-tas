@@ -1,10 +1,11 @@
 # Torment (1-UP) — the author time falls, and the technique was on a leaderboard nobody had connected to the map
 
-**Author time 20.258 · human world record 24.902 · best validated 19.936.**
+**Author time 20.258 · human world record 24.902 · best validated 19.927.**
 
 | tape | validated | vs AT | vs human WR |
 |---|---|---|---|
-| [`TAS_19936`](replays/TAS_19936.Ghost.Gbx) | **19.936** | **−0.322** | **−4.966** |
+| [`TAS_19927`](replays/TAS_19927.Ghost.Gbx) | **19.927** | **−0.331** | **−4.975** |
+| [`TAS_19936`](replays/TAS_19936.Ghost.Gbx) | 19.936 | −0.322 | −4.966 |
 | [`TAS_20070`](replays/TAS_20070.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
 | [`LOWINPUT_20070_16values`](replays/LOWINPUT_20070_16values.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
 | [`TAS_20083`](replays/TAS_20083.Ghost.Gbx) | 20.083 | −0.175 | −4.819 |
@@ -12,6 +13,13 @@
 | author time | 20.258 | — | −4.644 |
 | human WR, on the altered board | 24.902 | +4.644 | — |
 | [**the author's own lap**](replays/AUTHOR_LAP_20258_watchable.Ghost.Gbx) | *20.258* | — | *watchable only — see below* |
+
+**The basin around 19.93 looks flat, and that is a stronger statement than the
+tape.** Two search islands converged on 19.927 **independently, from different
+mutation windows**, and a third line sits at 19.940. A single best tape can be a
+lucky corner of the landscape; three arrivals from three directions at the same
+place is evidence about the landscape itself.
+
 
 TMX map [228607](https://trackmania.exchange/maps/228607) · **23 recorded runs**
 · and, as of tonight, an **official field of 400 000** — this map is
@@ -162,27 +170,64 @@ fires a y = 146 rung where rank 1 only reaches y = 138 — and the field has a
 > for the *original* objective.** Rank by the quantity your map actually needs
 > before picking a seed, not by finishing position.
 
+## This map has ten hidden waypoints, and they are five gates in disguise
+
+A tag audit found **ten `LinkedCheckpoint` waypoints** here that none of this
+project's tooling had ever enumerated — the waypoint filter matched only
+`Checkpoint`. That sounds alarming and turned out to be a clean piece of
+detective work with a reassuring answer.
+
+**They are five coincident pairs**: `Left32m` + `Right32m` at the same x and y,
+32 m apart in z. **One 64 m gate assembled from two 32 m item pieces.** With the
+one plain checkpoint, that is **six logical checkpoints**, which is exactly what
+the map has always behaved as having.
+
+Three independent confirmations, none of them needing a new simulation:
+
+* human ghosts declare **7 splits** — six checkpoints plus the finish;
+* every non-finisher returns `cps=6`, never 7 or 10;
+* and decisively: **a car cannot be at z = 720 and z = 752 at the same instant,
+  yet 15 of 15 official humans finish.** If each member were separately
+  required, nobody could ever complete this map.
+
+**Crossing one member satisfies the set.**
+
+The tempting inference — *a set of alternative required waypoints means
+unexplored routing* — is **false here**, and it is checkable in minutes off the
+item positions with no oracle calls at all: **for each set, are the members
+adjacent or scattered?** Adjacent means one wide gate and no routing freedom
+whatsoever. On this map every set is adjacent, so this is a **confident negative
+rather than an open gap.**
+
+**No number on this page is affected.** Every figure here is a game-scored lap on
+the untouched map — the game sees every waypoint whether our tools enumerate it
+or not — and the search apparatus for this map used no segmentation at all: every
+rung was the whole untouched map with the four `GateFinish` blocks relocated
+position-only and every other waypoint left required. The gap bites only on
+things cut from a *segment* map, and nothing here is.
+
 ## Validation — and the strongest yes-control in the project
 
-`TAS_19936` sha256 `5c5fef54fe0680191ed03b61e01c149c86d33540434b494cd9c12b1ba6ef1a2c`,
+`TAS_19927` sha256 `3c99172830e5c35cecba6656212e450f9f698d8349342076b9b240f1631b63b3`,
 map sha256 `2c6d500aa73e3e86c1b9c64c61e5801c04b1b9d757687a9054ecc0fb118976e5`
 (md5 `65b6b7bcf4808070383e6e9ff9de28f1`).
 
-**19.936 cleared a single-file gate**: `--jobs 1`, one file per invocation, a
-fresh process each time, an empty staging directory, and copies taken from the
-archive rather than any working tree — so nothing about the batch, the scheduler
-or a neighbouring tape can contribute to the number. Reproduced here on a
-separate toolchain, one file at a time:
+**Every headline here cleared a single-file gate**: `--jobs 1`, one file per
+invocation, a fresh process each time, an empty staging directory, and copies
+taken from the archive rather than any working tree — so nothing about the batch,
+the scheduler or a neighbouring tape can contribute to the number. Reproduced
+here on a separate toolchain, one file at a time:
 
 ```
+tor_BEST_19927.Ghost.Gbx      19927
 tor_BEST_19936.Ghost.Gbx      19936
-best_19941.Ghost.Gbx          19941
 CTRL_ident_24854.Ghost.Gbx    24854
 CTRL_splice_24854.Ghost.Gbx   24854
 ```
 
 with the controls' own hashes matching the archive byte for byte
-(`2188261a…e62db`, `86eb254f…6371a`).
+(`2188261a…e62db`, `86eb254f…6371a`). The 19.927 tape carries **zero respawn
+packets**, audited by enumerating bit 31 rather than assumed.
 
 Before that, **13 of 13 tapes exact and both controls exact** on an auditor's
 independently built tree, store-only inputs, hashes taken before validation. That
@@ -212,6 +257,8 @@ one: the sector table showed the last sector carrying all the spread while the
 * [`SIBLING_IS_THE_SAME_MAP.md`](notes/SIBLING_IS_THE_SAME_MAP.md) — 228607 and 228811 are one map,
   exhaustively
 * [`VALIDATION_independent.txt`](notes/VALIDATION_independent.txt) — the independent auditor's transcript
+* [`TWO_KNOBS.md`](notes/TWO_KNOBS.md) — the launch/coast decomposition, and the author on the curve
+* [`LINKED_CHECKPOINT_SEMANTICS.md`](notes/LINKED_CHECKPOINT_SEMANTICS.md) — the ten hidden waypoints, settled
 * [`RESULT.md`](notes/RESULT.md) — the attitude experiment that failed here
 
 ## This map is an Altered Nadeo copy of **Fall 2024 - 08**

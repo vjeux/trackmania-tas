@@ -22,7 +22,7 @@ The point is the **technique**, written up so a human can practise it.
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 24.164 |
 | [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **15.217** (keyboard from 4.56 s) |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
-| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.936** | **−0.322** | 20.070 (16 values, 47 events) |
+| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.927** | **−0.331** | 20.070 (16 values, 47 events) |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.503** | **−0.350** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |

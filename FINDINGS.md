@@ -2679,3 +2679,66 @@ runs are qualitatively different laps rather than variations on the same one.
 > **Profile the field on the quantity your route consumes, then rank on that.**
 > Finish position is a ranking for someone else's objective, and a nominally huge
 > field usually contains a small number of genuinely distinct lines.
+
+## A waypoint tag your tooling does not know about is invisible, not absent
+
+Four maps in this project carry **`LinkedCheckpoint`** waypoints. Every
+waypoint-handling tool the project owns filters on `tag == "Checkpoint"`, so
+across a whole night of work those waypoints were never ordered, never
+neutralised, and never once mentioned — on maps that were being segmented,
+laddered and published.
+
+**Validated lap times were never at risk**, and it is worth being precise about
+why: **the game scores the lap and the game sees every waypoint.** A
+game-validated time on the untouched map is correct whatever our own enumeration
+believes. What the gap touches is everything *derived from a segment map* —
+sector decompositions, rung tables, per-sector budgets — because a segment map
+cut before an unseen required waypoint still requires it and simply cannot
+finish.
+
+That is the shape of the whole class:
+
+> **A tag your parser does not match does not produce an error. It produces a
+> map that looks simpler than it is** — and every downstream artefact inherits
+> the simplification silently.
+
+### And the semantics were settled from data already on disk
+
+The alarming reading is that a *set* of required waypoints implies unexplored
+routing. On the one map where this was chased down, that is **false**, and the
+answer needed no new simulation at all:
+
+* the ten waypoints are **five coincident pairs** — `Left32m` + `Right32m` at the
+  same x and y, 32 m apart in z. **One 64 m gate assembled from two 32 m item
+  pieces.** With one plain checkpoint that is six logical checkpoints, which is
+  what the map always behaved as having;
+* human ghosts declare **7 splits**;
+* every non-finisher returns `cps=6`, never 7 or 10;
+* and decisively, **a car cannot be at z = 720 and z = 752 at the same instant,
+  yet 15 of 15 official humans finish.** If each member were separately required
+  the map would be uncompletable.
+
+**Crossing one member satisfies the set.**
+
+The test that turns this from a worry into a verdict is free:
+
+> **For each set, are the members ADJACENT or SCATTERED?** Adjacent means one
+> wide gate assembled from pieces — no routing freedom whatsoever. Scattered
+> means genuine alternative required waypoints, and *then* the routing question
+> is real.
+>
+> Adjacency is readable straight off the item positions. **No oracle calls, no
+> simulation, minutes per map** — and it converts an open gap into a confident
+> negative.
+
+### A note on how this was handled, because the handling is the lesson
+
+The first instinct was to put a caveat on every page for the affected maps. The
+better move — and the one taken — was to **check each page first**: on one of
+them every published figure was a game-scored lap and a relocated-Goal rung on
+the untouched map, with no segmentation anywhere in its apparatus, so it needed
+**nothing**.
+
+**An unnecessary caveat on a sound number is its own kind of misinformation.** It
+tells a reader to discount something that is fine, and it spends the credibility
+you will need for the caveat that matters.
