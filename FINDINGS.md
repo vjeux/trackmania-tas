@@ -795,3 +795,65 @@ starting at thirteen different places in six clusters, several mid-map, ending
 nowhere in common, and no end time matching either target. It has **no author
 lap**, and a file previously published for it on the index-0 assumption was
 withdrawn by its own author when the rule caught it.
+
+## Reward shaping is inert by construction — a proof, not a measurement
+
+The obvious cure for a stalled search on a long map is **reward shaping**: score
+partial progress through relocated intermediate gates, so a candidate that gets
+further scores better even if it does not finish. It was about to be prescribed
+to three maps. It is dead weight in every search this project has ever run, and
+the reason is arithmetic:
+
+```
+score_finish(t) = FINISH_BASE − t   = 1e8 − 14600  ≈ 9.9986e7
+score_dnf(k,t)  = k·SEG_UNIT − t    ≤ 4e7           (4 stations)
+```
+
+With a **finishing** incumbent, the acceptance delta for the best possible
+shaped non-finisher is −5.998e7; at T=25 that is `exp(−2.4e6)`, zero in double
+precision. Confirmed empirically — every accepted state in the shaped arm scored
+≥ 9.99e7, all finishers, no exceptions.
+
+The finisher-always-outranks-non-finisher invariant is *correct*: it is what
+stops a ladder optimising "fast to CP3" into a run that finishes a second
+slower. But it means **once the incumbent finishes, every non-finisher is
+strictly worse however far it got** — and **we seed every map from a downloaded
+human run, so the incumbent finishes from the first evaluation onward.**
+
+The A/B, since a proof still deserves a measurement (concurrent, same box, same
+seed, distinct staging roots, 20 min, 40 workers each):
+
+| arm | best | evaluations | rate |
+|---|---|---|---|
+| sparse control | **14.589** | 350,130 | 290/s |
+| dense, 4 stations | 14.669 | 186,066 | 152/s |
+
+**1.88× more expensive and 80 ms worse** — and it is cost, not quality: at equal
+evaluation counts the trajectories coincide.
+
+**Where shaping WOULD pay**, stated and explicitly not tested: only where the
+incumbent itself is a non-finisher — a first finish from a broken state, or a
+route change that must cross a DNF valley.
+
+**Two variants that would not be inert.** First, and worth trying on any map
+that plateaus: **stations as a tie-break among finishers**, scoring
+`(finish_ms, station_time)` lexicographically. It only ever compares finishers,
+so it can never be eaten by the invariant, and it supplies a gradient on a
+plateau of equal milliseconds — the same shape as the vernier that broke two
+CP1-End maps open. Second: a separate explorer island scored only on stations,
+migrating into the main population when it produces a finisher.
+
+**A general lesson about scoring functions.** This defect is invisible in a log:
+the shaped arm runs, accepts states, and improves — it just improves for reasons
+that have nothing to do with the shaping. Before adding a term to an objective,
+check it can actually change an acceptance decision in the regime you will run
+it in. That is the same discipline as the instrument controls above, applied to
+the objective rather than the apparatus.
+
+**And validate an objective against known artefacts before validating the
+search.** A proposed objective for another map — maximise the dwell time inside
+a trigger volume — was caught before implementation because a candidate that
+sinks *faster* reaches the reference height *sooner*, so the metric moves
+backwards exactly when the run gets better. Twenty minutes of checking a
+proposed metric against tapes whose answers are already known is cheap against a
+multi-hour search pointed the wrong way.
