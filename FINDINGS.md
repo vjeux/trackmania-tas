@@ -850,10 +850,25 @@ check it can actually change an acceptance decision in the regime you will run
 it in. That is the same discipline as the instrument controls above, applied to
 the objective rather than the apparatus.
 
+**A ladder with too few rungs is indistinguishable from a flat landscape.** The
+first pass of a height-ladder objective used four rungs and collapsed every
+perturbation into "fires nothing below the top rung" — no gradient, and the
+agent nearly concluded the neighbourhood was a cliff. Five extra rungs spread the
+same population across six levels. The failure presents as *"no gradient
+exists"*, not as *"my instrument is too coarse"*. Pair it with the vernier
+finding on another map: the same sweep gave 0 improving candidates at 28 µs
+rungs and 1,964 at 1.9 µs. **Resolution decides whether a gradient exists at
+all.**
+
 **And validate an objective against known artefacts before validating the
 search.** A proposed objective for another map — maximise the dwell time inside
 a trigger volume — was caught before implementation because a candidate that
 sinks *faster* reaches the reference height *sooner*, so the metric moves
-backwards exactly when the run gets better. Twenty minutes of checking a
-proposed metric against tapes whose answers are already known is cheap against a
-multi-hour search pointed the wrong way.
+backwards exactly when the run gets better.
+
+It was then measured, on 13 perturbations of the fast tape plus the human world
+record, and the metric turned out to carry **no** information at all: at
+identical clearance, dwell ranged from 6 to 33, and the two tapes sharing the
+best rung had dwells of 20 and 37. Twenty minutes of checking a proposed metric
+against tapes whose answers are already known is cheap against a multi-hour
+search pointed the wrong way.
