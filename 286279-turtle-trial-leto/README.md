@@ -206,9 +206,10 @@ to within 0.6 s. The 134.790 s is entirely their own retries.
 
 ## The tape will not compress, and that is the same fact as the 136 seconds
 
-The 218.812 tape reduces from 885 input events to **832** — six per cent — and no
-further: **1-minimal**, every one of the 831 remaining single deletions tried and
-failing. Of 177 single-deletion positions, 171 kill the run and **not one merely
+The 218.812 tape reduces from 885 input events to
+[**832**](replays/MINIMAL_832ev_219581.Ghost.Gbx) at **219.581** — six per cent —
+and no further: **1-minimal**, every one of the 831 remaining single deletions
+tried and failing. Of 177 single-deletion positions, 171 kill the run and **not one merely
 costs time**.
 
 That is not because the driving is superhuman. Run the same probe on the
@@ -228,6 +229,21 @@ Two honest limits on that. **1-minimality is per lineage** — it says no input 
 probe measures **marginal** freedom: on the author's lap, blanking ticks
 25290–25399 is free and blanking 25400–25834 is free, but blanking the **union**
 DNFs.
+
+**And the minimiser, run on the author's own lap, deletes its way past the
+author time.** 1453 events down to
+[**831**](replays/AUTHORMIN_831ev_354781.Ghost.Gbx) at **354.781** — 400 ms
+inside their own author time, with **no new driving at all**. The first two
+accepted moves were single blocks of 364 and 181 events worth exactly 0 ms: the
+retry loop, deleted wholesale, because it was already erased. That is the
+cleanest available statement of where the author's time went.
+
+*(A symmetry offered as suggestive, not as a constant: the optimised run
+minimises to 832 events, the author's lap to 831. Two lineages 136 seconds apart
+in finishing time, reached by completely different routes, bottoming out within
+one input of each other — as if the irreducible part of this map is the
+balancing itself, and everything above that floor is retries on one side and
+optimisation slack on the other.)*
 
 **The difficulty number, stated plainly:** of 104 sampled inputs on the minimal
 tape, **94 have a one-tick window** — shift by a single 10 ms tick either way and
