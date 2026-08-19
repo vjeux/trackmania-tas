@@ -169,3 +169,13 @@ forgiving than the driving humans have actually done on this map.
 | `replays/best_pC_5348_32098.Ghost.Gbx` | an independently produced 5.348 |
 
 Every tape above re-simulates to the time in its filename.
+
+<!-- VIDEOS:START -->
+
+## Videos
+
+Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
+
+- [`best_pF_5347_32087`](videos/best_pF_5347_32087.mp4)
+
+<!-- VIDEOS:END -->

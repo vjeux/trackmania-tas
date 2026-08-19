@@ -154,3 +154,13 @@ a brake tap into a landing.
 | `inputs/tas_min2_3848.tick.txt` | the two-action run as a readable input script |
 | `inputs/tas_kb_3844.tick.txt` | the keyboard run |
 | `inputs/tas_3836.tick.txt` | the fastest run |
+
+<!-- VIDEOS:START -->
+
+## Videos
+
+Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
+
+- [`tas_3836`](videos/tas_3836.mp4)
+
+<!-- VIDEOS:END -->

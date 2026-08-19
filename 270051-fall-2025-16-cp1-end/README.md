@@ -130,3 +130,13 @@ return their own official CP1 splits to the millisecond: 4.951 / 4.951 / 4.962 /
 | `replays/m270051_keyboard_4834.Ghost.Gbx` | keyboard only, ties the world record |
 | `replays/m270051_4830.Ghost.Gbx` | the unconstrained floor |
 | `inputs/rob4_4831.json` | the human-shaped tape's per-tick inputs |
+
+<!-- VIDEOS:START -->
+
+## Videos
+
+Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
+
+- [`m270051_human_shaped_4831`](videos/m270051_human_shaped_4831.mp4)
+
+<!-- VIDEOS:END -->

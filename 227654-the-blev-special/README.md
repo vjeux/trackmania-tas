@@ -110,3 +110,13 @@ touch the input that decides it.
 | `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed |
 | `replays/TAS_57573.Ghost.Gbx` | the first tape under the author time |
 | `replays/TAS_57498.Ghost.Gbx`, `TAS_57503`, `TAS_57518`, `TAS_57537`, `TAS_57577` | the rest of the family, 57.498 to 57.577 |
+
+<!-- VIDEOS:START -->
+
+## Videos
+
+Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
+
+- [`TAS_59912_watchable`](videos/TAS_59912_watchable.mp4)
+
+<!-- VIDEOS:END -->
