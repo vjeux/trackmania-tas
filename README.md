@@ -8,6 +8,53 @@ headless `TrackmaniaServer` re-simulating input tapes — and then **re-validate
 through a clean oracle** before being published. The point is not the replay.
 The point is the **technique**, written up so a human can practise it.
 
+## The headline: these author times are within reach of the field's existing technique
+
+Every beaten map here is required to end its investigation with a
+**classification of the technique** — is this a route nobody found, a technique
+the field already has but does not use here, or something that needs precision a
+person cannot hold? Twenty-five maps in, seventeen carry an explicit
+classification, and the answer is lopsided:
+
+| classification | count | maps |
+|---|---|---|
+| **known but unheld** — the field already does this, somewhere else or almost | **12** | [145875](145875-unlucke-get-jiggy-with-it), [165922](165922-idm-ruinin-ur-day-460), [186935](186935-magnet-trial), [191465](191465-training-10-long), [197047](197047-welcome-to-wiggles), [199100](199100-spring-2023-24-2up), [203330](203330-get-in-the-hole-impossible), [238835](238835-turtle-trial-angustus), [249521](249521-impossible-at-for-ssano), [252289](252289-surely-my-least-cooked-at), [270051](270051-fall-2025-16-cp1-end), [270053](270053-fall-2025-18-cp1-end) |
+| **undiscovered route** — the line itself is somewhere the field never goes | 3 | [126859](126859-kacky-reloaded-290), [227969](227969-great-wtf-of-what-165), [274191](274191-u10s-32-yeet-max-up) |
+| **precision-bound** — and on both, the forgiving variant has been *measured* | 2 | [173636](173636-tap-water-01), [279218](279218-fall-2025-22-reverse-cp1-end) |
+
+**Not one map has come back "not humanly executable."** That was the answer this
+project was set up to test for, and it has never been the right shape of answer,
+let alone the right one. Not a different car, not a physics exploit, not a
+machine-only line: in the large majority of cases a small specific thing the
+field already does, done in a place or a combination nobody tried.
+
+> **On four maps the deliverable is literally a human's own lap plus one or two
+> edits** — [279218](279218-fall-2025-22-reverse-cp1-end),
+> [252289](252289-surely-my-least-cooked-at),
+> [199100](199100-spring-2023-24-2up) and
+> [238835](238835-turtle-trial-angustus). Take the recorded run, change two
+> things, and it is inside the author time.
+
+The two precision-bound maps are the exception that makes the point: both say so
+in their own words, and on both a **forgiving variant** — a tape that gives up
+some time to tolerate human-sized timing error — has been found and measured,
+not merely wished for. What "known but unheld" looks like in practice is
+[249521](249521-impossible-at-for-ssano), where the world record's gas lifts
+land at the same race times as ours *to within 30 ms* and the entire margin is
+the car's attitude at the moment of the lift.
+
+Two mandatory follow-ups are demanded of every beaten map — (a) an investigation
+of the human technique, ending in that classification, and (b) a low-input
+family a person could actually drive. Current coverage over the 25 beaten maps:
+
+```
+(a) human-technique investigation   21 present / 2 partial / 2 missing
+(b) low-input family                20 present / 2 partial / 3 missing
+```
+
+Eight beaten maps do not yet carry an explicit classification sentence; every
+remaining follow-up gap sits on four maps, all of them with work in flight.
+
 ## Results — author time beaten
 
 | map | records | author time | best human | **this TAS** | vs AT | keyboard-only |
@@ -18,12 +65,12 @@ The point is the **technique**, written up so a human can practise it.
 | [Welcome to wiggles](197047-welcome-to-wiggles) | 21 | 100.784 | 101.794 | **95.839** | **−4.945** | **96.412** (2 keys) |
 | [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 6 | 51.602 | 52.202 | **49.778** | **−1.824** | **51.062** (3 values) |
 | [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.638 | **22.072** | **−1.253** | 23.125 (40 ms grain) |
-| [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** § | **−0.694** | **10.743** (14 presses) |
+| [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** | **−0.694** | **10.743** (14 presses) |
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 24.164 |
 | [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **15.217** (keyboard from 4.56 s) |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
 | [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.910** | **−0.348** | 20.070 (16 values, 47 events) |
-| [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
+| [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** | **−0.318** | — |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.503** | **−0.350** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **8.075** (14 inputs) |
@@ -46,7 +93,7 @@ of writing, and where they beat the human world record that is said too.
 
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
-| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.859** | **0.091** | **−0.310** | the closest live target here — one session of search so far, and all 19 records re-simulate exactly |
+| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.769** | **0.001** | **−0.400** | **the closest miss in the project — one millisecond, on the wrong side.** Four cold measurements across two separately compiled builds agree, and all 19 records re-simulate exactly |
 | [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.430** ‡‡ | 0.900 | **−0.793** | the 190 m gap jump that looked decisive is **dead** — it reaches CP5 1.128 s early and repays all of it within 82 m, and its exit is closed by a ballistic invariant. What works instead is scoring at the *next* checkpoint: arriving at CP5 earliest is not arriving best |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void. But **the field's own per-sector minima sum to 91.826 — 2.651 UNDER the author time** (93.847 after discarding every sector that could have inherited speed): every sector of a winning lap has been driven, nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
@@ -58,11 +105,14 @@ of writing, and where they beat the human world record that is said too.
 † 63.546 is the all-time human record on 134672, set on a 2022 build; it does not
 re-simulate on a current one. 68.442 is the best human record set on a build the
 game still runs.
-§ **Not re-verified in the latest audit pass.** These three maps have their
-headline control ghost archived, but not the wider *field* behind their
-field-reproduction claims, so those claims are not reproducible from our archive
-alone. The times themselves were validated with a control when they were found
-and are carried forward unchanged.
+§ **The field behind this map's reproduction claim is not banked.** 238835 has
+its headline control ghost archived but not the wider *field*, so its
+field-reproduction claim is not reproducible from our archive alone; the time
+itself was validated with a control when it was found and is carried forward
+unchanged. Two other maps carried this footnote until tonight —
+[203072](203072-yeet-fall-2024-04) and [228811](228811-torment-1-down) — and an
+audit pass has now re-downloaded, re-validated and banked their fields (120
+records and 48 of 48), so it no longer applies to them.
 ‡‡ **146612 is moving fast.** Several arms are live and the figures change hour
 by hour; every published tape re-validated on the untouched map with both human
 records exact in the same batch. A **segment sum** of 39.229 also exists, and on
@@ -90,6 +140,25 @@ people know about and cannot hold.
 That makes "a computer went faster" the boring half of the result. The
 interesting half is *what the computer did differently*, and whether it can be
 handed back to the people grinding the map.
+
+**What an author record actually contains, though, is worth being exact about.**
+Where we have extracted the author's record out of the map file, **five of five
+were telemetry-only** — [145875](145875-unlucke-get-jiggy-with-it),
+[203330](203330-get-in-the-hole-impossible),
+[285268](285268-pain-ft-mango-teuflum), [228607](228607-torment-1-up) and
+[228811](228811-torment-1-down) all carry the car's positions and no input
+chunk. You can watch the lap; **nobody can ever replay it**, because the inputs
+that produced it were never stored. On those maps the author time is a number
+the map *declares*, backed by telemetry of a lap someone drove.
+
+That weakens no result here — ours are game-validated laps re-simulated with
+known-answer controls — but it changes what the comparison *is*, and a reader
+should know. The one map that escapes it is the strongest object in the store:
+on [286279](286279-turtle-trial-leto) an arm **reconstructed** the missing
+inputs, and the reconstruction finishes at **355.181 — the declared author time,
+to the millisecond.** A reconstruction that lands exactly on a number it was
+never given is about as good as evidence gets that the declared time is a lap
+that was really driven.
 
 (Two maps here carry a caveat worth flagging honestly: on
 [210218](210218-fall-2024-25-pure-wet-icy-wood) and
