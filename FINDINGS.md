@@ -2742,3 +2742,76 @@ the untouched map, with no segmentation anywhere in its apparatus, so it needed
 **An unnecessary caveat on a sound number is its own kind of misinformation.** It
 tells a reader to discount something that is fine, and it spends the credibility
 you will need for the caveat that matters.
+
+## A negative becomes a result when it is swept as deep as the arm that SUCCEEDED — and defended against its own instrument
+
+"We searched and found nothing" is the cheapest sentence in this project and
+almost always the wrong one to publish. On *The Blev Special* it was published
+honestly for a while as an open question — *no keyboard finisher yet, and that
+is a statement about how much we have searched* — and it has now been converted
+into a real negative. The conversion took three things, and all three are
+reusable.
+
+**1. Sweep the dimension that unlocked the family that DID work, at least as
+deep.** On that map the analog family had been stuck at exactly the same wall
+until its graft alignment was swept at one-tick resolution: 7 826 grafts. The
+low-input arm had never had that sweep, so its zero meant nothing. The sweep was
+then run at **24 341 grafts** — triple the depth — over `k ∈ [4890, 4990]` step
+1 and `j−k ∈ [560, 800]` step 1.
+
+**2. Show the extra depth reached new ground.** A deeper sweep that re-tests the
+same candidates is not deeper. Here it took the launch-reaching grafts from
+**436 to 1 782** — four times as many entries into the decisive part of the map
+— and then swept the release tick every tick on the 400 earliest of them, for
+**19 601 release candidates**. Cumulatively the map's low-input campaign has
+evaluated **79 840 candidates and produced 0 finishers**.
+
+**3. Defend the zero against the instrument.** The way a null result is usually
+wrong is that the harness never had a chance: wrong map, mis-built tape, a graft
+that desyncs at tick 0. Every one of those failures announces itself in the
+checkpoint count. Across all **80 434** rows there was **not one `cps=1`** —
+every negative read *reached some checkpoints (2 of 3)*, the exact failure the
+analysis predicted, and analog batches from the same pipeline carried hundreds
+of finishers.
+
+> A null result needs a positive control **and** a shape. The control proves the
+> pipeline can succeed; the shape — every failure landing in the same, predicted
+> place — proves the failures are the map talking and not the harness.
+
+This is the same standard as *an audit that has only ever returned zero isn't an
+audit*, applied forwards instead of backwards: build the falsifier before you
+report the zero, not after someone doubts it.
+
+## A 0.001 s gain over 186 300 evaluations at a HEALTHY finish rate is a window, not a wall
+
+The same map produced the cleanest calibration of a failure mode that has cost
+this project real hours: a search that looks converged and is actually just
+pinned against the edges of the box it was allowed to move in.
+
+The numbers: **57.503 → 57.502 in 186 300 evaluations, at a 28 % finish rate.**
+
+Read those two figures together, because either alone is uninformative:
+
+* **A healthy finish rate rules out the ordinary explanation.** At 28 % the
+  search is not failing to produce valid runs — it is producing them by the tens
+  of thousands. Nothing is broken, nothing is on a cliff edge, more compute is
+  not the missing ingredient.
+* **So the tiny gain is not the map's resistance.** If 186 300 valid, scored,
+  distinct evaluations buy one millisecond, the search has already found the
+  best run *available inside its parameterisation* and is now spending its whole
+  budget re-deriving it.
+
+> **High finish rate + large evaluation count + micro improvement = you are
+> measuring your window, not the map.** The fix is never more iterations; it is
+> to move, widen, or re-parameterise the window — a different anchor tick, a
+> different seed, a different segment of the run left free.
+
+The contrast case matters as much: a **low** finish rate with a small gain means
+the opposite — the search is barely producing valid runs, it is on a boundary,
+and more evaluations or a gentler neighbourhood genuinely will help. The two
+situations look identical on a convergence plot and want opposite responses,
+which is why the finish rate belongs in every search report next to the best
+time.
+
+*(Source: the map's own closing arm, banked as
+`FLEET_NOTICE_a_REAL_low_input_negative_and_the_COLD_CHAIN_calibration_v1.md`.)*

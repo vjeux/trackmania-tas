@@ -187,17 +187,46 @@ author time had **not** fallen, which was true when they wrote it and was
 superseded within hours. The earlier note is preserved in the working record
 rather than deleted.
 
-## Still open — and stated as under-swept, not as a wall
+## No low-input finisher — and this is now a real negative, not an open question
 
-**There is no low-input finisher on this map yet, and that is a statement about
-how much we have searched rather than about the map.**
+An earlier version of this page said there was no keyboard finisher *yet*, and
+was careful to call that a statement about how little we had searched rather
+than about the map: 436 keyboard grafts reached the bowl launch **6.16 s ahead
+of the human** and died on the arc, and the analog family had hit the identical
+wall until its graft alignment was swept at one-tick resolution — **7 826
+grafts**. The low-input search had not had that sweep. That wording is now
+retired, because the sweep has been run, at triple the depth:
 
-436 keyboard grafts reach the bowl launch **6.16 s ahead of the human** and fail
-only on the arc. The analog family hit the *identical* wall — until the graft
-alignment was swept at one-tick resolution, which took **7 826 grafts**. The
-low-input search has not had that sweep.
+| | grafts | launch-reaching | release candidates | finishers |
+|---|---:|---:|---:|---:|
+| earlier state (under-swept) | — | 436 | — | 0 |
+| the sweep, k ∈ [4890, 4990] step 1, j−k ∈ [560, 800] step 1 | **24 341** | **1 782** | **19 601** † | **0** |
+| cumulative low-input campaign on this map | | | **79 840** | **0** |
 
-> **The low-input family here is under-swept in one dimension, not refuted.**
+† the release tick `b` swept every tick on the 400 earliest launch-reaching
+grafts.
+
+So the dimension that unlocked the analog family — graft alignment at one-tick
+resolution — has now been swept here three times as deep as it was there, and it
+produced four times the entries into the bowl (1 782 against 436) and no
+finisher at all.
+
+**And the negative is defended against the instrument.** The failure mode that
+would make all of this meaningless is a harness that never had a chance of
+finishing: a mis-built tape, a wrong map, a graft that desyncs at the start. Any
+of those shows up as `cps=0` or `cps=1`. Across all **80 434** rows of this
+campaign there is **not one `cps=1`** — every single negative reads *reached
+some checkpoints (2 of 3)*, meaning the tape drives the map, reaches the bowl,
+and dies on the arc, which is exactly the failure the analysis predicts. Analog
+batches from the *same* pipeline carry hundreds of finishers. The pipeline works;
+the route does not exist in this family.
+
+> **"We didn't find one" and "it isn't there" are different claims, and the
+> difference is a sweep plus a control that could have failed.**
+
+The published time is unaffected: **57.503 stands**, from the analog family.
+
+### Why the zero is the expected answer here
 
 Nor is the alphabet the interesting question on this map: the humans already
 drive it on three steer values, and so does the previous best at 59.912. And
