@@ -73,6 +73,34 @@ And sector 7 is not won in sector 7. The author is **4.4 km/h slower over the
 sector-6 crest** at 28.2 s, and then carries **+6 to +8 km/h continuously from
 29.6 s to 37.4 s**. The crest is where the sector is decided.
 
+## Independently reproduced, from a different search window
+
+The whole search was re-run from the same seed with the window opened a further
+684 ticks earlier — 1.08 M candidates against the first run's 796 k. It accepted
+**the identical four moves in the identical order** (49.322 → 49.290 → 49.278 →
+49.277), then reached 49.275 by a **different fifth move**. Two byte-different
+tapes, both validating at 49275, with the human controls exact in the batch.
+
+So the basin is not an artefact of one window choice. And the negative from the
+same run is worth stating: **opening sector 7 to the search bought nothing at
+all.**
+
+## One of the five changes is a stabiliser, not a time-gainer
+
+All 31 non-empty subsets of the five changed blocks were run on the plain
+oracle, and two results fall out that no heuristic would have found:
+
+- **Three inputs carry 168 of the 171 ms.** The 400 ms at 97% lock is −124 on
+  its own; three others are −25, −25 and −31.
+- **One input costs +175 ms by itself — and without it, the big one is fatal.**
+  Combine the 97%-lock ease with *any* of the other three and omit this one, and
+  **all six such subsets DNF.** It is what keeps the car alive once the long ease
+  is in.
+
+A one-move-at-a-time search cannot see that: on its own the move looks like a
+175 ms loss. It only survived here because it was accepted early, while the tail
+was still soft.
+
 ## The honest caveat: our 49.275 is a chaos exploit, not a technique
 
 The decisive input was swept over **3,276 cells** of placement × strength ×
@@ -133,5 +161,6 @@ about a run it is not.
 | `replays/HUMAN_rank2_keyboard_49491.Ghost.Gbx` | **Ssnake01's lap — the one that is one sector away** |
 | `replays/KEYBOARD_49475.Ghost.Gbx` | that lap plus two key presses |
 | `replays/TAS_49275.Ghost.Gbx` | the fastest run (a chaos exploit — see above) |
+| `replays/TAS_49275_independent.Ghost.Gbx` | the same time from a different search window — byte-different tape |
 | `replays/TAS_49278.Ghost.Gbx` | the first tape under the author time |
 | `notes/RESULT.md` | the full write-up: author decode, sector tables, the 3,276-cell sweep |

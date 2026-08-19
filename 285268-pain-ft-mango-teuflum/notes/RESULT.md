@@ -298,6 +298,35 @@ last 6.4 s, in five blocks, and every one of them is "ease off full left lock":
 The single largest move on the map is that **400 ms of 97 % lock instead of
 100 %, worth 124 ms of lap time on its own** (49.446 → 49.322).
 
+### 5.1 Attribution — every subset of the five blocks, adjudicated by the oracle
+
+All 31 non-empty subsets, applied to the human world record's tape:
+
+| blocks | time | Δ |
+|---|---|---|
+| ② alone (the 400 ms ease) | 49.322 | **−124** |
+| ⑤ alone | 49.415 | −31 |
+| ③ alone | 49.421 | −25 |
+| ④ alone | 49.421 | −25 |
+| **① alone** | **49.621** | **+175** |
+| ① ② | 49.290 | −156 |
+| ① ② ④ | **49.278** | **−168** |
+| ① ② ③ ④ | 49.277 | −169 |
+| ① ② ③ ④ ⑤ | **49.275** | **−171** |
+| ② ③ · ② ④ · ② ⑤ · ② ③ ④ · ② ④ ⑤ · … | **DNF** | — |
+
+Two things fall out that no attribution heuristic would have found.
+
+* **Three inputs carry 168 of the 171 ms.** The fourth and fifth are worth
+  3 ms between them.
+* **① is not a time-gainer, it is a stabiliser.** On its own it costs 175 ms.
+  But ② combined with *any* of ③④⑤ and **without** ① is a **DNF** — every one
+  of the six such subsets. The 30 ms, 19 %-of-lock ease at 42.88 s is what makes
+  the car survive the rest of the sector once the long ease is in. That is the
+  class of move a one-at-a-time greedy structurally cannot see, and here the
+  compounding order found it only because ① happened to be accepted first while
+  the tail was still soft.
+
 **(b) The author.** Per sector, % of ticks at full lock:
 
 | sector | author | WR | Ssnake01 (kbd) | author Δ vs WR |
@@ -347,7 +376,13 @@ So: **our 49.275 s beats the author time, and its inputs are lottery tickets.**
 An open-loop tape in a simulator this chaotic exploits micro-divergences that a
 driver cannot aim at. Per the project rule that "a human cannot do this" is
 never the answer, the forgiving version of this result is not our tape — it is
-§2.2 and §7: **the field's own sectors, and the keyboard lap below.**
+§2.2/§2.4 and §7: **the field's own sectors, and the keyboard lap below.**
+
+A second, blunter demonstration of the same thing: take the finished 49.275 tape
+and add a *second* ease of the same shape as ① at the same place (30–60 ms,
+12–32/127, placement ±80 ms, 144 cells). **106 of the 144 DNF and not one of the
+other 38 is faster** — the cheapest of them costs +270 ms. The tape is on a
+knife edge in every direction.
 
 What our tape *does* prove, and it is worth having: 49.282 is not a floor, and
 the specific place the whole field is leaving time is sector 9's unanimous full
@@ -434,7 +469,17 @@ the human WR (49.446) unless stated.
 | G | 38.63 s → end, ±127 deltas | F | 49.315 | 2 | 319 k |
 | H | 41.47 s → end, dense steer + dense gas/brake | A | 49.285 (**0 improvements**) | 1 | 180 k |
 | **I** | **38.63 s → end** | **raw WR** | **49.275** | 6 | 796 k |
+| **L** | **31.79 s → end** (independent reproduction, wider window) | raw WR | **49.277 → 49.275** | 5 | 1 076 k |
 | K/K2 | 31.79 s → end, digital | rank 2 | **49.475** | 5 | 96 k |
+
+**Stage L is a reproducibility control and it is a clean one.** Same seed, same
+move set, window opened a further 684 ticks earlier (the whole of sector 7 in
+play as well), so it explored 1.08 M candidates against stage I's 796 k — and it
+accepted **the identical moves in the identical order**: `4494_40_0_4` (49.322),
+`4441_3_0_24` (49.290), `4785_6_0_1` (49.278), `4657_1_0_3` (49.277). Two
+searches over different windows landed on the same tape. The 49.275 basin is not
+an artefact of one window choice, and opening sector 7 to the search bought
+nothing at all.
 
 Four transferable results, three of them negative:
 
@@ -500,3 +545,8 @@ In `~/persistent/private-30d/tm-unbeaten/285268/`:
 | `val_field_20260818.txt` | the 163-ghost identity control |
 | `m49.rs`, `m49an.rs`, `m49at.rs`, `m49sat.rs` | the tooling |
 | `NOTES_v1.md`, `PLAN.md` | working notes and the plan, as written before the search |
+
+*(Stage L's fifth accepted move differs — `4918_2_0_64` where stage I took
+`4919_2_0_4` — so the two 49.275 tapes are byte-different files that both
+validate to 49275. Banked separately as `m285268_49275_BEST.Ghost.Gbx` and
+`m285268_49275_stageL_independent.Ghost.Gbx`.)*
