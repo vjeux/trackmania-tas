@@ -10,37 +10,46 @@ The point is the technique, written up so a human can practise it.**
 
 ## Results — author time beaten
 
-| map | records | author time | best human | **this TAS** | vs AT | keyboard-only |
+| map | records | author time | best human | **this TAS** | vs AT | fewest inputs under the AT |
 |---|---|---|---|---|---|---|
-| [The Magnet Trial](186935-magnet-trial) | 7 | 2540.641 | 2575.154 | **793.893** | **−68.8 %** | — |
+| [The Magnet Trial](186935-magnet-trial) | 7 | 2540.641 | 2575.154 | **793.893** | **−68.8 %** | 16,397 → 793.893 |
 | [[Turtle Trial] Angustus](238835-turtle-trial-angustus) | 1 | 462.982 | 1964.933 | **239.133** | **−48.3 %** | — |
-| [[Turtle Trial] Leto](286279-turtle-trial-leto) | 5 | 355.181 | 441.002 | **218.812** | **−38.4 %** | **218.812** (3 values) |
-| [Welcome to wiggles](197047-welcome-to-wiggles) | 22 | 100.784 | 101.794 | **95.839** | **−4.945** | **96.412** (2 keys) |
-| [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 6 | 51.602 | 52.202 | **49.778** | **−1.824** | **51.062** (3 values) |
-| [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.638 | **22.072** | **−1.253** | 23.125 |
-| [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** | **−0.694** | **10.743** (14 presses) |
-| [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 24.164 |
-| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **15.217** (keyboard from 4.56 s) |
-| [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
+| [[Turtle Trial] Leto](286279-turtle-trial-leto) | 5 | 355.181 | 441.002 | **218.812** | **−38.4 %** | — |
+| [Welcome to wiggles](197047-welcome-to-wiggles) | 22 | 100.784 | 101.794 | **95.839** | **−4.945** | — |
+| [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 6 | 51.602 | 52.202 | **49.778** | **−1.824** | **197 → 51.575** (a human's own lap + 7) |
+| [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.638 | **22.072** | **−1.253** | 747 → 23.183 |
+| [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** | **−0.694** | **14 in the flight → 10.743** |
+| [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 315 → 23.545 |
+| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **70 → 15.285** |
+| [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **30 → 14.608** |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 64.871 | **57.493** | **−0.360** | — |
-| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.907** | **−0.351** | 20.070 (47 events) |
+| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.907** | **−0.351** | — |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** | **−0.318** | — |
-| [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
-| [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **8.075** (14 inputs) |
-| [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **6.323** (23 inputs) |
-| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | **6.595** (19 inputs) |
-| [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **3.844** (WR + 2 keys: 3.848) |
-| [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **13.986** (12 inputs) |
-| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | 10.788 (3 values) |
-| [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | **13.075** |
-| [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 163 | 49.282 | 49.446 | **49.275** | **−0.007** | 49.475 |
-| [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | 10.636 |
-| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | **5.350 — equals the AT** (15 inputs) |
-| [Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end) | 903 | 4.831 | 4.834 | **4.830** | **−0.001** | 4.834 |
+| [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **4 in the climb → 7.514** |
+| [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **14 → 8.075** |
+| [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **23 → 6.323** (or the WR + 1) |
+| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | 45 → 6.591 |
+| [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **12 → 3.848** (the WR + 2 keys) |
+| [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **12 → 13.986** |
+| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | — |
+| [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | — |
+| [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 163 | 49.282 | 49.446 | **49.275** | **−0.007** | — |
+| [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | — |
+| [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.347** | **−0.003** | 114 → 5.347 (15 *equals* the AT) |
+| [Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end) | 903 | 4.831 | 4.834 | **4.830** | **−0.001** | — |
 | [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 973 | 4.492 | 4.495 | **4.492** | **±0** | — |
 
 All times in **seconds**. "Best human" is the online world record at the time of
 the run; every author time in both tables had **never** been beaten by a human.
+
+**"Fewest inputs under the AT"** is the smallest number of input change events in
+any run here that is inside the author time — an input change event being any
+tick where steering, throttle or brake differs from the tick before. A dash
+means no such count is published for that map, usually because the only run
+under the author time is a dense analog tape. **Fewest is not easiest**: on
+several maps the sparsest tape is the *least* forgiving of mistimings, so each
+map's page names the run actually worth practising. See
+[`FINDINGS.md`](FINDINGS.md).
 
 On [The Blev Special](227654-the-blev-special) the human record of 147.031
 contains eleven respawns; 64.871 is that same driver's own driving with the
