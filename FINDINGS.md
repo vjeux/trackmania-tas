@@ -2479,3 +2479,102 @@ it ran it from the working tree where the missing file exists.
 This is the same shape as the controls above: the thing being verified (does the
 tool produce the right answer?) is adjacent to the thing that matters (can the
 recipient reproduce the answer from what I gave them?).
+
+## Early is free, late is fatal — measure the DIRECTION of a timing error, not just its size
+
+The project's standard tolerance probe slides the whole input block — steer,
+accelerate and brake together — by ±1 tick from a given point, and reports how
+many variants survive. That number compares maps well and it is the right thing
+for that. It also throws away the two most useful facts about a tape.
+
+Slipping **only the steering channel**, and reporting each direction separately:
+
+| steering slipped from | 10 ms EARLY | 10 ms LATE |
+|---|---|---|
+| through the decisive 600 ms window | **survives — and is 11 ms faster** | **loses the run outright** |
+| the 400 ms after that | — | survives, merely slower |
+| once the flight is committed | no change | no change |
+
+**The asymmetry is total inside the window, and it has a mechanism**: the flight
+is ballistic after ignition, so stopping the roll a tick sooner leaves more of
+the launch's vertical velocity intact, while stopping it a tick later has already
+spent the climb.
+
+That converts an unusable number — *"1 of 12 whole-block variants survived"* —
+into a sentence a human can act on: **release a touch early rather than a touch
+late.** A driver cannot use a survival rate. They can use a direction.
+
+Two bounds worth stating with it:
+
+* **The budget was exactly one tick.** −2, −3, −4, −5, −7 and −10 all lose the
+  run from every start point tested. *"Early is free"* means one tick early, not
+  "earlier is better" — and a rule quoted without its bound becomes the opposite
+  advice at −3.
+* **The probe slips everything after T**, so it measures the tolerance of the
+  rest of the flight *as a unit*. How late the release alone may be, with the
+  counter-steer held where it is, is a different and finer question.
+
+And the practical consequence for how this project reports: **a tolerance figure
+should say which direction and over what window**, because those are what
+transfer to a person. The count is a property of our probe; the asymmetry is a
+property of the map.
+
+## "Fewer inputs is easier to drive" is false, and it is measurable per tape
+
+This project publishes low-input tapes because a wall of per-tick analog
+micro-corrections is worthless to a human. The unstated assumption behind that —
+that fewer inputs is therefore *easier to drive* — is false, and on one map it is
+false twice over, by two independent probes.
+
+Two members of the same family, on the same map:
+
+| | analog | low-input |
+|---|---|---|
+| validated time | 20.070 | **20.070 — identical** |
+| steer values | 200+ | **16** |
+| input events | ~140 | **47** |
+| survives a 10 ms early slip | **yes, across a 600 ms window** | **no — neither direction, at any start point** |
+| whole-block probe | 1 survivor of 12 | **0 of 12** |
+
+A third of the inputs, the same time to the millisecond, and **no timing
+tolerance at all.**
+
+The reason is not mysterious once stated: a search under an alphabet constraint
+finds *a* solution inside a smaller feasible set, and nothing in the objective
+rewards robustness. Removing inputs removes the corrections that were absorbing
+error, so what is left is a tape that hits a narrower keyhole with fewer chances
+to adjust.
+
+> **Never infer drivability from input count. Measure the tolerance of each
+> member separately, and publish the low-input tape as a result rather than as a
+> recommendation** — on this map the *analog* tape is the one to hand a human,
+> because it is the one that forgives a human-sized error.
+
+This joins the earlier finding that a constraint can *find* time rather than
+cost it. Both say the same thing from opposite directions: **the alphabet and the
+drivability are independent axes, and neither one predicts the other.**
+
+## An altered map's official leaderboard ranks for the ORIGINAL objective
+
+Ten maps in this project turned out to be official campaign maps with something
+changed, which hands each of them a field one to four orders of magnitude larger
+than its own board. The obvious way to use one is to take the top-ranked players
+as seeds.
+
+On one of those maps the alteration moves the Goal **up**, and on the official
+map flying high is a **penalty**. So the official ranking sorts players by *how
+well they avoid the thing the altered map requires.*
+
+The seed that worked was **rank 10, not rank 1** — rank 10 fires a y = 146 rung
+where rank 1 only reaches y = 138 — and the field has a 1.08 s cliff after rank
+16, so the useful pool is both smaller and differently ordered than the board
+suggests.
+
+> **A leaderboard is a ranking for the objective that leaderboard was set under.
+> When the map has been altered, that is not your objective.** Re-rank the field
+> by the quantity your map actually needs — height, exit speed, a gate crossing —
+> before you pick a seed, and expect the order to change.
+
+The general form is worth keeping even away from altered maps: **any ordering you
+inherit encodes someone else's objective**, and the further your goal is from
+theirs, the less the top of their list is worth to you.

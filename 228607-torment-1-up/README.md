@@ -1,13 +1,14 @@
 # Torment (1-UP) — the author time falls, and the technique was on a leaderboard nobody had connected to the map
 
-**Author time 20.258 · human world record 24.902 · best validated 20.070.**
+**Author time 20.258 · human world record 24.902 · best validated 19.936.**
 
 | tape | validated | vs AT | vs human WR |
 |---|---|---|---|
-| [`TAS_20070`](replays/TAS_20070.Ghost.Gbx) | **20.070** | **−0.188** | **−4.832** |
+| [`TAS_19936`](replays/TAS_19936.Ghost.Gbx) | **19.936** | **−0.322** | **−4.966** |
+| [`TAS_20070`](replays/TAS_20070.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
+| [`LOWINPUT_20070_16values`](replays/LOWINPUT_20070_16values.Ghost.Gbx) | 20.070 | −0.188 | −4.832 |
 | [`TAS_20083`](replays/TAS_20083.Ghost.Gbx) | 20.083 | −0.175 | −4.819 |
-| [`TAS_20126`](replays/TAS_20126.Ghost.Gbx) | 20.126 | −0.132 | −4.776 |
-| [`SPLICE_24854`](replays/SPLICE_24854.Ghost.Gbx) | 24.854 | +4.596 | −0.048 | 
+| [`SPLICE_24854`](replays/SPLICE_24854.Ghost.Gbx) | 24.854 | +4.596 | −0.048 |
 | author time | 20.258 | — | −4.644 |
 | human WR, on the altered board | 24.902 | +4.644 | — |
 | [**the author's own lap**](replays/AUTHOR_LAP_20258_watchable.Ghost.Gbx) | *20.258* | — | *watchable only — see below* |
@@ -97,15 +98,95 @@ left sits entirely in what the car does *after* the reactor lights, which makes
 this an air-control problem in a reactor flight — the same class that was worth
 1.824 s on [Spring 2023 - 24](../199100-spring-2023-24-2up).
 
+## For a driver: early is free, late is fatal
+
+This is the most useful thing on the page, and it is a single sentence a player
+can act on.
+
+Slip everything after tick T by one tick and re-simulate. Through the decisive
+window — **race 18.70 to 19.30**, which is the release and the counter-steer:
+
+| steering slipped from | **10 ms EARLY** | **10 ms LATE** |
+|---|---|---|
+| race 18.70 … 19.20 | **19.936** — keeps the run, and is 11 ms *faster* | **loses the Goal** |
+| race 19.40 … 19.70 | — | 20.065 — survives, merely slower |
+| race 19.80 … 19.90 | 19.946 / 19.941 | 20.172 |
+| after race 20.10 | no change | no change — the flight is committed |
+
+> **Release the lock a touch early rather than a touch late.**
+
+It is consistent with the mechanism: the flight is ballistic after ignition, so
+stopping the roll sooner leaves more of the launch's vertical velocity intact,
+while stopping it later has already spent the climb.
+
+**And the budget is exactly one tick.** −2, −3, −4, −5, −7 and −10 all lose the
+Goal from every T tested. "Early is free" means *one* tick early, not "the
+earlier the better".
+
+That probe is also where **19.936** came from: it is the 19.947 tape with its
+steering slipped 10 ms earlier. The tolerance measurement produced the incumbent.
+
+## "Fewer inputs is easier to drive" is measured false here — twice
+
+The low-input member of this family is published above, and **it is the worse
+thing to hand a human despite looking simpler.**
+
+| | analog | low-input |
+|---|---|---|
+| time | 20.070 | **20.070 — identical** |
+| steer values | 200+ | **16** |
+| input events | ~140 | **47** |
+| survives a 10 ms early slip? | **yes, across a 600 ms window** | **no — neither direction, at any T** |
+| whole-block probe | 1 survivor of 12 | **0 of 12** |
+
+A third of the inputs, the same time, and **no tolerance at all**. Two
+independent probes agree.
+
+So the low-input tape is published as a *result*, not as a recommendation: on
+this map the drivable artefact is the analog one, because it is the one that
+forgives a human-sized error. Each member needed its own tolerance number, and
+assuming the simpler-looking tape was the friendlier one would have been wrong.
+
+## Mining the official field: rank 1 is the wrong seed here
+
+The [official field of 400 000](../_altered) is this map's best resource, and
+its **ranking is anti-correlated with what we need.**
+
+The alteration moves the Goal *up*. On the official map flying high is a
+**penalty**, so the board sorts players by how well they avoid precisely the
+thing this map requires. Our winning seed was **rank 10, not rank 1** — rank 10
+fires a y = 146 rung where rank 1 only reaches y = 138 — and the field has a
+1.08 s cliff after rank 16.
+
+> **When a map has been altered, the official leaderboard's order is a ranking
+> for the *original* objective.** Rank by the quantity your map actually needs
+> before picking a seed, not by finishing position.
+
 ## Validation — and the strongest yes-control in the project
 
-`TAS_20070` sha256 `7a552216f9060388372c156fc1e0e445a9a33b1ea2d3945f62ac832cc02645fe`,
-map md5 `65b6b7bcf4808070383e6e9ff9de28f1`.
+`TAS_19936` sha256 `5c5fef54fe0680191ed03b61e01c149c86d33540434b494cd9c12b1ba6ef1a2c`,
+map sha256 `2c6d500aa73e3e86c1b9c64c61e5801c04b1b9d757687a9054ecc0fb118976e5`
+(md5 `65b6b7bcf4808070383e6e9ff9de28f1`).
 
-**13 of 13 tapes exact and both controls exact**, on an auditor's independently
-built tree, reading **only** from the archived bank with nothing from any working
-directory, hashes taken before validation. Re-checked here on a third toolchain:
-20.070 / 20.071 / 20.083 with both controls at 24.854.
+**19.936 cleared a single-file gate**: `--jobs 1`, one file per invocation, a
+fresh process each time, an empty staging directory, and copies taken from the
+archive rather than any working tree — so nothing about the batch, the scheduler
+or a neighbouring tape can contribute to the number. Reproduced here on a
+separate toolchain, one file at a time:
+
+```
+tor_BEST_19936.Ghost.Gbx      19936
+best_19941.Ghost.Gbx          19941
+CTRL_ident_24854.Ghost.Gbx    24854
+CTRL_splice_24854.Ghost.Gbx   24854
+```
+
+with the controls' own hashes matching the archive byte for byte
+(`2188261a…e62db`, `86eb254f…6371a`).
+
+Before that, **13 of 13 tapes exact and both controls exact** on an auditor's
+independently built tree, store-only inputs, hashes taken before validation. That
+makes three independently built toolchains on this map.
 
 The tape carries **zero respawn packets** — audited by enumerating bit 31 of each
 input packet's state literal, not assumed.
