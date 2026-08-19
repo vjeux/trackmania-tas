@@ -1123,3 +1123,45 @@ nearly reported their own working ladder as broken.
 17 values for the 8-detent arms and 3 for keyboard. This is the same
 synthesised-tape telemetry trap documented above, in the place where somebody
 auditing a published number is most likely to hit it.
+
+## Bank the map and the controls, not just the tapes
+
+Three times in one session a map's result arrived complete, careful and
+cold-validated — and impossible for anyone else to reproduce, because the map
+file and the control ghosts had only ever existed in scratch space on the
+agent's node.
+
+On the largest result in this repo, **the map was one node reclamation away from
+turning a −1746.748 s finding into a claim with no evidence.**
+
+**The map is not input. It is half the evidence.** A time is a claim about a
+tape *and* a map, and re-simulating a tape against a map nobody else has is not
+a validation anyone can repeat.
+
+The standard, set by the map that did it properly: **30 human ghosts and all 15
+tapes validated in one batch, 45/45 exact**, reproducible from the directory in
+a single command. And the check that actually proves it — **re-validate with
+everything read from the durable store, with scratch space excluded**, and bank
+that transcript.
+
+> **Could a stranger reproduce every number in your write-up from this directory
+> alone, with your machine destroyed?** If not, it is not banked yet.
+
+## A rule that turns out to be a property of one tool
+
+The project believed that cutting a tape to a standing respawn works at **one
+exact, non-periodic phase** — a striking claim, measured on real data, and it
+shaped three agents' work.
+
+It is a property of **the tool that was used to measure it**. That tool splices
+through a respawn-blind code path; a packet-level cutter carries the respawn bit
+with the packet, and the same sweep then gives **27 consecutive survivors, all
+arithmetic-exact**.
+
+Neither measurement was wrong. The generalisation was — and it is a subtle
+failure, because the phenomenon was real, reproducible, and had a plausible
+physical story attached.
+
+> **Before elevating a measured behaviour to a rule about the game, reproduce it
+> with a second implementation.** Especially when the behaviour is surprising:
+> surprise is exactly what a tool artefact looks like from the inside.
