@@ -1,20 +1,20 @@
 # 274191 — `U10S_32 By Everios96 [Yeet] MAX-UP`
 
-## The author time falls by 0.241 s, and the four-and-a-half-second reactor flight turns out to be fifteen keyboard presses
+## The author time falls by 0.241 s, and the four-and-a-half-second reactor flight turns out to be four inputs
 
 **For a driver, before any of the detail:**
 
 > This map looks like it is about the reactor flight. It is not. **The flight is
-> the easy part** — fifteen keyboard presses, most with 30–50 ms of slack, and
-> five times more forgiving than the world record's own flight. All the
-> precision lives in the last quarter-second of road before the drop, and what
-> you have to do there is *take an input away*: **stop slamming the wheel into
-> the edge — ease out of the lock over the last two tenths.** That sets the spin
-> you fall with, and the spin is everything, because **the wheel does nothing at
-> all for the 1.2 seconds between leaving the road and half a second after the
-> launcher.** Pin the lock to the lip like all three humans do and you meet the
-> launcher rotated 58° nose-up and keep 148 km/h. Ease out and you meet it at
-> 35° and keep 197.
+> the easy part** — the simplest tape that beats the author time flies the whole
+> four-and-a-half-second climb on **four steering inputs and two values**, then
+> holds the wheel centred for the last 2.3 seconds. All the precision lives in
+> the last quarter-second of road before the drop, and what you have to do there
+> is *take an input away*: **stop slamming the wheel into the edge — ease out of
+> the lock over the last two tenths.** That sets the spin you fall with, and the
+> spin is everything, because **the wheel does nothing at all for the 1.2 seconds
+> between leaving the road and half a second after the launcher.** Pin the lock
+> to the lip like all three humans do and you meet the launcher rotated 58°
+> nose-up and keep 148 km/h. Ease out and you meet it at 35° and keep 197.
 
 | | time | vs AT | what it is |
 |---|---|---|---|
@@ -24,8 +24,8 @@
 | **author time (AT)** | **7.704 s** | — | `TwinsNaA`'s driven validation lap |
 | our best unconstrained TAS | **7.463 s** | **−0.241** | §2 |
 | **keyboard climb, 24 presses** | **7.474 s** | **−0.230** | §6 |
-| **keyboard climb, 15 presses, 30 ms hold floor** | **7.476 s** | **−0.228** | **the deliverable** |
-| fewest-input tape, 32 live events total | 7.558 s | −0.146 | §6 |
+| **keyboard climb, 13 presses, 30 ms hold floor** | **7.474 s** | **−0.230** | §6 |
+| **the simplest tape that beats it: 33 live inputs, FOUR of them in the flight** | **7.514 s** | **−0.190** | **the deliverable** |
 
 uid `ieMJgDjCjWkZ45apoiK2DPmQeQg` · Nadeo mapId `dddea8ed-682a-4e42-9566-3035683ddba5`
 · TMX 274191 · map md5 `20a56be3b87b3dfa3ff9d35e523ec25c` (Nadeo's own CDN,
@@ -417,20 +417,26 @@ re-validated in one batch with the human WR as control:
 |---|---|---|---|---|---|
 | unconstrained floor | **7.463** | −0.241 | 52 / 39 | 100 / 73 | 10 ms |
 | keyboard climb | **7.474** | −0.230 | 55 / 42 | 24 / **3** | 10 ms |
-| **keyboard climb + 30 ms hold floor** | **7.476** | **−0.228** | 55 / 42 | **15 / 3** | **30 ms** |
-| 5-value climb + 30 ms hold floor | 7.483 | −0.221 | 47 / 34 | 24 / 5 | 30 ms |
-| **fewest inputs of all** | 7.558 | −0.146 | **25 / 19** | **7 / 3** | 10 ms |
+| keyboard climb + 30 ms hold floor | **7.474** | −0.230 | 55 / 42 | **13 / 3** | **30 ms** |
+| 4-value climb + 30 ms hold floor | 7.481 | −0.223 | 47 / 34 | 17 / 4 | 30 ms |
+| event-thinned analog | 7.508 | −0.196 | 30 / 21 | 9 / 9 | 10 ms |
+| **THE SIMPLEST ONE — 33 live inputs in the whole lap** | **7.514** | **−0.190** | **27 / 20** | **4 / 2** | 10 ms |
+| fewest climb inputs, slower | 7.558 | −0.146 | 25 / 19 | 7 / 3 | 10 ms |
 | — human WR, for scale | 7.893 | +0.189 | 28 / 19 | 36 / 26 | 10 ms |
 
-Two things to notice.
+Three things to notice.
 
-* **The 15-press keyboard tape is not an approximation of the analog one — it
+* **The 13-press keyboard tape is not an approximation of the analog one — it
   flies the identical attitude program.** Mid-climb thrust elevation +21.3°
   against +21.2°, alignment 0.981 against 0.981, speed at y = 150 m of 697 km/h
   against 697.
-* **The fewest-input tape has fewer ground events than the human world record
-  (25 against 28) and a fifth of its climb inputs (7 against 36) — and is
-  0.335 s faster.**
+* **The simplest tape does the entire four-and-a-half-second reactor flight in
+  FOUR steering inputs using TWO values, and then holds the wheel centred for
+  the last 2.3 seconds.** It has *fewer ground inputs than the human world
+  record* (27 against 28) and is **0.379 s faster**.
+* Going from 13 climb presses to 4 costs 40 ms. Both are inside the author time
+  by a comfortable margin, so the choice is purely how much you want to be
+  doing with your hands.
 
 Free reductions found along the way, worth knowing generally:
 
@@ -452,7 +458,7 @@ lives — and it is the same difficulty the three humans already handle.
 with it — what a driver who is a beat late actually does. Cost against 7.476;
 **anything up to +228 ms still beats the author time.**
 
-### The fifteen presses of the climb (the deliverable tape)
+### The presses of the climb (the 15-press tape this was measured on; the 13-press tape is its direct descendant)
 
 | race | −50 | −30 | −20 | −10 | +10 | +20 | +30 | +50 |
 |---|---|---|---|---|---|---|---|---|
@@ -550,7 +556,7 @@ strike at 3.60 s, and those are 10 ms-tight. If you want the simple version, hol
 the brake like the world record does and give up a few hundredths — the 0.228 s
 is not in these.
 
-### Sector 4 — the climb, 4.10 → 5.90 s. Fifteen presses, and all of the time.
+### Sector 4 — the climb, 4.10 → 5.90 s. Four inputs, and all of the time.
 
 Control returns at **4.10 s — the moment the launcher has finished with you and
 the reactor takes over.** One idea:
@@ -563,30 +569,44 @@ aimed 50° up and you spend half of it going nowhere; aimed 20° up and you spen
 it going where the gate is. **The horizon is your instrument: the field lets the
 nose keep climbing; you have to check it and hold it low.**
 
-The complete keyboard script. `L` = full left, `R` = full right, `—` = centre.
+The complete keyboard script for the 13-press version. `L` = full left,
+`R` = full right, `—` = centre.
 
 ```
   4.10 s  R      as control returns — the catch
+  4.12 s  —
+  4.34 s  R
   4.41 s  —
   4.51 s  L
   4.61 s  —      <-- the "check the nose" release
   4.84 s  L      .......... 320 ms
   5.16 s  —
   5.25 s  R
-  5.31 s  —
-  5.39 s  L      .......... 490 ms, the long one
-  5.88 s  —      from here on nothing you do is worth more than a few ms
-  6.65 s  L      (30 ms tap)
-  6.68 s  —
-  7.15 s  R      (60 ms tap)
-  7.21 s  —
-  7.49 s  L      hold to the gate
+  5.32 s  —
+  5.39 s  L      .......... 480 ms, the long one
+  5.87 s  —      from here on nothing you do is worth more than a few ms
+  7.54 s  L      hold to the gate
 ```
 
-The first four are one phrase — "catch, check" — and the tolerance table treats
-them as one: only the total rotation matters, not which of them you were late
-on. From 5.16 s everything has ±30–50 ms of room. **From 5.88 s the lap is over:
-the last five presses cost zero however you place them.**
+**And the version to learn first, because it is barely a script at all.** The
+7.514 tape flies the whole climb on four inputs and two values:
+
+```
+  4.10 s  (R already held from before control returned)
+  4.50 s  L
+  4.61 s  —
+  4.84 s  L      .......... 320 ms
+  5.16 s  —      and CENTRE for the last 2.3 seconds to the gate
+```
+
+That is 0.190 s inside the author time and 0.379 s faster than the world record.
+Its climb inputs tolerate ±30 ms; several of the mistimings come out *faster*
+than the tape itself, which is the clearest sign it is not a knife edge.
+
+Timing notes: the presses around 4.1–4.5 s are one phrase — only the total
+rotation they produce matters, not which of them you were late on. From 5.16 s
+everything has ±30–50 ms of room, and **from 5.9 s the lap is over: the closing
+presses cost zero however you place them.**
 
 ### Sector 5 — 5.90 s to the gate. Already decided.
 
@@ -596,9 +616,9 @@ does not change at all.
 ### Is this humanly realistic?
 
 **Yes, and the hard part is the part they already do.** Sector 1 is the world
-record's own driving. Sector 3 needs no steering. Sector 4 is fifteen keyboard
-presses on quarter-second holds with tens of milliseconds of slack, five times
-more forgiving than the world record's own flight. **All the difficulty is a
+record's own driving. Sector 3 needs no steering. Sector 4 is four inputs on quarter-second holds
+with tens of milliseconds of slack (thirteen if you want the extra 40 ms), five
+times more forgiving than the world record's own flight. **All the difficulty is a
 650 ms stretch of road that all three humans already negotiate at 260 km/h — and
 the change asked for there is not a new input, it is taking one away: stop
 pinning the wheel into the lip.**
@@ -610,10 +630,12 @@ pinning the wheel into the lip.**
 | file | what |
 |---|---|
 | `tapes/m274191_x1_7463_*.Ghost.Gbx` | the unconstrained floor, 7.463 s |
-| `tapes/m274191_L2_7476_*.Ghost.Gbx` | **the deliverable** — 15-press keyboard climb, 30 ms hold floor |
+| `tapes/m274191_simpR1_*.Ghost.Gbx` | **the deliverable** — 33 live inputs, FOUR of them in the flight, 7.514 s |
+| `tapes/m274191_L2_7474_*.Ghost.Gbx` | keyboard climb, 13 presses, 30 ms hold floor, 7.474 s |
 | `tapes/m274191_L1_7474_*.Ghost.Gbx` | keyboard climb, 24 presses, 7.474 s |
-| `tapes/m274191_L4_7483_*.Ghost.Gbx` | 5-value climb, 7.483 s |
-| `tapes/m274191_simpP2_*.Ghost.Gbx` | fewest inputs: 32 live events, 7.558 s |
+| `tapes/m274191_L4_7481_*.Ghost.Gbx` | 4-value climb, 7.481 s |
+| `tapes/m274191_simpR2_*.Ghost.Gbx` | event-thinned analog, 45 events, 7.508 s |
+| `tapes/m274191_simpP2_*.Ghost.Gbx` | 32 live events, 7.558 s |
 | `tapes/m274191_TAS_*` | the whole improvement ladder, each re-validated when banked |
 | `ghosts/` | the three human runs, as served by trackmania.io |
 | `map_274191_v1.Map.Gbx` | the map, from Nadeo's own CDN |

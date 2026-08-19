@@ -8,6 +8,7 @@ time beaten by 0.241 s, and a 15-press keyboard tape is still 0.228 inside it.**
 | [`TAS_7463`](replays/TAS_7463.Ghost.Gbx) | **7.463** | **−0.241** | analog | 255 values |
 | [`KEYBOARD_7474`](replays/KEYBOARD_7474.Ghost.Gbx) | 7.474 | −0.230 | 24 presses | **3 — keyboard** |
 | [`KEYBOARD_7476`](replays/KEYBOARD_7476.Ghost.Gbx) | **7.476** | **−0.228** | **15 presses**, 30 ms hold floor | **3 — keyboard** |
+| [**`KEYBOARD_4input_7514`**](replays/KEYBOARD_4input_7514.Ghost.Gbx) | **7.514** | **−0.190** | **the whole 4.5 s climb on FOUR inputs** | **2 values** |
 | fewest inputs of all | 7.558 | −0.146 | **32 live events for the whole lap** | keyboard |
 | human WR — Whatever8319 *(control)* | 7.893 | +0.189 | — | — |
 
@@ -93,7 +94,11 @@ again into 3.83 s, straddling the launcher strike at 3.60 s, and those are
 10 ms-tight — if you want the simple version, hold the brake like the world
 record does and give up a few hundredths. The 0.228 s is not in these.
 
-**Sector 4 — the climb, 4.10 → 5.90 s. Fifteen presses, and all of the time.**
+**Sector 4 — the climb, 4.10 → 5.90 s.** Fifteen presses in the optimum — but
+the whole climb also flies on **four inputs and two values** for 38 ms more
+(`KEYBOARD_4input_7514`, still 0.190 inside the author time), after which the
+wheel is simply held centred for the last 2.3 s. That version uses **27 ground
+inputs — one fewer than the world record** — and is 0.379 s faster than it.
 One idea:
 
 > **Stop the car swinging nose-up. Point its belly at the far side of the map,
