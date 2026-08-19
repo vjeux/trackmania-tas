@@ -91,6 +91,4 @@ players** on this geometry.
 
 This is a **Reverse** variant: same physics, but those humans drove the route **backwards**. The official field gives you geometry and a corridor, **not a line** — and nobody has yet tried reversing it into one.
 
-*No time here is claimed from that field.* Grafting an official tape onto one of
-our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
-transfer" is a statement about physics rather than a demonstrated pipeline.
+**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.

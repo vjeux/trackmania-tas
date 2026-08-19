@@ -173,10 +173,12 @@ transferable findings in one place.
 campaign maps, and we can now name which.** Identified blind by cell occupancy
 against all 625 official seasonal maps, with every one matching the altered map's
 own header name — a signal the matcher never reads. That gives each of them a
-second field, on identical geometry, of 29 274 to 900 000 players. No time is
-claimed from it: grafting an official tape onto our map is a measured negative on
-2 of 2 maps tried and undiagnosed, so *"times transfer"* is a statement about
-physics, not a demonstrated pipeline.
+second field, on identical geometry, of 29 274 to 900 000 players — **and those
+fields are demonstrably drivable here: twenty official human tapes grafted onto
+our copies each returned their own official time or split to the millisecond.**
+Two results follow immediately: our 270051 tape beats every one of the official
+top five on an 87 596-player field, and on 228607 the official top 15 all fire a
+launcher that 0 of the 23 players on the altered board ever found.
 
 ## Layout
 

@@ -91,30 +91,86 @@ used for**, and the two answer different questions.
   is a corridor and never a time** — wet icy wood is not the surface those humans
   drove.
 
-## The caveat, and it must travel with the result
+## Times transfer — demonstrated, not merely physical
 
-**Grafting an official tape onto our map is a measured negative on 2 of 2 maps
-tried, and it is undiagnosed.**
+**Twenty official human tapes have been grafted onto altered copies, and every
+one of them returned its own official time or split to the millisecond.**
+
+All five of the official top five on Fall 2025 - 16, grafted onto our
+[270051](../270051-fall-2025-16-cp1-end):
+
+| donor | our oracle on the altered map | that human's official CP1 split |
+|---|---|---|
+| rank 1 (41.475 WR) | **4.951** | 4.951 |
+| rank 2 | **4.951** | 4.951 |
+| rank 3 | **4.962** | 4.962 |
+| rank 4 | **4.966** | 4.966 |
+| rank 5 | **4.932** | 4.932 |
+| lossless control | 4.831 | 4.831 |
+| *our native TAS tape* | *4.830* | — |
+
+and, independently, **all fifteen** grafted official Fall 2024 - 08 humans return
+their own official times to the millisecond on
+[228607](../228607-torment-1-up)'s geometry.
+
+Twenty foreign tapes, twenty exact, **and untunable** — each is a separate
+prediction that could only come out right if the identification, the graft and
+the oracle are all correct. It validates the whole chain in one measurement.
+
+### The recipe is map-dependent, and you pick it with a control
+
+An earlier version of this page carried a caveat saying the graft was a measured
+negative and undiagnosed. **It was a defect in the recipe, and it is fixed.**
+
+Carrying chunk `0x0309202D` declares the **donor's** race result onto the
+carrier — an official ghost's nine splits onto a map with one waypoint — and the
+validator rejects the run. The instruction had always been *carry the inputs, not
+the container*; the published `--ids` list contradicted it.
 
 ```
-210218 <- official Fall 2024 - 25 humans   control 103.915 EXACT, natives exact, donors DNF cps=0
-270051 <- official Fall 2025 - 16 humans   control   4.831 EXACT, natives exact, donors DNF cps=0
+270051   --ids 0x0309201D                            control exact, official 4.951   WORKS
+270051   --ids 0x0309201D,0x0309202D                 control exact, official DNF
+270051   --ids 0x0309201D,0x0309202D,0x0309202B      control exact, official DNF
+210218   --ids 0x0309201D                            CONTROL ITSELF DNFs
+210218   --ids 0x0309201D,0x0309202D,0x0309202B      control exact at 103.915
 ```
 
-210218 failing is expected — different surface, different physics. **270051 is
-not**: `name_agree` 0.9857, same surfaces, and it still failed. The graft
-machinery itself is sound (the control's grafted tape re-simulates its own line
-to 21 mm over 328 ticks), but the official tape could not be located against its
-own telemetry at race 1.5 s. The measured candidate, unconfirmed, is a two-tick
-`start_offset` difference between the foreign and native containers — −1550 ms
-against −1530 — which the graft carries across.
+> **Try both the inputs-only form and the three-chunk form, and use whichever
+> one's lossless control passes in that same batch. Never assume either.**
 
-> **"Times transfer" is a statement about physics, not a demonstrated pipeline.**
-> Nothing in this repository has yet driven an official tape on one of our maps.
-> Anyone who tries should run it **only** with a native-carrier control in the
-> same batch and a first-second telemetry check.
+**And note why this hid for so long: the lossless control passes in all three
+rows on 270051.** A native donor carries compatible metadata, so a
+native-into-native graft is fine however many chunks you take. The control was
+working correctly and was **blind to this by construction** — another instance of
+a control testing a proposition adjacent to the one it was believed to test.
 
-## What this opens
+### `name_agree` predicts the transfer, exactly
+
+With the recipe chosen properly, 210218's official humans **still** return
+`DNF cps=0` — with its own control exact at 103.915 in the same batch.
+
+That is no longer a mystery. It is a clean measurement of the surface swap:
+
+> **`name_agree` 0.9857 → foreign tapes run and return their own splits.
+> `name_agree` 0.5909 → they do not, because the physics changed.**
+
+The classifier and the transfer test agree, which is the strongest form the
+classification could take.
+
+## What this changes immediately
+
+Two results follow from the twenty exact grafts, and neither required a new
+search:
+
+* **Our [270051](../270051-fall-2025-16-cp1-end) tape at 4.830 beats every one of
+  the official top five** (best 4.932), on a field of **87 596 players** rather
+  than the 903 on the altered board.
+* **On [228607](../228607-torment-1-up), the official top 15 all fire the
+  launcher** at 692–997 km/h — while **0 of the 23** players on the altered
+  board ever found it. The technique was never undiscovered; it was on a
+  leaderboard nobody had connected to the map.
+
+## What else this opens
 
 Not a time — a source of **answer keys**, which this project has repeatedly found
 worth more than a seed. The pattern is established elsewhere in this repo: on

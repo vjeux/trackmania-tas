@@ -125,6 +125,6 @@ players** on this geometry.
 
 This is the best case of the ten. It is a **CP1 End** variant, so the official map's opening **is** our entire race — those humans have all driven exactly our sector, at full commitment, as the start of their own lap.
 
-*No time here is claimed from that field.* Grafting an official tape onto one of
-our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
-transfer" is a statement about physics rather than a demonstrated pipeline.
+**This is the map where official-tape transfer was demonstrated.** All five of the official top five, grafted onto this map, returned their own official CP1 splits to the millisecond — 4.951 / 4.951 / 4.962 / 4.966 / 4.932, with the lossless control exact at 4.831 in the same batch. Five foreign tapes, five exact predictions that could not have been tuned.
+
+**And it re-scores our own result. Our 4.830 beats every one of them**, against a field of 87 596 players rather than the 903 on the altered board. The recipe on this map is inputs-only (`--ids 0x0309201D`); the three-chunk form breaks it, because carrying the donor's result chunk declares nine official splits onto a map with one waypoint.

@@ -2291,13 +2291,17 @@ runner-up. Treat this as NO IDENTIFICATION, not as a weak one`, then picked the
 right map out of the full 625. It also aborts on item-built maps rather than
 scoring noise. Yes-control, no-control, and a refusal that names itself.
 
-The caveat that has to travel with it: **an identified field is not a usable
-tape.** Grafting an official human's tape onto our copy is a measured negative on
-2 of 2 maps tried, with lossless-graft controls exact in the same batch — and one
-of those two has `name_agree` 0.9857, so it was expected to work. *"Times
-transfer"* is a statement about physics, not a demonstrated pipeline, and the
-distinction is worth keeping sharp for exactly as long as it takes someone to
-close it.
+This document briefly carried a caveat here saying an identified field was not a
+usable tape — that grafting an official human's tape onto our copy was a measured
+negative on 2 of 2 maps tried. **It was a defect in the graft recipe, it took
+about an hour to find, and it is now closed**: twenty official tapes across two
+maps each reproduce their own official time or split to the millisecond. The
+post-mortem is the next section, and it is the more useful half — the control
+that hid the defect passed in every arm of the bisection.
+
+What survives from the caveat is the discipline it recommended: run a foreign
+tape only with a native-carrier control in the same batch. That is exactly the
+rule that picks the right recipe.
 
 ## Quote identifiers from the file, never from working memory
 
@@ -2316,3 +2320,49 @@ sends the recipient into an hour of the wrong diagnosis.
 
 The same discipline is why every validated number in this repository is quoted
 from a transcript rather than from the summary that reported it.
+
+## The control that passed in all three arms — and the recipe it was blind to
+
+A worked example of the control-that-could-not-fail pattern, from the other side:
+this one hid a **defect in a published recipe** for hours, and the reason is
+structural rather than careless.
+
+Grafting a foreign human's tape onto one of our maps used a published `--ids`
+list of three chunks. Bisected, with the lossless control run alongside every
+arm in the same batch:
+
+```
+--ids 0x0309201D                            control exact    official tape 4.951   WORKS
+--ids 0x0309201D,0x0309202D                 control exact    official tape DNF
+--ids 0x0309201D,0x0309202D,0x0309202B      control exact    official tape DNF
+```
+
+**The control passes in all three rows.** Chunk `0x0309202D` declares the
+*donor's* race result onto the carrier — an official ghost's nine splits onto a
+map with one waypoint — and the validator rejects the run. But the control is a
+**native**-into-native graft, and a native donor carries compatible metadata, so
+it is fine however many chunks you take.
+
+The control was working perfectly and was **blind to this by construction**. It
+proved "the graft pipeline is lossless", which is true, and was read as "the
+graft pipeline is correct for this donor", which does not follow.
+
+Two rules come out of it, and the second is the general one:
+
+> **When a recipe has options, pick the option by which control passes — in that
+> same batch — rather than assuming.** The right recipe here is *map-dependent*:
+> one map needs inputs-only and breaks on the three-chunk form, another breaks
+> its own control on inputs-only and needs all three. Three measured cases, two
+> different answers.
+
+> **A control built from your own artefacts cannot test the thing that makes a
+> foreign artefact foreign.** If the input under test differs from your control's
+> input in some property — provenance, container, build, declared metadata — then
+> the control does not exercise that property, and that is exactly where the
+> defect will be.
+
+The fix turned the project's largest open lever from "physically plausible" into
+demonstrated: twenty foreign tapes across two maps, each returning **its own**
+official time or split to the millisecond. Twenty independent predictions that
+could not be tuned, validating an identification, a graft and an oracle in one
+measurement.

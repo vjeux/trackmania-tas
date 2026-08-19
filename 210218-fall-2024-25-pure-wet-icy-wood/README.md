@@ -163,6 +163,4 @@ players** on this geometry.
 
 **This one is a surface swap, and its field is a corridor and never a time.** `name_agree` is **0.5909** — the road was re-skinned and the structure kept, which is exactly why it scores 0.59 rather than ~0. Wet icy wood is not the surface those 29 274 humans drove, so their times say nothing about this map. It also explains why the sibling sweep on this map's author found references rather than seeds.
 
-*No time here is claimed from that field.* Grafting an official tape onto one of
-our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
-transfer" is a statement about physics rather than a demonstrated pipeline.
+**And that is now measured rather than assumed.** With the graft recipe chosen properly — three-chunk here, lossless control exact at 103.915 in the same batch — the official humans still return `DNF cps=0`. On maps where `name_agree` is 0.98+, the same procedure reproduces official times to the millisecond. **`name_agree` predicts the transfer exactly**: 0.9857 → the tapes run; 0.5909 → they do not, because the physics changed.

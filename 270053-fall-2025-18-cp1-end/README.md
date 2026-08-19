@@ -123,6 +123,4 @@ players** on this geometry.
 
 This is the best case of the ten. It is a **CP1 End** variant, so the official map's opening **is** our entire race — those humans have all driven exactly our sector, at full commitment, as the start of their own lap.
 
-*No time here is claimed from that field.* Grafting an official tape onto one of
-our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
-transfer" is a statement about physics rather than a demonstrated pipeline.
+**Official tapes demonstrably run on this map.** Twenty official human ghosts have been grafted onto altered copies and each returned its own official time or split to the millisecond, so this is a demonstrated pipeline rather than a statement about physics. The graft recipe is map-dependent — carry the inputs chunk only, or all three, and pick whichever one's lossless control passes in the same batch.

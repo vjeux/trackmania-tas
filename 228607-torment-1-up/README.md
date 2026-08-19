@@ -85,6 +85,6 @@ players** on this geometry.
 
 Geometry and surface are identical (`name_agree` 1.0000); the alteration is the Goal moved 64 m. Its sibling [Torment (1-DOWN)](../228811-torment-1-down) resolves independently to the same official map, which is right — they are one map with the finish in two places. A detail no matcher could have arranged: the official world record on Fall 2024 - 08 is held by **Emelius.**, the person this map's own header name credits.
 
-*No time here is claimed from that field.* Grafting an official tape onto one of
-our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
-transfer" is a statement about physics rather than a demonstrated pipeline.
+**All fifteen** grafted official Fall 2024 - 08 humans return **their own official times to the millisecond** on this map's rung geometry — fifteen foreign tapes, fifteen exact, untunable. The recipe here is the three-chunk form, chosen by which lossless control passed in the same batch.
+
+That field also answers the technique question this map poses. The official top 15 **all** fire the launcher, at 692–997 km/h — while **0 of the 23** players on the altered board ever found it.
