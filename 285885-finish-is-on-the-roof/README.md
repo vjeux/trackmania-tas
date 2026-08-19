@@ -4,12 +4,15 @@
 11.000 s faster than any human, 7.150 s short of the author time.**
 
 > **Status: the hard half is provably closed and the easy half is untouched.**
-> Every route through this map's finish trigger now has a measured price and none
-> fits the budget — but rank 1's inverted flip is a human-demonstrated, validated
-> way to finish, it costs 11.2 s, and the approach it needs has **never been
-> searched**. Measurement says ~6 s is sitting unclaimed in one fourteen-second
-> stretch. Two arms are on it now. Jump to
-> [the endgame closure](#the-endgame-is-now-closed-by-measurement-not-by-exhaustion)
+> The finish trigger is now closed by **arithmetic** rather than by exhaustion —
+> one inequality, one calibrated constant, and a budget that fails term by term
+> — with the single assumption that would reopen it named below. Meanwhile
+> rank 1's inverted flip is a human-demonstrated, validated way to finish, it
+> costs 11.2 s, and the approach it needs has **never been searched**.
+> Measurement says ~6 s is sitting unclaimed in one fourteen-second stretch. Two
+> arms are on it now. Jump to
+> [the endgame closure](#the-endgame-is-now-closed-by-measurement-not-by-exhaustion),
+> [the trigger equation](#closed-by-arithmetic--the-triggers-own-equation-calibrated)
 > and [what replaced it](#which-turns-this-into-an-ordinary-search-problem).
 
 | tape | validated | vs human WR | vs AT |
@@ -247,6 +250,64 @@ corridor whose geometry would otherwise work.
 > tilt, the map contains exactly three sources of tilt, and the cheapest costs
 > 5.5× the entire time budget.
 
+## Closed by arithmetic — the trigger's own equation, calibrated
+
+The strongest form of this result is not "we could not find it". It is that the
+finish condition has been reduced to one inequality with one constant, and the
+budget fails term by term. The trigger fires iff
+
+```
+q = (y − plane(x, z)) + 0.84·u_y  ≤  C          one constant — no x, no z
+```
+
+`C` was calibrated on a **1 mm ladder**, on its own build and server tree, with a
+return-to-origin control passing on 7 ghosts and every bracket re-run singly:
+**C = 142.988 ± 0.003**. So the real gate, at 144.000, fires iff `q ≤ 1.012`.
+
+**The equation has no x and no z in it, and that is the whole explanation for a
+night of stalled probes.** The trigger's top face is parallel to the roof, so
+*where* you are inside the footprint is inert by construction — two independent
+ladders stalled on exactly the measured geometry because they were walking along
+a direction the trigger cannot see. A probe that moves only in x and z is not a
+weak probe here; it is a probe of nothing.
+
+With the equation in hand the budget closes term by term:
+
+| term | full observed range | can it pay? |
+|---|---|---|
+| `gap` — body height above the roof | **31.0 mm** | no |
+| `0.84·u_y` — attitude | **5.3 mm** | no |
+| **required** | **71.6 mm** | — |
+
+* **`gap` cannot pay.** Body compression was measured across the whole map in 13
+  speed bins: **3–8 mm mean, and flat in speed.** A car at 627 km/h compresses
+  its body the same as one at 120 km/h, so **there is no downforce lever** — the
+  intuition that going faster presses the car down is measured false here.
+* **Attitude cannot pay.** The same equation asks for **tilt ≥ 26.6°**, which
+  independently re-derives an earlier arm's 26° from a different direction, and
+  the cheapest source of that tilt on this map costs **11.2 s against a 2.042 s
+  budget**.
+
+**Two instruments with nothing in common agree on the deficit to 1.6 mm** — 70.0
+mm measured directly from crossings, 71.6 mm derived from the decomposition. And
+the fine ladder puts the incumbent tape's true threshold at **144.070**, with
+every tape silent from 144.000 all the way to 144.069: the gate is not nearly
+firing.
+
+### The one assumption whose failure reopens the map
+
+An arithmetic close that hides its assumption is worse than an honest negative,
+so this is stated in the arm's own terms:
+
+> The close assumes the tested point is a **single** point on the body's up-axis.
+> That model is *known* to break between `u_y` 0.98 and 0.56 — 1.33 m upright,
+> 0.125 m at the loop apex. **If the trigger is instead a hull with several
+> tested points, a partial 10–15° tilt could be worth far more than `−L·sin θ`
+> predicts.**
+
+That is a **trigger-geometry measurement, not a search** — which makes it cheap,
+well-posed, and the first thing anyone returning to this map should do.
+
 ## …which turns this into an ordinary search problem
 
 Here is the part that matters, and it is optimistic rather than the reverse.
@@ -336,6 +397,26 @@ record parked at a hairpin 120 m from where the candidate actually was. An agent
 read a climb rate of +9.2 m/s off it when the truth was a *descent* of 1.1 m/s,
 and nearly redirected the search on that basis. Both findings are written up in
 this repo's [`FINDINGS.md`](../FINDINGS.md).
+
+**A units mismatch in a tool flag manufactures a perfect-looking null.**
+`m8force --from` takes **ticks, not milliseconds**. Asking it for "30 s" as
+`--from 30000` lands past the end of the tape, so the forced edit does nothing
+and the run returns the container's own time — a clean, plausible, completely
+empty result. It was caught only because the output file's md5 changed while the
+answer did not.
+
+**And this map established its failure anchors *before* it produced any
+negative**, which is why the negatives above can be read at all. Three
+distinguishable signatures, each demonstrated on purpose:
+
+| what happened | what the oracle prints |
+|---|---|
+| a guaranteed-simulated driving failure | `DNF cps=0` |
+| a file the server refused | **no result block at all** |
+| a tape belonging to a different map | `DNF cps=-` |
+
+Knowing those three apart is what separates "the car tried and failed" from "the
+harness never ran", and it has to be established while you still expect success.
 
 ## Validation
 

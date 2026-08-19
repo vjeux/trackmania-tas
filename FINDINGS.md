@@ -91,6 +91,15 @@ the kicker commit worst (10 ms early = +90 ms, 10 ms late = DNF).
   carefully: `N` counts positive steps, so the alphabet has `2N+1` values.**
   `--qlevels 1` is keyboard (`{−127, 0, +127}`); `--qlevels 3` is seven values,
   not three. See "an off-by-one in a flag's units" below.
+* `tmsearch --quant` — **a silent no-op in the classic search path.** It is
+  implemented only in `forksearch.rs`, so a classic-path run that passes it is
+  completely unconstrained analog while reporting itself as quantised. Three runs
+  on 249521 were believed keyboard and were not. Any pre-fix `--quant` result
+  from the classic path is void; the classic-path ladder is `--qlevels`.
+* `m8force --from` — **ticks, not milliseconds.** `--from 30000` meaning "30 s"
+  lands past the end of any normal tape, so the forced edit silently does nothing
+  and the tool returns the container's own time: a clean-looking null result with
+  nothing behind it.
 * `pred_core.rs` — the sub-tick plane accepts a negative value meaning "z-plane
   at |v|, crossed with z increasing", for maps whose run axis is z.
 
@@ -2815,3 +2824,256 @@ time.
 
 *(Source: the map's own closing arm, banked as
 `FLEET_NOTICE_a_REAL_low_input_negative_and_the_COLD_CHAIN_calibration_v1.md`.)*
+
+## Two flags in one night lied about what they constrained — so read the alphabet off the TAPE
+
+`--qlevels N` gives `2N+1` steer values, not `N`. `--quant` does nothing at all
+in the classic search path. Both were discovered the same night, both had already
+produced results that were described in writing as low-input, and in both cases
+the description was wrong while every number in it was right.
+
+The rule that survives both, and that costs nothing to follow:
+
+> **Never certify an alphabet from the flag you passed. Read it back off the
+> finished tape and count the distinct values.**
+
+A flag states an intention. A tape states a fact. On 249521 the verification arm
+did exactly this and the keyboard claim held — all three tapes are exactly
+`{−127, 0, +127}` — but the claim was only worth anything *because* it was
+checked against the artefact rather than against the command line. The same
+habit is what turns "we ran the keyboard search" into "this tape is drivable on a
+keyboard", which is the only version a reader can use.
+
+The general shape: **a constraint you did not verify in the output is a
+constraint you did not apply.** This applies to alphabets, to respawn budgets, to
+event counts, and to every "restricted to …" sentence anyone writes.
+
+## On a trial map, the low-input axis is not steer events — it is respawns
+
+Every map here owes a low-input family: a version a person could actually drive,
+with a small alphabet and few input changes. On trial maps that requirement has
+been quietly satisfied all along and nobody noticed, because it was being read
+against the wrong axis.
+
+238835's published tape has **617 steer events** over 239 seconds. That number
+looks like a lot and means nothing: 2.6 events per second across a 25-obstacle
+course is not a memorised script, it is a person driving obstacles. And the tape
+descends from the map author's own keyboard lap **by deletion only**, so it uses
+their alphabet — three values — and no TAS-only input was ever introduced.
+
+> On a trial map the quantity a human has to reproduce is **how many respawns**,
+> not how many steering changes. Count the axis the map actually charges for.
+
+By that measure the deliverable was already minimal, and the low-input follow-up
+was satisfied by construction. The same is true on 286279 for the same reason.
+The lesson is not about trials specifically: **before reporting a low-input
+family as missing, check whether the map's difficulty is even denominated in
+inputs.**
+
+## "Unexamined" and "local-search exhausted" are different claims
+
+A map with no improvement in a long time attracts the sentence *nobody has
+really searched this*. On 238835 that sentence was false in a way worth
+recording: the map has had **14 rounds of about 9 500 scored candidates**, taking
+246.602 to 239.133 and terminating on an **empty neighbourhood** — every
+single-change mutation of the incumbent evaluated, none better.
+
+That is a real, specific, exhausted thing: *local search from this seed*. It is
+not the same as *examined*. What the map has never had is a **segment map** —
+every search there has been over the whole 239-second tape at once, and
+per-obstacle search has never been attempted.
+
+> **Say which instrument was exhausted, not that the map was.** "Local search
+> from seed X is exhausted" invites the next arm to change the seed or the
+> instrument. "This map has been searched" tells them to go away.
+
+The practical value is in what the distinction hands the next person: a named
+instrument that has never been pointed at the problem is a plan. A vague sense
+that the map is worked out is not.
+
+## A supersession banner must not quote the stale verdict verbatim
+
+Write-ups here are versioned and write-once, so a superseded claim is corrected
+by a new file that names what it replaces. The temptation is to quote the old
+verdict exactly so the reader can see what changed — and that is precisely what
+must not happen.
+
+A directory grepped for "did this map's author time fall?" returns the banner
+too. If the banner contains the retracted sentence in its original words, the
+search that was supposed to resolve the question re-ambiguates it, and a reader
+skimming picks the retracted number up as though it were current. On 227654 this
+cost two round-trips before anyone noticed the ambiguity was self-inflicted.
+
+> **Say what changed, not what was said.** *"An earlier state recorded this map
+> as not beaten; that is superseded — the author time falls to 57.503"* is
+> unambiguous under grep. Quoting the old claim in its own words is not.
+
+The same rule governs published pages, and this repo follows it: a retracted
+figure is described in the past tense, with its number stated only where the
+sentence around it cannot be read as a current claim.
+
+## A TAS can be a MORE forgiving object than the run a human actually drove
+
+The instinct is that a machine-optimised tape is a house of cards and a human's
+own run is robust, because a person had to be able to repeat it. Measured on
+249521, with the world record's own driven tape put through the identical
+±1–4-tick mistiming test:
+
+| tape | survives |
+|---|---|
+| **our keyboard TAS** | **41 %** |
+| the human world record | **18 %** |
+
+The TAS is more than twice as tolerant as the record it beats. That is not a
+quirk of one map — it is what happens when tolerance is *scored* rather than
+hoped for, and it reframes what a TAS is for. A tape that is both faster and
+more forgiving than the incumbent is not a curiosity to watch; it is a better
+thing to practise.
+
+Two conditions make it possible. The search can afford to evaluate a candidate
+under perturbation, which a human practising cannot. And a human's record is
+optimised for *the one time they got it*, which selects for luck as much as for
+robustness — the run that survives is the run that happened, not the run that
+would usually happen.
+
+> Test a tape against the incumbent's own tape under the same perturbation. It
+> is the only comparison that says whether you are handing someone something
+> easier or harder than what they already do.
+
+## Fewer inputs is easier to drive — now false on five maps, five mechanisms
+
+249521 is the fifth independent map to refute it, and the cleanest single
+demonstration: thinning the tape from **54 events to 30** made it **slower** and
+dropped its survival under mistiming from **41 % to 10 %**. One edit, both
+metrics worse, in the direction everyone assumes is the drivable one.
+
+The five mechanisms are all different — a binding launch input that sparsity
+cannot touch, a coupled pair that only survives together, an alphabet whose
+coarseness costs mid-corner correction, a re-centring that a sparse tape cannot
+express, and here, swings whose timing has to be *carried* by inputs that the
+thinning removed. That the mechanisms differ is the point: this is not one map's
+quirk with four coincidences, it is a wrong prior.
+
+> **Input count predicts nothing about tolerance. Measure tolerance per tape and
+> publish the number next to the event count**, or the event count will be read
+> as a difficulty rating — because that is what everyone assumes it is.
+
+A related trade worth pricing before you run it: on the same map, a dedicated
+robustness re-placement pass bought **2 percentage points of survival for 130 ms**.
+Sometimes the forgiving variant is nearly free (228607: same 37 % tolerance,
+window re-centred, 41 ms) and sometimes it is a bad deal. You cannot tell which
+without measuring.
+
+## The flashiest difference between runs is usually not the one that orders them
+
+On 249521 every human wags the car's nose across the strip, and the wag is
+11.4 of the world record's 15.0 seconds. The obvious lesson from watching the
+fast runs is *swing harder*. Across all 147 records, **peak swing speed
+correlates 0.02 with finishing order** — nothing at all.
+
+The thing that does separate them is invisible on video: the car's **attitude at
+the moment of the gas lift**. The field lifts at 80–85° of heading, before the
+nose is square, and the boost pads give them 0–6 km/h; the fast line lifts at
+90–105°, past square, and the same pads give 25–35 km/h.
+
+Only a field-wide correlation can tell those apart, and the cost of not
+computing one is publishing the wrong coaching instruction to everybody who
+reads the page.
+
+> **Before you tell people what the fast runs do differently, correlate your
+> candidate difference against finishing order across the whole field.** If it
+> comes back at 0.02, you were about to teach noise.
+
+## The standing respawn is real, and the "clean tape" table is a floor
+
+A respawn lives in the input bitstream, and there are **two** keys for it. The
+project's census counted one of them, and therefore called twelve tapes clean
+that carry the author's standing-respawn key — including a published best and a
+1-minimal low-input deliverable.
+
+The correction is now proven rather than inferred, by the same graded-failure
+argument that closes a deletion sweep:
+
+| edit to the tape | result |
+|---|---|
+| clear all three `0x1002` packets | `DNF cps 1` |
+| clear only the **first** | `cps 1` |
+| clear only the **last** | **`cps 3`** |
+| byte-identical null edit (the editor runs, changes nothing) | unchanged |
+
+Graded, in the right order, with the null edit proving the editor is not the
+cause and both injection controls firing. The packets are load-bearing inputs.
+
+Two consequences a reader should carry away. **A human copying one of those
+tapes has to press respawn at three specific moments** — the tape is not a pure
+driving line. And **a table of "N tapes are clean" is a floor, not a census**:
+165922's human record turned out to carry two more that were never on the list.
+Any count of a thing your decoder can only partly see is a lower bound, and
+should be published as one.
+
+## Five of five author records are telemetry-only — and the one exception is the strongest object we have
+
+Where an author's record has been extracted from the map file, **all five
+carried the car's positions and no input chunk**: 145875, 203330, 285268, 228607,
+228811. You can watch the lap. Nobody can replay it, ever, because the inputs
+were never stored.
+
+This changes what a comparison against an author time *is*. Ours are
+game-validated laps re-simulated with known-answer controls; theirs is a number
+the map declares, backed by telemetry of a lap that was driven. Both halves of
+that sentence matter — the telemetry is real evidence that somebody drove it
+(sample counts, a spawn at t ≈ 0.04, an ending inside the post-finish window),
+and the absence of inputs is a real limit on what can be checked.
+
+The exception is worth the paragraph. On 286279 an arm **reconstructed** the
+missing inputs from the telemetry, and the reconstruction finishes at
+**355.181 — the declared author time, to the millisecond**. A reconstruction
+landing exactly on a number it was never given is about as strong as evidence
+gets that the declared time is a real lap, and it is the only map here where the
+author's driving can be re-simulated at all.
+
+> When you cannot replay the reference, say so on the page. "Beaten" means
+> something slightly different when one side of the comparison is a declaration,
+> and a reader is entitled to know which kind of object they are looking at.
+
+## Establish your failure anchors while you still expect success
+
+285885 produced its negatives in a usable form because, before any of them, it
+had demonstrated on purpose what each kind of failure looks like:
+
+| what happened | what the oracle prints |
+|---|---|
+| a guaranteed-simulated driving failure | `DNF cps=0` |
+| a file the server refused | **no result block at all** |
+| a tape belonging to a different map | `DNF cps=-` |
+
+With those three anchors in hand, every later zero could be read: *the car tried
+and failed* is a different string from *the harness never ran*. Without them,
+every zero means both at once and none of them can be published.
+
+The anchors have to be established **before** the negative, for the same reason
+a control has to be capable of failing: afterwards, you are choosing which
+explanation to believe, and you will choose the interesting one.
+
+## Check which variables your detector actually reads before you probe along one
+
+285885's finish trigger reduces to `q = (y − plane(x,z)) + 0.84·u_y ≤ C` — **no
+free x, no free z**. Its top face is parallel to the roof, so position inside the
+footprint is inert *by construction*.
+
+Two independent ladders had stalled on exactly the measured geometry before that
+equation was calibrated. They were not weak probes. They were probes along a
+direction the detector cannot see, and they would have returned the same answer
+with infinite compute.
+
+> A null from a probe is only informative once you know the probe moves a
+> variable the thing you are testing depends on. Derive the detector's actual
+> arguments first; it is usually cheaper than the search you were about to run.
+
+The corollary is the happy one: once the equation was in hand, the map closed by
+**arithmetic** — 31.0 mm of available body gap plus 5.3 mm of available attitude
+against 71.6 mm required, with two unrelated instruments agreeing on the deficit
+to 1.6 mm. An arithmetic close is worth an enormous amount more than an
+exhausted search, and it comes with its own reopening condition attached: name
+the assumption whose failure would overturn it, and a negative becomes a
+well-posed next experiment instead of a dead end.
