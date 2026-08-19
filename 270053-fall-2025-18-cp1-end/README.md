@@ -114,3 +114,15 @@ plain oracle, so the phantom class cannot arise here.
 | `inputs/human_wr_4495.inputs.csv` | the human world record's inputs, for comparison |
 | `notes/HOW_TO_DRIVE_IT.md` | the driving guide |
 | `notes/RESULTS.md` | the full write-up |
+
+## This map is an Altered Nadeo copy of **Fall 2025 - 18**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **76 975
+players** on this geometry.
+
+This is the best case of the ten. It is a **CP1 End** variant, so the official map's opening **is** our entire race — those humans have all driven exactly our sector, at full commitment, as the start of their own lap.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

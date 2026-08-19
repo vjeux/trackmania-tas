@@ -154,3 +154,15 @@ downloaded human ghost or the plain oracle. See [`FINDINGS.md`](../FINDINGS.md).
 
 Four search arms were still running when this was written up. If the number moves,
 it moves down.
+
+## This map is an Altered Nadeo copy of **Fall 2024 - 25**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **29 274
+players** on this geometry.
+
+**This one is a surface swap, and its field is a corridor and never a time.** `name_agree` is **0.5909** — the road was re-skinned and the structure kept, which is exactly why it scores 0.59 rather than ~0. Wet icy wood is not the surface those 29 274 humans drove, so their times say nothing about this map. It also explains why the sibling sweep on this map's author found references rather than seeds.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

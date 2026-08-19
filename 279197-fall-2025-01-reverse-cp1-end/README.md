@@ -153,3 +153,15 @@ so none of the corruption defects found elsewhere in this project apply to it.
 | `replays/best_10596.Ghost.Gbx` … `best_10601.Ghost.Gbx` | the ladder of validated intermediates |
 | `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | the runs as readable input scripts |
 | `notes/RESULT.md`, `notes/NOTES.md`, `notes/PLAN.md` | full write-up and measurements |
+
+## This map is an Altered Nadeo copy of **Fall 2025 - 01**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **900 000
+players** on this geometry.
+
+This is a **Reverse** variant: same physics, but those humans drove the route **backwards**. The official field gives you geometry and a corridor, **not a line** — and nobody has yet tried reversing it into one. At 900 000 players it is the largest field attached to any map in this repository.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

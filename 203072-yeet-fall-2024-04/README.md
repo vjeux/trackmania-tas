@@ -105,3 +105,15 @@ Raw server output confirms `NbRespawns: 0`, `NbCheckpoints: 1`, correct MapUid.
 | `replays/ACTIONKEY_10717.Ghost.Gbx` | small action-key ladder |
 | `notes/SECTION8-RESOLVED.md` | **why the map was wrongly abandoned, and the full-field build analysis** |
 | `notes/RESULT.md`, `notes/RESULT-amendment.md` | the write-up and the 10.640 amendment |
+
+## This map is an Altered Nadeo copy of **Fall 2024 - 04**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **600 000
+players** on this geometry.
+
+Geometry **and** surface are preserved (`name_agree` 0.9914), so those humans drove the same car over the same road: their times are directly comparable and their lines are usable as references.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

@@ -116,3 +116,15 @@ own diagonal control does not catch it. Replaced with a one-file-image mixer.
 | `replays/TAS_49778.Ghost.Gbx` | the unconstrained floor |
 | `replays/A2_50738.Ghost.Gbx`, `A3_50224.Ghost.Gbx` | validated intermediates |
 | `notes/RESULT.md` | full write-up: sector guide, tolerance study, negatives |
+
+## This map is an Altered Nadeo copy of **Spring 2023 - 24**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **200 000
+players** on this geometry.
+
+Geometry **and** surface are preserved (`name_agree` 1.0000), so those humans drove the same car over the same road: their times are directly comparable and their lines are usable as references.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

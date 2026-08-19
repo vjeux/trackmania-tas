@@ -2236,3 +2236,83 @@ inherits its blind spots along with its line.
 > for a second basin.** A sibling map's human, a differently-constrained cut of
 > your own tape, or a deliberately worse starting line are all cheaper than the
 > evaluations they replace.
+
+## Drop the block MODEL and a re-skinned map matches its original
+
+The sibling-map technique earlier in this document keys on `(cell, block model)`
+and has repeatedly paid for itself. It also has a blind spot big enough to hide
+ten maps.
+
+An **Altered Nadeo** map is an official campaign map with its surfaces swapped —
+the same layout, re-skinned. Against its own original it scores **zero by
+construction**, because every cell that matters holds a different model name.
+Nine maps in this project sat unrecognised for a night for exactly that reason,
+and the arm that eventually specified the fix wrote down why its own instrument
+could not do it before anyone built the replacement.
+
+**Throw the names away and match on occupied cells alone.** Then report name
+agreement *afterwards*, as a separate column, because the two answer different
+questions:
+
+| column | answers |
+|---|---|
+| `jaccard` over occupied cells | *is this the same layout?* |
+| `dir_agree` (block direction) | *is it the same layout at the same orientation?* — survives a re-skin, and separates true from false hits with **no overlap**: 0.89–1.00 against 0.19–0.30 |
+| **`name_agree`** (model matches too) | ***what is the other map's field worth?*** |
+
+That last column is the one that makes the result usable rather than merely true:
+
+* **≥ 0.978** — geometry and surface preserved. Same car, same road: times are
+  comparable and lines are references.
+* **≈ 0.59** — a **surface swap**. Structure kept, road re-skinned. The other
+  field is a **corridor and never a time**. (0.59 rather than ~0 *is* the
+  signature; a genuinely unrelated map scores ≤ 0.047.)
+* And read the *name* too: a `Reverse` variant has identical physics and a field
+  that drove the route **backwards** — geometry and corridor, not a line. A
+  `CP1 End` variant is the best case there is, because the official map's opening
+  **is** your whole race.
+
+Swept blind against 625 official maps, this identified ten of ten, with
+separations of 3.7×–12.3×. **The answer key: every one matched the altered map's
+own header name, which the matcher never reads** — plus two checks nobody could
+have arranged, a pair of our maps resolving *independently* to the same official
+map (correct: one map, Goal moved 64 m), and the official record holder on that
+map being the person one of the altered maps credits in its own title.
+
+> **When a matcher scores zero against a map you have reason to think is
+> related, ask what your key is asserting.** Ours asserted "same model in the
+> same cell", which is a claim about *decoration*, when the question was about
+> *layout*. The weaker key found everything the stronger one could, plus ten maps
+> it could not.
+
+**And the instrument refuses.** Run against 106 official maps not containing the
+original it printed `ratio 1.0x — the best hit is NOT separated from the
+runner-up. Treat this as NO IDENTIFICATION, not as a weak one`, then picked the
+right map out of the full 625. It also aborts on item-built maps rather than
+scoring noise. Yes-control, no-control, and a refusal that names itself.
+
+The caveat that has to travel with it: **an identified field is not a usable
+tape.** Grafting an official human's tape onto our copy is a measured negative on
+2 of 2 maps tried, with lossless-graft controls exact in the same batch — and one
+of those two has `name_agree` 0.9857, so it was expected to work. *"Times
+transfer"* is a statement about physics, not a demonstrated pipeline, and the
+distinction is worth keeping sharp for exactly as long as it takes someone to
+close it.
+
+## Quote identifiers from the file, never from working memory
+
+One arm sent another a map's GUID from memory. It was wrong, and the correction
+followed a minute later — **in a message that had itself said to take the
+identifier from the banked index rather than from the message.**
+
+The failure would have been loud here (a wrong GUID 404s rather than fetching the
+wrong map) but that is luck, not design: a wrong *hash*, a wrong tape name, or a
+wrong map id that happens to resolve all fail quietly, and every one of them
+sends the recipient into an hour of the wrong diagnosis.
+
+> **Identifiers are copied, never recalled.** Hashes, GUIDs, uids, packet
+> indices, file names. If you are typing one rather than pasting it out of the
+> file you read it from, stop and read it again.
+
+The same discipline is why every validated number in this repository is quoted
+from a transcript rather than from the summary that reported it.

@@ -128,3 +128,15 @@ a single number. Written up separately as a reusable control.
 | `replays/TAS_20237.Ghost.Gbx` | the run |
 | `notes/TECHNIQUE.md` | **the driver's guide** — the line, the condition, the gate, the tolerance |
 | `notes/RESULT.md` | the full write-up, including the three failed objectives |
+
+## This map is an Altered Nadeo copy of **Fall 2024 - 08**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **400 000
+players** on this geometry.
+
+Geometry and surface are identical (`name_agree` 1.0000); the alteration is the Goal moved 64 m. Its sibling [Torment (1-UP)](../228607-torment-1-up) resolves independently to the same official map, which is right — they are one map with the finish in two places.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

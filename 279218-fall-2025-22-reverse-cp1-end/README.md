@@ -65,3 +65,15 @@ trusted.
 | `replays/best_pF_5347_32087.Ghost.Gbx` | the run |
 | `replays/best_pC_5348_32098.Ghost.Gbx` | an independent arm's 5348 |
 | `notes/PLAN.md` | the full pre-search analysis, all measured on this map |
+
+## This map is an Altered Nadeo copy of **Fall 2025 - 22**
+
+Identified blind by cell occupancy against all 625 official seasonal campaign
+maps — see [`_altered/`](../_altered). The official map has a field of **44 128
+players** on this geometry.
+
+This is a **Reverse** variant: same physics, but those humans drove the route **backwards**. The official field gives you geometry and a corridor, **not a line** — and nobody has yet tried reversing it into one.
+
+*No time here is claimed from that field.* Grafting an official tape onto one of
+our maps is a measured negative on 2 of 2 maps tried and undiagnosed, so "times
+transfer" is a statement about physics rather than a demonstrated pipeline.

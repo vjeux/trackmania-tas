@@ -169,6 +169,15 @@ rulers, the page says so.
 [`FINDINGS.md`](FINDINGS.md) collects the per-map results and the
 transferable findings in one place.
 
+**[`_altered/`](_altered) — ten of these maps are Altered Nadeo copies of official
+campaign maps, and we can now name which.** Identified blind by cell occupancy
+against all 625 official seasonal maps, with every one matching the altered map's
+own header name — a signal the matcher never reads. That gives each of them a
+second field, on identical geometry, of 29 274 to 900 000 players. No time is
+claimed from it: grafting an official tape onto our map is a measured negative on
+2 of 2 maps tried and undiagnosed, so *"times transfer"* is a statement about
+physics, not a demonstrated pipeline.
+
 ## Layout
 
 ```
