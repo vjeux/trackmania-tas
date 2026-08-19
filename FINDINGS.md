@@ -484,3 +484,38 @@ ladder.
 This is what makes intermediate-gate shaping practical on maps that have no
 checkpoints to score against — and gate relocation is also how you prove an
 evaluator can say yes (above).
+
+## The cheapest deliverable is the human world record plus two presses
+
+The fastest tape is rarely the useful one. On
+[252289](252289-surely-my-least-cooked-at) our best is 3.836 and our keyboard
+tape is 3.844, but both differ from the world record in nine ticks — and nobody
+practises nine changes.
+
+What a person can actually use is this: **take the world record's run and add
+two keyboard actions.**
+
+1. At 2.63 s, a one-tick tap of RIGHT — 66 km/h, pointed across the track, a
+   right tap 50 ms before you turn left. It sets the attitude for the corner.
+2. At 2.89 s, lift the throttle for 50 ms, then full throttle again at 2.94 s —
+   73 km/h, full left lock, with the seam between the two lanes passing under
+   the car at 2.97 s.
+
+**3.848 validated, three milliseconds under the author time.**
+
+And the pair is irreducible, which is why nobody found it:
+
+| change, on the WR's own tape | time |
+|---|---|
+| the lift alone | 3.858 (−9 ms) |
+| **the tap alone** | **4.189 — catastrophic** |
+| both | **3.848** |
+
+The tap only makes sense because the lift follows it. A field grinding one
+variable at a time will never find a pair where one half is a disaster on its
+own — and on a hunted map, that is precisely what is left after the route has
+been ground flat.
+
+**So the last step of every map should be: what is the smallest edit to a run
+the field already drives that gets under the author time?** Ablate down to it
+deliberately. It is usually a better artefact than the optimum.
