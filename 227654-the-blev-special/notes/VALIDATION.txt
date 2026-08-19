@@ -1,0 +1,18 @@
+=== 227654 blev2 — plain oracle, UNTOUCHED map, one batch, controls included ===
+map sha256 a5768448d61edfc32da243a74c098b18314724342f9e0ce1895a872eb05b8d82
+oracle /tmp/tmoracle/server/TrackmaniaServer  (GameVersion 3.3.0 git 128182-0de74ece09e)
+
+file                                       sim_time      cps
+blev2_tas_57573.Ghost.Gbx                     57573        -     <-- NEW, beats AT 57853 by 280 ms
+blev2_tas_57577.Ghost.Gbx                     57577        -
+blev2_tas_57580.Ghost.Gbx                     57580        -
+clean_64871.Ghost.Gbx                         64871        -     control (prior agent's respawn-spliced WR)
+rank00001_147031.Ghost.Gbx                   147031        -     control (human WR, leaderboard time)
+rank00002_676640.Ghost.Gbx                   676640        -     control (human #2, leaderboard time)
+tas_59912.Ghost.Gbx                           59912        -     control (prior agent's best)
+
+sha256 blev2_tas_57573.Ghost.Gbx
+365d822130e49379ea8eb47d3c5477ab4135a7bcc60490968da2d301d694af41
+
+Author time 57853.  Best validated 57573.  Margin -280 ms.
+Nothing was submitted to any Nadeo leaderboard.

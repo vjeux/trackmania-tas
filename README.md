@@ -23,6 +23,7 @@ The point is the **technique**, written up so a human can practise it.
 | [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.230** | **−0.413** | 15.290 (86 events) |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **14.349** (3 values) |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** § | **−0.318** | — |
+| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 147.031 ¶ | **57.573** | **−0.280** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **7.476** (15 presses) |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **8.075** (14 inputs) |
 | [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **6.323** (23 inputs) |
@@ -45,7 +46,7 @@ of writing, and where they beat the human world record that is said too.
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
 | [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.859** | **0.091** | **−0.310** | the closest live target here — one session of search so far, and all 19 records re-simulate exactly |
-| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.961** | 1.431 | **−0.262** | a 190 m gap jump nobody takes is worth **1.128 s to checkpoint 5** — validated. The *exit* from it is unsolved: the car overshoots the road |
+| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **39.961** ‡‡ | 1.431 | **−0.262** | a 190 m gap jump nobody takes is worth **1.128 s to checkpoint 5** — validated. The *exit* from it is unsolved: the car overshoots the road |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **96.068** | 1.591 | **−0.213** | the car model explains 1.6 % of yaw, so every steering prior we own is void; and there is no author ghost in the map — `atSetByPlugin: true` |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.918** | 5.030 | **−1.150** | 16.888 does not decompose into any launch + flight + endgame two independent agents can build; best construction ≈ 21.3 |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | a route ~2 s under the AT misses the sunken finish trigger by **64 mm**, and the trigger tests a point on the car's *roof* — all three humans finish upside down |
@@ -60,16 +61,20 @@ game still runs.
 ‡ 228607's tape re-simulates on the untouched map, but no human ghost for that
 map was banked, so the re-validation could not carry a known-answer control. No
 replay is published for it — see that page.
-§ **Not re-verified in the latest audit pass.** These three maps have no human
-control ghost banked alongside their map file, so their batches are not
-reproducible from our archive alone. The times were validated with a control at
-the time they were found and are carried forward unchanged; the missing controls
-are being restored, and these rows will be re-checked when they are.
+§ **Not re-verified in the latest audit pass.** These three maps have their
+headline control ghost archived, but not the wider *field* behind their
+field-reproduction claims, so those claims are not reproducible from our archive
+alone. The times themselves were validated with a control when they were found
+and are carried forward unchanged.
+‡‡ **146612 is moving.** Its sector work advanced substantially while this
+snapshot was being taken and its arms are still running; that row is a lower
+bound and is expected to be revised.
+¶ **147.031 is not the gap on 227654.** That record contains eleven respawns; the
+same human's own driving with the retries spliced out is **64.871**, and that is
+the number the −0.280 should be read against. See that page.
 
-**[227654 The Blev Special](227654-the-blev-special)** is present in this
-repository as a replay only. Its result is under review and is deliberately not
-stated here yet — the repo can lag by an hour more easily than it can carry a
-wrong number.
+**227654 is current best, not final** — the owning search is still improving and
+that row is expected to move down tonight.
 
 All times in **seconds**.  "Best human" is the online world record at the time
 of the run. Every author time in both tables had **never** been beaten by a
