@@ -114,7 +114,7 @@ Four findings from this repo that generalise:
   its speed to the kicker. Arriving flat and square instead carries 69.2 m/s
   into the finish plane against the world record's 57.3. The keyboard version of
   this run uses **12 steering inputs against the world record holder's 11**, on
-  the same three key values, and is **122 ms faster**.
+  the same three key values, and is **0.122 s faster**.
 - **The part of a map that looks decisive usually is not.** On
   [279197](279197-fall-2025-01-reverse-cp1-end), intermediate gates across ranks
   1 to 502 show the closing sweeper costs *everyone* the same 1.100–1.110 s: a
