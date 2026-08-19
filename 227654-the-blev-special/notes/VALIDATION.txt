@@ -1,18 +1,21 @@
-=== 227654 blev2 — plain oracle, UNTOUCHED map, one batch, controls included ===
+=== 227654 blev2 — VALIDATION v3 (v1 and v2 remain valid as written) ===
+Plain oracle, UNTOUCHED map, one batch, known-answer controls in the same batch.
 map sha256 a5768448d61edfc32da243a74c098b18314724342f9e0ce1895a872eb05b8d82
-oracle /tmp/tmoracle/server/TrackmaniaServer  (GameVersion 3.3.0 git 128182-0de74ece09e)
+oracle /tmp/tmoracle/server/TrackmaniaServer (GameVersion 3.3.0 git 128182-0de74ece09e)
 
 file                                       sim_time      cps
-blev2_tas_57573.Ghost.Gbx                     57573        -     <-- NEW, beats AT 57853 by 280 ms
-blev2_tas_57577.Ghost.Gbx                     57577        -
-blev2_tas_57580.Ghost.Gbx                     57580        -
-clean_64871.Ghost.Gbx                         64871        -     control (prior agent's respawn-spliced WR)
-rank00001_147031.Ghost.Gbx                   147031        -     control (human WR, leaderboard time)
-rank00002_676640.Ghost.Gbx                   676640        -     control (human #2, leaderboard time)
-tas_59912.Ghost.Gbx                           59912        -     control (prior agent's best)
+blev2_tas_57518.Ghost.Gbx                     57518        -   <-- BEST, beats AT 57853 by 335 ms
+blev2_tas_57537.Ghost.Gbx                     57537        -       (v2's best, re-validated)
+blev2_tas_57573.Ghost.Gbx                     57573        -       (v1's best, re-validated)
+clean_64871.Ghost.Gbx                         64871        -       control
+rank00001_147031.Ghost.Gbx                   147031        -       control, human WR, exact leaderboard time
+rank00002_676640.Ghost.Gbx                   676640        -       control, human #2, exact leaderboard time
+tas_59912.Ghost.Gbx                           59912        -       control, prior agent's best
 
-sha256 blev2_tas_57573.Ghost.Gbx
-365d822130e49379ea8eb47d3c5477ab4135a7bcc60490968da2d301d694af41
+Author time 57853.  Best validated 57518.  Margin -335 ms.
+Nothing submitted to any Nadeo leaderboard.
 
-Author time 57853.  Best validated 57573.  Margin -280 ms.
-Nothing was submitted to any Nadeo leaderboard.
+sha256:
+6a4bdcbeaa07fcbd311768ad9133b46297189441e58098dad9d24c67d4e59d67  blev2_tas_57518.Ghost.Gbx
+ab4cc33c708f69aa7838900aa05d858cdb6dde024df2e7cd7cbd151e741ace03  blev2_tas_57537.Ghost.Gbx
+365d822130e49379ea8eb47d3c5477ab4135a7bcc60490968da2d301d694af41  blev2_tas_57573.Ghost.Gbx

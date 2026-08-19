@@ -1212,8 +1212,9 @@ carried in **bit 31 of the packet's 34-bit state literal** (literal
 
 **It is invisible to the obvious tool.** The ghost factory does not surface it,
 and counting discontinuities in the *telemetry* is not the same measurement: one
-record with 941 respawn presses shows 914 telemetry jumps. **Enumerate the
-packets, not the jumps.**
+record with 941 respawn presses shows 914 telemetry jumps, and **941 is the
+respawn count** — see "an enumeration and a derived quantity" below.
+**Enumerate the packets, not the jumps.**
 
 **It is editable.** Which means a tape can be *constructed* around one, and that
 is what broke open a map where the only human record was a 2 h 26 m retry grind
@@ -1732,12 +1733,12 @@ the six published tapes    packets 2109     0 with bit31
 the human record           packets 879231   941 with bit31
 ```
 
-The control returns 941 on a recording independently known to contain 941 presses
-against 914 telemetry discontinuities. **Now the zero means something.** Without
-it, a counter that silently matched nothing — the wrong field, the wrong bit, an
-off-by-one in the packet walk, a parser that returned an empty list — is
-indistinguishable from a clean tape, and every one of those failures has actually
-happened in this project's tooling.
+The control returns 941 on a recording independently known to contain 941
+presses. **Now the zero means something.** Without it, a counter that silently
+matched nothing — the wrong field, the wrong bit, an off-by-one in the packet
+walk, a parser that returned an empty list — is indistinguishable from a clean
+tape, and every one of those failures has actually happened in this project's
+tooling.
 
 > **An audit that has only ever returned zero is not an audit.** Apply the
 > positive control to claims, not only to searches: the cheapest possible check is
@@ -2108,4 +2109,130 @@ invisible set of retries it cannot remove, and its budget includes their cost.
 The audit is the enumeration, not the telemetry: on one record, **31 position
 jumps agreed exactly with 31 state-literal bit-31 packets, at the same ticks.**
 Counting discontinuities in a trajectory is a different measurement and it
-disagrees — on another map, 941 presses against 914 jumps.
+disagrees — on another map, 941 presses against 914 jumps, and **941 is the one
+that is a respawn count** (resolved below).
+
+## Check the SHAPE of the output against the size of the edit
+
+The cheapest verification rule this project has, and it has now caught two
+separate corruptions in one night that every other check passed.
+
+| incident | the edit | what the tool did | the tell |
+|---|---|---|---|
+| a byte-mode `perl -0pi` with a non-ASCII replacement | append 357 lines | re-encoded **every pre-existing multi-byte character in the file**, leaving it valid UTF-8 | diffstat said **797 changed lines** |
+| a `perl -pi` with an anchored pattern and a newline in the replacement | add one table row | matched on every line and prefixed all of them | file went from **217 lines to 422** |
+
+Neither is detectable by the obvious check. The first still parses as UTF-8, so
+`iconv -f UTF-8 -t UTF-8` passes. The second is syntactically fine markdown.
+Both would have been committed by anyone reading only the tool's exit status.
+
+> **Before you commit, compare the shape of the change to the change you meant to
+> make.** An append of *n* lines should report *n* added and 0 removed. A one-row
+> edit should not touch the line count. It costs one `git diff --numstat` and it
+> is the only check that caught either of these.
+
+The rule that follows, and it is now standing practice here: **use a real
+file-write for anything structural.** A stream-editor one-liner is for a single
+literal substitution you have already proved unique with `grep -c` — anything
+with an anchor, a newline, or a non-ASCII character in the replacement should not
+be a one-liner at all.
+
+This belongs with the control-that-could-not-fail family above. Same shape:
+the check everyone runs (does it parse? did the command exit 0?) tests a
+proposition adjacent to the one that matters (did it change what I asked and
+nothing else?).
+
+## Three numbers, three different questions: 941, 929, 914
+
+Two figures were on the record for the respawn count of one human record — 941
+and 914 — and a 27-press disagreement is the kind of loose end that becomes a
+wrong conclusion three hours later. Resolving it turned up a **third** number,
+and the third is what makes the answer useful.
+
+| number | what it actually counts | what it is a fact about |
+|---|---|---|
+| **941** | packets with bit 31 of the state literal set | **the tape** — what the player pressed |
+| **929** | the validator's own `NbRespawns` | **the run** — what the game executed |
+| **914** | discontinuities in a decoded trajectory | **the decode** — what one detector could see |
+
+None of them is wrong. They are answers to three different questions, and the
+mistake was treating them as three attempts at one.
+
+**941 − 929 = 12 presses that were pressed and not executed as separate
+respawns** — presses landing inside the previous respawn's freeze, which the game
+absorbs. That is a real definitional difference and it has a name in this
+project already: *a hard respawn is two presses the validator counts as one.*
+Measured on the tape, merging presses closer than 0.1 s gives 940 and closer than
+0.2 s gives 928, so 929 sits exactly where a freeze-absorption rule would put it.
+
+**914 is the one that is not a count of respawns at all.** It is a derived
+quantity depending on three things neither of the others touches: which entity
+the decoder selected, the 50 ms telemetry sample rate, and the jump threshold.
+And this specific ghost is the one on which the entity-selection defect was
+discovered — a respawning player's car is split across many entities and the
+decoder picks whichever holds the most samples. Nor is it explained by
+double-press merging: at one telemetry sample (5 ticks) the tape gives 941, at
+the 1.010 s freeze 924, and you only reach 914 at about a 2 s merge window, which
+corresponds to nothing physical.
+
+> **Say which question you are answering.** A respawn count read from the packets
+> is a fact about the tape. One read from the validator is a fact about the run.
+> One read from a trajectory is a fact about the decode. When two disagree the
+> question is not "which is right" but "which of these counts the thing I named"
+> — and the derived one carries every assumption in its pipeline.
+
+For the record, the enumeration used here is pinned from both sides: it returns 4
+on a tape independently known to carry 4 and 0 on clean tapes, and clearing those
+4 turns a finishing tape into a DNF. It can say yes, say no, and cause a change.
+
+## Deleting a whole retry span is EXACT, not an approximation
+
+The respawn sections above are about a respawn as something you *add* or inherit.
+This is the editing consequence, and it is the most useful form of the fact.
+
+**A respawn restores the crossing state exactly.** Therefore cutting out an
+entire retry span — from a respawn to the next time the run reaches that same
+state — is not an approximation that happens to work. It is exact arithmetic:
+
+```
+finish = base − 10 ms × (packets deleted)
+```
+
+On one map the whole of that record's **eleven respawn packets sit inside the
+single span the first useful cut deletes**, so the retry schedule was stripped
+before any search ever saw it. That cut is where a 147.031 record becomes
+**64.871 of the same human's own driving** — and it is why that map's advertised
+89-second gap was never real. The true gap was 7 s.
+
+This is the same physical fact three maps found from three directions:
+
+* a **soft respawn wipes divergence**: 99 m of accumulated error becomes
+  0.00000 m on the tick after the respawn;
+* a **hard attitude reset is a leg boundary**: tails are portable across it and
+  not before it;
+* and **a retry span is exactly deletable**, which is what turns a retry-grind
+  recording into a clean lap.
+
+> **On any map where the clock runs through respawns, cut the retry spans before
+> you search.** It is exact, it is cheap, it usually dwarfs anything search will
+> find, and it removes the schedule the search could not have edited anyway.
+
+## The seed matters more than the search — now on three maps
+
+Stated earlier from one map. It has since been measured on three, and the effect
+sizes are not marginal:
+
+| map | reseeded from | result |
+|---|---|---|
+| a keyboard line | a keyboard cut instead of the human tape | **52.658 → 47.899 in nine minutes** |
+| a sibling-map sweep | a human's line from the sibling map | **0.126 s better than the best human pair, in a sixth of the evaluations** |
+| a fresh-basin attempt | a new basin rather than the champion | 11.169 → 10.999, where an exhaustively-optimised champion would not move |
+
+The mechanism is the same in each: a long run inside a basin is bounded by that
+basin, and every tape a project owns on a map usually descends from one seed and
+inherits its blind spots along with its line.
+
+> **Before adding an order of magnitude to a search, spend a tenth of it looking
+> for a second basin.** A sibling map's human, a differently-constrained cut of
+> your own tape, or a deliberately worse starting line are all cheaper than the
+> evaluations they replace.

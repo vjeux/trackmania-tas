@@ -1,12 +1,13 @@
 # The Blev Special — the author time falls, and the trick is to arrive at a dead stop *sooner*
 
-**Author time 57.853 · best validated 57.573 · the same human's own driving,
+**Author time 57.853 · best validated 57.518 · the same human's own driving,
 retries removed, 64.871.**
 
 | tape | validated | vs AT | what it is |
 |---|---|---|---|
-| [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | **57.573** | **−0.280** | reach the wedge ~7 s early, then replay the human's own escape |
-| [`TAS_57577`](replays/TAS_57577.Ghost.Gbx) | 57.577 | −0.276 | sibling from the same splice sweep |
+| [`TAS_57518`](replays/TAS_57518.Ghost.Gbx) | **57.518** | **−0.335** | reach the wedge ~7 s early, then replay the human's own escape |
+| [`TAS_57537`](replays/TAS_57537.Ghost.Gbx) | 57.537 | −0.316 | the previous best from the same lineage |
+| [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | 57.573 | −0.280 | the first tape to beat the author time here |
 | [`TAS_59912`](replays/TAS_59912_watchable.Ghost.Gbx) | 59.912 | +2.059 | the previous best, keyboard-only |
 | [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the world record with its eleven respawns spliced out** |
 | author time | 57.853 | — | — |
@@ -19,31 +20,49 @@ DesertCar / SnowCar / Bobsleigh.
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 
-*Current best, not final. The owning search is still improving — a 57.537 tail
-and a 46.601 prefix on a segment map are in hand at the time of writing — and
-the two mandatory follow-ups (the human-route story and the low-input family)
-are in progress. Expect this page to be revised downward.*
+*Current best, not final. The owning search is still improving — 57.503 was
+validating as this was written — and a fully keyboard-only finishing tape is in
+the pipeline as the low-input artefact. Expect this page to be revised downward.*
 
 ---
 
-## Read the gap correctly: 7 seconds, not 89
+## Read the gap correctly: 7 seconds, not 89 — and the cut is EXACT
 
 unbeaten.at shows this map with an 89.178 s gap between the author time and the
 world record, which makes it look like a joke map. **It is not, and quoting
-57.573 against 147.031 would badly overstate what was done here.**
+57.518 against 147.031 would badly overstate what was done here.**
 
-The world record contains **eleven respawns**. Splice them out — which is exact,
-not an approximation, because a TM2020 respawn restores the run's own checkpoint
-crossing state — and the same human's own driving is **64.871**. That is the
-number this result should be read against.
+The world record contains **eleven respawns**. Splice them out and the same
+human's own driving is **64.871**. That is the number this result should be read
+against, and the real gap was **7.018 s**.
 
-The real gap was **7.018 s**, and it is now closed by 0.280.
+**The splice is exact rather than approximate, and that is the point.** A
+respawn restores the crossing state exactly, so deleting an entire retry span is
+arithmetic:
+
+```
+finish = base − 10 ms × (packets deleted)
+```
+
+All eleven respawn packets on this record sit inside the single span the cut
+removes. Audited here with the packet enumeration rather than assumed:
+
+```
+rank00001_147031.Ghost.Gbx    11 respawns   at packets 6203,6913,7474,8195,9262,
+                                            9962,10799,11496,12198,12951,13698
+clean_64871.Ghost.Gbx          0 respawns
+blev2_tas_57518_v1.Ghost.Gbx   0 respawns
+```
+
+So the retry schedule was stripped before any search ever saw it — which matters
+for more than tidiness, because a search that writes steer, gas and brake
+**cannot see or remove a respawn** and would have inherited every one of them.
 
 This is the same lesson as [`[Turtle Trial] Leto`](../286279-turtle-trial-leto)
 and [`YOU LOVE WATER`](../284238-you-love-water), and it is worth stating as a
-rule: **on any map where the clock runs through respawns, read the leaderboard
-number as clean driving plus every retry before you decide the map is silly —
-and before you quote your own margin against it.**
+rule: **on any map where the clock runs through respawns, cut the retry spans
+first. It is exact, it is cheap, and it usually dwarfs anything the search will
+find** — here it was 82 of the 89 seconds.
 
 ## What the map does to you: nine seconds to travel eighty metres
 
@@ -142,9 +161,11 @@ whether the tape can be edited.
 
 ```
 map sha256 a5768448d61edfc32da243a74c098b18314724342f9e0ce1895a872eb05b8d82
-TAS_57573  sha256 365d822130e49379ea8eb47d3c5477ab4135a7bcc60490968da2d301d694af41
+TAS_57518  sha256 6a4bdcbeaa07fcbd311768ad9133b46297189441e58098dad9d24c67d4e59d67
 
-blev2_tas_57573_v1.Ghost.Gbx     57573      <- the result
+blev2_tas_57518_v1.Ghost.Gbx     57518      <- the result
+blev2_tas_57537_v1.Ghost.Gbx     57537
+blev2_tas_57573_v1.Ghost.Gbx     57573
 blev2_tas_57577_v1.Ghost.Gbx     57577
 blev2_tas_57580_v1.Ghost.Gbx     57580
 clean_64871.Ghost.Gbx            64871      control (the record with retries cut)
@@ -153,7 +174,7 @@ rank00001_147031.Ghost.Gbx      147031      KNOWN-ANSWER CONTROL (human WR)
 rank00002_676640.Ghost.Gbx      676640      KNOWN-ANSWER CONTROL (human #2)
 ```
 
-Seven of seven exact, on **three separate toolchains** built independently of one
+Nine of nine exact, on **three separate toolchains** built independently of one
 another: the claiming search, an auditor who worked from the archived files
 alone with hashes checked before validation and the claimant's transcript read
 only afterwards, and the publishing pass. No disagreement of any kind between
@@ -167,10 +188,12 @@ rather than deleted.
 
 ## Still open
 
-The low-input family. The previous agent's 59.912 is already keyboard-only and
+The low-input family. The previous best at 59.912 is already keyboard-only and
 the humans drive this map on three steer values, so the alphabet is not the
 question here — the question is the **event count** of the splice tape, which has
-not been minimised. `TAS_57573` is a search product, not a drivable script yet.
+not been minimised. `TAS_57518` is a search product, not a drivable script yet,
+and a fully keyboard-only finishing tape is in the pipeline as the artefact that
+will answer this.
 
 ## Notes
 

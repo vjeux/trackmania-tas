@@ -148,8 +148,11 @@ transplanted there. Both are true, and both left the map stuck.
 
 The step that was missing is that **a respawn is an input, and on this map the
 state it restores is canonical**. It rides in bit 31 of the input packet's 34-bit
-state literal — a place `ghost::Factory` cannot see, which is why 941 of them
-were invisible against 914 telemetry discontinuities. That turns the impossible
+state literal — a place `ghost::Factory` cannot see, which is why all 941 of them
+were invisible to the search. (A trajectory-based detector reported 914 for this
+record; that number is **not** a respawn count and has since been resolved — see
+[`FINDINGS.md`](../FINDINGS.md). The packet enumeration is authoritative and it
+says 941.) That turns the impossible
 transplant into two lines:
 
 ```
