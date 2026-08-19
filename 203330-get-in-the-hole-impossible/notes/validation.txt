@@ -1,5 +1,0 @@
-file                                       sim_time      cps
-kb330_15ev_13990.Ghost.Gbx                    13990        -
-kb330_19ev_13985.Ghost.Gbx                    13985        -
-kb330_22ev_13985.Ghost.Gbx                    13985        -
-r01_14018.Ghost.Gbx                           14018        -

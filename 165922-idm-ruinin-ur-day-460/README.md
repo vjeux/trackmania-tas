@@ -140,6 +140,5 @@ the point of being free.
 | `replays/TAS_15290_lowinput.Ghost.Gbx` | 86 input changes, zero steering through the glide |
 | `replays/TAS_15382_deep_landing.Ghost.Gbx` | lands 40–80 m deeper into the pad |
 | `replays/KEYBOARD_16276_tolerant.Ghost.Gbx` | **the forgiving launch — the one to learn from** |
-| `inputs/tolerance_ramp.txt` | every launch input shifted ±80 ms, with what it costs |
 
 `replays/` also holds three earlier tapes at 15.230, 15.240 and 15.549.
