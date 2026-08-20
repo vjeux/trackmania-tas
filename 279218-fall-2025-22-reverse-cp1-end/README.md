@@ -1,12 +1,17 @@
 # Fall 2025 - 22 Reverse CP1 End
 
-**The author time falls on a keyboard, and it is the rank-5 human's own lap plus
-two things nobody does: flick the right key off for a single frame at 3.13 s,
-and lift the throttle for two frames at 3.91 s. They only pay as a pair.**
+**Start accelerating on the second tick, not the first. It is worth 2 ms here —
+and the only reason it works is that the later start opens a line through the
+dip that does not exist from a first-tick start.**
+
+The trick came from **Matik_K**, who holds the world record on this map and
+asked whether we had tried it. We had not. His own record does not use it, and
+neither did any of the 40 runs on the leaderboard.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
-| **TAS** | **5.347** | **−0.003** | **−0.008** | analog, 114 changes |
+| **TAS, start trick** | **5.345** | **−0.005** | **−0.010** | analog |
+| TAS, previous best | 5.347 | −0.003 | −0.008 | analog, 114 changes |
 | TAS, earlier tape | 5.348 | −0.002 | −0.007 | analog |
 | **TAS, keyboard only** | **5.350** | **±0** | **−0.005** | 15 changes, 3 steer values |
 | **the drivable one** | **5.351** | +0.001 | **−0.004** | 19 changes, 7 steer values |
@@ -14,6 +19,39 @@ and lift the throttle for two frames at 3.91 s. They only pay as a pair.**
 | Author time | 5.350 | — | −0.005 | — |
 | Human WR — Matik_K | 5.355 | +0.005 | — | pad, 107 changes |
 | Human rank 5 | 5.358 | +0.008 | +0.003 | keyboard, 11 changes |
+
+## The start trick
+
+Hold the throttle off for one tick — 10 ms — then floor it. That is the whole
+technique.
+
+**Why it works is not what it looks like.** The two starts are *positionally
+identical for two full seconds*: same place, same speed, to the millimetre. The
+difference appears coming out of the first 1→2 upshift, worth about 0.4 km/h,
+and the car keeps it from there. So it is an engine-phase effect, not a launch
+one — which means **it is worth checking per map**, since what you gain depends
+on where your first gear change falls relative to the finish.
+
+On a flat practice map built for the technique (TMX 325723) the whole
+leaderboard splits on exactly this: seven runs at 2.590 start on the second
+tick, five at 2.592 start on the first.
+
+**The 2 ms here is not the launch.** Measured on a vernier fine enough to
+separate three other runs at quarter-millisecond resolution, the two launches
+are identical to within 0.25 ms at corner entry. What the later start buys is a
+*different line through the dip* — a corner the first-tick car cannot take. The
+ablations:
+
+| edit | result |
+|---|---|
+| the 5.345, unchanged | **5.345** |
+| put the first tick's throttle back, change nothing else | **DNF** |
+| apply the winning steering move to the old 5.347 tape | **DNF** |
+| revert the steering, keep the trick | 6.109 |
+
+Neither half works alone. And a matched-budget control search from a first-tick
+start, same machinery and same seeds, stayed flat at 5.347 through ~930,000
+evaluations while the second-tick arm found 5.345 in three rounds.
 
 TMX map [279218](https://trackmania.exchange/maps/279218) · author **in-.-** ·
 339 recorded runs. It is a reversed copy of the official Fall 2025 - 22 layout.
@@ -162,6 +200,7 @@ forgiving than the driving humans have actually done on this map.
 
 | file | what |
 |---|---|
+| `replays/TAS_5345_starttrick.Ghost.Gbx` | **the fastest run** — the start trick plus a corner line only it can reach |
 | `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |
