@@ -152,16 +152,3 @@ already moving badly.
 These files are input tapes: the telemetry inside them is inherited from the
 template they were built on, so opening one as a ghost in game replays the
 human's motion rather than this run's.
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`DRIVABLE_30ev_14608`](videos/DRIVABLE_30ev_14608.mp4)
-- [`KEYBOARD_14349`](videos/KEYBOARD_14349.mp4)
-- [`ROBUST_KEYBOARD_14479`](videos/ROBUST_KEYBOARD_14479.mp4)
-- [`TAS_14289`](videos/TAS_14289.mp4)
-
-<!-- VIDEOS:END -->

@@ -136,16 +136,3 @@ machine work.
 | `replays/UNIFORM_2on1off_23335.Ghost.Gbx` | **the metronome — beats the world record with no search at all** |
 | `replays/GRAIN40MS_23125.Ghost.Gbx` | inside the author time at a 40 ms input grain |
 | `replays/DDMIN_747ev_23183.Ghost.Gbx` | under the author time on 747 input events |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`DDMIN_747ev_23183`](videos/DDMIN_747ev_23183.mp4)
-- [`GRAIN40MS_23125`](videos/GRAIN40MS_23125.mp4)
-- [`TAS_22072`](videos/TAS_22072.mp4)
-- [`UNIFORM_2on1off_23335`](videos/UNIFORM_2on1off_23335.mp4)
-
-<!-- VIDEOS:END -->

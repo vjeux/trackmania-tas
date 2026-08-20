@@ -127,15 +127,3 @@ from:
 | `replays/KEYBOARD_10743.Ghost.Gbx` | **3 values, 14 presses — the one to study** |
 | `replays/ACTIONKEY_10717.Ghost.Gbx` | small action-key ladder |
 | `replays/TAS_10640.Ghost.Gbx` | the fastest run |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`ACTIONKEY_10717`](videos/ACTIONKEY_10717.mp4)
-- [`KEYBOARD_10743`](videos/KEYBOARD_10743.mp4)
-- [`TAS_10640`](videos/TAS_10640.mp4)
-
-<!-- VIDEOS:END -->

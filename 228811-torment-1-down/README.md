@@ -139,13 +139,3 @@ at 320 km/h in the ten metres after the gate.
 | file | what |
 |---|---|
 | `replays/TAS_20237.Ghost.Gbx` | the run |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`TAS_20237`](videos/TAS_20237.mp4)
-
-<!-- VIDEOS:END -->

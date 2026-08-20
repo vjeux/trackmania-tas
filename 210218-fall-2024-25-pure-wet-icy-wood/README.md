@@ -119,14 +119,3 @@ cheapest finishing respawn over the last 2.7 s costs +1.787, against a gap of
 |---|---|
 | `replays/TAS_96068.Ghost.Gbx` | **the fastest lap here, 0.213 under the world record** |
 | `replays/TAS_96078_1minimal.Ghost.Gbx` | 96.078, the same line with the input list minimised |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`TAS_96068`](videos/TAS_96068.mp4)
-- [`TAS_96078_1minimal`](videos/TAS_96078_1minimal.mp4)
-
-<!-- VIDEOS:END -->

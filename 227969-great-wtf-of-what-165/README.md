@@ -177,13 +177,3 @@ grind the kicker commit; use the crest of the wall as the cue, not the clock.
 | `replays/best_7998.Ghost.Gbx` | fastest run, unconstrained |
 | `replays/best_8010.Ghost.Gbx` | the first tape to beat the author time |
 | `inputs/m165_TAS_8010ms.tick.txt` | that run as a readable input script |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`best_7998`](videos/best_7998.mp4)
-
-<!-- VIDEOS:END -->

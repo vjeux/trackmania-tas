@@ -144,16 +144,3 @@ frame-perfect trick.
 | `replays/ablation_exit_only_4495.Ghost.Gbx` | the human record with only the exit release — still 4.495 |
 | `inputs/tas_4492_v1.inputs.csv` | per-tick inputs |
 | `inputs/human_wr_4495.inputs.csv` | the human world record's inputs, for comparison |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`ablation_early_only_4493`](videos/ablation_early_only_4493.mp4)
-- [`ablation_exit_only_4495`](videos/ablation_exit_only_4495.mp4)
-- [`tas_4492_v1`](videos/tas_4492_v1.mp4)
-- [`tas_4493_singletick_v1`](videos/tas_4493_singletick_v1.mp4)
-
-<!-- VIDEOS:END -->

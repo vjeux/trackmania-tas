@@ -166,17 +166,3 @@ leaderboard.
 | `replays/TAS_49275.Ghost.Gbx` | the fastest run |
 | `replays/TAS_49275_independent.Ghost.Gbx` | the same time reached independently — a byte-different tape |
 | `replays/TAS_49278.Ghost.Gbx` | the first tape under the author time |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`HUMAN_rank2_keyboard_49491`](videos/HUMAN_rank2_keyboard_49491.mp4)
-- [`KEYBOARD_49475`](videos/KEYBOARD_49475.mp4)
-- [`TAS_49275`](videos/TAS_49275.mp4)
-- [`TAS_49275_independent`](videos/TAS_49275_independent.mp4)
-- [`TAS_49278`](videos/TAS_49278.mp4)
-
-<!-- VIDEOS:END -->

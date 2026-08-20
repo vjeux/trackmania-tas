@@ -158,19 +158,3 @@ before you get there, so do not try to save it late.
 | `replays/best_13985.Ghost.Gbx` | 13.985 |
 | `inputs/kb330_12ev_13986.tick.txt` | the twelve-input route as a readable input script |
 | `inputs/kb330_31ev_13984.tick.txt` | the 31-input route, likewise |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`an330_13984`](videos/an330_13984.mp4)
-- [`best_13985`](videos/best_13985.mp4)
-- [`kb330_12ev_13986`](videos/kb330_12ev_13986.mp4)
-- [`kb330_15ev_13990`](videos/kb330_15ev_13990.mp4)
-- [`kb330_19ev_13985`](videos/kb330_19ev_13985.mp4)
-- [`kb330_22ev_13985`](videos/kb330_22ev_13985.mp4)
-- [`kb330_31ev_13984`](videos/kb330_31ev_13984.mp4)
-
-<!-- VIDEOS:END -->

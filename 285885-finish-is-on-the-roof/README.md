@@ -128,15 +128,3 @@ That is why the finish is a dead end and the approach is not.
 | `replays/TAS_50229.Ghost.Gbx` | the fastest validated run — 11.0 faster than any human |
 | `replays/POKE_1input_50659.Ghost.Gbx` | **the world record with one steering change** — 61.229 → 50.659 |
 | `replays/TRIGGERPOKE_50469.Ghost.Gbx` | the same idea, refined |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`POKE_1input_50659`](videos/POKE_1input_50659.mp4)
-- [`TAS_50229`](videos/TAS_50229.mp4)
-- [`TRIGGERPOKE_50469`](videos/TRIGGERPOKE_50469.mp4)
-
-<!-- VIDEOS:END -->

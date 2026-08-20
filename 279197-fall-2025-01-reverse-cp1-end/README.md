@@ -143,13 +143,3 @@ Both would place top-150 of 561.
 | `replays/KEYBOARD_10636.Ghost.Gbx` | pure keyboard, 66 events |
 | `replays/KEYBOARD_35ev_10646.Ghost.Gbx` | pure keyboard in **35 inputs** — the one to learn |
 | `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | those two runs as readable input scripts |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`real_10595`](videos/real_10595.mp4)
-
-<!-- VIDEOS:END -->

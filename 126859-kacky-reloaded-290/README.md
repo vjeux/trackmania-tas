@@ -163,13 +163,3 @@ of the best keyboard human, short of the author medal.
 | `replays/ALPHABET153_23545.Ghost.Gbx` | 153 steering values |
 | `replays/KEYBOARD_24164.Ghost.Gbx` | **keyboard only, 3 values, 130 presses** — faster than any keyboard human here |
 | `replays/TAS_23462_v1.Ghost.Gbx` | earlier stage |
-
-<!-- VIDEOS:START -->
-
-## Videos
-
-Chase-cam recordings rendered in-game (Player camera targeting the ghost, no effects). Each clip runs for the ghost's exact race time. Click to play (GitHub serves the file); each corresponds to a `replays/*.Ghost.Gbx` in this folder.
-
-- [`TAS_23462_v1`](videos/TAS_23462_v1.mp4)
-
-<!-- VIDEOS:END -->
