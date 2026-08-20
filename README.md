@@ -13,6 +13,7 @@ The point is the technique, written up so a human can practise it.**
 | map | records | author time | best human | **this TAS** | vs AT | fewest inputs under the AT |
 |---|---|---|---|---|---|---|
 | [untitled 02](276877-untitled-02) | **0** | 31.399 | *none* | **8.898** | **−71.7 %** | — (the author time is not route-enforced — see the page) |
+| [untitled 01](276874-untitled-01) | **0** | 23.839 | *none* | **12.759** | **−46.5 %** | — (analog; 13.349 is the human-shaped one) |
 | [The Magnet Trial](186935-magnet-trial) | 7 | 2540.641 | 2575.154 | **793.893** | **−68.8 %** | 16,397 → 793.893 |
 | [[Turtle Trial] Angustus](238835-turtle-trial-angustus) | 1 | 462.982 | 1964.933 | **239.133** | **−48.3 %** | — |
 | [[Turtle Trial] Leto](286279-turtle-trial-leto) | 5 | 355.181 | 441.002 | **218.812** | **−38.4 %** | — |
