@@ -1,8 +1,8 @@
 # untitled 02
 
 **The author time on this map is not route-enforced. There are no checkpoints,
-so the only thing you have to touch is the finish gate — and you can reach it by
-launching off the track and flying most of the way there.**
+so the only thing you have to touch is the finish gate — and 29 % of this run
+is spent airborne, riding the lattice's own launches rather than driving it.**
 
 | run | time | vs author time |
 |---|---|---|
@@ -25,6 +25,17 @@ separate finish gates. Nothing forces you round the course. The author time of
 31.399 is what it costs to drive the track as built; the finish gate can be
 reached in **8.898** by not driving it.
 
+**Measured, on the published 9.415 rung:** 100.0 % of samples sit inside an
+occupied block cell, the run never leaves the lattice's own volume, and it never
+exceeds its own spawn altitude — but **29.0 % of it is airborne**, 2.78 s in
+total, with the longest continuous stretch **1.51 s**. So it is not flying away
+from the map; it is being thrown along it by the lattice's own launches, which is
+why the line stays inside the cells while barely touching anything.
+
+For contrast, the sibling map's [untitled 01](../276874-untitled-01) run is
+airborne 19.3 % of the time with a longest stretch of 1.13 s. **This one flies
+more.**
+
 So read this page as a demonstration that the map's time is soft, not as a
 driving lesson. **32.219 is the honest number** — that is the first finish
 anybody has recorded here, following roughly the intended line, and it is still
@@ -35,14 +46,19 @@ anybody has recorded here, following roughly the intended line, and it is still
 Off the start platform, straight down into the dark descending section, which is
 where all the speed comes from — **325 km/h** by the bottom. There is a hard
 contact at **1.86** that the run simply absorbs. Launch at **4.76**, and the
-reactor-up zone lifts the car about **21 m** while it decelerates; from there it
-is above the cloud layer with the map's own geometry passing underneath. Thread
-the gate columns at x ≈ 752 / 688 / 624 around y 281–287, come down onto the
-curved ramp, land at **8.5**, and roll into the Goal item at (580, 284, 713) at
-**41 km/h**.
+reactor-up zone lifts the car about **21 m** while it decelerates; the cloud
+layer is below the whole lattice, so from the chase camera the car reads as
+flying above the clouds even though it is inside the map's own structure the
+entire time. Thread the gate columns at x ≈ 752 / 688 / 624 around y 281–287,
+come down onto the curved ramp, land at **8.5**, and roll into the Goal item at
+(580, 284, 713) at **41 km/h**.
 
-The whole middle of the run is off the built track. That is the trick, and it is
-visible in the video within a couple of seconds.
+**A correction, because the video misleads:** watching it, the middle of the run
+looks like it leaves the track entirely. It does not. Measured against the map's
+block census, every sample is inside an occupied cell and the run never exceeds
+its own spawn altitude. What is true is that it is *airborne* for 29 % of the
+run — thrown along the lattice by its own reactor zones rather than driven — so
+the car is barely touching anything even while it stays within the structure.
 
 ## The run, as inputs
 

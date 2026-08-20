@@ -1,7 +1,9 @@
 # untitled 01
 
 **Author time 23.839, and nobody has ever set a time on this map. This run does
-it in 12.759 — and unlike its sibling, it mostly drives the track.**
+it in 12.759 — and it drives the map: supported for 80.7 % of its samples,
+never rising above its own spawn altitude, taking the map's own reactor lift to
+reach a finish that sits at the bottom of the lattice.**
 
 | run | time | vs author time |
 |---|---|---|
@@ -18,22 +20,37 @@ Video of the run, with the inputs overlaid: <https://pxl.cl/cvdgw>
 ## What kind of result this is
 
 Same author and upload day as [untitled 02](../276877-untitled-02), and the same
-lattice — **0 checkpoints, 2 finish gates, nothing enforcing a route.** So the
-same caveat applies in principle: *the author time is not route-enforced.*
+lattice — **0 checkpoints, 2 finish gates, nothing enforcing a route.**
 
-But this run is far closer to real driving than its sibling's. Measured per
-sample against the map's own block census, **72.9 % of the run is inside
-occupied map cells**, and **92.6 % of samples are in ground contact** (237 of
-256). The longest airborne stretch is **0.35 s** — a jump, not a flight. Where
-it does leave the built volume, for about 3.2 s, it is gliding beside the
-structure rather than above the cloud layer.
+But **this run drives the map.** The test is model-free: a car with nothing under
+it accelerates downward at 22.3 m/s² in this engine (calibrated on two tapes that
+provably fall out of the world). Across the stretch that looks like a glide, the
+car drops **18.4 m in 2.71 s** where free fall would drop 81 m — it is supported
+the whole way.
 
-And the departure is *the map's own doing*. The finish sits at **y 292**, and
-the only thing that lifts a car back up is the reactor column — which exists at
-**cell-x 18 and 28 only**. A car that drops to the lattice floor between them
-can never get high enough to finish. So the run's ugly-looking stall at 12 km/h
-is not waste: it is the only way to be high enough, and it caps the glide's
-entry speed at 109 km/h.
+Measured per sample:
+
+| | supported | airborne |
+|---|---|---|
+| inside an occupied block cell | 58.1 % | 14.8 % |
+| outside every cell | 22.5 % | 4.5 % |
+
+**80.7 % of the run is supported**, total airborne time is 2.43 s with the
+longest continuous stretch 1.13 s — and that one is a real 20 m drop off the
+spawn platform, not a flight. The run **never rises above its own spawn
+altitude**.
+
+Of the 3.40 s spent outside any occupied cell, only **0.57 s** is airborne; the
+rest is a car on a surface that simply is not inside a block's cell. That
+distinction flips on centimetres — 7.5 cm lower and the same car changes
+category — so treat "inside a cell" as bookkeeping, not physics.
+
+And the departure from the built volume is *the map's own doing*. The finish
+sits at **y 292**, and the only thing that lifts a car back up is the reactor
+column — which exists at **cell-x 18 and 28 only**. A car that drops to the
+lattice floor between them can never get high enough to finish. So the run's
+ugly-looking stall at 12 km/h is not waste: it is the only way to be high
+enough, and it caps the glide's entry speed at 109 km/h.
 
 ## The line
 
