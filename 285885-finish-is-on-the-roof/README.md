@@ -119,6 +119,46 @@ upright from the fast line would need about **26° of body tilt**, and the
 cheapest source of that tilt on this map is rank 1's own flip, which costs
 **11.2 s** against a budget of about 2 s.
 
+### The wall is height, and it is not a measurement artefact
+
+An earlier reading suggested the deficit might be lateral rather than vertical —
+sweeping the goal over an (x, z) grid at its true height produces a fire region
+whose edge sits 1–1.5 m away, which reads as "short in z, not in height".
+
+That is an artefact of displacing the gate in raw axes. Re-swept **along the
+roof plane** — which is what a car displacement actually means on an 11.4° slope
+— the answer is unambiguous: **424 stations spanning 12 m × 8 m, and the fast
+line fires none of them**, while the human record fires about 40 in a coherent
+band. The instrument says yes where there is a yes. The deficit is height, and
+no amount of moving the car along the roof reaches it.
+
+### Rank 1's flip is not an unsearched lead — it is what this run already does
+
+An earlier version of this page said rank 1 had a validated way to finish that
+had never been searched, with about 6 s unclaimed upstream. That was wrong on
+both counts.
+
+The flip is a **low-speed pitch-over**: the car climbs a short steep face at
+70–90 km/h, loses the surface, tips over backwards, lands on its roof having
+travelled 8 m and lost 62 km/h, then drives the last 133 m inverted. **Our
+50.229 already does exactly this**, at the same place, and its inverted crawl is
+already twice as fast as the human's — 8.42 s against 21.2 s over the same
+133 m.
+
+The arithmetic closes it. The fastest anything reaches the top of the steep
+climb is 37.97, the flip itself costs about 3.2 s, and the inverted crawl adds
+8.42 s: **a floor of roughly 48.5 s against an author time of 43.079.** Free
+time upstream would not be enough, and there is no 6 s upstream to find.
+
+### What is actually open
+
+Banked surfaces. At race 35.0–35.4, one second after the launch landing, both
+the fast line and rank 1 ride something that puts them **74° on their side at
+165 km/h**, 142 m from the finish patch. So this map does contain geometry that
+tilts this car far past the 26° the gate needs, at speed, without the
+pitch-over's 3.2 s. Three separate efforts have measured the finish ramp as a
+bare plane; nobody has mapped what is beside it.
+
 That is why the finish is a dead end and the approach is not.
 
 ## Files

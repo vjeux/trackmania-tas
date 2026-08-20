@@ -4,12 +4,13 @@
 runs reach the first one; getting to that gate instead of the next one down is
 about a second, and it is free to anyone driving in the 43–45 second range.**
 
-The author time has not fallen. The fastest lap here is a full second under the
-human world record and still 0.653 short of the author medal.
+The author time has not fallen. The fastest lap here is **1.248 under the
+human world record** and still **0.445** short of the author medal.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
-| **TAS** | **39.183** | +0.653 | **−1.040** | analog, 189 steering values |
+| **TAS** | **38.975** | +0.445 | **−1.248** | analog |
+| TAS, previous | 39.183 | +0.653 | −1.040 | analog, 189 steering values |
 | **TAS, keyboard only** | **39.706** | +1.176 | **−0.517** | 3 values, 101 presses |
 | Author time | 38.530 | — | −1.693 | — |
 | Human WR — jujumasterr | 40.223 | +1.693 | — | pad, 1157 events |
