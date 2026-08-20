@@ -44,6 +44,36 @@ curved ramp, land at **8.5**, and roll into the Goal item at (580, 284, 713) at
 The whole middle of the run is off the built track. That is the trick, and it is
 visible in the video within a couple of seconds.
 
+## The run, as inputs
+
+**Throttle is held from the countdown to the line and never released — not once
+in 8.898.** Everything else is steering, plus a handful of brake taps *with the
+gas still down*.
+
+```
+race 0.000–0.180  small wiggle   | ±21 either way, settling straight
+race 0.310–0.660  full RIGHT     | −127 held for a third of a second
+race 0.860–1.420  full RIGHT     | held, and brake TAPPED through it —
+                                 |   14 taps of 10–60 ms, gas never lifted
+race 1.560–2.770  straight       | 1.2 s of nothing: this is the descent,
+                                 |   accelerating to 325 km/h
+race 2.770–2.820  full LEFT stab | +127 for 50 ms
+race 2.820–4.080  straight       | another 1.3 s of nothing
+race 4.440–4.490  full RIGHT stab| −126 for 50 ms — this is the launch input
+race 4.920–5.430  the flight     | continuous analog steering, ±80, correcting
+                                 |   attitude while airborne
+race 5.470–5.640  brake in air   | 110 ms + 30 ms, gas still down
+race 6.220–7.750  gate threading | the busiest part: sustained analog work
+                                 |   between ±90, one brake burst at 6.310
+race 7.750–8.898  landing + run-in| settling onto the ramp and into the gate
+```
+
+Counted properly: **349 input change events**, **158 distinct steering values**,
+**63 ticks of brake** across 19 separate applications, and **zero throttle
+lifts**. The two long straights (1.2 s and 1.3 s of literally no input) are the
+descent and the top of the flight — the run is doing nothing at all for a
+quarter of its length.
+
 ## Can a human do this?
 
 Not this tape. It is **349 input events across 158 distinct steering values** —
