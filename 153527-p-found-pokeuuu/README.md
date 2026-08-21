@@ -24,6 +24,27 @@ every failed attempt. The driver **clears CP8 at 929.549 — inside the author
 time** — and then spends 65 minutes on the next two segments.
 
 Deleting every failed attempt and keeping only the surviving one in each segment
+> ### ⚠️ The 892.148 below is withdrawn — it is not a route
+>
+> The de-looping analysis in this section was re-run with a **minimum junction
+> size** forbidden inside the dynamic program, and the number does not survive.
+> Keeping seven real loops (each ≥ 5 s) gives **941.588 — 2.305 s OVER the author
+> time**, not 47 seconds under it.
+>
+> **48.8 % of the published 892.148 was splice fee rather than driving.** The
+> chain time is 457.203 s; the rest was the cost of the cuts themselves, which
+> the analysis charged to nobody.
+>
+> What replaces it is more modest and still interesting: **the author time is
+> approximately this human's own route, de-looped, driven at this human's pace.**
+> 941.588 against 939.283. So the AT is reachable — but the 941.588 route spends
+> **51.950 s under 5 km/h and 165.868 s under 20 km/h** on a line averaging
+> 78 km/h. The barrier is being able to drive the map at all, not finding a
+> shorter way round it.
+>
+> Everything below about *where* the loops are is unaffected — the three closed
+> loops are real and their measurements stand. It is the total that was wrong.
+
 leaves **1214.465 s of real driving**, still 275 s outside the author time. So
 retries alone do not explain the gap, and neither does pace: that surviving line
 averages 72.8 km/h across 24 546 m, and it is genuinely driving rather than
