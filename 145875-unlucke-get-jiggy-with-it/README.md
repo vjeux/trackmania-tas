@@ -51,14 +51,19 @@ TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
 
 ## A version a person can actually press
 
-> **⚠️ The time in this section is under review as of 2026-08-21.** The tape was
-> validated at **6.342** by the arm that searched it, cold, one file per
-> invocation, with the human world record as a positive control in the same
-> batch. The dedicated server has since read the same file as declaring 6342 and
-> **validating to 6.360** — which would be over the author time, not under it.
-> The two readings are being reconciled. **Until they are, treat the 6.342 in
-> this section as unconfirmed**; the input-count and hold-length findings below
-> do not depend on which number is right.
+> **A note on the 6.360 you may see in these files.** Every tape in this
+> lineage declares **6360** in its header — including the 6.323 and the 6.322
+> above — because that is the time of `r03`, the human keyboard run the whole
+> family was searched out of, and its container has been carried down ever
+> since. The oracle returns 6.322, 6.323, 6.338, 6.342 and 6.345 from those same
+> five containers, so the header is a fact about the seed and the simulation is
+> the fact about the run. Confirmed by transplant: these inputs written into a
+> different human's container, declaring 6346, still simulate to **6.342**,
+> with a lossless control and a negative control in the same batch, on two
+> independently built binaries.
+>
+> **Never read a synthesised tape's time off its header, filename or manifest.
+> Re-simulate it.**
 
 The tape above is a machine's: it holds inputs for 10 ms and stabs three of them
 for a single tick. Nobody can do that. So the same line was **searched again from
