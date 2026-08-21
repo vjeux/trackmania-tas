@@ -1053,3 +1053,62 @@ to test against.
 2. **A donor's split list agrees with the donor's declared time.** That is why the
    "exclude values present in the split list" guard failed: *agreement across
    fields is not evidence of legitimacy when both fields came from the same file.*
+
+### The detector is the ENTITY count, not the node count — and the corpus splits three ways
+
+The obvious byte-level reading of the span defect was a node count: one
+`CPlugEntRecordData` node clean, two foreign, no game required. **On the matched
+pair that produced the finding, it fails.**
+
+```
+KEYBOARD_5350_equals_AT (foreign span)  1 node, 0..566080 ms, 10 entities, 4 car entities
+KEYBOARD_5352_11events  (clean)         1 node, 0..  5350 ms,  3 entities, 1 car entity
+```
+
+**Both are one node.** The dirty file carries **four copies of the car-entity
+group** where the clean one has one: the carrier's other entities rode along. So
+the byte-level detector is a count of class `0x0a018000` — and it still needs no
+game.
+
+> **A detector proposed from a mechanism is a hypothesis about that mechanism.**
+> The node count was derived from "a second track appears", which was true, and
+> the second track does not come from a second node.
+
+Across all 174 published files:
+
+| | count | meaning |
+|---|---|---|
+| **foreign span AND >1 car entity** | **19** | the carrier's entities rode along — the render-visible class |
+| foreign span, ONE car entity | **94** | span field inherited, no extra entities |
+| span ok, >1 car entity | 2 | entities rode along, the span was fixed |
+| both clean | 59 |  |
+
+The 19 cluster hard: 227654 ×9 (twenty-seven car entities each), 279218 ×5,
+126859 ×5.
+
+**The 94 are the honest open question.** The `SceneryEvents` track was measured on
+a file from the 19. Whether a foreign span with a *single* entity group also
+produces a second track is untested, and the two columns disagree on all 94.
+**Only an import can say which side of the line they fall** — which is exactly why
+the columns stay two.
+
+A fourth class, 165922's nine files: span 8790760 (a 2.44-hour donor) and **zero
+car entities**, consistent with their decoding to nothing at all. There is no run
+in them to have a span.
+
+### The repair is not `tail fix --cut` alone
+
+208024's four files are span-correct by construction — 18900 against the
+carrier's 25650, each ending within 50 ms of its own finish — and the obvious
+inference was that `tmtraj tail fix --cut MS` is the missing step the 45 never
+got.
+
+**The one before/after pair in the corpus says otherwise.** `50_TAS_239133_cut`
+has half the samples of its uncut sibling (4783 vs 9114) and **the same span,
+1964930**. Cutting samples off an inherited record leaves the inherited span;
+208024's files went through `tail fix` *and* a regeneration that rebuilt the
+record from our own run.
+
+> **Test a repair recipe on one file before committing it to forty-five.** The
+> mechanism that produced a clean result is not necessarily the step you can name
+> in it.
