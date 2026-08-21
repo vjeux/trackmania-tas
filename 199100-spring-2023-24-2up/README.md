@@ -6,19 +6,41 @@ and arrive from below still accelerating.**
 
 **Spring 2023 - 24 (2-UP)** — TAS **47.483** (−4.119) | AT 51.602 | WR 47.838 by uelen.
 
-https://github.com/user-attachments/assets/337947de-b504-4b5d-a829-4170a43944bd
+> ### ⚠️ Both videos withdrawn, and this result is under review — the 47.483 is uelen.'s run for its first 40 seconds
+>
+> The two clips that were here have been taken down.
+>
+> **The 47.483 tape shares uelen.'s input tape byte for byte, and its trajectory
+> matches his to under a millimetre for 800 consecutive samples** — mean
+> **0.000476 m**, max 0.000906 m — up to **40.000 s**. From 40.100 s the two
+> depart cleanly and genuinely differ, mean 18.71 m and max 52.86 m over the last
+> 157 samples.
+>
+> That is not two runs that resemble each other. **It is one run with a different
+> ending**, and the page's own description — *"the shape is theirs and we are
+> flying it a metre lower"* — is not a generous framing, it is the wrong account
+> of what the file contains. The first clip was largely uelen. beside uelen.
+>
+> **The independence check cleared it, and the check was broken.** `seplag`
+> reported `INDEPENDENT: no identical position at any lag` because it tests for
+> *exactly zero* difference, and these positions differ by about 0.0005 m — the
+> float encoder's own noise floor. **A tolerance-free equality test cannot see a
+> copy that has been through a re-encode.** The tool now needs a near-identity
+> band — positions within a millimetre for N consecutive samples — rather than an
+> exact one.
+>
+> What is not yet decided is what the last 7.7 seconds are worth. The departure
+> at 40.100 s is real and it is where the 0.355 s comes from. Whether that is a
+> result of ours built on a human's flight, or a human's flight with an ending
+> attached, is exactly the question this page is not entitled to answer for
+> itself — so the claim stands withdrawn until it is measured rather than
+> asserted.
+>
+> The second clip (our old 49.778 against the new 47.483) is affected the same
+> way in its right-hand pane. **The 49.778 file itself is unaffected** — a
+> different input tape entirely — and the 1.940 s finding about flight shape,
+> which came from comparing our own two runs, does not depend on the 47.483.
 
-**Our run beside the world record, and the striking thing is how little there is
-to see.** Left is our 47.483, right is uelen.'s 47.838; the two flights are
-nearly the same shape, because **the shape is theirs.** They found the family and
-we are flying it a metre lower and slightly faster. That is the honest picture of
-this result: 0.355 s on top of somebody else's idea.
-
-The clip below is the one that shows what the idea *was*.
-
-**Spring 2023 - 24 (2-UP)** — our old flight **49.778** against our new **47.483**
-
-https://github.com/user-attachments/assets/ddbc00c2-414d-4eed-be8f-d7a36b9cce28
 
 **Left is what we used to do; right is what we do now.** Same map, same launcher,
 same car — and from about 42 s the left pane climbs away above the structures
