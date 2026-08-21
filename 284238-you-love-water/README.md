@@ -118,9 +118,17 @@ else identical:
 
 Monotone in steer, so the instrument resolves the axis — and the same ladder
 reports "no effect, bit-identical" on the flight window, which is its control.
-**The reachable band is 37.4 °/s wide. The roll the finish needs is 90–100. The
-gap is 150.** The unload *instant* is 23.690–23.700 for every input in the
+**The reachable band from one entry state is 37.4 °/s wide. The roll the finish
+needs is 90–100.** The unload *instant* is 23.690–23.700 for every input in the
 alphabet: one tick of variation. The car leaves the ramp when the ramp says so.
+
+> **That band is not the map's, and the paragraph above is superseded by
+> [what the obstacle actually is](#what-the-obstacle-actually-is-the-engagement-point).**
+> The sweep was exhaustive over the input alphabet but was run from a single
+> entry state, and it measured that entry state. Braking before the ramp spans
+> **5.0 to 284.1** — the whole range, with the target comfortably inside it.
+> *An exhaustive search over a complete alphabet, run from one entry state,
+> measures the entry state and not the map.*
 
 Position, by contrast, is essentially solved — the human's crossing point is
 reached to **0.58 m**, from 9.73 m earlier the same day. Roughly forty
@@ -167,6 +175,61 @@ The author made exactly this substitution himself on his remix **279008 "Keep
 dropping"**, which shares 167 of its 186 blocks with this map but replaces the
 water ramps with tech blocks that give every copy a flat run-up. A human beats
 that map's author time. Nobody has beaten this one.
+
+## What the obstacle actually is: the engagement point
+
+**The obstacle is governed by one number — `engage_x`, the point on the curved
+ice kicker where the car first engages it.** That sets the car's roll rate at the
+suspension unload, and after that instant every input is bit-exactly inert. 27
+tapes across five families of intervention fall on one monotone curve:
+
+| engage_x | frozen roll rate | how it was reached |
+|---|---|---|
+| 911.0–911.7 | **250 … 284** | no intervention; **all three lifts**; all six steer pulse pairs; brakes ≤ 40 ticks |
+| 912.54 | 145.3 | brake 60 |
+| 913.76 | 136.9 | brake 30, ended 40 ticks early |
+| 916.57 | 121.1 | brake 30, ended 60 ticks early |
+| 916.86 | 120.8 | brake 75 |
+| **917.99** | **71.0** | brake 80 |
+| 920.23 | −4.9 | brake 30, ended 80 ticks early |
+
+**The roll the finish needs — about +86 at the wall, a rate near 90–100 — is
+bracketed by measured points at 916.86 and 917.99.** Not extrapolated. And note
+the shape: the curve sheds 24 °/s across the 4.4 m from 912.5 to 916.9, then
+**50 °/s in the next 1.1 m.** The window that matters is roughly **half a metre
+wide, sitting on a knee.**
+
+**It is not speed, and the control that proves it is the lift family.** Lifting
+the throttle sheds speed 98.55 → 95.24 m/s and moves the roll rate by 16,
+non-monotonically. Braking over the same speed span moves it by **279.** Two
+interventions costing the same speed, differing seventeen-fold — so what braking
+does that lifting does not is *move where the car meets the ramp.*
+
+### Two levers, and the door is shut between them
+
+**The free one.** A pair of equal and opposite steer pulses shifts the car
+1.67 m sideways, hands the heading back to within 0.05°, and costs no speed at
+all. It moves `engage_x` by **0.24 m** — a gearing of 0.14 m per metre of shift,
+so reaching 917 would need about **38 m of lateral shift on a lane that is not
+38 m wide.** The lever is real, monotone in both directions and free, and it is
+thirty times too weak.
+
+**The paid one.** Braking reaches the window and destroys the line. Composed
+properly — brake in the seed, steering free to re-aim around it, a hard gate
+requiring the wall be reached — ten seeds over two passes: every seed that kept
+enough brake to move the engagement point was **gated out 48–50 m short of the
+wall**, and the one seed per pass that did reach the wall had spent its brake and
+arrived at roll −147 and −172 against the target of +86.
+
+So inside a 190-tick window the steering cannot recover the ~50 m that the
+required brake costs. **That is a mechanism, not a budget.**
+
+**The open question, for anyone who wants it:** move `engage_x` by 5 m without
+spending the line. The untried candidate is **approach height** — the car meets a
+*rising* curve, so the vertical axis is geometrically the strongest lever and
+nobody has probed it. Separately, the water start is 1.30 s with no upstream
+coupling and has never been searched with a time-varying control; it may simply
+be worth more than any of this.
 
 ## The record's time is mostly retries
 
