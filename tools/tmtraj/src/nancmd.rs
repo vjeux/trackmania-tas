@@ -885,7 +885,7 @@ fn vres_report(t: &[f64], p: &[[f64; 3]], v: &[[f64; 3]]) {
         .map(|k| (k[0].powi(2) + k[1].powi(2) + k[2].powi(2)).sqrt())
         .collect();
     println!("mean speed {:.2} m/s", sp.iter().sum::<f64>() / sp.len() as f64);
-    for (n, mut x) in [("FIRST-ORDER |dp/dt - v0|   ", fo.clone()), ("TRAPEZOID   |dp/dt - v̄|    ", tz.clone()), ("|acceleration|             ", acc.clone())] {
+    for (n, x) in [("FIRST-ORDER |dp/dt - v0|   ", fo.clone()), ("TRAPEZOID   |dp/dt - v̄|    ", tz.clone()), ("|acceleration|             ", acc.clone())] {
         println!(
             "{} median {:8.4}   p90 {:8.4}   p99 {:9.4}   max {:11.4}",
             n,

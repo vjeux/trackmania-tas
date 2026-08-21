@@ -188,8 +188,8 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
     }
     let mut sv: Vec<f64> = steps.iter().map(|s| s.0).collect();
     sv.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p50 = sv[sv.len() / 2];
-    let worst = steps.iter().cloned().fold((0.0, 0i64), |a, b| if b.0 > a.0 { b } else { a });
+    let _p50 = sv[sv.len() / 2];
+    let _worst = steps.iter().cloned().fold((0.0, 0i64), |a, b| if b.0 > a.0 { b } else { a });
     // A RESPAWN IS NOT A TELEPORT. On a Trial map the car is thrown back to
     // its last checkpoint and the engine writes its own speed as 0.0 in that
     // sample -- measured on 286279 at 45.850 s: 10.60 m in 50 ms (212 m/s) with

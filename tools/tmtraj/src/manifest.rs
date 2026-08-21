@@ -435,7 +435,7 @@ pub fn verify(ghost: &str, m: &J) -> (usize, Vec<String>) {
     // either. Failing it instead would make every already-published file look
     // defective and teach people to ignore the gate.
     let reconstructed = m.s("provenance") == Some("RECONSTRUCTED");
-    let mut fail = |o: &mut Vec<String>, b: &mut usize, s: String| {
+    let fail = |o: &mut Vec<String>, b: &mut usize, s: String| {
         *b += 1;
         o.push(format!("FAIL   M-{}", s));
     };
