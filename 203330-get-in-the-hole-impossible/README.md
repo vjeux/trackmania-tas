@@ -36,8 +36,10 @@ finish at z = 1507.
 **Between 6.2 s and 8.5 s you are aiming the cannon.** Everything else is
 already decided:
 
-- Before **2.9 s** steering is disabled — full left, full right and centre all
-  give the identical millisecond.
+- Before **3.65 s** steering does nothing at all — full left, full right and
+  centre all give the identical millisecond. See
+  *[The car ignores you until 3.650](#the-car-ignores-you-until-3650)*; the
+  window is longer than it looks.
 - After the cannon you are ballistic. Steering turns the car but does not move
   it: forcing the wheel anywhere through the descent and touchdown changes the
   finish time by **zero**.
@@ -121,7 +123,7 @@ version is the one worth learning.
 ## Sector by sector
 
 **Start → 6.2 s.** Hold accelerate. Hold left, then right at about 1.6 s.
-Steering does nothing before 2.9 s, so the only input that matters here is the
+Steering does nothing before 3.65 s, so the only input that matters here is the
 throttle.
 
 **6.2 → 11.0 s — the launch, the only thing you really steer.** A handful of
@@ -133,14 +135,54 @@ cross the wall at x ≈ 171, left of the corridor centre, and flat.
 z ≈ 1315 and slide in. There is nothing to do after that — the run is decided
 before you get there, so do not try to save it late.
 
+## The car ignores you until 3.650
+
+**If you watch the video with the input overlay on, the car steers full right at
+2.250 and nothing happens for well over a second. That is not an overlay bug —
+it is the map.**
+
+The overlay is drawn from the filmed ghost's own input chunk, and the car's
+*applied* steering, recorded separately in its telemetry, agrees with it edge for
+edge across the whole run to within 20 ms — under half a telemetry sample and
+under one video frame. The input really is applied at 2.250. Then:
+
+| | race time |
+|---|---|
+| full right lock goes down | **2.250** |
+| the car's own steer field shows it applied | 2.300 |
+| first rotation (`|Δyaw| > 0.001 rad`) | **3.650** |
+| first lateral translation | **3.700** |
+
+**1.350 s of full lock before the car so much as rotates**, and z sits at
+239.99–240.00 the entire time while speed climbs from 553 to 819 km/h.
+
+**It is not merely that the car does not respond — the input has no authority at
+all**, and the cleanest proof is two real runs rather than a simulation. The
+human world record holds the wheel at centre through this whole window; our TAS
+holds it at full right lock from 2.270. Their positions:
+
+| race | 2.250 | 3.600 | 3.650 | 3.700 | 3.750 |
+|---|---|---|---|---|---|
+| human WR, centred | x 1418.82, z 239.996 | x 1138.11, z 239.983 | 239.978 | 239.853 | 239.319 |
+| our TAS, full right | x 1418.82, z 239.996 | x 1138.10, z 239.983 | 239.978 | 239.853 | 239.319 |
+
+**One car at full lock, one at centre, identical to three decimals for 1.4 s.**
+
+The car loses ground contact from 3.000 to 3.300 and lands at 3.350 — it is
+jumping a gap — and steering returns 0.300 s after the landing. So a driver has
+nothing to do here but hold the throttle, and nothing they can do wrong.
+
+*An earlier version of this page put the lockout at 2.90 s. That number
+understated it by 0.750 s and did not cover what the video plainly shows.*
+
 ## How forgiving it is
 
 - **The brake is load-bearing, and it is the counter-intuitive part.** Holding it
   from 6.53 s through the cannon is what settles the car; removing it entirely
   does not finish the map. Its timing tolerates about 70 ms, so it is a hold you
   can learn rather than a frame-perfect tap.
-- **Steering before 2.90 s is free** — you cannot get it wrong, because the map
-  will not let you steer.
+- **Steering before 3.65 s is free** — you cannot get it wrong, because the car
+  will not act on it. This is measured, not assumed: see below.
 - **After the hole there is no authority at all.** Every forced input over the
   whole landing and slide changes the finish by nothing. That cuts both ways: you
   cannot lose the run there either.
