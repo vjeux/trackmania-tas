@@ -171,24 +171,27 @@ whole window; our TAS holds it at full right lock from 2.270. Their positions:
 ### There is one live tenth of a second inside the dead window, and it decides the run
 
 Overwriting **exactly one tick** at a time and re-simulating — 561 arms across
-race −1.500 to 4.090 — gives not one boundary but four:
+race −1.500 to 4.090 — gives not one boundary but four, and they line up with
+where the car is:
 
-| race | | |
+| race | steering | where the car is |
 |---|---|---|
-| −1.500 … 2.970 | **inert** | all 448 ticks return exactly 13.984 |
-| **2.980 … 3.330** | **decisive** | 36 ticks — centre the wheel on any one and the run **DNFs** |
-| 3.340 … 3.620 | **inert** | 29 ticks, identical again |
-| 3.630 → | live | steering returns for good |
+| −1.500 … 2.970 | **inert** — all 448 ticks return exactly 13.984 | on the turbo road, x 1520 → 1285 |
+| **2.980 … 3.330** | **decisive** — centre the wheel on any one of the 36 and the run **DNFs** | airborne over the 8 m drop |
+| 3.340 … 3.620 | **inert** again, 29 ticks | landed on the snow road, x 1183 → 1132 |
+| 3.630 → | live | still on the snow road, x < 1130 |
 
-Now put the car's own ground-contact flag beside it: **True at 2.950, False from
-3.000 to 3.300, True again at 3.350.** The live window *is* the airborne window,
-to the tick.
+The launch straight is seven turbo blocks at y = 66, and it simply **ends** at
+x = 1296: the next surface is snow road **8 m lower**. The car is at x = 1283 at
+race 2.950 and airborne by 3.000, landing at x ≈ 1183. So the live window is
+the flight over that drop — and while the car is in the air, every single tick
+of steering is load-bearing.
 
-The road here is a `SpecialNoSteering` block, and it suppresses the **ground**
-steering channel — but only while the wheels are on it. The car jumps a gap at
-3.000, and for those 0.35 s in the air the axis is live as **air control**, where
-every tick of it is load-bearing. It lands at 3.350 back on the same road, goes
-inert for another 0.29 s, and only runs off the end of that road at 3.630.
+Why the road disables steering in the first place is measured but not yet
+attributed. "Inert on the ground, live in the air" fits the first three bands
+and fails on the fourth: authority returns at 3.630 with the wheels still down
+and no block boundary there. The bands above are what the oracle says; the
+mechanism behind them is honestly still open.
 
 So the honest statement is two statements, and they have different answers:
 
