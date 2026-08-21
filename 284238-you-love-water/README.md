@@ -73,8 +73,39 @@ speed from one that throws it away, and checkpoint speeds decay
 52.8 → 45.8 → 41.1 → 37.4 m/s as the cycles go on because each bad contact feeds
 the next.
 
-That position comes from lateral velocity built up on the **flat before the
-kicker**, and the flat is what copies 1–3 do not have:
+**The obstacle is a surface to be ridden, not a gap to be jumped.** The human
+crosses the ice kicker and the wall curve with his wheels **loaded the whole
+way**, rolled 90° onto the car's side. Copies 1–3 launch our car off the kicker
+instead, and from the instant the suspension fully unloads its angular velocity
+is exactly constant and every input is inert — so the wall contact is decided by
+the rotation at the ramp exit and by nothing afterwards.
+
+Body-frame angular velocity from the ramp exit, in °/s:
+
+| | exit | +0.10 s | +0.20 s | +0.30 s | +0.50 s |
+|---|---|---|---|---|---|
+| the human's 46.112 (works) | 222 | 150 | 92 | 84 | 68 |
+| ours, copy 0 (works) | 275 | 142 | 81 | 57 | 46 |
+| ours, copy 1 (fails) | **284.1** | **284.1** | **284.1** | **284.1** | **284.1** |
+| his inputs grafted, copy 1 | **267.7** | **267.7** | **267.7** | **267.7** | **267.7** |
+
+Identical to every printed digit for 40 consecutive ticks: a free rigid body.
+His dampers read 0.039 at the first no-contact sample and extend *gradually* to
+0.180 over 450 ms, never reaching full extension — he never leaves the surface.
+
+The decisive test: grafting the human's own steer, gas and brake from the kicker
+onto a launch matched to his state (2.61 m, 98.31 against 98.10 m/s, slip/pitch/
+roll within 1.5°) gives roll at the wall **−150 against his +86**, flat across a
+±60 ms phase sweep. **This is not a missing input sequence; it is a missing
+state, and the state is angular velocity.**
+
+Steering forced over the true flight window returns bit-identical state at the
+wall for −1, −0.3, +0.3 and +1 — on copy 1 *and* on copy 0 (0.6° across the full
+range). An earlier 28.5° figure came from a window that mistakenly included
+about 20 ticks of ramp.
+
+Lateral position on the flat before the kicker is still what separates the
+cycles, and copies 1–3 do not have that flat:
 
 | | time on the flat | sideways speed achieved |
 |---|---|---|
@@ -88,7 +119,10 @@ car cannot build the sideways speed the wall contact wants.
 It is **not** grip (full lock buys 13.4 m/s of sideways speed on this lane), not
 speed (the kicker is crossed at 97.2 m/s on the attempt that fails and 90.9 on
 the standing start that works), and not the six boost pads on the lane (they sit on the flat
-*after* the aim is decided).
+*after* the aim is decided). It is also **not** the kicker's height: lowering
+copy 0's kicker by 1.00 m in a matched A/B — one block's f32 `y`, so the car
+arrives in a bit-identical state — leaves the roll profile essentially unchanged
+(+105.2 against +108.4, both locking at +89.5 and driving the wall).
 
 The one encouraging measurement: a standing start off copy 0 flies the good line
 to within 2–7 m of it, point for point. The line is not exotic and this car can
