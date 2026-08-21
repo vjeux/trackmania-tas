@@ -6,6 +6,36 @@ and arrive from below still accelerating.**
 
 **Spring 2023 - 24 (2-UP)** — TAS **47.483** (−4.119) | AT 51.602 | WR 47.838 by uelen.
 
+https://github.com/user-attachments/assets/337947de-b504-4b5d-a829-4170a43944bd
+
+**Our run beside the world record, and the striking thing is how little there is
+to see.** Left is our 47.483, right is uelen.'s 47.838; the two flights are
+nearly the same shape, because **the shape is theirs.** They found the family and
+we are flying it a metre lower and slightly faster. That is the honest picture of
+this result: 0.355 s on top of somebody else's idea.
+
+The clip below is the one that shows what the idea *was*.
+
+**Spring 2023 - 24 (2-UP)** — our old flight **49.778** against our new **47.483**
+
+https://github.com/user-attachments/assets/ddbc00c2-414d-4eed-be8f-d7a36b9cce28
+
+**Left is what we used to do; right is what we do now.** Same map, same launcher,
+same car — and from about 42 s the left pane climbs away above the structures
+while the right one stays low and flat. **At the same point down the flight our
+old arc is up to 88.2 m higher.** Our old run reaches z = 800 at **46.30 s**;
+the new one is there at **43.50 s**. That is 2.80 s spent going up and coming
+back down, and it bought nothing — it is the whole 1.940 s the two humans found,
+plus the 0.355 we added on top.
+
+A note on the framing, because it took three attempts to get an honest one: a
+*simultaneous* two-car replay of this map cannot show any of it. Matched by race
+time the cars are up to **305 m apart along the track** and only 46 m apart
+vertically — the faster run is simply further ahead, and no camera holds both.
+Matched by position down the flight the horizontal gap is essentially zero and
+the vertical gap is the entire story. Two separate renders, side by side, is the
+only framing that puts the two shapes in front of you.
+
 > ### The record on this map was taken from us, and the technique is theirs
 >
 > On 2026-08-19 **uelen.** drove **47.838** and **JuntaoTM** **48.685** — 1.940
