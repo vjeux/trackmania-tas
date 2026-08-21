@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 | TAS, keyboard, 19 inputs | 13.985 | −0.010 | −0.033 | 19 |
 | TAS, unconstrained | 13.984 | −0.011 | −0.034 | 424 events, 192 steer values |
 | Author time | 13.995 | — | −0.023 | — |
-| Human WR — in-.- | 14.018 | +0.023 | — | 46 |
+| Human WR — in-.- | 13.990 | +0.023 | — | 46 |
 
 TMX map [203330](https://trackmania.exchange/maps/203330) · author
 **EvenOliveTM.exe** · **only 5 recorded runs**.

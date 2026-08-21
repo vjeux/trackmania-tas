@@ -5,13 +5,13 @@ lock for all 4.7 seconds of sector 9. That is the one place nobody has looked:
 easing fractionally off that lock is worth 0.171 to a machine, and on a keyboard
 a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
-**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.446 by burntbagels
+**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
 https://github.com/user-attachments/assets/cb6deb78-4e12-4de0-b9f3-4996eb2d41ef
 
 Both cars are on screen: our keyboard run against Ssnake01's rank-2 lap, sixteen milliseconds apart over forty-nine seconds.
 
-**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.446 by burntbagels
+**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
 https://github.com/user-attachments/assets/eb3a201a-49e9-4511-8daf-04640f5e64c0
 
@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/eb3a201a-49e9-4511-8daf-04640f5e64c0
 | TAS, earlier | 49.278 | −0.004 | −0.168 | analog |
 | **keyboard** | **49.475** | +0.193 | +0.029 | 3 steer values, 59 changes |
 | Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
-| Human WR — burntbagels | 49.446 | +0.164 | — | analog, 294 steer changes |
+| Human WR — Ssnake01 | 49.291 | +0.164 | — | analog, 294 steer changes |
 | Ssnake01, rank 2 | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**

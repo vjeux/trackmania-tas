@@ -4,7 +4,7 @@
 the fast runs present it, and stop chasing the approach — at the final contact
 every radian of roll away from the fast presentation costs about 1.8 s.**
 
-**bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.169 by Schmaniol
+**bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.059 by Max_heyu
 
 https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
 
@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
 | TAS 10.859 | 10.859 | +0.091 | −0.310 |
 | Keyboard 10.897 | 10.897 | +0.129 | −0.272 |
 | Author time | 10.768 | — | −0.401 |
-| Human WR — Schmaniol | 11.169 | +0.401 | — |
+| Human WR — Max_heyu | 11.059 | +0.401 | — |
 | Human rank 2 | 11.189 | +0.421 | +0.020 |
 
 TMX map [267859](https://trackmania.exchange/maps/267859) · author **Bald_tm /

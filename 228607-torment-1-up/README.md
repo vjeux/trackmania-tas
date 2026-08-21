@@ -5,11 +5,11 @@ and on this map, unlike its low-finish twin, you must release the lock about
 200 ms after it fires and then counter-steer, a touch early rather than a touch
 late.**
 
-**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.902 by Falco_TM_
+**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
-Single car: this map's human record is 24.902, nearly five seconds slower, so a
+Single car: this map's human record is 24.512, over four and a half seconds slower, so a
 side-by-side would show one car finishing while the other is still most of a
 straight behind. Two more of our tapes are filmed for comparison —
 [19.927](https://github.com/user-attachments/assets/dab645ee-4ec9-4958-b894-b24373ff4c67)
@@ -23,10 +23,10 @@ which is the one to copy if you are driving it yourself.
 | **the forgiving one** — [`FORGIVING_19948`](replays/FORGIVING_19948.Ghost.Gbx) | 19.948 | −0.310 | −4.954 |
 | low-input, 16 steer values | 20.070 | −0.188 | −4.832 |
 | Author time (never beaten by a human) | 20.258 | — | −4.644 |
-| Human WR — Falco_TM_ | 24.902 | +4.644 | — |
+| Human WR — surms41 | 24.512 | +4.644 | — |
 
 TMX map [228607](https://trackmania.exchange/maps/228607) · author
-**Bernkastel_.**, the title crediting **Emelius.** · **23 recorded runs**.
+**Bernkastel_.**, the title crediting **Emelius.** · **27 recorded runs**.
 
 This map is the same map as [Torment (1-DOWN)](../228811-torment-1-down) with the
 finish moved 64 m higher, and it is a remix of an official campaign map that
@@ -42,7 +42,7 @@ and the game fires the car along its own nose: **340 → 769 km/h in a single
 contact**. That one contact is the whole 4.644 s between the author and the
 board.
 
-**Not one of the 23 recorded runs on this board ever fires it.** They all climb
+**Not one of the 27 recorded runs on this board ever fires it.** They all climb
 the end wall to y ≈ 142–147 at 373–497 km/h and fly back to the line. It is not
 that the feature is hidden — every finisher drives straight over it, because it
 sits inside a checkpoint gate everybody has to pass through.

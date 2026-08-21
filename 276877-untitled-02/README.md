@@ -15,7 +15,7 @@ is spent airborne, riding the lattice's own launches rather than driving it.**
 TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 **DugonGOD** · **0 recorded runs**.
 
-**untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | no human has ever recorded a time here
+**untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
 
 https://github.com/user-attachments/assets/02596352-d4dd-4c96-a613-f0d6c1b7fab3
 
