@@ -1,0 +1,56 @@
+{
+  "schema": "tm-ghost-provenance/1",
+  "written_unix": "1787295357",
+  "file": "kb20.Ghost.Gbx",
+  "md5": "93cfe10ec428fa749bb75a5c0471ba19",
+  "bytes": 6826,
+  "map_id": "279209",
+  "declared_time_ms": 6595,
+  "oracle_time_ms": 6595,
+  "oracle_checkpoints": null,
+  "container_donor": null,
+  "source_inputs": null,
+  "engine_run": {
+    "note": "DECLARED-TIME REPAIR ONLY. The published file's telemetry is untouched and bit-identical (verified by tmtraj intg pair). Its container declared 6608 ms -- the map's human record -- at six u32 sites; all six rewritten to this file's own validated 6595 ms. Identity was ALREADY ours before the repair: Login TAS, no account id, no skin path string, so d2354b8's identity pass had reached this file and only the time field was left. Found by the u32 declared-time census, which reads the field directly; the server's IsValid could not see it because a header claiming a SLOWER time than the run achieves is accepted.",
+    "host": "73939.od.fbinfra.net"
+  },
+  "telemetry_coverage": null,
+  "fields_regenerated": [
+    "none"
+  ],
+  "fields_inherited": [
+    "container"
+  ],
+  "tools": [
+    {
+      "tool": "census",
+      "args": "own 6595 x6, foreign 6608 x0 after repair"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/home/vjeux/intg/href2/279209__r001_6604.Ghost.Gbx",
+        "md5": "db366c310eec43dae61fe8a50758b16b"
+      },
+      {
+        "path": "/home/vjeux/intg/href3/279209_r01_6601_uelen._.Ghost.Gbx",
+        "md5": "6ceda261d11826b1ca5fee2621b19643"
+      },
+      {
+        "path": "/home/vjeux/intg/href3/279209_r02_6604_jujumasterr_.Ghost.Gbx",
+        "md5": "db366c310eec43dae61fe8a50758b16b"
+      },
+      {
+        "path": "/home/vjeux/intg/href3/279209_r03_6608_manama314_.Ghost.Gbx",
+        "md5": "7079f710fc51b26b7884293461622895"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/_records/ghosts/279209_6601_uelen._.Ghost.Gbx",
+        "md5": "6ceda261d11826b1ca5fee2621b19643"
+      }
+    ],
+    "limits": []
+  }
+}

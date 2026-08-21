@@ -1,0 +1,48 @@
+{
+  "schema": "tm-ghost-provenance/1",
+  "written_unix": "1787295357",
+  "file": "WIP_pad5.Ghost.Gbx",
+  "md5": "304a6251c034cf5e1fbaee18b08e6ea7",
+  "bytes": 17852,
+  "map_id": "191465",
+  "declared_time_ms": 13074,
+  "oracle_time_ms": 13074,
+  "oracle_checkpoints": null,
+  "container_donor": null,
+  "source_inputs": null,
+  "engine_run": {
+    "note": "DECLARED-TIME REPAIR ONLY. The published file's telemetry is untouched and bit-identical (verified by tmtraj intg pair). Its container declared 13081 ms -- the map's human record -- at six u32 sites; all six rewritten to this file's own validated 13074 ms. Identity was ALREADY ours before the repair: Login TAS, no account id, no skin path string, so d2354b8's identity pass had reached this file and only the time field was left. Found by the u32 declared-time census, which reads the field directly; the server's IsValid could not see it because a header claiming a SLOWER time than the run achieves is accepted.",
+    "host": "73939.od.fbinfra.net"
+  },
+  "telemetry_coverage": null,
+  "fields_regenerated": [
+    "none"
+  ],
+  "fields_inherited": [
+    "container"
+  ],
+  "tools": [
+    {
+      "tool": "census",
+      "args": "own 13074 x6, foreign 13081 x0 after repair"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/home/vjeux/intg/href/191465__human_WR_13081.Ghost.Gbx",
+        "md5": "0427951754f2ff7c381de8e2cc142cb6"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/191465/human_WR_13081.Ghost.Gbx",
+        "md5": "0427951754f2ff7c381de8e2cc142cb6"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/_records/ghosts/191465_13081_in-.-_.Ghost.Gbx",
+        "md5": "0427951754f2ff7c381de8e2cc142cb6"
+      }
+    ],
+    "limits": []
+  }
+}

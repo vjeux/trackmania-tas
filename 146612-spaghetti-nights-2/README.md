@@ -204,3 +204,25 @@ guide for this map is not written yet.
 | `replays/KEYBOARD_39996_v3.Ghost.Gbx` | earlier keyboard lap, 119 presses |
 | `replays/JUMP_cp5_32702_v1.Ghost.Gbx` | the angled ramp jump — reaches the last checkpoint 1.128 early and never finishes |
 | `inputs/BEST_39961_v3.tick.csv` · `inputs/KEYBOARD_39996_v3.tick.csv` | those two laps as readable input scripts |
+
+## A note on `replays/JUMP_cp5_32702_v1.Ghost.Gbx`
+
+**That file does not finish the map.** Put through the game's own validator it
+returns *"wrong simu, but reached some checkpoints (5 out of 6)"* — it reaches
+CP5 and never crosses the line, so **it has no validated time of its own.** It is
+kept because the CP5 arrival is the interesting part of it, not because it is a
+lap.
+
+Its header declares **40.226** — jujumasterr's human world record, inherited from
+the carrier ghost the tape was built inside. That is left in place deliberately.
+The obvious tidy-up is to zero the field, and it is worse than leaving it: **zero
+is a value, not an absence**, so a zeroed file reads as "declares 0.000" to every
+tool we own, which trades a wrong claim for an unreadable one. Writing 32.702 in
+would be worse still — asserting a time the game refuses to certify.
+
+The general point, since this file is the only one of its kind in the repo:
+**a file that fails validation is exactly the one nobody re-checks.** Every other
+tape carrying a foreign declared time validated cleanly, so each was caught by
+comparing its header against its own validated time. This one has no own time to
+compare against, so that check cannot run at all — it needs its own verdict,
+`NO-OWN-TIME`: not clean, not refused, **not comparable**.
