@@ -1345,3 +1345,52 @@ shape worth stating rather than smoothing over.
 > A margin and a deficit are the same number with a different sign, and the
 > caption format puts that sign next to a person's name. **Publish the sign from
 > the live board, never from a recollection.**
+
+### Two independent render-cost mechanisms, and the worst file in the corpus
+
+Computing `last_sample_ms` for all 174 files produces an ordering **nothing like**
+the span-based list. Ten files carry more than 2 s of excess over their own time:
+
+| map | file | block end | excess |
+|---|---|---|---|
+| **186935** | **`CUT_795034`** | **2575.150** | **1780 s** |
+| 286279 | `AUTHOR_AT_ghost_from_map…DO_NOT_PUBLISH` | 441.000 | 441 s |
+| 238835 | `TAS_239133` | 462.950 | 224 s |
+| 286279 | `AUTHORCUT_220391` | 441.000 | 221 s |
+| 286279 | `AUTHORMIN_831ev_354781` | 441.000 | 86 s |
+| 191465 | `WIP_pad5`, `WIP_keyboard` | 13.050 | 13 s |
+| 146612 | `SEGMENT_cp5_32702…DO_NOT_PUBLISH` | 40.200 | 8 s |
+| 279209 | `kb_gasfull`, `kb20` | 6.600 | 7 s |
+
+**`186935/CUT_795034` is the worst file we have** — a 43-minute block end, roughly
+**20 hours of rendering** at the measured ~28×. It has **one car entity**, it is
+**not in the 19**, and it is **referenced from a published page's file table**. It
+would have passed every check that existed before this rule.
+
+**And the 19 turns out not to be the render-cost class at all.** 279218's
+`KEYBOARD_5350` — the file that actually rendered for 19 minutes — has a
+**5.350 s** block end on its own `Ghost:TAS` track. Its cost came from the
+*second* track, the `SceneryEvents` one at 566.08, produced by the extra entity
+groups.
+
+> **Two independent mechanisms, barely overlapping:** extra entity groups give a
+> second long track (the 19, measured); a late last sample gives a long ghost
+> track (these 10, predicted). **A blocklist needs both columns.**
+
+165922's nine report a block end of 39.700 with **zero car entities** — a
+24-second excess on files with no run in them at all. Listed separately; they are
+still the pre-repair copies.
+
+### "Settled" withdrawn by its own author
+
+The last-sample rule was reported as *"settled … five files, no import needed"*.
+Withdrawn the same hour:
+
+> **Five agreements is a good fit, not a settlement** — and one of the five was
+> taken from another arm's sweep rather than measured directly.
+
+Honest status: the rule fits every observation anyone has, and it is the only one
+of the three candidates that fits the two edited files. The cheapest falsifier is
+`186935/CUT_795034` — if the rule holds, its import shows a 2575-second block end,
+which is also the single most valuable thing to know before that map is ever
+filmed.
