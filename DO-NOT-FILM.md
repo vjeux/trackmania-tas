@@ -1288,3 +1288,60 @@ Others predicted, all one-car-entity so no second-track confound: 126859's
 **The render-cost class is therefore "last checkpoint ≫ own time", not the 19** —
 which is the second-track class, a different set. On the current tree the
 render-cost class is `TAS_239133` alone.
+
+### What the render's block end actually is: the last sample's TIMESTAMP
+
+Two rules were proposed tonight and both were wrong, each refuted by a case the
+third explains:
+
+```
+file                    samples  last sample t   (n-1)*50   lastCP    observed
+TAS_239133                9114       462950        455650   462982     462.95
+TAS_347003_noretry_v4     6891       347000        344500   347003     347.00
+KEYBOARD_24164             484        24150         24150    24342      24.15
+KEYBOARD_5352_11events     108         5350          5350     5352       5.35
+TAS_19907                  401        20000         20000    20034      20.00
+```
+
+**The last sample's timestamp fits all five exactly.**
+
+- The **sample count** rule fails on the edited files: 9114 samples, last one at
+  462950, because **a cut removes samples from the middle and leaves the
+  timeline**. `(n−1)×50` equals the last timestamp only when there are no gaps.
+- The **last checkpoint** rule fails on `KEYBOARD_24164` — 24.342 predicted,
+  24.15 observed.
+
+And the two failures are one phenomenon from opposite ends: on an unedited file
+the last sample *is* `(n−1)×50` and sits just before the finish checkpoint, so all
+three rules agree. **Only edited files separate them, and both go to the
+timestamp.**
+
+> **A rule that fits every case you have may be fitted to cases that could not
+> have refuted it.** Every clean file confirmed all three hypotheses equally.
+
+This also dissolves a hypothesis that sounded like a bigger finding — that our
+parser and the game disagree about sample count. **They do not.** Both read 9114;
+the game is not counting at all.
+
+The checkpoint correlation was real and was an artefact: edited tapes were cut
+*at* checkpoints, so the last surviving sample lands on one.
+
+What survives from the original observation, and it was the load-bearing part:
+**the block end is neither the span nor the declared time** — and now it has a
+positive answer instead of a candidate. The render-cost predictor is
+`last_sample_ms`, computable for all 174 files with no import.
+
+### The sign error
+
+208024's 18.942 was relayed twice as "0.136 from the author time" and then written
+as **(−0.136)** in a draft caption. The author time is **18.806**, confirmed
+against TMX: the run is **0.136 SLOWER**, and the map is not beaten.
+
+The board is three runs, all within two days, **the record a day old**:
+deeperjungle 21.105 (2026-08-20), lqpzz 23.689, Herrlille 25.681. So the run sits
+2.163 inside the human record while still short of the author time — an unusual
+shape worth stating rather than smoothing over.
+
+> A margin and a deficit are the same number with a different sign, and the
+> caption format puts that sign next to a person's name. **Publish the sign from
+> the live board, never from a recollection.**
