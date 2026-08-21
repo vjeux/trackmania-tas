@@ -252,7 +252,7 @@ resize();
 const STRIP_H = 46;
 const judgeY = () => H - 140 - STRIP_H;
 const laneGeom = () => {
-  const unit = Math.min(190, Math.max(76, (W - 60) / LANE_W));
+  const unit = Math.min(300, Math.max(76, (W - 90) / LANE_W));
   const total = unit * LANE_W;
   const x0 = (W - total) / 2;
   const xs = []; let x = x0;
@@ -456,7 +456,9 @@ function draw(){
     }
   }
 
-  // notes
+  // notes — clipped at the judgement line, so nothing is drawn over the keys
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0 - 60, 0, total + 120, jy + 2); ctx.clip();
   for (const n of NOTES){
     if (!S.includeCountdown && n.end <= 0) continue;
     const top = yFor(n.end), bot = yFor(n.start);
@@ -494,6 +496,7 @@ function draw(){
     }
     ctx.globalAlpha = 1;
   }
+  ctx.restore();
 
   // judgement bar
   ctx.fillStyle = 'rgba(255,255,255,.10)'; ctx.fillRect(x0, jy - 2, total, 4);

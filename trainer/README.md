@@ -5,9 +5,9 @@ network.** Save it and double-click it.
 
 It is a falling-note rhythm game (DDR / Guitar Hero) built from the **real input
 tape** of the keyboard 6.323 on
-[unluckE - get jiggy with it](../145875-unlucke-get-jiggy-with-it): four lanes
-for the four controls, notes that are *held durations* rather than points, and
-judgement in real milliseconds against the tape.
+[unluckE - get jiggy with it](../145875-unlucke-get-jiggy-with-it): three lanes,
+notes that are *held durations* rather than points, and judgement in real
+milliseconds against the tape.
 
 The point of the page: **6.323 is 23 steer events on three values and one brake
 tap. A person could learn it.** This is the tool for finding out.
@@ -24,11 +24,48 @@ is measured off those rows when you open it.
 
 ## Playing it
 
-`←` `↑` `↓` `→` (or `A W S D`) are left / gas / brake / right.
+`←` `↓` `→` (or `A S D`) are the three lanes: left, brake, right.
+`↑` (or `W`) is gas — hold it the whole time.
 `Enter` play · `R` retry · `P` pause · `[` `]` speed.
 
+**Gas is not a lane.** The tape puts it down at −0.270 and never lifts it, so a
+gas lane would be one solid bar carrying no information and a quarter of the
+screen saying "hold this". It is a permanently-lit bar under the keys instead,
+and it is *checked continuously* rather than timed: hold it and nothing happens,
+come off it during the race — or never press it at all — and the bar goes red
+and the results say where. **It is never scored on timing.** Its only press is
+at −0.270, during the countdown, and countdown timing is exactly the thing this
+page refuses to teach.
+
+The brake keeps a lane, narrow, even though it has one note in the whole run:
+it is a real key under another finger *while left stays down*, the only moment
+in the run your hands do two things at once. The width it gives up goes to the
+two steer lanes, which is where the run is genuinely hard to read.
+
+### The timing windows
+
+Late is the roomy side, because you react to a note arriving and never before
+it, and a release gets about double the room a press does — letting go long is
+a milder mistake, and judging a 10 ms flick's release as strictly as its press
+is simply unplayable.
+
+| | perfect | great | good | late | still a hit |
+|---|---|---|---|---|---|
+| **press** | −25 / +25 | −45 / +70 | −80 / +140 | −130 / +240 | −200 / +420 |
+| **release** | −45 / +45 | −85 / +120 | −140 / +220 | −200 / +360 | −260 / +560 |
+
+Anything inside *still a hit* is a late **hit** — never a miss, and never an
+extra. **Extra** means one thing only: a key pressed where the tape has no note
+at all. One input is never counted as two errors.
+
+Matching is by **sequence, not by nearest note**. Nearest cannot work here: the
+presses at 2.360 and 2.380 are 20 ms apart, so a 12 ms late press on the first
+would be stolen by the second and the cluster would unravel. Each input is
+credited to the earliest edge in its lane it could legitimately be a hit on, so
+playing slightly behind the beat stays a sequence.
+
 You are judged on **edges, not notes**: every held note is a press *and* a
-release, 28 judged edges across the race. That is what makes the 10 ms flick at
+release, 27 judged edges across the race. That is what makes the 10 ms flick at
 2.360 scoreable at all — as a note it is invisible, as two edges 10 ms apart it
 is the hardest thing on the page.
 
@@ -44,7 +81,7 @@ is the hardest thing on the page.
 - **Countdown fidget is hidden by default.** The tape carries 23 input changes
   *before* the line while the car is locked; only the state carried across
   0.000 matters, and showing the rest would teach a lie. The toggle exposes all
-  50 edges if you want them.
+  43 edges if you want them.
 
 ## What the tape says
 

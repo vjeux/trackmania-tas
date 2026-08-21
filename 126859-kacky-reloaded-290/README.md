@@ -4,7 +4,7 @@
 through it, hit the finish tower a car's height lower, and the drop into the
 gate is a third of a second shorter.**
 
-Video — both cars at once: our TAS **23.416** against the human record **24.342**.
+**Kacky Reloaded #290** — TAS **23.416** (−0.646) vs WR by zetos. 24.342 | AT = 24.062
 
 https://github.com/user-attachments/assets/2e7527fc-121b-4682-b83a-35e91ae04ccf
 

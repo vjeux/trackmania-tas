@@ -15,7 +15,9 @@ reach a finish that sits at the bottom of the lattice.**
 TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 **DugonGOD** · **0 recorded runs** · map uid `9wv8HirGqNFCJsFeVJg6ErKYH6b`.
 
-Video of the run, with the inputs overlaid:
+**untitled 01** — TAS **12.759** (−11.080) | AT = 23.839 | no human has ever recorded a time here
+
+With the inputs overlaid:
 
 https://github.com/user-attachments/assets/d7912e54-4a9a-49be-b3f8-355a9f26eed1
 
