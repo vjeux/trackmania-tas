@@ -1,18 +1,41 @@
 # Spring 2023 - 24 (2-UP)
 
+> ### ⚠️ This page is out of date and is being rewritten
+>
+> **On 2026-08-19 two humans found a flight family we had never searched, and
+> drove it 1.940 s faster than our best run.** uelen. set **47.838** and
+> JuntaoTM **48.685**, against the 49.778 below. The world record on this page —
+> JuntaoTM's 52.202 — is four and a half seconds retired, and the author time is
+> no longer the interesting number on this map.
+>
+> **What they changed is the last sector.** The technique described below throws
+> the car at the sky, overshoots the finish gate by 60–100 m and dives back down
+> onto it. Theirs never goes above the gate at all: a flat, fully-powered,
+> continuously-accelerating climb that arrives from below **still climbing**, at
+> its own peak speed. That sector goes from 11.6–12.2 s to **8.2–8.9 s**.
+>
+> Everything below is a correct account of the *old* family, and the brake-tap
+> finding is real within it — our own search then spent 175 000 evaluations
+> inside the flight window and found nothing, because no perturbation of a high
+> arc reaches a flat one. Re-seeded inside their family, the same searcher found
+> four improvements in 34 000. **Full rewrite, with the new numbers and the
+> credit where it belongs, is in progress.**
+
 **One 10 ms brake tap, six tenths of a second into the reactor climb, is worth
 0.730 on a keyboard run — three quarters of everything on this page.**
 
-| run | time | vs author time | vs human WR | device |
+| run | time | vs author time | vs the record of the day | device |
 |---|---|---|---|---|
 | **TAS, unconstrained** | **49.778** | **−1.824** | **−2.424** | analog |
 | **keyboard** | **51.062** | **−0.540** | **−1.140** | **3 values** |
 | **a human keyboard run + seven actions** | **51.575** | **−0.027** | **−0.627** | **keyboard** |
 | Author time | 51.602 | — | −0.600 | — |
-| Human WR — JuntaoTM | 52.202 | +0.600 | — | pad |
+| JuntaoTM, the record when this was written | 52.202 | +0.600 | — | pad |
+| **uelen., the record now** | **47.838** | **−3.764** | — | — |
+| **JuntaoTM, now** | **48.685** | **−2.917** | — | — |
 
 TMX map [199100](https://trackmania.exchange/maps/199100) · author **.ar** ·
-tags **Reactor, Plastic, Altered Nadeo** · **6 recorded runs**.
+tags **Reactor, Plastic, Altered Nadeo** · **8 recorded runs**.
 
 This is an Altered Nadeo copy of **Spring 2023 - 24**, with the geometry and the
 surfaces preserved, so the 200 000 people who drive the official map are driving
