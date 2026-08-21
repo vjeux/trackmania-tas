@@ -4,23 +4,28 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
-**Video: withdrawn, and this map cannot currently be filmed at all.** The
-side-by-side clip published here showed a second car clipping through the ground
-and rotating wrongly. Two separate faults sit behind it.
+**Video — both cars at once:** <https://pxl.cl/cvB8K> — our keyboard **6.323**
+against the human world record **6.346** (xeap-.-).
 
-The file used as the opponent was `HUMANWR_plus_early_flick_6342`, which is
-**not a human recording** — it is the world record's tape with one input
-changed, a run of ours. It belongs in the table below; it does not belong in a
-clip captioned "against the human world record". The caption also gave the
-human's time as 6.342; the real world record is **xeap-.- at 6.346**.
+*An earlier clip on this page was withdrawn twice over, and both corrections are
+worth keeping.* The first version used `HUMANWR_plus_early_flick_6342` as the
+opponent — which is **not a human recording**: it is the world record's tape
+with one input changed, a run of ours. It belongs in the table below, not in a
+clip captioned "against the human world record", and the caption also gave the
+human's time as 6.342 when the real record is 6.346.
 
-But the deeper fault is not ours. Every recording on this map — all six of our
-tapes **and Nadeo's own downloaded rank-1 ghost** — reports the same dead wheel
-telemetry: **31.5 % ground contact and zero usable rolling steps over a 495 m
-path**. A car that drove half a kilometre on a road cannot have wheels that
-never turn. That is a property of this map's recordings rather than of anything
-we generated, and until it is understood **no clip of this map, by us or from a
-download, will render correctly.**
+The second correction was ours to make against ourselves. This page then claimed
+that every recording of this map, **including Nadeo's own download**, carried
+dead wheel telemetry — "zero usable rolling steps over a 495 m path". That was
+false, and the fault was in our checker: it only measured samples classed
+`Supported`, and the car on this map descends for its entire run, so it had
+nothing to measure and reported the blindness as a defect. Measured directly,
+the world record's ghost carries **122 distinct wheel values across 127 samples**.
+Nothing was ever missing.
+
+The rule that came out of it, now enforced in the render gate: **absence of
+signal is not evidence of correctness — and it is not evidence of a fault
+either.** A check that cannot see tells you nothing in either direction.
 
 The runs and the times are unaffected: 6.322, 6.323 and 6.342 all validate on
 the untouched map.

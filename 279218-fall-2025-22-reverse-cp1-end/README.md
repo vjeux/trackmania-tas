@@ -8,6 +8,8 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
+**Video:** <https://pxl.cl/cvzZ5> — our keyboard **5.352**, eleven input events. Single car: against the human 5.355 the cars stay within 0.42 m for the whole run.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS, start trick** | **5.345** | **−0.005** | **−0.010** | analog |

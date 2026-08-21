@@ -5,6 +5,8 @@ the nose goes light, lift off the throttle for 40 ms and get back on it: that is
 worth 0.012, it is the easiest input in the lap to get right, and nobody in a
 field of 334 does it.**
 
+**Video:** <https://pxl.cl/cvzXT> — our TAS **6.578**. Single car: against the human 6.604 the maximum separation is 1.52 m, too close to render as two distinguishable cars.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS, unconstrained** | **6.578** | **−0.017** | **−0.026** | analog, 111 values |

@@ -4,6 +4,8 @@
 whole field's spread is already decided by 9.500, and the run home costs
 everybody the same.**
 
+**Video:** <https://pxl.cl/cvB6s> — our TAS **10.594**. Single car: the human record is 10.602, and at eight milliseconds the two cars never separate by more than 0.86 m, so a side-by-side clip would show one car with a shimmer rather than a comparison.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS** | **10.594** | **−0.004** | **−0.008** | analog |
