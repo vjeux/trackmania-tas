@@ -1,211 +1,220 @@
-# Impossible Mini Trial 2
+# Impossible Mini Trial 2 (TMX 267460)
 
-**Our best run is 21.022 — 2.046 faster than the only human who has ever driven
-this map. Do not brake onto the finish platform. The record holder is on the brake from
-20.0 s and crosses the line at 8.5 km/h, taking 0.829 for the last ten metres;
-carrying speed instead takes 0.258, and that decision alone is worth more than
-half a second.**
+**Author time 16.888 · World record 23.068 (Wirtual, the only record ever set on this map) · Our best 21.022**
+
+This is **one of only two maps in this repo where we have not beaten the author
+time.** We are 2.046 under the human world record and still **4.134 over the
+author time**. This page is the best account anyone has of why — including a
+technique we found tonight that saves five and a half seconds and that we still
+cannot convert into a lap.
 
 **Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
 
-The only time any human has ever set on this map. The clip runs past our finish,
-so you see Wirtual still driving — the 2.046 gap is on screen.
+The clip runs past our finish, so you see Wirtual still driving — the 2.046 gap
+is on screen.
 
 https://github.com/user-attachments/assets/1ded7d9a-e78f-44fd-9761-e5abace1282d
 
-*An earlier clip on this page was withdrawn: it was filmed from `TAS_21918_analog`,
-whose telemetry is its carrier's rather than its own — measured against a live
-re-simulation of its own inputs, it sat a median of 17.05 m and a maximum of
-53.19 m from where the car actually goes. The regenerated file above sits
-0.000523 m away.*
+*The car path is regenerated from engine
+memory and is accurate to half a millimetre; the dirt and spark effects are
+wrong, because the ghost's surface-contact byte is still the carrier file's —
+see "What is wrong with this video" at the bottom.*
 
-*One caveat on the clip above.* The ghost's positions are right — median 0.5 mm
-against a live re-simulation — but its **ground-contact byte is still the
-carrier's**, so contact reads ON for 15 of 39 provably airborne samples, and the
-render gate refuses it on that ground alone. It was filmed anyway, deliberately:
-that byte has been measured as irreducible from two directions and the positions,
-which are what a video shows, are correct. The map's own downloaded human
-recording passes all ten checks, which is what makes the flag a real defect here
-rather than a false alarm. A record-internal rule (contact iff min(dampen) < 0.057) scores 96.97 % against a 72.51 %
-baseline on this map — eleven times better than the best engine slot found
-elsewhere — but it does not transfer, going negative on two of four other maps,
-so it is recorded as a bounded negative rather than shipped.
+---
 
-| run | time | vs human WR | vs author time | steer values | input events |
-|---|---|---|---|---|---|
-| **TAS** | **21.022** | **−2.046** | +4.134 | — | — |
-| TAS, earlier | 21.024 | −2.044 | +4.136 | — | — |
-| TAS, earlier | 21.090 | −1.978 | +4.202 | — | — |
-| TAS, earlier | 21.417 | −1.651 | +4.529 | — | — |
-| TAS, earlier | 21.652 | −1.416 | +4.764 | — | — |
-| TAS, analog (previously published as best) | 21.918 | −1.150 | +5.030 | 214 | 515 |
-| TAS, thinned | 22.290 | −0.778 | +5.402 | 31 | 84 |
-| TAS, low-input | 22.698 | −0.370 | +5.810 | **10** | **78** |
-| Author time | 16.888 | −6.180 | — | — | — |
-| Human WR — Wirtual | 23.068 | — | +6.180 | 3 | 87 |
+## The map
 
-TMX map [267460](https://trackmania.exchange/maps/267460) · author
-**Mattlightning** · **exactly one recorded run**.
+A chain of floating platforms threaded through two enormous stadium screens.
+One checkpoint (the finish), no respawns — "Trial" here is a building style, not
+a checkpoint mechanic, so a respawn sends you back to the start with the clock
+running.
 
-**The author time does not fall here.** 16.888 is more than four seconds faster
-than anything that can be built on this route, and where those five seconds
-would come from is an open question — see the end of this page.
+The lap has three parts:
 
-## It is not a respawn map
+1. **The ice run (0 – 4 s).** You spawn on a turbo pad and are fired west along
+   a strip of ice at 143 km/h. You do not get a choice about this: we tried
+   twelve maximally different opening programs — every combination of full left,
+   full right and straight, with gas and brake on and off — and *all twelve*
+   cross the same point 9 m away between **0.422 and 0.455**. The human is at
+   0.422. The first half-second of this map is the same whatever you press.
+2. **The pit (4 – 13 s).** You fall off the west end onto tilted dirt. Wirtual
+   descends, U-turns at the bottom, climbs back north, U-turns again at the top,
+   and only then charges east — **nine seconds, of which about seven net zero
+   displacement.** He is not being slow: the second descent is where his run-up
+   speed comes from, 58 → 155 km/h in 1.6 s.
+3. **The launch and the flight (13 – 23 s).** Through a big turbo gate at
+   155 km/h, off a ramp, a long dive to 268 km/h, land on the grass, U-turn,
+   come back west past a no-engine gate, and coast into the flag. Wirtual
+   crosses the line at 8.5 km/h.
 
-The obvious read of a 23-second run on a map called *Mini Trial* is that most of
-it is failed attempts. It is not: the map has **one checkpoint**, which is the
-finish itself, so there is nowhere to respawn *to* except the start line with the
-clock running. The world record contains no respawns at all. "Trial" here is a
-building style — small floating platforms — not a checkpoint mechanic.
+Our 21.022 drives Wirtual's route and wins in the last six seconds — mostly by
+**not braking into the finish**. He is on the brake from 20.0 s and takes 0.829
+for the final ten metres; carrying speed instead takes 0.258.
 
-## What the map is, and where the time goes
+## The dirt ice flick — the pit's nine seconds are not forced
 
-Twenty-two of the map's thirty-one blocks are big flat stadium screens rotated
-vertical into **two solid walls**, one behind the start and one between the
-flight and the finish. Every route question on this map is "which hole in which
-wall", and the answer is that there is only one of each. The route is forced in
-*space* — there is no secret line.
+Everything above is the *route*, and the route really is forced (see "Two things
+that are genuinely closed"). But **being forced to drive somewhere is not the
+same as being forced to take nine seconds doing it**, and that is where this
+map has been hiding.
 
-> **Correction, and it is the important thing on this page.** An earlier version
-> of this section went on to say the route being forced meant the *timing* was
-> forced too, and a floor was published on that basis. **That does not follow,
-> and it is false.** The pit below is on the forced route, and its cost was never
-> measured against an alternative — it was simply accepted. It turns out the car
-> can be slid across the dirt instead of driven around it, arriving at the same
-> point on the eastward deck **5.650 s earlier than our best run does**, with both
-> loops skipped entirely. See *[The pit is not forced](#the-pit-is-not-forced)*.
-> Every measurement above and below this note still stands; the conclusion drawn
-> from them did not.
+The car can be **flicked** across the first dirt turn instead of looping around
+it. Measured against three checkpoints along the eastward deck, required in
+order so nothing can score by falling past them:
 
-The world record, gate by gate, with our run alongside:
-
-| point on the route | human | ours |
-|---|---|---|
-| flat out west on the ice, 167 km/h | 1.985 | 1.985 |
-| off the west end, airborne | 3.946 | 3.946 |
-| bottom of the pit, 69 km/h | 5.979 | 5.979 |
-| top of the climb back out | 9.825 | — |
-| back down, charging east | 12.969 | 12.969 |
-| **through the big turbo gate** | 15.239 | 15.239 |
-| mid-dive, 257 km/h | 18.018 | 18.015 |
-| on the finish platform | 22.239 | **21.660** |
-| finish | 23.068 | **21.918** |
-
-**Nine of the twenty-three seconds are the pit** — 151 m at 45–100 km/h on
-30°-rolled dirt, dropping in and climbing back out. **Four more are the
-endgame.** Everything published here is after 18.0 s, and it splits into two
-almost equal halves: 0.576 in a tighter landing and turn-around, and **0.574 in
-the final ten metres.** The pit's nine seconds looked untouchable when this was
-written; [they are not](#the-pit-is-not-forced).
-
-## The run, sector by sector
-
-1. **The ice, west (0 → 3.9 s).** Flat out to the west end and off it. You have
-   to go west past the wall's edge — that is the only gap — before you can get
-   anywhere.
-2. **The pit (3.9 → 12.9 s).** Unavoidable, and nine seconds long. Drop into the
-   tilted dirt cluster, cross the bottom, climb back out and come east onto the
-   run-up platform. It is the largest single block of time on the map and it is
-   the least explored.
-3. **The turbo gate and the dive (15.2 → 19.0 s).** Ballistic. Nothing you do in
-   the air changes where you land. **Do not try to steer toward the flag** — you
-   can see it out of the window and you cannot reach it; the screen is in the
-   way, and the only doorway through that wall puts you past the flag and four
-   metres below it.
-4. **The landing (about 19.0 s).** The record lands still pointed east, runs on
-   to the far end of the grass and turns around there. **That U-turn is about
-   half a second.** Land already turning.
-5. **The last ten metres — this is the whole map.** The engine dies as you cross
-   the no-engine gate, so **every km/h you brake away before that gate is gone
-   for good**: speed is the only thing you can still spend on the far side.
-   Carry it through the 32 m gap jump up onto the finish platform, thread the
-   four pillars at speed, and let the flag stop you. The record brakes from
-   20.0 s, holds it through the jump and the pillars, and arrives *into* the flag
-   structure at 8.5 km/h rather than through it — 0.829 for ten metres against
-   our 0.258.
-
-## How forgiving it is
-
-Per-input timing slack has not been measured on this map, so there is no honest
-table to give. What can be said:
-
-- **The one thing that matters is a decision, not a timing** — whether you brake
-  onto the finish platform. It needs no tape at all and it is worth roughly half
-  a second.
-- **The line simplifies a very long way.** The fastest tape is per-tick noise no
-  person could reproduce, but deleting 433 of its 515 input changes costs
-  nothing at all; the real structure is about eighty held segments. The
-  low-input version gets within **0.370** of the world record on ten steering
-  values, against the record holder's three. That part is teachable.
-- The pit is where the remaining time must be, and it repays practice more than
-  anything else on the map.
-
-## Where the missing five seconds are not
-
-The author time needs another five seconds, and five seconds here means a
-different route, not a better line. Three candidate routes were measured and
-closed:
-
-- **Flying through the flag mid-dive.** At 18.018 the car is level with the flag
-  and 56 m adrift of it in the wrong axis, with a solid screen between. Tapes do
-  get through the low doorway in that wall, but the doorway is east of the flag
-  and four metres below the platform, so they arrive already past it.
-- **Dropping straight off the start platform into the turbo gate.** It is 70 m
-  from the spawn and behind the near screen. Nothing reaches it.
-- **Landing on the dirt slope north of the finish platform.** Tapes reach the
-  slope in quantity, but the strip between its south edge and the platform is
-  void and nothing crosses the last 16 m.
-- **Launching upward** over the far wall is closed too: the flat ramp does not
-  produce upward velocity.
-
-The best construction anyone had assembled out of a launch, a flight and an
-endgame was about 21.3, against a best actual of 21.022 — which was the basis for
-saying that either there is a route nobody has found, or the author time was not
-driven. **The first of those turned out to be true.** The map carries no
-author ghost of any kind, and with a single human record there is no field to
-cross-check it against.
-
-## The pit is not forced
-
-**Nine of the twenty-three seconds are spent in the pit, and they do not have to
-be.** Every run on this map — the human record, the author's implied lap, and all
-of ours — drives down into the pit, U-turns at the bottom, climbs back out north
-and U-turns again at the top. That is 4.7 s to 11.4 s of looping, and it was
-never priced, only assumed.
-
-The car can be **slid across the dirt** instead. Landing on the dirt at 4.75 s,
-the slide scrubs 141.8 → 62.3 km/h in a single contact and then runs straight
-down the deck eastward — x 735 → 791 while z 746 → 698 — with no loop at all.
-
-Three stations along the eastward deck, each of which the human record and our
-own best prefix both cross at a known time, and which must be crossed in order so
-that a falling car cannot score:
-
-| arrival at | (740.6, 112, 727.5) | (755, …) | (767, 108, 722) |
+| | first deck marker | second | third (x = 767) |
 |---|---|---|---|
-| human WR | 12.954 | 13.297 | 13.560 |
-| our best conventional prefix | 12.254 | 12.652 | 12.933 |
-| **the slide** | **6.119** | **6.848** | **7.283** |
+| Wirtual | 12.954 | 13.297 | 13.560 |
+| our previous best line | 12.254 | 12.652 | 12.933 |
+| **the flick** | **6.119** | **6.848** | **7.283** |
 
-**416 separate programs arrive in order. The best of them reaches the third
-station 5.650 s ahead of our best conventional run.**
+**5.650 seconds earlier to the same point**, and it is not a fluke: 415 of
+24,300 candidate runs arrive there in order.
 
-**The trade, stated honestly:** the human crosses that last station at 174 km/h
-and the slide crosses it at 128. His two loops are buying run-up speed, so this
-is 6.28 s earlier and 46 km/h slower, and **whether it converts into a finish is
-not yet known.** Reconnecting the ending from this much slower entry state is
-open work. The arithmetic — 7.283 to the deck, plus 2.081 to the ramp exit, plus
-5.988 from ramp exit to the flag — lands near 15.4, well under the author time,
-but it assumes a launch speed we do not have. **It is not a result; it is a
-reason to keep going.**
+### Why it is a flick and not a bug slide
+
+A Trackmania player who saw our first write-up corrected us: you cannot bug
+slide here, because the car is on **icy wheels**. We checked that against the
+game rather than taking it on trust — the map's own recording carries per-wheel
+surface state, and this is it:
+
+| race time | ice, four wheels | dirt | where the car is |
+|---|---|---|---|
+| 2.0 s | **1.00 — saturated** | 0.00 | on the ice run |
+| 4.6 s | 0.46 / 0.56 / 0.44 / 0.56 | 0.000 | airborne off the west end |
+| **4.7 s — the contact** | **0.44 / 0.54 / 0.43 / 0.55** | **0.008** | **the flick** |
+| 6.5 s | 0.01 – 0.09 | 0.11 – 0.16 | pit floor |
+| 14.0 s | 0.00 | **1.00** | the deck |
+
+**Ice on the wheels, dirt underneath.** He was right, and now it is measured
+rather than asserted.
+
+One thing that falls out of the table and that we have not seen written down
+anywhere: **ice is a decaying clock, not a state.** It saturates by 2.0 s and
+bleeds away to nothing by 6.5 s, roughly 0.2 per second. So how icy your wheels
+are when you hit the dirt depends on *when* you hit it.
+
+### The gain is route, not grip
+
+It would be a nicer story to say the flick keeps your speed through a corner
+that should scrub it. **It does not, and here is the measurement that says so.**
+Speed carried through the contact, read from engine memory across our 200 best
+candidates:
+
+| | before contact | after (5.3 s) | lost |
+|---|---|---|---|
+| **Wirtual** | 143.6 | **77.9** | 65.7 |
+| **best of our 200** | 147.6 | **79.7** | 67.8 |
+| our median | ~146 | ~55 | ~91 |
+
+The best flick we have keeps **1.8 km/h more** than Wirtual keeps through his
+own contact. He scrubs just as hard as we do. The five and a half seconds come
+entirely from **not driving the two loops** — it is a shortcut, not a grip
+trick.
+
+## Where it stops
+
+Skipping the loops also skips the drop that pays for them, so we arrive at the
+launch **50 km/h short**. Wirtual converts 78 → 175 km/h in 6.7 s using two
+loops and a 15 m descent; the flick converts 78 → 119 in 2.3 s with 10 m to work
+with. Two ways out, both measured shut:
+
+**The lower platforms.** There are two dirt platforms 16 m below the deck that
+**no run in this project had ever touched**, and the fast flick line runs
+straight over them at **157.8 km/h** — 5 km/h off Wirtual's speed, 5.5 s
+earlier. The energy is there. What is missing is a way back up: those platforms
+end at x ≈ 784 and the next drivable surface east is
+`OpenTechRoadSlope2FCLeft` at x ≈ 816, so the return is a **32 m gap that has to
+be crossed while climbing 7 m — departing from a surface rolled 30° downward.**
+At 157.8 km/h the crossing takes 0.73 s and gravity alone costs 6.4 m; you
+arrive about 13 m low. **Zero of roughly 135,000 evaluations reach the far
+side.** (A marker 16 m further east, built the same way in the same batch, fires
+normally — so the test can succeed; this route just never gets there.)
+
+**Under the flag instead of over it.** The fast line crosses the flag's exact
+height at z = 653 against the flag's z = 656 — dead on in two coordinates — but
+at **x = 826 against the flag's x = 990**. Closing 164 m at that height needs
+about **416 km/h**. The fastest anything has ever gone on this map, in any run
+we or anyone else has produced, is 294.7.
+
+## Two things that *are* genuinely closed
+
+**You cannot leave the start going east.** There is a large hole in the first
+screen east of the spawn, and an ice tile pointing at it, and it would be worth
+about ten seconds. It is unreachable: the spawn turbo fires you west and the
+first 0.45 s is input-independent, so 3,840 turn-around programs and a detector
+wall two metres from the spawn produce nothing.
+
+**You cannot finish out of the air.** We re-measured the second screen by
+sliding it across a run that crosses it exactly once (1,685 real validations)
+and mapped where it is solid. The only opening a launch can reach puts the car
+*past* the flag — which is why every run on this map, ours and Wirtual's, lands
+on the grass, U-turns, and comes back.
+
+## A retraction
+
+An earlier version of this page said the author time was **below this map's
+physical floor** — that even granting a wall that exists and a prefix that
+cannot continue, the best conceivable lap was 17.102 against 16.888.
+
+**That was wrong, and we broke it ourselves within the hour.** The physics was
+fine. The *premise* was not: "the best ramp exit ever measured is 15.014" was a
+report on five sessions of searching, not a property of the map, and the flick
+beat it by 5.650 s.
+
+There were two errors, and both generalise:
+
+* **A bound whose premise is a search record is a report on the search, not on
+  the map.** If a floor rests on "the best anyone has measured", it has to say
+  so in the same sentence, or it should not be stated at all.
+* **"The route is forced" and "the route's *timing* is forced" are different
+  claims.** We proved the first and quietly acted on the second. The pit is *on*
+  the forced route — which is exactly why nobody had ever priced its nine
+  seconds.
+
+## What is left
+
+We can estimate what a perfect run-up would be worth, **and this is an estimate,
+not a bound** — its inputs are speeds and times we have measured, which is
+precisely the kind of premise that just failed above. A 2.5 s run-up returning
+Wirtual's conversion rate puts the deck arrival near 9.8 s at 175 km/h, and our
+existing ending from there is 8.09 s: **about 17.9.** Three seconds better than
+our published run, and still over the author time.
+
+So the open question is a single number:
+
+> **A deck arrival at ≈ 8.8 s carrying ≈ 175 km/h.**
+
+Get that and the author time is in range. Every other part of this lap has now
+been measured.
+
+## What is wrong with this video
+
+The run in the clip is real — validated by the game's own simulator, three times
+cold. But a Trackmania ghost stores its inputs and its *telemetry* separately,
+and a searched run is built inside a donor file, so the raw file plays back as
+somebody else's run entirely. We regenerate the telemetry from engine memory to
+fix that, and the car path in this video is accurate to **half a millimetre**.
+
+One byte still is not ours: the surface-contact flag. Our own publish check
+refuses this ghost because of it (contact reads "on" for 15 of 39 samples where
+the car is provably airborne), while the map's downloaded human recording passes
+every check. So the *driving* you see is exactly what the simulator validated,
+and some of the *effects* — dirt spray, sparks, wheel behaviour at the edges —
+are not. Three independent attempts to decode that byte have failed; we would
+rather ship the video with this note than quietly fit a value that looks right
+on one map and is wrong everywhere else.
 
 ## Files
 
 | file | what |
 |---|---|
-| `replays/TAS_21918_analog.Ghost.Gbx` | the fastest run |
+| `replays/TAS_21918_analog.Ghost.Gbx` | the fastest tape |
 | `replays/TAS_22290_thinned.Ghost.Gbx` | the same line at 84 input changes |
 | `replays/TAS_22698_lowinput.Ghost.Gbx` | **ten steering values — the one worth studying** |
 | `inputs/m267460_TAS_lowinput_76inputs.script.txt` | the low-input run as a readable script |
 | `inputs/m267460_TAS_thinned_82inputs.script.txt` | the thinned run |
+
+TMX map [267460](https://trackmania.exchange/maps/267460).
+
+**Not submitted to any Nadeo leaderboard, and it never will be.**
