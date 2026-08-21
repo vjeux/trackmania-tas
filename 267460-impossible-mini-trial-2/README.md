@@ -1,15 +1,26 @@
 # Impossible Mini Trial 2
 
-**Do not brake onto the finish platform. The record holder is on the brake from
+**Our best run is 21.022 — 2.046 faster than the only human who has ever driven
+this map. Do not brake onto the finish platform. The record holder is on the brake from
 20.0 s and crosses the line at 8.5 km/h, taking 0.829 for the last ten metres;
 carrying speed instead takes 0.258, and that decision alone is worth more than
 half a second.**
 
-**Video — both cars at once:** <https://pxl.cl/cvCXq> — our TAS **21.918** against Wirtual's **23.068**, the only time any human has ever set on this map. The clip runs past our finish, so you can watch the world record still driving for another 1.150 s.
+**Video: withdrawn.** The clip published here was filmed from `TAS_21918_analog`,
+whose telemetry is its carrier's rather than its own — measured against a live
+re-simulation of its own inputs, it sits a median of 17.05 m and a maximum of
+53.19 m from where the car actually goes. A regenerated file sits 0.000523 m
+away. The run and the time are unaffected; the video was of the wrong car's
+path. A replacement will be filmed from a regenerated ghost.
 
 | run | time | vs human WR | vs author time | steer values | input events |
 |---|---|---|---|---|---|
-| **TAS, analog** | **21.918** | **−1.150** | +5.030 | 214 | 515 |
+| **TAS** | **21.022** | **−2.046** | +4.134 | — | — |
+| TAS, earlier | 21.024 | −2.044 | +4.136 | — | — |
+| TAS, earlier | 21.090 | −1.978 | +4.202 | — | — |
+| TAS, earlier | 21.417 | −1.651 | +4.529 | — | — |
+| TAS, earlier | 21.652 | −1.416 | +4.764 | — | — |
+| TAS, analog (previously published as best) | 21.918 | −1.150 | +5.030 | 214 | 515 |
 | TAS, thinned | 22.290 | −0.778 | +5.402 | 31 | 84 |
 | TAS, low-input | 22.698 | −0.370 | +5.810 | **10** | **78** |
 | Author time | 16.888 | −6.180 | — | — | — |
@@ -18,7 +29,7 @@ half a second.**
 TMX map [267460](https://trackmania.exchange/maps/267460) · author
 **Mattlightning** · **exactly one recorded run**.
 
-**The author time does not fall here.** 16.888 is more than five seconds faster
+**The author time does not fall here.** 16.888 is more than four seconds faster
 than anything that can be built on this route, and where those five seconds
 would come from is an open question — see the end of this page.
 
