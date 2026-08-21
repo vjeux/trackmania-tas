@@ -8,7 +8,7 @@ half a second.**
 
 **Video — both cars at once:** our **21.022** against Wirtual's **23.068**, the
 only time any human has ever set on this map. The clip runs past our finish, so
-Video — both cars at once: our TAS **21.022** against Wirtual's **23.068**, the only human time ever set on this map.
+you see Wirtual still driving — the 2.046 gap is on screen.
 
 https://github.com/user-attachments/assets/1ded7d9a-e78f-44fd-9761-e5abace1282d
 
