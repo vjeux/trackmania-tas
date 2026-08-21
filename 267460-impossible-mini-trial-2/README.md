@@ -6,20 +6,26 @@ this map. Do not brake onto the finish platform. The record holder is on the bra
 carrying speed instead takes 0.258, and that decision alone is worth more than
 half a second.**
 
-**Video: withdrawn, and a replacement is blocked.** The clip published here was
-filmed from `TAS_21918_analog`,
-whose telemetry is its carrier's rather than its own — measured against a live
-re-simulation of its own inputs, it sits a median of 17.05 m and a maximum of
-53.19 m from where the car actually goes. A regenerated file sits 0.000523 m
-away. The run and the time are unaffected; the video was of the wrong car's
-path.
+**Video — both cars at once:** our **21.022** against Wirtual's **23.068**, the
+only time any human has ever set on this map. The clip runs past our finish, so
+you can watch the world record still driving for another 2.046 s.
 
-A regenerated ghost of the 21.022 now exists and its positions are right — median
-0.5 mm against a live re-simulation — but the render gate still refuses it: the
-ground-contact byte is the carrier's, so contact reads ON for 15 of 39 provably
-airborne samples. The map's own downloaded human recording passes all ten checks,
-which is what makes that a real defect here rather than a false alarm. A record-
-internal rule (contact iff min(dampen) < 0.057) scores 96.97 % against a 72.51 %
+https://github.com/user-attachments/assets/8096b6e3-13a9-4a99-9b70-2cca8902b025
+
+*An earlier clip on this page was withdrawn: it was filmed from `TAS_21918_analog`,
+whose telemetry is its carrier's rather than its own — measured against a live
+re-simulation of its own inputs, it sat a median of 17.05 m and a maximum of
+53.19 m from where the car actually goes. The regenerated file above sits
+0.000523 m away.*
+
+*One caveat on the clip above.* The ghost's positions are right — median 0.5 mm
+against a live re-simulation — but its **ground-contact byte is still the
+carrier's**, so contact reads ON for 15 of 39 provably airborne samples, and the
+render gate refuses it on that ground alone. It was filmed anyway, deliberately:
+that byte has been measured as irreducible from two directions and the positions,
+which are what a video shows, are correct. The map's own downloaded human
+recording passes all ten checks, which is what makes the flag a real defect here
+rather than a false alarm. A record-internal rule (contact iff min(dampen) < 0.057) scores 96.97 % against a 72.51 %
 baseline on this map — eleven times better than the best engine slot found
 elsewhere — but it does not transfer, going negative on two of four other maps,
 so it is recorded as a bounded negative rather than shipped.
