@@ -39,6 +39,13 @@ published as the human's lap, and matching it is correct.
 
 **Untestable, for four different reasons — recorded as untested, never as clean:**
 
+| category | files | where |
+|---|---|---|
+| no car in the file at all | 9 | 165922 |
+| the only reference **is** the donor | 5 | 238835 |
+| no human recording held | 2 | 134672 |
+| the map has **no human records at all** | 2 | 276874, 276877 |
+
 - **238835** — five files are rank 1's telemetry, and the map's only human
   recording *is* the donor. There is nothing independent to grade a repair
   against, so the map is refused rather than fixed.
@@ -50,6 +57,16 @@ published as the human's lap, and matching it is correct.
 - **276874, 276877** — zero-record maps. No human has ever driven them, so no
   reference recording can *ever* exist and these files can never be certified by
   comparison. Their evidence is their provenance manifest and nothing else.
+  **Both of these are pages that carry a video.**
+
+**143 files are clean against a human recording**, and three more are a human's
+run *by intent* — `227654/HUMAN_WR_retries_cut`, `228607/AUTHOR_LAP`, and
+`186935/ONE_ATTEMPT_DELETED`, which is the record holder's own run with a fall
+removed. Matching the human is correct for those three.
+
+228607's ten files, which an earlier pass could not compare at all, are **clean** —
+tested alignment-free against the author's own validation lap, with not one
+bit-identical position.
 
 ## The corrections we made to our own instruments
 
@@ -120,3 +137,28 @@ of samples and has never been attacked; a scalar fit is fitting the sum of two
 independent bits and cannot succeed in principle. So a regenerated ghost may show
 ground effects in mid-air. It is named per file rather than guessed at, because a
 car with a known wrong flag is better than one with an invented one.
+
+## A note on how the jump detector was calibrated
+
+It needed four attempts, and the discarded ones are worth recording because two
+of them refused the *same* genuine human recording by different routes.
+
+- A **distance** threshold called an 805 km/h Kacky run a teleport.
+- A **200 m/s** bar sat inside the ordinary respawn band (153–213 m/s) and
+  refused `286279/HUMANCUT_236972`, a real human's run.
+- "What the car does in the second after the jump" does not separate the
+  classes: on a Trial map a respawn lands and drives away at 9.4 m/s, and so
+  does the far side of a splice.
+- Three narrower tests each catch part of the class and none catches all —
+  the speedometer reading zero (8 cases), arriving at a standstill (41),
+  returning to a point the car already occupied (244). The residue sat at
+  233.7 m/s and refused `HUMANCUT_236972` again.
+
+The rule finally adopted is contextual: **a run that demonstrably respawns has
+its other jumps of the same size calibrated as respawns.** It also needs an
+absolute distance floor, because a 0.20 m shuffle at 0.8 m/s trips a pure ratio
+test and reads as a splice.
+
+That rule is deliberately conservative — it can miss a splice disguised as a
+respawn on a respawning map. The reason for erring that way is worth stating:
+**contamination has two other instruments, and a teleport has only this one.**
