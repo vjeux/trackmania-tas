@@ -10,7 +10,7 @@ cannot convert into a lap.
 
 **Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
 
-> ### ⚠️ Video withdrawn — the tape imports into the game under Wirtual's name
+> ### Video withdrawn, then replaced — the tape had imported under Wirtual's name
 >
 > The clip that was here has been taken down. Nothing about the run is wrong: the
 > 21.022 is validated, the car path is regenerated from engine memory and
@@ -32,6 +32,22 @@ cannot convert into a lap.
 > A replacement will be rebuilt on a clean carrier and re-filmed. The other tape
 > on this map that is already clean, `TAS_21918_analog`, is a **different run** —
 > 0.896 slower — and is not a substitute for this one.
+>
+> **Replaced 2026-08-21.** The tape was rebuilt on a clean carrier — nickname,
+> skin path, storage URL and login all replaced, declared time 21.022 matching
+> the oracle, no account id — and it now imports as **`Ghost:TAS`** beside
+> Wirtual's own recording, which still reads `Ghost:WirtualTM` as it should. The
+> trajectory is **421 of 421 positions identical** to the tape the withdrawn clip
+> was shot from, so the run you are watching is unchanged; only the file is
+> different. The clip below is that re-shoot.
+
+https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
+
+**Ours against Wirtual's world record, and the clip runs past both finishes.**
+We cross at 21.022 and his car keeps driving for another two seconds — that gap
+is the 2.046 we are ahead of the only human who has ever recorded a time here.
+The two runs are properly apart for most of it: **max 50.16 m, mean 18.13 m**,
+180 of 421 samples in the band where two cars read as two cars.
 
 
 ---
