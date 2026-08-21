@@ -63,6 +63,9 @@ human world record** and still **0.438** short of the author medal.
 author medal of 38.530 is still 0.438 short. What this map has is a lap 1.255
 under the fastest human — which is worth watching, and is not a record.
 
+TMX map [146612](https://trackmania.exchange/maps/146612) · authors
+**AmpelJoe10** and **Wakawukwuk** · 181 recorded runs.
+
 **181 records does not mean the field is settled here.** Only five runs are
 within a second of the world record, and there is an 0.849 cliff between rank 2
 and rank 3. This is two players who duelled and 179 who did not, which is why a
