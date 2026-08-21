@@ -36,13 +36,13 @@ finish at z = 1507.
 **Between 6.2 s and 8.5 s you are aiming the cannon.** Everything else is
 already decided:
 
-- Before **3.65 s** steering does nothing at all — full left, full right and
-  centre all give the identical millisecond. See
-  *[The car ignores you until 3.650](#the-car-ignores-you-until-3650)*; the
-  window is longer than it looks.
-- After the cannon you are ballistic. Steering turns the car but does not move
-  it: forcing the wheel anywhere through the descent and touchdown changes the
-  finish time by **zero**.
+- Before **2.98 s** steering does nothing at all — full left, full right and
+  centre all give the identical millisecond, every one of 448 ticks. The car
+  then goes on ignoring you until **3.65 s**, but not because the input is
+  dead: see *[The car ignores you until 3.650](#the-car-ignores-you-until-3650)*.
+- **The flight after the cannon is where the run is won or lost.** Forcing the
+  wheel through it costs **+0.914 s** at full right and **+2.375 s** at full
+  left, and centring it does not finish the map at all.
 - The cannon outputs 999.8 km/h for everyone, and the flight from it is fixed to
   2–3 ms across a 33 ms spread of finish times.
 
@@ -123,7 +123,7 @@ version is the one worth learning.
 ## Sector by sector
 
 **Start → 6.2 s.** Hold accelerate. Hold left, then right at about 1.6 s.
-Steering does nothing before 3.65 s, so the only input that matters here is the
+Steering does nothing before 2.98 s, so the only input that matters here is the
 throttle.
 
 **6.2 → 11.0 s — the launch, the only thing you really steer.** A handful of
@@ -203,9 +203,12 @@ loses the run outright.
 
 *An earlier version of this page put the lockout at 2.90 s and said that after
 the cannon the car is ballistic, with steering unable to move it. The first was
-0.080 s out. The second is wrong: forcing the wheel from 8.600 to the line costs
-**+1.031 s** at full right and **+2.379 s** at full left, and centring it does
-not finish at all.*
+0.080 s out. The second is wrong, and wrong about the most important part of the
+run: splitting the post-cannon span to give the claim its best chance, the
+purely ballistic phase alone (race 8.600 → 13.000) costs **+0.914 s** at full
+right and **+2.375 s** at full left, and does not finish at all when centred.
+The landing slide after it accounts for 4 ms of the difference. Steering during
+the flight is worth over two seconds.*
 
 ## How forgiving it is
 
@@ -213,11 +216,13 @@ not finish at all.*
   from 6.53 s through the cannon is what settles the car; removing it entirely
   does not finish the map. Its timing tolerates about 70 ms, so it is a hold you
   can learn rather than a frame-perfect tap.
-- **Steering before 3.65 s is free** — you cannot get it wrong, because the car
-  will not act on it. This is measured, not assumed: see below.
-- **After the hole there is no authority at all.** Every forced input over the
-  whole landing and slide changes the finish by nothing. That cuts both ways: you
-  cannot lose the run there either.
+- **Steering before 2.98 s is free** — you cannot get it wrong, because the car
+  will not act on it: 448 consecutive ticks, every forced value returning the
+  identical millisecond. From 2.98 to 3.33, while the car is in the air, it is
+  the opposite of free — centring the wheel for any single tick loses the run.
+- **After the landing there is very little left to do.** Over the last second —
+  the slide from race 13.000 — the whole range of forced steering spans
+  13.986 to 14.289. The flight before it is a different matter entirely.
 - **What will take real practice** is the 6.2–8.5 s window that aims the cannon,
   and the attitude you carry through it. Roll is what kills runs here: it is what
   puts two of the five records into the wall, and it is what makes the world
