@@ -1448,3 +1448,54 @@ was the only clean discriminator, and it decided the question alone.
 10 s: `186935/CUT_795034` at **+1780 s** (~20 hours of render), 286279's three at
 +86 to +441 s, `238835/TAS_239133` at +224 s, and 165922's nine at +24 s each —
 though those carry zero car entities and would render nothing at all.
+
+### Field #7 gets an address, and two readers now disagree on 12 files
+
+The split list lives inside chunk `0x0309202B` and **always starts at +24**, with
+an 8-byte stride. Verified against the decoder on every control:
+
+```
+228607 TAS_19907    7 splits, +24..+72, ends 20.034
+285268 TAS_49275   10 splits, +24..+96, ends 49.275
+238835 TAS_239133   5 splits, +24..+56, ends 462.982
+```
+
+**That retires the `+56` mystery as arithmetic rather than a quirk:** `+56` is the
+*fifth entry* — the finish on a five-split map, an intermediate split on a
+seven-split one.
+
+The heuristic version it replaces had a failure the address exposes. 126859's
+`TAS_23416` holds `w[1] +4 = 23416` (its own time) and `w[6] +24 = 27609`
+(TheWoreL's) — **two single-entry runs of equal length**, and the search picked
+the first. Corpus agreement went 149 → 153 on that one change.
+
+> **A reader that searches for a structure will lose a tie; a reader that knows
+> its address cannot.**
+
+**Where the two readers still disagree, the pattern is informative:**
+
+```
+186935  BEST_793893, CUT_795034     16 splits, ends 2138.325   decoder: 793.893 / 795.034
+238835  TAS_262907 + 3 siblings      4 splits, ends 1704.277   decoder: their own times
+197047  4 files                      2 splits, ends  100.215   decoder: their own times
+284238  TAS_97325                    4 splits, ends  184.638   decoder: 97.325
+228607  AUTHOR_LAP_20258_watchable   1 split,  ends   20.258   decoder: 24.902
+```
+
+In **eleven of twelve** the chunk reader sees the donor's number and the decoder
+sees ours — the reverse of the 126859 case. So the two are reading *different
+fields*, and on an edited file those fields disagree.
+
+**`AUTHOR_LAP_20258_watchable` is the one that flips**: the chunk reader sees our
+20.258, the decoder sees Falco_TM_'s 24.902. That is also the file the game
+refuses to open and the one with the malformed skin string — **three readers,
+three answers, on the most broken file in the corpus.**
+
+Neither reader is being called right. They agree on 153 of 174; where they differ
+a third source is needed, and **the measured block ends are no help, because the
+block end follows the last sample's timestamp rather than either of these.** The
+table carries both columns per file so the disagreement stays visible instead of
+being resolved by fiat.
+
+165922's nine are excluded — the decoder returns nothing for them, so there is
+nothing to compare.
