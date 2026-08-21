@@ -51,20 +51,6 @@ TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
 
 ## A version a person can actually press
 
-> **A note on the 6.360 you may see in these files.** Every tape in this
-> lineage declares **6360** in its header — including the 6.323 and the 6.322
-> above — because that is the time of `r03`, the human keyboard run the whole
-> family was searched out of, and its container has been carried down ever
-> since. The oracle returns 6.322, 6.323, 6.338, 6.342 and 6.345 from those same
-> five containers, so the header is a fact about the seed and the simulation is
-> the fact about the run. Confirmed by transplant: these inputs written into a
-> different human's container, declaring 6346, still simulate to **6.342**,
-> with a lossless control and a negative control in the same batch, on two
-> independently built binaries.
->
-> **Never read a synthesised tape's time off its header, filename or manifest.
-> Re-simulate it.**
-
 The tape above is a machine's: it holds inputs for 10 ms and stabs three of them
 for a single tick. Nobody can do that. So the same line was **searched again from
 scratch under a minimum-hold constraint** — never quantised afterwards, which
@@ -73,18 +59,24 @@ minimal repairs of the 6.323 keyboard tape fail to finish.** Those single-tick
 events are load-bearing. A machine tape cannot be smoothed into a human one; it
 has to be re-searched under the constraint.
 
-The result is that the human floor is nearly free:
+The 13-input version is `play_TAPE_80ms_6342.Ghost.Gbx`, and **the game validates
+it at 6.360** — 0.017 over the author time and 0.014 off the world record. It
+does not beat either. What it does is land **within 14 ms of the world record on
+thirteen presses**, none of them shorter than 80 ms.
 
-| minimum hold and gap | best time | vs author time 6.343 | inputs |
-|---|---|---|---|
-| 10 ms — the machine tape | 6.323 | −0.020 | 21 |
-| **50 ms** | **6.338** | −0.005 | **11** |
-| **80 ms** | **6.342** | **−0.001** | **13** |
-| 120 ms | 6.345 | +0.002 | **10** |
+**For scale: the nine human keyboard runs on this board have minimum holds of
+30–90 ms, so this lap is stricter than every human on the leaderboard** while
+finishing alongside them. The two 10 ms holds in the field are not presses at
+all — they are the rollover between opposite arrow keys.
 
-**Going from a 10 ms grain to an 80 ms grain costs 19 ms and still beats the
-author time.** At a 120 ms floor — ten presses, nothing held under an eighth of a
-second — the run lands 1 ms under the human world record. For scale, the nine
+> **A caution about the times in this section.** The search reported this ladder
+> as 6.323 / 6.338 / 6.342 / 6.345, and the 80 ms rung was published for an hour
+> as beating the author time. Three independent readers of the finished file —
+> its metadata, a ghost checker, and a byte census — all read **6360**, as does
+> the game server, and the value 6342 appears nowhere in the file except its
+> filename. **The rungs above the 80 ms one have not been re-read the same way**
+> and should be treated as search output rather than measured results until they
+> are. The general rule that came out of it is at the bottom of this section. For scale, the nine
 human keyboard runs on this board have minimum holds of 30–90 ms, so **80 ms is
 stricter than every human here.** (The two 10 ms holds in the field are not
 presses at all: they are the rollover between opposite arrow keys.)
@@ -279,3 +271,32 @@ earlier.
 | `replays/BEST_KEYBOARD_6323.Ghost.Gbx` | the same time on 47 inputs, before event reduction |
 | `replays/BEST_6322.Ghost.Gbx` | fastest, unconstrained |
 | `replays/tas_6330.Ghost.Gbx` | the analog family, 6.330 |
+
+## Why the time on that tape was published wrong for an hour
+
+The 80 ms tape went onto this page as **6.342**, a millisecond under the author
+time. It is a **6.360**, and the correction is worth keeping because the two
+readings had genuinely different sources.
+
+The search reported 6.342 from a cold validation with a positive control. Three
+independent readers of the finished file — its metadata, a ghost checker, and a
+byte census — read **6360**, and so does the game server's own
+`ValidatedResult`. **The value 6342 appears nowhere in the file except its
+filename.**
+
+There is a real phenomenon underneath the confusion, and it is why the wrong
+number was believable: **every tape in this lineage carries a declared header of
+`6360`**, which is the time of `r03`, the human keyboard run the whole family was
+searched out of. That header has been inherited down the line, so it is a fact
+about the *seed* and not about the run — five different tapes in the family
+declare it while simulating to five different times.
+
+Both things are true, and the rule that survives both is the same one:
+
+> **Never read a synthesised tape's time off its header, its filename, or its
+> manifest. Re-simulate the file you are holding.**
+
+A search's reported score is a claim about a candidate; the file on disk is the
+artefact. When they disagree, the artefact wins — and the way to find out is to
+read the file three ways rather than to argue about which reading is more
+plausible.
