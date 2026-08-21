@@ -4,6 +4,37 @@
 booster gates. After that, hold the gas, let go of the wheel, and land long: nine
 of the fifteen seconds need no steering at all.**
 
+**idm ruinin ur day #460** — TAS **15.217** (−0.426) | AT 15.643 | WR 16.870 by banktm
+
+https://github.com/user-attachments/assets/497aa5f4-7e45-46fc-b644-6368d58d7c71
+
+**Our run and the world record, side by side.** banktm took this record tonight,
+replacing a ghost that had stood as the board's best; ours is 1.653 faster. Both
+panes start together and you can watch the whole flight — nine seconds of a car
+in the clouds with nobody steering — until our pane lands and finishes at 15.217
+and the right-hand one is still in the air.
+
+It is a split screen rather than two cars in one shot because these runs are
+**mean 97.30 m apart, and 230.55 m at the widest**. A chase camera pointed at one
+of them would spend the run showing one car.
+
+**What is ours in this video, precisely.** These replays were repaired: every
+file on this page previously decoded to no car at all. Position, orientation,
+speed, velocity direction and the input echo are regenerated from our own run —
+that is the driving you are watching. Each ghost's `.manifest.json` declares what
+is still inherited from the carrier recording: **rpm, gear, wheel rotation,
+suspension, turbo, ice, dirt and wetness**. So the line is ours and some of the
+effects are not, and the manifests say which is which rather than leaving you to
+guess.
+
+They were cleared by tests that *identify* rather than compare — first-sample
+spawn against a downloaded human recording (9/9), travel against the published
+files' zero (9/9), gate PUBLISHABLE (9/9), alignment-free clean at every lag, and
+35 cross-file pairs with zero refusals, i.e. **nine distinct runs** rather than
+one trajectory under nine names. They were deliberately **not** cleared on
+two regenerations agreeing with each other: on another map four of five
+regenerations agreed and all four were wrong.
+
 | run | time | vs author time | what it is |
 |---|---|---|---|
 | **TAS, keyboard steering from 4.56 s** | **15.217** | **−0.426** | the fastest run on the map |
