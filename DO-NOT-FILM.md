@@ -927,3 +927,71 @@ answer leaves the blocklist standing; only its cost changes.
 the damage to zero — but the boundary held by luck, not process: every published
 clip came from a file whose span happens to be correct, 279218's from the sibling
 rather than the subject. **A bound that holds by accident is not a control.**
+
+## A backlog that cannot be counted, and why refusing the number was right
+
+Asked for the size of the declared-time backlog after `setdecl`'s short-circuit
+was fixed. The honest answer came back as a refusal, and the reasoning is the
+finding.
+
+**The short-circuit itself:** `setdecl` read the current time from chunk
+`0x03092005` alone, and if that one site already held the target it copied the
+file unchanged and printed
+
+```
+already declares 347003 ms; nothing to do
+```
+
+— on a file still wrong at two sites in chunks it never opened. Its own header
+comment predicted exactly this failure and the code reintroduced it. **That is
+very likely how the two repaired 238835 files came to be published.** Fixed: the
+tool now surveys and refuses rather than reporting a no-op, and `--from <donor>`
+reproduces the banked repairs byte for byte.
+
+**Three attempts to make it decide automatically, three ways to be wrong:**
+
+1. Rewrite every plausible-time u32 at the known sites — *"23 sites rewritten"*.
+   `0x0309202B` is the **checkpoint-splits** chunk; this would have flattened the
+   whole split list onto the finish time. Caught only by a regression on a file
+   whose correct answer was already known.
+2. Exclude values that appear in the file's own split list. Cleaner — and it
+   excluded 238835's **real** defect, because the donor's 1964.933 appears in the
+   split list too. The splits were inherited as well.
+
+> **Presence in the file's own split list does not prove a value is legitimate.**
+> A donor's number can be consistent with itself throughout the file it came from.
+
+The offsets are not universal either: `0x0309202B+56` is the finish on a
+5-checkpoint map and a genuine **intermediate split** on a longer one — 228607's
+`TAS_19907` has splits `[4687, 8196, 9542, 11781, 15008, 18434, 20034]` and +56
+holds 15008.
+
+**Three guards produced three corpus counts — 67, then 39, then 12 — each with
+demonstrable errors in a different direction.** So no number was given:
+
+> **A count nobody can defend is worse than no count**, because it becomes a work
+> queue and then a completion claim. What can be defended is a survey: **51 files
+> across 11 maps carry a non-target value at a declared-time offset** — an upper
+> bound requiring per-file judgement against a healthy sibling on the same map.
+
+All three counts are banked beside the survey so the instability is visible
+rather than hidden.
+
+### 238835 is now clean in every field we can read
+
+All three published files repaired and verified by readers that did not make the
+edits, plus an independent raw u32 scan:
+
+| file | before | after |
+|---|---|---|
+| `NORETRY_347003_watchable` | 4 own + 2× 1964933 | 6 own, 0 foreign, oracle 347003 |
+| `NORETRY_407463_watchable` | 4 own + 2× 1964933 | 6 own, 0 foreign, oracle 407463 |
+| `AUTHORCUT_246602_watchable` | 4 own + 1× 462982, **two** donor skins, GUID + storage URL | 5 own, 0 foreign, both paths `CarSport\TAS.zip`, no GUID, no URL, oracle 246602 |
+
+The skin strip was checked with the **malformed-path detector built for 228607** —
+a strip is a rewrite, and the acceptance test for the repair is the tool that
+catches the failure mode the repair could introduce.
+
+**Field #7 remains unread**: a donor checkpoint split survives inside the two
+NORETRY files. The page says so rather than implying they are clean in every
+field.

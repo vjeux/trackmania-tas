@@ -43,9 +43,13 @@ cost the author 197 seconds.**
 > game's own oracle to the exact millisecond in their names — the repair changed
 > what the file *claims*, never what it *does*.
 >
-> **The third file, `AUTHORCUT_246602_watchable`, is not yet clean**: it declares
-> the map's author time at one site and still carries a donor's skin reference.
-> It is being repaired next, and this line stays until it is.
+> **The third file, `AUTHORCUT_246602_watchable`, is now clean too.** It had been
+> declaring the map's author time at one site and carrying **two** of the donor's
+> skins — a stock one and a named person's custom livery, with the storage URL and
+> GUID that identify it. All three are gone, both skin paths now read
+> `Skins\Models\CarSport\TAS.zip`, and the file still re-simulates to 246.602
+> exact. **All three replay files on this page are now clean in every field we can
+> read.**
 >
 > Two things worth saying plainly, since this page is where we said the last one:
 > the tool that repairs a declared time **had a short-circuit that read one chunk,
