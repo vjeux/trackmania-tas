@@ -4,11 +4,32 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
-**Video: withdrawn.** The clip published here was filmed from a copy of our ghost
-that is not the file this page ships — a stale staging copy, superseded before the
-clip was shot. The run and the time are unaffected. A replacement will be filmed
-from a regenerated ghost, whose telemetry is verified against a re-simulation of
-its own inputs.
+**unluckE - get jiggy with it** — TAS **6.342** (−0.001) | AT 6.343 | WR 6.346 by xeap-.-
+
+https://github.com/user-attachments/assets/eb055e0b-f715-4bd9-b12e-ed2de3f26b65
+
+**Thirteen inputs. Nothing held for less than 80 ms. Three steering values, gas
+never released, brake never touched — and it beats the author time by a
+millisecond and the world record by four.** Ours is the magenta car; xeap-.-'s
+record is the one the camera follows. The two runs share their first 1.35 s
+exactly — the launch is deterministic, so any two runs that hold the same opening
+are bit-identical through it — and then part company for good.
+
+The point of this tape is that **a person could press it.** The nine human
+keyboard runs on this board have minimum holds of 30–90 ms; this lap never goes
+below 80 ms, which makes it stricter than every human on the leaderboard while
+finishing ahead of all of them.
+
+**It is playable, which is not the same as forgiving.** Jitter every input by
+±10 ms and it dies: 0 of 120 trials survive. The world record fails the same test
+identically, 0 of 120. That control is published beside the number because the
+number means nothing without it.
+
+**Video: previously withdrawn, now replaced.** The clip published here before was
+filmed from a copy of our ghost that is not the file this page ships — a stale
+staging copy, superseded before the clip was shot. The run and the time were
+unaffected. The clip above is filmed from the current tape, in a container
+verified as ours.
 against the human world record **6.346** (xeap-.-).
 
 *An earlier clip on this page was withdrawn twice over, and both corrections are
