@@ -3,6 +3,21 @@
 **Add two key presses to the world record's run — a tap and a lift, both in the
 last corner — and the author time falls.**
 
+**surely my least cooked at** — TAS **3.836** (−0.015) | AT 3.851 | WR 3.867 by KevinMagPizza
+
+https://github.com/user-attachments/assets/1d322e42-5beb-4e5e-842a-ba01870a2606
+
+**Our 3.836 and KevinMagPizza's world record, both in one camera.** They never
+separate by more than **0.86 m** (mean **0.12 m**), so for most of the clip the
+two cars render inside one another rather than as two vehicles — which is the
+subject, not a defect: up to 2.6 s this *is* his run, to within 8 cm, because
+the TAS is his line with two extra key presses added to it. The gap only opens
+in the final left sweep — 0.03 m at 3.10 s, 0.29 m at 3.30 s, **0.86 m at the
+last sample** — and it opens because he loses 6.2 km/h over the seam and we lose
+2.2. The camera is bolted to **his** car: our recording stops sampling at 3.800
+and his runs to 3.850, so a camera on our ghost would go blind before either
+car reached the line. Ours is the one in front when they get there.
+
 | run | time | vs author time | vs human WR | input changes | steering |
 |---|---|---|---|---|---|
 | Human WR — KevinMagPizza | 3.867 | +0.016 | — | 8 | keyboard |
