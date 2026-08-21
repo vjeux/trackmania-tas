@@ -397,10 +397,10 @@ one of them half-cleaned.
 
 ### Three outright foreign, one of them new
 
-`146612/JUMP_cp5_32702_v1` carries **5× 40.226 — Mr.Compiler's, rank 2, not the
+`146612/SEGMENT_cp5_32702_DO_NOT_PUBLISH_declares_40226` carries **5× 40.226 — Mr.Compiler's, rank 2, not the
 world record.** Anyone checking against the WR alone would have missed it.
 `279218/TAS_5345_starttrick` (already withdrawn) and
-`286279/AUTHOR_AT_355181_extracted_from_map` are the others.
+`286279/AUTHOR_AT_ghost_from_map_DNF_cps1_DO_NOT_PUBLISH_declares_441002` are the others.
 
 ### The two axes are independent, and this is the proof
 
@@ -576,3 +576,44 @@ should worry us most**, because the same mechanism produced both.
 > **Lag-versus-control is necessary and not sufficient.** A repair can be right
 > about the lag and wrong about the file, so the contamination check runs on every
 > repaired file before it lands.
+
+## The baseline: zero unexplained foreign containers
+
+After three renames and four repairs, a census over the whole published tree:
+
+```
+foreign containers — UNEXPLAINED:    0
+foreign containers — KNOWN & NAMED:  2   146612 SEGMENT_cp5_…_declares_40226
+                                         279218 TAS_5345_…_TELEMETRY_IS_Matik_K_…
+carries its own time, no human's:  137
+mixed (partially rewritten):        18   identity axis clean wherever read
+neither:                            15   165922's nine record-less files, three
+                                         macOS resource forks, three name-parse misses
+```
+
+**A census with no unexplained exceptions is a fact. One with exceptions is a
+snapshot.** Re-run it whenever the tree changes — it costs about a second per file
+and it is the only check that needs no reference and no server.
+
+## The last identity field, and the only one the audience can see
+
+Two files passed every reader we had — no account id, login `TAS`, `Ghost:TAS` on
+the game's own import — and carried the donor's **custom car skin**:
+
+```
+Skins\Models\CarSport\frckitbot (1)(1)_756eeda4-….zip
+https://core.trackmania.nadeo.live/storageObjects/756eeda4-…
+```
+
+Every other inherited field is metadata. **A custom skin is the paint on the car
+in the video.** Those files would have gone on screen wearing a stranger's livery
+in a clip captioned as ours, and no reader was looking for it — it was found by a
+tool that scans skin paths on its way to account ids.
+
+> **No clip ships from a file carrying a custom skin path.** The correct value is
+> `Skins\Models\CarSport\TAS.zip` with the checksum zeroed.
+
+Four readers, four fields, **none subsumes another**: the game's import for the
+nickname, the server's parser for login and account id, the u32 census for
+declared-time sites, a skin-path read for the livery. Each has caught something
+the other three passed.

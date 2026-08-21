@@ -202,10 +202,10 @@ guide for this map is not written yet.
 | `replays/TAS_39430.Ghost.Gbx` | the lap whose splits are quoted above |
 | `replays/BEST_39961_v3.Ghost.Gbx` | earlier analog lap |
 | `replays/KEYBOARD_39996_v3.Ghost.Gbx` | earlier keyboard lap, 119 presses |
-| `replays/JUMP_cp5_32702_v1.Ghost.Gbx` | the angled ramp jump — reaches the last checkpoint 1.128 early and never finishes |
+| `replays/SEGMENT_cp5_32702_DO_NOT_PUBLISH_declares_40226.Ghost.Gbx` | the angled ramp jump — reaches the last checkpoint 1.128 early and never finishes |
 | `inputs/BEST_39961_v3.tick.csv` · `inputs/KEYBOARD_39996_v3.tick.csv` | those two laps as readable input scripts |
 
-## A note on `replays/JUMP_cp5_32702_v1.Ghost.Gbx`
+## A note on the segment tape, and why it was renamed rather than fixed
 
 **That file does not finish the map.** Put through the game's own validator it
 returns *"wrong simu, but reached some checkpoints (5 out of 6)"* — it reaches
