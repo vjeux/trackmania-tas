@@ -94,9 +94,10 @@ The world record, gate by gate, with our run alongside:
 
 **Nine of the twenty-three seconds are the pit** — 151 m at 45–100 km/h on
 30°-rolled dirt, dropping in and climbing back out. **Four more are the
-endgame.** Everything we found is after 18.0 s, and it splits into two almost
-equal halves: 0.576 in a tighter landing and turn-around, and **0.574 in the
-final ten metres.**
+endgame.** Everything published here is after 18.0 s, and it splits into two
+almost equal halves: 0.576 in a tighter landing and turn-around, and **0.574 in
+the final ten metres.** The pit's nine seconds looked untouchable when this was
+written; [they are not](#the-pit-is-not-forced).
 
 ## The run, sector by sector
 
