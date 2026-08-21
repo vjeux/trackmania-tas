@@ -698,3 +698,56 @@ But it is not `TAS` either, and a clip from it would put a personal identity on
 screen where every other clip puts the project's. **Left as-is and recorded here
 rather than repaired**, because unlike a donor's login this one may be entirely
 intended, and a repair would be us deciding that for him.
+
+## An acceptance test one sector deep is not a composability proof
+
+210218, sector 11. A perturbation was accepted because the tape still reached the
+*next* milestone with the following sector's inputs frozen — the h = 1 contract.
+It recovered **990 ms** at CP12 and was banked as progress.
+
+Measured properly, against the same tail inputs and the same repair tool with one
+free variable:
+
+| tape | CP13+300 rung |
+|---|---|
+| incumbent 95.575 | 78.113 |
+| chain **without** the sector-11 edit | 78.008 |
+| chain **with** it, plus a 45-minute dense repair | 80.768 |
+
+**The 990 ms bought at CP12 costs 2.760 s by CP13 — net −1.770 s.** Forty-five
+minutes of repair moved it 56 ms in the last 21; the curve is flat and will not
+close the gap.
+
+Nothing is wrong with h = 1 as a *search objective* — it still dominates h = 0 and
+h = ∞. The error is reading its acceptance as a property of the route:
+
+> **Surviving one rung says nothing about the rung after it.** An h = 1 acceptance
+> is a scoring rule, not a promise that the gain composes. On this map the two
+> differ by 2.8 s at one sector's remove.
+
+The corollary is what to search next: if a 990 ms perturbation bills 2.8 s a sector
+later, the tapes worth converting are the ones whose perturbation is *small*.
+
+## A relocated gate the goal is standing in for
+
+Same arm, same night — the repo's own rule (*a relocated gate is a fine ruler and
+an unsafe objective*) walked into from a new direction.
+
+The dense-milestone spec relocated CP14–16 into a scoring sector **and CP13 along
+with them** — the checkpoint the sector's goal was standing in for. The map's route
+then no longer required the real CP13 gate. The winning candidate fires the dense
+goal at 80.768 while being **DNF cps 12 on the real map**: it passes through the
+goal's trigger volume near CP13 without satisfying CP13's own directional gate.
+
+The number survives only in its weaker form — an upper bound against a *relaxed*
+objective — and the true statement is the blunt one: after 636 000 evaluations
+with a dense ladder, the tape still cannot complete sector 13 on the real map at
+all.
+
+> **A goal may relocate the gates it measures you past, never the gate it is
+> standing in for.** If the goal replaces a checkpoint, satisfying the goal stops
+> implying the route.
+
+Fixed in the tool rather than in a note: `pwdense` now refuses a spec that
+relocates the checkpoint its goal substitutes for, so the next arm cannot make
+this mistake by hand.
