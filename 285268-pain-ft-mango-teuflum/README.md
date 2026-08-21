@@ -5,6 +5,8 @@ lock for all 4.7 seconds of sector 9. That is the one place nobody has looked:
 easing fractionally off that lock is worth 0.171 to a machine, and on a keyboard
 a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
+**Video — both cars at once:** <https://pxl.cl/cvxXJ> — our keyboard **49.475** against rank 2's **49.491** (Ssnake01) — sixteen milliseconds apart over forty-nine seconds.
+
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
 | **TAS** | **49.275** | **−0.007** | −0.171 | analog |

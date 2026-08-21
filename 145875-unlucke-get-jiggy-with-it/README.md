@@ -4,6 +4,8 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
+**Video — both cars at once:** <https://pxl.cl/cvz21> — our keyboard **6.323** against the human world record **6.342** (xeap-.-).
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS, unconstrained** | **6.322** | **−0.021** | −0.024 | analog, 186 events |
