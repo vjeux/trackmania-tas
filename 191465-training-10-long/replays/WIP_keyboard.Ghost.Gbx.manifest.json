@@ -1,6 +1,6 @@
 {
-  "schema": "tm-ghost-provenance/1",
-  "written_unix": "1787295356",
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787295508",
   "file": "WIP_keyboard.Ghost.Gbx",
   "md5": "507e862efa546b2f475784d7aa7b4ca6",
   "bytes": 17823,
@@ -11,7 +11,7 @@
   "container_donor": null,
   "source_inputs": null,
   "engine_run": {
-    "note": "DECLARED-TIME REPAIR ONLY. The published file's telemetry is untouched and bit-identical (verified by tmtraj intg pair). Its container declared 13081 ms -- the map's human record -- at six u32 sites; all six rewritten to this file's own validated 13075 ms. Identity was ALREADY ours before the repair: Login TAS, no account id, no skin path string, so d2354b8's identity pass had reached this file and only the time field was left. Found by the u32 declared-time census, which reads the field directly; the server's IsValid could not see it because a header claiming a SLOWER time than the run achieves is accepted.",
+    "note": "DECLARED-TIME REPAIR ONLY of md5 ceecb531e3998e9a401db3e1a961d37a. Telemetry untouched, verified bit-identical by tmtraj intg pair. Its container declared 13081 ms (the map's human record) at six u32 sites; all six rewritten to this file's own validated 13075 ms. Identity was ALREADY ours: Login TAS, no account id, no skin path -- d2354b8's pass had reached this file and left only the time. Found by the u32 census, which reads the field directly; IsValid could not see it because the server accepts a header claiming a SLOWER time than the run achieves.",
     "host": "73939.od.fbinfra.net"
   },
   "telemetry_coverage": null,
@@ -27,6 +27,8 @@
       "args": "own 13075 x6, foreign 13081 x0 after repair"
     }
   ],
+  "provenance_kind": "repair",
+  "repaired_from_md5": "ceecb531e3998e9a401db3e1a961d37a",
   "certification": {
     "contamination_verdict": "CLEAN",
     "references_tested": [
