@@ -15,7 +15,7 @@ reach a finish that sits at the bottom of the lattice.**
 TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 **DugonGOD** · **0 recorded runs** · map uid `9wv8HirGqNFCJsFeVJg6ErKYH6b`.
 
-Video of the run, with the inputs overlaid: <https://pxl.cl/cvdgw>
+Video of the run, with the inputs overlaid: <https://pxl.cl/cvs17>
 
 ## What kind of result this is
 

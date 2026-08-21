@@ -15,7 +15,7 @@ is spent airborne, riding the lattice's own launches rather than driving it.**
 TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 **DugonGOD** · **0 recorded runs**.
 
-Video of the run: <https://pxl.cl/cv5jm> (the 9.415 rung; the line is the same).
+Video of the run: <https://pxl.cl/cvsgF>
 
 ## What is going on here
 
@@ -25,7 +25,8 @@ separate finish gates. Nothing forces you round the course. The author time of
 31.399 is what it costs to drive the track as built; the finish gate can be
 reached in **8.898** by not driving it.
 
-**Measured, on the published 9.415 rung:** 100.0 % of samples sit inside an
+**Measured, on the 9.415 sibling rung** (same line, same lattice; the committed
+8.898 tape differs only in how hard it is thrown): 100.0 % of samples sit inside an
 occupied block cell, the run never leaves the lattice's own volume, and it never
 exceeds its own spawn altitude — but **29.0 % of it is airborne**, 2.78 s in
 total, with the longest continuous stretch **1.51 s**. So it is not flying away
