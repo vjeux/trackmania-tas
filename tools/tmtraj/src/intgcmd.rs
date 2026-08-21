@@ -1918,7 +1918,7 @@ pub fn cmd_dup(args: &[String]) {
         if files.len() < 2 {
             continue;
         }
-        let mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let _mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
         let mut files = files.clone();
         files.sort();
         // decode once per file
