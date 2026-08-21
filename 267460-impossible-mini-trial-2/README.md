@@ -5,6 +5,8 @@
 carrying speed instead takes 0.258, and that decision alone is worth more than
 half a second.**
 
+**Video — both cars at once:** <https://pxl.cl/cvCXq> — our TAS **21.918** against Wirtual's **23.068**, the only time any human has ever set on this map. The clip runs past our finish, so you can watch the world record still driving for another 1.150 s.
+
 | run | time | vs human WR | vs author time | steer values | input events |
 |---|---|---|---|---|---|
 | **TAS, analog** | **21.918** | **−1.150** | +5.030 | 214 | 515 |
