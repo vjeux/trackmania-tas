@@ -995,3 +995,61 @@ catches the failure mode the repair could introduce.
 **Field #7 remains unread**: a donor checkpoint split survives inside the two
 NORETRY files. The page says so rather than implying they are clean in every
 field.
+
+## Field #7: the checkpoint split list — a reader with a stated limit, and no count
+
+The seventh inheritable field now has a reader (`splits.rs`, read-only), and the
+first thing it established is that the field is **not shaped the way we assumed**:
+the entries sit **8 bytes apart** — 15153, 15161, 15169 — a time plus one more
+field, not a count-prefixed u32 array. The first version, keyed to an offset,
+found nothing at all on a file whose splits were already known.
+
+Verified against three files whose answers came from an independent decoder:
+
+```
+228607 TAS_19907            7 splits  4.687 8.196 9.542 11.781 15.008 18.434 20.034  ✓
+285268 TAS_49275           10 splits  6.522 … 49.275                                 ✓
+238835 NORETRY_347003       4 splits  58.906 148.023 347.003 1704.277                ✓
+```
+
+**The third control is the point of the exercise.** That file was certified clean
+on all six declared-time sites two hours earlier — and its split list ends at
+**1704.277**, a donor split no tool we own touches.
+
+> **A file certified in one field is not certified.** Each reader is clean only
+> about what it reads, and the certificate says so or it lies by omission.
+
+It also reproduces the known defect: `TAS_239133`'s list ends at **462.982**, the
+map's *author* time, in a file the oracle validates at 239.133.
+
+### Why no count was given — again
+
+The sweep flags 27 of 174, and several flags are visibly the locator rather than
+the file: 126859's ~23-second runs reported with a "finish split" of **3146.112**;
+another cluster at 7.168; 199100's at 2138.325. Those are a run-finder locking
+onto a coincidental increasing sequence elsewhere in the body. It had already been
+tightened twice — a plausibility cap after it found a 50929.676 "split", and
+last-run-not-longest after a junk run outscored the real list — and both times the
+controls caught it. **A third tightening would be a third guess.**
+
+Credible flags are the ones whose finish split is in scale with the map: 238835's
+five, 228607's `AUTHOR_LAP` (24.902 — Falco_TM_'s time, in the file already broken
+three other ways), and the two repaired NORETRY files. The out-of-scale rows are
+the instrument.
+
+The real fix is to anchor on the chunk id (`0x0309202B`) by walking the chunk
+table, rather than heuristically locating the run — a bigger job needing the game
+to test against.
+
+> **Hand over a reader with a stated limit rather than a number that becomes a
+> work queue.** Same conclusion as the declared-time backlog, reached
+> independently, one hour apart, by the same reasoning.
+
+### Two facts that survive whatever the locator does
+
+1. **The split list is inherited as a unit** — 238835's donor split survives in
+   files whose declared time was fully repaired. The two fields are written by
+   different tools and neither knows about the other.
+2. **A donor's split list agrees with the donor's declared time.** That is why the
+   "exclude values present in the split list" guard failed: *agreement across
+   fields is not evidence of legitimacy when both fields came from the same file.*
