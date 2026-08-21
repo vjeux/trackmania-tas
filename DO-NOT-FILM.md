@@ -141,3 +141,49 @@ neither is safe to caption.
 Before any two-car shoot, decode **both** ghosts and compare sample-CSV md5s. The
 gate cannot help here: a separation of zero and a separation you cannot see
 produce the same verdict. See `VIDEO-UPLOAD-NOTES.md` trap 5.
+
+## 173636 "tap water 01" — the regeneration re-simulates to the right time and the server still calls the run invalid
+
+Found 2026-08-21. The regenerated tape `F1994618919`
+(md5 `52f527fa171d2690a85133d7a171e41f`) was produced to unblock this map. It is
+**not** clear to film, and the reason is narrow enough to be worth stating
+precisely, because two of its three failures are innocent and one is not.
+
+| check | regen | our published `TAS_22072` | downloaded human WR `rank00001_23638` |
+|---|---|---|---|
+| C6 ground contact | FAIL 85.4 % | FAIL 85.4 % | **FAIL 85.7 %** |
+| oracle, re-simulated time | 22.072 — correct | 22.072 — correct | 23.638 — correct |
+| oracle, `IsValid` | **false** | true | true |
+| contamination | clean vs **31** human recordings, 0 bit-identical positions | — | — |
+
+**C6 is refusing the map, not the file.** A downloaded human world record fails
+it at 85.7 %, and on another map (227969) a human WR passes the same check at
+100.0 %. The regen's 85.4 % is the number our own published file has carried
+since it was made. C6 here is a named, signed override — not evidence.
+
+**`IsValid false` is the block, and it belongs to this file alone.** Every other
+file put through the same server on the same map came back valid, including our
+published `TAS_22072` with the same `cps 1`. So: the server re-simulates the
+regen to exactly its declared 22.072 s and still declines to call the run valid.
+**The time is right and the run is not accepted are different statements**, and
+this is the only file in the corpus where they disagree — which is exactly the
+shape of defect that cost this project a night: a correct-looking number attached
+to something that is not the thing claimed.
+
+`cps 1` matches across all four runs, so it is not a missing checkpoint count.
+The open candidates are the finish event and the respawn/state flags. A passing
+file exists on the same map from the same pipeline family, so this is a diff, not
+a mystery.
+
+## The pattern behind three of the entries above: run the human's file through the gate first
+
+C8 refused the snow car. C3 refused 197047. C6 refuses 173636. **All three were
+genuine human recordings, and all three were caught only because somebody thought
+to run a human's file through our own gate.** Three is not a coincidence: the
+gate has a systematic bias against certain surfaces.
+
+Standing step, not an ad-hoc control: before trusting any refusal on a map,
+download that map's human world record and put it through the same gate. **A
+check that refuses the human recording is measuring the map.** Where that is the
+finding, record it as `GATE_OVERRIDE="<id>=<reason>"` — a signed claim in the log
+— and never by widening the rule.
