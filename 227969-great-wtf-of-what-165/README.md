@@ -8,6 +8,11 @@ record holder uses.**
 
 https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
 
+Single car: the **7.998**, our fastest run here, driven with analog steering and
+111 distinct steering values — a tape no human hand produces. The comparison
+below is the 8.050, because that is the run this page is really about: it is
+made of eight steering levels, which a keyboard with action keys can reach.
+
 **Great WTF of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR 8.197 by Titoch_tm
 
 https://github.com/user-attachments/assets/ce212204-01ef-437e-9f2b-631967f19249
