@@ -1,0 +1,75 @@
+{
+  "schema": "tm-ghost-provenance/1",
+  "written_unix": "1787288090",
+  "file": "TAS_15290_lowinput.Ghost.Gbx",
+  "md5": "282c4914125a4ed3e31a932852f700cf",
+  "bytes": 80965,
+  "map_id": "165922",
+  "declared_time_ms": 15290,
+  "oracle_time_ms": 15290,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "/home/vjeux/w165922/cont/human_only_record_8790769_wschseng.Ghost.Gbx",
+    "md5": "5b6a6ff1ff91c7863fa5d9ad9705f1ee"
+  },
+  "source_inputs": {
+    "path": "/tmp/tmrepo/165922-idm-ruinin-ur-day-460/replays/TAS_15290_lowinput.Ghost.Gbx",
+    "md5": "a9403c53bd4861a0a066e0c2e7acb33b"
+  },
+  "engine_run": {
+    "note": "tapecut 879231->2109; tapeswap; fk regen --fieldmap r165_neutral_map.tsv --trim-outside --quat-kind 1; tail fix --cut 15290; body setlogin TAS; anon; setdecl 15290; recspan --end 15290 --trim-all (entity 0x2D001000 175815 -> 305 samples, undecoded and INHERITED inside the race window)",
+    "host": "74871.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 306,
+    "samples_in_record": 306,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18",
+    "47-68"
+  ],
+  "fields_inherited": [
+    "16",
+    "17",
+    "35-38",
+    "41",
+    "44",
+    "45",
+    "46",
+    "73",
+    "74",
+    "75",
+    "77",
+    "78",
+    "79",
+    "80",
+    "85",
+    "86",
+    "87",
+    "88",
+    "90",
+    "92",
+    "94",
+    "96",
+    "98",
+    "100-115"
+  ],
+  "tools": [
+    {
+      "tool": "fk",
+      "args": "tapecut/tapeswap/regen"
+    },
+    {
+      "tool": "tmtraj",
+      "args": "tail fix/body setlogin/anon/setdecl/recspan/intg"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "UNCERTIFIED",
+    "references_tested": [],
+    "limits": []
+  }
+}
