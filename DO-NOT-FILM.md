@@ -1757,3 +1757,61 @@ gate never checked for it, and six files went to film.**
 
 The check is one line — *first-sample orientation against a human recording of
 the same spawn, compared as a rotation* — and it would have caught all ten.
+
+## The independence check could not see a copy, and it was written after the copies were found
+
+**199100's 47.483 is uelen.'s run for its first forty seconds.** Same input tape
+byte for byte; trajectories matching to under a millimetre for 800 consecutive
+samples; a clean departure at 40.100 s and genuine difference over the last 157.
+
+```
+sample-CSV md5   ours == uelen.'s          identical
+separation < 40.000 s   800 samples, mean 0.000476 m, max 0.000906 m
+separation ≥ 40.100 s   157 samples, mean 18.71  m,   max 52.86  m
+```
+
+The page had described it as *"the shape is theirs and we are flying it a metre
+lower"* — which reads as modesty and was **a less literal statement than the file
+itself**. Both clips withdrawn.
+
+### Why it passed
+
+`seplag` reported `INDEPENDENT: no identical position at any lag`. It tests for
+**exactly zero** difference, and these positions differ by ~0.0005 m — the float
+encoder's own noise floor.
+
+> **A tolerance-free equality test cannot see a copy that has been through a
+> re-encode.**
+
+This is the `sep {:.2}` precision bug **inverted**: that one rounded real
+differences away, this one demands differences be exactly zero. **Both failed
+toward "clean"** — the direction that never gets a second look.
+
+And the sharpest part:
+
+> **Every `INDEPENDENT` verdict in this project's history came from that exact
+> test — including the verdicts that cleared files in response to the whole-file
+> copy withdrawals.** The checks run *because* contamination had been found were
+> themselves blind to a re-encoded copy.
+
+### The replacement, and what it can and cannot tell you
+
+`nearident`: positions within **1 mm for 100 consecutive samples**, scanned at
+every integer lag. Calibrated against known answers before use —
+
+```
+POSITIVE  199100 ours vs uelen.       802 consecutive ≤1 mm   COPY
+NEGATIVE  199100 49.778 vs uelen.      30 samples             INDEPENDENT
+NEGATIVE  270053 ours vs AffiTM        11 samples             INDEPENDENT
+          228607 TAS_19907 vs 19910   364 consecutive ≤1 mm   COPY
+```
+
+The last row is **not a false positive and was not tuned away.** Those two tapes
+have *different input CSVs*, so they are not the same tape — but they are bit-close
+for the first **18.200 s of a 20-second run**. Two runs sharing a common prefix,
+as a search branching late off one parent produces.
+
+> **The band measures a shared prefix. The input-tape md5 is what distinguishes a
+> branch from a copy.** A band that fired only on copies would be a band tuned to
+> the answers already known.
+
