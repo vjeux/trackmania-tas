@@ -144,3 +144,46 @@ console.log('\n— gas as a state —');
 gasProbe('holds gas the whole run', true, null);
 gasProbe('never presses gas', false, null);
 gasProbe('lifts at 3.000', true, 3000);
+
+// section drills: a drill that starts mid-hold must not punish you for the
+// release of a note whose press it never showed
+function playSection(idx, offsetMs, label){
+  byId('cbDemo').onchange({target:{checked:false}});
+  byId('rgSpeed').oninput({target:{value:100}});
+  const secBtns = []; // sections are wired to real buttons; drive state directly
+  key('keyup','ArrowUp',t);
+  // click the section button by replaying its handler
+  const wrap = byId('sections');
+  wrap.children[idx].onclick();
+  frames(1,4);
+  key('keydown','ArrowUp',t);
+  // a drill player plays only what the drill shows
+  const SEC=[[-500,6370],[-500,2250],[1900,5110],[3400,6370]][idx];
+  const all = laneRuns().filter(n=>n.end>0 && n.end>SEC[0] && n.start<=SEC[1]+1);
+  const notes = all.filter(n=>n.start>=SEC[0]-1);
+  const granted = all.filter(n=>n.start<SEC[0]);   // handed to you: release only
+  const edges = [];
+  for (const n of notes){
+    edges.push({t:n.start+offsetMs, code:CODES[n.lane], type:'keydown'});
+    if(!n.open) edges.push({t:n.end+offsetMs, code:CODES[n.lane], type:'keyup'});
+  }
+  for (const n of granted) if(!n.open) edges.push({t:n.end+offsetMs, code:CODES[n.lane], type:'keyup'});
+  edges.sort((a,b)=>a.t-b.t);
+  // drive off the PAGE's own clock, not a private one
+  for(let i=0;i<4000;i++){
+    const now = parseFloat(byId('hTime').textContent)*1000;
+    while(edges.length && edges[0].t<=now){ const e=edges.shift(); key(e.type,e.code,t+4); }
+    frames(1,4);
+    if(byId('results').classList.contains('show')) break;
+  }
+  const rh=byId('results').innerHTML;
+  const grade=(rh.match(/gradebig[^>]*>\s*([A-Z+]+)/)||[])[1];
+  const acc=(rh.match(/([\d.]+)%/)||[])[1];
+  const miss=(rh.match(/<b>(\d+)<\/b><span>missed/)||[])[1];
+  const extra=(rh.match(/<b>(\d+)<\/b><span>inputs the tape never makes/)||[])[1];
+  console.log(label.padEnd(34)+' grade='+grade+' acc='+acc+'% miss='+miss+' extra='+extra);
+}
+console.log('\n— section drills, played perfectly (should be clean) —');
+['Full run','Launch','The burst','Long left→out'].forEach((n,i)=>playSection(i,0,n+' @ on tape'));
+console.log('— section drills, 30 ms late —');
+['Full run','Launch','The burst','Long left→out'].forEach((n,i)=>playSection(i,30,n+' @ 30 ms late'));

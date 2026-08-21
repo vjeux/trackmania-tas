@@ -5,7 +5,11 @@ lock for all 4.7 seconds of sector 9. That is the one place nobody has looked:
 easing fractionally off that lock is worth 0.171 to a machine, and on a keyboard
 a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
-**Video — both cars at once:** <https://pxl.cl/cvxXJ> — our keyboard **49.475** against rank 2's **49.491** (Ssnake01) — sixteen milliseconds apart over forty-nine seconds.
+**Pain ft Mango & Teuflum** — keyboard **49.475** (+0.193) | AT 49.282 | WR 49.446 by burntbagels
+
+https://github.com/user-attachments/assets/aa4bd56a-2ff1-42b8-8165-96dfe87e511f
+
+Both cars are on screen: our keyboard run against Ssnake01's rank-2 lap, sixteen milliseconds apart over forty-nine seconds.
 
 **Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.446 by burntbagels
 

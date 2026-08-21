@@ -4,7 +4,11 @@
 metre tighter. That is the whole map — and it is enough to beat an author time
 856 people have chased, on a keyboard.**
 
-**Video — both cars at once:** <https://pxl.cl/cvB2t> — our TAS **13.071** against the human world record **13.081**. Eight milliseconds apart, but the two drivers take genuinely different lines and only converge at the finish, so both cars are clearly visible.
+**Training 10 long** — TAS **13.071** (−0.010) | AT 13.081 | WR 13.081
+
+https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
+
+Both cars are on screen: eight milliseconds apart, but the two drivers take genuinely different lines and only converge at the finish, so both are clearly visible.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|

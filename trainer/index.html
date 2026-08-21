@@ -1326,13 +1326,46 @@ function click(freq, gain){
 }
 
 /* ---------- run control ---------- */
+
+/* A section is a drill cut out of the middle of a run, so some notes are
+   ALREADY HELD when it opens — in "The burst" you are mid-way through the
+   0.520 s right, in "Long left→out" you are inside a left. Judging the release
+   of a note whose press was never shown is the definition of unfair, so the
+   drill HANDS you that state: the lane starts held, the lead-in says which keys
+   to be holding, and your own press during the lead-in is absorbed silently
+   instead of counting as an input the tape never makes. The release is still
+   yours to time. */
+function preHeldLanes(a){
+  const set = [];
+  for (const n of NOTES){
+    if (!S.includeCountdown && n.end <= 0) continue;
+    if (n.start < a && n.end > a && !set.includes(n.lane)) set.push(n.lane);
+  }
+  return set;
+}
+/* And a drill should never stop in the middle of a note it asked you to press:
+   the end stretches to cover whatever is still down. */
+function sectionEnd(sec){
+  let end = sec.b;
+  for (const n of NOTES){
+    if (!S.includeCountdown && n.end <= 0) continue;
+    if (n.start >= sec.a - 1 && n.start <= sec.b + 1 && !n.open) end = Math.max(end, n.end);
+  }
+  return end;
+}
+
 function arm(){
+  const secEnd = sectionEnd(S.sec);
   S.events = notesToEvents(NOTES, S.includeCountdown)
-    .filter(e => e.t >= S.sec.a - 1 && e.t <= S.sec.b + 1);
+    .filter(e => e.t >= S.sec.a - 1 && e.t <= secEnd + 1);
   S.events.forEach(e => { e.judged = false; e.missed = false; e.grade = null; e.err = 0; e.playerT = null; });
+  S.secEnd = secEnd;
+  S.granted = preHeldLanes(S.sec.a);
   const first = S.events.length ? S.events[0].t : S.sec.a;
+  S.firstNote = first;
   S.tapeNow = Math.min(S.sec.a, first) - LEAD_IN;
-  S.pops.length = 0; S.combo = 0; S.bestCombo = 0; S.held = LANES.map(() => false);
+  S.pops.length = 0; S.combo = 0; S.bestCombo = 0;
+  S.held = LANES.map((l, i) => S.granted.includes(i));   // the drill hands you the state
   S.hits.length = 0; S.extra = 0;
   S.gasLifted = 0; S.gasFaultAt = null;
   S.demoFired = new Set();
@@ -1360,6 +1393,10 @@ function edge(lane, type, t){
   if (S.sound) click(type === 'press' ? 1180 : 760, 0.05);
   const m = matchEdge(S.events, lane, type, t);
   if (!m){
+    // Before the drill's first note you are warming up, not playing: a key
+    // pressed there is not an input the tape "never makes", it is you getting
+    // your fingers onto the keys. Costs nothing.
+    if (t < S.firstNote - claimFor(type).early){ S.held[lane] = (type === 'press'); return; }
     S.combo = 0;
     S.wrong[lane] = performance.now();
     pop(lane, 'EXTRA', '#ff5b6e');
@@ -1408,6 +1445,15 @@ addEventListener('keyup', e => {
   if (S.state === 'playing' && !S.demo) edge(l, 'release', tapeTimeOf(e));
 });
 
+/* Alt-tab mid-run and the OS never delivers your keyup: the lane would stay
+   stuck down for the rest of the run and every later note in it would break.
+   Drop the keys silently and pause — losing focus is not a mistake you made. */
+addEventListener('blur', () => {
+  S.held = LANES.map(() => false);
+  S.gasHeld = false;
+  if (S.state === 'playing') S.state = 'paused';
+});
+
 /* ---------- frame ---------- */
 function frame(ts){
   const dt = S.lastTs ? Math.min(100, ts - S.lastTs) : 0;
@@ -1443,7 +1489,7 @@ function frame(ts){
       }
     }
 
-    const tail = Math.max(S.sec.b, S.events.length ? S.events[S.events.length-1].t : 0) + 900;
+    const tail = Math.max(S.secEnd, S.events.length ? S.events[S.events.length-1].t : 0) + 900;
     if (S.tapeNow > tail) finish();
   }
   draw();
@@ -1513,7 +1559,7 @@ function draw(){
     if (!S.includeCountdown && n.end <= 0) continue;
     const top = yFor(n.end), bot = yFor(n.start);
     if (bot < -60 || top > H) continue;
-    const inSec = n.end >= S.sec.a - 1 && n.start <= S.sec.b + 1;
+    const inSec = n.end >= S.sec.a - 1 && n.start <= S.secEnd + 1;
     const L = LANES[n.lane], { x, w } = xs[n.lane];
     const h = Math.max(5, bot - top);
     const done = S.events.some(e => e.note === n.idx && e.type === 'press' && e.judged);
@@ -1580,6 +1626,7 @@ function draw(){
     ctx.fillText(L.label, x + w/2, cy + 15);
   }
   drawGasBar(x0, total, jy);
+  drawGrant(x0, total, jy);
 
   // popups
   S.pops = S.pops.filter(p => now - p.born < 900);
@@ -1665,7 +1712,7 @@ function drawStrip(){
   ctx.strokeStyle = '#161b27'; ctx.beginPath(); ctx.moveTo(0, H-STRIP_H+.5); ctx.lineTo(W, H-STRIP_H+.5); ctx.stroke();
   // section shading
   ctx.fillStyle = 'rgba(255,255,255,.05)';
-  ctx.fillRect(X(Math.max(a,S.sec.a)), y - 3, X(Math.min(b,S.sec.b)) - X(Math.max(a,S.sec.a)), h + 6);
+  ctx.fillRect(X(Math.max(a,S.sec.a)), y - 3, X(Math.min(b,S.secEnd)) - X(Math.max(a,S.sec.a)), h + 6);
   for (const n of NOTES){
     const L = LANES[n.lane];
     const yy = n.lane === 1 ? y + h - 4 : y;     // brake rides low, as a tick
@@ -1694,6 +1741,24 @@ function drawStrip(){
     ctx.fillStyle = '#3f4a60';
     ctx.fillText(ph.name, cx, y + h + 15);
   }
+}
+
+/* What you must already be holding when a drill opens, said plainly during the
+   lead-in — the counterpart to arm() handing you that state. */
+function drawGrant(x0, total, jy){
+  if (!S.granted || !S.granted.length) return;
+  if (S.state !== 'playing' || S.tapeNow >= S.sec.a) return;
+  const names = S.granted.map(i => LANES[i].glyph + ' ' + LANES[i].label).join('  +  ');
+  const y = jy - 74;
+  ctx.font = '700 15px ui-sans-serif,sans-serif'; ctx.textAlign = 'center';
+  const w = Math.max(280, ctx.measureText(names).width + 90);
+  ctx.fillStyle = 'rgba(12,16,23,.92)';
+  roundRect(x0 + total/2 - w/2, y - 26, w, 52, 10); ctx.fill();
+  ctx.strokeStyle = '#39415a'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#8b95ab'; ctx.font = '600 10.5px ui-sans-serif,sans-serif';
+  ctx.fillText('THIS DRILL STARTS MID-RUN — ALREADY HOLDING', x0 + total/2, y - 8);
+  ctx.fillStyle = '#ffd75e'; ctx.font = '700 17px ui-sans-serif,sans-serif';
+  ctx.fillText(names, x0 + total/2, y + 14);
 }
 
 function drawCountdown(){

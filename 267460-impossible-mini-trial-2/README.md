@@ -64,8 +64,19 @@ building style — small floating platforms — not a checkpoint mechanic.
 Twenty-two of the map's thirty-one blocks are big flat stadium screens rotated
 vertical into **two solid walls**, one behind the start and one between the
 flight and the finish. Every route question on this map is "which hole in which
-wall", and the answer is that there is only one of each. **The route is forced;
-there is no secret line.**
+wall", and the answer is that there is only one of each. The route is forced in
+*space* — there is no secret line.
+
+> **Correction, and it is the important thing on this page.** An earlier version
+> of this section went on to say the route being forced meant the *timing* was
+> forced too, and a floor was published on that basis. **That does not follow,
+> and it is false.** The pit below is on the forced route, and its cost was never
+> measured against an alternative — it was simply accepted. It turns out the car
+> can be slid across the dirt instead of driven around it, arriving at the same
+> point on the eastward deck **5.650 s earlier than our best run does**, with both
+> loops skipped entirely. See *[The pit is not forced](#the-pit-is-not-forced)*.
+> Every measurement above and below this note still stands; the conclusion drawn
+> from them did not.
 
 The world record, gate by gate, with our run alongside:
 
@@ -147,11 +158,46 @@ closed:
 - **Launching upward** over the far wall is closed too: the flat ramp does not
   produce upward velocity.
 
-The best construction anyone has assembled out of a launch, a flight and an
-endgame is about 21.3, against a best actual of 21.918. So either there is a
-route nobody has found, or the author time was not driven. The map carries no
+The best construction anyone had assembled out of a launch, a flight and an
+endgame was about 21.3, against a best actual of 21.022 — which was the basis for
+saying that either there is a route nobody has found, or the author time was not
+driven. **The first of those turned out to be true.** The map carries no
 author ghost of any kind, and with a single human record there is no field to
 cross-check it against.
+
+## The pit is not forced
+
+**Nine of the twenty-three seconds are spent in the pit, and they do not have to
+be.** Every run on this map — the human record, the author's implied lap, and all
+of ours — drives down into the pit, U-turns at the bottom, climbs back out north
+and U-turns again at the top. That is 4.7 s to 11.4 s of looping, and it was
+never priced, only assumed.
+
+The car can be **slid across the dirt** instead. Landing on the dirt at 4.75 s,
+the slide scrubs 141.8 → 62.3 km/h in a single contact and then runs straight
+down the deck eastward — x 735 → 791 while z 746 → 698 — with no loop at all.
+
+Three stations along the eastward deck, each of which the human record and our
+own best prefix both cross at a known time, and which must be crossed in order so
+that a falling car cannot score:
+
+| arrival at | (740.6, 112, 727.5) | (755, …) | (767, 108, 722) |
+|---|---|---|---|
+| human WR | 12.954 | 13.297 | 13.560 |
+| our best conventional prefix | 12.254 | 12.652 | 12.933 |
+| **the slide** | **6.119** | **6.848** | **7.283** |
+
+**416 separate programs arrive in order. The best of them reaches the third
+station 5.650 s ahead of our best conventional run.**
+
+**The trade, stated honestly:** the human crosses that last station at 174 km/h
+and the slide crosses it at 128. His two loops are buying run-up speed, so this
+is 6.28 s earlier and 46 km/h slower, and **whether it converts into a finish is
+not yet known.** Reconnecting the ending from this much slower entry state is
+open work. The arithmetic — 7.283 to the deck, plus 2.081 to the ramp exit, plus
+5.988 from ramp exit to the flag — lands near 15.4, well under the author time,
+but it assumes a launch speed we do not have. **It is not a result; it is a
+reason to keep going.**
 
 ## Files
 
