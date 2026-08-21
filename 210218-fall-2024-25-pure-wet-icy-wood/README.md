@@ -1,125 +1,193 @@
 # Fall 2024 - 25 (Pure Wet Icy Wood)
 
-**On wet icy wood the car is not steered, it is aimed: the whole leaderboard
-drives permanently sideways, and the one player who stops doing that is faster
-in eight of the last twelve sectors.**
-
-**Fall 2024 - 25 (pure wet icy wood)** — TAS **96.068** (+1.591) | AT 94.477 | WR 96.281 by iambeeen
+**Fall 2024 - 25 (pure wet icy wood)** — TAS **95.575** (+1.098) | AT 94.477 | WR 96.281 by iambeeen
 
 https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 
-| run | time | vs author time | vs human WR |
+*The clip is an earlier 96.068 tape — the same line, 0.493 slower than the
+95.575 this page describes; it has not been re-filmed yet.*
+
+TMX [210218](https://trackmania.exchange/maps/210218) · author time **94.477** ·
+world record **96.281** (iambeeen) · **36 recorded runs**
+
+| | time | vs AT | vs WR |
 |---|---|---|---|
-| [`TAS_96068`](replays/TAS_96068.Ghost.Gbx) | **96.068** | +1.591 | **−0.213** |
-| [`TAS_96078_1minimal`](replays/TAS_96078_1minimal.Ghost.Gbx) | 96.078 | +1.601 | −0.203 |
-| Author time | 94.477 | — | −1.804 |
-| Human WR — iambeeen | 96.281 | +1.804 | — |
+| **our TAS** | **95.575** | **+1.098** | **−0.706** |
+| world record, iambeeen | 96.281 | +1.804 | — |
+| author time | 94.477 | — | −1.804 |
 
-TMX map [210218](https://trackmania.exchange/maps/210218) · author **R4igekon**
-· 30 recorded runs.
+**The author time is not beaten.** We are 0.706 s under the human world record
+and 1.098 s over the author. This page is about why — and the why turns out to
+be a genuinely unusual thing, which is that on this map the time exists and
+cannot be spent.
 
-**The author time still stands.** We are 1.591 short of it. The durable result
-on this map is not our lap time — it is where the time is, and a human has
-already driven all of it.
+---
 
-## The lap is already on the leaderboard, in pieces
+## If you drive this map: sector 11 is where the time is
 
-The map has 17 checkpoints. Add up the best sector time anybody in the field has
-driven and you get **91.826 — 2.651 under the author time**. Even after
-discarding every sector that could have carried speed in from the one before it,
-the assembled lap is **93.847, still 0.630 under**. Every one of those sector
-times is a real clock reading from a human's own lap on this map.
+Sector 11 is the long one — 11.9 seconds, CP10 to CP11, and the single biggest
+block of unclaimed time on the track.
 
-**Nobody has put them together.** The world record is the fastest run in only 6
-of the 17 sectors.
+**926 milliseconds are available there**, and we know that in two independent
+ways that agree:
 
-## What the field does wrong: it slides
+* a machine search of that sector alone, starting from the world record's own
+  entry state, found **−926 ms** in twelve minutes;
+* **rank 21 on the leaderboard already drives it 881 ms faster than the world
+  record does.**
 
-One run tells the whole story. `r21` (SparkSheep) sits **21st** on the
-leaderboard, because it loses 81.587 in sectors 1–5 to a driver stuck crawling
-on a plateau. Over sectors 6–17 it is **3.195 faster than the world record** —
-the fastest run in the field in 8 of those 12 sectors, on the same route, its
-checkpoints within a metre or two of the record's at every gate.
+Those two numbers landing on top of each other is the interesting part. A TAS
+optimum on its own tells you nothing about whether a person can hold the line —
+machines routinely find time in places no human hand can reach. When the
+machine's answer and a human's answer arrive at the same place with the same
+number, the gain is a real property of the corner and not an artefact of
+perfect inputs.
 
-The difference is slip. The field drives at roughly 20–30° of slip angle; over
-sectors 6–17 r21 drives at **0.3–3.1°**.
+**What rank 21 does differently, and it is the whole map:** he does not slide.
+On this surface the field drives at 21–30° of slip. Through sectors 6 to 17 he
+is at **0.3–3.1°** — the slip angle of a world record on the *grippy* version
+of this same layout. Same corners, same throttle, and in sector 11 he is
+carrying the speed everybody else is grinding off sideways.
 
-| sector | WR slip | r21 slip | WR throttle | r21 throttle | WR mean speed | r21 mean speed | path Δ | r21 gain |
-|---|---|---|---|---|---|---|---|---|
-| 6 | 24.8° | **0.3°** | 100 % | 100 % | 73.4 m/s | **75.0** | −27.3 m | 0.457 |
-| 12 | 10.4° | **3.1°** | **100 %** | **100 %** | 51.7 | **60.5** | **+4.6 m** | 0.574 |
-| 13 | 23.5° | **3.1°** | 95.8 % | 100 % | 59.7 | **66.9** | −8.0 m | 0.715 |
-| 14 | 28.6° | **2.0°** | 97.2 % | 100 % | 59.4 | **61.9** | +0.6 m | 0.230 |
-| 15 | 16.1° | **0.7°** | **100 %** | **100 %** | 44.7 | **48.8** | −2.5 m | 0.514 |
-| 16 | 34.1° | **0.5°** | 83.8 % | 100 % | 63.9 | **67.4** | −4.0 m | 0.269 |
+> **Arrive pointed where you are going and keep the wheel still.** Every degree
+> of slide on this ice is speed you are throwing away.
 
-**Sectors 12 and 15 are the clean case: identical full throttle, the same line
-to within 8 m, and in sector 12 r21's path is 4.6 m *longer* — and it still
-carries 17 % and 9 % more mean speed.** Neither throttle nor route explains it.
-On this surface sliding scrubs speed, and that is the whole of it.
+The catch, and the reason nobody holds this time: that low-slip line is about
+one unit of steering wide, and the driver who misses it is in the water. This
+is a survival leaderboard — across all 30 runs, finishing position tracks
+*respawn count* at +0.874. The top five have zero. Last place has 34.
 
-Sector 6, side by side from the same entry speed (221 against 226 km/h): the
-world record swings up to **50 m/s sideways** and thrashes between full left and
-full right lock; r21 stays inside **0.43 m/s** of straight with the wheel
-centred. Over the run the world record uses 213 distinct steering values. r21's
-input tape holds three — it is a keyboard run.
+## The state of the run
 
-And the five biggest gains are all taken from an entry speed **equal to or lower
-than** the world record's, so this is not a run inheriting speed from upstream.
+Our lap **is** the world record's lap — literally, to within a centimetre — for
+its first 83.2 seconds. We re-simulated our tape inside the engine and compared
+it to iambeeen's own recorded telemetry tick by tick:
 
-## Sector by sector, off what you can see
-
-The run descends x 1488 → 660 overall. "Wheel centred" means literally zero
-steering input, which is what r21 holds most of the time.
-
-| sector | where you are | what to do | gain |
-|---|---|---|---|
-| **6** | leaving the CP5 gate at ~220 km/h, long descent to z ≈ 500 | wheel centred between a handful of steering inputs, throttle pinned. **Do not catch the car — do not let it start sliding.** Exit at 341 km/h against the record's 308 | **0.457** |
-| **7** | flat-out run to z ≈ 338, the fastest ground stretch (401 km/h) | sixteen input changes, full throttle throughout | 0.233 |
-| **8** | braking zone into z ≈ 238 | **throttle for only 41 % of the sector** against the field's 57 % — lift earlier and longer | 0.423 |
-| **10** | climbing back out, x 785 → 1005, first air | throttle 82 % — hold it *more* than the record does here (48 %) | 0.159 |
-| **11** | the long one: x 1005 → 1265 climbing to y 122, 40 % airborne | the single biggest gain on the map. 47 changes, throttle 94 %. The record spends 122 changes fighting this and loses 0.881 | **0.881** |
-| **12** | over the top, dropping y 122 → 82, 43 % airborne | **ten input changes for the whole sector.** Full throttle, a touch of brake | 0.574 |
-| **13** | landing and running to x 1352, y 58 | 28 changes, full throttle | 0.715 |
-| **14** | along z 755 → 971 at y ≈ 50 | sixteen changes | 0.230 |
-| **15** | the slow hairpin back, x 1400 → 1244, down to 132 km/h at entry | 22 changes, full throttle | 0.514 |
-| **16** | back along z ≈ 960 to x 985, up to 290 km/h | 36 changes, **full throttle where the record is on it only 84 %** | 0.269 |
-| **17** | the finish: 58 % airborne, 506 km/h peak | four input changes. Nothing to do but hold it | — |
-
-The general instruction is the same everywhere: **arrive with the car pointed
-where it is going, hold the wheel still, and do not chase it.** The thing to
-watch is how far sideways the car is travelling, not how fast it is turning.
-
-A player chasing the author time needs sectors 6, 7, 10, 11, 12, 13, 14, 15 and
-16 the way SparkSheep drives them in the 21st-place run, sector 8 the way
-Sompig. drives it, and the rest from iambeeen's world record.
-
-## How forgiving it is
-
-Not at all, and that is the honest answer. **The low-slip line is about one unit
-of steering wide.** Change a single tick of steering by one unit of 254 anywhere
-in the run and the lap dies about two thirds of the time; on a keyboard tape it
-is still 55 %. There is no slower-but-alive region on this surface — you are
-either on the line or you are in the water.
-
-That is also what the leaderboard is made of: what separates a 96-second lap
-from a 440-second one is how many times you fall in, not how you drive. The top
-five have zero respawns; the last has 34.
-
-So the technique is **simpler to execute than what the field does** — three
-steering values, two to three times fewer input changes per sector than the
-world record — but it is not more forgiving. Fewer inputs here means less to
-execute, not more slack per input. Anyone who has avoided this map because "you
-have to catch the slides" has it backwards; anyone who expects the gripping line
-to be comfortable will be swimming.
-
-And respawning your way out of a mistake is not a route to the author time: the
-cheapest finishing respawn over the last 2.7 s costs +1.787, against a gap of
-1.601.
-
-## Files
-
-| file | what |
+| race second | distance between the two lines |
 |---|---|
-| `replays/TAS_96068.Ghost.Gbx` | **the fastest lap here, 0.213 under the world record** |
-| `replays/TAS_96078_1minimal.Ghost.Gbx` | 96.078, the same line with the input list minimised |
+| 0 … 82 | ≤ 0.003 m |
+| 84 | 0.199 m |
+| 90 | 14.007 m |
+| 95 | 95.836 m |
+
+Everything we have ever won on this map — 706 ms across three sessions — was
+won in the **last 12.4 seconds**. Sectors 1 through 14 have never been improved
+by anything.
+
+And the field's own per-sector bests, added up, come to **91.826** — 2.651
+under the author time. Every sector of a winning lap has been driven by
+somebody. Nobody has assembled one, and this page is the account of finding out
+why.
+
+## Why the time cannot be spent: the exchange rate
+
+Here is the measurement that explains this map.
+
+We ran the same search five times. Same starting tape, same operators, same
+budget of about 24 minutes, same window of the lap open to editing. **The only
+thing that changed was where we put the finish line.**
+
+| time is measured at | how much the search finds |
+|---|---|
+| checkpoint 12 | **−947 ms** |
+| checkpoint 13 | −251 ms |
+| checkpoint 14 | −365 ms |
+| checkpoint 15 | −90 ms |
+| **the real finish** | **−10 ms** |
+
+Nearly a second of real, driveable time exists at checkpoint 12. Ninety
+milliseconds of it are still there three sectors later. **Ten survive to the
+line.**
+
+The same thing measured a different way: searching each sector on its own, from
+the state we actually arrive in, finds **1.814 seconds** in 48 minutes of
+compute — against a deficit of 1.098. Then 1.52 million evaluations aimed at the
+real finish line bought **23 milliseconds**.
+
+> **210218 is not short of time. It is short of a way to spend it.**
+
+The mechanism is not mysterious, it is just brutal. This is an open-loop input
+tape in a chaotic simulation: change one steering unit on one tick and the run
+dies 69 % of the time, and the survivors come back to the same millisecond. Any
+edit invalidates every input after it. So a gain in sector 11 is only worth
+anything if the *next twenty-five seconds of unchanged driving happen to still
+work* — and they almost never do.
+
+We did convert one, end to end, which is worth stating as a number because it
+is the exchange rate as a lived experience: 115 ms banked at checkpoint 15,
+then a full rebuild of the last 7 seconds to recover from it. **Net gain:
+−124 ms.** Everything else the search found upstream was paid straight back to
+the tail.
+
+## What is closed, and what it cost to close
+
+Each of these is a resourced experiment with a control, not an impression.
+
+| we tried | candidates | result |
+|---|---|---|
+| **the weld** — our first five sectors, then rank 21's entire tail, over every join point and phase | 77 | 0 finishers |
+| **re-phasing the tail** after banking 467 ms in sector 14 (slide the remaining inputs earlier by 0–55 ticks) | 64 | **0 finishers** |
+| the same at the exact tick the run dies | 84 | **0 finishers** |
+| **blending** our tape toward the faster one, from 10 % to 95 % | 10 | 0 reach the next checkpoint — even a 10 % blend is fatal |
+| **an exhaustive structural sweep** — every steering bias, gain and phase shift over a grid of windows across the last 24 seconds | **1 368** | 203 finishers, best **−1 ms** |
+
+The first four say the same thing in four ways: **a fast arrival is not a fast
+lap, and no amount of sliding the tail around converts one into the other.**
+The fifth says the endgame is genuinely converged — combined with an earlier
+session's exhaustive enumeration of all 470 016 single-input changes, this map's
+last 24 seconds have absorbed nearly half a million deliberate edits and given
+back 2 milliseconds.
+
+## How you can tell this is the map and not our instrument
+
+A negative result is only worth reading if the thing that produced it could
+have detected a positive. This one could, and did, all night:
+
+* Against the **real finish line**, the search resolved single milliseconds and
+  kept doing so: **95.604 → 95.603 → 95.598 → 95.591 → 95.588 → 95.586 →
+  95.575**, every step written to disk and re-validated.
+* The **same binary, same starting tape, same operators**, pointed one
+  checkpoint upstream, found **926, 371 and 467 ms** in twelve minutes apiece.
+* Every one of those upstream winners reproduces our tape's time *exactly* at
+  the checkpoint before the sector it edited, and is a **did-not-finish** on the
+  real map. The instrument agrees where it must and diverges where it should.
+
+So the failure to reach 94.477 is a statement about the map, not about the
+detector.
+
+One thing that went right and is worth recording: the search's own guard fired
+once, refusing to bank a tape whose time it could not reproduce on a second
+look. Re-checked by hand afterwards the tape was fine — it had hit the known,
+rare case where the simulator returns a different answer on the same input — but
+**a search that stops rather than bank a result it cannot reproduce is doing
+exactly its job**, and that guard exists because an earlier session on another
+map nearly published a time that was not real.
+
+## Verification
+
+Everything is re-simulated by Nadeo's own dedicated server on an untouched copy
+of the map, one file per invocation, with a downloaded human ghost in the same
+sweep as a control:
+
+```
+r01_96281  (world record, control)   96281
+r02_103915 (rank 2, control)        103915
+TAS                                  95575   ×3
+```
+
+The published ghost carries its own telemetry, regenerated out of the running
+engine, so it plays back as the run it records rather than as the tape it was
+built from. Nadeo's validator on the published file:
+
+```
+"Time" : 95575,   "IsValid" : true,   Can't load 0%,   Unvalidable 0%
+```
+
+## What would take this map
+
+Not more compute on the endgame — that is settled to two milliseconds. The
+prize is sector 11, it is worth 926 ms, and the obstacle is not finding the time
+but carrying it home through twenty-five seconds of tail. That needs a repair
+tool that works over that distance; the best one we have works over seven
+seconds. Whoever builds it gets the author time, because the time is already
+there and measured.
