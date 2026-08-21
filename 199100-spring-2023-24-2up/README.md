@@ -6,6 +6,36 @@ and arrive from below still accelerating.**
 
 **Spring 2023 - 24 (2-UP)** — TAS **49.778** (−1.824) | AT 51.602 | WR 47.838 by uelen.
 
+
+https://github.com/user-attachments/assets/bd9be08e-337b-4f64-9164-7841ceb273a1
+
+**Our 49.778 and uelen.'s world record, both in one camera, shot on our car —
+and this is the one map here where the human is the faster car.** He is ahead
+almost throughout, by **308 m** at the widest, mean **72.9 m**; 321 of 957 shared
+samples fall in the band where both read as cars rather than as one. His ghost
+stops being drawn at **47.850**, because he has finished, and ours runs on to
+49.800. The last two seconds with only our car on screen are the 1.940 s, drawn.
+
+The clip is filmed from `replays/gen_TAS_49778.Ghost.Gbx`, whose record was
+generated from our input tape through the engine rather than patched.
+
+*Two gate notes, both with their controls, because neither is a clean pass.*
+`tmtrajcheck` **refuses** this file at C10 — 7.00 s of claimed flight over a
++77.0 m climb. Byte 89, the ground-contact flag, is the single per-sample field
+the generator inherits rather than writes, and it is named as inherited in the
+file's own manifest. The control: **uelen.'s downloaded world record fails the
+same check in the same phase of the run**, 6.00 s over +84.1 m. C10 is reading
+this map's flag convention, not this file, and position, orientation and speed
+are all engine-written.
+
+And our trajectory holds within 1 mm of his for **32 consecutive samples** off
+the line, which is the standing start rather than a shared run: on this map two
+*human* recordings hold for **28, 28 and 49** samples over the same opening, and
+ours against rank 2 reads **49** — exactly what rank 2 and rank 3 read against
+each other. Container: five copies of its own 49.778 and none of 47.838,
+51.602, 52.202, 47.483 or 49.491; imports as `Ghost:TAS`; spawn attitude |dot|
+1.0000 against the human recording.
+
 > ### ⚠️ The 47.483 on this page is under review
 >
 > **The 47.483 tape shares uelen.'s input tape byte for byte, and its trajectory
