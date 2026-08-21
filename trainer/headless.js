@@ -82,10 +82,11 @@ function laneRuns(){
   return notes;
 }
 const CODES=['ArrowLeft','ArrowDown','ArrowRight'];
-function playRun(offsetMs, label, demo){
+function playRun(offsetMs, label, demo, speedPct, secIdx){
   cache.forEach(e=>{ e.innerHTML=''; e.classList.remove('show'); });
   byId('cbDemo').onchange({target:{checked:!!demo}});
-  byId('rgSpeed').oninput({target:{value:100}});           // 1.00x
+  if (secIdx!=null) byId('sections').children[secIdx].onclick();
+  byId('rgSpeed').oninput({target:{value: speedPct||100}});
   const edges=[];
   if(!demo) for(const n of laneRuns()){
     if(n.end<=0) continue;
@@ -96,12 +97,12 @@ function playRun(offsetMs, label, demo){
   key('keydown','KeyR',t);                                  // (re)start
   key('keydown','ArrowUp',t);                               // gas: held, never judged
   frames(1,4);
-  let tape=-2.3*1000, i=0;
-  const STEP=4;
-  while(tape < 7600 && i<100000){
-    tape += STEP;                                           // speed 1.0 → tape ms == wall ms
-    while(edges.length && edges[0].t<=tape){ const e=edges.shift(); key(e.type,e.code,t+STEP); }
-    frames(1,STEP); i++;
+  // drive off the PAGE's own clock so this works at any speed
+  for(let i=0;i<20000;i++){
+    const now = parseFloat(byId('hTime').textContent)*1000;
+    while(edges.length && edges[0].t<=now){ const e=edges.shift(); key(e.type,e.code,t+4); }
+    frames(1,4);
+    if(byId('results').classList.contains('show')) break;
   }
   const rh=byId('results').innerHTML;
   const grade=(rh.match(/gradebig[^>]*>\s*([A-Z+]+)/)||[])[1];
@@ -187,3 +188,16 @@ console.log('\n— section drills, played perfectly (should be clean) —');
 ['Full run','Launch','The burst','Long left→out'].forEach((n,i)=>playSection(i,0,n+' @ on tape'));
 console.log('— section drills, 30 ms late —');
 ['Full run','Launch','The burst','Long left→out'].forEach((n,i)=>playSection(i,30,n+' @ 30 ms late'));
+
+// the ladder: a clean run should raise the speed, a poor one should lower it
+console.log('\n— speed ladder —');
+function ladderProbe(offset, label){
+  byId('cbLadder').onchange({target:{checked:true}});
+  playRun(offset, '  '+label, false, 50, 0);
+  console.log('     speed slider now: ' + byId('vSpeed').textContent);
+}
+ladderProbe(0,   'clean run at 0.50x  ->');
+ladderProbe(200, 'poor run at 0.50x   ->');
+byId('cbLadder').onchange({target:{checked:false}});
+playRun(0, '  ladder off, clean  ->', false, 50, 0);
+console.log('     speed slider now: ' + byId('vSpeed').textContent + '  (must be unchanged)');

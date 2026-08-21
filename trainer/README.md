@@ -88,7 +88,12 @@ release, 27 judged edges across the race. That is what makes the 10 ms flick at
 is the hardest thing on the page.
 
 - **Speed 0.15× – 1.00×.** Windows are measured in *tape* milliseconds, so
-  slowing down genuinely widens them: a ±20 ms perfect is 80 real ms at 0.25×.
+  slowing down genuinely widens them: a ±25 ms perfect is 100 real ms at 0.25×.
+- **The ladder** (on by default) walks the speed for you: clear a run at 90% and
+  it steps up 0.05×, drop below 62% and it backs off, and the results always say
+  what it did and why. That is how the burst stops being a blur — doing it by
+  hand means thinking about the slider instead of about the run. Turn it off in
+  Transport to pin the speed.
 - **Note spacing** is a separate slider, because slow motion does not make a
   10 ms note *bigger*.
 - **Sections**: Full run · Launch · The burst · Long left→out. The burst is

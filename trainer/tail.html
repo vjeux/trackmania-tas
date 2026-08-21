@@ -216,6 +216,7 @@ const S = {
   includeCountdown: false,
   demo: false,
   loop: false,
+  ladder: true,
   sound: false,
   sec: SECTIONS[0],
   state: 'idle',          // idle | playing | paused | done
@@ -760,6 +761,20 @@ function updateHud(){
   $('#hErr').textContent = sc.meanAbs == null ? '—' : Math.round(sc.meanAbs) + ' ms';
 }
 
+/* The ladder: the whole point of slow motion is to walk the speed up until the
+   burst stops being a blur. Doing that by hand means stopping to think about
+   the slider instead of about the run, so the page does it — clear it well and
+   it speeds up, struggle and it backs off, and it always says what it did. */
+const LADDER = { up: 90, down: 62, step: 0.05, min: 0.15, max: 1.00 };
+function ladderVerdict(acc){
+  if (!S.ladder || S.demo) return null;
+  if (acc >= LADDER.up   && S.speed < LADDER.max)
+    return { to: Math.min(LADDER.max, Math.round((S.speed + LADDER.step)*100)/100), why: 'cleared ' + acc.toFixed(1) + '%' };
+  if (acc <  LADDER.down && S.speed > LADDER.min)
+    return { to: Math.max(LADDER.min, Math.round((S.speed - LADDER.step)*100)/100), why: 'at ' + acc.toFixed(1) + '%, back off and get it clean' };
+  return null;
+}
+
 /* ---------- results ---------- */
 function bestKey(){ return 'tas6323:' + S.sec.name + (S.includeCountdown ? ':full' : ''); }
 function getBest(){ try { return +localStorage.getItem(bestKey()) || 0; } catch(_){ return 0; } }
@@ -778,6 +793,9 @@ function showResults(){
   const prevBest = getBest();
   const isPb = !S.demo && acc > prevBest;
   if (isPb) putBest(Math.round(acc*10)/10);
+  const rung = ladderVerdict(acc);
+  const wasSpeed = S.speed;
+  if (rung) setSpeed(rung.to);
 
   const rows = S.events.slice().sort((a,b) => a.t - b.t).map(e => {
     const n = NOTES[e.note];
@@ -801,7 +819,7 @@ function showResults(){
     '<div class="gradebig" style="color:' + gcol + '">' + grade + ' <span style="font-size:26px;color:#8b95ab">' + acc.toFixed(1) + '%</span>' +
       (isPb ? ' <span style="font-size:15px;color:#7ee787">▲ personal best</span>' : (prevBest ? ' <span style="font-size:15px;color:#5d677c">best ' + prevBest.toFixed(1) + '%</span>' : '')) + '</div>' +
     '<div class="cards">' +
-      card(sc.counts.PERFECT + '/' + S.events.length, 'perfect ±20 ms') +
+      card(sc.counts.PERFECT + '/' + S.events.length, 'perfect ±25 ms') +
       card(sc.meanAbs == null ? '—' : Math.round(sc.meanAbs) + ' ms', 'mean abs error') +
       card((bias >= 0 ? '+' : '−') + Math.abs(Math.round(bias)) + ' ms', bias >= 0 ? 'you run late' : 'you run early') +
       card(sc.counts.MISS + '', 'missed') +
@@ -814,6 +832,12 @@ function showResults(){
       (S.gasLifted >= 10 ? 'for ' + (S.gasLifted/1000).toFixed(3) + ' s ' : '') +
       'during the race. The tape never does: ↑ goes down at ' + (GAS_DOWN_AT/1000).toFixed(3) +
       ' and stays down through the finish. It is not scored on timing — it is simply never released.</p>' : '') +
+    (rung ? '<p style="margin:0 0 10px;padding:8px 12px;border:1px solid ' +
+        (rung.to > wasSpeed ? '#2b8f5d' : '#3f6dab') + ';border-radius:9px;background:' +
+        (rung.to > wasSpeed ? '#0b1a12' : '#0c1420') + ';color:#e8edf7">' +
+        (rung.to > wasSpeed ? '▲ ' : '▼ ') + '<b>' + wasSpeed.toFixed(2) + '× → ' + rung.to.toFixed(2) + '×</b> — ' +
+        rung.why + '. Hit <b>R</b> and it runs at the new speed.' +
+        '<span style="color:#5d677c"> (turn the ladder off in Transport to keep the speed fixed)</span></p>' : '') +
     (!S.demo && Math.abs(bias) >= 8 ? '<p style="color:#8b95ab;margin:0 0 8px">Your whole run sits ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) +
        ' ms off centre. Put ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) + ' into <b style="color:#e8edf7">input offset</b> and that part stops costing you.</p>' : '') +
     (sc.worst ? '<p style="color:#8b95ab;margin:0 0 12px">Worst edge: <b style="color:#e8edf7">' + LANES[sc.worst.lane].label + ' ' +
@@ -852,6 +876,7 @@ $('#btnRetry').onclick = () => play();
 $('#btnDemo').onclick = () => { $('#cbDemo').checked = true; S.demo = true; play(); };
 $('#cbDemo').onchange  = e => { S.demo = e.target.checked; };
 $('#cbLoop').onchange  = e => { S.loop = e.target.checked; };
+$('#cbLadder').onchange = e => { S.ladder = e.target.checked; };
 $('#cbSound').onchange = e => { S.sound = e.target.checked; };
 $('#cbFull').onchange  = e => { S.includeCountdown = e.target.checked; renderTapeInfo(); if (S.state !== 'idle') play(); };
 
