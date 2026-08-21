@@ -5,11 +5,28 @@ run is one question: can you arrive in a state the upper row will accept? Our
 19.427 is the first tape of ours that does — through the low row, caught by the
 upper one at 779 km/h.**
 
+**Miru's Hell 2** — TAS **18.942** (+0.136) | AT 18.806 | WR 21.105 by deeperjungle
+
+https://github.com/user-attachments/assets/47e8c6a7-e40c-4bf0-8c1f-b2fff67447f9
+
+**The fastest run on this map, and it still does not beat the author time.**
+18.942 is **0.136 short of the 18.806** and **2.163 inside the human record** —
+deeperjungle's 21.105, set on 2026-08-20 on a board with three runs on it. That
+is the honest shape of this result: the humans have not converged here, so
+beating them says little, and the author time is the target we have not reached.
+
+**What it cost to get a file worth filming.** Across **52 regeneration attempts
+on this tape, 4 landed on the true clock — under 8 %.** The rest cluster at
+7.78 m, 24–25 m, 403 m and 1368–1372 m from the run's own route. The two winners
+in the final batch are byte-identical to each other, and they were picked by
+ranking every attempt against ground truth rather than by taking the answer the
+attempts agreed on: **the largest agreeing cluster was one of the wrong ones.**
+
 **Miru's Hell 2** — TAS **19.427** (+0.621) | AT 18.806 | WR 21.105 by deeperjungle
 
 https://github.com/user-attachments/assets/d7f87580-9b89-4ae3-9eed-ea3f0b232053
 
-**Ours on the left, deeperjungle's 21.105 on the right, both clocks from the same
+**The clip below is the 19.427, our earlier tape, against the record.** Ours on the left, deeperjungle's 21.105 on the right, both clocks from the same
 start.** They take visibly different lines through the red structure from about
 6 s, and by 12.6 s ours is a whole section ahead. It is two panes rather than one
 camera because the runs finish **335 m apart at their widest** — a chase camera
