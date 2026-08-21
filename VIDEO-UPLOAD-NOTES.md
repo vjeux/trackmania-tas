@@ -337,3 +337,85 @@ The check earned its keep either way: keyed to the *outcome* — is this the gho
 I asked for — rather than to any mechanism, it survived the mechanism being
 wrong, twice, and stopped a video of `Ghost:OrmeEssence44` going out captioned as
 our arc.
+
+## 13. Reported coverage is not measured coverage
+
+Every check that failed tonight was **reporting on itself**. Five different
+tools, one shape:
+
+| tool | what it reported | what was true |
+|---|---|---|
+| `M-time` in a manifest verifier | `PASS` | it compared two numbers **from its own command line** and never read the file |
+| `curl` | success | it had successfully downloaded a **404 page** |
+| an anonymiser | *"2 strings replaced"* | it left the donor's zone string in place — the file said `World\|Europe\|Sweden`, the tool looked for `World\|World\|Sweden` |
+| the ghost parser | *"1 replay parsed"* | **two** were staged; the edited one had vanished from the batch with no error naming it |
+| a locator | *"0 candidates"* | it was pointed at the wrong offset |
+
+The fix is always the same shape: **measure the outcome, not the operation.**
+After an upload, fetch the bytes. After an anonymisation pass, **grep the output
+for the donor's strings** — the tool tells you what it did, only a scan tells you
+what remains. After a container edit, assert the parser produced a row **for your
+file, by name**, rather than that the batch succeeded.
+
+**A file that vanishes reads exactly like a file that was never there.**
+
+## 14. The file's own layout decides the repair method
+
+Two container repairs failed tonight by doing what had worked on the previous
+file:
+
+- **Header path vs body path.** A ghost with header user data keeps its nickname
+  and skin strings in the header, and editing them requires decrementing the
+  size u32 at **offset 77**. A ghost whose header user data size is **0** keeps
+  everything in the body, where a length change is free. Running the header path
+  on a body-only file misreads the body as a chunk table, grows it 5263 → 10436
+  bytes and **overwrites the map UID** — a repair that destroys the map binding
+  while still producing a plausible file.
+- **Block transplant vs in-place edit.** Copying a clean twin's identity block
+  worked on 227969 and silently broke 145875, whose container carries an extra
+  37-byte skin blob and a second skin path the twin does not have. The
+  transplant removed fields the file needed and the server dropped it from the
+  batch without naming it.
+
+So: **diff against a clean twin to find *which* fields differ, but repair in
+place, preserving every intervening field and the field count.** The diff tells
+you what to change; the file tells you its own layout. **Never pattern-match the
+last file that worked.**
+
+## 15. Agreement between readers of the same field is one reader
+
+On 145875 three tools agreed the tape declared 6.360 — `inputcount --meta`,
+`ghostqc`, and a u32 census showing `6360 ×6` with no `6342` anywhere. All three
+were correct and all three were **reading the same stored field**, which is
+`DeclaredResult`. The server's `ValidatedResult` was 6.342, and its own `Desc`
+said *"validated time is actually better! (6360 > 6342)"* — a sentence it only
+emits when a run beats its header.
+
+Two rules come out of it:
+
+- **Never quote `DeclaredResult` or `ValidatedResult` without their labels.** A
+  mislabelled operand is worse than an invented one: an invented number gets
+  checked, a mislabelled one gets *corroborated*.
+- **Before treating three sources as three, ask what each one read.** Three
+  readers of three different fields is strong evidence. Three readers of one
+  field is one reader wearing three hats.
+
+And the counterpart, for synthesised tapes: **never read a tape's time off its
+header, filename or manifest — re-simulate the file you are holding.**
+
+## 16. The majority is not the answer
+
+A regeneration on 208024 was run **24 times** and ranked against ground truth
+(the tape's own route dump):
+
+- **2** attempts landed on the true clock, byte-identical to each other at 0.0026 m
+- **5** clustered together on a *wrong* answer, 7.81 m out
+- **11** were 900–1400 m out
+
+**The largest agreeing cluster was wrong.** Any procedure of the form
+"regenerate a few times and take the agreement" ships the 7.81 m file. The error
+also tracked the clock offset monotonically — −210 ms → 7.81 m, −300 → 17.29,
+−690 → 43.29 — which is how you tell *right car, wrong tick* from *wrong car*.
+
+Elsewhere the same trap: four of five regenerations agreed with each other on one
+map and **all four were wrong**. Rank against ground truth, or do not rank.
