@@ -109,6 +109,8 @@ Map files are not redistributed here. Each map's README links to it; the
 2. Every claim is re-validated on the untouched map before it is published.
 3. Public APIs are rate-limited and identify themselves honestly.
 4. A retraction gets published next to the thing it retracts, not instead of it.
+5. **Every clip is shot from our car, with the human record in the same scene.**
+   Not a preference — [`FILMING.md`](FILMING.md), enforced by the render script.
 
 ## Credit
 

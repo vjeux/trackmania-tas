@@ -143,3 +143,15 @@ render box's own UI automation — and are banked with a manifest at
 **F1994652705**, together with the eight `.tsv` outputs including the corpus
 audit table `GHOST-AUDIT.md` narrates. The remaining forty-eight were
 scaffolding and are gone.
+
+## Filming
+
+The rules a clip is shot under are in [`../FILMING.md`](../FILMING.md) — camera
+always on our car, both runs in one scene, and what makes an asset public.
+
+| | catches |
+|---|---|
+| `render.sh` | a one-car clip: no OCR, nothing judged by eye; refuses a camera that targets nobody |
+| `render2.sh` | **the two-car shot**. Imports the TAS ghost first so the camera follows ours, measures the separation and refuses a pairing that would silently look like one car, and reads each imported track's nickname — a tape built on someone else's recording comes back wearing their name |
+| `splitscreen.sh` | only for maps where a chase camera provably cannot hold both cars |
+| `ship-clip.sh` | a clip that is 404 to everyone but us: registers the URL in the release body, then fetches it back under `env -i` with no credential |
