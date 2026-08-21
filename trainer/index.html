@@ -1,0 +1,1775 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TAS Trainer — TMX 145875 "get jiggy with it" · 6.323</title>
+<style>
+  :root{
+    --bg:#07080d; --bg2:#0d1018; --line:#1e2434; --ink:#e8edf7; --dim:#8b95ab;
+    --left:#39d0ff; --gas:#4ade80; --brake:#ff5b6e; --right:#ffb020;
+    --gold:#ffd75e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 50% -10%,#141a2b 0%,var(--bg) 60%);
+    color:var(--ink);
+    font:14px/1.45 ui-sans-serif,-apple-system,"SF Pro Text",Inter,Segoe UI,Roboto,sans-serif;
+    display:flex;flex-direction:column;height:100%;overflow:hidden;
+    -webkit-font-smoothing:antialiased;user-select:none;
+  }
+  @media (max-width:1000px){ aside{width:236px} header .fact{display:none} }
+  @media (max-width:760px){ main{flex-direction:column} aside{width:auto;max-height:38vh;border-left:none;border-top:1px solid var(--line)} }
+  .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+
+  header{
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    padding:9px 16px;border-bottom:1px solid var(--line);background:rgba(8,10,16,.75);backdrop-filter:blur(6px);
+  }
+  header h1{font-size:14px;margin:0;letter-spacing:.2px;font-weight:650}
+  header h1 .map{color:var(--dim);font-weight:500}
+  .times{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .t{display:flex;gap:5px;align-items:baseline;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:#0c1017}
+  .t b{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;font-size:13px;font-weight:650}
+  .t span{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+  .t.ours{border-color:#2b6b48;background:#0b1a12}
+  .t.ours b{color:#6ee7a0}
+  .fact{color:var(--dim);font-size:12px;margin-left:auto;text-align:right}
+  .fact b{color:var(--ink);font-weight:600}
+
+  main{flex:1;display:flex;min-height:0}
+  #stagewrap{flex:1;position:relative;min-width:0}
+  canvas{display:block;width:100%;height:100%}
+
+  /* overlays */
+  .ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  #bigtext{font-size:96px;font-weight:800;letter-spacing:-2px;opacity:0;transition:opacity .12s}
+  #splash{
+    pointer-events:auto;background:rgba(5,7,12,.86);flex-direction:column;gap:14px;text-align:center;padding:28px;
+  }
+  #splash h2{margin:0;font-size:26px;letter-spacing:-.3px}
+  #splash p{margin:0;max-width:640px;color:var(--dim)}
+  #splash .keys{display:flex;gap:10px;margin-top:4px}
+  .kcap{
+    border:1px solid var(--line);border-radius:9px;padding:8px 12px;background:#0f1420;min-width:86px;
+  }
+  .kcap b{display:block;font-size:20px}
+  .kcap span{font-size:10.5px;color:var(--dim);letter-spacing:.7px}
+  button{
+    font:inherit;color:var(--ink);background:#161c2b;border:1px solid #2a3346;border-radius:8px;
+    padding:6px 12px;cursor:pointer;transition:background .12s,border-color .12s;
+  }
+  button:hover{background:#1e263a;border-color:#3a465f}
+  button.primary{background:#1c6b45;border-color:#2b8f5d;font-weight:650}
+  button.primary:hover{background:#228153}
+  button.on{background:#243a5e;border-color:#3f6dab}
+  button.sm{padding:3px 8px;font-size:12px;border-radius:6px}
+
+  /* right panel */
+  aside{
+    width:288px;flex:none;border-left:1px solid var(--line);background:#0a0d14;
+    padding:12px 13px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;
+  }
+  .grp{display:flex;flex-direction:column;gap:7px}
+  .grp>h3{
+    margin:0;font-size:10.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--dim);font-weight:650;
+  }
+  .row{display:flex;align-items:center;gap:8px}
+  .row.wrap{flex-wrap:wrap}
+  input[type=range]{width:100%;accent-color:#4ea1ff}
+  .val{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--gold);min-width:52px;text-align:right}
+  label.chk{display:flex;gap:7px;align-items:center;color:var(--dim);cursor:pointer;font-size:12.5px}
+  input[type=checkbox]{accent-color:#4ea1ff}
+  .hint{color:#6d778c;font-size:11.5px;line-height:1.4}
+  .hint code{color:#9fb0cc}
+
+  /* live HUD */
+  #hud{display:flex;flex-direction:column;gap:6px}
+  .stat{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px dotted #1b2130;padding-bottom:3px}
+  .stat span{color:var(--dim);font-size:12px}
+  .stat b{font-family:ui-monospace,Menlo,monospace;font-size:15px}
+  #lastj{font-family:ui-monospace,Menlo,monospace;font-size:13px;height:19px}
+
+  /* results */
+  #results{
+    position:absolute;inset:0;background:rgba(5,7,12,.93);overflow-y:auto;padding:24px 26px;display:none;
+  }
+  #results.show{display:block}
+  #results h2{margin:0 0 2px;font-size:24px}
+  .gradebig{font-size:64px;font-weight:800;line-height:1;letter-spacing:-2px}
+  .cards{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:9px 13px;background:#0c1017;min-width:104px}
+  .card b{display:block;font-family:ui-monospace,Menlo,monospace;font-size:20px}
+  .card span{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.7px}
+  table{border-collapse:collapse;font-family:ui-monospace,Menlo,monospace;font-size:12px;width:100%;max-width:760px}
+  th,td{text-align:right;padding:2.5px 9px;border-bottom:1px solid #151a26}
+  th{color:var(--dim);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px}
+  td.l,th.l{text-align:left}
+  .tag{padding:1px 6px;border-radius:4px;font-size:11px}
+  footer{
+    border-top:1px solid var(--line);padding:5px 16px;color:#5d677c;font-size:11px;
+    display:flex;gap:16px;flex-wrap:wrap;background:#080a10;
+  }
+  footer b{color:#8b95ab;font-weight:600}
+  .lane-legend{display:flex;gap:6px}
+  .pill{padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TAS TRAINER <span class="map">· TMX 145875 “unluckE — get jiggy with it”</span></h1>
+  <div class="times">
+    <div class="t ours"><b>6.323</b><span>our keyboard TAS</span></div>
+    <div class="t"><b>6.343</b><span>author</span></div>
+    <div class="t"><b>6.346</b><span>human WR · xeap-.-</span></div>
+  </div>
+  <div class="fact"><b>23</b> steer events · <b>3</b> steer values · <b>1</b> brake tap · gas never released</div>
+</header>
+
+<main>
+  <div id="stagewrap">
+    <canvas id="cv"></canvas>
+    <div class="ov"><div id="bigtext"></div></div>
+    <div class="ov" id="splash">
+      <h2>Drive a TAS with four keys.</h2>
+      <p>This is the real input tape of a run that beat the author time and the human world record on this map — full left, centre, full right, and one brake tap. Notes fall; hold the key for exactly as long as the bar is long.</p>
+      <div class="keys">
+        <div class="kcap" style="border-color:#1d4a5e"><b>←</b><span>FULL LEFT</span></div>
+        <div class="kcap" style="border-color:#1d5238"><b>↑</b><span>GAS</span></div>
+        <div class="kcap" style="border-color:#5e2029"><b>↓</b><span>BRAKE</span></div>
+        <div class="kcap" style="border-color:#5e4318"><b>→</b><span>FULL RIGHT</span></div>
+      </div>
+      <p class="hint">Start at half speed. <b>Enter</b> play · <b>R</b> retry · <b>P</b> pause · <b>[</b> <b>]</b> speed</p>
+      <div class="row">
+        <button class="primary" id="btnStart">▶ Play (Enter)</button>
+        <button id="btnDemo">👁 Watch the TAS drive it</button>
+      </div>
+    </div>
+    <div id="results"></div>
+  </div>
+
+  <aside>
+    <div class="grp">
+      <h3>Transport</h3>
+      <div class="row">
+        <button class="primary" id="btnStart2" style="flex:1">▶ Play</button>
+        <button id="btnPause">⏸</button>
+        <button id="btnRetry">↻</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="cbDemo"> Demo mode (the TAS plays itself)</label>
+      <label class="chk"><input type="checkbox" id="cbLoop"> Loop the section</label>
+    </div>
+
+    <div class="grp">
+      <h3>Speed</h3>
+      <div class="row"><input type="range" id="rgSpeed" min="10" max="100" step="5" value="50"><div class="val" id="vSpeed">0.50×</div></div>
+      <div class="row wrap">
+        <button class="sm" data-speed="0.15">0.15×</button>
+        <button class="sm" data-speed="0.25">0.25×</button>
+        <button class="sm" data-speed="0.5">0.50×</button>
+        <button class="sm" data-speed="0.75">0.75×</button>
+        <button class="sm" data-speed="1">1.00× real</button>
+      </div>
+      <div class="hint">Timing windows are measured in <i>tape</i> milliseconds, so slowing down really does make them easier — a ±20 ms perfect window is 80 real ms at 0.25×.</div>
+    </div>
+
+    <div class="grp">
+      <h3>Note spacing</h3>
+      <div class="row"><input type="range" id="rgZoom" min="180" max="1100" step="20" value="380"><div class="val" id="vZoom">380</div></div>
+      <div class="hint">Pixels per second of tape. Crank it to see the 10 ms flick at 2.360 as an actual object.</div>
+    </div>
+
+    <div class="grp">
+      <h3>Section</h3>
+      <div class="row wrap" id="sections"></div>
+      <div class="hint" id="sechint"></div>
+    </div>
+
+    <div class="grp">
+      <h3>Input offset</h3>
+      <div class="row"><input type="range" id="rgOff" min="-80" max="80" step="1" value="0"><div class="val" id="vOff">0 ms</div></div>
+      <div class="hint">Subtracted from every key edge before judging. If the results screen keeps telling you you run <i>+18 ms late</i>, dial +18 here and the rest of your practice is about the run, not your keyboard.</div>
+    </div>
+
+    <div class="grp">
+      <h3>Tape</h3>
+      <label class="chk"><input type="checkbox" id="cbFull"> Include countdown inputs</label>
+      <div class="hint" id="tapeinfo"></div>
+    </div>
+
+    <div class="grp">
+      <h3>Live</h3>
+      <div id="hud">
+        <div class="stat"><span>race time</span><b id="hTime">—</b></div>
+        <div class="stat"><span>accuracy</span><b id="hAcc">—</b></div>
+        <div class="stat"><span>combo</span><b id="hCombo">0</b></div>
+        <div class="stat"><span>mean error</span><b id="hErr">—</b></div>
+        <div class="stat"><span>best here</span><b id="hBest">—</b></div>
+        <div id="lastj"></div>
+      </div>
+    </div>
+
+    <div class="grp">
+      <h3>Read the run</h3>
+      <div class="hint" id="coach"></div>
+    </div>
+
+    <div class="grp">
+      <h3>Sound</h3>
+      <label class="chk"><input type="checkbox" id="cbSound"> Click on every note edge</label>
+    </div>
+
+    <div class="grp">
+      <h3>Keys</h3>
+      <div class="hint"><code>← ↑ ↓ →</code> (or <code>A W S D</code>) drive · <code>Enter</code> play ·
+        <code>R</code> retry · <code>P</code> pause · <code>[</code> <code>]</code> speed.<br>
+        Hold the key for as long as the bar is long: you are judged on the press <i>and</i> on the release.</div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <div class="lane-legend">
+    <span class="pill" style="color:var(--left);border-color:#1d4a5e">← left</span>
+    <span class="pill" style="color:var(--gas);border-color:#1d5238">↑ gas</span>
+    <span class="pill" style="color:var(--brake);border-color:#5e2029">↓ brake</span>
+    <span class="pill" style="color:var(--right);border-color:#5e4318">→ right</span>
+  </div>
+  <div>tape <b>kb6323.csv</b> · F1994613747 · ghost <b>BEST_KEYBOARD_6323.Ghost.Gbx</b> md5 <b>25e04568c299eccdb867c107f40ed650</b></div>
+  <div id="selfcheck"></div>
+</footer>
+
+<script>
+/* ============================================================================
+   The tape, verbatim, exactly as downloaded from F1994613747 (kb6323.csv).
+   Every note on screen is derived from these rows at load time — nothing about
+   the run is hand-transcribed.
+   ==========================================================================*/
+const RAW_TAPE = String.raw`
+race_ms,steer,accel,brake
+-1560,0,1,0
+-1550,0,1,0
+-1540,0,1,0
+-1530,0,1,0
+-1520,0,1,0
+-1510,0,1,0
+-1500,0,1,0
+-1490,0,1,0
+-1480,0,1,0
+-1470,0,1,0
+-1460,0,0,0
+-1450,0,0,0
+-1440,0,1,0
+-1430,0,1,0
+-1420,0,1,0
+-1410,0,1,0
+-1400,0,1,0
+-1390,0,1,0
+-1380,0,1,0
+-1370,0,1,0
+-1360,0,1,0
+-1350,0,1,0
+-1340,0,1,0
+-1330,0,1,0
+-1320,0,1,0
+-1310,0,1,0
+-1300,0,1,0
+-1290,0,1,0
+-1280,0,1,0
+-1270,0,1,0
+-1260,0,1,0
+-1250,0,1,0
+-1240,0,1,0
+-1230,0,1,0
+-1220,0,1,0
+-1210,0,1,0
+-1200,0,1,0
+-1190,-127,1,0
+-1180,-127,1,0
+-1170,-127,1,0
+-1160,-127,1,0
+-1150,-127,1,0
+-1140,-127,1,0
+-1130,-127,1,0
+-1120,0,1,0
+-1110,0,1,0
+-1100,0,1,0
+-1090,0,1,0
+-1080,127,1,0
+-1070,127,1,0
+-1060,127,1,0
+-1050,127,1,0
+-1040,127,1,0
+-1030,127,1,0
+-1020,127,1,0
+-1010,127,1,0
+-1000,127,1,0
+-990,127,1,0
+-980,127,1,0
+-970,127,1,0
+-960,127,1,0
+-950,127,1,0
+-940,127,1,0
+-930,127,1,0
+-920,127,1,0
+-910,127,1,0
+-900,127,1,0
+-890,0,1,0
+-880,0,1,0
+-870,0,1,0
+-860,0,1,0
+-850,0,1,0
+-840,0,1,0
+-830,-127,1,0
+-820,-127,1,0
+-810,0,1,0
+-800,127,1,0
+-790,127,1,0
+-780,127,1,0
+-770,127,1,0
+-760,127,1,0
+-750,127,1,0
+-740,127,1,0
+-730,127,1,0
+-720,127,1,0
+-710,127,1,0
+-700,127,1,0
+-690,127,1,0
+-680,127,1,0
+-670,127,1,0
+-660,127,1,0
+-650,127,1,0
+-640,127,1,0
+-630,127,1,0
+-620,0,1,0
+-610,0,1,0
+-600,0,1,0
+-590,0,1,0
+-580,0,1,0
+-570,0,1,0
+-560,0,1,0
+-550,0,1,1
+-540,0,1,1
+-530,0,1,1
+-520,0,1,0
+-510,0,0,0
+-500,0,0,0
+-490,0,0,0
+-480,0,0,0
+-470,0,0,0
+-460,0,0,0
+-450,0,0,0
+-440,0,0,0
+-430,127,0,0
+-420,127,0,0
+-410,0,0,0
+-400,0,1,0
+-390,0,1,0
+-380,0,1,0
+-370,0,1,0
+-360,0,1,0
+-350,0,1,0
+-340,0,1,0
+-330,127,1,0
+-320,127,0,0
+-310,127,0,1
+-300,127,0,1
+-290,127,0,1
+-280,127,0,1
+-270,127,1,1
+-260,127,1,1
+-250,127,1,1
+-240,127,1,1
+-230,127,1,1
+-220,127,1,1
+-210,127,1,1
+-200,127,1,1
+-190,127,1,0
+-180,127,1,0
+-170,127,1,0
+-160,127,1,0
+-150,127,1,0
+-140,127,1,0
+-130,127,1,0
+-120,127,1,0
+-110,127,1,0
+-100,127,1,0
+-90,127,1,0
+-80,127,1,0
+-70,127,1,0
+-60,-127,1,0
+-50,-127,1,0
+-40,-127,1,0
+-30,-127,1,0
+-20,-127,1,0
+-10,-127,1,0
+0,-127,1,0
+10,-127,1,0
+20,-127,1,0
+30,-127,1,0
+40,-127,1,0
+50,-127,1,0
+60,-127,1,0
+70,-127,1,0
+80,-127,1,0
+90,-127,1,0
+100,-127,1,0
+110,-127,1,0
+120,-127,1,0
+130,-127,1,0
+140,-127,1,0
+150,-127,1,0
+160,-127,1,0
+170,-127,1,0
+180,-127,1,0
+190,-127,1,0
+200,-127,1,0
+210,-127,1,0
+220,-127,1,0
+230,-127,1,0
+240,-127,1,0
+250,-127,1,0
+260,-127,1,0
+270,-127,1,0
+280,-127,1,0
+290,-127,1,0
+300,-127,1,0
+310,-127,1,0
+320,-127,1,0
+330,-127,1,0
+340,-127,1,0
+350,-127,1,0
+360,-127,1,0
+370,-127,1,0
+380,-127,1,0
+390,-127,1,0
+400,-127,1,0
+410,-127,1,0
+420,-127,1,0
+430,-127,1,0
+440,-127,1,0
+450,-127,1,0
+460,-127,1,0
+470,-127,1,0
+480,-127,1,0
+490,-127,1,0
+500,-127,1,0
+510,-127,1,0
+520,-127,1,0
+530,-127,1,0
+540,-127,1,0
+550,-127,1,0
+560,-127,1,0
+570,-127,1,0
+580,-127,1,0
+590,-127,1,0
+600,-127,1,0
+610,-127,1,0
+620,-127,1,0
+630,-127,1,0
+640,-127,1,0
+650,-127,1,0
+660,-127,1,0
+670,-127,1,0
+680,-127,1,0
+690,-127,1,0
+700,-127,1,0
+710,-127,1,0
+720,-127,1,0
+730,-127,1,0
+740,-127,1,0
+750,-127,1,1
+760,-127,1,1
+770,-127,1,1
+780,-127,1,1
+790,-127,1,1
+800,-127,1,1
+810,-127,1,1
+820,-127,1,1
+830,-127,1,1
+840,-127,1,1
+850,-127,1,1
+860,-127,1,1
+870,-127,1,1
+880,-127,1,0
+890,-127,1,0
+900,-127,1,0
+910,-127,1,0
+920,-127,1,0
+930,-127,1,0
+940,-127,1,0
+950,-127,1,0
+960,-127,1,0
+970,-127,1,0
+980,-127,1,0
+990,-127,1,0
+1000,-127,1,0
+1010,-127,1,0
+1020,-127,1,0
+1030,-127,1,0
+1040,-127,1,0
+1050,-127,1,0
+1060,-127,1,0
+1070,-127,1,0
+1080,-127,1,0
+1090,-127,1,0
+1100,-127,1,0
+1110,-127,1,0
+1120,-127,1,0
+1130,-127,1,0
+1140,-127,1,0
+1150,-127,1,0
+1160,-127,1,0
+1170,-127,1,0
+1180,-127,1,0
+1190,-127,1,0
+1200,-127,1,0
+1210,-127,1,0
+1220,-127,1,0
+1230,-127,1,0
+1240,-127,1,0
+1250,-127,1,0
+1260,-127,1,0
+1270,-127,1,0
+1280,-127,1,0
+1290,-127,1,0
+1300,-127,1,0
+1310,-127,1,0
+1320,-127,1,0
+1330,-127,1,0
+1340,-127,1,0
+1350,-127,1,0
+1360,-127,1,0
+1370,-127,1,0
+1380,-127,1,0
+1390,-127,1,0
+1400,-127,1,0
+1410,-127,1,0
+1420,-127,1,0
+1430,-127,1,0
+1440,-127,1,0
+1450,127,1,0
+1460,127,1,0
+1470,127,1,0
+1480,127,1,0
+1490,127,1,0
+1500,127,1,0
+1510,127,1,0
+1520,127,1,0
+1530,127,1,0
+1540,127,1,0
+1550,127,1,0
+1560,127,1,0
+1570,127,1,0
+1580,127,1,0
+1590,127,1,0
+1600,127,1,0
+1610,127,1,0
+1620,127,1,0
+1630,127,1,0
+1640,127,1,0
+1650,127,1,0
+1660,127,1,0
+1670,127,1,0
+1680,127,1,0
+1690,127,1,0
+1700,127,1,0
+1710,127,1,0
+1720,127,1,0
+1730,127,1,0
+1740,127,1,0
+1750,127,1,0
+1760,127,1,0
+1770,127,1,0
+1780,127,1,0
+1790,127,1,0
+1800,127,1,0
+1810,127,1,0
+1820,127,1,0
+1830,127,1,0
+1840,127,1,0
+1850,127,1,0
+1860,127,1,0
+1870,127,1,0
+1880,127,1,0
+1890,127,1,0
+1900,127,1,0
+1910,127,1,0
+1920,127,1,0
+1930,127,1,0
+1940,127,1,0
+1950,127,1,0
+1960,127,1,0
+1970,0,1,0
+1980,0,1,0
+1990,0,1,0
+2000,0,1,0
+2010,0,1,0
+2020,0,1,0
+2030,0,1,0
+2040,0,1,0
+2050,0,1,0
+2060,0,1,0
+2070,0,1,0
+2080,0,1,0
+2090,-127,1,0
+2100,-127,1,0
+2110,-127,1,0
+2120,-127,1,0
+2130,-127,1,0
+2140,-127,1,0
+2150,-127,1,0
+2160,-127,1,0
+2170,-127,1,0
+2180,-127,1,0
+2190,-127,1,0
+2200,-127,1,0
+2210,-127,1,0
+2220,-127,1,0
+2230,-127,1,0
+2240,-127,1,0
+2250,0,1,0
+2260,0,1,0
+2270,0,1,0
+2280,0,1,0
+2290,0,1,0
+2300,-127,1,0
+2310,-127,1,0
+2320,-127,1,0
+2330,0,1,0
+2340,0,1,0
+2350,0,1,0
+2360,-127,1,0
+2370,0,1,0
+2380,-127,1,0
+2390,-127,1,0
+2400,-127,1,0
+2410,-127,1,0
+2420,-127,1,0
+2430,-127,1,0
+2440,-127,1,0
+2450,-127,1,0
+2460,-127,1,0
+2470,-127,1,0
+2480,-127,1,0
+2490,-127,1,0
+2500,-127,1,0
+2510,0,1,0
+2520,0,1,0
+2530,0,1,0
+2540,0,1,0
+2550,0,1,0
+2560,0,1,0
+2570,0,1,0
+2580,0,1,0
+2590,0,1,0
+2600,0,1,0
+2610,0,1,0
+2620,0,1,0
+2630,0,1,0
+2640,0,1,0
+2650,0,1,0
+2660,0,1,0
+2670,0,1,0
+2680,0,1,0
+2690,0,1,0
+2700,0,1,0
+2710,127,1,0
+2720,127,1,0
+2730,127,1,0
+2740,127,1,0
+2750,127,1,0
+2760,127,1,0
+2770,127,1,0
+2780,127,1,0
+2790,-127,1,0
+2800,-127,1,0
+2810,-127,1,0
+2820,-127,1,0
+2830,-127,1,0
+2840,-127,1,0
+2850,-127,1,0
+2860,-127,1,0
+2870,-127,1,0
+2880,-127,1,0
+2890,-127,1,0
+2900,-127,1,0
+2910,-127,1,0
+2920,-127,1,0
+2930,-127,1,0
+2940,-127,1,0
+2950,-127,1,0
+2960,-127,1,0
+2970,-127,1,0
+2980,-127,1,0
+2990,-127,1,0
+3000,-127,1,0
+3010,-127,1,0
+3020,-127,1,0
+3030,-127,1,0
+3040,-127,1,0
+3050,-127,1,0
+3060,-127,1,0
+3070,-127,1,0
+3080,-127,1,0
+3090,-127,1,0
+3100,-127,1,0
+3110,0,1,0
+3120,0,1,0
+3130,127,1,0
+3140,127,1,0
+3150,127,1,0
+3160,127,1,0
+3170,127,1,0
+3180,127,1,0
+3190,127,1,0
+3200,127,1,0
+3210,127,1,0
+3220,127,1,0
+3230,127,1,0
+3240,127,1,0
+3250,127,1,0
+3260,127,1,0
+3270,127,1,0
+3280,127,1,0
+3290,127,1,0
+3300,127,1,0
+3310,127,1,0
+3320,127,1,0
+3330,127,1,0
+3340,0,1,0
+3350,-127,1,0
+3360,-127,1,0
+3370,-127,1,0
+3380,-127,1,0
+3390,-127,1,0
+3400,-127,1,0
+3410,-127,1,0
+3420,-127,1,0
+3430,-127,1,0
+3440,-127,1,0
+3450,-127,1,0
+3460,-127,1,0
+3470,-127,1,0
+3480,0,1,0
+3490,0,1,0
+3500,-127,1,0
+3510,-127,1,0
+3520,-127,1,0
+3530,-127,1,0
+3540,-127,1,0
+3550,-127,1,0
+3560,-127,1,0
+3570,0,1,0
+3580,0,1,0
+3590,-127,1,0
+3600,-127,1,0
+3610,-127,1,0
+3620,-127,1,0
+3630,-127,1,0
+3640,-127,1,0
+3650,-127,1,0
+3660,-127,1,0
+3670,-127,1,0
+3680,-127,1,0
+3690,-127,1,0
+3700,-127,1,0
+3710,-127,1,0
+3720,-127,1,0
+3730,-127,1,0
+3740,-127,1,0
+3750,-127,1,0
+3760,-127,1,0
+3770,-127,1,0
+3780,-127,1,0
+3790,-127,1,0
+3800,-127,1,0
+3810,-127,1,0
+3820,-127,1,0
+3830,-127,1,0
+3840,-127,1,0
+3850,-127,1,0
+3860,-127,1,0
+3870,-127,1,0
+3880,-127,1,0
+3890,-127,1,0
+3900,-127,1,0
+3910,-127,1,0
+3920,-127,1,0
+3930,-127,1,0
+3940,-127,1,0
+3950,-127,1,0
+3960,-127,1,0
+3970,-127,1,0
+3980,-127,1,0
+3990,-127,1,0
+4000,-127,1,0
+4010,-127,1,0
+4020,-127,1,0
+4030,-127,1,0
+4040,-127,1,0
+4050,-127,1,0
+4060,-127,1,0
+4070,-127,1,0
+4080,-127,1,0
+4090,-127,1,0
+4100,-127,1,0
+4110,-127,1,0
+4120,-127,1,0
+4130,-127,1,0
+4140,-127,1,0
+4150,-127,1,0
+4160,-127,1,0
+4170,-127,1,0
+4180,-127,1,0
+4190,-127,1,0
+4200,-127,1,0
+4210,-127,1,0
+4220,-127,1,0
+4230,-127,1,0
+4240,-127,1,0
+4250,-127,1,0
+4260,-127,1,0
+4270,-127,1,0
+4280,-127,1,0
+4290,-127,1,0
+4300,-127,1,0
+4310,-127,1,0
+4320,-127,1,0
+4330,-127,1,0
+4340,-127,1,0
+4350,-127,1,0
+4360,-127,1,0
+4370,-127,1,0
+4380,-127,1,0
+4390,-127,1,0
+4400,-127,1,0
+4410,-127,1,0
+4420,-127,1,0
+4430,-127,1,0
+4440,-127,1,0
+4450,-127,1,0
+4460,-127,1,0
+4470,-127,1,0
+4480,-127,1,0
+4490,-127,1,0
+4500,-127,1,0
+4510,-127,1,0
+4520,-127,1,0
+4530,-127,1,0
+4540,-127,1,0
+4550,-127,1,0
+4560,-127,1,0
+4570,-127,1,0
+4580,-127,1,0
+4590,-127,1,0
+4600,-127,1,0
+4610,-127,1,0
+4620,-127,1,0
+4630,-127,1,0
+4640,-127,1,0
+4650,-127,1,0
+4660,-127,1,0
+4670,-127,1,0
+4680,-127,1,0
+4690,-127,1,0
+4700,-127,1,0
+4710,-127,1,0
+4720,-127,1,0
+4730,-127,1,0
+4740,-127,1,0
+4750,-127,1,0
+4760,-127,1,0
+4770,-127,1,0
+4780,-127,1,0
+4790,-127,1,0
+4800,-127,1,0
+4810,-127,1,0
+4820,-127,1,0
+4830,-127,1,0
+4840,-127,1,0
+4850,-127,1,0
+4860,-127,1,0
+4870,-127,1,0
+4880,-127,1,0
+4890,-127,1,0
+4900,-127,1,0
+4910,-127,1,0
+4920,-127,1,0
+4930,-127,1,0
+4940,-127,1,0
+4950,-127,1,0
+4960,-127,1,0
+4970,-127,1,0
+4980,-127,1,0
+4990,-127,1,0
+5000,-127,1,0
+5010,-127,1,0
+5020,-127,1,0
+5030,-127,1,0
+5040,-127,1,0
+5050,-127,1,0
+5060,-127,1,0
+5070,-127,1,0
+5080,-127,1,0
+5090,-127,1,0
+5100,-127,1,0
+5110,0,1,0
+5120,0,1,0
+5130,0,1,0
+5140,0,1,0
+5150,0,1,0
+5160,0,1,0
+5170,0,1,0
+5180,0,1,0
+5190,0,1,0
+5200,0,1,0
+5210,0,1,0
+5220,0,1,0
+5230,127,1,0
+5240,127,1,0
+5250,127,1,0
+5260,127,1,0
+5270,127,1,0
+5280,127,1,0
+5290,127,1,0
+5300,127,1,0
+5310,127,1,0
+5320,127,1,0
+5330,127,1,0
+5340,127,1,0
+5350,127,1,0
+5360,127,1,0
+5370,127,1,0
+5380,127,1,0
+5390,127,1,0
+5400,127,1,0
+5410,127,1,0
+5420,127,1,0
+5430,127,1,0
+5440,127,1,0
+5450,127,1,0
+5460,127,1,0
+5470,127,1,0
+5480,127,1,0
+5490,127,1,0
+5500,127,1,0
+5510,127,1,0
+5520,127,1,0
+5530,127,1,0
+5540,127,1,0
+5550,127,1,0
+5560,127,1,0
+5570,127,1,0
+5580,127,1,0
+5590,127,1,0
+5600,127,1,0
+5610,127,1,0
+5620,127,1,0
+5630,127,1,0
+5640,127,1,0
+5650,127,1,0
+5660,127,1,0
+5670,127,1,0
+5680,127,1,0
+5690,127,1,0
+5700,127,1,0
+5710,127,1,0
+5720,127,1,0
+5730,127,1,0
+5740,127,1,0
+5750,127,1,0
+5760,127,1,0
+5770,127,1,0
+5780,127,1,0
+5790,127,1,0
+5800,127,1,0
+5810,127,1,0
+5820,127,1,0
+5830,127,1,0
+5840,127,1,0
+5850,127,1,0
+5860,127,1,0
+5870,127,1,0
+5880,127,1,0
+5890,127,1,0
+5900,127,1,0
+5910,127,1,0
+5920,127,1,0
+5930,127,1,0
+5940,127,1,0
+5950,127,1,0
+5960,127,1,0
+5970,127,1,0
+5980,127,1,0
+5990,127,1,0
+6000,127,1,0
+6010,127,1,0
+6020,127,1,0
+6030,127,1,0
+6040,127,1,0
+6050,127,1,0
+6060,127,1,0
+6070,127,1,0
+6080,127,1,0
+6090,127,1,0
+6100,127,1,0
+6110,127,1,0
+6120,127,1,0
+6130,127,1,0
+6140,127,1,0
+6150,127,1,0
+6160,127,1,0
+6170,127,1,0
+6180,127,1,0
+6190,127,1,0
+6200,127,1,0
+6210,127,1,0
+6220,127,1,0
+6230,127,1,0
+6240,127,1,0
+6250,127,1,0
+6260,127,1,0
+6270,127,1,0
+6280,127,1,0
+6290,127,1,0
+6300,127,1,0
+6310,127,1,0
+6320,127,1,0
+6330,127,1,0
+6340,127,1,0
+6350,127,1,0
+6360,127,1,0
+`;
+/* ============================================================================
+   PURE LOGIC — no DOM here, so this section can be unit-tested outside a page.
+   ==========================================================================*/
+const TICK = 10;          // tape resolution, ms
+const FINISH_MS = 6323;   // our validated finish, 6.323
+const LANES = [
+  { id:'left',  label:'LEFT',  glyph:'←', key:'ArrowLeft',  alt:'KeyA', color:'#39d0ff', dark:'#0e3446', on:r => r.steer <  0 },
+  { id:'gas',   label:'GAS',   glyph:'↑', key:'ArrowUp',    alt:'KeyW', color:'#4ade80', dark:'#0f3524', on:r => r.accel === 1 },
+  { id:'brake', label:'BRAKE', glyph:'↓', key:'ArrowDown',  alt:'KeyS', color:'#ff5b6e', dark:'#3d151b', on:r => r.brake === 1 },
+  { id:'right', label:'RIGHT', glyph:'→', key:'ArrowRight', alt:'KeyD', color:'#ffb020', dark:'#3d2c0d', on:r => r.steer >  0 },
+];
+
+function parseTape(raw){
+  const lines = raw.trim().split(/\r?\n/);
+  const head = lines[0].split(',').map(s => s.trim());
+  const ci = { race_ms:head.indexOf('race_ms'), steer:head.indexOf('steer'), accel:head.indexOf('accel'), brake:head.indexOf('brake') };
+  for (const k in ci) if (ci[k] < 0) throw new Error('tape is missing column ' + k);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++){
+    const L = lines[i].trim();
+    if (!L) continue;
+    const p = L.split(',');
+    rows.push({ t:+p[ci.race_ms], steer:+p[ci.steer], accel:+p[ci.accel], brake:+p[ci.brake] });
+  }
+  rows.sort((a,b) => a.t - b.t);
+  return rows;
+}
+
+// Contiguous runs of "this control is engaged" become held notes.
+function buildNotes(rows){
+  const last = rows[rows.length - 1].t;
+  const notes = [];
+  LANES.forEach((lane, li) => {
+    let start = null, prevT = null;
+    for (const r of rows){
+      const on = lane.on(r);
+      // a gap in the tape ends any open note
+      if (start !== null && prevT !== null && r.t - prevT > TICK){
+        notes.push({ lane:li, start, end:prevT + TICK, open:false });
+        start = null;
+      }
+      if (on && start === null) start = r.t;
+      if (!on && start !== null){ notes.push({ lane:li, start, end:r.t, open:false }); start = null; }
+      prevT = r.t;
+    }
+    if (start !== null) notes.push({ lane:li, start, end:last + TICK, open:true }); // still held when the tape stops
+  });
+  notes.sort((a,b) => a.start - b.start || a.lane - b.lane);
+  notes.forEach((n,i) => { n.idx = i; n.dur = n.end - n.start; });
+  return notes;
+}
+
+// State transitions of the (steer, accel, brake) triple — the run as vjeux writes it.
+function transitions(rows){
+  const out = []; let prev = null;
+  for (const r of rows){
+    const k = r.steer + '|' + r.accel + '|' + r.brake;
+    if (k !== prev){ out.push(r); prev = k; }
+  }
+  return out;
+}
+
+// Steer segments (how many "events on three steer values" the run really is).
+function steerSegments(rows, fromT){
+  const segs = []; let cur = null;
+  for (const r of rows){
+    if (r.t < fromT) { cur = null; continue; }
+    if (!cur || cur.steer !== r.steer){ if (cur) { cur.end = r.t; segs.push(cur); } cur = { steer:r.steer, start:r.t }; }
+  }
+  if (cur){ cur.end = rows[rows.length-1].t + TICK; segs.push(cur); }
+  return segs;
+}
+
+/* Notes → judged events. A held note is TWO events: press at its start,
+   release at its end. Notes still held when the tape stops have no release. */
+function notesToEvents(notes, includeCountdown){
+  const ev = [];
+  for (const n of notes){
+    if (!includeCountdown && n.end <= 0) continue;   // pure countdown fidget: skipped by default
+    ev.push({ lane:n.lane, type:'press',   t:n.start, note:n.idx });
+    if (!n.open) ev.push({ lane:n.lane, type:'release', t:n.end, note:n.idx });
+  }
+  ev.sort((a,b) => a.t - b.t || a.lane - b.lane);
+  ev.forEach((e,i) => e.id = i);
+  return ev;
+}
+
+// Judgement windows, in TAPE milliseconds (so slow motion genuinely helps).
+const WIN = [
+  { name:'PERFECT', abs:20,  pts:100, color:'#ffd75e' },
+  { name:'GREAT',   abs:45,  pts:72,  color:'#7ee787' },
+  { name:'GOOD',    abs:90,  pts:42,  color:'#63b3ff' },
+  { name:'LATE',    abs:150, pts:14,  color:'#c58bff' },
+];
+const MATCH_MS = 150;          // beyond this, an edge is spurious and a note is a miss
+const EXTRA_PENALTY = 25;      // points removed for an input the tape never makes
+function gradeOf(err){
+  const a = Math.abs(err);
+  for (const w of WIN) if (a <= w.abs) return w;
+  return null;
+}
+
+/* Match one player key edge to an unjudged event of the same lane+type.
+   Rule: the EARLIEST still-open event inside the window, not the nearest one.
+   Nearest breaks down exactly where this run is interesting — the presses at
+   2.360 and 2.380 are 20 ms apart, so a slightly late first press would be
+   credited to the second and the whole flick would unravel. Earliest-first
+   keeps a sequence of edges attributed in the order you played them; events
+   nobody claims retire on their own once the playhead is MATCH_MS past. */
+function matchEdge(events, lane, type, t){
+  let first = null, bullseye = null;
+  for (const e of events){
+    if (e.judged || e.missed || e.lane !== lane || e.type !== type) continue;
+    const d = t - e.t;
+    if (Math.abs(d) > MATCH_MS) continue;
+    if (!first || e.t < first.t) first = e;
+    if (Math.abs(d) <= WIN[0].abs && (!bullseye || e.t < bullseye.t)) bullseye = e;
+  }
+  // ...unless the earliest one is already badly overdue and a later one is dead
+  // on the beat: then you skipped the earlier edge, and it should read as a miss.
+  if (bullseye && first && bullseye !== first && (t - first.t) > WIN[1].abs) return bullseye;
+  return first;
+}
+
+function scoreOf(events){
+  let pts = 0, max = 0, hit = 0, sumAbs = 0, worst = null;
+  const counts = { PERFECT:0, GREAT:0, GOOD:0, LATE:0, MISS:0, EXTRA:0 };
+  for (const e of events){
+    max += 100;
+    if (e.judged && e.grade){
+      pts += e.grade.pts; hit++; sumAbs += Math.abs(e.err); counts[e.grade.name]++;
+      if (!worst || Math.abs(e.err) > Math.abs(worst.err)) worst = e;
+    } else if (e.judged === 'miss' || e.missed){ counts.MISS++; }
+  }
+  return { pts, max, hit, counts, meanAbs: hit ? sumAbs / hit : null, worst };
+}
+
+/* ============================================================================
+   DATA — built once from the tape above.
+   ==========================================================================*/
+const ROWS  = parseTape(RAW_TAPE);
+const NOTES = buildNotes(ROWS);
+const TRANS = transitions(ROWS);
+const TAPE_START = ROWS[0].t, TAPE_END = ROWS[ROWS.length-1].t + TICK;
+const RACE_SEGS = steerSegments(ROWS, 0);
+
+const SECTIONS = [
+  { name:'Full run',      a:-500,  b:TAPE_END, hint:'gas and left already down at the line' },
+  { name:'Launch',        a:-500,  b:2100,     hint:'carry-in, the one brake tap, first swing right' },
+  { name:'The burst',     a:1900,  b:3700,     hint:'the 1.5 s that no human has driven' },
+  { name:'Long left→out', a:3400,  b:TAPE_END, hint:'1.520 s of left, then right to the line' },
+];
+
+const PHASES = [
+  { a:-270, b:750,      name:'carry-in' },
+  { a:750,  b:1450,     name:'brake tap' },
+  { a:1450, b:2090,     name:'swing right' },
+  { a:2090, b:3590,     name:'THE BURST' },
+  { a:3590, b:5110,     name:'long left' },
+  { a:5110, b:FINISH_MS,name:'exit' },
+];
+
+/* ============================================================================
+   VIEW
+   ==========================================================================*/
+if (typeof document !== 'undefined') boot();
+
+function boot(){
+const $ = s => document.querySelector(s);
+const cv = $('#cv'), ctx = cv.getContext('2d');
+
+const S = {
+  speed: 0.5,
+  zoom: 380,              // px per second of tape
+  includeCountdown: false,
+  demo: false,
+  loop: false,
+  sound: false,
+  sec: SECTIONS[0],
+  state: 'idle',          // idle | playing | paused | done
+  tapeNow: 0,
+  lastTs: 0,
+  events: [],
+  held: [false,false,false,false],
+  pops: [],
+  flash: [0,0,0,0],
+  wrong: [0,0,0,0],
+  combo: 0, bestCombo: 0,
+  offset: 0,
+  hits: [],               // recent judged edges, for the error meter
+  started: 0,
+};
+
+const LEAD_IN = 1800;     // ms of tape time before the section's first note
+
+/* ---------- sizing ---------- */
+let W = 0, H = 0, DPR = 1;
+function resize(){
+  const r = cv.parentElement.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(320, r.width); H = Math.max(320, r.height);
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+new ResizeObserver(resize).observe(cv.parentElement);
+resize();
+
+const STRIP_H = 46;
+const judgeY = () => H - 118 - STRIP_H;
+const laneGeom = () => {
+  const lw = Math.min(140, Math.max(64, (W - 40) / 4));
+  const total = lw * 4;
+  return { lw, x0: (W - total) / 2 };
+};
+const yFor = t => judgeY() - (t - S.tapeNow) * (S.zoom / 1000);
+
+/* ---------- audio ---------- */
+let actx = null;
+function click(freq, gain){
+  if (!S.sound) return;
+  try{
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = freq; o.type = 'square';
+    g.gain.setValueAtTime(gain, actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0005, actx.currentTime + 0.05);
+    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.06);
+  }catch(_){}
+}
+
+/* ---------- run control ---------- */
+function arm(){
+  S.events = notesToEvents(NOTES, S.includeCountdown)
+    .filter(e => e.t >= S.sec.a - 1 && e.t <= S.sec.b + 1);
+  S.events.forEach(e => { e.judged = false; e.missed = false; e.grade = null; e.err = 0; e.playerT = null; });
+  const first = S.events.length ? S.events[0].t : S.sec.a;
+  S.tapeNow = Math.min(S.sec.a, first) - LEAD_IN;
+  S.pops.length = 0; S.combo = 0; S.bestCombo = 0; S.held = [false,false,false,false];
+  S.hits.length = 0; S.extra = 0;
+  S.demoFired = new Set();
+  $('#results').classList.remove('show');
+}
+function play(){ arm(); S.state = 'playing'; $('#splash').style.display = 'none'; }
+function pause(){ if (S.state === 'playing') S.state = 'paused'; else if (S.state === 'paused') S.state = 'playing'; }
+function finish(){
+  S.state = 'done';
+  if (S.loop){ play(); return; }
+  showResults();
+}
+
+/* ---------- input ---------- */
+function laneForCode(code){
+  for (let i = 0; i < LANES.length; i++) if (LANES[i].key === code || LANES[i].alt === code) return i;
+  return -1;
+}
+function tapeTimeOf(evt){
+  let d = (evt.timeStamp || 0) - S.lastTs;
+  if (!isFinite(d) || d < 0 || d > 120) d = 0;
+  return S.tapeNow + d * S.speed - S.offset;
+}
+function edge(lane, type, t){
+  if (S.sound) click(type === 'press' ? 1180 : 760, 0.05);
+  const m = matchEdge(S.events, lane, type, t);
+  if (!m){
+    S.combo = 0;
+    S.wrong[lane] = performance.now();
+    pop(lane, 'EXTRA', '#ff5b6e');
+    S.extra = (S.extra || 0) + 1;
+    return;
+  }
+  m.judged = true; m.playerT = t; m.err = t - m.t; m.grade = gradeOf(m.err) || WIN[WIN.length-1];
+  S.flash[lane] = performance.now();
+  S.hits.push({ err: m.err, born: performance.now(), color: m.grade.color });
+  S.combo++; S.bestCombo = Math.max(S.bestCombo, S.combo);
+  const sign = m.err >= 0 ? '+' : '−';
+  pop(lane, m.grade.name + '  ' + sign + Math.abs(Math.round(m.err)) + ' ms', m.grade.color);
+  setLast(m);
+}
+function pop(lane, text, color){ S.pops.push({ lane, text, color, born: performance.now() }); }
+
+addEventListener('keydown', e => {
+  if (e.code === 'Enter'){ e.preventDefault(); play(); return; }
+  if (e.code === 'KeyR'){ e.preventDefault(); play(); return; }
+  if (e.code === 'KeyP'){ e.preventDefault(); pause(); return; }
+  if (e.code === 'BracketLeft'){ setSpeed(Math.max(0.10, S.speed - 0.05)); return; }
+  if (e.code === 'BracketRight'){ setSpeed(Math.min(1.00, S.speed + 0.05)); return; }
+  const l = laneForCode(e.code);
+  if (l < 0) return;
+  e.preventDefault();
+  if (e.repeat || S.held[l]) return;
+  S.held[l] = true;
+  if (S.state === 'playing' && !S.demo) edge(l, 'press', tapeTimeOf(e));
+});
+addEventListener('keyup', e => {
+  const l = laneForCode(e.code);
+  if (l < 0) return;
+  e.preventDefault();
+  if (!S.held[l]) return;
+  S.held[l] = false;
+  if (S.state === 'playing' && !S.demo) edge(l, 'release', tapeTimeOf(e));
+});
+
+/* ---------- frame ---------- */
+function frame(ts){
+  const dt = S.lastTs ? Math.min(100, ts - S.lastTs) : 0;
+  S.lastTs = ts;
+  if (S.state === 'playing'){
+    S.tapeNow += dt * S.speed;
+
+    if (S.demo){
+      for (const e of S.events){
+        if (!e.judged && e.t <= S.tapeNow){
+          e.judged = true; e.playerT = e.t; e.err = 0; e.grade = WIN[0];
+          S.held[e.lane] = (e.type === 'press');
+          S.flash[e.lane] = performance.now();
+          if (S.sound) click(e.type === 'press' ? 1180 : 760, 0.04);
+        }
+      }
+    } else {
+      for (const e of S.events) if (!e.judged && !e.missed && S.tapeNow > e.t + MATCH_MS){
+        e.missed = true; S.combo = 0; pop(e.lane, 'MISS', '#ff5b6e'); setLast(e);
+      }
+    }
+
+    const tail = Math.max(S.sec.b, S.events.length ? S.events[S.events.length-1].t : 0) + 900;
+    if (S.tapeNow > tail) finish();
+  }
+  draw();
+  updateHud();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------- drawing ---------- */
+function draw(){
+  const { lw, x0 } = laneGeom(), jy = judgeY();
+  ctx.clearRect(0,0,W,H);
+
+  // lane beds
+  for (let i = 0; i < 4; i++){
+    const x = x0 + i * lw;
+    ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.022)' : 'rgba(255,255,255,.04)';
+    ctx.fillRect(x, 0, lw, jy + 60);
+    if (S.held[i]){
+      const g = ctx.createLinearGradient(0, jy - 260, 0, jy);
+      g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1, LANES[i].dark);
+      ctx.fillStyle = g; ctx.fillRect(x, jy - 260, lw, 260);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, jy + 60); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(x0 + 4*lw + .5, 0); ctx.lineTo(x0 + 4*lw + .5, jy + 60); ctx.stroke();
+
+  // time grid
+  const tTop = S.tapeNow + (jy / (S.zoom/1000));
+  const tBot = S.tapeNow - (60 / (S.zoom/1000));
+  ctx.textAlign = 'right'; ctx.font = '11px ui-monospace,Menlo,monospace';
+  for (let t = Math.floor(tBot/100)*100; t <= tTop; t += 100){
+    const y = yFor(t);
+    if (y < -20 || y > jy + 40) continue;
+    const big = t % 1000 === 0, mid = t % 500 === 0;
+    ctx.strokeStyle = big ? 'rgba(255,255,255,.17)' : mid ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.045)';
+    ctx.beginPath(); ctx.moveTo(x0, y + .5); ctx.lineTo(x0 + 4*lw, y + .5); ctx.stroke();
+    if (big){
+      ctx.fillStyle = '#54607a';
+      ctx.fillText((t/1000).toFixed(3), x0 - 8, y + 4);
+    }
+  }
+
+  // start line & finish line
+  const y0 = yFor(0);
+  if (y0 > -30 && y0 < jy + 40){
+    ctx.strokeStyle = '#7ee787'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + 4*lw, y0); ctx.stroke();
+    ctx.fillStyle = '#7ee787'; ctx.textAlign = 'left'; ctx.font = '600 11px ui-sans-serif,sans-serif';
+    ctx.fillText('0.000  START', x0 + 4*lw + 8, y0 + 4);
+  }
+  const yf = yFor(FINISH_MS);
+  if (yf > -30 && yf < jy + 40){
+    ctx.fillStyle = '#ffd75e'; ctx.textAlign = 'left'; ctx.font = '700 12px ui-sans-serif,sans-serif';
+    ctx.fillText('6.323  FINISH', x0 + 4*lw + 8, yf + 4);
+    for (let i = 0; i < 4*lw; i += 12){
+      ctx.fillStyle = (Math.floor(i/12) % 2) ? '#ffd75e' : '#111';
+      ctx.fillRect(x0 + i, yf - 3, 12, 6);
+    }
+  }
+
+  // notes
+  for (const n of NOTES){
+    if (!S.includeCountdown && n.end <= 0) continue;
+    const top = yFor(n.end), bot = yFor(n.start);
+    if (bot < -60 || top > H) continue;
+    const inSec = n.end >= S.sec.a - 1 && n.start <= S.sec.b + 1;
+    const L = LANES[n.lane], x = x0 + n.lane * lw;
+    const h = Math.max(5, bot - top);
+    const done = S.events.some(e => e.note === n.idx && e.type === 'press' && e.judged);
+    const missed = S.events.some(e => e.note === n.idx && e.type === 'press' && e.missed);
+
+    ctx.globalAlpha = inSec ? (missed ? .28 : 1) : .16;
+    const pad = 9;
+    roundRect(x + pad, top, lw - 2*pad, h, Math.min(7, h/2));
+    const grad = ctx.createLinearGradient(x, top, x + lw, top + h);
+    grad.addColorStop(0, L.dark); grad.addColorStop(1, L.color);
+    ctx.fillStyle = done ? L.dark : grad;
+    ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = L.color; ctx.stroke();
+    // bright caps mark the two moments you are judged on
+    ctx.fillStyle = L.color;
+    ctx.fillRect(x + pad, top, lw - 2*pad, 3);
+    if (!n.open) ctx.fillRect(x + pad, bot - 3, lw - 2*pad, 3);
+    // durations worth reading
+    if (h > 15 && n.dur >= 100 && inSec){
+      ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.textAlign = 'center';
+      ctx.font = '700 11px ui-monospace,Menlo,monospace';
+      ctx.fillText((n.dur/1000).toFixed(3), x + lw/2, top + h/2 + 4);
+    } else if (n.dur <= 30 && inSec){
+      ctx.fillStyle = L.color; ctx.textAlign = 'left';
+      ctx.font = '700 10px ui-monospace,Menlo,monospace';
+      ctx.fillText(n.dur + 'ms', x + lw - pad + 4, top + 4);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // judgement bar
+  ctx.fillStyle = 'rgba(255,255,255,.10)'; ctx.fillRect(x0, jy - 2, 4*lw, 4);
+  ctx.fillStyle = '#fff'; ctx.fillRect(x0, jy - 1, 4*lw, 2);
+  // perfect-window band
+  const bandPx = WIN[0].abs * (S.zoom/1000);
+  ctx.fillStyle = 'rgba(255,215,94,.13)';
+  ctx.fillRect(x0, jy - bandPx, 4*lw, bandPx * 2);
+
+  // key caps
+  const now = performance.now();
+  for (let i = 0; i < 4; i++){
+    const L = LANES[i], x = x0 + i*lw, cy = jy + 34;
+    const fl = Math.max(0, 1 - (now - (S.flash[i]||0)) / 260);
+    const wr = Math.max(0, 1 - (now - (S.wrong[i]||0)) / 300);
+    ctx.fillStyle = S.held[i] ? L.dark : '#0e121b';
+    roundRect(x + 10, cy - 22, lw - 20, 44, 9); ctx.fill();
+    ctx.strokeStyle = wr > 0 ? 'rgba(255,91,110,' + wr + ')' : (S.held[i] ? L.color : 'rgba(255,255,255,.14)');
+    ctx.lineWidth = S.held[i] ? 2 : 1; ctx.stroke();
+    if (fl > 0){ ctx.fillStyle = 'rgba(255,255,255,' + (fl*.22) + ')'; roundRect(x+10, cy-22, lw-20, 44, 9); ctx.fill(); }
+    ctx.fillStyle = S.held[i] ? L.color : '#6b7689';
+    ctx.textAlign = 'center'; ctx.font = '700 19px ui-sans-serif,sans-serif';
+    ctx.fillText(L.glyph, x + lw/2, cy + 1);
+    ctx.font = '600 9.5px ui-sans-serif,sans-serif'; ctx.fillStyle = '#5b6579';
+    ctx.fillText(L.label, x + lw/2, cy + 15);
+  }
+
+  // popups
+  S.pops = S.pops.filter(p => now - p.born < 900);
+  for (const p of S.pops){
+    const k = (now - p.born) / 900;
+    ctx.globalAlpha = 1 - k*k;
+    ctx.fillStyle = p.color; ctx.textAlign = 'center';
+    ctx.font = '700 13px ui-monospace,Menlo,monospace';
+    ctx.fillText(p.text, x0 + p.lane*lw + lw/2, jy - 26 - k*36);
+    ctx.globalAlpha = 1;
+  }
+
+  drawMeter();
+  drawStrip();
+  drawCountdown();
+}
+
+// ±150 ms gauge: every recent edge leaves a needle, so a bias is visible as a
+// cloud sitting off-centre rather than as a number you have to remember.
+function drawMeter(){
+  const now = performance.now();
+  const w = Math.min(430, W - 60), x = (W - w)/2, y = H - STRIP_H - 30, half = w/2;
+  const px = e => x + half + (e / MATCH_MS) * half;
+  ctx.fillStyle = '#0d1119'; roundRect(x, y - 9, w, 18, 9); ctx.fill();
+  for (const wd of [WIN[2], WIN[1], WIN[0]]){
+    ctx.fillStyle = wd === WIN[0] ? 'rgba(255,215,94,.22)' : wd === WIN[1] ? 'rgba(126,231,135,.12)' : 'rgba(99,179,255,.08)';
+    ctx.fillRect(px(-wd.abs), y - 8, px(wd.abs) - px(-wd.abs), 16);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(x + half - 1, y - 11, 2, 22);
+  S.hits = S.hits.filter(h => now - h.born < 4000);
+  for (const h of S.hits){
+    ctx.globalAlpha = Math.max(0, 1 - (now - h.born)/4000) * .9;
+    ctx.fillStyle = h.color;
+    ctx.fillRect(px(Math.max(-MATCH_MS, Math.min(MATCH_MS, h.err))) - 1, y - 8, 2.5, 16);
+    ctx.globalAlpha = 1;
+  }
+  if (S.hits.length >= 3){
+    const bias = S.hits.reduce((s,h) => s + h.err, 0) / S.hits.length;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(px(Math.max(-MATCH_MS, Math.min(MATCH_MS, bias))) - 1, y - 14, 2, 6);
+  }
+  ctx.font = '10px ui-monospace,Menlo,monospace'; ctx.fillStyle = '#4f5972';
+  ctx.textAlign = 'left';  ctx.fillText('early −150 ms', x, y + 22);
+  ctx.textAlign = 'right'; ctx.fillText('+150 ms late', x + w, y + 22);
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  r = Math.min(r, w/2, h/2);
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+// whole-run ribbon: steer state over time + where you are
+function drawStrip(){
+  const y = H - STRIP_H + 6, h = 16, pad = 26;
+  const a = TAPE_START, b = TAPE_END;
+  const X = t => pad + (t - a) / (b - a) * (W - 2*pad);
+  ctx.fillStyle = '#0b0e15'; ctx.fillRect(0, H - STRIP_H, W, STRIP_H);
+  ctx.strokeStyle = '#161b27'; ctx.beginPath(); ctx.moveTo(0, H-STRIP_H+.5); ctx.lineTo(W, H-STRIP_H+.5); ctx.stroke();
+  // section shading
+  ctx.fillStyle = 'rgba(255,255,255,.05)';
+  ctx.fillRect(X(Math.max(a,S.sec.a)), y - 3, X(Math.min(b,S.sec.b)) - X(Math.max(a,S.sec.a)), h + 6);
+  for (const n of NOTES){
+    if (n.lane === 1) continue;           // gas is always on; it would just be one long bar
+    const L = LANES[n.lane];
+    const yy = n.lane === 2 ? y + h - 4 : y;
+    ctx.fillStyle = L.color;
+    ctx.globalAlpha = n.end <= 0 ? .3 : .95;
+    ctx.fillRect(X(n.start), yy, Math.max(1.2, X(n.end) - X(n.start)), n.lane === 2 ? 4 : h - 6);
+    ctx.globalAlpha = 1;
+  }
+  ctx.strokeStyle = '#2a3243'; ctx.beginPath(); ctx.moveTo(X(0), y-4); ctx.lineTo(X(0), y+h+4); ctx.stroke();
+  ctx.strokeStyle = '#ffd75e'; ctx.beginPath(); ctx.moveTo(X(FINISH_MS), y-4); ctx.lineTo(X(FINISH_MS), y+h+4); ctx.stroke();
+  const px = X(Math.max(a, Math.min(b, S.tapeNow)));
+  ctx.fillStyle = '#fff'; ctx.fillRect(px - 1, y - 6, 2, h + 12);
+  ctx.fillStyle = '#5d677c'; ctx.font = '10px ui-monospace,Menlo,monospace';
+  ctx.textAlign = 'left';  ctx.fillText('countdown', pad, y + h + 15);
+  ctx.textAlign = 'right'; ctx.fillText('6.323', W - pad, y + h + 15);
+  ctx.font = '9.5px ui-sans-serif,sans-serif'; ctx.textAlign = 'center';
+  for (const ph of PHASES){
+    const cx = (X(ph.a) + X(ph.b)) / 2;
+    if (X(ph.b) - X(ph.a) < 34) continue;
+    ctx.fillStyle = '#3f4a60';
+    ctx.fillText(ph.name, cx, y + h + 15);
+  }
+}
+
+function drawCountdown(){
+  const bt = document.getElementById('bigtext');
+  if (S.state === 'paused'){ bt.textContent = 'PAUSED'; bt.style.color = '#8b95ab'; bt.style.opacity = .45; return; }
+  if (S.state !== 'playing'){ bt.style.opacity = 0; return; }
+  const t = S.tapeNow;
+  let txt = '', col = '#fff';
+  if (S.sec.a < 0 && t < 0){
+    if (t > -1000) { txt = '1'; }
+    else if (t > -2000) { txt = '2'; }
+    else if (t > -3000) { txt = '3'; }
+    else { txt = 'GET SET'; }
+    col = '#8b95ab';
+  } else if (t >= 0 && t < 420 && S.sec.a < 0){ txt = 'GO'; col = '#7ee787'; }
+  else if (S.sec.a >= 0 && t < S.sec.a){ txt = ((S.sec.a - t) / 1000).toFixed(1); col = '#8b95ab'; }
+  bt.textContent = txt; bt.style.color = col; bt.style.opacity = txt ? .5 : 0;
+}
+
+/* ---------- HUD ---------- */
+function setLast(e){
+  const el = $('#lastj');
+  if (e.missed || !e.grade){ el.innerHTML = '<span style="color:#ff5b6e">MISS</span> ' + LANES[e.lane].label + ' ' + e.type + ' @ ' + (e.t/1000).toFixed(3); return; }
+  const sign = e.err >= 0 ? 'late' : 'early';
+  el.innerHTML = '<span style="color:' + e.grade.color + '">' + e.grade.name + '</span> ' +
+                 Math.abs(Math.round(e.err)) + ' ms ' + sign;
+}
+function updateHud(){
+  $('#hTime').textContent = (S.tapeNow/1000).toFixed(3);
+  const sc = scoreOf(S.events);
+  const judged = sc.hit + sc.counts.MISS;
+  $('#hAcc').textContent = judged ? (100 * sc.pts / (judged*100)).toFixed(1) + '%' : '—';
+  $('#hCombo').textContent = S.combo;
+  $('#hErr').textContent = sc.meanAbs == null ? '—' : Math.round(sc.meanAbs) + ' ms';
+}
+
+/* ---------- results ---------- */
+function bestKey(){ return 'tas6323:' + S.sec.name + (S.includeCountdown ? ':full' : ''); }
+function getBest(){ try { return +localStorage.getItem(bestKey()) || 0; } catch(_){ return 0; } }
+function putBest(v){ try { localStorage.setItem(bestKey(), String(v)); } catch(_){} }
+
+function showResults(){
+  const sc = scoreOf(S.events);
+  const extra = S.extra || 0;
+  const denom = Math.max(1, S.events.length * 100);
+  const acc = Math.max(0, (sc.pts - extra*EXTRA_PENALTY)) / denom * 100;
+  const grade = acc >= 98 ? 'S+' : acc >= 94 ? 'S' : acc >= 88 ? 'A' : acc >= 78 ? 'B' : acc >= 62 ? 'C' : 'D';
+  const gcol  = acc >= 94 ? '#ffd75e' : acc >= 78 ? '#7ee787' : '#63b3ff';
+
+  const judged = S.events.filter(e => e.judged && e.grade);
+  const bias = judged.length ? judged.reduce((s,e) => s + e.err, 0) / judged.length : 0;
+  const prevBest = getBest();
+  const isPb = !S.demo && acc > prevBest;
+  if (isPb) putBest(Math.round(acc*10)/10);
+
+  const rows = S.events.slice().sort((a,b) => a.t - b.t).map(e => {
+    const n = NOTES[e.note];
+    const g = e.grade ? e.grade.name : 'MISS';
+    const gc = e.grade ? e.grade.color : '#ff5b6e';
+    const err = e.grade ? ((e.err >= 0 ? '+' : '−') + Math.abs(Math.round(e.err)) + ' ms') : '—';
+    const bar = e.grade
+      ? '<div style="position:relative;height:8px;width:150px;background:#121722;border-radius:4px">' +
+        '<div style="position:absolute;left:50%;top:-2px;width:1px;height:12px;background:#39415a"></div>' +
+        '<div style="position:absolute;left:' + (50 + Math.max(-49, Math.min(49, e.err / MATCH_MS * 50))) + '%;top:-2px;width:3px;height:12px;background:' + gc + ';border-radius:2px"></div></div>'
+      : '';
+    return '<tr><td class="l" style="color:' + LANES[e.lane].color + '">' + LANES[e.lane].glyph + ' ' + LANES[e.lane].label + '</td>' +
+      '<td class="l">' + (e.type === 'press' ? 'press' : 'release') + '</td>' +
+      '<td>' + (e.t/1000).toFixed(3) + '</td>' +
+      '<td>' + (n ? (n.dur/1000).toFixed(3) : '') + '</td>' +
+      '<td style="color:' + gc + '">' + g + '</td><td>' + err + '</td><td class="l">' + bar + '</td></tr>';
+  }).join('');
+
+  $('#results').innerHTML =
+    '<h2>' + S.sec.name + ' — ' + (S.demo ? 'demo' : 'your run') + '</h2>' +
+    '<div class="gradebig" style="color:' + gcol + '">' + grade + ' <span style="font-size:26px;color:#8b95ab">' + acc.toFixed(1) + '%</span>' +
+      (isPb ? ' <span style="font-size:15px;color:#7ee787">▲ personal best</span>' : (prevBest ? ' <span style="font-size:15px;color:#5d677c">best ' + prevBest.toFixed(1) + '%</span>' : '')) + '</div>' +
+    '<div class="cards">' +
+      card(sc.counts.PERFECT + '/' + S.events.length, 'perfect ±20 ms') +
+      card(sc.meanAbs == null ? '—' : Math.round(sc.meanAbs) + ' ms', 'mean abs error') +
+      card((bias >= 0 ? '+' : '−') + Math.abs(Math.round(bias)) + ' ms', bias >= 0 ? 'you run late' : 'you run early') +
+      card(sc.counts.MISS + '', 'missed') +
+      card(extra + '', 'inputs the tape never makes') +
+      card(S.bestCombo + '', 'best combo') +
+    '</div>' +
+    (!S.demo && Math.abs(bias) >= 8 ? '<p style="color:#8b95ab;margin:0 0 8px">Your whole run sits ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) +
+       ' ms off centre. Put ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) + ' into <b style="color:#e8edf7">input offset</b> and that part stops costing you.</p>' : '') +
+    (sc.worst ? '<p style="color:#8b95ab;margin:0 0 12px">Worst edge: <b style="color:#e8edf7">' + LANES[sc.worst.lane].label + ' ' +
+      sc.worst.type + ' at ' + (sc.worst.t/1000).toFixed(3) + '</b> — ' + (sc.worst.err >= 0 ? '+' : '−') +
+      Math.abs(Math.round(sc.worst.err)) + ' ms. Drop to 0.25× and drill just that section.</p>' : '') +
+    '<div class="row" style="margin-bottom:14px">' +
+      '<button class="primary" onclick="window.__retry()">↻ Retry (R)</button>' +
+      '<button onclick="window.__slower()">− Slower</button>' +
+      '<button onclick="window.__demo()">👁 Watch it driven</button>' +
+    '</div>' +
+    '<table><thead><tr><th class="l">lane</th><th class="l">edge</th><th>tape s</th><th>hold s</th><th>judge</th><th>error</th><th class="l">early ← → late</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  $('#results').classList.add('show');
+  $('#hBest').textContent = getBest() ? getBest().toFixed(1) + '%' : '—';
+}
+function card(v, l){ return '<div class="card"><b>' + v + '</b><span>' + l + '</span></div>'; }
+window.__retry  = () => play();
+window.__slower = () => { setSpeed(Math.max(0.10, S.speed - 0.15)); play(); };
+window.__demo   = () => { $('#cbDemo').checked = true; S.demo = true; play(); };
+
+/* ---------- controls ---------- */
+$('#rgOff').oninput = e => {
+  S.offset = +e.target.value;
+  $('#vOff').textContent = (S.offset > 0 ? '+' : '') + S.offset + ' ms';
+};
+function setSpeed(v){
+  S.speed = Math.round(v*100)/100;
+  $('#rgSpeed').value = Math.round(S.speed*100);
+  $('#vSpeed').textContent = S.speed.toFixed(2) + '×';
+}
+$('#rgSpeed').oninput = e => setSpeed(+e.target.value / 100);
+document.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => setSpeed(+b.dataset.speed));
+$('#rgZoom').oninput = e => { S.zoom = +e.target.value; $('#vZoom').textContent = S.zoom; };
+$('#btnStart').onclick = $('#btnStart2').onclick = () => play();
+$('#btnPause').onclick = () => pause();
+$('#btnRetry').onclick = () => play();
+$('#btnDemo').onclick = () => { $('#cbDemo').checked = true; S.demo = true; play(); };
+$('#cbDemo').onchange  = e => { S.demo = e.target.checked; };
+$('#cbLoop').onchange  = e => { S.loop = e.target.checked; };
+$('#cbSound').onchange = e => { S.sound = e.target.checked; };
+$('#cbFull').onchange  = e => { S.includeCountdown = e.target.checked; renderTapeInfo(); if (S.state !== 'idle') play(); };
+
+const secWrap = $('#sections');
+SECTIONS.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.className = 'sm' + (i === 0 ? ' on' : '');
+  b.textContent = s.name;
+  b.title = s.hint + '  (' + (s.a/1000).toFixed(3) + ' → ' + (Math.min(s.b, TAPE_END)/1000).toFixed(3) + ')';
+  b.onclick = () => {
+    S.sec = s;
+    secWrap.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    $('#sechint').textContent = s.hint + ' — ' + (s.a/1000).toFixed(3) + ' → ' + (Math.min(s.b, TAPE_END)/1000).toFixed(3);
+    $('#hBest').textContent = getBest() ? getBest().toFixed(1) + '%' : '—';
+    play();
+  };
+  secWrap.appendChild(b);
+});
+$('#sechint').textContent = SECTIONS[0].hint;
+
+/* ---------- what the tape says (computed, not typed) ---------- */
+function renderTapeInfo(){
+  const ev = notesToEvents(NOTES, S.includeCountdown);
+  const raceTrans = TRANS.filter(r => r.t > 0).length;
+  const holds = NOTES.filter(n => S.includeCountdown || n.end > 0);
+  const shortest = holds.reduce((m,n) => n.dur < m.dur ? n : m);
+  $('#tapeinfo').innerHTML =
+    ROWS.length + ' ticks at 10 ms, ' + (TAPE_START/1000).toFixed(3) + ' → ' + ((TAPE_END-TICK)/1000).toFixed(3) + '.<br>' +
+    holds.length + ' held notes, ' + ev.length + ' judged edges.<br>' +
+    'shortest hold: <code>' + LANES[shortest.lane].label + ' ' + shortest.dur + ' ms at ' + (shortest.start/1000).toFixed(3) + '</code><br>' +
+    RACE_SEGS.length + ' steer segments after 0.000, ' + raceTrans + ' state changes.';
+  $('#selfcheck').innerHTML =
+    'parsed <b>' + ROWS.length + '</b> ticks · <b>' + NOTES.length + '</b> notes · steer values <b>' +
+    [...new Set(ROWS.map(r => r.steer))].sort((a,b)=>a-b).join(' / ') + '</b> · gas released after the line: <b>' +
+    (ROWS.some(r => r.t >= 0 && r.t <= FINISH_MS && r.accel === 0) ? 'yes' : 'never') + '</b>';
+}
+setSpeed(0.5);
+renderTapeInfo();
+renderCoach();
+$('#hBest').textContent = getBest() ? getBest().toFixed(1) + '%' : '—';
+arm();
+
+/* Everything in this panel is measured off the tape at load time. */
+function renderCoach(){
+  const inBurst = s => s.end > 2090 && s.start < 3600;
+  const segs = RACE_SEGS.filter(inBurst);
+  const dirName = v => v < 0 ? '◀ left' : v > 0 ? 'right ▶' : '· centre';
+  const stutters = segs.filter(s => s.steer === 0 && s.end - s.start <= 60);
+  const shortest = segs.reduce((m,s) => (s.end - s.start) < (m.end - m.start) ? s : m);
+  const list = segs.map(s => {
+    const d = s.end - s.start;
+    const col = s.steer < 0 ? '#39d0ff' : s.steer > 0 ? '#ffb020' : '#6d778c';
+    return '<div style="display:flex;gap:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px">' +
+      '<span style="color:#54607a;width:42px">' + (s.start/1000).toFixed(3) + '</span>' +
+      '<span style="color:' + col + ';width:56px">' + dirName(s.steer) + '</span>' +
+      '<span style="color:#8b95ab;width:44px;text-align:right">' + (d/1000).toFixed(3) + '</span>' +
+      '<span style="flex:1;background:' + col + ';opacity:.5;height:8px;align-self:center;max-width:' + Math.max(2, d/6) + 'px"></span></div>';
+  }).join('');
+  $('#coach').innerHTML =
+    'Gas goes down before the light and never comes up. The whole race is your left hand.<br><br>' +
+    '<b style="color:#e8edf7">The burst, 2.090 → 3.590</b> — ' + segs.length + ' steer segments, ' +
+    stutters.length + ' of them centre stutters of ' + Math.min(...stutters.map(s => s.end - s.start)) + '–' +
+    Math.max(...stutters.map(s => s.end - s.start)) + ' ms. Do not read it as ' + segs.length +
+    ' separate inputs: it is <i>left held with the finger twitching off it</i>, twice, around one 80 ms right and one 210 ms right.<br>' +
+    '<div style="margin:7px 0">' + list + '</div>' +
+    'Shortest thing here: <code>' + ((shortest.end - shortest.start)) + ' ms of ' + dirName(shortest.steer).replace(/[◀▶·] ?/,'') +
+    ' at ' + (shortest.start/1000).toFixed(3) + '</code> — one tick. At 1.00× nobody hits that; at 0.15× it is 67 real ms.<br><br>' +
+    'Then <b style="color:#39d0ff">1.520 s of left</b> (3.590 → 5.110) — the only place in the run where you can breathe — and right from 5.230 to the line at 6.323.';
+}
+}
+</script>
+</body>
+</html>
