@@ -5,7 +5,34 @@
 
 **Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
 
-https://github.com/user-attachments/assets/999792f4-397f-4d16-818d-da900a53017e
+> ### ⚠️ Video withdrawn — the car is facing the wrong way
+>
+> The clip that was here has been taken down. **The run is real and the time
+> stands** — 95.839 re-simulates on the game's own oracle, the inputs are ours,
+> and the car's *path* through the map is correct in every position.
+>
+> What is wrong is the car's **orientation**. `TAS_95839_analog`'s spawn
+> quaternion is the identity — no rotation applied at all — where all 26 human
+> recordings on this map read `(3.39e-05, −0.7071, 0, 0.7071)`, rotated 90°. On a
+> map whose whole technique is holding gas and brake together and sliding
+> sideways for a hundred seconds, that is not subtle: the car in the clip points
+> somewhere the car in the run never pointed.
+>
+> **No positional check could ever have caught this.** Position and orientation
+> are separate fields in the record — `pos` at +208, the quaternion at +192 — so
+> "1917 of 1917 samples identical", which this page claimed above, was true of the
+> positions and silent about the facing. The project's own notes had predicted
+> exactly this failure and named it before it happened; the gate never checked
+> for it.
+>
+> Two of this page's four tapes are affected and two are correct, which is why
+> comparing our files against each other never showed it.
+>
+> A replacement will be re-regenerated with the quaternion kind pinned, and the
+> check — *first-sample orientation against a human recording of the same spawn,
+> compared as a rotation* — is going into the gate so no clip can be filmed
+> without it again.
+
 
 **Both runs, side by side, and yes — the car really does vanish and reappear at
 the start.** That is not a broken clip and it is not an edit. At **94.250** our

@@ -1678,3 +1678,82 @@ asked:
 > Treat 95.507 as a search result only until the container gate has looked at it.
 
 `pwiw_TAPE_95575_watchable_v1` remains the last renderable artefact on that map.
+
+## Field #8: the car is facing the wrong way, and no positional check can see it
+
+Reported by vjeux watching the 197047 clip — **"the car orientation in the TAS is
+wrong"** — on a video that had passed every gate we own.
+
+The page claimed the tape **"regenerates 1917 of 1917 samples"** with a sample CSV
+*identical* to the filmed file, an equality rather than a tolerance. Both true,
+and both silent about the defect: in the record layout
+
+```
+pos +208    quat +192    vel +220    (reclen 452)
+```
+
+**position and orientation are different fields.** A comparison over positions
+passes at 1917 of 1917 while the facing is wrong for the whole run.
+
+> **"Every sample identical" is a claim about the samples you compared.**
+
+### The mechanism, read from source rather than from a report
+
+`fk regen` **does** write the quaternion — `write_transform` encodes
+`ang = acos(q[3])`, heading `atan2(q[1], q[0])`, pitch `asin(q[2]/sin ang)`. So
+the field was never simply unwritten; the fault is in *how*.
+
+Every run on a map spawns identically, which gives a free reference. All 26 human
+recordings on 197047 read `(3.39e-05, −0.7071, 0, 0.7071)`:
+
+```
+TAS_96852_v1              (-3.39e-05, -0.7071, 0, 0.7071)   matches
+KEYBOARD_96759_metronome  (-3.39e-05, -0.7071, 0, 0.7071)   matches
+TAS_95839_analog          ( 1.0000,    0,      0, -2.4e-05) IDENTITY — no rotation
+KEYBOARD_96412_twokey     ( 1.0000,    0,      0, -2.4e-05) IDENTITY
+```
+
+`TAS_95839_analog` is the file in the withdrawn clip. **Two of the four tapes on
+that page are affected and two are fine — which is why comparing our own files
+against each other never showed it.**
+
+### The corpus, and why three classes had to be separated
+
+173 files, 24 flagged, **13 real**:
+
+| class | files | |
+|---|---|---|
+| **identity quaternion — no rotation at all** | **6** | 197047 ×2 (incl. the filmed one), 186935 ×2, 227654 `TAS_57503`, 238835 `AUTHORCUT_246602_watchable` |
+| **kind flip `(w,x,y,z)` vs `(x,y,z,w)`** | **4** | 145875 ×3, 274191 `KEYBOARD_7476` — permuted dot **1.000** |
+| no car entity at all | 9 | 165922's nine |
+| **q vs −q — the SAME rotation, not a defect** | 5 | 199100 ×5 |
+
+**149 of 173 match the human spawn exactly.**
+
+The five 199100 rows are why this must be computed as a rotation rather than a
+byte comparison: ours read `(−0.7071, 0, 0.7071, 0)` against the humans'
+`(0.7071, 0, −0.7071, 0)` — **dot product 1.000**, the same rotation with the
+opposite sign, exactly as `write_transform`'s own comment says. A naive equality
+check calls those five broken and they are perfect.
+
+> **q and −q are the same rotation.** A checker that does not know that will
+> condemn correct files and teach everyone to ignore it.
+
+Positive control: `NORETRY_347003_watchable` reads `(0, 0.7071, 0, 0.7071)` —
+exactly 238835's human spawn — so the reader distinguishes at the fourth decimal
+on a file whose history is known.
+
+### The part that stings
+
+The project's own notes **predicted this failure and named it**, before it
+happened:
+
+> *"the probe reports the same quaternion offset every run but its KIND flips …
+> positions are unaffected, so NO GATE CHECK SEES IT; the car simply faces the
+> wrong way for the whole render."*
+
+`fk regen --quat-kind N` exists to pin it. **The tooling anticipated the bug, the
+gate never checked for it, and six files went to film.**
+
+The check is one line — *first-sample orientation against a human recording of
+the same spawn, compared as a rotation* — and it would have caught all ten.
