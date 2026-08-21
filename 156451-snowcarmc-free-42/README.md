@@ -1,6 +1,6 @@
 # Snowcarmc free 42
 
-**Snowcarmc free 42** — TAS **18.690** (−21.384) | AT 40.074 | WR 18.810 by Roquett
+**Snowcarmc free 42** — TAS **18.690** (−0.120) | WR 18.810 by Roquett, best of 63 | AT 40.074, beaten by every human on the board
 
 https://github.com/user-attachments/assets/d6fc2ce8-70b3-423b-bc3e-67681e44b804
 
