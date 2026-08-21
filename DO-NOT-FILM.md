@@ -1166,3 +1166,68 @@ The oracle validates the driving and is silent on every one.
 
 That is why a tape that validates three times is a **time**, and not yet a
 **file**.
+
+### The 94 import with one track — the blocklist is 19
+
+The question that decided the size of the problem: does a foreign span with a
+*single* car-entity group also produce a second MediaTracker track? **No.**
+
+238835 was the specimen — five files in the 94 with span excesses of 1617–1726
+seconds, and three span-correct siblings in the same folder as in-map controls.
+Whole folder, control at open and close:
+
+```
+01_AUTHORCUT_246602_watchable   1 track   Ghost:Bald_tm@246.57   CONTROL-open
+02_NORETRY_347003_watchable     1 track   Ghost:TAS@346.97       span ok
+03_NORETRY_407463_watchable     1 track   Ghost:TAS@407.43       span ok
+04_TAS_239133                   1 track   Ghost:TAS@462.95       ← the 94
+05_TAS_262907                   1 track   Ghost:TAS@262.90       ← the 94
+06_TAS_267646_v7                1 track   Ghost:TAS@267.60       ← the 94
+07_TAS_268554_v6                1 track   Ghost:TAS@268.55       ← the 94
+08_TAS_347003_noretry_v4        1 track   Ghost:TAS@347.00       ← the 94
+50_TAS_239133_cut               1 track   Ghost:TAS@239.10       ← the 94
+01_AUTHORCUT_246602_watchable   1 track   Ghost:Bald_tm@246.57   CONTROL-close
+```
+
+Controls agree at open and close, so the session is valid. **Every block end
+matches the file's own declared time**, not the donor's 1964.930 span.
+
+This agrees with the *mechanism*, not merely with the numbers: 279218's second
+track came from the carrier's extra entity groups, and a file with one group has
+nothing to make a second track out of. **The entity count is not just a proxy for
+the track count — it looks like the cause.**
+
+Scope stated by its own author: **five of the 94, one map, one span value.**
+286279 and 186935 carry different spans and were not imported. The mechanism
+argues they behave the same; that is an argument, not a measurement.
+
+> **Render blocklist: the 19.** The 94 are container hygiene — real, worth
+> repairing, invisible to the viewer and harmless to the pipeline.
+
+### A projection offered twenty minutes before the measurement
+
+The interim figure was "~60 minutes of render for a 5.35-second run", derived
+from the output file's **byte growth rate**. Measured:
+
+```
+control (clean span)   162 frames    5.400 s    ~40 s of rendering
+subject (566 s span)   16,983 frames 566.066 s  ~1,140 s of rendering
+```
+
+Real video — 16,983 frames counted, not a header read. But the cost is **~28×,
+not 90×**: about 19 minutes against 40 seconds.
+
+**Bytes are not frames.** A long clip of mostly-static scenery compresses far
+better than five seconds of moving car, so the byte rate understated progress
+badly.
+
+> **Do not offer a projection when the measurement is twenty minutes away** —
+> and if you must, name the quantity you extrapolated from, because that is where
+> the error lives.
+
+### One anomaly for the census
+
+`238835/04_TAS_239133` declares 239133 and imports with a block end of **462.95**
+— not its declared time, not the 1964.93 span, roughly double the declaration.
+One track, so it is not a render problem. **A third number from a file that
+should have two.**
