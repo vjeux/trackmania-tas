@@ -5,7 +5,7 @@ respawns cost it 82 seconds, and the seven that are left are all in the
 nine-second crawl into the corner at 47 s — get wedged there by 40.0 s instead
 of 46.9 s and the author time falls.**
 
-> ### ⚠️ Five of the replay files on this page do not show our runs
+> ### ⚠️ Five replay files withdrawn — they carried the human world record holder's trajectory
 >
 > An audit tonight decoded every published tape against every human recording on
 > this map. **`TAS_57493`, `TAS_57498`, `TAS_57573`, `TAS_59912_watchable` and
@@ -18,15 +18,25 @@ of 46.9 s and the author time falls.**
 > *recording*, not the result. A searched tape is built inside a donor file and
 > inherits that donor's telemetry unless it is regenerated, and these were not.
 >
-> So: the numbers stand, the analysis stands, and **the files should not be
-> loaded as replays** until they are regenerated. Nothing on this page has ever
-> been filmed.
+> So: the numbers stand, the analysis stands, and **the five files have been
+> removed from this page**. `TAS_57493`, `TAS_57498`, `TAS_57573` and
+> `TAS_59912_watchable` each carry 365 of 365 of ailiei.'s samples; `TAS_57503`
+> is a splice, 364 of 365 with one sample diverging by 2004 m. Replacements will
+> be regenerated. `HUMAN_WR_retries_cut_64871` stays: it is published AS the
+> human's lap with the respawns removed, so carrying his trajectory is the point.
+>
+> This was known this morning — a commit recorded that ten files had resisted
+> regeneration and remained a stranger's telemetry end to end, and they stayed
+> published all day. A fact in a commit message gates nothing. Files now pass a
+> check before a page can reference them.
+>
+> Nothing on this page has ever been filmed.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
-| [`TAS_57493`](replays/TAS_57493.Ghost.Gbx) | **57.493** | **−0.360** | reach the corner about 7 s early, then drive the human's own escape |
-| [`TAS_57573`](replays/TAS_57573.Ghost.Gbx) | 57.573 | −0.280 | the first tape to beat the author time here |
-| [`TAS_59912`](replays/TAS_59912_watchable.Ghost.Gbx) | 59.912 | +2.059 | the best keyboard-only run |
+| `TAS_57493` *(withdrawn)* | **57.493** | **−0.360** | reach the corner about 7 s early, then drive the human's own escape |
+| `TAS_57573` *(withdrawn)* | 57.573 | −0.280 | the first tape to beat the author time here |
+| `TAS_59912` *(withdrawn)* | 59.912 | +2.059 | the best keyboard-only run |
 | [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the world record with its eleven respawns spliced out** |
 | Author time | 57.853 | — | — |
 | Human WR, as recorded | 147.031 | +89.178 | contains 11 respawns |

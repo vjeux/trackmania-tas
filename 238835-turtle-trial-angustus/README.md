@@ -5,9 +5,32 @@ is not a display of driving, it is a competent lap plus nineteen crashes — so
 hard-respawn the instant you take a checkpoint, and learn the one obstacle that
 cost the author 197 seconds.**
 
+
+> ### ⚠️ Five replay files withdrawn — they carried the human's recorded trajectory
+>
+> `TAS_239133`, `TAS_262907`, `TAS_267646_v7`, `TAS_268554_v6` and
+> `TAS_347003_noretry_v4` have been removed from this page. Each one decodes to
+> **Quantiks' own recorded trajectory, bit for bit** — 9114 of 9114 samples on
+> `TAS_239133`, and the same whole-file match on the other four.
+>
+> **The times stand and the method stands.** Every one of these tapes
+> re-simulates on the game's own oracle to the millisecond in its name, and this
+> map's entire result comes from *deleting failed attempts*, which is a property
+> of the input tape rather than of the recording. What was wrong is the
+> recording of how the car moved — the only thing a replay file shows.
+>
+> A tape built by editing an existing run inherits that run's telemetry unless it
+> is regenerated from engine memory. On this map the regeneration was attempted
+> and **failed** — recorded at the time, in a commit message, and then published
+> anyway. That is the real defect: the finding existed and nothing refused to
+> ship on it. Files now pass a gate before a page can reference them.
+>
+> Replacements will be regenerated. Until then this page has replay files for
+> nothing, and the numbers below are the result.
+
 | run | time | vs author time |
 |---|---|---|
-| **the author's lap, failures cut, then optimised** — [`TAS_239133`](replays/TAS_239133.Ghost.Gbx) | **239.133** | **−223.849 (−48.3 %)** |
+| **the author's lap, failures cut, then optimised** — `TAS_239133` *(file withdrawn)* | **239.133** | **−223.849 (−48.3 %)** |
 | the author's lap, failures cut only — **watchable** | 246.602 | −216.380 |
 | the earlier human-derived line | 262.907 | −200.075 |
 | Author time | 462.982 | — |

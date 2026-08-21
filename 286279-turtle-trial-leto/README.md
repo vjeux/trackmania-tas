@@ -215,3 +215,15 @@ play**.
 | [`replays/TAS_235625.Ghost.Gbx`](replays/TAS_235625.Ghost.Gbx) | the world-record lineage, 26 steer values |
 | [`replays/KEYBOARD_235939.Ghost.Gbx`](replays/KEYBOARD_235939.Ghost.Gbx) | the same, keyboard-only — the 0.314 comparison |
 | [`replays/HUMANCUT_237122_watchable.Ghost.Gbx`](replays/HUMANCUT_237122_watchable.Ghost.Gbx) | the first cut of the world record, before the checkpoint trims |
+
+## Withdrawn: `AUTHORMIN_831ev_354781.Ghost.Gbx`
+
+That replay file has been removed. It is a **splice** rather than a whole-file
+copy — 8 of 7087 samples bit-identical to Bald_tm's recording and **707 m of
+shared path** — so most of what it shows is its own driving with somebody else's
+stitched into it. The rule it fails: *a file whose recorded trajectory contains a
+human's, in whole or in part, is not ours to publish.*
+
+The time and the analysis are unaffected; the result on this map comes from the
+author's own ghost recovered from inside the `.Map.Gbx`, and that provenance is
+unchanged. A regenerated replacement will be published.
