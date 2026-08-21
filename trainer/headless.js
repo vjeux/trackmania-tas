@@ -119,6 +119,8 @@ playRun(0,'player: exactly on tape');
 playRun(12,'player: 12 ms late');
 playRun(-35,'player: 35 ms early');
 playRun(70,'player: 70 ms late');
+playRun(120,'player: 120 ms late');
+playRun(200,'player: 200 ms late');
 playRun(400,'player: hopeless (400 ms)');
 console.log('\nfillText calls total:',calls);
 

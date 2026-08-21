@@ -173,7 +173,7 @@
         <button class="sm" data-speed="0.75">0.75×</button>
         <button class="sm" data-speed="1">1.00× real</button>
       </div>
-      <div class="hint">Timing windows are measured in <i>tape</i> milliseconds, so slowing down really does make them easier — a ±20 ms perfect window is 80 real ms at 0.25×.</div>
+      <div class="hint">Timing windows are measured in <i>tape</i> milliseconds, so slowing down really does make them easier — a ±25 ms perfect window is 100 real ms at 0.25×.</div>
     </div>
 
     <div class="grp">
@@ -215,6 +215,11 @@
     <div class="grp">
       <h3>Read the run</h3>
       <div class="hint" id="coach"></div>
+    </div>
+
+    <div class="grp">
+      <h3>Judging</h3>
+      <div class="hint" id="windows"></div>
     </div>
 
     <div class="grp">
@@ -1139,41 +1144,69 @@ function notesToEvents(notes, includeCountdown){
   return ev;
 }
 
-// Judgement windows, in TAPE milliseconds (so slow motion genuinely helps).
-const WIN = [
-  { name:'PERFECT', abs:20,  pts:100, color:'#ffd75e' },
-  { name:'GREAT',   abs:45,  pts:72,  color:'#7ee787' },
-  { name:'GOOD',    abs:90,  pts:42,  color:'#63b3ff' },
-  { name:'LATE',    abs:150, pts:14,  color:'#c58bff' },
+/* Judgement windows, in TAPE milliseconds (so slow motion genuinely helps).
+   Two things make these asymmetric on purpose.
+
+   LATE IS THE HUMAN FAILURE MODE. You react to a note arriving; you cannot
+   react to one that has not arrived yet. So every tier is far more generous
+   after the beat than before it, and being late costs grade, never the note.
+
+   A RELEASE IS NOT A PRESS. Letting go a little long is a different, milder
+   mistake than mistiming a press — and on a 10 ms flick, judging the release
+   as strictly as the press is simply unplayable. Releases get roughly double
+   the room. */
+const WIN_PRESS = [
+  { name:'PERFECT', early:25,  late:25,  pts:100, color:'#ffd75e' },
+  { name:'GREAT',   early:45,  late:70,  pts:78,  color:'#7ee787' },
+  { name:'GOOD',    early:80,  late:140, pts:52,  color:'#63b3ff' },
+  { name:'LATE',    early:130, late:240, pts:26,  color:'#c58bff' },
 ];
-const MATCH_MS = 150;          // beyond this, an edge is spurious and a note is a miss
-const EXTRA_PENALTY = 25;      // points removed for an input the tape never makes
-function gradeOf(err){
-  const a = Math.abs(err);
-  for (const w of WIN) if (a <= w.abs) return w;
-  return null;
+const WIN_RELEASE = [
+  { name:'PERFECT', early:45,  late:45,  pts:100, color:'#ffd75e' },
+  { name:'GREAT',   early:85,  late:120, pts:78,  color:'#7ee787' },
+  { name:'GOOD',    early:140, late:220, pts:52,  color:'#63b3ff' },
+  { name:'LATE',    early:200, late:360, pts:26,  color:'#c58bff' },
+];
+const WIN = WIN_PRESS;                       // the band drawn at the judgement line
+const winsFor = type => type === 'release' ? WIN_RELEASE : WIN_PRESS;
+
+/* Beyond the last tier an edge is still CLAIMABLE: it scores the bottom grade
+   rather than being thrown away. "Extra" is reserved for a key press with no
+   note it could plausibly belong to — which is what the word should mean. */
+const CLAIM = { press:{ early:200, late:420 }, release:{ early:260, late:560 } };
+const claimFor = type => type === 'release' ? CLAIM.release : CLAIM.press;
+const VERY_LATE = { name:'LATE', early:1e9, late:1e9, pts:10, color:'#8b6bd6' };
+const EXTRA_PENALTY = 25;    // points removed for an input the tape never makes
+
+function gradeOf(err, type){
+  for (const w of winsFor(type)) if (err >= -w.early && err <= w.late) return w;
+  return VERY_LATE;          // claimable, and scored — never discarded
 }
 
-/* Match one player key edge to an unjudged event of the same lane+type.
-   Rule: the EARLIEST still-open event inside the window, not the nearest one.
-   Nearest breaks down exactly where this run is interesting — the presses at
-   2.360 and 2.380 are 20 ms apart, so a slightly late first press would be
-   credited to the second and the whole flick would unravel. Earliest-first
-   keeps a sequence of edges attributed in the order you played them; events
-   nobody claims retire on their own once the playhead is MATCH_MS past. */
+/* Match one player key edge to an event of the same lane and type.
+
+   SEQUENCE, NOT NEAREST. Nearest cannot work on this run: the presses at 2.360
+   and 2.380 are 20 ms apart, so a 12 ms late press on the first would be stolen
+   by the second and the whole cluster would unravel. You play a lane's edges in
+   order, so they are credited in order: the EARLIEST edge this input could
+   legitimately be a hit on. Playing slightly behind the beat stays a sequence
+   instead of turning into a pile of extras and misses.
+
+   Two bands. Inside the last grade tier an input is a graded hit. Between that
+   and the claim limit it is still a hit — the bottom grade — because an input
+   the tape plainly asked for is never an "extra". Only outside the claim limit
+   is there no note it could belong to, and only then is it spurious. */
 function matchEdge(events, lane, type, t){
-  let first = null, bullseye = null;
+  const claim = claimFor(type), wins = winsFor(type), last = wins[wins.length - 1];
+  let inTier = null, inClaim = null;
   for (const e of events){
     if (e.judged || e.missed || e.lane !== lane || e.type !== type) continue;
-    const d = t - e.t;
-    if (Math.abs(d) > MATCH_MS) continue;
-    if (!first || e.t < first.t) first = e;
-    if (Math.abs(d) <= WIN[0].abs && (!bullseye || e.t < bullseye.t)) bullseye = e;
+    const err = t - e.t;
+    if (err < -claim.early || err > claim.late) continue;
+    if (!inClaim || e.t < inClaim.t) inClaim = e;
+    if (err >= -last.early && err <= last.late && (!inTier || e.t < inTier.t)) inTier = e;
   }
-  // ...unless the earliest one is already badly overdue and a later one is dead
-  // on the beat: then you skipped the earlier edge, and it should read as a miss.
-  if (bullseye && first && bullseye !== first && (t - first.t) > WIN[1].abs) return bullseye;
-  return first;
+  return inTier || inClaim;
 }
 
 function scoreOf(events){
@@ -1333,7 +1366,7 @@ function edge(lane, type, t){
     S.extra = (S.extra || 0) + 1;
     return;
   }
-  m.judged = true; m.playerT = t; m.err = t - m.t; m.grade = gradeOf(m.err) || WIN[WIN.length-1];
+  m.judged = true; m.playerT = t; m.err = t - m.t; m.grade = gradeOf(m.err, m.type);
   S.flash[lane] = performance.now();
   S.hits.push({ err: m.err, born: performance.now(), color: m.grade.color });
   S.combo++; S.bestCombo = Math.max(S.bestCombo, S.combo);
@@ -1405,7 +1438,7 @@ function frame(ts){
         }
       }
     } else {
-      for (const e of S.events) if (!e.judged && !e.missed && S.tapeNow > e.t + MATCH_MS){
+      for (const e of S.events) if (!e.judged && !e.missed && S.tapeNow > e.t + claimFor(e.type).late){
         e.missed = true; S.combo = 0; pop(e.lane, 'MISS', '#ff5b6e'); setLast(e);
       }
     }
@@ -1516,9 +1549,14 @@ function draw(){
   ctx.fillStyle = 'rgba(255,255,255,.10)'; ctx.fillRect(x0, jy - 2, total, 4);
   ctx.fillStyle = '#fff'; ctx.fillRect(x0, jy - 1, total, 2);
   // perfect-window band
-  const bandPx = WIN[0].abs * (S.zoom/1000);
+  // the perfect band, drawn the shape it really is: tighter above the line
+  // (early) than below it (late)
+  const gE = WIN_PRESS[1].early * (S.zoom/1000), gL = WIN_PRESS[1].late * (S.zoom/1000);
+  ctx.fillStyle = 'rgba(126,231,135,.07)';
+  ctx.fillRect(x0, jy - gE, total, gE + gL);
+  const pxE = WIN_PRESS[0].early * (S.zoom/1000), pxL = WIN_PRESS[0].late * (S.zoom/1000);
   ctx.fillStyle = 'rgba(255,215,94,.13)';
-  ctx.fillRect(x0, jy - bandPx, total, bandPx * 2);
+  ctx.fillRect(x0, jy - pxE, total, pxE + pxL);
 
   // key caps
   const now = performance.now();
@@ -1575,33 +1613,37 @@ function drawGasBar(x0, total, jy){
     x0 + total/2, y + 15);
 }
 
-// ±150 ms gauge: every recent edge leaves a needle, so a bias is visible as a
-// cloud sitting off-centre rather than as a number you have to remember.
+// Error gauge, asymmetric like the windows: −200 ms early on the left, +420 ms
+// late on the right, so "late" looks like the roomy side it actually is.
 function drawMeter(){
   const now = performance.now();
-  const w = Math.min(430, W - 60), x = (W - w)/2, y = H - STRIP_H - 30, half = w/2;
-  const px = e => x + half + (e / MATCH_MS) * half;
+  const LO = -CLAIM.press.early, HI = CLAIM.press.late;
+  const w = Math.min(470, W - 60), x = (W - w)/2, y = H - STRIP_H - 34;
+  const px = e => x + (Math.max(LO, Math.min(HI, e)) - LO) / (HI - LO) * w;
   ctx.fillStyle = '#0d1119'; roundRect(x, y - 9, w, 18, 9); ctx.fill();
-  for (const wd of [WIN[2], WIN[1], WIN[0]]){
-    ctx.fillStyle = wd === WIN[0] ? 'rgba(255,215,94,.22)' : wd === WIN[1] ? 'rgba(126,231,135,.12)' : 'rgba(99,179,255,.08)';
-    ctx.fillRect(px(-wd.abs), y - 8, px(wd.abs) - px(-wd.abs), 16);
+  for (let i = WIN_PRESS.length - 1; i >= 0; i--){
+    const wd = WIN_PRESS[i];
+    ctx.fillStyle = i === 0 ? 'rgba(255,215,94,.24)' : i === 1 ? 'rgba(126,231,135,.13)'
+                  : i === 2 ? 'rgba(99,179,255,.09)' : 'rgba(197,139,255,.06)';
+    ctx.fillRect(px(-wd.early), y - 8, px(wd.late) - px(-wd.early), 16);
   }
-  ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(x + half - 1, y - 11, 2, 22);
+  ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(px(0) - 1, y - 11, 2, 22);
   S.hits = S.hits.filter(h => now - h.born < 4000);
   for (const h of S.hits){
     ctx.globalAlpha = Math.max(0, 1 - (now - h.born)/4000) * .9;
     ctx.fillStyle = h.color;
-    ctx.fillRect(px(Math.max(-MATCH_MS, Math.min(MATCH_MS, h.err))) - 1, y - 8, 2.5, 16);
+    ctx.fillRect(px(h.err) - 1, y - 8, 2.5, 16);
     ctx.globalAlpha = 1;
   }
   if (S.hits.length >= 3){
     const bias = S.hits.reduce((s,h) => s + h.err, 0) / S.hits.length;
     ctx.fillStyle = '#fff';
-    ctx.fillRect(px(Math.max(-MATCH_MS, Math.min(MATCH_MS, bias))) - 1, y - 14, 2, 6);
+    ctx.fillRect(px(bias) - 1, y - 14, 2, 6);
   }
   ctx.font = '10px ui-monospace,Menlo,monospace'; ctx.fillStyle = '#4f5972';
-  ctx.textAlign = 'left';  ctx.fillText('early −150 ms', x, y + 22);
-  ctx.textAlign = 'right'; ctx.fillText('+150 ms late', x + w, y + 22);
+  ctx.textAlign = 'left';   ctx.fillText('early ' + LO + ' ms', x, y + 22);
+  ctx.textAlign = 'center'; ctx.fillText('on the beat', px(0), y + 22);
+  ctx.textAlign = 'right';  ctx.fillText('+' + HI + ' ms late', x + w, y + 22);
 }
 
 function roundRect(x,y,w,h,r){
@@ -1710,9 +1752,9 @@ function showResults(){
     const gc = e.grade ? e.grade.color : '#ff5b6e';
     const err = e.grade ? ((e.err >= 0 ? '+' : '−') + Math.abs(Math.round(e.err)) + ' ms') : '—';
     const bar = e.grade
-      ? '<div style="position:relative;height:8px;width:150px;background:#121722;border-radius:4px">' +
-        '<div style="position:absolute;left:50%;top:-2px;width:1px;height:12px;background:#39415a"></div>' +
-        '<div style="position:absolute;left:' + (50 + Math.max(-49, Math.min(49, e.err / MATCH_MS * 50))) + '%;top:-2px;width:3px;height:12px;background:' + gc + ';border-radius:2px"></div></div>'
+      ? '<div style="position:relative;height:8px;width:170px;background:#121722;border-radius:4px">' +
+        '<div style="position:absolute;left:' + (100 * (0 - -CLAIM.press.early) / (CLAIM.press.late + CLAIM.press.early)) + '%;top:-2px;width:1px;height:12px;background:#39415a"></div>' +
+        '<div style="position:absolute;left:' + Math.max(0, Math.min(98, 100 * (Math.max(-CLAIM.press.early, Math.min(CLAIM.press.late, e.err)) + CLAIM.press.early) / (CLAIM.press.late + CLAIM.press.early))) + '%;top:-2px;width:3px;height:12px;background:' + gc + ';border-radius:2px"></div></div>'
       : '';
     return '<tr><td class="l" style="color:' + LANES[e.lane].color + '">' + LANES[e.lane].glyph + ' ' + LANES[e.lane].label + '</td>' +
       '<td class="l">' + (e.type === 'press' ? 'press' : 'release') + '</td>' +
@@ -1818,8 +1860,26 @@ function renderTapeInfo(){
 setSpeed(0.5);
 renderTapeInfo();
 renderCoach();
+renderWindows();
 $('#hBest').textContent = getBest() ? getBest().toFixed(1) + '%' : '—';
 arm();
+
+// The windows, printed from the tables themselves so this can never drift.
+function renderWindows(){
+  const row = (label, wins, claim) =>
+    '<div style="margin:4px 0"><b style="color:#e8edf7">' + label + '</b>' +
+    '<table style="font-size:11px;margin-top:2px"><tbody>' +
+    wins.map(w => '<tr><td class="l" style="color:' + w.color + ';padding:1px 6px">' + w.name + '</td>' +
+      '<td style="padding:1px 6px">−' + w.early + '</td><td style="padding:1px 6px">+' + w.late + ' ms</td></tr>').join('') +
+    '<tr><td class="l" style="color:#8b6bd6;padding:1px 6px">still counts</td><td style="padding:1px 6px">−' +
+      claim.early + '</td><td style="padding:1px 6px">+' + claim.late + ' ms</td></tr>' +
+    '</tbody></table></div>';
+  $('#windows').innerHTML =
+    row('press', WIN_PRESS, CLAIM.press) +
+    row('release', WIN_RELEASE, CLAIM.release) +
+    'Late is the roomy side — you react to a note arriving, never before it. A release gets about double the room a press does, because letting go long is a milder mistake and a 10 ms flick is otherwise unplayable.<br><br>' +
+    'Anything inside <i>still counts</i> is a late <b>hit</b>, never a miss and never an extra. <b>Extra</b> means only one thing here: a key you pressed where the tape has no note at all.';
+}
 
 /* Everything in this panel is measured off the tape at load time. */
 function renderCoach(){

@@ -81,18 +81,21 @@ ok(evRace.filter(e=>e.type==='press').length===evRace.filter(e=>e.type==='releas
 // judging behaviour
 const evs = api.notesToEvents(N,false).map(e=>Object.assign({},e,{judged:false}));
 const target = evs.find(e=>e.t===2360 && e.type==='press');
-ok(api.matchEdge(evs,0,'press',2372)===target,'a press 12 ms late is credited to the 2.360 flick, not the nearer 2.380');
-target.judged = true;
-const nxt = evs.find(e=>e.t===2380 && e.type==='press');
-ok(api.matchEdge(evs,0,'press',2385)===nxt,'the following press then lands on 2.380');
-target.judged = false;
 const p2300 = evs.find(e=>e.t===2300 && e.type==='press');
-ok(api.matchEdge(evs,0,'press',2312)===p2300,'a press 12 ms late in sequence takes the earliest open edge (2.300)');
+const nxt   = evs.find(e=>e.t===2380 && e.type==='press');
+evs.filter(e=>e.t<2300).forEach(e=>e.judged=true);   // the run so far is played
+ok(api.matchEdge(evs,0,'press',2312)===p2300,'12 ms late lands on 2.300, the earliest open edge');
 p2300.judged = true;
-ok(api.matchEdge(evs,0,'press',2402)===target,'42 ms overdue still belongs to the open 2.360 edge');
+ok(api.matchEdge(evs,0,'press',2372)===target,'12 ms late then lands on the 2.360 flick, not the nearer 2.380');
 target.judged = true;
-ok(api.matchEdge(evs,0,'press',2402)===nxt,'with 2.360 played, 2.380 takes the next press');
-ok(api.gradeOf(12).name==='PERFECT' && api.gradeOf(30).name==='GREAT' && api.gradeOf(200)===null,'window tiers');
+ok(api.matchEdge(evs,0,'press',2385)===nxt,'and the next press lands on 2.380 — the cluster stays a sequence');
+ok(api.gradeOf(2385-2380,'press').name==='PERFECT','5 ms late is perfect');
+nxt.judged = true;
+ok(api.matchEdge(evs,0,'press',2900)!==null && api.gradeOf(200,'press').name==='LATE','a very late press is still a hit, never an extra');
+ok(api.matchEdge(evs,2,'press',1000)===null,'a right-lane press at 1.000, where the tape has nothing, IS an extra');
+ok(api.gradeOf(12,'press').name==='PERFECT' && api.gradeOf(30,'press').name==='GREAT' && api.gradeOf(200,'press').name==='LATE','press tiers, late side generous');
+ok(api.gradeOf(-46,'press').name==='GOOD' && api.gradeOf(46,'press').name==='GREAT','the same error is graded worse EARLY than LATE');
+ok(api.gradeOf(100,'release').name==='GREAT' && api.gradeOf(100,'press').name==='GOOD','a release gets more room than a press');
 ok(api.matchEdge(evs,1,'press',4000)===null,'a brake press at 4.000 matches nothing (spurious)');
 
 console.log('— page shell —');

@@ -34,6 +34,10 @@ either.** A check that cannot see tells you nothing in either direction.
 The runs and the times are unaffected: 6.322, 6.323 and 6.342 all validate on
 the untouched map.
 
+Video — both cars at once: our TAS **6.330** against the human world record **6.346** (xeap-.-).
+
+https://github.com/user-attachments/assets/ae6e57c3-4f44-4bca-881f-361f573b1571
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS, unconstrained** | **6.322** | **−0.021** | −0.024 | analog, 186 events |
