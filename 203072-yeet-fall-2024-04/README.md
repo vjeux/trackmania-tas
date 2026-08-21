@@ -6,7 +6,7 @@ spend a second and a half coming back down.**
 
 **Video — both cars at once** — our keyboard flight **10.743** against the human world record **12.083** (Bonobo.e).
 
-<video src="https://vjeux.github.io/trackmania-tas/203072-keyboard-10743-vs-wr-12083.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/a3492244-635d-4f22-9670-23cd93c31364
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

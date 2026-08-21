@@ -17,7 +17,7 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 Video of the run:
 
-<video src="https://vjeux.github.io/trackmania-tas/276877-tas-8898-author-time-31399.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/02596352-d4dd-4c96-a613-f0d6c1b7fab3
 
 ## What is going on here
 
