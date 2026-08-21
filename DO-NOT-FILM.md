@@ -617,3 +617,49 @@ Four readers, four fields, **none subsumes another**: the game's import for the
 nickname, the server's parser for login and account id, the u32 census for
 declared-time sites, a skin-path read for the livery. Each has caught something
 the other three passed.
+
+## A search that could not have found the thing it reported absent
+
+Every "0 wheel-block candidates" in this project's record was produced by a finder
+that searches **stride 44 only**. There are **two** blocks: family A at stride 44,
+and family B at **stride 184**, and they are **3,844 bytes apart** — so a window
+sized for one excludes the other.
+
+So none of those zeros is evidence of absence. Not because they are wrong — A and
+B coexist on all three maps measured — but because **the search could not have
+found B**, on top of a false-negative rate already demonstrated on A. The table of
+four maps built on those zeros is **retired rather than corrected**.
+
+### How B was settled, and why the control is the whole argument
+
+At its own stride, B's four wheels score 86.09 / 88.34 / 83.64 / 85.28 % with
+phases identical to A's, same map, same gather — **the same physical quantity**.
+Then the discriminating test:
+
+| comparison | identical slot-instants | worst numeric difference |
+|---|---|---|
+| **A vs B** | 5.76 % | **0.000610 rad** |
+| **control: A wheel *i* vs A wheel *i+1*** | 8.37 % | **1527.8** |
+
+**"Not bit-identical" alone would have been weak.** With the control sitting six
+orders of magnitude away, the instrument is *shown to resolve what it is being
+asked to resolve* — so 0.000610 rad means "the same quantity, separately stored",
+not "close enough to be a copy". Damper at B−4 lands *below* each column's own
+majority baseline, so B's interior is not A's.
+
+Most likely a render- or interpolation-side copy, which fits both the tiny
+disagreement and the wider stride.
+
+### Two things it does not license
+
+**B is not preferable to A for reading fields** — A's interior is confirmed, B's
+is unknown, and B's wheel value is marginally *less* faithful.
+
+**And the shared 0.3636 m radius told us nothing.** The open note said in advance
+that a matching radius was expected under *both* hypotheses, and it duly failed to
+discriminate. **The bit-comparison did.** Writing down what a measurement cannot
+settle, before running it, is what stopped that number being read as evidence.
+
+> **"We have not tested it" and "we tested it and found nothing" are different
+> claims.** Half of tonight's false negatives came from a tool reporting the
+> second while only entitled to the first.
