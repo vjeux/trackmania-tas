@@ -1591,3 +1591,41 @@ goes with it.
 > **A result attributed to a mechanism needs the same run without the mechanism.**
 > Not as a formality — the attribution control here is on course to take the
 > finding back.
+
+### A winning run that was nearly lost to a filename
+
+208024's 18.160 — the run that finally beat that author time — was found, logged,
+and then **its spec file was gone.** `mh_hunt3.sh` writes
+`/tmp/hunt3_<chunk>.spec` and restarts the chunk counter at 1 on every
+invocation, so relaunching the hunt overwrote the file holding the winning line.
+
+The failure did not look like a lost file. `mh emit` produced nothing and the
+oracle returned **`NORECORD` five times** — which reads exactly like a broken
+tape, not a missing input.
+
+It was recovered only because the candidate generator is deterministic:
+`srand(seed)` with seed 70002, candidate index 7161, so re-running the awk with
+those two numbers reproduced the line exactly and the emitted tape validated at
+18160.
+
+> **That was luck of design, not of process.** With `$RANDOM` or a time seed the
+> run would have been unrecoverable — a number in a log and nothing else.
+
+Two fixes, both cheap: per-seed filenames, and **bank the spec line of every
+finisher at the moment its chunk completes**, not when someone gets round to
+looking at the log.
+
+### The doubling bug: the repair step was never needed
+
+The four 208024 files that came out exactly twice their input size are withdrawn
+and re-issued from the pre-deskin originals, each **186 bytes smaller** than its
+input with the size assertion armed.
+
+Root cause: **`hdr setlogin` doubles a body-only file, and it was never needed.**
+`skin set` + `body setlogin` clears the nickname on its own. The "header copy"
+that seemed to require a second edit was an artefact of a mis-parse that reported
+`user data 0 B` beside a 50 MB chunk.
+
+> A repair added to cover a field that another step already covered, justified by
+> a reader that was misreporting the file. **Three wrongs that cancelled into a
+> plausible-looking pipeline.**
