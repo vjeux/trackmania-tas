@@ -322,3 +322,49 @@ Three things that follow:
   5 runs — the rest were two aborts and one neighbour.
 - **Budget one re-attempt in three** for a corpus-wide re-run, and read an abort
   as the tool refusing rather than as a defect in the file.
+
+## A threshold on a quantised quantity is a threshold on the quantiser
+
+Three checks in one kit changed meaning between decoded-CSV input (~1 cm) and
+full-precision f32 input, silently, in both directions:
+
+| check | at ~1 cm | at f32 |
+|---|---|---|
+| agreement **count** vs a human | hundreds of samples agree with the seed | a clean regenerated file agrees with **nothing** — 0 samples |
+| pre-divergence **floor** | reads a floor | reads the true sub-millimetre separation |
+| consecutive-run **graft** detector | an honest tape shows **69 consecutive** agreeing samples on the shared part of a lap | the run collapses |
+
+The third one refused a certified known-good file as a graft. **The fix is not a
+bigger threshold** — it is that the check now **refuses to run** on quantised
+input and prints `not run (needs full-precision .json input)` in its own row.
+
+> **State the precision a check needs, and refuse to run rather than run blind.**
+
+Corollary already paid for elsewhere in these notes: on full-precision input read
+the **separation**, not the agreement count. A clean file agrees with nothing at
+f32, so a count of zero is meaningless and only the distance still carries the
+signal.
+
+### And the shape of the graft test itself
+
+A splice is a **consecutive run** of identical positions — a segment — not a
+scattering of coincidences. Two runs on a similar line coincide at isolated
+instants long after they have genuinely parted, so an agreement *count* over the
+whole file finds grafts in honest work. Threshold: 10 consecutive samples, 0.5 s.
+
+Combined with the prefix rule from the entry above:
+
+- **identical from the start, then diverging** — innocent, that is shared
+  deterministic physics with no steering yet
+- **identical in the interior** — a splice
+- **re-convergent after real separation** — a splice
+- **identical to the end** — a whole-file copy
+
+### A trap that documentation does not fix
+
+The author of these notes hit their own documented `$(basename $f)` trap **two
+hours after writing it down** — command substitution inside an `echo` sets `$?`
+before it is read, so a verification loop reported `rc=0` for three known-bad
+files. Documenting a trap does not stop anyone falling into it. **Capturing
+`rc=$?` on its own line does.** Prefer the fix that removes the possibility over
+the note that warns about it — which is this file's own thesis applied to itself.
