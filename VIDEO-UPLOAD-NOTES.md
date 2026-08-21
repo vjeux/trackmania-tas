@@ -462,3 +462,57 @@ the table fills up with the second wearing the first's clothes. Every tool in
 this pipeline that has produced a false finding produced it this way — the 404
 that `curl` downloaded successfully, the parser that said `1 replay parsed`, the
 locator that printed `0 candidates`, and now the reader built to catch them.
+
+## 18. What decides a clip's length: the last sample's timestamp
+
+Not the declared time, not the container's record span, not the last checkpoint.
+**The MediaTracker block end is the timestamp of the ghost's last sample**, and
+that is what the render runs to.
+
+Measured on this box, controls at open and close of each session:
+
+| file | own | span | last checkpoint | **last sample** | block end |
+|---|---|---|---|---|---|
+| `126859/KEYBOARD_24164` | 24.164 | 24.400 | 24.342 | **24.150** | **24.15** |
+| `126859/TAS_23416` | 23.416 | 27.800 | 27.609 | **23.400** | **23.40** |
+| `279218/KEYBOARD_5350` | 5.350 | 566.080 | 5.350 | **5.350** | **5.35** |
+| `238835/TAS_239133` | 239.133 | 1964.930 | 462.982 | **462.950** | **462.95** |
+| `238835/TAS_347003_noretry_v4` | 347.003 | 1964.930 | 347.003 | **347.000** | **347.00** |
+| `238835/NORETRY_347003_watchable` | 347.003 | 346.970 | **1964.933** | **346.970** | **346.97** |
+
+Six for six on the last sample; the other four columns each fail at least once.
+The last row is the decisive one — its last checkpoint is a donor's 1964.933 and
+it still imports at 346.97.
+
+**A near-miss worth recording**, because it fitted eight of ten cases and was
+wrong: *block end = (samples − 1) × 50 ms*. That is only the last sample's
+timestamp when the samples sit on an unbroken 50 ms grid. `TAS_239133` has 9114
+samples and a last sample at 462.950 — the grid has gaps — so the formula reads
+455.65 and the file renders to 462.95. **Count the timestamp, not the samples.**
+
+### The two ways a short run becomes a long render
+
+They are different fields and they barely overlap, so a blocklist needs both:
+
+1. **Extra car-entity groups → a second track.** `279218/KEYBOARD_5350` imports
+   as `Ghost:TAS@5.35` *plus* `Ghost:SceneryEvents@566.08`, and a clip runs to
+   its longest block. Measured: **16,983 frames, 566.066 s of video, ~19 minutes
+   of rendering** against the control's 162 frames, 5.400 s and ~40 s.
+2. **A late last sample → a long ghost track.** `186935/CUT_795034`'s last
+   sample is at **2575.150 s** — 43 minutes of video, and at the measured ~28×
+   that is roughly **20 hours of rendering** for one clip.
+
+A file with one entity group and a foreign span is harmless: 238835's five all
+import with one track at their own block end.
+
+## 19. The wedged game: `/editmap` returns `ok` and nothing opens
+
+After a crash the game can come back answering `/ping` with `pong` and reporting
+the menu from `/ctx`, while every `/editmap` returns `ok` and no map ever loads.
+Two different maps failed identically, including one that had opened forty
+minutes earlier — which is how you tell the state from a bad map file.
+
+**`ok` from the plugin means the call was accepted, not that the game did it.**
+A liveness check that reads a return code passes cleanly against this state, the
+same way a dead game answers every import with `NONE`. The only reliable exit is
+a full restart with re-injection.
