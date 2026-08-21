@@ -8,8 +8,6 @@ before the finish that costs the world record 490 km/h.**
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
-**Get in the hole (impossible)** — TAS **13.984** (−0.011) | AT 13.995 | WR 13.990 by in-.-
-
 https://github.com/user-attachments/assets/c8d613ce-fc26-41e7-b772-186d04369bbc
 
 **Both cars are in this one and you can see the difference.** Ours is magenta,
@@ -206,9 +204,9 @@ Why the road disables steering in the first place is measured but not yet
 attributed. "Inert on the ground, live in the air" fits the first three bands
 and fails on the fourth: authority returns at 3.630 with the wheels still down
 and no block boundary there. The bands above are what the oracle says; the
-mechanism behind them is honestly still open.
+mechanism behind them is still open.
 
-So the honest statement is two statements, and they have different answers:
+Two statements, then, and they have different answers:
 
 - **the car does not respond** — true from 2.270 all the way to 3.650;
 - **the input does nothing** — true only to 2.970. For 0.35 s after that it is
@@ -219,14 +217,11 @@ That is why holding full lock through here is not a wasted input: it is what
 sets the car up in the air, and centring the wheel for any single tick of it
 loses the run outright.
 
-*An earlier version of this page put the lockout at 2.90 s and said that after
-the cannon the car is ballistic, with steering unable to move it. The first was
-0.080 s out. The second is wrong, and wrong about the most important part of the
-run: splitting the post-cannon span to give the claim its best chance, the
-purely ballistic phase alone (race 8.600 → 13.000) costs **+0.914 s** at full
-right and **+2.375 s** at full left, and does not finish at all when centred.
-The landing slide after it accounts for 4 ms of the difference. Steering during
-the flight is worth over two seconds.*
+The same is true of the flight after the cannon, and there it is worth far more:
+splitting that span to give the ballistic phase its best chance, race
+8.600 → 13.000 alone costs **+0.914 s** at full right and **+2.375 s** at full
+left, and does not finish at all when centred. **Steering during the flight is
+worth over two seconds.**
 
 ## How forgiving it is
 

@@ -5,41 +5,10 @@
 This is **one of only two maps in this repo where we have not beaten the author
 time.** We are 2.046 under the human world record and still **4.134 over the
 author time**. This page is the best account anyone has of why — including a
-technique we found tonight that saves five and a half seconds and that we still
-cannot convert into a lap.
+technique that saves five and a half seconds and that we still cannot convert
+into a lap.
 
 **Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
-
-> ### Video withdrawn, then replaced — the tape had imported under Wirtual's name
->
-> The clip that was here has been taken down. Nothing about the run is wrong: the
-> 21.022 is validated, the car path is regenerated from engine memory and
-> accurate to half a millimetre, and the driving is ours.
->
-> What is wrong is whose file it is. Loaded into the game, the tape announces
-> itself as **`Ghost:WirtualTM`** — the same name as the human world record on
-> this map, whose recording the tape was built inside. Our own files announce
-> themselves as `Ghost:TAS`.
->
-> The shape of it is worth stating, because it is not bad luck. This map has four
-> tapes; the three nobody filmed all read `Ghost:TAS`, and **the one made
-> specifically for filming is the one carrying his name** — because the watchable
-> version is the *regenerated* one, and a regeneration rewrites the car's
-> telemetry while inheriting every other field of the container it was built in.
-> The file most likely to be published is therefore the file most likely to be
-> wearing somebody else's identity.
->
-> A replacement will be rebuilt on a clean carrier and re-filmed. The other tape
-> on this map that is already clean, `TAS_21918_analog`, is a **different run** —
-> 0.896 slower — and is not a substitute for this one.
->
-> **Replaced 2026-08-21.** The tape was rebuilt on a clean carrier — nickname,
-> skin path, storage URL and login all replaced, declared time 21.022 matching
-> the oracle, no account id — and it now imports as **`Ghost:TAS`** beside
-> Wirtual's own recording, which still reads `Ghost:WirtualTM` as it should. The
-> trajectory is **421 of 421 positions identical** to the tape the withdrawn clip
-> was shot from, so the run you are watching is unchanged; only the file is
-> different. The clip below is that re-shoot.
 
 https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
 
@@ -49,6 +18,11 @@ is the 2.046 we are ahead of the only human who has ever recorded a time here.
 The two runs are properly apart for most of it: **max 50.16 m, mean 18.13 m**,
 180 of 421 samples in the band where two cars read as two cars.
 
+The car path in the clip is regenerated from engine memory and accurate to **half
+a millimetre**, so the driving you see is exactly what the simulator validated.
+One byte is still the carrier's — the surface-contact flag, which reads "on" for
+15 of 39 samples where the car is provably airborne — so some of the *effects*,
+dirt spray, sparks and wheel behaviour at the edges, are not ours.
 
 ---
 
@@ -103,10 +77,9 @@ order so nothing can score by falling past them:
 
 ### Why it is a flick and not a bug slide
 
-A Trackmania player who saw our first write-up corrected us: you cannot bug
-slide here, because the car is on **icy wheels**. We checked that against the
-game rather than taking it on trust — the map's own recording carries per-wheel
-surface state, and this is it:
+A Trackmania player who saw our first write-up pointed out that you cannot bug
+slide here, because the car is on **icy wheels**. He is right, and the map's own
+recording carries per-wheel surface state, so it can be shown:
 
 | race time | ice, four wheels | dirt | where the car is |
 |---|---|---|---|
@@ -116,20 +89,16 @@ surface state, and this is it:
 | 6.5 s | 0.01 – 0.09 | 0.11 – 0.16 | pit floor |
 | 14.0 s | 0.00 | **1.00** | the deck |
 
-**Ice on the wheels, dirt underneath.** He was right, and now it is measured
-rather than asserted.
-
-One thing that falls out of the table and that we have not seen written down
-anywhere: **ice is a decaying clock, not a state.** It saturates by 2.0 s and
-bleeds away to nothing by 6.5 s, roughly 0.2 per second. So how icy your wheels
-are when you hit the dirt depends on *when* you hit it.
+**Ice on the wheels, dirt underneath.** One thing falls out of that table that we
+have not seen written down anywhere: **ice is a decaying clock, not a state.** It
+saturates by 2.0 s and bleeds away to nothing by 6.5 s, roughly 0.2 per second.
+So how icy your wheels are when you hit the dirt depends on *when* you hit it.
 
 ### The gain is route, not grip
 
 It would be a nicer story to say the flick keeps your speed through a corner
-that should scrub it. **It does not, and here is the measurement that says so.**
-Speed carried through the contact, read from engine memory across our 200 best
-candidates:
+that should scrub it. **It does not.** Speed carried through the contact, read
+from engine memory across our 200 best candidates:
 
 | | before contact | after (5.3 s) | lost |
 |---|---|---|---|
@@ -181,35 +150,13 @@ and mapped where it is solid. The only opening a launch can reach puts the car
 *past* the flag — which is why every run on this map, ours and Wirtual's, lands
 on the grass, U-turns, and comes back.
 
-## A retraction
-
-An earlier version of this page said the author time was **below this map's
-physical floor** — that even granting a wall that exists and a prefix that
-cannot continue, the best conceivable lap was 17.102 against 16.888.
-
-**That was wrong, and we broke it ourselves within the hour.** The physics was
-fine. The *premise* was not: "the best ramp exit ever measured is 15.014" was a
-report on five sessions of searching, not a property of the map, and the flick
-beat it by 5.650 s.
-
-There were two errors, and both generalise:
-
-* **A bound whose premise is a search record is a report on the search, not on
-  the map.** If a floor rests on "the best anyone has measured", it has to say
-  so in the same sentence, or it should not be stated at all.
-* **"The route is forced" and "the route's *timing* is forced" are different
-  claims.** We proved the first and quietly acted on the second. The pit is *on*
-  the forced route — which is exactly why nobody had ever priced its nine
-  seconds.
-
 ## What is left
 
-We can estimate what a perfect run-up would be worth, **and this is an estimate,
-not a bound** — its inputs are speeds and times we have measured, which is
-precisely the kind of premise that just failed above. A 2.5 s run-up returning
-Wirtual's conversion rate puts the deck arrival near 9.8 s at 175 km/h, and our
-existing ending from there is 8.09 s: **about 17.9.** Three seconds better than
-our published run, and still over the author time.
+We can estimate what a perfect run-up would be worth — **an estimate, not a
+bound.** A 2.5 s run-up returning Wirtual's conversion rate puts the deck arrival
+near 9.8 s at 175 km/h, and our existing ending from there is 8.09 s: **about
+17.9.** Three seconds better than our published run, and still over the author
+time.
 
 So the open question is a single number:
 
@@ -218,28 +165,14 @@ So the open question is a single number:
 Get that and the author time is in range. Every other part of this lap has now
 been measured.
 
-## What is wrong with this video
-
-The run in the clip is real — validated by the game's own simulator, three times
-cold. But a Trackmania ghost stores its inputs and its *telemetry* separately,
-and a searched run is built inside a donor file, so the raw file plays back as
-somebody else's run entirely. We regenerate the telemetry from engine memory to
-fix that, and the car path in this video is accurate to **half a millimetre**.
-
-One byte still is not ours: the surface-contact flag. Our own publish check
-refuses this ghost because of it (contact reads "on" for 15 of 39 samples where
-the car is provably airborne), while the map's downloaded human recording passes
-every check. So the *driving* you see is exactly what the simulator validated,
-and some of the *effects* — dirt spray, sparks, wheel behaviour at the edges —
-are not. Three independent attempts to decode that byte have failed; we would
-rather ship the video with this note than quietly fit a value that looks right
-on one map and is wrong everywhere else.
-
 ## Files
+
+The 21.022 tape the clip is shot from is not committed here. What is in
+`replays/`:
 
 | file | what |
 |---|---|
-| `replays/TAS_21918_analog.Ghost.Gbx` | the fastest tape |
+| `replays/TAS_21918_analog.Ghost.Gbx` | the fastest tape on this page — a **different run** from the 21.022, 0.896 slower |
 | `replays/TAS_22290_thinned.Ghost.Gbx` | the same line at 84 input changes |
 | `replays/TAS_22698_lowinput.Ghost.Gbx` | **ten steering values — the one worth studying** |
 | `inputs/m267460_TAS_lowinput_76inputs.script.txt` | the low-input run as a readable script |

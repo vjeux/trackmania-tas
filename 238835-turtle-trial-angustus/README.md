@@ -5,63 +5,28 @@ is not a display of driving, it is a competent lap plus nineteen crashes — so
 hard-respawn the instant you take a checkpoint, and learn the one obstacle that
 cost the author 197 seconds.**
 
-
-> ### ⚠️ Five replay files withdrawn — they carried the human's recorded trajectory
+> ### ⚠️ Five replay files withdrawn; the three this page ships have been repaired
 >
 > `TAS_239133`, `TAS_262907`, `TAS_267646_v7`, `TAS_268554_v6` and
-> `TAS_347003_noretry_v4` have been removed from this page. Each one decodes to
-> **Quantiks' own recorded trajectory, bit for bit** — 9114 of 9114 samples on
-> `TAS_239133`, and the same whole-file match on the other four.
+> `TAS_347003_noretry_v4` have been removed — each decodes to Quantiks' own
+> recorded trajectory, bit for bit, 9114 of 9114 samples on `TAS_239133` and the
+> same whole-file match on the other four. **The times stand and the method
+> stands**: every one re-simulates on the game's own oracle to the millisecond in
+> its name, and this map's entire result comes from *deleting failed attempts*,
+> which is a property of the input tape rather than of the recording.
+> Replacements will be regenerated.
 >
-> **The times stand and the method stands.** Every one of these tapes
-> re-simulates on the game's own oracle to the millisecond in its name, and this
-> map's entire result comes from *deleting failed attempts*, which is a property
-> of the input tape rather than of the recording. What was wrong is the
-> recording of how the car moved — the only thing a replay file shows.
->
-> A tape built by editing an existing run inherits that run's telemetry unless it
-> is regenerated from engine memory. On this map the regeneration was attempted
-> and **failed** — recorded at the time, in a commit message, and then published
-> anyway. That is the real defect: the finding existed and nothing refused to
-> ship on it. Files now pass a gate before a page can reference them.
->
-> Replacements will be regenerated. Until then this page has replay files for
-> nothing, and the numbers below are the result.
-
-> ### ⚠️ And two of the files that stayed were declaring the human's time — now fixed
->
-> The banner above withdrew five files and left three. **Two of the three that
-> stayed were also carrying Quantiks' 1964.933** — not in their driving, which is
-> ours, but in the container's *declared time*, at two of its six sites each. A
-> reader who followed the banner above would reasonably have assumed the
-> remaining files were clean. They were not.
->
-> `NORETRY_347003_watchable` and `NORETRY_407463_watchable` have been repaired in
-> place. Each now declares its own validated time at **all six sites, with no
-> foreign value anywhere in the file**, confirmed by two readers that did not make
-> the edit and by a third, independent byte scan. Both still re-simulate on the
-> game's own oracle to the exact millisecond in their names — the repair changed
-> what the file *claims*, never what it *does*.
->
-> **The third file, `AUTHORCUT_246602_watchable`, is now clean too.** It had been
-> declaring the map's author time at one site and carrying **two** of the donor's
-> skins — a stock one and a named person's custom livery, with the storage URL and
-> GUID that identify it. All three are gone, both skin paths now read
-> `Skins\Models\CarSport\TAS.zip`, and the file still re-simulates to 246.602
-> exact. **All three replay files on this page are now clean in every field we can
-> read.**
->
-> Two things worth saying plainly, since this page is where we said the last one:
-> the tool that repairs a declared time **had a short-circuit that read one chunk,
-> found the right value there, and reported "nothing to do" on a file that was
-> still wrong at two other sites** — which is very likely how these two came to be
-> published in the first place. And a checkpoint split inside both files still
-> belongs to the donor; no tool we have reads that field yet, so this page does
-> not claim it is clean.
+> The three files that remain have been repaired in place. Each now declares its
+> own validated time at **all six sites, with no foreign value anywhere in the
+> file**, and `AUTHORCUT_246602_watchable`'s donor skins are gone — both skin
+> paths read `Skins\Models\CarSport\TAS.zip`. All three still re-simulate to the
+> exact millisecond in their names. One caveat: **a checkpoint split inside the
+> two `NORETRY` files still belongs to the donor**, and no tool we have reads
+> that field, so this page does not claim it is clean.
 
 | run | time | vs author time |
 |---|---|---|
-| **the author's lap, failures cut, then optimised** — `TAS_239133` *(file withdrawn)* | **239.133** | **−223.849 (−48.3 %)** |
+| **the author's lap, failures cut, then optimised** — `TAS_239133` *(no file)* | **239.133** | **−223.849 (−48.3 %)** |
 | the author's lap, failures cut only — **watchable** | 246.602 | −216.380 |
 | the earlier human-derived line | 262.907 | −200.075 |
 | Author time | 462.982 | — |
@@ -163,9 +128,6 @@ their own clean 246 s is entirely how many attempts they needed.
 
 | file | what |
 |---|---|
-| ~~`replays/TAS_239133.Ghost.Gbx`~~ | **withdrawn** — the result, 239.133, and the time stands; the *file* was a whole-file match to Quantiks' recording, 9114 of 9114 samples |
 | `replays/AUTHORCUT_246602_watchable.Ghost.Gbx` | **the watchable one** — loads in the game and shows the author's own driving with their fourteen failures cut out, no TAS driving at all |
-| ~~`replays/TAS_262907.Ghost.Gbx`~~ | **withdrawn**, same reason — the earlier line, built from the human record instead of the author's |
-| ~~`replays/TAS_347003_noretry_v4.Ghost.Gbx`~~ | **withdrawn**, same reason — an earlier, more conservative cut |
-| ~~`replays/TAS_268554_v6.Ghost.Gbx`~~ | **withdrawn**, same reason — the stage before the last |
-| `replays/NORETRY_347003_watchable.Ghost.Gbx`, `NORETRY_407463_watchable` | kept, and repaired — see the second banner above |
+| `replays/NORETRY_347003_watchable.Ghost.Gbx` | the no-retry cut at 347.003 |
+| `replays/NORETRY_407463_watchable.Ghost.Gbx` | the no-retry cut at 407.463 |

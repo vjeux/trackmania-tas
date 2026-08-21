@@ -12,18 +12,11 @@ https://github.com/user-attachments/assets/dbcfd0d7-352b-4a5c-9b87-9bcf67cf40c1
 **Our run and the world record in one camera, and the whole race is over by
 4.7 s.** Ours is the magenta car the camera follows; Lukrecja666's 23.298 is
 beside us off the line and gone from the frame by about 7 s. **That is not a
-framing mistake — it is the result.** A split screen would have given each car
-its own pane and its own scale, and neither would ever have been *behind*. Here
-she simply stops keeping up, and you watch it happen. They are hard to tell apart
-on the glide — this is a wet map and both cars are
-aquaplaning, which is why the pipeline's ground-contact check reads 85.4 % on our
-tape and **85.7 % on the human's own recording**, a genuine file the game wrote
-itself. Watch the descent instead: by the time the two panes reach the flat, ours
-is a car length and a half up the track, and it stays there to the arch.
-
-They are also genuinely two runs and not one — max **33.12 m** apart, mean
-**15.76 m**, 394 of 442 samples in the visible band, and independent at every
-alignment on both the exact test and a 1 mm band — two runs, not one tape twice.
+framing mistake — it is the result.** She simply stops keeping up, and you watch
+it happen. The two are hard to tell apart on the glide — this is a wet map and
+both cars are aquaplaning — so watch the descent instead: by the time the cars
+reach the flat, ours is a car length and a half up the track, and it stays there
+to the arch.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|

@@ -7,47 +7,13 @@ about a second, and it is free to anyone driving in the 43–45 second range.**
 The author time has not fallen. The fastest lap here is **1.255 under the
 human world record** and still **0.438** short of the author medal.
 
-> ### No video yet — and the reason is *not* the map
->
-> This page has no clip. An earlier version of it said "the game will not open
-> this map", as though that were a property of the map. **That claim has been
-> withdrawn**, and so has the follow-up theory that the map's dependencies were
-> to blame. Both were refuted by measurement rather than argument.
->
-> A chunk census of the decompressed map body puts 146612 against maps that do
-> film:
->
-> | | **146612** | 279218 | 133353 | 126859 | 210218 |
-> |---|---|---|---|---|---|
-> | body | 4.12 MB | 1.43 MB | 2.10 MB | 3.22 MB | **11.92 MB** |
-> | GBX nodes | 169 | 84 | 86 | 79 | **254** |
-> | embedded objects | 384 KB | 24 B | 5.8 KB | 258 KB | **7.24 MB** |
-> | items | 112 KB | 215 KB | 76 KB | **1.23 MB** | 727 KB |
-> | header deps | 14 | 8 | 10 | **20** | 17 |
-> | films? | **no** | yes | ? | yes | **yes** |
->
-> **Everything that only the client processes — embedded objects, skins, item
-> count, sheer size — is larger on maps that film.** 210218 carries nineteen
-> times the embedded object data, 1.5× the nodes and 2.9× the body, and it
-> films. 126859 carries more dependencies and eleven times the items, and it
-> films. 228811 has two car-model skins exactly as this map does, and it films.
->
-> The container itself is sound on six independent readers — the game engine via
-> `/validatepath`, the block graph (2,881 records), the waypoint list, six
-> derived segment maps, a live-memory trajectory reader and the ghost decoder —
-> and Nadeo's own binary simulated about 1.29 million laps off this file today.
-> md5 `16e7220f2128587c0d0018626feacb0f`, sha256
-> `c6cca762e167eba6e969c07f306798c29c88d0da397b4744d4042c51b21526db`,
-> 3,824,673 bytes.
->
-> What is left is **that machine, that copy, or that attempt** — not this map.
->
-> **So the honest status: the ghost side is finished and the video side is not.**
-> `sn2_LAP_38968_watchable_v1` is regenerated, gate-passing and watchable in
-> principle (md5 `6c459ceb546eb8c794084690e4c31cb0`, spawn exact, residual
-> 0.000403 m against a same-batch control of 0.000407 m). Nobody has opened this
-> map in a client and filmed it. **Until somebody does, the 38.968 is a result we
-> hold, not a result we ship** — and this page is not promising a clip.
+> **No clip yet — nobody has opened this map in a client to film it.** What is
+> known about that is in [`CANNOT-OPEN.md`](CANNOT-OPEN.md). The ghost side is
+> finished: the 38.968 is regenerated, gate-passing and watchable in principle
+> (md5 `6c459ceb546eb8c794084690e4c31cb0`, spawn exact, residual 0.000403 m
+> against a same-batch control of 0.000407 m). Until somebody films it, **the
+> 38.968 is a result we hold, not a result we ship**, and it is not among the
+> tapes in `replays/`.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
@@ -61,7 +27,7 @@ human world record** and still **0.438** short of the author medal.
 
 **Read that table correctly: the author time is not beaten.** 38.968 against an
 author medal of 38.530 is still 0.438 short. What this map has is a lap 1.255
-under the fastest human — which is worth watching, and is not a record.
+under the fastest human.
 
 TMX map [146612](https://trackmania.exchange/maps/146612) · authors
 **AmpelJoe10** and **Wakawukwuk** · 181 recorded runs.
@@ -195,34 +161,22 @@ guide for this map is not written yet.
 
 | file | what |
 |---|---|
-| `replays/TAS_39183.Ghost.Gbx` | **the fastest lap** |
+| `replays/TAS_39183.Ghost.Gbx` | **the fastest lap in this directory, 39.183** |
 | `replays/KEYBOARD_39706.Ghost.Gbx` | **keyboard only, 101 presses** — the one worth studying |
 | `replays/TAS_39460.Ghost.Gbx` | the best sector 4, 5.491, arriving planted at the last checkpoint |
 | `replays/TAS_39748.Ghost.Gbx` | carries the best last sector, 5.992 |
 | `replays/TAS_39430.Ghost.Gbx` | the lap whose splits are quoted above |
 | `replays/BEST_39961_v3.Ghost.Gbx` | earlier analog lap |
+| `replays/TAS_39478.Ghost.Gbx` | 39.478, analog |
 | `replays/KEYBOARD_39996_v3.Ghost.Gbx` | earlier keyboard lap, 119 presses |
 | `replays/SEGMENT_cp5_32702_DO_NOT_PUBLISH_declares_40226.Ghost.Gbx` | the angled ramp jump — reaches the last checkpoint 1.128 early and never finishes |
 | `inputs/BEST_39961_v3.tick.csv` · `inputs/KEYBOARD_39996_v3.tick.csv` | those two laps as readable input scripts |
 
-## A note on the segment tape, and why it was renamed rather than fixed
-
-**That file does not finish the map.** Put through the game's own validator it
-returns *"wrong simu, but reached some checkpoints (5 out of 6)"* — it reaches
-CP5 and never crosses the line, so **it has no validated time of its own.** It is
-kept because the CP5 arrival is the interesting part of it, not because it is a
-lap.
-
-Its header declares **40.226** — jujumasterr's human world record, inherited from
-the carrier ghost the tape was built inside. That is left in place deliberately.
-The obvious tidy-up is to zero the field, and it is worse than leaving it: **zero
-is a value, not an absence**, so a zeroed file reads as "declares 0.000" to every
-tool we own, which trades a wrong claim for an unreadable one. Writing 32.702 in
-would be worse still — asserting a time the game refuses to certify.
-
-The general point, since this file is the only one of its kind in the repo:
-**a file that fails validation is exactly the one nobody re-checks.** Every other
-tape carrying a foreign declared time validated cleanly, so each was caught by
-comparing its header against its own validated time. This one has no own time to
-compare against, so that check cannot run at all — it needs its own verdict,
-`NO-OWN-TIME`: not clean, not refused, **not comparable**.
+**The segment tape does not finish the map.** The game's own validator returns
+*"wrong simu, but reached some checkpoints (5 out of 6)"* — it reaches CP5 and
+never crosses the line, so **it has no validated time of its own.** It is kept
+for the CP5 arrival, not as a lap. Its header declares **40.226**,
+jujumasterr's human world record, inherited from the carrier ghost it was built
+inside; that is left in place deliberately, because zeroing the field would read
+as "declares 0.000" to every tool we own and writing 32.702 in would assert a
+time the game refuses to certify.

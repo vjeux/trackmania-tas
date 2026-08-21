@@ -4,7 +4,7 @@
 lifts at 80–85° and the pads give them nothing, and lifting at 90–105° gives you
 25–35 km/h instead.**
 
-**Impossible AT for `in-.-`** — TAS **14.289** (−0.359) | AT 14.648 | WR 15.039 by `in-.-`
+**impossible at for ssano** — TAS **14.289** (−0.359) | AT 14.648 | WR 15.039 by `in-.-`
 
 https://github.com/user-attachments/assets/87632ebb-24b6-4b24-9bb3-c5f25fc3dc8b
 

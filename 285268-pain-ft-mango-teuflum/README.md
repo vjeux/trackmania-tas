@@ -7,59 +7,26 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
 **Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
-> ### ⚠️ Both videos on this page have been withdrawn — they showed a human's car, not ours
+> ### ⚠️ No video — both clips withdrawn
 >
-> Two clips were published here and both have been taken down. They played
-> perfectly; the problem is what was in them.
->
-> An audit decoded every tape on this map against every human recording we hold.
-> **All eight of our tapes carry a human's trajectory**, seven of them the same
-> one:
->
-> | file | sample-CSV md5 | whose driving it is |
-> |---|---|---|
-> | our 49.275 BEST, 49.278, 49.285, 49.288, 49.311, 49.355 | `12333c2541b62c9b5a854d1950b35050` | **burntbagels' 49.446** |
-> | downloaded `rank001_49446` (burntbagels) | `12333c2541b62c9b5a854d1950b35050` | — |
-> | our 49.475 keyboard | `f4639ab2917031c2e6d69efa0e107ee4` | **Ssnake01's 49.491** |
-> | downloaded `rank002_49491` (Ssnake01) | `f4639ab2917031c2e6d69efa0e107ee4` | — |
->
-> So the solo clip was burntbagels' car, and **the side-by-side captioned "our
-> 49.475 against Ssnake01's 49.491" was Ssnake01 against Ssnake01.**
->
-> **The times below stand.** Every one of these tapes re-simulates on the game's
-> own oracle to the millisecond in its name — the inputs and the results are
-> ours. What is wrong is the *recording* of how the car was driven, which is the
-> only thing a video shows. A searched tape is built inside a donor file and
-> inherits that donor's telemetry unless it is regenerated, and these were not.
->
-> Replacement clips will be filmed from regenerated tapes. Until then this page
-> has no video, and that is the honest state.
->
-> The trap worth remembering: this map's separation profile was the *healthiest*
-> on the board — **868 of 986 samples** in the "two visible cars" band — because
-> two copies of one lap, offset slightly, look exactly like a close race. Before
-> filming two cars, decode both and compare their sample-CSV md5s. A separation
-> of zero and a separation you cannot see produce the same verdict.
+> **All eight of our tapes on this map carry a human's trajectory**, seven of
+> them burntbagels' 49.446 (sample-CSV md5 `12333c2541b62c9b5a854d1950b35050`,
+> the same as his downloaded `rank001_49446`) and the keyboard 49.475 Ssnake01's
+> 49.491 (`f4639ab2917031c2e6d69efa0e107ee4`). So the solo clip was burntbagels'
+> car, and the side-by-side captioned "our 49.475 against Ssnake01's 49.491" was
+> Ssnake01 against Ssnake01. **The times below stand** — every tape re-simulates
+> on the game's own oracle to the millisecond in its name; the inputs and the
+> results are ours, and it is the recording of how the car was driven that is
+> wrong. Replacement clips will be filmed from regenerated tapes.
 
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
 | **TAS** | **49.275** | **−0.007** | −0.171 | analog |
 | TAS, independent tape | 49.275 | −0.007 | −0.171 | analog |
-| ~~TAS, earlier — 49.278~~ | *withdrawn as a separate row* | | | |
 | **keyboard** | **49.475** | +0.193 | +0.029 | 3 steer values, 59 changes |
 | Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
 | Human WR — Ssnake01 | 49.291 | +0.009 | — | **pure keyboard** |
 | Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
-
-> **The 49.278 was not a separate run.** A near-identity sweep found it and the
-> 49.275 sharing **903 consecutive samples within a millimetre and the same input
-> tape** — one run listed twice, three thousandths apart. Both times are real and
-> both re-simulate; what was wrong was presenting them as two attacks on the map.
->
-> This page's own warning above — *decode both and compare their sample-CSV
-> md5s* — was written about filming two cars. It applies to a results table just
-> as much: **two rows are not two runs until something has checked.**
-
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**
 · Stadium Ice · 10 sectors, 49 seconds · **163 recorded runs**.
@@ -225,4 +192,4 @@ leaderboard.
 | `replays/KEYBOARD_49475.Ghost.Gbx` | **the drivable one** — that lap plus two key presses |
 | `replays/TAS_49275.Ghost.Gbx` | the fastest run |
 | `replays/TAS_49275_independent.Ghost.Gbx` | the same time reached independently — a byte-different tape |
-| `replays/TAS_49278.Ghost.Gbx` | the first tape under the author time |
+| `replays/TAS_49278.Ghost.Gbx` | **the same run as the 49.275, not a second attack on the map** — same input tape, 903 consecutive samples within a millimetre |

@@ -167,3 +167,4 @@ of the best keyboard human, short of the author medal.
 | `replays/ALPHABET153_23545.Ghost.Gbx` | 153 steering values |
 | `replays/KEYBOARD_24164.Ghost.Gbx` | **keyboard only, 3 values, 130 presses** — faster than any keyboard human here |
 | `replays/TAS_23462_v1.Ghost.Gbx` | earlier stage |
+| `replays/TAS_23498_v1.Ghost.Gbx` | earlier stage |

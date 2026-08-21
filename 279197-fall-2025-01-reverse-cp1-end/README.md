@@ -4,12 +4,6 @@
 whole field's spread is already decided by 9.500, and the run home costs
 everybody the same.**
 
-**Video: withdrawn.** The clip published here was filmed from a copy of our ghost
-that is not the file this page ships — a stale staging copy, superseded before the
-clip was shot. The run and the time are unaffected. A replacement will be filmed
-from a regenerated ghost, whose telemetry is verified against a re-simulation of
-its own inputs.
-
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS** | **10.594** | **−0.004** | **−0.008** | analog |

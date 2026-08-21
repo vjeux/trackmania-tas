@@ -216,15 +216,14 @@ play**.
 | [`replays/TAS_235625.Ghost.Gbx`](replays/TAS_235625.Ghost.Gbx) | the world-record lineage, 26 steer values |
 | [`replays/KEYBOARD_235939.Ghost.Gbx`](replays/KEYBOARD_235939.Ghost.Gbx) | the same, keyboard-only — the 0.314 comparison |
 | [`replays/HUMANCUT_237122_watchable.Ghost.Gbx`](replays/HUMANCUT_237122_watchable.Ghost.Gbx) | the first cut of the world record, before the checkpoint trims |
+| [`replays/AUTHORCUT_220821_watchable.Ghost.Gbx`](replays/AUTHORCUT_220821_watchable.Ghost.Gbx) | an earlier cut of the author's own lap, 220.821 — watchable |
+| [`replays/MINIMAL_832ev_219581.Ghost.Gbx`](replays/MINIMAL_832ev_219581.Ghost.Gbx) | 219.581 on 832 input events — the fewest-input run here |
+| [`replays/TAS_analog26_235814.Ghost.Gbx`](replays/TAS_analog26_235814.Ghost.Gbx) | 235.814, analog, 26 steer values |
+| `replays/AUTHOR_AT_ghost_from_map_DNF_cps1_DO_NOT_PUBLISH_declares_441002.Ghost.Gbx` | the author's own author-time ghost, recovered from inside the `.Map.Gbx` — the source of the 355.181 decomposition above. It reaches CP1 only and its header declares 441.002 (the world record's time), so it is **not for publication**. |
 
-## Withdrawn: `AUTHORMIN_831ev_354781.Ghost.Gbx`
-
-That replay file has been removed. It is a **splice** rather than a whole-file
-copy — 8 of 7087 samples bit-identical to Bald_tm's recording and **707 m of
-shared path** — so most of what it shows is its own driving with somebody else's
-stitched into it. The rule it fails: *a file whose recorded trajectory contains a
-human's, in whole or in part, is not ours to publish.*
-
-The time and the analysis are unaffected; the result on this map comes from the
-author's own ghost recovered from inside the `.Map.Gbx`, and that provenance is
-unchanged. A regenerated replacement will be published.
+**Withdrawn: `AUTHORMIN_831ev_354781.Ghost.Gbx`.** That file has been removed
+from the tree. It was a **splice** — 8 of 7087 samples bit-identical to Bald_tm's
+recording and **707 m of shared path** — so part of what it showed was his
+driving, not ours. The time and the analysis are unaffected: the result on this
+map comes from the author's own ghost recovered from inside the `.Map.Gbx`. A
+regenerated replacement will be published.

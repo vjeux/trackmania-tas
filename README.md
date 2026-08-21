@@ -19,37 +19,43 @@ it, and find out whether a person can drive a run no human has driven.
 
 | map | records | author time | best human | **this TAS** | vs AT | fewest inputs under the AT |
 |---|---|---|---|---|---|---|
-| [untitled 02](276877-untitled-02) | **0** | 31.399 | *none* | **8.898** | **−71.7 %** | — (the author time is not route-enforced — see the page) |
+| [untitled 02](276877-untitled-02) | **1** | 31.399 | 14.959 | **8.898** | **−71.7 %** | — (the author time is not route-enforced — see the page) |
 | [untitled 01](276874-untitled-01) | **0** | 23.839 | *none* | **12.759** | **−46.5 %** | — (analog; 13.349 is the human-shaped one) |
 | [The Magnet Trial](186935-magnet-trial) | 7 | 2540.641 | 2575.154 | **793.893** | **−68.8 %** | 16,397 → 793.893 |
 | [[Turtle Trial] Angustus](238835-turtle-trial-angustus) | 1 | 462.982 | 1964.933 | **239.133** | **−48.3 %** | — |
 | [[Turtle Trial] Leto](286279-turtle-trial-leto) | 5 | 355.181 | 441.002 | **218.812** | **−38.4 %** | — |
 | [Welcome to wiggles](197047-welcome-to-wiggles) | 22 | 100.784 | 101.794 | **95.839** | **−4.945** | — |
-| [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 6 | 51.602 | 52.202 | **49.778** | **−1.824** | **197 → 51.575** (a human's own lap + 7) |
-| [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.638 | **22.072** | **−1.253** | 747 → 23.183 |
+| [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 8 | 51.602 | 47.838 | **49.778** | **−1.824** | **197 → 51.575** (a human's own lap + 7) |
+| [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.298 | **22.072** | **−1.253** | 747 → 23.183 |
 | [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** | **−0.694** | **14 in the flight → 10.743** |
+| [Miru's Hell 2](208024-mirus-hell-2) | 3 | 18.806 | 21.105 | **18.160** | **−0.646** | — |
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 315 → 23.545 |
-| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 1 | 15.643 | 8790.769 | **15.217** | **−0.426** | **70 → 15.285** |
+| [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 7 | 15.643 | 16.870 | **15.217** | **−0.426** | **70 → 15.285** |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **30 → 14.608** |
 | [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 64.871 | **57.493** | **−0.360** | — |
-| [Torment (1-UP)](228607-torment-1-up) | 23 | 20.258 | 24.902 | **19.907** | **−0.351** | — |
+| [Torment (1-UP)](228607-torment-1-up) | 27 | 20.258 | 24.512 | **19.907** | **−0.351** | — |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** | **−0.318** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **4 in the climb → 7.514** |
 | [Great wtf of what #165](227969-great-wtf-of-what-165) | 42 | 8.127 | 8.197 | **7.998** | **−0.129** | **14 → 8.075** |
 | [unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) | 46 | 6.343 | 6.346 | **6.322** | **−0.021** | **23 → 6.323** (or the WR + 1) |
-| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.604 | **6.578** | **−0.017** | **19 → 6.595** |
+| [Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end) | 334 | 6.595 | 6.601 | **6.578** | **−0.017** | **19 → 6.595** |
 | [surely my least cooked at](252289-surely-my-least-cooked-at) | 706 | 3.851 | 3.867 | **3.836** | **−0.015** | **12 → 3.848** (the WR + 2 keys) |
-| [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 14.018 | **13.984** | **−0.011** | **12 → 13.986** |
-| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.169 | **10.759** | **−0.009** | — |
+| [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 5 | 13.995 | 13.990 | **13.984** | **−0.011** | **12 → 13.986** |
+| [bald turtle #35](267859-bald-turtle-35) | 19 | 10.768 | 11.059 | **10.759** | **−0.009** | — |
 | [Training - 10 Long](191465-training-10-long) | 856 | 13.080 | 13.081 | **13.071** | **−0.009** | — |
-| [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 163 | 49.282 | 49.446 | **49.275** | **−0.007** | — |
+| [Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum) | 163 | 49.282 | 49.291 | **49.275** | **−0.007** | — |
 | [Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end) | 561 | 10.598 | 10.602 | **10.594** | **−0.004** | — |
 | [Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end) | 339 | 5.350 | 5.355 | **5.345** | **−0.005** | **15 → 5.350** |
 | [Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end) | 903 | 4.831 | 4.834 | **4.830** | **−0.001** | — |
-| [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 973 | 4.492 | 4.495 | **4.492** | **±0** | — |
+| [Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end) | 1,052 | 4.492 | 4.495 | **4.492** | **±0** | — |
 
-All times in **seconds**. "Best human" is the online world record at the time of
-the run; every author time in both tables had **never** been beaten by a human.
+All times in **seconds**. "Best human" is the online world record as of the last
+refresh of these leaderboards. Every author time here was unbeaten by a human
+when the run was found; on four maps a human has since gone under it —
+[Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up),
+[Tap water 01](173636-tap-water-01),
+[Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) and
+[untitled 02](276877-untitled-02), whose author time is not route-enforced.
 
 **"Fewest inputs under the AT"** is the smallest number of input change events
 in any run here that takes the author medal — an input change event being any
@@ -72,13 +78,12 @@ Where it beats the human world record, that is said too.
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
 | [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **38.975** | 0.445 | **−1.248** | a second and a quarter under the world record, from a line found on a 98.1 %-identical sibling map. Sector 3 is already driven for CP4 exit speed rather than its own split — that trade is cashed, conceding 299 ms in s3 to win 784 ms in s4. What is unexecuted is the turn-in: the human record is at full lock 50 ms **before** CP3, where this line is at 4 units and does not commit for another 285 ms |
-| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 30 | 94.477 | 96.281 | **95.575** | 1.098 | **−0.706** | **the field's own per-sector bests sum to 91.826 — 2.651 under the author time** (93.847 if you discard every sector that could have inherited speed). Every sector of a winning lap has been driven; nobody has assembled one |
-| [Miru's Hell 2](208024-mirus-hell-2) | 3 | 18.806 | 21.105 | **19.427** | 0.621 | **−1.678** | the fastest time recorded on the map. Not a driving map: 1,173 spinning rotors in two rows ARE the launcher, proved by removal. Ours is caught by the upper row at 779 km/h against the author's 884 from nearly the same place, so the 0.621 is launch quality rather than aim. Closed: the start cannot be shifted one tick (k=0 control passes, k=1-260 all die), lateral aim is not the blocker (0.1 m from a bay centre still crashes), and 20,815 exhaustive one-move edits give one finisher |
+| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 36 | 94.477 | 96.281 | **95.575** | 1.098 | **−0.706** | **the field's own per-sector bests sum to 91.826 — 2.651 under the author time** (93.847 if you discard every sector that could have inherited speed). Every sector of a winning lap has been driven; nobody has assembled one |
 | [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.022** | 4.134 | **−2.046** | bounded away three ways: an energy floor of 17.102 taken at the most generous measured gravity and using no constant, an absurd limit of 16.893 with the car pinned at its top observed speed through solid geometry, and the geometry closed by removal — the map has one Goal |
 | [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the obvious finish is geometrically closed, and the deficit is height: swept over 424 stations across 12 m × 8 m of car displacement **along the roof plane**, the fast line fires none of them while the human record fires ~40. Rank 1's flip finish is **not** an unsearched lead — it is what this 50.229 already does, and its floor is about 48.5 s. The open question is a banked surface: both tapes reach 74° of tilt at 165 km/h, 142 m from the finish, and nobody has mapped what is beside the ramp |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 | **67.319** | 8.632 | **−1.123** | a 1/127 steering error grows out of control in 0.7 s, and the author time is 4.8 s below the field's best-sector splice as well as our own per-sector optima |
 | [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | — | a human's line on a byte-identical sibling map, priced onto this one, comes to **47.4 — 3.0 s inside the author time**. It needs a long flat run-up into each launch, and only the first copy of the obstacle has one |
-| [P-Found - Pokeuuu](153527-p-found-pokeuuu) | 1 | 939.283 | 5661.335 | — | — | — | nobody has driven this map here, and no time is claimed. The one recorded run clears CP8 inside the author time and then spends 65 minutes on the next two segments; cutting its retries leaves 1214.465. A published de-looping figure of 892.148 is **withdrawn** — with a minimum junction size enforced, seven real loops give **941.588, 2.305 OVER the AT**, and 48.8 %% of the old number was splice fee rather than driving. The honest statement: the author time is about this human's own route, de-looped, at this human's pace — reachable, but the route spends 165.868 s under 20 km/h and the barrier is driving the map at all |
+| [P-Found - Pokeuuu](153527-p-found-pokeuuu) | 1 | 939.283 | 5661.335 | — | — | — | nobody has driven this map here, and no time is claimed. The one recorded run clears CP8 inside the author time and then spends 65 minutes on the next two segments; cutting its retries leaves 1214.465. A published de-looping figure of 892.148 is **withdrawn** — with a minimum junction size enforced, seven real loops give **941.588, 2.305 OVER the AT**, and 48.8 % of the old number was splice fee rather than driving. The honest statement: the author time is about this human's own route, de-looped, at this human's pace — reachable, but the route spends 165.868 s under 20 km/h and the barrier is driving the map at all |
 
 63.546 is the all-time human record on [134672](134672-kekl-sausage-ice), set on
 a 2022 build; it does not re-simulate on a current one, so 68.442 — the best

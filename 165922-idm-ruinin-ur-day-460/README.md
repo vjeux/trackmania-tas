@@ -8,44 +8,8 @@ of the fifteen seconds need no steering at all.**
 
 https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
-> ### The nine replay files were rebuilt again — and the video above is one generation behind
->
-> These ghosts have now been through three generations in one night, and the
-> corrections are worth stating because two of them overturned our own work.
->
-> **They carried the donor's identity.** Every one of the nine reported to the
-> game as `QW4zOg2US6aggp2uG5L4WA` — account
-> `416e333a-0d94-4ba6-a082-9dae1b92f858`, **wschseng, the human whose recording
-> they were seeded on** — with his own 8790.769 s session length attached to a
-> fifteen-second run. The driving was always ours; the file said it was his. Our
-> tapes report login `TAS` and carry no account at all. That is now fixed, and
-> the account id went with it: the server derives one from the other.
->
-> **And a correction we made earlier today was itself wrong.** A check reported
-> these files as one physics tick late, and they were regenerated with a −10 ms
-> shift to compensate. Putting a **downloaded human ghost — a file the game
-> wrote itself** — through the same check settled it the other way: the game's
-> own recordings sit at −10 ms, our published files on another map sit at
-> −10 ms, and the *original* generation of these nine sat at −10 ms too. The
-> shifted version is the only thing that sits at zero. **The fix moved the files
-> away from the convention rather than onto it**, so the shift is reverted.
->
-> The rule we keep relearning: **when our instrument and the game disagree, the
-> game is the instrument.** The same map supplied a second instance an hour
-> later — every file here reports `Unvalidable`, including untouched human
-> downloads, because the server lacks one of the map's scripts. Read as a
-> verdict on our repair, that would have been a false negative.
->
-> **One inherited field remains and each manifest names it**: the carrier's
-> session walltime, which the server still reports as
-> `unexcepted walltime (8791s)`. It is derived rather than copied — it is not
-> stored as that number anywhere in the file — and it has not been located.
-> Nine files with the identity stripped and one field *named* is a better
-> artefact than nine called repaired.
->
-> **The clip above was filmed from the shifted generation**, so it shows the run
-> 10 ms displaced. It is being re-shot from the reverted files and will be
-> replaced rather than left up.
+**The clip was filmed from an earlier generation of these files, so it shows the
+run 10 ms displaced. It will be re-shot from the current files and replaced.**
 
 **Our run and the world record, side by side.** banktm took this record tonight,
 replacing a ghost that had stood as the board's best; ours is 1.653 faster. Both
@@ -64,7 +28,9 @@ that is the driving you are watching. Each ghost's `.manifest.json` declares wha
 is still inherited from the carrier recording: **rpm, gear, wheel rotation,
 suspension, turbo, ice, dirt and wetness**. So the line is ours and some of the
 effects are not, and the manifests say which is which rather than leaving you to
-guess.
+guess. The files carry no donor identity — they report login `TAS` and no
+account — and one inherited field remains unlocated: the carrier's session
+walltime, which the server reports as `unexcepted walltime (8791s)`.
 
 They were cleared by tests that *identify* rather than compare, against **four
 human recordings** — the historic donor plus the board's current ranks 1, 2 and 3
@@ -81,10 +47,7 @@ human recordings** — the historic donor plus the board's current ranks 1, 2 an
 >
 > Sub-millimetre agreement before that point is not a defect. It is what a
 > correct regeneration looks like when it replays a shared opening: the floor is
-> the floor. **What identifies a stolen tape is that the floor never grows.**
-
-They were deliberately **not** cleared on two regenerations agreeing with each
-other: on another map four of five regenerations agreed and all four were wrong.
+> the floor.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
@@ -150,7 +113,9 @@ Holding the throttle flat from 4.46 s to the finish is free in the same way.
 
 ## The run, as keys
 
-The human tape analysed below is the 8790.769 one -- it was the board's only human run when this section was written, and it plays on a keyboard, as does the fastest tape here.
+The human tape analysed below is the 8790.769 one — for most of this map's
+history the board's only run — and it plays on a keyboard, as does the fastest
+tape here.
 Across the record, 94.2 % of steering values are exactly `0`, `−127` or `+127`,
 and the winning attempt is 102 input events with the gas held the whole way and
 one 20 ms brake tap:
@@ -224,4 +189,7 @@ the point of being free.
 | `replays/TAS_15382_deep_landing.Ghost.Gbx` | lands 40–80 m deeper into the pad |
 | `replays/KEYBOARD_16276_tolerant.Ghost.Gbx` | **the forgiving launch — the one to learn from** |
 
-`replays/` also holds three earlier tapes at 15.230, 15.240 and 15.549.
+`replays/` also holds three earlier tapes — `TAS_15230_clean` (15.230),
+`TAS_15240_clean` (15.240) and `TAS_15549_provenance` (15.549) — plus a
+`.manifest.json` beside every ghost naming what that file inherits from the
+carrier recording. `replays/VERIFICATION.md` records the integrity checks.

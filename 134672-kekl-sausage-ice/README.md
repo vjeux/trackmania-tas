@@ -3,7 +3,6 @@
 **KEKL- SAUSAGE ICE** — TAS **67.319** (+8.632) | AT 58.687 | WR 68.442 by Robbalobb
 
 TMX 134672 · uid `agH9XtjTZd8iZbuGp_KhC16jMO7` · author `Travis.TM` · 15 records
-Replay: `ksi_67319_watchable_v2.Ghost.Gbx`.
 Nothing here has been or will be submitted to a Nadeo leaderboard.
 
 > **On the world record.** Roevhaal's 63.546 was set on a 2022 game build and
@@ -184,12 +183,11 @@ and byte-for-byte identical to the copy Nadeo's own CDN serves today.
 
 ### About the replay file
 
-The searched tape and the watchable ghost are two different things, and this
-project has been burned by treating them as one: a search output carries the
-*telemetry* of whatever ghost's container it was built in, so it can time
-correctly and play back as somebody else's run. The published file has been
-**regenerated** — its position, orientation and speed are read out of the engine
-sample by sample, and its declared time and checkpoint list are its own
+The searched tape and the watchable ghost are two different things: a search
+output carries the *telemetry* of whatever ghost's container it was built in, so
+it can time correctly and play back as somebody else's run. The 67.319 ghost has
+been **regenerated** — its position, orientation and speed are read out of the
+engine sample by sample, and its declared time and checkpoint list are its own
 (12.475 / 31.492 / 45.396 / 61.703 / 67.319, not the carrier's).
 
 The fidelity of that regeneration is measured, not assumed: run the same
@@ -202,12 +200,21 @@ the 116 bytes per sample; the rest keep the carrier's values, and two of them ar
 the per-wheel ground-contact and surface-material channels. They still describe
 *Robbalobb's* flights, and this run is airborne at different moments — so wheel
 contact effects and ice spray will fire at the wrong instants. The integrity gate
-refuses the file for exactly that (C5 and C7), and it is reported here rather
-than glossed: the same gate passes Robbalobb's regenerated ghost 10/10, so this
-is not a pipeline defect but two un-regenerated channels. Fixing it needs a
-per-map field map anchored on the wheel block, and **this map's engine gather
-contains no wheel block at any window size up to ±64 KB**, so that map cannot
-currently be fitted here.
+refuses the file for exactly that (C5 and C7); the same gate passes Robbalobb's
+regenerated ghost 10/10, so this is two un-regenerated channels rather than a
+pipeline defect. Fixing it needs a per-map field map anchored on the wheel block,
+and **this map's engine gather contains no wheel block at any window size up to
+±64 KB**, so that map cannot currently be fitted here.
 
 **The line and the speed in the replay are this run's own. The tyre effects are
 not.**
+
+## Files
+
+| file | what |
+|---|---|
+| `replays/TAS_67404.Ghost.Gbx` | the previous best TAS, 67.404 |
+| `replays/KEYBOARD_67625.Ghost.Gbx` | keyboard tape, 67.625 |
+
+**The regenerated 67.319 ghost is not in this directory.** Every time and split
+on this page comes from the validator, not from a file kept here.

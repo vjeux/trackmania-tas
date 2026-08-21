@@ -5,60 +5,16 @@
 
 **Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
 
-> ### ⚠️ Video withdrawn — the car is facing the wrong way
+> ### ⚠️ No video — the clip is withdrawn
 >
-> The clip that was here has been taken down. **The run is real and the time
-> stands** — 95.839 re-simulates on the game's own oracle, the inputs are ours,
-> and the car's *path* through the map is correct in every position.
->
-> What is wrong is the car's **orientation**. `TAS_95839_analog`'s spawn
-> quaternion is the identity — no rotation applied at all — where all 26 human
-> recordings on this map read `(3.39e-05, −0.7071, 0, 0.7071)`, rotated 90°. On a
-> map whose whole technique is holding gas and brake together and sliding
-> sideways for a hundred seconds, that is not subtle: the car in the clip points
-> somewhere the car in the run never pointed.
->
-> **No positional check could ever have caught this.** Position and orientation
-> are separate fields in the record — `pos` at +208, the quaternion at +192 — so
-> "1917 of 1917 samples identical", which this page claimed above, was true of the
-> positions and silent about the facing. The project's own notes had predicted
-> exactly this failure and named it before it happened; the gate never checked
-> for it.
->
-> Two of this page's four tapes are affected and two are correct, which is why
-> comparing our files against each other never showed it.
->
-> A replacement will be re-regenerated with the quaternion kind pinned, and the
-> check — *first-sample orientation against a human recording of the same spawn,
-> compared as a rotation* — is going into the gate so no clip can be filmed
-> without it again.
-
-
-**Both runs, side by side, and yes — the car really does vanish and reappear at
-the start.** That is not a broken clip and it is not an edit. At **94.250** our
-run presses respawn the instant it touches the far gate, the car returns to
-within 6.6 m of the spawn, sits still for 1.05 s across 22 samples, and then
-drives across the finish. It is ordinary gameplay on a map whose two checkpoints
-are 6 m from the spawn and 620 m away: touching the far one and respawning is
-the route, and the headline of this page tells you to do it.
-
-**How we know it is a respawn and not a splice**, which is the question a 620 m
-jump should always raise: re-simulating **our own inputs** reproduces the jump at
-the same instant. A carrier segment spliced into a recording cannot survive
-re-simulation; a respawn we actually drove must. The tape regenerates 1917 of
-1917 samples, the oracle returns 95.839 exactly, and the regenerated file's
-sample CSV is **identical** to the tape we filmed — an equality, not a tolerance.
-The gate still refuses the file on two checks that have since been superseded (a
-distance-based teleport test, and a wheel-radius test that reads wheelspin as
-foreign telemetry on a map that slides for a hundred seconds), so this clip was
-filmed under a named override, `C3,C8`, recorded in the render log with its
-reason.
-
-Split screen rather than one camera: the two runs finish 5.955 s and hundreds of
-metres apart. Watch both cars hold **GAS and BRAKE together** for the entire
-hundred seconds — that is the wiggle — and watch our pane reach the finish arch
-while Beagle.3 is still creeping down the straight. Opponent is the rank-1
-recording downloaded from the live board, filmed exactly as recorded.
+> `TAS_95839_analog`'s recording has the car facing the wrong way: its spawn
+> quaternion is the identity, where all 26 human recordings on this map read
+> `(3.39e-05, −0.7071, 0, 0.7071)`. On a map whose whole technique is sliding
+> sideways for a hundred seconds, the car in a clip would point somewhere the car
+> in the run never pointed. **The run and the time stand** — 95.839 re-simulates
+> on the game's own oracle and the path through the map is correct in every
+> position. The page gets a clip back when it can be filmed from a recording with
+> the right facing.
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|
@@ -117,9 +73,11 @@ through zero on about 90% of flips.
 
 **The last 1.5 seconds is a respawn, and most of the field is late on it.** The
 far gate is not the end: you respawn there, get teleported to the start line and
-cross the finish about 1.5 s later, and nothing you do in between matters. The
-world record presses 75 ms after touching the gate; the best in the field presses
-after 22 ms, and the difference is exactly the difference in their tails.
+cross the finish about 1.5 s later, and nothing you do in between matters. Our
+run presses at **94.250**, the instant it touches the gate; the car returns to
+within 6.6 m of the spawn, sits still for 1.05 s, then drives across the finish.
+The world record presses 75 ms after touching the gate; the best in the field
+presses after 22 ms, and the difference is exactly the difference in their tails.
 Pressing on the first tick is worth about 0.075 for free.
 
 ## The run as inputs
@@ -171,7 +129,7 @@ entries rather than 900.
 |---|---|
 | `replays/KEYBOARD_96412_twokey.Ghost.Gbx` | **two keys, `{−127, +127}`** — the one to practise |
 | `replays/KEYBOARD_96759_metronome.Ghost.Gbx` | three-value metronome variant |
-| `replays/TAS_95839_analog.Ghost.Gbx` | the fastest run |
+| `replays/TAS_95839_analog.Ghost.Gbx` | the fastest run — the tape whose recorded facing is wrong; the inputs and the time are unaffected |
 | `replays/TAS_96852_v1.Ghost.Gbx` | the first tape under the author time |
 | `inputs/KEYBOARD_96412_twokey.tick.txt` | the two-key run as an input script |
 | `inputs/KEYBOARD_96759_metronome.tick.txt` | the metronome run as an input script |

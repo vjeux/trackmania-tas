@@ -9,9 +9,10 @@ late.**
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
-Single car: this map's human record is 24.512, over four and a half seconds slower, so a
-side-by-side in one camera would show one car finishing while the other is still
-most of a straight behind. Two more of our tapes are filmed for comparison —
+Single car: this map's human record is 24.512, over four and a half seconds
+slower, so a side-by-side in one camera would show one car finishing while the
+other is still most of a straight behind. Two more of our tapes are filmed for
+comparison —
 [19.927](https://github.com/user-attachments/assets/dab645ee-4ec9-4958-b894-b24373ff4c67)
 and the more forgiving
 [19.948](https://github.com/user-attachments/assets/0282a92c-5227-4516-821f-2ae50123991d),
@@ -41,18 +42,13 @@ flag, his is still driving; that held frame *is* the 4.605 s.
 TMX map [228607](https://trackmania.exchange/maps/228607) · author
 **Bernkastel_.**, the title crediting **Emelius.** · **27 recorded runs**.
 
-> **These tapes are one family, not independent attacks.** A near-identity sweep
-> finds every pair of our runs on this map agreeing to within a millimetre for the
-> **first 18.2 seconds of a 20-second run**, diverging only in the last two. They
-> carry *different* input tapes, so they are branches off a shared parent rather
-> than copies of one another — 79 such pairs on this map alone, the largest family
-> in the project.
->
-> Nothing about the times or the driving is in question: each validates on the
-> game's own oracle. But the rows above are variations on one solution's ending,
-> and a reader is entitled to know that before reading them as four ways of
-> attacking the map.
-
+> **These tapes are one family, not independent attacks.** Every pair of our runs
+> on this map agrees to within a millimetre for the **first 18.2 seconds of a
+> 20-second run**, diverging only in the last two. They carry *different* input
+> tapes, so they are branches off a shared parent rather than copies of one
+> another — 79 such pairs on this map alone, the largest family in the project.
+> Each time validates on the game's own oracle; the rows above are variations on
+> one solution's ending rather than four ways of attacking the map.
 
 This map is the same map as [Torment (1-DOWN)](../228811-torment-1-down) with the
 finish moved 64 m higher, and it is a remix of an official campaign map that
@@ -198,6 +194,8 @@ is the harder one to drive.
 | `replays/TAS_19907.Ghost.Gbx` | the fastest validated run |
 | `replays/LOWINPUT_20070_16values.Ghost.Gbx` | 16 steer values — the counter-example: same time as its parent, no tolerance |
 | `replays/AUTHOR_LAP_20258_watchable.Ghost.Gbx` | the author's own author-time lap, watchable; it is a recording, so it can be watched but never re-driven |
+| `replays/TAS_19910`, `TAS_19927`, `TAS_19936`, `TAS_20070`, `TAS_20083`, `TAS_20126` | the rest of the family — 19.910, 19.927, 19.936, 20.070, 20.083, 20.126 |
+| `replays/SPLICE_24854.Ghost.Gbx` | a spliced lap, 24.854 |
 
 Do not carry [Torment (1-DOWN)](../228811-torment-1-down)'s closing instruction
 across to this map. It says to keep the lock held after the launcher, which is

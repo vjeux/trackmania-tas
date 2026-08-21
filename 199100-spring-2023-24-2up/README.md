@@ -6,85 +6,24 @@ and arrive from below still accelerating.**
 
 **Spring 2023 - 24 (2-UP)** — TAS **47.483** (−4.119) | AT 51.602 | WR 47.838 by uelen.
 
-> ### ⚠️ Both videos withdrawn, and this result is under review — the 47.483 is uelen.'s run for its first 40 seconds
+> ### ⚠️ No video, and the 47.483 is under review
 >
-> The two clips that were here have been taken down.
+> Both clips have been taken down. **The 47.483 tape shares uelen.'s input tape
+> byte for byte, and its trajectory matches his to under a millimetre for 800
+> consecutive samples** — mean **0.000476 m**, max 0.000906 m — up to **40.000 s**.
+> From 40.100 s the two depart cleanly and genuinely differ, mean 18.71 m and max
+> 52.86 m over the last 157 samples, and that departure is where the 0.355 comes
+> from. Whether that is a result of ours built on a human's flight, or a human's
+> flight with an ending attached, is not settled — so **the claim stands withdrawn
+> until it is measured rather than asserted.**
 >
-> **The 47.483 tape shares uelen.'s input tape byte for byte, and its trajectory
-> matches his to under a millimetre for 800 consecutive samples** — mean
-> **0.000476 m**, max 0.000906 m — up to **40.000 s**. From 40.100 s the two
-> depart cleanly and genuinely differ, mean 18.71 m and max 52.86 m over the last
-> 157 samples.
->
-> That is not two runs that resemble each other. **It is one run with a different
-> ending**, and the page's own description — *"the shape is theirs and we are
-> flying it a metre lower"* — is not a generous framing, it is the wrong account
-> of what the file contains. The first clip was largely uelen. beside uelen.
->
-> **The independence check cleared it, and the check was broken.** `seplag`
-> reported `INDEPENDENT: no identical position at any lag` because it tests for
-> *exactly zero* difference, and these positions differ by about 0.0005 m — the
-> float encoder's own noise floor. **A tolerance-free equality test cannot see a
-> copy that has been through a re-encode.** The tool now needs a near-identity
-> band — positions within a millimetre for N consecutive samples — rather than an
-> exact one.
->
-> What is not yet decided is what the last 7.7 seconds are worth. The departure
-> at 40.100 s is real and it is where the 0.355 s comes from. Whether that is a
-> result of ours built on a human's flight, or a human's flight with an ending
-> attached, is exactly the question this page is not entitled to answer for
-> itself — so the claim stands withdrawn until it is measured rather than
-> asserted.
->
-> The second clip (our old 49.778 against the new 47.483) is affected the same
-> way in its right-hand pane. **The 49.778 file itself is unaffected** — a
-> different input tape entirely — and the 1.940 s finding about flight shape,
-> which came from comparing our own two runs, does not depend on the 47.483.
-
-
-**Left is what we used to do; right is what we do now.** Same map, same launcher,
-same car — and from about 42 s the left pane climbs away above the structures
-while the right one stays low and flat. **At the same point down the flight our
-old arc is up to 88.2 m higher.** Our old run reaches z = 800 at **46.30 s**;
-the new one is there at **43.50 s**. That is 2.80 s spent going up and coming
-back down, and it bought nothing — it is the whole 1.940 s the two humans found,
-plus the 0.355 we added on top.
-
-A note on the framing, because it took three attempts to get an honest one: a
-*simultaneous* two-car replay of this map cannot show any of it. Matched by race
-time the cars are up to **305 m apart along the track** and only 46 m apart
-vertically — the faster run is simply further ahead, and no camera holds both.
-Matched by position down the flight the horizontal gap is essentially zero and
-the vertical gap is the entire story. Two separate renders, side by side, is the
-only framing that puts the two shapes in front of you.
-
-> ### The record on this map was taken from us, and the technique is theirs
->
-> On 2026-08-19 **uelen.** drove **47.838** and **JuntaoTM** **48.685** — 1.940
-> faster than our best run, on a map where our own search had just spent 175,000
-> evaluations in the flight window and found nothing.
->
-> They were not driving our line faster. They were in a different family. The
-> technique this page used to describe throws the car at the sky, overshoots the
-> finish gate by 60–100 m and dives back onto it; theirs **never goes above the
-> gate at all**. Apex **223 m** against our **271.8** — fifty metres of climb and
-> fall that buys nothing.
->
-> **Re-seeded inside their family, the same searcher that had found nothing
-> returned 34 improvements and 47.483.** So the discovery is uelen.'s and
-> JuntaoTM's, and our contribution is 0.355 on top of it.
->
-> **One thing this page will not claim, because the measurement refuses it.**
-> "The map rewards not going up" is false as stated. It is true *between*
-> families — 271.8 m → 223 m is the whole 1.940 s. Inside the low family, height
-> and time move in **opposite** directions: our fastest tape apexes at **227.5 m**,
-> higher than uelen.'s 223 and higher than our own 47.721's 222.0, and it is
-> 0.238 quicker. The sentence is "the old family went far too high", and nothing
-> stronger.
+> The **49.778 file is unaffected** — a different input tape entirely — and the
+> 1.940 s finding about flight shape came from comparing our own two runs, so it
+> does not depend on the 47.483.
 
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
-| **TAS** | **47.483** | **−4.119** | **−0.355** | analog |
+| **TAS** *(under review)* | **47.483** | **−4.119** | **−0.355** | analog |
 | TAS, the old high family | 49.778 | −1.824 | +1.940 | analog |
 | **keyboard**, old family | 51.062 | −0.540 | +3.224 | **3 values** |
 | a human keyboard run + seven actions | 51.575 | −0.027 | +3.737 | keyboard |
@@ -103,6 +42,36 @@ the map is its last sector.
 This is an Altered Nadeo copy of **Spring 2023 - 24**, with the geometry and the
 surfaces preserved, so the 200 000 people who drive the official map are driving
 the same road — their lines are directly usable here. That matters below.
+
+## The record on this map is uelen.'s, and so is the technique
+
+On 2026-08-19 **uelen.** drove **47.838** and **JuntaoTM** **48.685** — 1.940
+faster than our best run, on a map where our own search had just spent 175,000
+evaluations in the flight window and found nothing.
+
+They were not driving our line faster. They were in a different family. The
+technique this page used to describe throws the car at the sky, overshoots the
+finish gate by 60–100 m and dives back onto it; theirs **never goes above the
+gate at all**. Apex **223 m** against our **271.8** — fifty metres of climb and
+fall that buys nothing.
+
+**Re-seeded inside their family, the same searcher that had found nothing
+returned 34 improvements and 47.483.** So the discovery is uelen.'s and
+JuntaoTM's, and our contribution is 0.355 on top of it.
+
+**The old family against the new.** Same map, same launcher, same car — and from
+about 42 s the old line climbs away above the structures while the new one stays
+low and flat. **At the same point down the flight the old arc is up to 88.2 m
+higher.** Our old run reaches z = 800 at **46.30 s**; the new one is there at
+**43.50 s**. That is 2.80 s spent going up and coming back down, and it bought
+nothing — it is the whole 1.940 s the two humans found, plus the 0.355 on top.
+
+**"The map rewards not going up" is false as stated.** It is true *between*
+families — 271.8 m → 223 m is the whole 1.940 s. Inside the low family, height
+and time move in **opposite** directions: our fastest tape apexes at **227.5 m**,
+higher than uelen.'s 223 and higher than our own 47.721's 222.0, and it is
+0.238 quicker. The statement that survives is that the old family went far too
+high, and nothing stronger.
 
 ## The brake tap, which is a finding about the OLD family
 

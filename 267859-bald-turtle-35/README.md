@@ -8,16 +8,14 @@ every radian of roll away from the fast presentation costs about 1.8 s.**
 
 https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
 
-**bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.059 by Max_heyu
-
-https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
-
 **Both cars, and the whole race is the last half-second.** Ours is magenta,
 Max_heyu's world record is the dark car. They run wheel to wheel through the
 final landings — never more than **4.00 m apart, mean 1.30 m** — and ours edges
 clear only at the line, crossing **0.301** ahead. The camera is bolted to *his*
 car on purpose, so the shot stays alive after ours has finished and vanished:
 you see us cross, and then you watch him arrive.
+
+https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
@@ -30,7 +28,7 @@ you see us cross, and then you watch him arrive.
 | Keyboard 10.897 | 10.897 | +0.129 | −0.162 |
 | Author time | 10.768 | — | −0.291 |
 | Human WR — Max_heyu | 11.059 | +0.291 | — |
-| Human rank 2 | 11.189 | +0.421 | +0.020 |
+| Human rank 2 | 11.189 | +0.421 | +0.130 |
 
 TMX map [267859](https://trackmania.exchange/maps/267859) · author **Bald_tm /
 BALDFROMSPB** · **19 recorded runs**.

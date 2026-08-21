@@ -8,32 +8,19 @@ what makes the faster corner exit pay.**
 
 https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
 
-> **The two-car clip that was here was pulled, and has now been replaced.** It was filmed from a tape
-> one physics tick late -- 10 ms, which puts the car 0.336 m behind itself along
-> its own line. On a solo clip that is invisible and harmless; in a side-by-side
-> on THIS map it is not, because the whole subject here is 0.689 ms and about
-> 3.4 cm at the line. The clip would have been showing a display artefact
-> fifteen times larger than the result it was illustrating. A re-shoot from the
-> repaired tape is coming; the times and the tapes are unchanged.
->
-> What it showed is worth keeping, because it will be true of the re-shoot too:
-> our tape and AffiTM's world record never separate by more than **0.48 m**
-> (mean **0.08 m**), so the two cars render inside one another and there is no
-> moment where a viewer sees two vehicles. Six players are tied at 4.495 and the
-> whole top 15 fits inside 0.003. The 0.003 we lead by is **14 cm at the line**,
-> about a tenth of one video frame — **a chase camera cannot show it**, and the
-> clip never pretended to. What it showed was the sameness: one racing line,
-> driven to the half-metre, by a machine hunting the author medal and by the
-> best human on the board.
-
-> **Replaced 2026-08-21.** Both clips on this page are now filmed from the
-> repaired tape `bb84db2ced762e657fa45359f29e3a81`, which the game imports as
-> `Ghost:TAS` and which sits at the tick the game itself uses. The times and the
-> tapes are unchanged.
+Single car: the **4.492**, the tape that matches the author time.
 
 **Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 by AffiTM
 
 https://github.com/user-attachments/assets/1279d078-eded-49ea-8b75-8c5085f1cde2
+
+**Our tape and AffiTM's world record, both on screen.** They never separate by
+more than **0.48 m** (mean **0.08 m**), so the two cars render inside one another
+and there is no moment where a viewer sees two vehicles. That sameness is the
+subject: six players are tied at 4.495, the whole top 15 fits inside 0.003, and
+the 0.003 we lead by is **14 cm at the line** — about a tenth of one video frame,
+which no chase camera can show. One racing line, driven to the half-metre by a
+machine hunting the author medal and by the best human on the board.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|

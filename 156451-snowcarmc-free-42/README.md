@@ -25,11 +25,11 @@ The 120 ms come from where the two cars are *not quite* the same in the corners.
 | Human world record — **Roquett**, of 63 records | **18.810** |
 | **Our TAS** | **18.690** |
 
-**Lead with the world record, not the author time.** Every one of the 63 human
-records already beats this author time by about a factor of two, and the author
-himself sits **twelfth on his own map at 19.610**. Saying "author time beaten"
-here would be true and useless. The result is that our tape is **0.120 under the
-best of 63 humans**, and 0.205 under the second-best.
+**The author time here is soft, and that is why this page leads with the human
+record.** Every one of the 63 human records beats 40.074 by about a factor of
+two, and the author himself sits **twelfth on his own map at 19.610**. The result
+that means something is that our tape is **0.120 under the best of 63 humans**,
+and 0.205 under the second-best.
 
 The whole leaderboard runs 18.810 to 21.830.
 
@@ -108,18 +108,13 @@ The published ghost's telemetry is its own run, regenerated sample by sample out
 of engine memory, so it plays back as what it is rather than as the run it was
 built on.
 
-**Tolerance, and a caveat we would rather publish than hide.** Perturbing every
-input event by ±1 tick, no-op corrected: the **18.700** tape survives **68.9 %**
-of real moves, and the **18.690** tape that replaced it survives **48.5 %**. Ten
-milliseconds faster, twenty points less forgiving. Four earlier maps in this
-project found the fastest tape was also the most forgiving; this pair is a
-counterexample, so treat that as conditional rather than settled. 48.5 % is still
-mid-range here, so the shipped tape remains a plausible human target.
+**Tolerance.** Perturbing every input event by ±1 tick, no-op corrected: the
+**18.700** tape survives **68.9 %** of real moves, and the shipped **18.690**
+tape survives **48.5 %** — ten milliseconds faster, twenty points less forgiving.
+48.5 % is still mid-range here, so the shipped tape remains a plausible human
+target.
 
-## What does not work — and how we know the test would have seen it
-
-Each of these is a negative, and each is quoted with the control that would have
-detected a positive.
+## What does not work
 
 **The start trick is unavailable: race tick 0 is inert on this map.** The tape
 starts at race zero with the throttle already on. Turning the gas off, applying
@@ -143,15 +138,12 @@ units, held to the end, from each of 13 divert times spanning 11.5 to 17.5 s).
 **Every one DNF** except two late shallow diverts that wander and rejoin, at
 20.840 and 18.959; the identity in the same batch returns 18.702. The geometry
 agrees — the terraces are joined only by the two ramps and the finish is on top.
-State it as *the author time is not route-enforced*, not as *a cut exists*, and
-not as *we proved none does*.
 
 ## Re-checking this map: the validation is BUILD-DEPENDENT
 
-**Anyone re-running the field check here without splitting by game build will
-conclude our oracle is broken.** Re-simulating all 63 ghosts gives 44 exact, 10
-different and 9 DNF — a raw 70 % that looks like a failed map. Split by the game
-build each record was set on:
+**Re-simulating this field must be split by the game build each record was set
+on.** All 63 ghosts together give 44 exact, 10 different and 9 DNF — a raw 70 %.
+Split by build:
 
 | build the record was set on | exact | different | DNF |
 |---|---|---|---|
@@ -187,3 +179,12 @@ measured empty — 0 improvements in 49,440 unbiased single moves, and none in
 1,116 systematic single-window steer biases — the only operator that moved this
 tape again was **multiple mutations per candidate**, which walked eight
 consecutive improvements from 18.699 to 18.690.
+
+## Files
+
+| file | what |
+|---|---|
+| `replays/tas_18690.Ghost.Gbx` | **the run** |
+| `replays/human_wr_18810_Roquett.Ghost.Gbx` | Roquett's world record, the tape this search was seeded from |
+| `inputs/tas_18690_rawsearch.Ghost.Gbx` | the raw search tape, before the ghost was regenerated |
+| `notes/` | the 63-record leaderboard, the tolerance log and the working notes |

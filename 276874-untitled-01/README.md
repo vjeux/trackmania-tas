@@ -19,44 +19,14 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid:
 
-> ### Video withdrawn, then replaced — the tape had reported another player's identity
->
-> The clip that was here has been taken down. It played, and there is nothing
-> wrong with the driving in it: the run is ours, the time re-simulates on the
-> game's own oracle to the millisecond in its name, and the declared time in the
-> file agrees with what the server validates.
->
-> What is wrong is whose file it is. Read by the game's own parser, this tape
-> reports account `4c3537f3-381d-46d5-879a-45eca500dd4d`, login
-> `TDU38zgdRtWHmkXspQDdTQ` — **a real player, not us.** Our own files report
-> login `TAS` and carry no account at all. The same stranger's identity appears
-> on this map and on its sibling, so it is a person rather than an artefact.
->
-> A searched tape is built inside a *carrier* — an existing ghost — and inherits
-> that carrier's container unless every field is rewritten. Identity is one of
-> those fields, and on these two tapes it was never rewritten.
->
-> **This map has no human recording to compare against** (or, for untitled 02,
-> exactly one, set the day this page was written). Every trajectory-based check
-> we have is therefore blind here, and the identity read is not one check among
-> several — it is the whole verdict. That is why this took until now to find.
->
-> The run stands and the time stands. A replacement clip will be filmed from a
-> tape rebuilt on a clean carrier.
->
-> **Replaced 2026-08-21.** The tape was rebuilt: login `TAS`, no account id, the
-> donor's custom car livery and its download URL replaced with our own, and the
-> trajectory **256 of 256 positions bit-identical** to the withdrawn tape. It
-> imports into the game as `Ghost:TAS`. The clip below is that re-shoot — same
-> run, different file.
->
-> Two fields are still the carrier's and are not being faked: **ground contact
-> and wheel rotation**. Zeroing them would assert that the car was airborne for
-> the whole run and that its wheels never turned, which is a claim rather than a
-> blank. **So the dirt and spark effects in this clip may be wrong; the car's
-> path is ours.**
-
 https://github.com/user-attachments/assets/808e0fe9-7013-4b84-9182-6b3bc4de30e6
+
+The clip is shot from a tape rebuilt on a clean carrier — login `TAS`, no account
+id, our own livery, and the trajectory **256 of 256 positions bit-identical** to
+the file it replaced. Two fields in it are still the carrier's and are not being
+faked: **ground contact and wheel rotation**, because zeroing them would assert
+that the car was airborne for the whole run and that its wheels never turned.
+**So the dirt and spark effects may be wrong; the car's path is ours.**
 
 ## What kind of result this is
 
@@ -93,18 +63,17 @@ lattice floor between them can never get high enough to finish. So the run's
 ugly-looking stall at 12 km/h is not waste: it is the only way to be high
 enough, and it caps the glide's entry speed at 109 km/h.
 
-**A note on what that column is.** Earlier versions of this page called it a
-*reactor* column. That is wrong: a census of the map's own block list finds
-**zero blocks whose name contains "Reactor"**. What the map actually carries is
-**9 `GateExpandableSpecialBoost` gates and 9 `RoadBumpSpecialTurboRoulette`
-bumps**, plus 18 reset gates and 18 no-steering gates. The lift itself is real
-and measured — the car climbs **19.2 m between 4.25 and 7.50 s** while
-accelerating 11.8 → 182 km/h, with no block beneath it for the first 1.5 s and
-vertical acceleration nowhere near the −25.20 m/s² of free fall, so it is
-neither supported by geometry nor ballistic. Three boost gates sit 6.6–12.1 m
-away during that climb, and the run passes within 0.7 m of a turbo bump at
-0.350 s. That is a coincidence in space and time; **the mechanism is not
-demonstrated** and this page does not claim one.
+**What that column is.** A census of the map's own block list finds **zero blocks
+whose name contains "Reactor"**. What the map actually carries is **9
+`GateExpandableSpecialBoost` gates and 9 `RoadBumpSpecialTurboRoulette` bumps**,
+plus 18 reset gates and 18 no-steering gates. The lift itself is real and
+measured — the car climbs **19.2 m between 4.25 and 7.50 s** while accelerating
+11.8 → 182 km/h, with no block beneath it for the first 1.5 s and vertical
+acceleration nowhere near the −25.20 m/s² of free fall, so it is neither
+supported by geometry nor ballistic. Three boost gates sit 6.6–12.1 m away during
+that climb, and the run passes within 0.7 m of a turbo bump at 0.350 s. That is a
+coincidence in space and time; **the mechanism is not demonstrated** and this
+page does not claim one.
 
 ## The line
 
@@ -148,18 +117,14 @@ still 10.490 under the author time.
 
 No online records, no author ghost, no embedded telemetry — no reference line of
 any kind. The search climbed toward the finish gate for hours, stuck at one
-point **0.375 m short in y for 85 rounds and 25,500 candidates**.
-
-What broke it was not more search on that axis. Re-sweeping the *other* axes at
-the stuck rung showed the run could already reach y 292 — it was 4 m short in
-**x**. **A one-axis ladder reports "no fire" identically whether that axis is
-exhausted or is simply the wrong axis**, and one 24-validation sweep tells the
-two apart.
+point **0.375 m short in y for 85 rounds and 25,500 candidates**; re-sweeping the
+other axes at that rung showed the run could already reach y 292 and was 4 m
+short in **x**.
 
 After the first finish at 13.349, the search improved twelve times in 94 seconds
 and then found nothing in a further 2.3 million evaluations at a 74 % finish
-rate. Two fresh basins were tried; both are blocked by the reactor-column
-geometry above.
+rate. Two fresh basins were tried; both are blocked by the lift-column geometry
+above.
 
 ## Verification
 
@@ -180,8 +145,8 @@ completely different readout path agrees to **0.48 mm**.
 
 | file | what |
 |---|---|
-| ~~`replays/TAS_12759.Ghost.Gbx`~~ | **withdrawn, and not yet replaced here.** The time stands and the clip above is a re-shoot from a rebuilt tape — login `TAS`, no account id, trajectory 256 of 256 positions bit-identical to the withdrawn file. That rebuilt tape has not been committed back to this page yet. The file that *was* here reported a stranger's account, as the banner above describes. |
-| `inputs/TAS_12759.inputs.csv` | per-tick inputs — **the run itself, unaffected**: this is what the oracle validates at 12.759 |
+| *(no replay committed)* | The rebuilt tape the clip above is shot from is not in this directory yet. The time stands and the oracle validates it at 12.759. |
+| `inputs/TAS_12759.inputs.csv` | per-tick inputs — **the run itself**: this is what the oracle validates at 12.759 |
 
 ## The route in the video does not convert, and that is now measured
 
@@ -231,14 +196,3 @@ Goal relocated to y 291.266 and nothing at 291.281, against the real gate at
 roughly 250 km/h, and the only source of height on the map is a lift that costs
 exactly that speed. If someone finds a second way up, or a way to spend roof
 height horizontally instead of in a plunge, that 0.734 m is sitting there.
-
-*(One method note, because it nearly produced a false result. The first version
-of this search ranked candidates by an apex read from live memory, and under load
-that reader can settle on the wrong object: it reported apexes of 349.5 m and
-368.5 m, which would have answered the question the other way. Both were
-phantoms — the winning files were byte-identical to the base and re-measured at
-330.042 three times running — and the search then froze for 44 rounds chasing a
-score it could never beat. The gate was sound throughout; it was the tiebreak
-that lied. **A surrogate measured by a locate is not a number until it
-reproduces**, so the leader is now re-measured before adoption. The census above
-ran with that guard armed and rejected no phantoms at all.)*

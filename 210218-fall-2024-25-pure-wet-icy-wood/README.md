@@ -1,5 +1,10 @@
 # Fall 2024 - 25 (Pure Wet Icy Wood)
 
+**The whole map is slip angle. The field slides through the middle sectors at
+21–30°; rank 21 drives the same corners at 0.3–3.1° and takes 881 ms out of the
+world record in sector 11 alone. Arrive pointed where you are going and keep the
+wheel still.**
+
 **Fall 2024 - 25 (pure wet icy wood)** — TAS **95.575** (+1.098) | AT 94.477 | WR 96.281 by iambeeen
 
 https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
@@ -16,10 +21,11 @@ world record **96.281** (iambeeen) · **36 recorded runs**
 | world record, iambeeen | 96.281 | +1.804 | — |
 | author time | 94.477 | — | −1.804 |
 
-**The author time is not beaten.** We are 0.706 s under the human world record
-and 1.098 s over the author. This page is about why — and the why turns out to
-be a genuinely unusual thing, which is that on this map the time exists and
-cannot be spent.
+**The author time is not beaten on this map.** Our best validated lap, 95.575,
+is 1.098 s **over** the author time and 0.706 s under the human world record —
+fastest ever driven here, and still short of the medal. The reason is unusual
+enough to be the subject of this page: on 210218 the time exists and cannot be
+spent.
 
 ---
 
@@ -76,8 +82,7 @@ by anything.
 
 And the field's own per-sector bests, added up, come to **91.826** — 2.651
 under the author time. Every sector of a winning lap has been driven by
-somebody. Nobody has assembled one, and this page is the account of finding out
-why.
+somebody. Nobody has assembled one.
 
 ## Why the time cannot be spent: the exchange rate
 
@@ -113,15 +118,12 @@ edit invalidates every input after it. So a gain in sector 11 is only worth
 anything if the *next twenty-five seconds of unchanged driving happen to still
 work* — and they almost never do.
 
-We did convert one, end to end, which is worth stating as a number because it
-is the exchange rate as a lived experience: 115 ms banked at checkpoint 15,
-then a full rebuild of the last 7 seconds to recover from it. **Net gain:
-−124 ms.** Everything else the search found upstream was paid straight back to
-the tail.
+One conversion has been made end to end, and it is the exchange rate as a
+number: 115 ms banked at checkpoint 15, then a full rebuild of the last 7
+seconds to recover from it. **Net gain: −124 ms.** Everything else the search
+found upstream was paid straight back to the tail.
 
 ## What is closed, and what it cost to close
-
-Each of these is a resourced experiment with a control, not an impression.
 
 | we tried | candidates | result |
 |---|---|---|
@@ -138,30 +140,14 @@ session's exhaustive enumeration of all 470 016 single-input changes, this map's
 last 24 seconds have absorbed nearly half a million deliberate edits and given
 back 2 milliseconds.
 
-## How you can tell this is the map and not our instrument
-
-A negative result is only worth reading if the thing that produced it could
-have detected a positive. This one could, and did, all night:
-
-* Against the **real finish line**, the search resolved single milliseconds and
-  kept doing so: **95.604 → 95.603 → 95.598 → 95.591 → 95.588 → 95.586 →
-  95.575**, every step written to disk and re-validated.
-* The **same binary, same starting tape, same operators**, pointed one
-  checkpoint upstream, found **926, 371 and 467 ms** in twelve minutes apiece.
-* Every one of those upstream winners reproduces our tape's time *exactly* at
-  the checkpoint before the sector it edited, and is a **did-not-finish** on the
-  real map. The instrument agrees where it must and diverges where it should.
-
-So the failure to reach 94.477 is a statement about the map, not about the
-detector.
-
-One thing that went right and is worth recording: the search's own guard fired
-once, refusing to bank a tape whose time it could not reproduce on a second
-look. Re-checked by hand afterwards the tape was fine — it had hit the known,
-rare case where the simulator returns a different answer on the same input — but
-**a search that stops rather than bank a result it cannot reproduce is doing
-exactly its job**, and that guard exists because an earlier session on another
-map nearly published a time that was not real.
+The negative has a positive control on both sides. Against the **real finish
+line** the same search resolves single milliseconds and kept doing so —
+**95.604 → 95.603 → 95.598 → 95.591 → 95.588 → 95.586 → 95.575**, every step
+written to disk and re-validated. Pointed one checkpoint upstream, the same
+binary, tape and operators find **926, 371 and 467 ms** in twelve minutes
+apiece — and every one of those upstream winners reproduces our time exactly at
+the checkpoint before the sector it edited and is a did-not-finish on the real
+map. So the failure to reach 94.477 is a statement about the map.
 
 ## Verification
 
@@ -191,3 +177,10 @@ but carrying it home through twenty-five seconds of tail. That needs a repair
 tool that works over that distance; the best one we have works over seven
 seconds. Whoever builds it gets the author time, because the time is already
 there and measured.
+
+## Files
+
+| file | what |
+|---|---|
+| `replays/TAS_96068.Ghost.Gbx` | the tape the clip above is filmed from — the same line, 96.068 |
+| `replays/TAS_96078_1minimal.Ghost.Gbx` | the 1-minimal variant, 96.078 |

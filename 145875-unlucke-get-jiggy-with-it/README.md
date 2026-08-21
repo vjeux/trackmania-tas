@@ -25,36 +25,6 @@ finishing ahead of all of them.
 identically, 0 of 120. That control is published beside the number because the
 number means nothing without it.
 
-**Video: previously withdrawn, now replaced.** The clip published here before was
-filmed from a copy of our ghost that is not the file this page ships — a stale
-staging copy, superseded before the clip was shot. The run and the time were
-unaffected. The clip above is filmed from the current tape, in a container
-verified as ours.
-against the human world record **6.346** (xeap-.-).
-
-*An earlier clip on this page was withdrawn twice over, and both corrections are
-worth keeping.* The first version used `HUMANWR_plus_early_flick_6342` as the
-opponent — which is **not a human recording**: it is the world record's tape
-with one input changed, a run of ours. It belongs in the table below, not in a
-clip captioned "against the human world record", and the caption also gave the
-human's time as 6.342 when the real record is 6.346.
-
-The second correction was ours to make against ourselves. This page then claimed
-that every recording of this map, **including Nadeo's own download**, carried
-dead wheel telemetry — "zero usable rolling steps over a 495 m path". That was
-false, and the fault was in our checker: it only measured samples classed
-`Supported`, and the car on this map descends for its entire run, so it had
-nothing to measure and reported the blindness as a defect. Measured directly,
-the world record's ghost carries **122 distinct wheel values across 127 samples**.
-Nothing was ever missing.
-
-The rule that came out of it, now enforced in the render gate: **absence of
-signal is not evidence of correctness — and it is not evidence of a fault
-either.** A check that cannot see tells you nothing in either direction.
-
-The runs and the times are unaffected: 6.322, 6.323 and 6.342 all validate on
-the untouched map.
-
 **unluckE - get jiggy with it** — TAS **6.330** (−0.013) | AT 6.343 | WR 6.346 by xeap-.-
 
 https://github.com/user-attachments/assets/ae6e57c3-4f44-4bca-881f-361f573b1571
@@ -82,9 +52,6 @@ TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
 > different human's container, declaring 6346, still simulate to **6.342**,
 > with a lossless control and a negative control in the same batch, on two
 > independently built binaries.
->
-> **Never read a synthesised tape's time off its header, filename or manifest.
-> Re-simulate it.**
 
 The tape above is a machine's: it holds inputs for 10 ms and stabs three of them
 for a single tick. Nobody can do that. So the same line was **searched again from
@@ -113,9 +80,8 @@ presses at all: they are the rollover between opposite arrow keys.)
 Every rung is the same line as the machine's — right at 1.45, the short right
 stab at ~2.7, a second right at ~3.1, the long left hold from ~3.4, the flick to
 the line — with the 2.25–3.59 flutter replaced by three or four ordinary presses.
-
-`play_TAPE_80ms_6342.Ghost.Gbx` is the 13-input version: gas held throughout,
-brake never touched, three steering values.
+The 80 ms row is the 13-input version: gas held throughout, brake never touched,
+three steering values.
 
 ### But do not read "playable" as "forgiving"
 
@@ -128,10 +94,10 @@ published here because a number like ours means nothing without them.
 Per input, the picture is sharper. **Every tape on this map — ours and all nine
 human keyboard runs — has a zero-millisecond window on every input between about
 1.4 s and 3.5 s**, and ±20–30 ms on everything after 5 s. So a survival
-*percentage* mostly counts how many presses sit in the free endgame. A robustness
-search here duly "improved" one tape from 9.1 % to 45.8 % by adding ten events
-after 4.98 s while leaving all ten knife-edge inputs untouched. **Report the worst
-window and where the zero-window inputs are, never the mean.**
+*percentage* mostly counts how many presses sit in the free endgame: one tape
+"improves" from 9.1 % to 45.8 % by adding ten events after 4.98 s while leaving
+all ten knife-edge inputs untouched. **Read the worst window and where the
+zero-window inputs are, never the mean.**
 
 The honest axis is **recoverable** tolerance — mistime one press, then re-time the
 later ones to compensate. Our 6.342 saves 10 of 26 perturbations at ±10 ms, four
@@ -139,7 +105,6 @@ of them inside the hard window; the human r10 saves 11 of 26, about eight of the
 inside it. **The human line recovers roughly twice as often where it matters.**
 That is a property of the route, it is measurable, and it is the thing worth
 improving next.
-
 
 ## The cheapest advice on this map
 
@@ -211,22 +176,17 @@ of it from `kb6323.csv` when you open it.
 to the line and never released.** There is exactly one brake input in the whole
 race, and everything else is steering.
 
-*Provenance of the numbers below, now settled:* they are measured off the input
-tape `kb6323.csv`, and that tape is **793 of 793 rows identical to
-`replays/BEST_KEYBOARD_6323.Ghost.Gbx`'s own input archive** (md5
-`40472ddf8733aeaa9ec9a9a5322be21a`), 10 ms per row. The check discriminates: the
-other candidate, `KEYBOARD_23ev_6323.Ghost.Gbx`, matches only 679 of 793 and
-first disagrees at race −1.460. An earlier version of this page attributed the
-table to a `KEYBOARD_6323.Ghost.Gbx` with a different md5 — no such file exists
-in this repo, and the table describes the 47-input tape above, not the
-23-event one.
+The numbers below are measured off the input tape `kb6323.csv`, which is **793 of
+793 rows identical to `replays/BEST_KEYBOARD_6323.Ghost.Gbx`'s own input archive**
+(md5 `40472ddf8733aeaa9ec9a9a5322be21a`), 10 ms per row. The other candidate,
+`KEYBOARD_23ev_6323.Ghost.Gbx`, matches only 679 of 793 and first disagrees at
+race −1.460, so the table describes the 47-input tape rather than the 23-event
+one.
 
 **The brake tap is a brake-turn.** 0.750 → 0.880 — 0.130 s — taken at *full
 left with the gas still down*. It is not a slowdown and you never lift; it
-rotates the car. An earlier version of this page said the brake is never
-touched, which was the input-reduction's steering-only count leaking into the
-prose: the reduction to "23 events" counts **steer segments**, and the brake tap
-is not one of them.
+rotates the car. It is not one of the "23 events" either: that reduction counts
+**steer segments**, and the brake tap is not one of them.
 
 | # | when | input | the cue |
 |---|---|---|---|
@@ -300,46 +260,4 @@ earlier.
 | `replays/BEST_KEYBOARD_6323.Ghost.Gbx` | the same time on 47 inputs, before event reduction |
 | `replays/BEST_6322.Ghost.Gbx` | fastest, unconstrained |
 | `replays/tas_6330.Ghost.Gbx` | the analog family, 6.330 |
-
-## An hour spent deciding whether this tape is a 6.342 or a 6.360
-
-It is a **6.342**. The episode is recorded because the wrong answer was reached
-by three independent readers agreeing, which is normally the strongest evidence
-there is.
-
-Every tape in this lineage declares **6360** in its header. That is the time of
-`r03`, the human keyboard run the whole family was searched out of, and the
-container has been inherited ever since. Five different tapes declare it while
-simulating to 6.322, 6.323, 6.338, 6.342 and 6.345 — **a stored field cannot give
-five answers**, so the header describes the seed and the simulation describes the
-run.
-
-What went wrong: a report inverted the server's two columns — writing
-*"declares 6342, validates to 6360"* when the file says the reverse — and once
-that was in the record, three further readings were fitted to it. The three
-readers (`inputcount --meta`, a ghost checker, and a byte census) all agreed on
-`6360`, and all three were reading **the stored field**. The census's `6360 ×6`
-*is* the declared-time sites, by construction. **Three readers of one field are
-one reader.**
-
-And *"the value 6342 appears nowhere in the file"* — which read as damning — is
-exactly what a correct file looks like. The simulated time is not stored anywhere.
-
-The disambiguator needed no field-order judgement at all. The server writes it in
-a sentence:
-
-```
-"Desc" : "validated time is actually better! (6360 > 6342)"
-```
-
-Three rules came out of it, and the third is the one that generalises furthest:
-
-> **Never read a synthesised tape's time off its header, its filename, or its
-> manifest. Re-simulate the file you are holding.**
-
-> **`DeclaredResult` and `ValidatedResult` must never be quoted without their
-> labels.** A mislabelled operand is worse than an invented one, because an
-> invented number gets checked and a mislabelled one gets corroborated.
-
-> **Agreement between readers of the same field is not independent evidence.**
-> Before treating three sources as three, ask what each one read.
+| `replays/tas_6333.Ghost.Gbx` | the analog family, 6.333 |

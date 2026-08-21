@@ -10,8 +10,8 @@ https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
 
 Single car: the **7.998**, our fastest run here, driven with analog steering and
 111 distinct steering values — a tape no human hand produces. The comparison
-below is the 8.050, because that is the run this page is really about: it is
-made of eight steering levels, which a keyboard with action keys can reach.
+below is the 8.050, made of eight steering levels, which a keyboard with action
+keys can reach.
 
 **Great WTF of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR 8.197 by Titoch_tm
 
@@ -22,14 +22,6 @@ Ours is magenta. They are never far apart — **max 7.41 m, mean 0.47 m** — an
 gap opens where the run is decided rather than steadily: watch 4.4 s onward,
 where the two cars take visibly different lines through the grass section and
 ours arrives at the loop already ahead. We finish 0.147 in front.
-
-This clip is also the one that cost the most to make honest. The file it is shot
-from went through **three generations** before it was ours: the first declared
-Titoch's 8.197 in its header, the second was repaired but still imported into the
-game wearing his nickname, and only the third reads `Ghost:TAS`. The trajectory
-never changed through any of it — 162 of 162 positions identical, and independent
-of his recording at every alignment. **The driving was always ours; the file was
-not.**
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|

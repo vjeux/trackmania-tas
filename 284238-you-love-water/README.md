@@ -101,34 +101,7 @@ state, and the state is angular velocity.**
 
 Steering forced over the true flight window returns bit-identical state at the
 wall for −1, −0.3, +0.3 and +1 — on copy 1 *and* on copy 0 (0.6° across the full
-range). An earlier 28.5° figure came from a window that mistakenly included
-about 20 ticks of ramp.
-
-**And the axis that does work is five times too short.** One constant input over
-the last 0.50 s of ramp, eleven values spanning the whole alphabet, everything
-else identical:
-
-| input | frozen ω_z at unload | unload instant |
-|---|---|---|
-| steer −1.00 | **285.9 °/s** | 23.700 |
-| steer 0 | 270.7 | 23.690 |
-| steer +1.00 | **248.9** | 23.690 |
-| brake | 256.9 | 23.700 |
-| **the human** | **never unloads — 222 decaying to 68** | — |
-
-Monotone in steer, so the instrument resolves the axis — and the same ladder
-reports "no effect, bit-identical" on the flight window, which is its control.
-**The reachable band from one entry state is 37.4 °/s wide. The roll the finish
-needs is 90–100.** The unload *instant* is 23.690–23.700 for every input in the
-alphabet: one tick of variation. The car leaves the ramp when the ramp says so.
-
-> **That band is not the map's, and the paragraph above is superseded by
-> [what the obstacle actually is](#what-the-obstacle-actually-is-the-engagement-point).**
-> The sweep was exhaustive over the input alphabet but was run from a single
-> entry state, and it measured that entry state. Braking before the ramp spans
-> **5.0 to 284.1** — the whole range, with the target comfortably inside it.
-> *An exhaustive search over a complete alphabet, run from one entry state,
-> measures the entry state and not the map.*
+range).
 
 Position, by contrast, is essentially solved — the human's crossing point is
 reached to **0.58 m**, from 9.73 m earlier the same day. Roughly forty
@@ -139,8 +112,8 @@ the wall in **−131 … +176** and never within 100° of the human's +86.
 The kicker's geometry is also cleared, on all three axes at once: applying
 copies 1–3's *whole* offset from the sibling map (+0.70, −1.00, −0.29) to copy
 0's kicker, in a matched A/B so the car arrives bit-identically, leaves the
-working launch working — roll within 2.5° of control throughout. Three separate
-efforts had pointed at that offset; it is not what separates the copies.
+working launch working — roll within 2.5° of control throughout. It is not what
+separates the copies.
 
 So the remaining lever is narrow and upstream: the ramp does the same thing to
 whatever it is handed, so the target is the state at the **ramp entry** — the

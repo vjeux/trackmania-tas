@@ -119,24 +119,18 @@ upright from the fast line would need about **26° of body tilt**, and the
 cheapest source of that tilt on this map is rank 1's own flip, which costs
 **11.2 s** against a budget of about 2 s.
 
-### The wall is height, and it is not a measurement artefact
+### The wall is height
 
-An earlier reading suggested the deficit might be lateral rather than vertical —
-sweeping the goal over an (x, z) grid at its true height produces a fire region
-whose edge sits 1–1.5 m away, which reads as "short in z, not in height".
+Sweeping the goal over a raw (x, z) grid at its true height produces a fire
+region whose edge sits 1–1.5 m away, which reads as "short in z, not in height".
+That is an artefact of displacing the gate in raw axes. Swept **along the roof
+plane** — which is what a car displacement actually means on an 11.4° slope —
+the answer is unambiguous: **424 stations spanning 12 m × 8 m, and the fast line
+fires none of them**, while the human record fires about 40 in a coherent band.
+The instrument says yes where there is a yes. The deficit is height, and no
+amount of moving the car along the roof reaches it.
 
-That is an artefact of displacing the gate in raw axes. Re-swept **along the
-roof plane** — which is what a car displacement actually means on an 11.4° slope
-— the answer is unambiguous: **424 stations spanning 12 m × 8 m, and the fast
-line fires none of them**, while the human record fires about 40 in a coherent
-band. The instrument says yes where there is a yes. The deficit is height, and
-no amount of moving the car along the roof reaches it.
-
-### Rank 1's flip is not an unsearched lead — it is what this run already does
-
-An earlier version of this page said rank 1 had a validated way to finish that
-had never been searched, with about 6 s unclaimed upstream. That was wrong on
-both counts.
+### Rank 1's flip is what this run already does
 
 The flip is a **low-speed pitch-over**: the car climbs a short steep face at
 70–90 km/h, loses the surface, tips over backwards, lands on its roof having
@@ -148,9 +142,9 @@ already twice as fast as the human's — 8.42 s against 21.2 s over the same
 The arithmetic closes it. The fastest anything reaches the top of the steep
 climb is 37.97, the flip itself costs about 3.2 s, and the inverted crawl adds
 8.42 s: **a floor of roughly 48.5 s against an author time of 43.079.** Free
-time upstream would not be enough, and there is no 6 s upstream to find.
+time upstream would not be enough.
 
-### What is closed, and what would reopen it
+### What is closed
 
 The banked-surface lead above has now been tested and it is dead. At race
 35.0–35.4 both the fast line and rank 1 do ride something that puts them 74° on
@@ -163,52 +157,29 @@ trajectories, found **580 airborne episodes and the nearest one comes within
 self-corrects its tilt in 0.30 s and at best leaves the car wedged at 4 km/h at
 full throttle for the remainder of the race.
 
-The 70 mm deficit was also re-tested on the right basis. The raw (x,z) grid
-shows a tempting band of ~27 fires 1–1.5 m from the gate, which reads as "short
-in z, not height" — that band is an artefact of the displacement basis. Once
-each station is compensated for the roof's 11.4° slope, so that a rung asks
-*would this tape fire if its crossing moved along the roof*, the fast line fires
-**0 of 425 stations** while the human record fires ~40 in the same invocation.
-
 **And the near miss is real, not a car falling past the plane.** A finish gate
 is a plane you cross rather than a region you occupy, so a candidate can be
-nearer the gate in every spatial sense and still trigger nothing — that trap
-produced a phantom "best result" on another map in this repo. It does not apply
-here, and the control is one validation: a gate placed at the incumbent's own
-crossing point, at the real gate's real height, **fires** (40.964). The car is
-travelling at ~50 m/s horizontally with *positive* vertical velocity — climbing
-the ramp, ratio 0.15 — where a faller would need |vy| to exceed |vx|. What it
-cannot do is fire the gate 5.29 m away where the gate actually is; raise that
-one by 70 mm and it fires (41.074). The deficit is height, and it is genuine.
-
-That also sharpens why the fitted trigger model mis-ranked six probes. They all
-cross; the model simply carries one `ceiling` constant while the real trigger's
-top surface tilts more steeply than the roof and has an interior minimum. A
-probe crossing 5 m further along has both a lower tested point *and* a much
-lower ceiling to clear, and a constant-ceiling model sees only the first half.
+nearer the gate in every spatial sense and still trigger nothing. That does not
+apply here, and the control is one validation: a gate placed at the incumbent's
+own crossing point, at the real gate's real height, **fires** (40.964). The car
+is travelling at ~50 m/s horizontally with *positive* vertical velocity —
+climbing the ramp, ratio 0.15 — where a faller would need |vy| to exceed |vx|.
+What it cannot do is fire the gate 5.29 m away where the gate actually is; raise
+that one by 70 mm and it fires (41.074). The deficit is height, and it is
+genuine.
 
 Both search windows are frozen: 3483 candidates, 0 improvements, and all 78
 splice handovers after the divergence are dead.
 
-So the honest statement of this map is that **"improve our own record" and "beat
-the author time" are different projects here.** The one lever with a measured
+So the statement of this map is that **"improve our own record" and "beat the
+author time" are different projects here.** The one lever with a measured
 non-zero gradient is upstream of the launch — and it must be *re-searched* on
 the fast lineage rather than ported, since a 0.201 s edit that works on the
 older lineage DNFs on this one despite both tapes sharing those exact inputs.
 That lever can improve 50.229. It cannot reach 43.079.
 
-Two instruments not to reuse here, both of which cost real time:
-
-- **The fitted trigger model is not a ranker.** Scored on `y + 0.84·u_y` inside
-  the footprint, six probes beat the incumbent by 0.10–0.17 m and every one
-  fires nothing on an 11-rung oracle ladder. Model-free witness: rank 1 reaches
-  a tested 143.962 and does not finish, then finishes at 144.486 — half a metre
-  *higher*.
-- **A tilt detector placed at `plane(x,z) − Δ` is a height detector** wherever
-  the plane fit drifts, and this roof drifts 1.8 m over 100 m.
-
 One more measured local fact: **free fall on this map is −24.308 m/s²**, not the
-−25.20 measured elsewhere. Gravity here is per-map; measure it before using it.
+−25.20 measured elsewhere. Gravity here is per-map.
 
 ## Files
 

@@ -8,7 +8,9 @@ metre tighter. That is the whole map — and it is enough to beat an author time
 
 https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
 
-Both cars are on screen: eight milliseconds apart, but the two drivers take genuinely different lines and only converge at the finish, so both are clearly visible.
+Both cars are on screen: eight milliseconds apart, but the two drivers take
+genuinely different lines and only converge at the finish, so both stay clearly
+visible.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|

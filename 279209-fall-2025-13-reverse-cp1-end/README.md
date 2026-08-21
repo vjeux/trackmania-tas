@@ -5,11 +5,7 @@ the nose goes light, lift off the throttle for 40 ms and get back on it: that is
 worth 0.012, it is the easiest input in the lap to get right, and nobody in a
 field of 334 does it.**
 
-**Video: withdrawn.** The clip published here was filmed from a copy of our ghost
-that is not the file this page ships — a stale staging copy, superseded before the
-clip was shot. The run and the time are unaffected. A replacement will be filmed
-from a regenerated ghost, whose telemetry is verified against a re-simulation of
-its own inputs.
+*No clip on this page yet; one will be filmed from the ghost this page ships.*
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
@@ -197,4 +193,4 @@ tape has one flick.
 | `replays/AK5_6595.Ghost.Gbx` | 5-value action keys, 6.595 |
 | `replays/BEST_6578_ratcheted.Ghost.Gbx` | the fastest run, unconstrained |
 | `replays/champ_6578.Ghost.Gbx` | the first tape to reach 6.578 |
-| `replays/kb2_best_6595.Ghost.Gbx`, `kb20.Ghost.Gbx`, `kb_gasfull.Ghost.Gbx` | the rest of the low-input family |
+| `replays/kb2_best_6595.Ghost.Gbx`, `kb20.Ghost.Gbx`, `kb_gasfull.Ghost.Gbx`, `ms_r002_6608_best_6585.Ghost.Gbx` | the rest of the low-input family, and earlier stages |
