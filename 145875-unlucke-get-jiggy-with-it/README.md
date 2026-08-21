@@ -115,17 +115,19 @@ built from this tape.** Notes fall, you hold the keys, and it judges you in
 milliseconds. Nothing below is transcribed by hand; the trainer re-derives all
 of it from `kb6323.csv` when you open it.
 
-`replays/KEYBOARD_23ev_6323.Ghost.Gbx`. **Accelerate is held from the countdown
+`replays/BEST_KEYBOARD_6323.Ghost.Gbx`. **Accelerate is held from the countdown
 to the line and never released.** There is exactly one brake input in the whole
 race, and everything else is steering.
 
-*Provenance of the numbers below:* they are measured off the input tape
-`kb6323.csv`, extracted from `KEYBOARD_6323.Ghost.Gbx`
-(md5 `25e04568c299eccdb867c107f40ed650`) — 793 rows at 10 ms. That tape agrees
-with every timing this page previously listed, so it is the same run; but it is
-a *different file* from the shipped `KEYBOARD_23ev_6323.Ghost.Gbx`, and no one
-has yet decoded the shipped ghost's inputs to confirm the two are identical
-byte for byte.
+*Provenance of the numbers below, now settled:* they are measured off the input
+tape `kb6323.csv`, and that tape is **793 of 793 rows identical to
+`replays/BEST_KEYBOARD_6323.Ghost.Gbx`'s own input archive** (md5
+`40472ddf8733aeaa9ec9a9a5322be21a`), 10 ms per row. The check discriminates: the
+other candidate, `KEYBOARD_23ev_6323.Ghost.Gbx`, matches only 679 of 793 and
+first disagrees at race −1.460. An earlier version of this page attributed the
+table to a `KEYBOARD_6323.Ghost.Gbx` with a different md5 — no such file exists
+in this repo, and the table describes the 47-input tape above, not the
+23-event one.
 
 **The brake tap is a brake-turn.** 0.750 → 0.880 — 0.130 s — taken at *full
 left with the gas still down*. It is not a slowdown and you never lift; it

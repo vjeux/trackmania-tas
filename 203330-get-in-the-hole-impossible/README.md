@@ -4,7 +4,7 @@
 flat and a little left of centre, at x ≈ 171, and you will ride the 2 m step
 before the finish that costs the world record 490 km/h.**
 
-**Get in the hole (impossible)** — TAS **13.984** (−0.011) | AT 13.995 | WR 14.018 by in-.-
+**Get in the hole (impossible)** — TAS **13.984** (−0.011) | AT 13.995 | WR 13.990 by in-.-
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
