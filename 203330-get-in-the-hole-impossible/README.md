@@ -156,10 +156,10 @@ under one video frame. The input really is applied at 2.250. Then:
 **1.350 s of full lock before the car so much as rotates**, and z sits at
 239.99–240.00 the entire time while speed climbs from 553 to 819 km/h.
 
-**It is not merely that the car does not respond — the input has no authority at
-all**, and the cleanest proof is two real runs rather than a simulation. The
-human world record holds the wheel at centre through this whole window; our TAS
-holds it at full right lock from 2.270. Their positions:
+**It is not merely that the car does not respond — for most of that window the
+input has no authority at all**, and the cleanest proof is two real runs rather
+than a simulation. The human world record holds the wheel at centre through this
+whole window; our TAS holds it at full right lock from 2.270. Their positions:
 
 | race | 2.250 | 3.600 | 3.650 | 3.700 | 3.750 |
 |---|---|---|---|---|---|
@@ -168,12 +168,44 @@ holds it at full right lock from 2.270. Their positions:
 
 **One car at full lock, one at centre, identical to three decimals for 1.4 s.**
 
-The car loses ground contact from 3.000 to 3.300 and lands at 3.350 — it is
-jumping a gap — and steering returns 0.300 s after the landing. So a driver has
-nothing to do here but hold the throttle, and nothing they can do wrong.
+### There is one live tenth of a second inside the dead window, and it decides the run
 
-*An earlier version of this page put the lockout at 2.90 s. That number
-understated it by 0.750 s and did not cover what the video plainly shows.*
+Overwriting **exactly one tick** at a time and re-simulating — 561 arms across
+race −1.500 to 4.090 — gives not one boundary but four:
+
+| race | | |
+|---|---|---|
+| −1.500 … 2.970 | **inert** | all 448 ticks return exactly 13.984 |
+| **2.980 … 3.330** | **decisive** | 36 ticks — centre the wheel on any one and the run **DNFs** |
+| 3.340 … 3.620 | **inert** | 29 ticks, identical again |
+| 3.630 → | live | steering returns for good |
+
+Now put the car's own ground-contact flag beside it: **True at 2.950, False from
+3.000 to 3.300, True again at 3.350.** The live window *is* the airborne window,
+to the tick.
+
+The road here is a `SpecialNoSteering` block, and it suppresses the **ground**
+steering channel — but only while the wheels are on it. The car jumps a gap at
+3.000, and for those 0.35 s in the air the axis is live as **air control**, where
+every tick of it is load-bearing. It lands at 3.350 back on the same road, goes
+inert for another 0.29 s, and only runs off the end of that road at 3.630.
+
+So the honest statement is two statements, and they have different answers:
+
+- **the car does not respond** — true from 2.270 all the way to 3.650;
+- **the input does nothing** — true only to 2.970. For 0.35 s after that it is
+  doing the most important work in the sector, as air control on a car whose yaw
+  is flat at −1.5708 ± 0.0001 the whole time.
+
+That is why holding full lock through here is not a wasted input: it is what
+sets the car up in the air, and centring the wheel for any single tick of it
+loses the run outright.
+
+*An earlier version of this page put the lockout at 2.90 s and said that after
+the cannon the car is ballistic, with steering unable to move it. The first was
+0.080 s out. The second is wrong: forcing the wheel from 8.600 to the line costs
+**+1.031 s** at full right and **+2.379 s** at full left, and centring it does
+not finish at all.*
 
 ## How forgiving it is
 
