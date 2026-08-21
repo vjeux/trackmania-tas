@@ -2,6 +2,21 @@
 
 **Snowcarmc free 42** — TAS **18.690** (−21.384) | AT 40.074 | WR 18.810 by Roquett
 
+https://github.com/user-attachments/assets/d6fc2ce8-70b3-423b-bc3e-67681e44b804
+
+**Two snow cars, 0.120 apart, and the difference is only visible in the
+corners.** Both runs are on screen; the camera follows Roquett's record. On the
+straights the cars are inside one another — separation over the whole run is
+**mean 1.02 m** — and then at 10.3 s, 14.4 s and 16.5 s they come apart into two
+distinct cars, each on its own line through the turn, before rejoining. The
+widest they ever get is **4.28 m, and it happens at 18.650**, in the last tenth
+of the run: the gap does not exist until the end, and then it is the result.
+
+This is the whole field's problem in one picture. All 63 recorded runs drive the
+same line to a **2.56 m RMS lateral spread**, with **not one brake input**
+anywhere in any of them, so nobody wins this map by finding a different route.
+The 120 ms come from where the two cars are *not quite* the same in the corners.
+
 **TMX [156451](https://trackmania.exchange/mapshow/156451)** · uid `7jgWLFiAFRQ09bAnRA6DeGFnm_e` · by **Bapdada**, 2024-02-23 · snow car
 
 | | time |
