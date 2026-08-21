@@ -663,3 +663,38 @@ settle, before running it, is what stopped that number being read as evidence.
 > **"We have not tested it" and "we tested it and found nothing" are different
 > claims.** Half of tonight's false negatives came from a tool reporting the
 > second while only entitled to the first.
+
+## An instrument that was gone, reporting
+
+A corpus sweep returned `NONE` for 15 of 31 files — including all eleven on a map
+whose files had been read as `Ghost:TAS` forty-five minutes earlier and filmed
+from. The game had crashed. **A dead game answers every import with no track, and
+`NONE` looks exactly like a finding.**
+
+Fixed rather than noted. The reader now refuses to start unless the game answers
+`/ping`, and if a file comes back nameless it **re-checks liveness and aborts
+instead of writing the row**:
+
+```
+nickcheck: the game is not answering /ping -- refusing to score files against a dead instrument
+nickcheck: the game died during <file> -- aborting rather than recording NONE
+```
+
+**The general form, and it is the last of the night's dozen:** every failed check
+tonight reported on its own state while appearing to report on the world. This one
+reported on its own *existence*. A check that cannot tell "the answer is no" from
+"I am not running" will fill a table with confident absences.
+
+> **An instrument must be able to say it is not there.** Liveness is a
+> precondition of a verdict, not a footnote to one.
+
+## `238835/NORETRY_347003_watchable` imports as `Ghost:vjeux`
+
+Not a stranger's name — it is the project owner's own account. So it is not the
+container defect this file's neighbours had, and nothing about the run is in
+question.
+
+But it is not `TAS` either, and a clip from it would put a personal identity on
+screen where every other clip puts the project's. **Left as-is and recorded here
+rather than repaired**, because unlike a donor's login this one may be entirely
+intended, and a repair would be us deciding that for him.
