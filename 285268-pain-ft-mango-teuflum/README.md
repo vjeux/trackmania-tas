@@ -45,11 +45,21 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 |---|---|---|---|---|
 | **TAS** | **49.275** | **−0.007** | −0.171 | analog |
 | TAS, independent tape | 49.275 | −0.007 | −0.171 | analog |
-| TAS, earlier | 49.278 | −0.004 | −0.168 | analog |
+| ~~TAS, earlier — 49.278~~ | *withdrawn as a separate row* | | | |
 | **keyboard** | **49.475** | +0.193 | +0.029 | 3 steer values, 59 changes |
 | Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
 | Human WR — Ssnake01 | 49.291 | +0.009 | — | **pure keyboard** |
 | Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
+
+> **The 49.278 was not a separate run.** A near-identity sweep found it and the
+> 49.275 sharing **903 consecutive samples within a millimetre and the same input
+> tape** — one run listed twice, three thousandths apart. Both times are real and
+> both re-simulate; what was wrong was presenting them as two attacks on the map.
+>
+> This page's own warning above — *decode both and compare their sample-CSV
+> md5s* — was written about filming two cars. It applies to a results table just
+> as much: **two rows are not two runs until something has checked.**
+
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**
 · Stadium Ice · 10 sectors, 49 seconds · **163 recorded runs**.

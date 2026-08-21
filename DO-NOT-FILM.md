@@ -1815,3 +1815,54 @@ as a search branching late off one parent produces.
 > branch from a copy.** A band that fired only on copies would be a band tuned to
 > the answers already known.
 
+
+### The corpus sweep: 355 flagged pairs, and the input-tape column does the work
+
+Per-map, ours against every human recording and against each other, every row
+carrying the input-tape md5:
+
+```
+355 flagged pairs
+ 50  SAME-TAPE        the same run re-encoded — a copy
+305  different-tapes  two runs sharing a prefix — a branch
+```
+
+**Eight SAME-TAPE pairs involve a human recording, and only one is new:**
+
+| | samples | status |
+|---|---|---|
+| 199100 `51_TAS_47483_clean` vs `91_HUMAN_uelen_47838` | 802 | **the one the exact test missed** |
+| 227654 `HUMAN_WR_retries_cut` vs five `TAS_*` | 364–365 | already withdrawn |
+| 279218 `TAS_5345_starttrick` vs `HUMAN_r001_5355` | 112 | already withdrawn |
+| 145875 `90_WR_xeap` vs `91_HUMAN_xeap` | 127 | one download staged twice under two names |
+
+The already-withdrawn ones are whole-file copies, which equality **can** see. The
+new tool earned itself on exactly one file — the one that motivated it.
+
+**And one entry that was two rows of one run:** `285268/05_TAS_49278` against
+`50_TAS_49275_regen` — **903 consecutive samples within a millimetre, same input
+tape.** Two published times, 49.278 and 49.275, three thousandths apart, from one
+run. Both are real; presenting them as two attacks on the map was not. The 49.278
+row is withdrawn from that page's table.
+
+That page had **already written the warning**, about filming two cars:
+
+> *Decode both and compare their sample-CSV md5s. A separation of zero and a
+> separation you cannot see produce the same verdict.*
+
+It applies to a results table exactly as much. **Two rows are not two runs until
+something has checked.**
+
+### The 305 branches, and where they concentrate
+
+228607 with 79, 286279 with 46, 203330 with 36, 238835 with 28 — precisely where
+a search branched late off one parent. **228607's 79 is the family behind four
+live clips**: different input tapes, agreeing for the first **18.2 s of a 20 s
+run** and differing only in the last two. Nothing about those times or that
+driving is in question; what the page must not imply is four independent attacks
+on the map.
+
+Both tools ship with their calibration in the header comment, and the negative
+control is a genuinely close pairing (270053 against AffiTM, 0.48 m apart at its
+widest) rather than a far-apart one — **a band that only clears easy negatives
+proves nothing.**
