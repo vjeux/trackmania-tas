@@ -35,7 +35,8 @@
 # Also reported: last sample vs declared race time, because a record can stop
 # SHORT of the line -- the opposite defect, and one no check was looking for.
 set -u
-cd /mnt/c/Users/vjeux/tj || exit 1
+R="$HOME/trackmania-tas/tools/tmtraj"; [ -x "$R/target/release/tmtrajcheck" ] || { R=/mnt/c/Users/vjeux/tj; echo "[warn] using the STALE toolkit at $R -- build tools/tmtraj" >&2; }
+cd "$R" || exit 1
 TJ=./target/release
 REPO=/tmp/repo
 

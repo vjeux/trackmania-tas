@@ -12,7 +12,8 @@
 # corpus instead of one file at a time.
 #
 # RUNS ON THE RENDER BOX: the scan walks a checkout of this repo at /tmp/repo.
-cd /mnt/c/Users/vjeux/tj || exit 1
+R="$HOME/trackmania-tas/tools/tmtraj"; [ -x "$R/target/release/tmtrajcheck" ] || { R=/mnt/c/Users/vjeux/tj; echo "[warn] using the STALE toolkit at $R -- build tools/tmtraj" >&2; }
+cd "$R" || exit 1
 # THE OPPOSITE OF A TAIL: a record that stops BEFORE the line. 126859's
 # published files end 95 ms short of their declared race time, so the finish
 # crossing is not in the record and a clip cannot show it. Scan every published

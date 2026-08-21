@@ -61,7 +61,8 @@
 #   A map with no human recording cannot be tested this way at all.
 #   NO-HUMAN-REFERENCE means UNTESTED. It does not mean clean.
 set -u
-TJ=/mnt/c/Users/vjeux/tj/target/release
+TJ="$HOME/trackmania-tas/tools/tmtraj/target/release"
+[ -x "$TJ/tmtrajcheck" ] || { TJ=/mnt/c/Users/vjeux/tj/target/release; echo "[warn] using the STALE toolkit at $TJ -- build tools/tmtraj" >&2; }
 REPO=/tmp/repo
 V=/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Replays/v
 DIVERGE_M=5.0

@@ -18,7 +18,8 @@
 # Full scan: does ANY audit verdict rest on a truncated comparison?
 # A CLEAN verdict from a comparison that stopped after 3 samples is not a
 # verdict at all -- it is the tool falling silent and the caller hearing "fine".
-cd /mnt/c/Users/vjeux/tj || exit 1
+R="$HOME/trackmania-tas/tools/tmtraj"; [ -x "$R/target/release/tmtrajcheck" ] || { R=/mnt/c/Users/vjeux/tj; echo "[warn] using the STALE toolkit at $R -- build tools/tmtraj" >&2; }
+cd "$R" || exit 1
 TJ=./target/release
 REPO=/tmp/repo
 is_ref(){ echo "$1" | grep -Eqi 'wr|human|rank|author'; }
