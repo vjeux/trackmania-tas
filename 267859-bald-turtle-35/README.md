@@ -4,6 +4,10 @@
 the fast runs present it, and stop chasing the approach — at the final contact
 every radian of roll away from the fast presentation costs about 1.8 s.**
 
+**bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.169 by Schmaniol
+
+https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | **TAS 10.759 — the record** | **10.759** | **−0.009** | **−0.410** |
