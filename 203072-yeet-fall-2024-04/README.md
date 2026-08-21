@@ -4,7 +4,7 @@
 where it goes — apex at 82 m and spend the boost going forwards, not at 99 m and
 spend a second and a half coming back down.**
 
-**Video — both cars at once:** <https://pxl.cl/cvxnt> — our keyboard flight **10.743** against the human world record **12.083** (Bonobo.e).
+**Video — both cars at once:** <https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/203072-keyboard-10743-vs-wr-12083.mp4> — our keyboard flight **10.743** against the human world record **12.083** (Bonobo.e).
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

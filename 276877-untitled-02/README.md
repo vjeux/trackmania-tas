@@ -15,7 +15,7 @@ is spent airborne, riding the lattice's own launches rather than driving it.**
 TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 **DugonGOD** · **0 recorded runs**.
 
-Video of the run: <https://pxl.cl/cvsgF>
+Video of the run: <https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/276877-tas-8898-author-time-31399.mp4>
 
 ## What is going on here
 
