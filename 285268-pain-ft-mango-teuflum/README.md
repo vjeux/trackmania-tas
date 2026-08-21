@@ -7,17 +7,42 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
 **Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
-> ### ⚠️ No video — both clips withdrawn
->
-> **All eight of our tapes on this map carry a human's trajectory**, seven of
-> them burntbagels' 49.446 (sample-CSV md5 `12333c2541b62c9b5a854d1950b35050`,
-> the same as his downloaded `rank001_49446`) and the keyboard 49.475 Ssnake01's
-> 49.491 (`f4639ab2917031c2e6d69efa0e107ee4`). So the solo clip was burntbagels'
-> car, and the side-by-side captioned "our 49.475 against Ssnake01's 49.491" was
-> Ssnake01 against Ssnake01. **The times below stand** — every tape re-simulates
-> on the game's own oracle to the millisecond in its name; the inputs and the
-> results are ours, and it is the recording of how the car was driven that is
-> wrong. Replacement clips will be filmed from regenerated tapes.
+https://github.com/user-attachments/assets/f98396d1-1d74-4788-beab-86ccc1cd81e9
+
+**Our 49.275 and Ssnake01's world record, both in one camera, shot on our car —
+and this time they really are two cars.** They separate by **12.88 m** at the
+widest, mean **4.02 m**, with **842 of 986 samples** in the band where a chase
+camera shows two distinct vehicles. At the flag ours is clear of his by about a
+car's length.
+
+Filmed from `replays/TAS_49275_regenerated.Ghost.Gbx`, whose record was
+generated from our own input tape rather than patched, so the trajectory on
+screen is the one our inputs produce. The check that matters here, run against
+the file actually on screen:
+
+| pair | closest approach | longest run within 1 mm |
+|---|---|---|
+| **this file** vs Ssnake01 49.291 | 0.0035 m | **0** |
+| **this file** vs burntbagels 49.446 | 0.0035 m | **0** |
+| **this file** vs Ssnake01's 49.491 | 0.0035 m | **0** |
+| *control:* the withdrawn `TAS_49275` vs burntbagels | 0.000072 m | **858** |
+| *control:* two unrelated humans | 0.000000 m | 3 |
+
+The withdrawn tape reproduces its known copy at 858 consecutive samples; the new
+one touches nothing, on a map whose own human-versus-human floor is 3. Gate
+`PUBLISHABLE`, 0 failures and 0 warnings; container carries five copies of its
+own 49.275 and none of 49.291, 49.446, 49.491, 49.282 or 49.278; imports as
+`Ghost:TAS`; spawn attitude |dot| 1.0000 against the human recording.
+
+*Two notes on the checking, since this page exists because a check missed
+something.* The file's provenance manifest certifies it clean against five human
+recordings — but they are ranks 1/2/3/5/13 of an **older** board, and Ssnake01's
+49.291 is newer than all of them, so **the opponent in this clip is not among the
+files the certificate covers**. The comparison above was run separately for that
+reason. And `nearident`, the tool for exactly this question, returned
+`overlap=0` with a mean of 1.8e308 — it compared **nothing**, because the two
+recordings' sample-time bases differ; its `INDEPENDENT` verdict on this pairing
+is vacuous. The table above is measured from `sep`, which aligns on race time.
 
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
