@@ -491,3 +491,48 @@ Third instance of this shape tonight, and by far the worst ratio — the others
 were four-of-five agreeing wrongly, and three deltas agreeing at the same wrong
 distance. On that map a regeneration needs **~24 attempts and a ranker**, not six
 and a vote.
+
+## Repairing a container: two paths, and picking the wrong one destroys the file
+
+**There are two repair paths and the choice is not cosmetic.**
+
+- **header user data present** — the nickname, skin path and storage URL live in
+  the header block. Edit each string in place, then adjust the header-size u32 at
+  **offset 77** by the total delta.
+- **header user data size 0** — everything is in the body (one file had them at
+  `body@150 / 242 / 340 / 10374`). Use the body path; no size adjustment.
+
+Running the **header** path on a file whose header user data is empty misreads the
+body as a chunk table, grows it 5263 → 10436 bytes and **overwrites the map UID**.
+Silent, and fatal.
+
+And in either case, edit strings **in place** — never transplant a clean twin's
+whole block. Two containers on different maps had different field layouts (an
+extra skin blob, a second skin path), so a wholesale copy removed fields the
+target needed and the server **dropped the file from the batch without a word**.
+
+## A repair tool reports its actions, not its coverage
+
+An anonymisation pass was given the zone as `World|World|Sweden` when the file
+said `World|Europe|Sweden`. It reported **"2 strings replaced"**, looked entirely
+successful, and left the real zone string sitting in the file. Nothing in its
+output suggested anything had been missed — **it only replaces what you name.**
+
+> **After any anonymisation pass, grep the output for the donor's strings.** The
+> tool tells you what it did; only a scan tells you what remains.
+
+Same shape as a manifest check comparing two numbers from the command line, and as
+`curl` succeeding perfectly at downloading a 404: **a tool doing exactly the
+subset of the job it was told about, and reporting success.**
+
+## The four combinations, all with real instances
+
+| declared-time census | container identity | example |
+|---|---|---|
+| foreign | foreign | 199100's two arcs — time *and* nickname both the donor's |
+| **clean** | **foreign** | 208024 — a bit-patch fixed the time sites and nothing else |
+| partially rewritten | clean | 126859's five — half the time sites, `Ghost:TAS` throughout |
+| clean | clean | the 137 published files that passed both |
+
+**Neither reader implies the other, in either direction.** That is now demonstrated
+rather than argued, and it is why a clip needs both plus the residual grep.
