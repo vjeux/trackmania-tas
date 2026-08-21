@@ -368,3 +368,56 @@ before it is read, so a verification loop reported `rc=0` for three known-bad
 files. Documenting a trap does not stop anyone falling into it. **Capturing
 `rc=$?` on its own line does.** Prefer the fix that removes the possibility over
 the note that warns about it — which is this file's own thesis applied to itself.
+
+## Partially rewritten containers: a file that carries two answers at once
+
+A census over all 173 published ghosts found a class nobody had named. The
+declared time lives at **five or six sites**, and eighteen files have only *some*
+of them rewritten — so the container holds **both** its own time and a human's,
+and **which one the game reads depends on which site it reads.**
+
+```
+126859  ALPHABET153_23545 / TAS_23416 / TAS_23462_v1 / THIN_318ev_23508
+                                    2x own + 4x 27.609  (TheWoreL, rank 13)
+126859  KEYBOARD_24164              2x own + 4x 24.342  (zetos.)
+286279  x9 files                    4x own + 1x 441.002 (Bald_tm)
+238835  NORETRY_347003 / _407463    4x own + 2x 1964.933 (Quantiks)
+228607  AUTHOR_LAP_20258            5x own + 2x 24.902  (Falco_TM_)
+227654  TAS_59912_watchable         4x own + 1x 147.031 (ailiei.)
+```
+
+**A census that asks only "does it contain a foreign time" calls these foreign; one
+that asks only "does it contain its own" calls them clean. Both single questions
+are wrong** — ask both and compare the counts.
+
+126859 is the clearest case and it matches that map's telemetry audit exactly: the
+donor is **TheWoreL's rank-13 ghost**, chosen originally because "the fastest
+approach to the final tower belongs to rank 13". Same donor, two different fields,
+one of them half-cleaned.
+
+### Three outright foreign, one of them new
+
+`146612/JUMP_cp5_32702_v1` carries **5× 40.226 — Mr.Compiler's, rank 2, not the
+world record.** Anyone checking against the WR alone would have missed it.
+`279218/TAS_5345_starttrick` (already withdrawn) and
+`286279/AUTHOR_AT_355181_extracted_from_map` are the others.
+
+### The two axes are independent, and this is the proof
+
+`227654/TAS_57573` is a **whole-file telemetry copy** of ailiei. — and its
+**container is clean**. `126859/TAS_23416` has clean-ish telemetry and a
+**half-rewritten container**. So *whose motion is recorded* and *whose file it is*
+are orthogonal. **A file can fail either one independently, and neither reader
+implies the other.**
+
+### Caveats that keep this table honest
+
+- The "own time" is taken **from the filename**, which is an assumption. Right
+  often enough to be useful, wrong sometimes. Confirm against the oracle before
+  withdrawing anything.
+- It reads the declared time **as a u32 only** — it cannot see the nickname or the
+  login, so a clean census is not a clearance.
+- The "neither" bucket contains parser artefacts: `._TAS_12759` and two siblings
+  are macOS resource forks, not ghosts. The real content there is **165922's
+  nine**, which contain no copy of any time at all — consistent with their having
+  had no decodable record.
