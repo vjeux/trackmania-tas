@@ -799,3 +799,77 @@ each miss, liveness checked between attempts. A genuine refusal now reads
 for the malformed skin path documented above — an independent explanation from an
 independent reader, and a sweep of all 174 published files found no second
 specimen.
+
+## Two repairs, no file gets both — the record span and the declared time are separate operations
+
+A **sixth** container field, found from the 227654 rows: the **record span**, the
+container's statement of how long the recording runs (`tmtraj decode` prints it
+as `start 0 end N`). It is independent of the declared time and of the six
+declared-time sites.
+
+On 227654 all eight of our tapes **declare their own time correctly at every
+site and still carry ailiei.'s 147.030 span.** Both readings are true; they are
+different fields.
+
+**Population: 45 of 165 published files, across 12 maps.** Worst ratios:
+
+| map | file | declared | span | ratio |
+|---|---|---|---|---|
+| 279218 | `best_pC_5348_32098` | 5.348 | **566.080** | **106×** |
+| 238835 | `TAS_262907` | 262.907 | 1964.930 | 7.5× |
+| 284238 | `TAS_97325` | 97.325 | 440.230 | 4.5× |
+| 227654 | ×8 | ~57.5 | 147.030 | 2.6× |
+
+### The shape of the defect, from one run under two treatments
+
+238835 holds 347.003 twice, and the two copies are wrong in **opposite** ways:
+
+| | `TAS_347003_noretry_v4` | `NORETRY_347003_watchable` |
+|---|---|---|
+| span end | **1964930** (Quantiks') | **346970** ✅ own |
+| declared-time sites | **5× own, 0 foreign** ✅ | 4× own + **2× 1964933** ❌ |
+| oracle | 347003 | 347003 |
+
+And the before/after pair that was supposed to demonstrate the fix instead
+demonstrated its absence: `50_TAS_239133_cut` halves the samples of its uncut
+sibling (9114 → 4783) and **leaves the span at Quantiks' 1964.930**.
+
+> **Cutting samples and fixing the span are two different operations, and no
+> file in the corpus has had both.** A repair pass must do both and then re-read
+> both fields — fixing one and reporting success is how the corpus got into this
+> state.
+
+### What was NOT claimed, and why the restraint mattered
+
+The tempting inference — *the span is the clip's length, so a 566-second
+container films 9½ minutes for a 5-second run* — was **withdrawn before it was
+written down**. What is actually measured is span ↔ which treatment was applied.
+Span ↔ rendered duration is untested.
+
+Measured instead, on the artefacts the audience actually has: **all 30 live clips
+fetched logged-out, all playable, none padded** — longest 101.800 (197047) and
+96.300 (210218), both genuinely long maps; 279218's clip is 5.400 s. That bounds
+the damage to zero *today* without answering the question, because that clip came
+from `KEYBOARD_5352_11events`, whose span is correct.
+
+> **A bound on the damage is not a test of the mechanism.** Thirty clean
+> measurements said nothing about the defect, because none of the thirty carried
+> it.
+
+The pair that would settle it is on 279218, which holds both classes in one
+folder: `KEYBOARD_5350_equals_AT` (span 566.080) against
+`KEYBOARD_5352_11events` (span correct, **and the file behind the live clip, so
+the control's expected value is already measured on the published artefact**).
+Measure duration, **frame count**, and **wall-clock render time** — a renderer
+that truncates output to the declared time while walking the whole container
+shows the defect in minutes spent rather than in the file it writes.
+
+### A third and fourth field, still unreconciled
+
+- **Block-end is not a proxy for span**: the game's imported block end agrees
+  with the span on 227654 and disagrees on 238835. Unresolved; do not substitute
+  one for the other.
+- `TAS_239133`'s **checkpoint list ends at 462982** — 238835's *author* time,
+  neither its own nor the donor's. Three fields, three answers, in a file that
+  validates perfectly on the oracle. No reader we own reports the checkpoint
+  list.
