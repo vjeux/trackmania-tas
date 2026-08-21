@@ -180,8 +180,8 @@ completely different readout path agrees to **0.48 mm**.
 
 | file | what |
 |---|---|
-| `replays/TAS_12759.Ghost.Gbx` | the run |
-| `inputs/TAS_12759.inputs.csv` | per-tick inputs |
+| ~~`replays/TAS_12759.Ghost.Gbx`~~ | **withdrawn, and not yet replaced here.** The time stands and the clip above is a re-shoot from a rebuilt tape — login `TAS`, no account id, trajectory 256 of 256 positions bit-identical to the withdrawn file. That rebuilt tape has not been committed back to this page yet. The file that *was* here reported a stranger's account, as the banner above describes. |
+| `inputs/TAS_12759.inputs.csv` | per-tick inputs — **the run itself, unaffected**: this is what the oracle validates at 12.759 |
 
 ## The route in the video does not convert, and that is now measured
 

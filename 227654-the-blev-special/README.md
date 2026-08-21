@@ -132,8 +132,9 @@ touch the input that decides it.
 
 | file | what |
 |---|---|
-| `replays/TAS_57493.Ghost.Gbx` | **the fastest run, 0.360 under the author time** |
-| `replays/TAS_59912_watchable.Ghost.Gbx` | the best keyboard-only run, and the easiest one to watch |
-| `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed |
-| `replays/TAS_57573.Ghost.Gbx` | the first tape under the author time |
-| `replays/TAS_57498.Ghost.Gbx`, `TAS_57503`, `TAS_57518`, `TAS_57537`, `TAS_57577` | the rest of the family, 57.498 to 57.577 |
+| ~~`replays/TAS_57493.Ghost.Gbx`~~ | **withdrawn** — the fastest run, 0.360 under the author time, but the file recorded 365 of 365 of ailiei.'s samples. The time stands; the recording was his. |
+| ~~`replays/TAS_59912_watchable.Ghost.Gbx`~~ | **withdrawn**, same reason — the best keyboard-only run and the easiest to watch, in a file that was a whole-file copy of his telemetry. |
+| `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed — **kept, because it is published as his recording** and that is what it is |
+| ~~`replays/TAS_57573.Ghost.Gbx`~~ | **withdrawn** — the first tape under the author time, same whole-file match |
+| ~~`replays/TAS_57498.Ghost.Gbx`~~, ~~`TAS_57503`~~ | **withdrawn** — 57.498 a whole-file copy, 57.503 a splice at 364 of 365 |
+| `replays/TAS_57518.Ghost.Gbx`, `TAS_57537`, `TAS_57577` | the rest of the family, still here |

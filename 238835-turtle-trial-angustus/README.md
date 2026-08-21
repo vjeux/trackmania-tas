@@ -163,8 +163,9 @@ their own clean 246 s is entirely how many attempts they needed.
 
 | file | what |
 |---|---|
-| `replays/TAS_239133.Ghost.Gbx` | **the result — 239.133**, the author's own lap with every failed attempt removed and then tightened |
+| ~~`replays/TAS_239133.Ghost.Gbx`~~ | **withdrawn** — the result, 239.133, and the time stands; the *file* was a whole-file match to Quantiks' recording, 9114 of 9114 samples |
 | `replays/AUTHORCUT_246602_watchable.Ghost.Gbx` | **the watchable one** — loads in the game and shows the author's own driving with their fourteen failures cut out, no TAS driving at all |
-| `replays/TAS_262907.Ghost.Gbx` | the earlier line, built from the human record instead of the author's |
-| `replays/TAS_347003_noretry_v4.Ghost.Gbx` | an earlier, more conservative cut |
-| `replays/TAS_268554_v6.Ghost.Gbx` | the stage before the last |
+| ~~`replays/TAS_262907.Ghost.Gbx`~~ | **withdrawn**, same reason — the earlier line, built from the human record instead of the author's |
+| ~~`replays/TAS_347003_noretry_v4.Ghost.Gbx`~~ | **withdrawn**, same reason — an earlier, more conservative cut |
+| ~~`replays/TAS_268554_v6.Ghost.Gbx`~~ | **withdrawn**, same reason — the stage before the last |
+| `replays/NORETRY_347003_watchable.Ghost.Gbx`, `NORETRY_407463_watchable` | kept, and repaired — see the second banner above |

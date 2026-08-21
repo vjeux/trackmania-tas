@@ -195,5 +195,5 @@ human's video shows too.
 
 | file | what |
 |---|---|
-| `replays/TAS_8898.Ghost.Gbx` | the run |
-| `inputs/TAS_8898.inputs.csv` | per-tick inputs |
+| ~~`replays/TAS_8898.Ghost.Gbx`~~ | **withdrawn.** It reported the same stranger's account as its sibling on [untitled 01](../276874-untitled-01) — account `4c3537f3-…`, a real player. The time stands and re-simulates on the oracle; the *file* was the carrier's. A rebuilt tape is owed here. |
+| `inputs/TAS_8898.inputs.csv` | per-tick inputs — **the run itself, unaffected**: this is what the oracle validates at 8.898 |
