@@ -4,12 +4,26 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
-**Video: withdrawn.** The side-by-side clip published here showed a second car that
-clips through the ground and rotates wrongly. The file used as the opponent was
-`HUMANWR_plus_early_flick_6342` — which is **not a human recording**: it is the
-world record's tape with one input changed, i.e. a run of ours, and it carries
-its carrier's telemetry rather than its own. A replacement will be filmed against
-a genuine downloaded recording, or this page will carry a single-car clip.
+**Video: withdrawn, and this map cannot currently be filmed at all.** The
+side-by-side clip published here showed a second car clipping through the ground
+and rotating wrongly. Two separate faults sit behind it.
+
+The file used as the opponent was `HUMANWR_plus_early_flick_6342`, which is
+**not a human recording** — it is the world record's tape with one input
+changed, a run of ours. It belongs in the table below; it does not belong in a
+clip captioned "against the human world record". The caption also gave the
+human's time as 6.342; the real world record is **xeap-.- at 6.346**.
+
+But the deeper fault is not ours. Every recording on this map — all six of our
+tapes **and Nadeo's own downloaded rank-1 ghost** — reports the same dead wheel
+telemetry: **31.5 % ground contact and zero usable rolling steps over a 495 m
+path**. A car that drove half a kilometre on a road cannot have wheels that
+never turn. That is a property of this map's recordings rather than of anything
+we generated, and until it is understood **no clip of this map, by us or from a
+download, will render correctly.**
+
+The runs and the times are unaffected: 6.322, 6.323 and 6.342 all validate on
+the untouched map.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
