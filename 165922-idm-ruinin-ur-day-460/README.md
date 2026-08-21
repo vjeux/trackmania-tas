@@ -27,13 +27,25 @@ suspension, turbo, ice, dirt and wetness**. So the line is ours and some of the
 effects are not, and the manifests say which is which rather than leaving you to
 guess.
 
-They were cleared by tests that *identify* rather than compare — first-sample
-spawn against a downloaded human recording (9/9), travel against the published
-files' zero (9/9), gate PUBLISHABLE (9/9), alignment-free clean at every lag, and
-35 cross-file pairs with zero refusals, i.e. **nine distinct runs** rather than
-one trajectory under nine names. They were deliberately **not** cleared on
-two regenerations agreeing with each other: on another map four of five
-regenerations agreed and all four were wrong.
+They were cleared by tests that *identify* rather than compare, against **four
+human recordings** — the historic donor plus the board's current ranks 1, 2 and 3
+— in **36 file-reference comparisons, none of them a copy.**
+
+> Each of these nine follows the map's only historic human recording —
+> **wschseng's 8790.769**, the ghost every one of them was seeded on — to within
+> **0.000563 m**, the client-versus-server rounding floor, for the first
+> **2.180 s**. At 2.180 s their inputs stop being his and their trajectories
+> depart, reaching **over 1100 m** of separation by the end of the run, and
+> **2608–2682 m** measured against the reference's full span. Against the three
+> live records — banktm 16.870, Miota.TM 18.953, Nanachi97 42.677 — they share no
+> trajectory at all.
+>
+> Sub-millimetre agreement before that point is not a defect. It is what a
+> correct regeneration looks like when it replays a shared opening: the floor is
+> the floor. **What identifies a stolen tape is that the floor never grows.**
+
+They were deliberately **not** cleared on two regenerations agreeing with each
+other: on another map four of five regenerations agreed and all four were wrong.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
@@ -47,7 +59,7 @@ regenerations agreed and all four were wrong.
 | Human world record — banktm | 16.870 | +1.227 | set 2026-08-20; our tape leads it by 1.653 |
 | The board's previous human record | 8790.769 | — | 2 h 26 m — see below |
 
-TMX map [165922](https://trackmania.exchange/maps/165922) · **two recorded runs** — for most of this page's life there was only one, a 2 h 26 m crawl; banktm set a real time of **16.870** on 2026-08-20.
+TMX map [165922](https://trackmania.exchange/maps/165922) · **seven recorded runs** — for most of this page's life there was one, a 2 h 26 m crawl; banktm set a real time of **16.870** on 2026-08-20, and the board now also holds Miota.TM at 18.953 and Nanachi97 at 42.677.
 
 ## The map in one paragraph
 
