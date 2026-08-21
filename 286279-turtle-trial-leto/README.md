@@ -3,6 +3,15 @@
 **Nobody on this map has ever needed to drive better — they needed to fail less.
 Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 
+
+> ### ⚠️ No video — every tape on this page is refused on the contact bytes
+>
+> `BEST_218812`, `KEYBOARD_218877` and `MINIMAL_219581` all fail the gate's
+> C3/C5/C6 contact checks: those bytes belong to the carrier, not to our run.
+> Here the human control convicts rather than exonerates — the human world
+> record passes the same checks. The times are unaffected. See
+> [`DO-NOT-FILM.md`](../DO-NOT-FILM.md).
+
 | tape | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|
 | [`BEST_218812`](replays/BEST_218812.Ghost.Gbx) | **218.812** | **−136.369** | −222.190 | 3 values — keyboard |

@@ -4,6 +4,20 @@
 cross it sideways — go through the last checkpoint, then scrub across the line
 ten metres later with the car turned across its own direction of travel.**
 
+
+> ### ⚠️ No video — `TAS_20237` cannot be filmed
+>
+> The result stands; the recording does not. **The file is KappaRiley's
+> container, and 73 % of its trajectory is his driving** — within 1 mm for the
+> first 14.720 s of a 20.237 s run, then a clean departure to 291 m. It carries
+> his record span, his sample-time base and his checkpoint splits, where the
+> other two human downloads carry their own. A clip would be 14.7 seconds of the
+> world record captioned as ours.
+>
+> The 20.237 itself is unaffected: the oracle validates the input tape, and the
+> tape is not what was inherited. Five separate readers passed this file —
+> none of them reads the three fields that carry the answer. The full account,
+> and the repair, are in [`DO-NOT-FILM.md`](../DO-NOT-FILM.md).
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | **TAS** — [`TAS_20237`](replays/TAS_20237.Ghost.Gbx) | **20.237** | **−0.318** | −2.400 |

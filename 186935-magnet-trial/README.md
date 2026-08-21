@@ -4,6 +4,15 @@
 need to fall off it less. Their gap to the author time is 34.513 s, and eight of
 their failed attempts each lasted longer than that.**
 
+
+> ### ⚠️ No video — there is no car in the file
+>
+> `BEST_793893` carries no `CSceneVehicleVis` entity at all: it satisfies a
+> finiteness check vacuously, and there is nothing to render. The other two
+> tapes on this page are not substitutes. The 793.893 is unaffected — it is a
+> property of the input tape, which the oracle validates. See
+> [`DO-NOT-FILM.md`](../DO-NOT-FILM.md).
+
 | run | time | vs author time |
 |---|---|---|
 | **best** | **793.893** | **−1746.748 (−68.8 %)** |
