@@ -17,7 +17,7 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 **untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
 
-> ### ⚠️ Video withdrawn — the tape reports another player's identity
+> ### Video withdrawn, then partly replaced — the tape had reported another player's identity
 >
 > The clip that was here has been taken down. It played, and there is nothing
 > wrong with the driving in it: the run is ours, the time re-simulates on the
@@ -41,6 +41,24 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 >
 > The run stands and the time stands. A replacement clip will be filmed from a
 > tape rebuilt on a clean carrier.
+>
+> **Replaced 2026-08-21**, and note the clip below is a **different tape**: the
+> withdrawn one was the 8.898, and what has been rebuilt on a clean carrier so
+> far is the **9.415**, the earlier rung of the same lattice skip. Login `TAS`,
+> no account id, the donor's custom livery and its download URL replaced,
+> trajectory 189 of 189 positions bit-identical to its own original, imports as
+> `Ghost:TAS`. **Ground contact and wheel rotation are still the carrier's** —
+> zeroing them would claim the car was airborne all run with wheels that never
+> turned — so the dirt and spark effects may be wrong while the path is ours.
+>
+> The split screen against Its_Cam.'s record was filmed from the 8.898 and came
+> down with it; it returns when that tape is rebuilt.
+
+**untitled 02** — TAS **9.415** (−21.984) | AT 31.399 | WR 14.959 by Its_Cam.
+
+https://github.com/user-attachments/assets/fb996518-80a2-4f6a-b200-3c26f7a01ce3
+
+*(The paragraph below describes the withdrawn split screen; it returns with the rebuilt 8.898 tape.)*
 
 **Somebody finally drove this map, and here is our run beside theirs.** Its_Cam.
 set the first human time here on 20 August 2026 — **14.959** — and took the
