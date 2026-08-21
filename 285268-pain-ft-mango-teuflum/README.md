@@ -7,13 +7,12 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
 **Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
-https://github.com/user-attachments/assets/cb6deb78-4e12-4de0-b9f3-4996eb2d41ef
-
-Both cars are on screen: our keyboard run against Ssnake01's rank-2 lap, sixteen milliseconds apart over forty-nine seconds.
-
-**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
-
 https://github.com/user-attachments/assets/eb3a201a-49e9-4511-8daf-04640f5e64c0
+
+And the two keyboard laps side by side — our 49.475 against Ssnake01's 49.491,
+the lap he has since improved to 49.291 and the world record:
+
+https://github.com/user-attachments/assets/cb6deb78-4e12-4de0-b9f3-4996eb2d41ef
 
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
@@ -22,8 +21,8 @@ https://github.com/user-attachments/assets/eb3a201a-49e9-4511-8daf-04640f5e64c0
 | TAS, earlier | 49.278 | −0.004 | −0.168 | analog |
 | **keyboard** | **49.475** | +0.193 | +0.029 | 3 steer values, 59 changes |
 | Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
-| Human WR — Ssnake01 | 49.291 | +0.164 | — | analog, 294 steer changes |
-| Ssnake01, rank 2 | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
+| Human WR — Ssnake01 | 49.291 | +0.009 | — | **pure keyboard** |
+| Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**
 · Stadium Ice · 10 sectors, 49 seconds · **163 recorded runs**.
@@ -44,7 +43,7 @@ Sector ranks within the top twenty (1 = fastest):
 | run | final | S1 | S2 | S3 | S4 | S5 | S6 | S7 | S8 | S9 | S10 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 burntbagels | 49.446 | 10 | 10 | 4 | 5 | 4 | 2 | 11 | 5 | 3 | **19** |
-| **2 Ssnake01 (kbd)** | 49.491 | 5 | 8 | **1** | **20** | 2 | **1** | 14 | **1** | 7 | **1** |
+| **Ssnake01 (kbd), the lap analysed below** | 49.491 | 5 | 8 | **1** | **20** | 2 | **1** | 14 | **1** | 7 | **1** |
 | 3 Tigu. | 49.535 | 12 | **1** | 10 | 10 | 10 | 4 | 5 | 8 | **1** | 3 |
 | 4 thgiN_ (kbd) | 49.541 | 6 | 5 | 12 | 16 | 3 | 5 | 2 | 6 | 11 | 5 |
 | 5 Jastastic000 | 49.634 | 8 | 3 | 6 | 3 | 7 | 6 | 4 | 18 | 12 | 9 |
@@ -52,15 +51,29 @@ Sector ranks within the top twenty (1 = fastest):
 | 7 Shikurima | 49.720 | 3 | 7 | 15 | 13 | **1** | 13 | 9 | 4 | 13 | 2 |
 | 13 Slidelock (author) | 50.140 | 14 | 17 | 11 | **1** | 17 | 16 | 13 | 17 | 6 | 10 |
 
-> **Ssnake01's rank-2 lap is pure keyboard, owns four of the ten sectors, and is
+> **Ssnake01's lap was pure keyboard, owned four of the ten sectors, and was
 > 20th of 20 in sector 4 — 4.745 against a top-20 median of 4.533. Give that
 > same lap a merely median sector 4 and it finishes in 49.279: under the author
 > time, on a keyboard, with 58 key presses.**
 
 Everybody else in the top twenty needs three or four sectors to improve.
-Ssnake01 needs one, and it is the one they are last in. (Sectors are not fully
-independent — a sector time is bought partly with entry speed from the one
+Ssnake01 needed one, and it was the one they were last in. (Sectors are not
+fully independent — a sector time is bought partly with entry speed from the one
 before — so this points at the slack, it does not predict a lap.)
+
+### He then went and collected it
+
+That paragraph was written when Ssnake01's lap was **49.491** and second on the
+board. **On 2026-08-20 he drove 49.291 and took the world record** — improving
+his own lap by 0.200, and landing **12 milliseconds** off the number the sector
+analysis said was sitting there for him.
+
+So the leaderboard now reads: **Ssnake01 49.291, burntbagels 49.446.** The
+author time is 49.282, and 49.291 is **9 ms over it** — so no human is under the
+author time on this map yet, on a keyboard or otherwise. The 49.279 above was
+never a run anybody drove; it is his own lap with one sector replaced by the
+field's median, and it stays on this page as what it was: a prediction, now
+tested.
 
 ## What the field is unanimously getting wrong
 
@@ -171,7 +184,7 @@ leaderboard.
 
 | file | what |
 |---|---|
-| `replays/HUMAN_rank2_keyboard_49491.Ghost.Gbx` | **Ssnake01's lap — the one that is one sector away** |
+| `replays/HUMAN_rank2_keyboard_49491.Ghost.Gbx` | **Ssnake01's 49.491 — the lap that was one sector away, before he took the record** |
 | `replays/KEYBOARD_49475.Ghost.Gbx` | **the drivable one** — that lap plus two key presses |
 | `replays/TAS_49275.Ghost.Gbx` | the fastest run |
 | `replays/TAS_49275_independent.Ghost.Gbx` | the same time reached independently — a byte-different tape |
