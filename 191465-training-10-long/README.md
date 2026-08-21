@@ -4,7 +4,7 @@
 metre tighter. That is the whole map — and it is enough to beat an author time
 856 people have chased, on a keyboard.**
 
-**Training 10 long** — TAS **13.071** (−0.010) | AT 13.081 | WR 13.081
+**Training 10 long** — TAS **13.071** (−0.009) | AT 13.080 | WR 13.081 by in-.-
 
 https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
 
