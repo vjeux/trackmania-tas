@@ -516,3 +516,47 @@ minutes earlier — which is how you tell the state from a bad map file.
 A liveness check that reads a return code passes cleanly against this state, the
 same way a dead game answers every import with `NONE`. The only reliable exit is
 a full restart with re-injection.
+
+## 20. An exact-equality contamination test is blind to a re-encoded copy
+
+`seplag` reports `DONOR-GRAFT` when two ghosts share **exactly zero** separation
+for a run of samples. On 199100 it reported `INDEPENDENT: no identical position
+at any lag` for a pair that is the same run:
+
+```
+sample-CSV md5   our 47.483        08bedfc0efdbcb7d2a048054910eae45
+                 uelen.'s 47.838   08bedfc0efdbcb7d2a048054910eae45   identical
+
+separation t < 40.000 s   800 samples   mean 0.000476 m   max 0.000906 m
+separation t >= 40.100 s  157 samples   mean 18.71 m      max 52.86 m
+```
+
+**Half a millimetre for 800 consecutive samples is not independence — it is a
+copy that has been through a float re-encode.** The exact test cannot see it,
+because a re-encode never reproduces the bits.
+
+This is the `sep {:.2}` bug from the other side. That one rounded real
+differences away and called distinct files identical; this one demands exact
+equality and calls one run two. **Both failed toward "clean", which is the
+direction that publishes.**
+
+A contamination test needs a **near-identity band** — positions within ~1 mm for
+N consecutive samples — not an equality. And the cheapest independent check is
+the one that settled it here: **compare the input tapes.** Two runs that were
+driven separately do not share a sample-CSV md5.
+
+## 21. Two ghosts in one frame beats two panes
+
+**A car leaving the frame is content, not a defect.** The project exists to show
+where our run diverges from the human record, and the moment the human stops
+keeping up is the thing a viewer came to see. A split screen hides exactly that:
+each car gets its own pane and its own scale, so neither is ever *behind*.
+
+Use a split screen only when one camera genuinely cannot show the run — 228607's
+356 m, 276877's 61 m with the human six seconds adrift, 208024's 335 m. **Not
+because the cars separated.**
+
+It also decides the camera target. Following **our** car makes the divergence
+read as the human falling behind, which is what happened. Following the
+longer-lived ghost keeps a car on screen past both finishes (trap 7) — that is
+worth it when the finish is the story, and not otherwise.
