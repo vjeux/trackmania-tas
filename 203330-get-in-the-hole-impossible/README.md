@@ -8,14 +8,29 @@ before the finish that costs the world record 490 km/h.**
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
+**Get in the hole (impossible)** — TAS **13.984** (−0.011) | AT 13.995 | WR 13.990 by in-.-
+
+https://github.com/user-attachments/assets/c8d613ce-fc26-41e7-b772-186d04369bbc
+
+**Both cars are in this one and you can see the difference.** Ours is magenta,
+in-.-'s world record is the dark car. Six thousandths of a second separate them
+on the clock, and yet they are **13.08 m apart at the widest point** of the run
+(mean 2.24 m) — the two laps are not the same lap at all, they simply arrive
+together. Watch the last three seconds: the two cars come down the corridor side
+by side, and ours is the one still carrying speed onto the finish ramp while the
+record's car settles.
+
+That is the 490 km/h step, made visible. The clock says these runs are
+equivalent; the picture says they are nothing alike.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
-| **TAS, keyboard, 12 inputs** | **13.986** | **−0.009** | **−0.032** | 12 change events |
-| TAS, keyboard, 31 inputs | 13.984 | −0.011 | −0.034 | 31 |
-| TAS, keyboard, 19 inputs | 13.985 | −0.010 | −0.033 | 19 |
-| TAS, unconstrained | 13.984 | −0.011 | −0.034 | 424 events, 192 steer values |
-| Author time | 13.995 | — | −0.023 | — |
-| Human WR — in-.- | 13.990 | +0.023 | — | 46 |
+| **TAS, keyboard, 12 inputs** | **13.986** | **−0.009** | **−0.004** | 12 change events |
+| TAS, keyboard, 31 inputs | 13.984 | −0.011 | −0.006 | 31 |
+| TAS, keyboard, 19 inputs | 13.985 | −0.010 | −0.005 | 19 |
+| TAS, unconstrained | 13.984 | −0.011 | −0.006 | 424 events, 192 steer values |
+| Author time | 13.995 | — | +0.005 | — |
+| Human WR — in-.- | 13.990 | −0.005 | — | 46 |
 
 TMX map [203330](https://trackmania.exchange/maps/203330) · author
 **EvenOliveTM.exe** · **only 5 recorded runs**.
