@@ -536,3 +536,43 @@ subset of the job it was told about, and reporting success.**
 
 **Neither reader implies the other, in either direction.** That is now demonstrated
 rather than argued, and it is why a clip needs both plus the residual grep.
+
+## A repair that made the file worse, and the control that caught it
+
+Five files were repaired for a one-tick timing error. **Three were improved. Two
+were pulled onto a human's trajectory.**
+
+| file | published | after the repair |
+|---|---|---|
+| `285268/TAS_49278` vs rank001 | 1 of 986 | **410 of 986** |
+| `285268/HUMAN_rank2_keyboard_49491` vs rank002 | 1 of 990 | **514 of 990** |
+| 270053 ×3 vs all five humans | 0–1 of 90 | **0 of 90** ✓ |
+
+**The control is what makes this a finding rather than an alarm.** Every
+unrepaired file on that map sits at 0 or 1 identical positions against either
+human — and **two genuine, unrelated human recordings score 2 of 989 against each
+other.** So 0–2 is the map's entire natural range, and the repairs land two orders
+of magnitude outside every control, including the human-versus-human one.
+
+**It is not the tail-overlap artefact** (unchanged with `--race`), and **it is not
+a splice**: the 410 identical samples arrive in **226 runs averaging under two
+samples**, scattered from 0.000 s to the finish and interleaved with
+non-identical samples throughout. A splice is long contiguous blocks. At 41 % of
+instants our car is exactly where the human was, and in between it is up to
+15.7 m away — the two records are being *mixed*, not copied.
+
+Best available reading: the tick shift changed which entity or memory copy the
+regeneration read, so it picks up an adjacent ghost part of the time. Unproven,
+and nobody guessed further. It happens on **both** files toward **different**
+humans, which argues it pulls in whatever ghost is nearby rather than one donor.
+
+### The one that would have been waved through
+
+`HUMAN_rank2_keyboard_49491` is published **as** that human's run. So 514 of 990
+identical positions reads as *more faithful* — and it is on the allowlist for
+exactly that reason. **The easiest of the five to approve was the one whose number
+should worry us most**, because the same mechanism produced both.
+
+> **Lag-versus-control is necessary and not sufficient.** A repair can be right
+> about the lag and wrong about the file, so the contamination check runs on every
+> repaired file before it lands.
