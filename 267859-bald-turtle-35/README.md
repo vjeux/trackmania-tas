@@ -8,17 +8,28 @@ every radian of roll away from the fast presentation costs about 1.8 s.**
 
 https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
 
+**bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.059 by Max_heyu
+
+https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
+
+**Both cars, and the whole race is the last half-second.** Ours is magenta,
+Max_heyu's world record is the dark car. They run wheel to wheel through the
+final landings — never more than **4.00 m apart, mean 1.30 m** — and ours edges
+clear only at the line, crossing **0.301** ahead. The camera is bolted to *his*
+car on purpose, so the shot stays alive after ours has finished and vanished:
+you see us cross, and then you watch him arrive.
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
-| **TAS 10.759 — the record** | **10.759** | **−0.009** | **−0.410** |
-| TAS 10.758 — fastest, not yet independently confirmed | 10.758 | −0.010 | −0.411 |
-| TAS 10.768 | 10.768 | ±0 — *equals* the author time | −0.401 |
-| TAS 10.769 | 10.769 | +0.001 | −0.400 |
-| Keyboard 10.788 | 10.788 | +0.020 | −0.381 |
-| TAS 10.859 | 10.859 | +0.091 | −0.310 |
-| Keyboard 10.897 | 10.897 | +0.129 | −0.272 |
-| Author time | 10.768 | — | −0.401 |
-| Human WR — Max_heyu | 11.059 | +0.401 | — |
+| **TAS 10.759 — the record** | **10.759** | **−0.009** | **−0.300** |
+| TAS 10.758 — fastest, not yet independently confirmed | 10.758 | −0.010 | −0.301 |
+| TAS 10.768 | 10.768 | ±0 — *equals* the author time | −0.291 |
+| TAS 10.769 | 10.769 | +0.001 | −0.290 |
+| Keyboard 10.788 | 10.788 | +0.020 | −0.271 |
+| TAS 10.859 | 10.859 | +0.091 | −0.200 |
+| Keyboard 10.897 | 10.897 | +0.129 | −0.162 |
+| Author time | 10.768 | — | −0.291 |
+| Human WR — Max_heyu | 11.059 | +0.291 | — |
 | Human rank 2 | 11.189 | +0.421 | +0.020 |
 
 TMX map [267859](https://trackmania.exchange/maps/267859) · author **Bald_tm /
@@ -98,10 +109,10 @@ Tolerance across whole tapes, as one-tick boundary shifts:
 |---|---|---|
 | **analog record 10.759** | 472 | **76.1 %** |
 | keyboard 10.788 | 158 | 38.6 % |
-| human world record 11.169 | 74 | 24.3 % |
+| human record 11.169 — Schmaniol, the previous record | 74 | 24.3 % |
 
 > **Study the 10.759 analog record.** It is the fastest thing on the map *and*
-> three times more forgiving than the world record a human actually drove.
+> three times more forgiving than the 11.169 a human actually drove.
 
 That is worth saying plainly because the usual assumption runs the other way.
 The sparse keyboard tape has a third of the boundaries and three steering values
