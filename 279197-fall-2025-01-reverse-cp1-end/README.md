@@ -42,6 +42,30 @@ not spread evenly: **the chicane flick (3–4 s) and the whole sweeper (7 s to t
 flag)**. The bend, the downhill and the straight are driven exactly as the human
 drove them.
 
+**Fall 2025 - 01 Reverse (CP1 end)** — TAS **10.594** (−0.004) | AT 10.598 | WR 10.602 by ShcrTM
+
+https://github.com/user-attachments/assets/21231d7d-4b27-4777-a788-0abaea66b1b7
+
+**Our 10.594 and ShcrTM's world record, both in one camera, and they never come
+apart.** Maximum separation over the whole run is **0.86 m**, mean **0.20 m**,
+so the two cars render inside one another for ten and a half seconds. On a map
+where the finish is worth 9.49 cm per millisecond, eight thousandths is 76 cm —
+about the width of the car — and that is the entire picture.
+
+The telemetry confirms the page's own account of *where* the run differs, which
+is the useful thing here. The bend, the downhill and the straight are stated
+above to be driven exactly as the human drove them: measured, our trajectory
+holds within **0.5 mm** of his for the first **3.15 s** and then departs at the
+chicane flick, which is where the page says the first of the 339 differing ticks
+lives. Two *human* recordings on this map are **0.186 m** apart over that same
+opening, so the agreement is inheritance rather than a deterministic start — and
+our distance to rank 2 (0.185847 m) is the same as rank 1's distance to rank 2
+(0.185850 m), which is what "we are driving his line" looks like as a number.
+
+The camera is on **his** car: his recording runs to 10.650 and ours stops at
+10.600, so following ours would have left the last 50 ms with a dead camera.
+Both crossings are inside their own recordings.
+
 ## Where the time is — and is not
 
 Timing the whole field through intermediate gates, from rank 1 to rank 502:
