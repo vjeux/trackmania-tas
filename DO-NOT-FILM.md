@@ -1541,3 +1541,53 @@ The author-time sign was right throughout in the arm's own reports — the run i
 > **A leaderboard figure has an expiry date and does not announce it.** Re-pull
 > the board before publishing a margin, especially on a three-run board that has
 > moved within the day.
+
+### 210218: the horizon is a real dial, and it collapses between one sector and two
+
+Sector 11's 990 ms was accepted under an h = 1 contract. Measured across the
+horizon table, same seed, same window, same operators, same 35 minutes, same
+binary — **only the contract rung moved**:
+
+| horizon | contract | sector 11 yields | evals |
+|---|---|---|---|
+| h = 0 | its own rung | −926 ms | |
+| **h = 1** | seg12, sector 12 frozen | **−990 ms** | 482 k |
+| **h = 2** | seg13, sectors 12–13 frozen | **0 ms** | 305 k |
+| h = ∞ | the finish | 0 ms | 197 k |
+
+`DONE best=78008` — the seed's own time to the millisecond, after 304,560
+evaluations.
+
+**The null is trustworthy because of what sits beside it.** The positive control
+is the row above, in the same configuration one sector nearer: 990 ms. **An
+instrument that finds nearly a second at h = 1 and nothing at h = 2 is measuring
+the contract, not its own limits.** And 18 % of candidates fired the rung, so the
+objective was bright and dense throughout — not a dark-objective null. The
+scoring goal relocates only the checkpoints *after* CP13 and leaves CP13 at home,
+so there is no repeat of the relocated-gate error.
+
+With the other measurement from the same night — the h = 1 winner costing 2.760 s
+by CP13 — the two agree from opposite directions:
+
+> **Sector 11's 990 ms is an artefact of where the clock stops, not a property of
+> the car.** It exists under a one-sector contract, costs 2.8 s under a two-sector
+> one, and does not exist at all if the car must still be on the line two sectors
+> later.
+
+The strategy's central claim survives: h = 1 does dominate h = 0 and h = ∞ *as a
+search objective*. **What does not survive is reading an h = 1 gain as time you
+can spend.**
+
+### And the 95.538 may not belong to the chain
+
+Interim, reported before it could be claimed: at 36 of 70 minutes the
+**plain-incumbent** tail search is at 95.570, where the chain-seeded run was at
+95.607 at the same point. **The control is currently ahead.**
+
+If it finishes ahead, the 68 ms credited to the chain conversion belongs to the
+tail search instead, and the "first upstream gain converted into a lap" reading
+goes with it.
+
+> **A result attributed to a mechanism needs the same run without the mechanism.**
+> Not as a formality — the attribution control here is on course to take the
+> finding back.
