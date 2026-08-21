@@ -17,7 +17,8 @@ would lose the second car within seconds.
 
 | run | time | vs author time | vs the record |
 |---|---|---|---|
-| **TAS** | **19.427** | **+0.621** | **−1.678** |
+| **TAS, validated (not yet watchable)** | **18.942** | **+0.136** | **−2.163** |
+| **TAS, the filmed one** | **19.427** | +0.621 | −1.678 |
 | TAS, watchable earlier | 20.296 | +1.490 | −0.809 |
 | TAS, earlier still | 20.942 | +2.136 | −0.163 |
 | Author time | 18.806 | — | −2.299 |
@@ -25,12 +26,15 @@ would lose the second car within seconds.
 | lqpzz | 23.689 | +4.883 | +2.584 |
 | Herrlille | 25.681 | +6.875 | +4.576 |
 
-**The author time is not beaten.** 19.427 against 18.806 is 0.621 short. What the
+**The author time is not beaten** — but it is close. A newer tape validates
+**18.942**, only **0.136** short, and a second in the same batch reaches 19.276, so
+the basin has depth. That tape is not yet certified as a renderable ghost, so the
+clip above is still the 19.427; the times below are what the game validates. What the
 run is, is the fastest time anyone has recorded on this map — 1.678 under the
 current record — and the first evidence that the author's own launch mechanism is
 reachable at all.
 
-## The rotor wall is the launcher
+## The rotor wall is the launcher — and the map is a gate CHOICE
 
 The map holds **1,173 spinning `ObstacleRotor24mWing90X2Level2`** in two rows of
 574 — one at y 197 / z 704, the other at y 207 / z 687, spanning x 919–1207 — plus
@@ -38,10 +42,32 @@ The map holds **1,173 spinning `ObstacleRotor24mWing90X2Level2`** in two rows of
 mechanism; they are scenery. **Removing the rotor rows removes the launch**, which
 is how the real answer was found.
 
-**Our 19.427 goes through the low row and is caught by the upper one at 779 km/h,
-from y 211.6 / z 692.3.** The author is caught at **884 km/h** from y 211.0 /
-z 690.7 — nearly the same place, a hundred km/h faster. That gap is the remaining
-0.621, and it is a question about launch *quality*, not about aim.
+**Every finisher needs the LOW row.** Delete it — 282 movers, with the origin
+control passing — and every tape on this map DNFs, the weak-launch ones and the
+author-launcher ones alike. It is not an obstacle to be got past; it is the first
+link in the chain. What the fast tapes changed is not bypassing it but arriving at
+the *upper* row in a state that row accepts, after the low row has done its part.
+
+**And the map has fifteen finish gates, so the run is a choice of which one to
+reach.** That is where the time is, and our own two best tapes prove it:
+
+| tape | launch speed | gate crossed | time |
+|---|---|---|---|
+| 19.427 | **779 km/h** | #1031 at (1008, 402, 1360) | 19.427 |
+| **18.942** | **696 km/h** | **#1033 at (1104, 394, 1232)** | **18.942** |
+| the author | 884 km/h | #1026 at (1008, 474, 1136) | 18.806 |
+
+**The faster of our two launches at 83 km/h LESS.** It reaches a nearer gate and
+wins by 0.485. So peak launch speed is the wrong objective — **where the launch
+puts you is the objective**, and an earlier note on this page saying the residue is
+"launch quality" was at best incomplete.
+
+**The interesting part is a gate nobody has reached.** Geometry says **#1027 at
+(1168, 458, 1072)** is the cheapest of the fifteen — 63 m closer to the launcher
+row than the author own #1026 — with a predicted run of about **18.45**. Nothing
+has ever crossed it. #1024 and #1032 are unvisited too. If that prediction holds,
+the remaining margin is sitting in a gate no tape has found, which is a far more
+tractable target than out-launching the author.
 
 Three things that are measured and closed:
 
