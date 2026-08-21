@@ -873,3 +873,57 @@ shows the defect in minutes spent rather than in the file it writes.
   neither its own nor the donor's. Three fields, three answers, in a file that
   validates perfectly on the oracle. No reader we own reports the checkpoint
   list.
+
+### The span reaches the render — and it arrives as a second track
+
+The matched pair on 279218, run control / subject / control so a drifting
+renderer could not be mistaken for a file property:
+
+```
+CONTROL-1  KEYBOARD_5352_11events   5.400 s  162 frames  94 s wall  ok
+SUBJECT    KEYBOARD_5350_equals_AT  refused at the gate   47 s wall
+CONTROL-2  KEYBOARD_5352_11events   5.400 s  162 frames  92 s wall  ok
+```
+
+The two controls agree exactly, so the set is valid.
+
+**The donor's span does not stretch the car's block. It materialises as a whole
+extra MediaTracker track:**
+
+```
+clip=Trigger 1  tracks=2
+  track[0]  Ghost:TAS            block end =   5.35
+  track[1]  Ghost:SceneryEvents  block end = 566.08
+```
+
+The ghost is correct at 5.35 s. The game builds a `SceneryEvents` entity
+spanning the full 566.080 beside it, and **a MediaTracker clip runs to its
+longest block** — so the render is 566 seconds of which 5.35 contains a car.
+
+> **The 45-file list is a render blocklist, not container hygiene.** Anything on
+> it either produces a 566-second video or costs a 566-second render.
+
+**Why no reader we own saw it coming:** `inputcount --meta` reports 5400 for both
+files, because it reads the *sample* span. The 566.080 does not exist until the
+game builds the clip. The cheap detector is therefore not a byte read at all —
+**import the ghost and count the tracks.** One track clean, two tracks foreign.
+
+Two detectors, and they must stay two columns: the `tmtraj decode` span read sees
+the declared field; the track count sees what the renderer will do. A file whose
+span is foreign but which imports with one track is safe to film and dirty in the
+container. **That disagreement is the blocklist's boundary, and no byte reader can
+draw it.**
+
+The publish gate refused the subject in 47 s with no file written —
+`wrong ghost: clip end=566.08s, expected span 5.40s`. That check was written for
+mis-imports and turns out to be a span detector as well: luck, not design, and
+worth saying so rather than claiming coverage we did not plan.
+
+**Still unmeasured, and not claimed:** whether a forced render produces 566 s of
+video or 5.4 s after a very long render. The gate refused before filming. Either
+answer leaves the blocklist standing; only its cost changes.
+
+**And it retires a hedge honestly.** Thirty published clips measured clean bounded
+the damage to zero — but the boundary held by luck, not process: every published
+clip came from a file whose span happens to be correct, 279218's from the sibling
+rather than the subject. **A bound that holds by accident is not a control.**
