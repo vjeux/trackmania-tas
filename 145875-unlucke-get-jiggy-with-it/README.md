@@ -4,7 +4,12 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
-**Video — both cars at once:** <https://pxl.cl/cvz21> — our keyboard **6.323** against the human world record **6.342** (xeap-.-).
+**Video: withdrawn.** The side-by-side clip published here showed a second car that
+clips through the ground and rotates wrongly. The file used as the opponent was
+`HUMANWR_plus_early_flick_6342` — which is **not a human recording**: it is the
+world record's tape with one input changed, i.e. a run of ours, and it carries
+its carrier's telemetry rather than its own. A replacement will be filmed against
+a genuine downloaded recording, or this page will carry a single-car clip.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
