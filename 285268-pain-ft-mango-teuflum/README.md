@@ -50,9 +50,6 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 | Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
 | Human WR — Ssnake01 | 49.291 | +0.009 | — | **pure keyboard** |
 | Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
-| Author time (never beaten by a human) | 49.282 | — | −0.164 | — |
-| Human WR — Ssnake01 | 49.291 | +0.009 | — | **pure keyboard** |
-| Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**
 · Stadium Ice · 10 sectors, 49 seconds · **163 recorded runs**.
