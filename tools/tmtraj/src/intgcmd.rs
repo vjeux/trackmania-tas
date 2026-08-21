@@ -1101,6 +1101,68 @@ pub struct GateOut {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The record a ghost carries, against the engine's own trajectory for the same
+/// tape as dumped by `fk btraj2`. Returns
+/// `(shared instants, median, mean, max, the route's own quantisation step)`.
+///
+/// The route CSV is written with six significant digits, so its resolution
+/// depends on where the map sits in world coordinates -- ~0.01 m at 1400, ~0.001
+/// at 140. The step is derived from the data rather than assumed, so the caller
+/// compares against the instrument's own reach instead of a constant somebody
+/// picked on one map.
+pub fn route_compare(ghost: &str, route: &str) -> Result<(usize, f64, f64, f64, f64), String> {
+    let rows = std::fs::read_to_string(route).map_err(|e| format!("{}: {}", route, e))?;
+    let mut hdr = true;
+    let mut rmap: std::collections::HashMap<i64, [f64; 3]> = std::collections::HashMap::new();
+    let mut mag = 0.0f64;
+    for l in rows.lines() {
+        if hdr {
+            hdr = false;
+            continue;
+        }
+        let f: Vec<&str> = l.split(',').collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let (t, x, y, z) = (
+            f[0].parse::<i64>().ok(),
+            f[1].parse::<f64>().ok(),
+            f[2].parse::<f64>().ok(),
+            f[3].parse::<f64>().ok(),
+        );
+        if let (Some(t), Some(x), Some(y), Some(z)) = (t, x, y, z) {
+            mag = mag.max(x.abs()).max(y.abs()).max(z.abs());
+            rmap.insert(t, [x, y, z]);
+        }
+    }
+    if rmap.is_empty() {
+        return Err(format!("{} has no usable rows", route));
+    }
+    let d = crate::entrec::decode_ghost(ghost).map_err(|e| format!("{}: {}", ghost, e))?;
+    let mut ds: Vec<f64> = Vec::new();
+    for s in &d.samples {
+        if let Some(p) = rmap.get(&(s.time_ms as i64)) {
+            ds.push(((s.x - p[0]).powi(2) + (s.y - p[1]).powi(2) + (s.z - p[2]).powi(2)).sqrt());
+        }
+    }
+    if ds.is_empty() {
+        return Err(format!(
+            "the record and {} share no instant -- the route was made from a different run, or at \
+             a probe tick past the record's span",
+            route
+        ));
+    }
+    let n = ds.len();
+    let mean = ds.iter().sum::<f64>() / n as f64;
+    let mx = ds.iter().cloned().fold(0.0f64, f64::max);
+    ds.sort_by(|a, b| a.total_cmp(b));
+    let med = ds[n / 2];
+    // six significant digits: the last digit is worth mag * 1e-6, and two reads
+    // can differ by one step in each, so the floor is twice that.
+    let quant = (mag * 1e-6 * 2.0).max(1e-6);
+    Ok((n, med, mean, mx, quant))
+}
+
 pub fn gate_one(
     ghost: &str,
     race: i64,
@@ -1113,6 +1175,8 @@ pub fn gate_one(
     manifest_override: Option<&str>,
     require_manifest: bool,
     source_ref: Option<&str>,
+    flag_route: Option<String>,
+    flag_route_dir: Option<String>,
 ) -> GateOut {
     let mut lines: Vec<String> = Vec::new();
     let mut hard = 0usize;
@@ -1528,6 +1592,92 @@ pub fn gate_one(
         }
     }
 
+    // ---- G. C-ROUTE: the record against the ENGINE, read by a different
+    //      instrument.
+    //
+    // THIS IS THE ONLY CHECK IN THE GATE THAT DOES NOT READ THE RECORD PATH.
+    // Everything above interrogates the written record, or the tape, or the
+    // file's own header, and on 227654 every one of them passed a file whose
+    // telemetry is the CONTAINER's run and not ours:
+    //
+    //   * B-contam passed -- the record is 0.000511 m from ailiei.'s, which is
+    //     the client-vs-server floor, not bit-identical.
+    //   * C-spawn passed -- the first sample is the map's spawn, because his
+    //     run starts there too.
+    //   * C-oracle passed -- the oracle re-simulates the TAPE, and the tape is
+    //     ours.
+    //   * E-stale passed -- two independent generations agreed exactly.
+    //
+    // They agreed with each other because they were all reading one poisoned
+    // source. What convicted the file was asking a DIFFERENT instrument the
+    // same question: `fk btraj2` re-simulates the tape and dumps the car's
+    // per-tick position without going near the record. Our car was 0.7249 m
+    // mean / 1.8607 m max from the line the record claims, over 301 instants --
+    // and two of our tapes that differ at race 11.270 s, inside the recorded
+    // window, produced BIT-IDENTICAL records, which two different simulations
+    // cannot do.
+    //
+    // The bar is derived from the instrument, not chosen: `fk btraj2` writes
+    // six significant digits, so at coordinates around 1400 its own quantum is
+    // ~0.01 m. Anything within a small multiple of that is agreement to the
+    // resolution of the reading; 0.55 m is fifty times it. Nothing in the gap.
+    //
+    // NO ROUTE IS A REFUSAL, NOT AN `n/a`. A file that cannot be route-checked
+    // is precisely the file this hole hides in.
+    {
+        let route = flag_route.clone().or_else(|| {
+            flag_route_dir.as_ref().map(|d| {
+                let stem = std::path::Path::new(ghost)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().replace(".Ghost.Gbx", ""))
+                    .unwrap_or_default();
+                format!("{}/route_{}.csv", d, stem)
+            })
+        });
+        match route {
+            None => {
+                hard += 1;
+                lines.push(
+                    "FAIL   C-route   no --route given. The record has NOT been checked against \
+                     the engine by any instrument other than the one that wrote it, and on 227654 \
+                     every other check in this gate passed a file carrying the container's run. \
+                     Produce one with `fk btraj2 --template THIS FILE ... --out route.csv`."
+                        .into(),
+                );
+            }
+            Some(rp) => match route_compare(ghost, &rp) {
+                Err(e) => {
+                    unmeasured += 1;
+                    lines.push(format!(
+                        "UNMEASURED  C-route   {} -- the engine's own trajectory could not be \
+                         read, so THIS FILE IS NEITHER CLEAN NOR CONVICTED on the one axis the \
+                         rest of the gate cannot see.",
+                        e
+                    ));
+                }
+                Ok((n, med, mean, mx, quant)) => {
+                    let bar = (20.0 * quant).max(0.02);
+                    if med > bar {
+                        hard += 1;
+                        lines.push(format!(
+                            "FAIL   C-route   the record is {:.4} m from where the engine put this \
+                             tape's car (median over {} shared instants, mean {:.4}, max {:.4}; the \
+                             route's own quantum here is {:.4} m, bar {:.4}). THIS RECORD IS NOT \
+                             THIS RUN.",
+                            med, n, mean, mx, quant, bar
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "PASS   C-route   the record matches the engine's own trajectory for \
+                             this tape to {:.4} m over {} shared instants (route quantum {:.4} m)",
+                            med, n, quant
+                        ));
+                    }
+                }
+            },
+        }
+    }
+
     // ---- D. the file against its own MANIFEST ---------------------------
     //
     // Last, and it is the one that certifies. A, B and C interrogate the
@@ -1575,7 +1725,7 @@ pub fn cmd_gate(args: &[String]) {
         if args[i].starts_with("--") {
             if matches!(
                 args[i].as_str(),
-                "--race" | "--refs" | "--map" | "--server" | "--minsep" | "--mapid" | "--manifest" | "--source"
+                "--race" | "--refs" | "--map" | "--server" | "--minsep" | "--mapid" | "--manifest" | "--source" | "--route" | "--route-dir"
             ) {
                 i += 2;
             } else {
@@ -1636,6 +1786,8 @@ Without a human reference the file is UNTESTED for contamination, never clean.
             manifest.as_deref(),
             require_manifest,
             source.as_deref(),
+            flag("--route"),
+            flag("--route-dir"),
         );
         println!(
             "=== {}  --  {}",
@@ -1766,7 +1918,7 @@ pub fn cmd_dup(args: &[String]) {
         if files.len() < 2 {
             continue;
         }
-        let _mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
         let mut files = files.clone();
         files.sort();
         // decode once per file
