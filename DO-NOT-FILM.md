@@ -1499,3 +1499,45 @@ being resolved by fiat.
 
 165922's nine are excluded — the decoder returns nothing for them, so there is
 nothing to compare.
+
+### The nickname lives in two places and the strip reaches neither
+
+208024's v2 failed `skincheck` on a donor livery. After `skin set` cleared the
+skin path, the file **still read `nickname "Herrlille"`** — the third-place human
+whose container the tape was built in.
+
+The nickname has **two** sites:
+
+- a **header** copy, chunk `0x00000000`
+- a **body** copy, chunk `0x03092000`
+
+`tmtraj hdr setlogin` and `tmtraj body setlogin` are both required. And the trap
+is in the reporting:
+
+> **`skin info` shows only the body copy.** Fix the header and stop, and the tool
+> reports a clean file that still announces a human's name on import.
+
+The same shape as the malformed-path specimen, one field over: a reader that sees
+one of two sites, reporting a pass.
+
+The full donor set on that file — skin path, storage URL, GUID, sha256, nickname
+×2, trigram `HER`, zone `World|Europe|Sweden`, clubtag, login — is what a strip
+has to clear. Verified after: reparse OK, **map UID present exactly once** (the
+hazard, since a string rewrite can overwrite it), zero occurrences of the donor's
+name or GUID, oracle exact on three cold runs, telemetry unchanged at 2.5 mm.
+
+It is now `mh2_deskin.sh` rather than a hand step, **run last — after the declare,
+because a string rewrite moves offsets.**
+
+### A margin quoted for twelve hours after it expired
+
+208024's run was reported all night as **6.739 s inside the human record**. True
+against Herrlille's 25.681; stale from the moment **deeperjungle's 21.105** landed
+the day before. The real margin is **2.163**.
+
+The author-time sign was right throughout in the arm's own reports — the run is
+**+0.136 OVER** the AT — and was inverted only in this coordinator's relay.
+
+> **A leaderboard figure has an expiry date and does not announce it.** Re-pull
+> the board before publishing a margin, especially on a three-run board that has
+> moved within the day.
