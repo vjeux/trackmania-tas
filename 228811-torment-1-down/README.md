@@ -3,6 +3,29 @@
 **The floor at the base of the end wall is a launcher, and it fires only if you
 cross it sideways — go through the last checkpoint, then scrub across the line
 ten metres later with the car turned across its own direction of travel.**
+
+**Torment (1-DOWN)** — TAS **20.237** (−0.318) | AT 20.555 | WR 22.637 by KappaRiley
+
+https://github.com/user-attachments/assets/fb64c1d0-5f92-404a-bf77-5271c57a7d8a
+
+**Our 20.237 and KappaRiley's world record, both in one camera, shot on our
+car.** For the first 13.5 s there is visibly one car, because there is
+effectively one car — see the note below. From the landing at 14.720 they part,
+and they part hard: 0.03 m at 14.770, 1.1 m at 15.970, 11 m at 18.020, **291.73 m**
+at the end, because he rides up the wall and we do not. The clip is trimmed at
+our own last live frame, 20.267; his recording runs 2.4 s longer and following
+it would have meant filming his car.
+
+**The 1.19 s between the inputs diverging and the cars diverging is the car
+being in the air.** The note below says the tapes part at race 13.530 while the
+trajectories only separate at 14.720, which looks like a gap in the story and is
+not: this run's longest airborne stretch is **2.25 s beginning at 12.470**, so it
+ends at exactly 14.720. An input changed in mid-air moves nothing until the
+wheels touch. Measured on the file itself, the separation holds a flat
+0.0002–0.0008 m noise floor with no growth trend right up to 14.670, then steps
+to 0.0016 and climbs smoothly — a perturbation released at touchdown, not a
+seam.
+
 > ### On this clip: the two cars are superimposed for the first 13.5 seconds
 >
 > That is real, and it is not a recording defect. **Our input tape was seeded
