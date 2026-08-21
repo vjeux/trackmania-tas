@@ -100,3 +100,44 @@ Compare only against **human recordings**; same-pipeline siblings trip the
 re-convergence test legitimately. And restrict the window to the race: a shared
 post-finish carrier tail makes two independent runs agree exactly after the line,
 which is a tail problem and not a provenance one.
+
+## 285268 "Pain ft Mango & Teuflum" — eight tapes, one human's trajectory
+
+Found 2026-08-21, while this map was queued as the *best-looking* two-car pairing
+in the set. All eight of our tapes decode to a human's trajectory, seven of them
+to the same one:
+
+| file | sample-CSV md5 | whose run it is |
+|---|---|---|
+| our 49.275 BEST, 49.278, 49.285, 49.288, 49.311, 49.355 | `12333c2541b62c9b5a854d1950b35050` | burntbagels' 49.446 |
+| downloaded `rank001_49446` (burntbagels) | `12333c2541b62c9b5a854d1950b35050` | — |
+| our 49.475 keyboard | `f4639ab2917031c2e6d69efa0e107ee4` | Ssnake01's 49.491 |
+| downloaded `rank002_49491` (Ssnake01) | `f4639ab2917031c2e6d69efa0e107ee4` | — |
+
+Every one re-simulates to its own claimed time, so the **results** stand; what is
+unreliable is the recording of how they were driven, which is the only thing a
+video shows. A two-car clip here would have been burntbagels racing himself.
+
+The trap worth remembering: its separation profile was the healthiest on the
+board — **868 of 986 samples** in the "two visible cars" band — because two
+copies of one lap, offset slightly, look exactly like a close race.
+
+## 279218 `TAS_5345_starttrick` — the file is Matik_K's run
+
+One file on an otherwise filmable map. The published 279218 clip is not this
+tape; do not swap it in.
+
+## 134672 "kekl sausage ice" — held twice over
+
+Its gate refuses `ksi_67319_watchable_v2` at C5/C7 for carrier-owned contact and
+surface bytes. Independently, its two files disagree with **each other**:
+`ksi_67319.Ghost.Gbx` decodes with `race_time=68442`, 1.123 s away from the
+67319 in its own filename, while `ksi_67319_watchable_v2` decodes to 67319 with a
+different split vector. One of those names is wrong, and until it is known which,
+neither is safe to caption.
+
+## Not a map, but the same disease: check the pairing, not just the file
+
+Before any two-car shoot, decode **both** ghosts and compare sample-CSV md5s. The
+gate cannot help here: a separation of zero and a separation you cannot see
+produce the same verdict. See `VIDEO-UPLOAD-NOTES.md` trap 5.
