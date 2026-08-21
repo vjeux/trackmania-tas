@@ -632,3 +632,38 @@ operator who believes it re-uploads, and the repo grows a duplicate asset per
 attempt. **Retry the anonymous fetch for ~90 s before declaring a failure**, and
 report the reading that decided it. As on the takedown side: one reading is not
 a verdict, and the second one is the truth.
+
+## 24. The ghost picker reads a CACHED folder listing — a third way to import the wrong ghost
+
+Trap 12 gave two branches for a wrong-ghost import: someone else's container, or
+the row index. There is a third, and it is the one that fires when **you** change
+the staging.
+
+208024 was staged by moving a superseded file out and copying its replacement
+in — four files before, four files after. The shoot asked for row 1 and row 4:
+
+```
+importing TAS (row 1) then WR (row 4)
+  clip=Trigger 1 tracks=1
+    track[0] name=Ghost:TAS  end=19.4        <- 01_TAS_19427_watchable
+FAIL: only 1 ghost(s) imported
+```
+
+The picker was still listing the **deleted** file. With it, the rows are five:
+the removed v1 at 1 (clicking it does nothing at all — silently), our new file at
+2, and row 4 lands on `01_TAS_19427_watchable`, whose block ends at 19.4. Both
+observations fit exactly. The obvious alternative — that the picker sorts by
+modification time — is refuted by the same log: mtime order puts 19427 at row 1,
+so the *first* import would have produced the 19.4 and the second would have
+worked. The first produced nothing.
+
+**A game restart fixes it**, and after one the same two rows imported correctly:
+`Ghost:TAS end=18.15` and `Ghost:deeperjungle end=21.1`.
+
+> **Restart the game after any change to a staged ghost folder.** Adding a file
+> is visible to the picker; removing one is not, and a stale row shifts every row
+> after it while `ls` on disk shows a folder that looks perfectly right.
+
+Note what caught it: not the picker, but **the block-end assertion keyed to the
+camera target's span**. Same as trap 12 — a check written against the *outcome*
+survives the mechanism being something nobody had thought of.
