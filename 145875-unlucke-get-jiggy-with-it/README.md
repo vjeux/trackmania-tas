@@ -51,6 +51,15 @@ TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
 
 ## A version a person can actually press
 
+> **⚠️ The time in this section is under review as of 2026-08-21.** The tape was
+> validated at **6.342** by the arm that searched it, cold, one file per
+> invocation, with the human world record as a positive control in the same
+> batch. The dedicated server has since read the same file as declaring 6342 and
+> **validating to 6.360** — which would be over the author time, not under it.
+> The two readings are being reconciled. **Until they are, treat the 6.342 in
+> this section as unconfirmed**; the input-count and hold-length findings below
+> do not depend on which number is right.
+
 The tape above is a machine's: it holds inputs for 10 ms and stabs three of them
 for a single tick. Nobody can do that. So the same line was **searched again from
 scratch under a minimum-hold constraint** — never quantised afterwards, which
