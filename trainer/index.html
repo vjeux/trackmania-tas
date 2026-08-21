@@ -44,6 +44,7 @@
 
   /* overlays */
   .ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .ov.top{align-items:flex-start;padding-top:6vh}
   #bigtext{font-size:96px;font-weight:800;letter-spacing:-2px;opacity:0;transition:opacity .12s}
   #splash{
     pointer-events:auto;background:rgba(5,7,12,.86);flex-direction:column;gap:14px;text-align:center;padding:28px;
@@ -131,7 +132,7 @@
 <main>
   <div id="stagewrap">
     <canvas id="cv"></canvas>
-    <div class="ov"><div id="bigtext"></div></div>
+    <div class="ov top"><div id="bigtext"></div></div>
     <div class="ov" id="splash">
       <h2>Drive a TAS with three keys — and one you just hold.</h2>
       <p>This is the real input tape of a run that beat the author time and the human world record on this map — full left, centre, full right, and one brake tap. Notes fall; hold the key for exactly as long as the bar is long.</p>
@@ -1397,6 +1398,10 @@ function edge(lane, type, t){
     // pressed there is not an input the tape "never makes", it is you getting
     // your fingers onto the keys. Costs nothing.
     if (t < S.firstNote - claimFor(type).early){ S.held[lane] = (type === 'press'); return; }
+    // The tape ends still holding gas and the final right — it stops at the
+    // finish, it does not let go. Letting go after the run is over is not an
+    // input the tape never makes; it is you stopping.
+    if (type === 'release' && NOTES.some(n => n.lane === lane && n.open && t >= n.start)) return;
     S.combo = 0;
     S.wrong[lane] = performance.now();
     pop(lane, 'EXTRA', '#ff5b6e');
@@ -1565,8 +1570,19 @@ function draw(){
     const done = S.events.some(e => e.note === n.idx && e.type === 'press' && e.judged);
     const missed = S.events.some(e => e.note === n.idx && e.type === 'press' && e.missed);
 
-    ctx.globalAlpha = inSec ? (missed ? .28 : 1) : .16;
+    // Notes outside the drill are drawn as hollow grey ghosts — visibly not
+    // yours to play, so the drill cannot bait you into an extra.
     const pad = Math.max(5, w * 0.09);
+    if (!inSec){
+      ctx.globalAlpha = .5;
+      roundRect(x + pad, top, w - 2*pad, h, Math.min(7, h/2));
+      ctx.strokeStyle = 'rgba(255,255,255,.13)'; ctx.lineWidth = 1;
+      ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    ctx.globalAlpha = missed ? .28 : 1;
     roundRect(x + pad, top, w - 2*pad, h, Math.min(7, h/2));
     const grad = ctx.createLinearGradient(x, top, x + w, top + h);
     grad.addColorStop(0, L.dark); grad.addColorStop(1, L.color);

@@ -13,7 +13,7 @@ function ctxStub(){
     setTransform(){}, clearRect(){}, fillRect(){}, strokeRect(){}, beginPath(){}, moveTo(){}, lineTo(){},
     stroke(){}, fill(){}, arcTo(){}, closePath(){}, save(){}, restore(){}, arc(){}, rect(){}, clip(){},
     fillText(t){ if(t===undefined) throw new Error('fillText(undefined)'); calls++; },
-    strokeText(){}, measureText(){ return {width:20}; },
+    strokeText(){}, measureText(){ return {width:20}; }, setLineDash(){}, getLineDash(){ return []; },
     createLinearGradient(){ return { addColorStop(o,c){ if(typeof c!=='string') throw new Error('bad gradient stop '+c); } }; },
     createRadialGradient(){ return { addColorStop(){} }; },
   };

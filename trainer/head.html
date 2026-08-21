@@ -44,6 +44,7 @@
 
   /* overlays */
   .ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .ov.top{align-items:flex-start;padding-top:6vh}
   #bigtext{font-size:96px;font-weight:800;letter-spacing:-2px;opacity:0;transition:opacity .12s}
   #splash{
     pointer-events:auto;background:rgba(5,7,12,.86);flex-direction:column;gap:14px;text-align:center;padding:28px;
@@ -131,7 +132,7 @@
 <main>
   <div id="stagewrap">
     <canvas id="cv"></canvas>
-    <div class="ov"><div id="bigtext"></div></div>
+    <div class="ov top"><div id="bigtext"></div></div>
     <div class="ov" id="splash">
       <h2>Drive a TAS with three keys — and one you just hold.</h2>
       <p>This is the real input tape of a run that beat the author time and the human world record on this map — full left, centre, full right, and one brake tap. Notes fall; hold the key for exactly as long as the bar is long.</p>

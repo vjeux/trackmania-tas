@@ -347,6 +347,10 @@ function edge(lane, type, t){
     // pressed there is not an input the tape "never makes", it is you getting
     // your fingers onto the keys. Costs nothing.
     if (t < S.firstNote - claimFor(type).early){ S.held[lane] = (type === 'press'); return; }
+    // The tape ends still holding gas and the final right — it stops at the
+    // finish, it does not let go. Letting go after the run is over is not an
+    // input the tape never makes; it is you stopping.
+    if (type === 'release' && NOTES.some(n => n.lane === lane && n.open && t >= n.start)) return;
     S.combo = 0;
     S.wrong[lane] = performance.now();
     pop(lane, 'EXTRA', '#ff5b6e');
@@ -515,8 +519,19 @@ function draw(){
     const done = S.events.some(e => e.note === n.idx && e.type === 'press' && e.judged);
     const missed = S.events.some(e => e.note === n.idx && e.type === 'press' && e.missed);
 
-    ctx.globalAlpha = inSec ? (missed ? .28 : 1) : .16;
+    // Notes outside the drill are drawn as hollow grey ghosts — visibly not
+    // yours to play, so the drill cannot bait you into an extra.
     const pad = Math.max(5, w * 0.09);
+    if (!inSec){
+      ctx.globalAlpha = .5;
+      roundRect(x + pad, top, w - 2*pad, h, Math.min(7, h/2));
+      ctx.strokeStyle = 'rgba(255,255,255,.13)'; ctx.lineWidth = 1;
+      ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    ctx.globalAlpha = missed ? .28 : 1;
     roundRect(x + pad, top, w - 2*pad, h, Math.min(7, h/2));
     const grad = ctx.createLinearGradient(x, top, x + w, top + h);
     grad.addColorStop(0, L.dark); grad.addColorStop(1, L.color);
