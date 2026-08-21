@@ -2,7 +2,7 @@
 
 **Author time 23.839, and nobody has ever set a time on this map. This run does
 it in 12.759 — and it drives the map: supported for 80.7 % of its samples,
-never rising above its own spawn altitude, taking the map's own reactor lift to
+never rising above its own spawn altitude, using the map's own lift to
 reach a finish that sits at the bottom of the lattice.**
 
 | run | time | vs author time |
@@ -46,16 +46,29 @@ distinction flips on centimetres — 7.5 cm lower and the same car changes
 category — so treat "inside a cell" as bookkeeping, not physics.
 
 And the departure from the built volume is *the map's own doing*. The finish
-sits at **y 292**, and the only thing that lifts a car back up is the reactor
+sits at **y 292**, and the only thing that lifts a car back up is the lift
 column — which exists at **cell-x 18 and 28 only**. A car that drops to the
 lattice floor between them can never get high enough to finish. So the run's
 ugly-looking stall at 12 km/h is not waste: it is the only way to be high
 enough, and it caps the glide's entry speed at 109 km/h.
 
+**A note on what that column is.** Earlier versions of this page called it a
+*reactor* column. That is wrong: a census of the map's own block list finds
+**zero blocks whose name contains "Reactor"**. What the map actually carries is
+**9 `GateExpandableSpecialBoost` gates and 9 `RoadBumpSpecialTurboRoulette`
+bumps**, plus 18 reset gates and 18 no-steering gates. The lift itself is real
+and measured — the car climbs **19.2 m between 4.25 and 7.50 s** while
+accelerating 11.8 → 182 km/h, with no block beneath it for the first 1.5 s and
+vertical acceleration nowhere near the −25.20 m/s² of free fall, so it is
+neither supported by geometry nor ballistic. Three boost gates sit 6.6–12.1 m
+away during that climb, and the run passes within 0.7 m of a turbo bump at
+0.350 s. That is a coincidence in space and time; **the mechanism is not
+demonstrated** and this page does not claim one.
+
 ## The line
 
 Spawn at (976, 341, 714). **181 km/h by 1.25 s.** A hard contact at 2.5 s knocks
-it down to about 50 km/h. The **cx-28 reactor column lifts it 18 m between 4.3
+it down to about 50 km/h. The **cx-28 lift column raises it 18 m between 4.3
 and 6.3 s**, which is what pays for the glide that follows. Then down through
 the lattice, **228 → 254 km/h from 8.75 to 11.25 s**, arriving at the Goal at
 (580, 292, 713) doing **263 km/h** at 12.25 s and stopping dead into it.
@@ -77,7 +90,7 @@ race 0.860–1.470  full RIGHT      | held, and the brake TAPPED 14 times
 race 1.470–2.090  straight        | 620 ms of nothing
 race 2.240–2.450  GAS OFF         | the only real lift in the run, 210 ms
 race 2.770–2.820  full LEFT stab  | +127 for 50 ms
-race 2.820–4.060  straight        | 1.24 s of nothing — the reactor lift
+race 2.820–4.060  straight        | 1.24 s of nothing — the lift column
 race 4.060 onward the lattice     | continuous analog work to the Goal
 ```
 

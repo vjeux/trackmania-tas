@@ -150,16 +150,48 @@ climb is 37.97, the flip itself costs about 3.2 s, and the inverted crawl adds
 8.42 s: **a floor of roughly 48.5 s against an author time of 43.079.** Free
 time upstream would not be enough, and there is no 6 s upstream to find.
 
-### What is actually open
+### What is closed, and what would reopen it
 
-Banked surfaces. At race 35.0–35.4, one second after the launch landing, both
-the fast line and rank 1 ride something that puts them **74° on their side at
-165 km/h**, 142 m from the finish patch. So this map does contain geometry that
-tilts this car far past the 26° the gate needs, at speed, without the
-pitch-over's 3.2 s. Three separate efforts have measured the finish ramp as a
-bare plane; nobody has mapped what is beside it.
+The banked-surface lead above has now been tested and it is dead. At race
+35.0–35.4 both the fast line and rank 1 do ride something that puts them 74° on
+their side at 165 km/h — but that is 142 m from the finish patch, and the tilt
+cannot be carried there. A 797-probe fan across the whole approach, read as live
+trajectories, found **580 airborne episodes and the nearest one comes within
+82.6 m of the patch**; coverage was complete at 5 m out to ±40 m and 10 m out to
+±80 m. The lowest body-up component achieved anywhere on the roof within 20 m is
+0.970 — essentially flat. The single rotation source, a wall 36.4 m away,
+self-corrects its tilt in 0.30 s and at best leaves the car wedged at 4 km/h at
+full throttle for the remainder of the race.
 
-That is why the finish is a dead end and the approach is not.
+The 70 mm deficit was also re-tested on the right basis. The raw (x,z) grid
+shows a tempting band of ~27 fires 1–1.5 m from the gate, which reads as "short
+in z, not height" — that band is an artefact of the displacement basis. Once
+each station is compensated for the roof's 11.4° slope, so that a rung asks
+*would this tape fire if its crossing moved along the roof*, the fast line fires
+**0 of 425 stations** while the human record fires ~40 in the same invocation.
+
+Both search windows are frozen: 3483 candidates, 0 improvements, and all 78
+splice handovers after the divergence are dead.
+
+So the honest statement of this map is that **"improve our own record" and "beat
+the author time" are different projects here.** The one lever with a measured
+non-zero gradient is upstream of the launch — and it must be *re-searched* on
+the fast lineage rather than ported, since a 0.201 s edit that works on the
+older lineage DNFs on this one despite both tapes sharing those exact inputs.
+That lever can improve 50.229. It cannot reach 43.079.
+
+Two instruments not to reuse here, both of which cost real time:
+
+- **The fitted trigger model is not a ranker.** Scored on `y + 0.84·u_y` inside
+  the footprint, six probes beat the incumbent by 0.10–0.17 m and every one
+  fires nothing on an 11-rung oracle ladder. Model-free witness: rank 1 reaches
+  a tested 143.962 and does not finish, then finishes at 144.486 — half a metre
+  *higher*.
+- **A tilt detector placed at `plane(x,z) − Δ` is a height detector** wherever
+  the plane fit drifts, and this roof drifts 1.8 m over 100 m.
+
+One more measured local fact: **free fall on this map is −24.308 m/s²**, not the
+−25.20 measured elsewhere. Gravity here is per-map; measure it before using it.
 
 ## Files
 
