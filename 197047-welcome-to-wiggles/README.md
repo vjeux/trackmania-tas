@@ -5,16 +5,6 @@
 
 **Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
 
-> ### ⚠️ No video — the clip is withdrawn
->
-> `TAS_95839_analog`'s recording has the car facing the wrong way: its spawn
-> quaternion is the identity, where all 26 human recordings on this map read
-> `(3.39e-05, −0.7071, 0, 0.7071)`. On a map whose whole technique is sliding
-> sideways for a hundred seconds, the car in a clip would point somewhere the car
-> in the run never pointed. **The run and the time stand** — 95.839 re-simulates
-> on the game's own oracle and the path through the map is correct in every
-> position. The page gets a clip back when it can be filmed from a recording with
-> the right facing.
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

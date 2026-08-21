@@ -1,0 +1,155 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787342881",
+  "file": "gen_TAS_95839_analog.Ghost.Gbx",
+  "md5": "b065b243f226e403fd1230fb10c71241",
+  "bytes": 29732,
+  "map_id": "197047",
+  "declared_time_ms": 95839,
+  "oracle_time_ms": 95839,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "/tmp/w/197047/TAS_95839_analog.Ghost.Gbx",
+    "md5": "88af55bdd53aa22fca629d72ee319e0a"
+  },
+  "source_inputs": {
+    "path": "/tmp/w/197047/TAS_95839_analog.Ghost.Gbx",
+    "md5": "88af55bdd53aa22fca629d72ee319e0a"
+  },
+  "engine_run": {
+    "note": "GENERATED, not repaired: the input tape was taken from TAS_95839_analog.Ghost.Gbx -- the one part of that file that is ours -- and every sample of this record was produced by driving that tape through the dedicated server's own engine and reading the car's state per tick (fk regen --inputs, FK_NO_CHOOSER=1, field map gen_map_v1, --trim-outside, no --quat-kind: the writer follows the encoding the layout probe found). Then tail fix --cut 95839, anon, body setlogin TAS, setdecl 95839, recspan --end 95839 --trim-all. INHERITED, and named rather than invented: sample byte 89, the ground-contact flag, which no honest fit exists for on a ground-dominated map (99.95 % against 197047's own human recording -- at a slot the same run's layout calls a quaternion component, because the byte takes its second value on 0.05 % of samples). Also still the carrier's: the intermediate checkpoint splits in chunk 0x0309202B, a corpus-wide unfixed field.",
+    "host": "44794.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 1917,
+    "samples_in_record": 1917,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "0-13",
+    "14",
+    "15",
+    "18",
+    "19-34",
+    "39",
+    "40",
+    "42",
+    "43",
+    "47-68",
+    "69-72",
+    "76",
+    "81-84",
+    "91",
+    "93",
+    "95",
+    "97",
+    "99"
+  ],
+  "fields_inherited": [
+    "89"
+  ],
+  "tools": [
+    {
+      "tool": "fk",
+      "args": "regen --inputs --trim-outside --fieldmap gen_map_v1.tsv"
+    },
+    {
+      "tool": "tmtraj",
+      "args": "tail fix/anon/body setlogin/setdecl/recspan/intg gate"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank01_101794.Ghost.Gbx",
+        "md5": "f5d04a18b045803aa84dd48aceaf0ab7"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank02_102934.Ghost.Gbx",
+        "md5": "8d056e602d9ca2386cc58394df55c016"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank03_103244.Ghost.Gbx",
+        "md5": "cb2c1ef83411b0c2b39a46b74aa418e0"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank04_103635.Ghost.Gbx",
+        "md5": "e0f4b9295222f9edecca722085c13c07"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank05_105174.Ghost.Gbx",
+        "md5": "7e6124df283c0d9c4db5e87723b4bd65"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank06_105466.Ghost.Gbx",
+        "md5": "b00d97fa0c509348dfa6aface52d4a97"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank07_106694.Ghost.Gbx",
+        "md5": "c41ff8a6213c98ee23167e3144c0db73"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank08_107204.Ghost.Gbx",
+        "md5": "dd3b90149fc10286a7327bc9274d72f5"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank09_108114.Ghost.Gbx",
+        "md5": "314e6ff09ba49ef8045c9a54036dd49a"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank10_108613.Ghost.Gbx",
+        "md5": "9fdb979bab417dc7ca73541a9b23ef9b"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank11_108854.Ghost.Gbx",
+        "md5": "d5ab4f205cedecf301d10bb81039f419"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank12_109194.Ghost.Gbx",
+        "md5": "ae6129793c9d6b95d2a4a056e80e8819"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank13_109624.Ghost.Gbx",
+        "md5": "ae30791c6ba0bf6c4e38f5a708d5586f"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank14_110344.Ghost.Gbx",
+        "md5": "a55097080a66c798734efca3e1f1bc14"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank15_110974.Ghost.Gbx",
+        "md5": "2f9c7da40205c991a7e588240bd0e177"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank16_111004.Ghost.Gbx",
+        "md5": "ae5de13770ca5a372d9079756d1a5926"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank17_111164.Ghost.Gbx",
+        "md5": "962bce7a278fac0ca315d75758645bf9"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank18_112144.Ghost.Gbx",
+        "md5": "d5c0013a659179eb2a62ceddfba65007"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank19_113104.Ghost.Gbx",
+        "md5": "94ff28a651172893cf4a4ad7b6abbbbf"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank20_117550.Ghost.Gbx",
+        "md5": "23b4df5b510922350b1826f2fe3ff736"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank21_120937.Ghost.Gbx",
+        "md5": "38f44f1bbf0c771551e97d16632c0148"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/197047/ghosts/rank22_125161.Ghost.Gbx",
+        "md5": "a98bd7c8faffd8d1123ea4990e1d4169"
+      }
+    ],
+    "limits": []
+  }
+}
