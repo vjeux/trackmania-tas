@@ -5,14 +5,36 @@ accelerator down. Push it toward 67 %, and tap through the drop-in as well as th
 ramp — the first 4.7 seconds are worth more than the whole nineteen-second
 glide.**
 
+**Tap water 01** — TAS **22.072** (−1.253) | AT 23.325 | WR 23.298 by Lukrecja666
+
+https://github.com/user-attachments/assets/833aa5d5-25b1-46e2-a053-d5566e7ee7c1
+
+**Our run beside the world record, and the whole race is over by 4.7 s.** Left is
+our 22.072, right is Lukrecja666's 23.298, both clocks from the same start. They
+are hard to tell apart on the glide — this is a wet map and both cars are
+aquaplaning, which is why the pipeline's ground-contact check reads 85.4 % on our
+tape and **85.7 % on the human's own recording**, a genuine file the game wrote
+itself. Watch the descent instead: by the time the two panes reach the flat, ours
+is a car length and a half up the track, and it stays there to the arch.
+
+They are also genuinely two runs and not one — max **33.12 m** apart, mean
+**15.76 m**, 394 of 442 samples in the visible band, independent at every
+alignment. Split screen rather than one camera precisely because of that gap: at
+33 m the second car is behind the lens for most of the run.
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
-| **TAS** | **22.072** | **−1.253** | **−1.566** |
-| TAS at a 40 ms input grain | 23.125 | −0.200 | −0.513 |
-| 1-minimal, 747 input events | 23.183 | −0.142 | −0.455 |
-| **a uniform 2-on/1-off tap, nothing else** | **23.335** | +0.010 | **−0.303** |
-| Author time (never beaten by a human) | 23.325 | — | −0.313 |
-| Human WR — Reddnox, who is also the author | 23.638 | +0.313 | — |
+| **TAS** | **22.072** | **−1.253** | **−1.226** |
+| TAS at a 40 ms input grain | 23.125 | −0.200 | −0.173 |
+| 1-minimal, 747 input events | 23.183 | −0.142 | −0.115 |
+| **a uniform 2-on/1-off tap, nothing else** | **23.335** | +0.010 | +0.037 |
+| Author time | 23.325 | — | +0.027 |
+| **Human WR — Lukrecja666** | **23.298** | **−0.027** | — |
+| previous human record — Reddnox, the author | 23.638 | +0.313 | +0.340 |
+
+**The author time has now been beaten by a human.** It stood unbeaten for the
+life of this page; on 2026-08-20 Lukrecja666 took it by 0.027, pushing the
+author's own 23.638 down to third. Our 22.072 still leads the board by 1.226.
 
 TMX map [173636](https://trackmania.exchange/maps/173636) · author **Reddnox** ·
 **602 recorded runs** — one of the most hunted maps here.
@@ -61,7 +83,7 @@ and phase, not because he did anything different. Against the world record:
 
 | step | time | won |
 |---|---|---|
-| human WR | 23.638 | — |
+| Reddnox 23.638, the record when this ladder was built | 23.638 | — |
 | + a uniform tap over the glide | 23.335 | 0.303 |
 | + optimised glide throttle | 23.112 | 0.223 |
 | + optimised **first 4.7 s** | 22.277 | **0.835** |
