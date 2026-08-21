@@ -2104,3 +2104,92 @@ orientation.
 
 > **It reports that every written sample came from an engine instant, and nothing
 > about whether the instant was the car.**
+
+## 228811 "Torment (1-DOWN)" — `TAS_20237` is KappaRiley's container, and 73 % of it is his driving
+
+Found 2026-08-21, filming. This map was queued as the easy one: our 20.237
+against a human record 2.400 s slower, a pairing with no plausible donor
+relationship. It has both. **The gate passes it, the census passes it, the skin
+and login pass it, and it must not be filmed.**
+
+### What the container says
+
+| field | our `TAS_20237` | KappaRiley's download | two other humans |
+|---|---|---|---|
+| record span | `end 22670` — **his** | `end 22670` | 23210 / 23760, their own |
+| checkpoint list | `[4647, 8171, 9515, 11746, 14976, 18373, 20237]` | `[4647, 8171, 9515, 11746, 14976, 18373, 22637]` | their own, all different |
+| first sample time | **20 ms** | 20 ms | **0 ms**, both |
+| car-entity groups | **2** — 300 and 405 samples | 2 — 300 and 454 | **1** each |
+
+Our own last sample is at **20250** and our finish is 20237, so the 22.670 span
+is not ours by any reading. **The first six checkpoint splits are his to the
+millisecond** — which the page's own account predicts, since the whole 2.082 s
+is made at the end — so the splits do not discriminate on their own. The span,
+the sample-time base and the inherited 300-sample car-entity group do.
+
+### What the telemetry says
+
+Within **1 mm for 294 consecutive samples — 0 to 14.720 s of a 20.237 s run**,
+73 % of it. Then a clean monotone departure: past 1 cm at 14.770, 1 m at 15.970,
+10 m at 17.820, to a maximum of **291.73 m**. No re-convergence, so by shape
+this is the innocent "identical from the start, then diverging" case rather than
+a splice.
+
+**But the control that would settle it cannot be run on this map**, and that is
+the point at which this stopped being a judgement call. On every other map in
+the same batch the question "is the shared opening inheritance or map
+determinism?" was answered by comparing two *human* recordings over the same
+window. Here `sep` returns **zero compared rows** for rank 1 against rank 2 and
+against rank 3 — the documented session-time truncation, silent on stdout, the
+exact failure `sep-truncation-scan.sh` exists to catch. `nearident` reports it
+as `overlap=0` with a mean of 1.8e308, which is `f64::MAX` wearing a
+measurement's clothes.
+
+So there is no human-vs-human baseline here, and **absence of a baseline is not
+a passing baseline.**
+
+### The fact that decides it
+
+**Our file pairs with KappaRiley's recording and with nothing else.** Rank 2 and
+rank 3 share a sample-time base with each other and not with him; our file
+shares *his*. Two runs recorded in different sessions do not share sample
+timestamps — that is the whole reason `seplag` scans lags in the first place.
+Our file carrying his timestamps, his span, his splits and his positions for
+three-quarters of the run is not something honest driving produces.
+
+Whatever the input tape is, **the video would be 14.7 seconds of KappaRiley's
+driving captioned as ours, followed by 5.5 seconds of ours.** That is the
+227654 verdict reached by a different route: the times may be honest, because
+the oracle validates the input tape and the tape is not what is inherited; what
+is wrong is the record, and the record is the only thing a video shows.
+
+The standing rule applies without needing any of the above: **a tape whose
+container is not ours is not filmable, however clean its driving.**
+
+### What passed it
+
+Worth listing, because five readers cleared this file:
+
+```
+tmtrajcheck --race 20237     PUBLISHABLE, 0 fail 0 warn (C10 included)
+census --own 20237           5x its own, 0 of 22637 / 20555 / 23210
+skincheck                    clean, Skins\Models\CarSport\TAS.zip
+body login                   TAS
+spawnq vs the human          ok, dist 0.001 m, |dot| 1.0000
+```
+
+**Not one of them reads the span, the sample-time base or the entity-group
+count** — the three fields that carry the answer. The container axis and the
+telemetry axis are orthogonal, as this file demonstrates from the third side:
+its telemetry is partly foreign *and* its container is foreign, while every
+reader we habitually run is blind to both.
+
+> **A decode header is a reader nobody was treating as one.** `tmtraj decode`
+> prints the span, the checkpoint list and the entity groups in its first three
+> lines, for free, on every file this project has ever opened. All three said so
+> here before any instrument was run.
+
+### Repairable?
+
+In principle, the same way 227654 is: regenerate the record from the input tape
+into a clean container. Until then the page keeps its result and gets no clip.

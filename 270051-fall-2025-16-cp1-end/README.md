@@ -30,16 +30,18 @@ contains.
 *One instrument reading that needs its context.* `nearident`, the contamination
 check, reads **COPY** on this pairing — 41 consecutive samples inside its 1 mm
 band. It is a false positive here, and the reason is measurable: **every ghost
-our pipeline writes places the car 0.000507 m from where the game places it**,
-identically at the spawn on five different maps with five different spawn
-coordinates, including one where our run is 2.4 s faster than the human's and no
-donor relationship is possible. Two of our own tapes sit at exactly 0.000000 m
-from each other; two downloaded human recordings sit at exactly 0.000000 m from
-each other. So the 1 mm band is only twice our own writer's noise floor, and it
-cannot resolve a close following line from a copy on any of-ours-versus-a-
-download pairing. The control that does resolve it is on this map: three
-unrelated pairs of human recordings read **3, 4 and 6** samples inside the band,
-against our 41 — and our input archive is 1073 bytes of dense analog steering
+our pipeline writes places the car ~0.0005 m from where the game places it.**
+The cleanest demonstration is 279209, a map where our tape inherits nothing —
+4 samples in the band, mean separation 0.81 m — and where **three pairs of
+downloaded human recordings sit at exactly 0.000000 m at the spawn while our
+tape sits at 0.000500 m from two different humans and at 0.000000 m from its own
+sibling.** The offset is ours, it is the same magnitude on every map measured,
+and it does not depend on any donor. So the 1 mm band is only twice our own
+writer's noise floor, and it cannot resolve a close following line from a copy
+on any of-ours-versus-a-download pairing. The control that does resolve it is
+per-map and human-versus-human: here three unrelated pairs of human recordings
+read **3, 4 and 6** samples inside the band, against our 41 — and our input
+archive is 1073 bytes of dense analog steering
 against his 605 bytes of sparse keyboard, so the two tapes are not one tape.
 
 | run | time | vs author time | vs human WR | slack |
