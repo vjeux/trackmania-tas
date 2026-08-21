@@ -10,12 +10,25 @@ late.**
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
 Single car: this map's human record is 24.512, over four and a half seconds slower, so a
-side-by-side would show one car finishing while the other is still most of a
-straight behind. Two more of our tapes are filmed for comparison —
+side-by-side in one camera would show one car finishing while the other is still
+most of a straight behind. Two more of our tapes are filmed for comparison —
 [19.927](https://github.com/user-attachments/assets/dab645ee-4ec9-4958-b894-b24373ff4c67)
 and the more forgiving
 [19.948](https://github.com/user-attachments/assets/0282a92c-5227-4516-821f-2ae50123991d),
 which is the one to copy if you are driving it yourself.
+
+**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
+
+https://github.com/user-attachments/assets/7a263da5-a1b2-41c7-b110-4e36c9f97a63
+
+**The comparison, as a split screen: our 19.907 on the left, surms41's world
+record on the right, both clocks running from the same start.** A single camera
+cannot hold this pairing — the two runs are **356 m apart** at the widest point,
+so the opponent spends the run behind the lens — but side by side the whole
+difference is legible. Watch the middle of the run: we are already through the
+green gate while the record is still climbing to it, and by 18.250 we are on the
+final yellow ramp with the record two sections back. When our car parks at the
+flag, his is still driving; that held frame *is* the 4.605 s.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
