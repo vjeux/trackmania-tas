@@ -4,6 +4,10 @@
 lock anywhere between 0.240 and 0.770 is worth a millisecond or two, and it is
 what makes the faster corner exit pay.**
 
+**Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 (five players tied)
+
+https://github.com/user-attachments/assets/82fa0be0-16d7-43fa-a56c-5a72a3da7a67
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | **TAS** | **4.492** | **±0** | **−0.003** |
