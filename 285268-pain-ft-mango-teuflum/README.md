@@ -7,6 +7,10 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
 **Video — both cars at once:** <https://pxl.cl/cvxXJ> — our keyboard **49.475** against rank 2's **49.491** (Ssnake01) — sixteen milliseconds apart over forty-nine seconds.
 
+**Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) vs WR by burntbagels 49.446 | AT = 49.282
+
+https://github.com/user-attachments/assets/eb3a201a-49e9-4511-8daf-04640f5e64c0
+
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
 | **TAS** | **49.275** | **−0.007** | −0.171 | analog |
