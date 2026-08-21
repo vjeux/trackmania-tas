@@ -419,3 +419,46 @@ also tracked the clock offset monotonically — −210 ms → 7.81 m, −300 →
 
 Elsewhere the same trap: four of five regenerations agreed with each other on one
 map and **all four were wrong**. Rank against ground truth, or do not rank.
+
+## 17. Absence of a result is not a result
+
+The nickname reader records what the MediaTracker calls an imported ghost. When
+an import produces no track it writes `NONE` — and **`NONE` looks exactly like a
+finding.** It lied twice in one night, in both available directions:
+
+**A dead game answers every import with no track.** Trackmania crashed during a
+long sweep and the reader wrote `NONE` for eleven files that had read
+`Ghost:TAS` an hour earlier. Guarded now: it refuses to start unless `/ping`
+answers, and aborts mid-sweep rather than record a row against a dead
+instrument.
+
+**An import sometimes just misses.** Five files were reported to the fleet as
+*"the game refuses to load them while our own parser reads them fine."* Four of
+them import perfectly on retry, with correct durations — 347.0 s for the tape
+named 347003, 239.1 s for the 239133 cut. **They were an instrument artefact
+published as a finding.**
+
+The existing data said so and was not read properly: the failures came in
+**consecutive pairs** — rows 3 and 4 of one map with rows 5–9 fine afterwards,
+the last two rows of another. *A per-file property does not recover after two
+rows, and a dedupe does not un-dedupe.* Non-monotonic failure is the signature of
+a transient, and it was visible in the table before anyone ran an experiment.
+
+The experiment that settled it carried both controls, which is what a
+negative-result test needs:
+
+- a **positive control from a different map's folder**, imported first — it
+  still produces a track, so it proves the session is healthy without spending
+  the experiment on a sibling
+- a **mirror control**: the subject first, then a sibling. If order were the
+  cause, the failure would move to the sibling. It did not move; both imported.
+
+`nickcheck.sh` now retries a nameless import three times before recording
+anything. A real refusal still reports `NONE-after-3`; a missed attempt no
+longer reports at all.
+
+**The rule:** distinguish *the answer is no* from *I did not get an answer*, or
+the table fills up with the second wearing the first's clothes. Every tool in
+this pipeline that has produced a false finding produced it this way — the 404
+that `curl` downloaded successfully, the parser that said `1 replay parsed`, the
+locator that printed `0 candidates`, and now the reader built to catch them.
