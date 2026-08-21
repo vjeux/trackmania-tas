@@ -16,8 +16,8 @@ ten metres later with the car turned across its own direction of travel.**
 >
 > The 20.237 itself is unaffected: the oracle validates the input tape, and the
 > tape is not what was inherited. Five separate readers passed this file —
-> none of them reads the three fields that carry the answer. The full account,
-> and the repair, are in [`DO-NOT-FILM.md`](../DO-NOT-FILM.md).
+> none of them reads the three fields that carry the answer.
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | **TAS** — [`TAS_20237`](replays/TAS_20237.Ghost.Gbx) | **20.237** | **−0.318** | −2.400 |

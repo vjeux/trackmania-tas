@@ -14,7 +14,7 @@
 # Why step 4 exists: a pushed commit does NOT authorise an attachment for public
 # serving. Only a reference in content GitHub renders at save time does. We shipped
 # 19 clips before learning this and 18 of them were 404 to everyone but us.
-# See VIDEO-UPLOAD-NOTES.md traps 0 and 1.
+# The two steps that make this true are 4 (register in the release body) and 5.
 #
 # Why step 5 uses a scrubbed environment: every check we ran for a whole night
 # carried a session cookie, so the failure was invisible. A gate that runs with

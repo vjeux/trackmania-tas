@@ -10,8 +10,7 @@ their failed attempts each lasted longer than that.**
 > `BEST_793893` carries no `CSceneVehicleVis` entity at all: it satisfies a
 > finiteness check vacuously, and there is nothing to render. The other two
 > tapes on this page are not substitutes. The 793.893 is unaffected — it is a
-> property of the input tape, which the oracle validates. See
-> [`DO-NOT-FILM.md`](../DO-NOT-FILM.md).
+> property of the input tape, which the oracle validates.
 
 | run | time | vs author time |
 |---|---|---|

@@ -1,5 +1,5 @@
 #!/bin/bash
-# ghost-splice-audit.sh — the corpus-wide audit behind GHOST-AUDIT.md.
+# ghost-splice-audit.sh — the corpus-wide published-ghost telemetry audit.
 #
 #   bash tools/ghost-splice-audit.sh > audit.tsv
 #
