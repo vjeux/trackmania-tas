@@ -69,6 +69,15 @@ exists. `CUT_795034` is separately a splice at 1021× the plausible speed ratio.
 | `BEST_218812`, `KEYBOARD_218877` | `AUTHORMIN_831ev_354781` | 10 samples re-converge after 652 m |
 | `MINIMAL_832ev_219581` | `AUTHORCUT_220391` | **3046** samples re-converge after 64 m |
 
+> **Superseded in part, 2026-08-21 — see the re-measure at the end of this
+> file.** Rows two and three compare our tapes against **same-pipeline
+> siblings**, which trips the re-convergence test legitimately. Against genuine
+> downloaded human recordings `BEST_218812` reads 10 samples inside the 1 mm
+> band where two unrelated humans read 8: **its driving is its own.** It is
+> still refused, on carrier-owned contact bytes (C5/C6, which the human world
+> record passes) and a container carrying Bald_tm's 441.002 — a different
+> defect from the one recorded here.
+
 ## 279218 `TAS_5345_starttrick` — the file, not the map
 
 112 of 112 samples identical to the human `r001` 5.355. The map's other five
@@ -2193,3 +2202,89 @@ reader we habitually run is blind to both.
 
 In principle, the same way 227654 is: regenerate the record from the input tape
 into a clean container. Until then the page keeps its result and gets no clip.
+
+## 286279 "[Turtle Trial] Leto" — the 218.812 is refused, and the recorded reason for refusing it was the wrong one
+
+Re-measured 2026-08-21, filming. The existing entry above lists `BEST_218812`
+and `KEYBOARD_218877` as carrying `AUTHORMIN_831ev_354781`'s trajectory,
+"10 samples re-converge after 652 m". **That comparison is against a
+same-pipeline sibling, which this same document says trips the re-convergence
+test legitimately** — and against genuine downloaded human recordings the file
+is clean:
+
+| pair | longest run inside the 1 mm band | mean separation |
+|---|---|---|
+| `BEST_218812` vs **Bald_tm's 441.002 download** (rank 1) | **10** | 142.20 m |
+| `BEST_218812` vs **Quantiks' 977.690 download** (rank 2) | **8** | 219.73 m |
+| **control: Bald_tm vs Quantiks**, two unrelated humans | **8** | 154.98 m |
+
+Eight is this map's floor between two genuine human recordings; ours reads ten
+against the record. **The driving in this file is its own.** What the original
+measurement found was a branch: against `AUTHORMIN_831ev_354781` the two share
+**760 consecutive bit-identical positions** and the same checkpoint lineage
+(`42036, 122182, 168281`, where the author's and Bald_tm's read `45597,
+130162`), which is what a search branching off one parent produces.
+
+> **The re-convergence test needs a human recording on the other side, every
+> time.** Run against a sibling it reports the pipeline's own family tree and
+> calls it contamination. That is written down two sections below the table it
+> just corrected.
+
+### It is still refused, on the contact bytes, and here the human control convicts rather than exonerates
+
+```
+06_BEST_218812        REFUSED  C3, C5, C6
+09_KEYBOARD_218877    REFUSED  C3, C5, C6
+11_MINIMAL_219581     REFUSED  C3, C5, C6
+```
+
+The standing step says download the map's world record and put it through the
+same gate, because a check that refuses the human recording is measuring the
+map. Done, and it splits the three failures cleanly in two:
+
+| check | our `BEST_218812` | Bald_tm's download | Quantiks' download |
+|---|---|---|---|
+| C3 | FAIL — 23.1 m jump at 46.850 | **FAIL — 152.3 m at 315.100** | **FAIL — 462.6 m at 856.450** |
+| **C5** airborne with contact ON | **FAIL — 84 of 153** | **PASS** — off on all 119 | PASS |
+| **C6** ground-borne with contact ON | **FAIL — 80.2 %** | **PASS — 95.2 %** | PASS |
+| C8 steps implying a car wheel | 29 % | **60 %** | — |
+
+**C3 is the map** — both humans fail it worse than we do, `c3speed` re-grades
+our worst step as **196.0 m/s, PASS** under the 200 m/s bar, and `spdcheck`
+identifies the two offenders as **respawns**: implied 196.0 and 166.4 m/s
+against a *recorded speedometer of exactly 0.0*. That is the documented
+signature of a respawn, on a trial map where respawning is how the map is
+driven.
+
+**C5 and C6 are the file.** The genuine world record's contact flag is coherent
+with its own ballistics — off for all 119 airborne samples, on for 95.2 % of
+ground-borne ones. Ours claims ground contact for **84 of 153 provably airborne
+samples** and loses it for a fifth of the samples where the car is provably on
+the ground. That is 134672's diagnosis in another file: **carrier-owned contact
+and surface bytes.** The wheel column agrees — 29 % of our rolling steps imply
+a car wheel against the human's 60 %.
+
+And the container is half the donor's:
+
+```
+census  4x its own 218.812  AND  1x 441002 -- Bald_tm's world-record time
+span    end 441000 -- Bald_tm's, for a 218.812 run whose last sample is 217.950
+        an 8820-sample 0x2D001000 group rides along beside a 4359-sample car
+```
+
+`KEYBOARD_218877` and `MINIMAL_219581` carry the same mixed census. So the three
+fastest tapes on this map all fail the same three checks and all carry the
+record holder's time in their containers.
+
+**No clip.** The result stands; the artefact does not support one. The only
+tapes here that gate clean are `AUTHORCUT_220391_watchable` (lone C5) and
+`AUTHORCUT_220821_watchable` (no failures) — both author-derived, so neither is
+ours to caption as a TAS.
+
+### What would fix it
+
+The same repair 227654 needs: regenerate the record from the input tape into a
+clean container, so the contact and surface bytes belong to the run that is
+being drawn. The positions are already ours — that is the part this re-measure
+established, and it is the part a regeneration would otherwise be assumed to
+need.
