@@ -23,9 +23,9 @@ Same author and upload day as [untitled 02](../276877-untitled-02), and the same
 lattice — **0 checkpoints, 2 finish gates, nothing enforcing a route.**
 
 But **this run drives the map.** The test is model-free: a car with nothing under
-it accelerates downward at 22.3 m/s² in this engine (calibrated on two tapes that
+it accelerates downward at 25.20 m/s² in this engine (calibrated on two tapes that
 provably fall out of the world). Across the stretch that looks like a glide, the
-car drops **18.4 m in 2.71 s** where free fall would drop 81 m — it is supported
+car drops **18.4 m in 2.71 s** where free fall would drop 92.5 m — it is supported
 the whole way.
 
 Measured per sample:
