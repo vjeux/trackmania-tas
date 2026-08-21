@@ -1956,3 +1956,50 @@ identity quaternion (caught, |dot| 0.707) and telemetry relocated to
 Restricted to the 8 passers the route-dump distances are 7.75 m and 16.3–17.1 m —
 **none near the 2.5 mm the 18.942 reached**, so the true clock was not in the
 batch. Consistent with the measured rate of 4 in 52.
+
+### The repair failed, and the control failing is the finding
+
+Four regenerations of 197047's broken tape, every kind, 100 % coverage and 1917 of
+1917 samples each:
+
+```
+--quat-kind 0   spawn (0.7071, 0.7071, 0, -0)      |dot| 0.5000
+--quat-kind 1   spawn (1.0000, 0, 0, -0)           |dot| 0.0000
+--quat-kind 2   spawn (0.8660, 0, 0, 0.5000)       |dot| 0.3536
+human spawn           (3.4e-05, -0.7071, 0, 0.7071)
+
+CONTROL — regenerating KEYBOARD_96759_metronome, which is CORRECT as published:
+                      (0, 0, 0, 1.0000)            |dot| 0.7071   BROKEN
+                      (its published version reads |dot| 1.0000)
+```
+
+**No kind reproduces the human spawn, and re-regenerating the good file makes it
+bad.** So the kind is not the variable — and the control is what says so.
+
+> **A repair whose positive control also fails is not a failed repair, it is a
+> broken path.** Without that row the four negatives would have read as "this file
+> resists repair" instead of "this tool damages this map".
+
+**The cause is the offset, not the kind:**
+
+```
+subject:  pos +1644   quat +1700    quat is +56 AFTER pos
+control:  pos +5400   quat +5384    quat is −16 BEFORE pos   ← correct
+```
+
+The probe is reading orientation out of bytes that are not the orientation.
+**`--quat-kind` permutes four components at a chosen address; it cannot rescue a
+wrong address.** `--quatoff` exists in `regen.rs` and is **not wired through to
+`fk regen`** — invoking it produces no output file at all.
+
+**The free check that falls out of this:** every regeneration prints
+`record layout: pos +N, quat +M`. **`M − N` should be −16.** Anything else means
+the run is suspect, readable from a log nobody had to instrument.
+
+Two standing consequences:
+
+- **Do not re-regenerate a currently-correct file as a "refresh".** On this map
+  the round trip breaks it.
+- Before pointing a fixed path at broken files, **regenerate a known-good sibling
+  and require it back unchanged.** If the good file does not survive the round
+  trip, nothing downstream of that path can be trusted.
