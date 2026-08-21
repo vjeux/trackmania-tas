@@ -98,6 +98,27 @@ ok(api.gradeOf(-46,'press').name==='GOOD' && api.gradeOf(46,'press').name==='GRE
 ok(api.gradeOf(100,'release').name==='GREAT' && api.gradeOf(100,'press').name==='GOOD','a release gets more room than a press');
 ok(api.matchEdge(evs,1,'press',4000)===null,'a brake press at 4.000 matches nothing (spurious)');
 
+console.log('— section drills (fairness) —');
+for (const s of api.SECTIONS){
+  const secEnd = (()=>{ let e=s.b;
+    for(const n of N){ if(n.end<=0) continue;
+      if(n.start>=s.a-1 && n.start<=s.b+1 && !n.open) e=Math.max(e,n.end); }
+    return e; })();
+  const granted = N.filter(n=>n.end>0 && n.start<s.a && n.end>s.a).map(n=>n.lane);
+  const ev = api.notesToEvents(N,false).filter(e=>e.t>=s.a-1 && e.t<=secEnd+1);
+  const byNote={}; for(const e of ev)(byNote[e.note]=byNote[e.note]||[]).push(e.type);
+  const unexplained = Object.entries(byNote)
+    .filter(([n,t])=>t.includes('release') && !t.includes('press') && !granted.includes(N[n].lane));
+  const unfinished = Object.entries(byNote)
+    .filter(([n,t])=>t.includes('press') && !t.includes('release') && !N[n].open);
+  ok(unexplained.length===0, s.name+': no release judged whose press the drill never showed');
+  ok(unfinished.length===0,  s.name+': the drill never stops mid-note');
+}
+ok(/function preHeldLanes/.test(html) && /S\.granted/.test(html),
+   'the page hands you the keys a mid-run drill starts on');
+ok(/addEventListener\('blur'/.test(html), 'losing focus drops held keys instead of sticking them down');
+ok(/t < S\.firstNote/.test(html), 'a key pressed before the drill begins is warm-up, not an extra');
+
 console.log('— page shell —');
 ok(html.includes('<canvas id="cv">'),'canvas present');
 ok(!/\bsrc=|\bhref="http/.test(html),'no external resources — opens with no network');
