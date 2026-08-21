@@ -10,14 +10,32 @@ is spent airborne, riding the lattice's own launches rather than driving it.**
 | TAS, earlier rung | 9.415 | −21.984 |
 | TAS, the intended-ish line | 32.219 | +0.820 |
 | Author time | 31.399 | — |
-| Human record | *none — nobody has a time on this map* | — |
+| Human record — Its_Cam. | 14.959 | −16.440 |
 
 TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
-**DugonGOD** · **0 recorded runs**.
+**DugonGOD** · **1 recorded run** — the first human time on this map was set on 2026-08-20.
 
 **untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
 
 https://github.com/user-attachments/assets/02596352-d4dd-4c96-a613-f0d6c1b7fab3
+
+**untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
+
+https://github.com/user-attachments/assets/03ba355a-f703-4846-b5c2-7ccae682c632
+
+**Somebody finally drove this map, and here is our run beside theirs.** Its_Cam.
+set the first human time here on 20 August 2026 — **14.959** — and took the
+same shortcut we did: watch the two panes at 2.583 s and they are at the same
+gate. Then ours goes through the purple lattice while theirs is still working up
+to it, and the left pane parks at the flag at 8.898 while the right keeps flying
+for six more seconds.
+
+It is a split screen rather than one camera because the two runs end up **61.5 m**
+apart with the human 6.061 s behind: in a single chase shot the second car is
+simply not on screen, which would make a two-car caption a claim the picture
+cannot support. Side by side, the difference is legible — and on a map with no
+checkpoints, what is worth watching is that a human independently found the same
+way to cheat it.
 
 ## What is going on here
 
