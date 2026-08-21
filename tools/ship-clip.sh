@@ -23,8 +23,37 @@ set -euo pipefail
 
 REPO="${REPO:-vjeux/trackmania-tas}"
 RELEASE="${RELEASE:-videos-v1}"
-GHVID="${GHVID:-$HOME/tas-test/.ghvid/ghvid.sh}"
-ROOT="${ROOT:-$HOME/tas-test}"
+
+# --- portability: this runs on the render box (Linux/WSL) and on a Mac -------
+# The render box has no native ffmpeg/ffprobe; it drives the Windows builds
+# through /mnt/c. Everything else here is coreutils, which differ by platform.
+if [ -x "$HOME/bin/ghvid.sh" ]; then GHVID="${GHVID:-$HOME/bin/ghvid.sh}"
+else GHVID="${GHVID:-$HOME/tas-test/.ghvid/ghvid.sh}"; fi
+if [ -d "$HOME/trackmania-tas" ]; then ROOT="${ROOT:-$HOME/trackmania-tas}"
+else ROOT="${ROOT:-$HOME/tas-test}"; fi
+
+WINFF=/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin
+if command -v ffprobe >/dev/null 2>&1; then FFPROBE=ffprobe
+elif [ -x "$WINFF/ffprobe.exe" ]; then FFPROBE="$WINFF/ffprobe.exe"
+else FFPROBE=""; fi
+
+# ffprobe.exe cannot read a WSL path; stage through the Windows drive.
+probe_duration() {
+  [ -n "$FFPROBE" ] || return 1
+  case "$FFPROBE" in
+    *.exe)
+      _t="/mnt/c/Users/vjeux/tm-video/_probe_$$.bin"
+      cp "$1" "$_t" || return 1
+      _w="C:/Users/vjeux/tm-video/_probe_$$.bin"
+      _d="$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$_w" 2>/dev/null || true)"
+      rm -f "$_t"
+      printf '%s' "$_d" ;;
+    *) "$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null || true ;;
+  esac
+}
+
+# stat: BSD takes -f%z, GNU takes -c%s.
+filesize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
 FILE="${1:?usage: ship-clip.sh <file.mp4> <map-dir> [release-asset-name]}"
 MAPDIR="${2:?usage: ship-clip.sh <file.mp4> <map-dir> [release-asset-name]}"
@@ -34,8 +63,8 @@ die() { echo "ship: $*" >&2; exit 1; }
 
 # --- 1. the local file, settled and playable --------------------------------
 [ -f "$FILE" ] || die "no such file: $FILE"
-a=0; b=1; while [ "$a" != "$b" ]; do a=$(stat -f%z "$FILE"); sleep 1; b=$(stat -f%z "$FILE"); done
-LOCAL_DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$FILE" 2>/dev/null || true)"
+a=0; b=1; while [ "$a" != "$b" ]; do a=$(filesize "$FILE"); sleep 1; b=$(filesize "$FILE"); done
+LOCAL_DUR="$(probe_duration "$FILE")"
 [ -n "$LOCAL_DUR" ] || die "local file does not probe as playable: $FILE"
 echo "ship: local $FILE  ${b} bytes  ${LOCAL_DUR}s"
 
@@ -78,8 +107,8 @@ CODE=""; ANON_BYTES=""; ANON_DUR=""
 for attempt in $(seq 1 10); do
   CODE="$(env -i /usr/bin/curl -s -L --retry 3 --max-time 300 -o "$OUT" -w '%{http_code}' "$URL" || true)"
   if [ "$CODE" = "200" ]; then
-    ANON_BYTES="$(stat -f%z "$OUT")"
-    ANON_DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" 2>/dev/null || true)"
+    ANON_BYTES="$(filesize "$OUT")"
+    ANON_DUR="$(probe_duration "$OUT")"
     [ -n "$ANON_DUR" ] && break
     echo "ship: attempt $attempt fetched $ANON_BYTES bytes that do not probe yet — retrying"
   else
