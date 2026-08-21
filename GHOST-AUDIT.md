@@ -52,7 +52,12 @@ published as the human's lap, and matching it is correct.
 - **227654** — same shape: all 43 of our files on that map inherit rank 1, and
   the only other record is an eleven-minute respawn run that cannot carry a
   57-second tape. It needs a third recording from any source.
-- **165922** — nine files contain no `CSceneVehicleVis` entity at all.
+- **165922** — nine files contain no `CSceneVehicleVis` entity at all: every one
+  exactly 5019 bytes, nine distinct md5s, nine distinct input tapes, and no
+  telemetry section whatsoever. **They cannot be contaminated — there is no
+  carrier telemetry in them to be wrong.** They are also the cheapest repair in
+  the corpus: nothing to preserve, nothing to compare against, no risk of the
+  chooser picking a donor.
 - **134672** — no downloaded human recording is held.
 - **276874, 276877** — zero-record maps. No human has ever driven them, so no
   reference recording can *ever* exist and these files can never be certified by
@@ -162,3 +167,19 @@ test and reads as a splice.
 That rule is deliberately conservative — it can miss a splice disguised as a
 respawn on a respawning map. The reason for erring that way is worth stating:
 **contamination has two other instruments, and a teleport has only this one.**
+
+The mechanism behind it, found while calibrating: a respawn **restores a saved
+checkpoint state**, so the speedometer that looked "frozen" on one file is not
+frozen but *restored*. That gives a physical statement rather than a threshold —
+*a respawn returns the car to a place it has already been* — and the distance
+from each landing to the nearest earlier sample of the same run separates the
+classes by three orders of magnitude.
+
+**And one honest limit on all of it.** After the reclassification the corpus
+contains **zero splices**, which means the detector's negative control was
+mislabeled: the file we had been treating as the known splice, `227654/TAS_57503`,
+turns out to open with an origin placeholder rather than a jump. So the jump
+exemptions are **unfalsified, not validated** — we checked that the rule refused
+things, and not that what it refused was the thing we named. Anyone extending
+this should treat a genuine splice as untested territory and re-derive the
+control when a real one appears.
