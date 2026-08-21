@@ -1112,3 +1112,57 @@ record from our own run.
 > **Test a repair recipe on one file before committing it to forty-five.** The
 > mechanism that produced a clean result is not necessarily the step you can name
 > in it.
+
+### The forced render: both answers were true at once
+
+The question left open was whether a foreign-span file produces 566 seconds of
+video or a short file after a very long render. **Both.**
+
+```
+control (clean span)   5.4 s of video     5.2 MB    94 s wall
+subject (566 s span)   real frames        156 MB    1139 s wall and counting
+```
+
+Thirty times the control's size, growing at ~0.96 MB per second of video — it
+writes real frames for the entire container. At ~6.5× real time, that projects to
+**about an hour of rendering for a 5.35-second run**.
+
+> **The 19 are a hard blocklist.** A file from that group is a 566-second video
+> *and* an hour of render time. One of them in an unattended batch eats a night.
+
+**Still open, and it is the whole size of the problem:** the 94 files with a
+foreign span but a *single* car-entity group. The measurement above was made on a
+file from the 19. Whether the 94 also produce a second track is one import away,
+and it is the difference between a 19-file exception list and a 113-file
+corpus-wide defect.
+
+### Track count and node count are different quantities
+
+Withdrawn by its own author: the phrasing "the span materialises as a second
+`SceneryEvents` track". What was observed is a clip with **two tracks** —
+`Ghost:TAS` at 5.35 and `Ghost:SceneryEvents` at 566.08 — and the byte reading
+shows that comes from **one node carrying four car-entity groups**.
+
+> The MediaTracker's **track** count predicts the render. The **node** count does
+> not. A detector derived from a mechanism inherits that mechanism's imprecision.
+
+### The line all seven fields sit on
+
+Reached independently from the repair side, and it is the general form of the
+whole night:
+
+> **Our readers measure the samples; the game reads the container; the two
+> disagree by design.**
+
+The span is a statement *in the container*, not a property of the sample stream —
+which is why cutting samples leaves it untouched, and why no sample-level
+operation repairs the 45.
+
+Every field found tonight is on the container side of that line: the nickname,
+the login and account id, the six declared-time sites, the skin path, its length
+prefix, the record span, the entity groups, the checkpoint split list. **All of
+them are things the file says about itself rather than things the driving did.**
+The oracle validates the driving and is silent on every one.
+
+That is why a tape that validates three times is a **time**, and not yet a
+**file**.
