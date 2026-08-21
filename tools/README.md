@@ -199,3 +199,48 @@ own recorded bytes**, can:
 ~0.5 mm is the client-vs-server floor. Run one before believing any verdict
 about a file you made, and never carry another map's reading over: winning
 parameters do not port.
+
+### `C-route` — the record against the engine, read by a different instrument
+
+`fk btraj2` re-simulates a ghost's tape and dumps the car's position per tick
+without going near the record, so it answers "is this record this run?" from
+outside the writer's own instrument.
+
+```
+fk btraj2 --template G.Ghost.Gbx --map M.Map.Gbx --shim libfkshim.so \
+          --server /tmp/tmoracle/server --tick 2500 --out route.csv
+tmtraj intg gate G.Ghost.Gbx --race MS --refs refs.tsv --route route.csv ...
+```
+
+**It scans integer tick offsets and reports the best one.** The first version
+compared at lag 0 and reported a magnitude, and it convicted an honest file
+within an hour of being written: 227654's record reads **0.5485 m at lag 0 and
+0.0000 m at lag −1**, because 0.5485 m is exactly how far that car travels in
+one 10 ms tick. *A magnitude cannot see which side of a tick a file is on* —
+a sentence already in this project's notes about `C11b`, which did not stop it
+happening again. **When a comparison produces a suspicious distance, scan the
+lag before drawing any conclusion. It is two lines.** A time shift collapses to
+zero at some lag; a different trajectory collapses at none.
+
+A non-zero best lag is reported, not punished: tick alignment is a property of
+the run, the regenerator is nondeterministic about it, and a solo clip cannot
+look wrong from one tick. Judge it against the map's own control.
+
+**`C-route` needs a control per map like everything else.** `fk btraj2` cannot
+locate the car on every map — on 197047 it reads **1.7657 m against a file the
+game itself wrote**, and on 227654 it will not locate at all on the human's own
+download. A map where it fails its own control is `UNMEASURED` on this axis:
+not clean, not convicted. That column is never folded into either.
+
+### `tmtraj intg echo` — the record's input channel, and it needs no locate
+
+A ghost's samples carry the steer/gas/brake the car was being given. Compare
+that against a `tmtas trace` CSV of a tape and you learn which tape the record
+was written alongside — with no fork server and no locate, so it works on maps
+where `C-route` cannot run. On 197047: **100.0 % agreement with our tape over
+1917 samples, 8.3 % with the human rank-1's.**
+
+**Permanent caveat, do not let this be promoted:** the echo channel is written
+from our tape even in a record whose *positions* came from somewhere else. It
+answers "was this record written alongside this tape", not "are these positions
+this run". It would not have caught the defect `C-route` was built for.
