@@ -21,6 +21,43 @@ the world record's alike, uses about 48 distinct steering values on the ground
 before the launch — restricting the ground phase to a keyboard alphabet does not
 finish at any resolution tried.
 
+**U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR 7.893 by Whatever8319
+
+https://github.com/user-attachments/assets/702a7a24-1629-4a19-9f18-731da47d61cf
+
+**Our 7.463 and Whatever8319's world record, both in one camera, on our car.**
+On the ground the two are one car — the ground phase is not searched here, and
+all four of our tapes share it with the record, which is what the section above
+means by *"every run on this map, ours and the world record's alike, uses about
+48 distinct steering values on the ground before the launch"*. Measured: our
+trajectory is **0.000539 m** from his over the first 2.45 s, while two *human*
+recordings on this map are **1.60 m** apart over the same window — so the shared
+opening is a deliberate inheritance, not a property of the map, and everything
+you see after the launch is ours.
+
+Then it opens, and this is the only clip in the set where the human genuinely
+leaves: **3.15 m at 3.5 s, 24 m at 5.0 s, 82 m at the widest.** 57 of 150
+samples sit in the band where two cars read as two cars, and after that his is
+simply not there — which is what 0.430 s looks like on a map that reaches
+843 km/h.
+
+**The last 0.43 s was cut in post, and the reason is worth stating.** A
+MediaTracker camera dies with the ghost it is bolted to. Our recording stops at
+7.450 and his runs to 7.880, so the render carried 13 frames of frozen still at
+the end — the camera parked, the human's car not drawn at all. `blackdetect`
+saw nothing (it is not black) and `freezedetect` at the usual setting saw
+nothing either; a per-frame difference measurement reads **0.02 against 5.9–19.2
+for live footage** and finds it immediately. Cut at the last live frame.
+
+*Gate.* `tmtrajcheck` **refuses** this tape at C10 — *"the flag claims 4.55 s of
+flight, over which the car changes height by 211.1 m; free fall demands
+−374.8 m."* It refuses the **downloaded human world record** the same way, at
+the same instant, with the same +211 m climb. This is a Reactor map: the car is
+thrust at ~4.5 g along its own −up axis, so C10's free-fall model is not this
+map's physics, and the check is measuring the map rather than the file. Filmed
+on that named exception; every other check passes, and the container carries six
+copies of its own 7.463 and none of 7.704, 7.893, 7.474, 7.476 or 7.514.
+
 ## The physics everything rests on
 
 This is a **Reactor** map. In the air the car is pushed at a constant
