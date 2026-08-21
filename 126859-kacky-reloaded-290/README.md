@@ -4,6 +4,10 @@
 through it, hit the finish tower a car's height lower, and the drop into the
 gate is a third of a second shorter.**
 
+Video — both cars at once: our TAS **23.416** against the human record **24.342**.
+
+https://github.com/user-attachments/assets/2e7527fc-121b-4682-b83a-35e91ae04ccf
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS** | **23.416** | **−0.646** | **−0.926** | analog, 241 steering values |

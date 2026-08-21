@@ -125,7 +125,7 @@
     <div class="t"><b>6.343</b><span>author</span></div>
     <div class="t"><b>6.346</b><span>human WR · xeap-.-</span></div>
   </div>
-  <div class="fact"><b>23</b> steer events · <b>3</b> steer values · <b>1</b> brake tap · gas never released</div>
+  <div class="fact"><b>23</b> steer events · <b>3</b> steer values · <b>1</b> brake tap · <b>gas held throughout</b></div>
 </header>
 
 <main>
@@ -133,15 +133,16 @@
     <canvas id="cv"></canvas>
     <div class="ov"><div id="bigtext"></div></div>
     <div class="ov" id="splash">
-      <h2>Drive a TAS with four keys.</h2>
+      <h2>Drive a TAS with three keys — and one you just hold.</h2>
       <p>This is the real input tape of a run that beat the author time and the human world record on this map — full left, centre, full right, and one brake tap. Notes fall; hold the key for exactly as long as the bar is long.</p>
       <div class="keys">
         <div class="kcap" style="border-color:#1d4a5e"><b>←</b><span>FULL LEFT</span></div>
-        <div class="kcap" style="border-color:#1d5238"><b>↑</b><span>GAS</span></div>
-        <div class="kcap" style="border-color:#5e2029"><b>↓</b><span>BRAKE</span></div>
+        <div class="kcap" style="border-color:#5e2029"><b>↓</b><span>BRAKE ×1</span></div>
         <div class="kcap" style="border-color:#5e4318"><b>→</b><span>FULL RIGHT</span></div>
+        <div class="kcap" style="border-color:#1d5238;opacity:.72"><b>↑</b><span>GAS — JUST HOLD IT</span></div>
       </div>
-      <p class="hint">Start at half speed. <b>Enter</b> play · <b>R</b> retry · <b>P</b> pause · <b>[</b> <b>]</b> speed</p>
+      <p class="hint"><b>Gas is not a lane.</b> The tape puts it down before the lights and never lifts, so hold <code>↑</code> from the start and forget it — it is checked, not timed.<br>
+        Start at half speed. <b>Enter</b> play · <b>R</b> retry · <b>P</b> pause · <b>[</b> <b>]</b> speed</p>
       <div class="row">
         <button class="primary" id="btnStart">▶ Play (Enter)</button>
         <button id="btnDemo">👁 Watch the TAS drive it</button>
@@ -223,9 +224,9 @@
 
     <div class="grp">
       <h3>Keys</h3>
-      <div class="hint"><code>← ↑ ↓ →</code> (or <code>A W S D</code>) drive · <code>Enter</code> play ·
-        <code>R</code> retry · <code>P</code> pause · <code>[</code> <code>]</code> speed.<br>
-        Hold the key for as long as the bar is long: you are judged on the press <i>and</i> on the release.</div>
+      <div class="hint"><code>←</code> <code>↓</code> <code>→</code> (or <code>A S D</code>) are the three lanes; <code>↑</code> (or <code>W</code>) is gas — hold it the whole time.<br>
+        <code>Enter</code> play · <code>R</code> retry · <code>P</code> pause · <code>[</code> <code>]</code> speed.<br>
+        Hold each lane key for as long as its bar is long: you are judged on the press <i>and</i> on the release.</div>
     </div>
   </aside>
 </main>
@@ -233,9 +234,9 @@
 <footer>
   <div class="lane-legend">
     <span class="pill" style="color:var(--left);border-color:#1d4a5e">← left</span>
-    <span class="pill" style="color:var(--gas);border-color:#1d5238">↑ gas</span>
     <span class="pill" style="color:var(--brake);border-color:#5e2029">↓ brake</span>
     <span class="pill" style="color:var(--right);border-color:#5e4318">→ right</span>
+    <span class="pill" style="color:var(--gas);border-color:#1d5238">↑ gas — held, not timed</span>
   </div>
   <div>tape <b>kb6323.csv</b> · F1994613747 · ghost <b>KEYBOARD_6323.Ghost.Gbx</b> md5 <b>25e04568c299eccdb867c107f40ed650</b></div>
   <div id="selfcheck"></div>

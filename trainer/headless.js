@@ -72,7 +72,7 @@ let t = 1000;
 function laneRuns(){
   const rows = fs.readFileSync(__dirname + '/kb6323.csv','utf8').trim().split('\n').slice(1)
     .map(l=>l.split(',').map(Number)).map(([t,s,a,b])=>({t,s,a,b}));
-  const on=[r=>r.s<0, r=>r.a===1, r=>r.b===1, r=>r.s>0];
+  const on=[r=>r.s<0, r=>r.b===1, r=>r.s>0];
   const notes=[];
   on.forEach((f,li)=>{ let st=null;
     for(const r of rows){ const v=f(r);
@@ -81,7 +81,7 @@ function laneRuns(){
     if(st!==null) notes.push({lane:li,start:st,end:rows[rows.length-1].t+10,open:true}); });
   return notes;
 }
-const CODES=['ArrowLeft','ArrowUp','ArrowDown','ArrowRight'];
+const CODES=['ArrowLeft','ArrowDown','ArrowRight'];
 function playRun(offsetMs, label, demo){
   cache.forEach(e=>{ e.innerHTML=''; e.classList.remove('show'); });
   byId('cbDemo').onchange({target:{checked:!!demo}});
@@ -94,6 +94,7 @@ function playRun(offsetMs, label, demo){
   }
   edges.sort((a,b)=>a.t-b.t);
   key('keydown','KeyR',t);                                  // (re)start
+  key('keydown','ArrowUp',t);                               // gas: held, never judged
   frames(1,4);
   let tape=-2.3*1000, i=0;
   const STEP=4;
@@ -120,3 +121,24 @@ playRun(-35,'player: 35 ms early');
 playRun(70,'player: 70 ms late');
 playRun(400,'player: hopeless (400 ms)');
 console.log('\nfillText calls total:',calls);
+
+// gas discipline: it is a state, checked continuously, never a timing note
+function gasProbe(label, holdGas, liftAt){
+  byId('cbDemo').onchange({target:{checked:false}});
+  byId('rgSpeed').oninput({target:{value:100}});
+  key('keyup','ArrowUp',t);          // start each probe with the key genuinely up
+  key('keydown','KeyR',t); frames(1,4);
+  if (holdGas) key('keydown','ArrowUp',t);
+  let tape=-2300;
+  while(tape<7600){ tape+=4;
+    if(liftAt!=null && tape>=liftAt && liftAt>-1e9){ key('keyup','ArrowUp',t); liftAt=-1e9; }
+    frames(1,4); }
+  const rh=byId('results').innerHTML;
+  const verdict=(rh.match(/<b>(held|LIFTED)<\/b>/)||[])[1];
+  const when=(rh.match(/gas, first at ([\d.]+)/)||[])[1];
+  console.log(label.padEnd(30)+' gas verdict='+verdict+(when?' at '+when:''));
+}
+console.log('\n— gas as a state —');
+gasProbe('holds gas the whole run', true, null);
+gasProbe('never presses gas', false, null);
+gasProbe('lifts at 3.000', true, 3000);

@@ -125,7 +125,7 @@
     <div class="t"><b>6.343</b><span>author</span></div>
     <div class="t"><b>6.346</b><span>human WR · xeap-.-</span></div>
   </div>
-  <div class="fact"><b>23</b> steer events · <b>3</b> steer values · <b>1</b> brake tap · gas never released</div>
+  <div class="fact"><b>23</b> steer events · <b>3</b> steer values · <b>1</b> brake tap · <b>gas held throughout</b></div>
 </header>
 
 <main>
@@ -133,15 +133,16 @@
     <canvas id="cv"></canvas>
     <div class="ov"><div id="bigtext"></div></div>
     <div class="ov" id="splash">
-      <h2>Drive a TAS with four keys.</h2>
+      <h2>Drive a TAS with three keys — and one you just hold.</h2>
       <p>This is the real input tape of a run that beat the author time and the human world record on this map — full left, centre, full right, and one brake tap. Notes fall; hold the key for exactly as long as the bar is long.</p>
       <div class="keys">
         <div class="kcap" style="border-color:#1d4a5e"><b>←</b><span>FULL LEFT</span></div>
-        <div class="kcap" style="border-color:#1d5238"><b>↑</b><span>GAS</span></div>
-        <div class="kcap" style="border-color:#5e2029"><b>↓</b><span>BRAKE</span></div>
+        <div class="kcap" style="border-color:#5e2029"><b>↓</b><span>BRAKE ×1</span></div>
         <div class="kcap" style="border-color:#5e4318"><b>→</b><span>FULL RIGHT</span></div>
+        <div class="kcap" style="border-color:#1d5238;opacity:.72"><b>↑</b><span>GAS — JUST HOLD IT</span></div>
       </div>
-      <p class="hint">Start at half speed. <b>Enter</b> play · <b>R</b> retry · <b>P</b> pause · <b>[</b> <b>]</b> speed</p>
+      <p class="hint"><b>Gas is not a lane.</b> The tape puts it down before the lights and never lifts, so hold <code>↑</code> from the start and forget it — it is checked, not timed.<br>
+        Start at half speed. <b>Enter</b> play · <b>R</b> retry · <b>P</b> pause · <b>[</b> <b>]</b> speed</p>
       <div class="row">
         <button class="primary" id="btnStart">▶ Play (Enter)</button>
         <button id="btnDemo">👁 Watch the TAS drive it</button>
@@ -223,9 +224,9 @@
 
     <div class="grp">
       <h3>Keys</h3>
-      <div class="hint"><code>← ↑ ↓ →</code> (or <code>A W S D</code>) drive · <code>Enter</code> play ·
-        <code>R</code> retry · <code>P</code> pause · <code>[</code> <code>]</code> speed.<br>
-        Hold the key for as long as the bar is long: you are judged on the press <i>and</i> on the release.</div>
+      <div class="hint"><code>←</code> <code>↓</code> <code>→</code> (or <code>A S D</code>) are the three lanes; <code>↑</code> (or <code>W</code>) is gas — hold it the whole time.<br>
+        <code>Enter</code> play · <code>R</code> retry · <code>P</code> pause · <code>[</code> <code>]</code> speed.<br>
+        Hold each lane key for as long as its bar is long: you are judged on the press <i>and</i> on the release.</div>
     </div>
   </aside>
 </main>
@@ -233,9 +234,9 @@
 <footer>
   <div class="lane-legend">
     <span class="pill" style="color:var(--left);border-color:#1d4a5e">← left</span>
-    <span class="pill" style="color:var(--gas);border-color:#1d5238">↑ gas</span>
     <span class="pill" style="color:var(--brake);border-color:#5e2029">↓ brake</span>
     <span class="pill" style="color:var(--right);border-color:#5e4318">→ right</span>
+    <span class="pill" style="color:var(--gas);border-color:#1d5238">↑ gas — held, not timed</span>
   </div>
   <div>tape <b>kb6323.csv</b> · F1994613747 · ghost <b>KEYBOARD_6323.Ghost.Gbx</b> md5 <b>25e04568c299eccdb867c107f40ed650</b></div>
   <div id="selfcheck"></div>
@@ -1048,12 +1049,20 @@ race_ms,steer,accel,brake
    ==========================================================================*/
 const TICK = 10;          // tape resolution, ms
 const FINISH_MS = 6323;   // our validated finish, 6.323
+/* Three lanes, not four.
+   Gas is down from -0.270 to the finish and never comes up, so a gas lane is a
+   solid bar carrying no information — it is a HELD STATE, drawn as a permanent
+   indicator and checked continuously (see GAS below), not a falling note.
+   Brake keeps a lane because it is a real key you press with another finger,
+   but a narrow one: one tap in the whole run. The two steer lanes take the
+   width that buys, which is where the run is actually hard to read. */
 const LANES = [
-  { id:'left',  label:'LEFT',  glyph:'←', key:'ArrowLeft',  alt:'KeyA', color:'#39d0ff', dark:'#0e3446', on:r => r.steer <  0 },
-  { id:'gas',   label:'GAS',   glyph:'↑', key:'ArrowUp',    alt:'KeyW', color:'#4ade80', dark:'#0f3524', on:r => r.accel === 1 },
-  { id:'brake', label:'BRAKE', glyph:'↓', key:'ArrowDown',  alt:'KeyS', color:'#ff5b6e', dark:'#3d151b', on:r => r.brake === 1 },
-  { id:'right', label:'RIGHT', glyph:'→', key:'ArrowRight', alt:'KeyD', color:'#ffb020', dark:'#3d2c0d', on:r => r.steer >  0 },
+  { id:'left',  label:'LEFT',  glyph:'←', key:'ArrowLeft',  alt:'KeyA', w:1.00, color:'#39d0ff', dark:'#0e3446', on:r => r.steer <  0 },
+  { id:'brake', label:'BRAKE', glyph:'↓', key:'ArrowDown',  alt:'KeyS', w:0.50, color:'#ff5b6e', dark:'#3d151b', on:r => r.brake === 1 },
+  { id:'right', label:'RIGHT', glyph:'→', key:'ArrowRight', alt:'KeyD', w:1.00, color:'#ffb020', dark:'#3d2c0d', on:r => r.steer >  0 },
 ];
+const GAS = { label:'GAS', glyph:'↑', key:'ArrowUp', alt:'KeyW', color:'#4ade80', dark:'#0f3524', on:r => r.accel === 1 };
+const LANE_W = LANES.reduce((s,l) => s + l.w, 0);
 
 function parseTape(raw){
   const lines = raw.trim().split(/\r?\n/);
@@ -1072,10 +1081,10 @@ function parseTape(raw){
 }
 
 // Contiguous runs of "this control is engaged" become held notes.
-function buildNotes(rows){
+function buildNotes(rows, lanes){
   const last = rows[rows.length - 1].t;
   const notes = [];
-  LANES.forEach((lane, li) => {
+  lanes.forEach((lane, li) => {
     let start = null, prevT = null;
     for (const r of rows){
       const on = lane.on(r);
@@ -1184,10 +1193,14 @@ function scoreOf(events){
    DATA — built once from the tape above.
    ==========================================================================*/
 const ROWS  = parseTape(RAW_TAPE);
-const NOTES = buildNotes(ROWS);
+const NOTES = buildNotes(ROWS, LANES);
+const GAS_NOTES = buildNotes(ROWS, [GAS]);          // for the indicator, never judged
 const TRANS = transitions(ROWS);
 const TAPE_START = ROWS[0].t, TAPE_END = ROWS[ROWS.length-1].t + TICK;
 const RACE_SEGS = steerSegments(ROWS, 0);
+// The gas fact the lane used to carry, measured rather than asserted.
+const GAS_DOWN_AT = (GAS_NOTES.find(n => n.end > 0) || {}).start;
+const GAS_LIFTED_IN_RACE = ROWS.some(r => r.t >= 0 && r.t <= FINISH_MS && r.accel === 0);
 
 const SECTIONS = [
   { name:'Full run',      a:-500,  b:TAPE_END, hint:'gas and left already down at the line' },
@@ -1226,10 +1239,13 @@ const S = {
   tapeNow: 0,
   lastTs: 0,
   events: [],
-  held: [false,false,false,false],
+  held: LANES.map(() => false),
+  gasHeld: false,          // ↑ is a STATE, not a note: never judged on timing
+  gasLifted: 0,            // ms of race time spent off the gas
+  gasFaultAt: null,        // first moment they lifted
   pops: [],
-  flash: [0,0,0,0],
-  wrong: [0,0,0,0],
+  flash: LANES.map(() => 0),
+  wrong: LANES.map(() => 0),
   combo: 0, bestCombo: 0,
   offset: 0,
   hits: [],               // recent judged edges, for the error meter
@@ -1251,11 +1267,14 @@ new ResizeObserver(resize).observe(cv.parentElement);
 resize();
 
 const STRIP_H = 46;
-const judgeY = () => H - 118 - STRIP_H;
+const judgeY = () => H - 140 - STRIP_H;
 const laneGeom = () => {
-  const lw = Math.min(140, Math.max(64, (W - 40) / 4));
-  const total = lw * 4;
-  return { lw, x0: (W - total) / 2 };
+  const unit = Math.min(190, Math.max(76, (W - 60) / LANE_W));
+  const total = unit * LANE_W;
+  const x0 = (W - total) / 2;
+  const xs = []; let x = x0;
+  for (const l of LANES){ xs.push({ x, w: unit * l.w }); x += unit * l.w; }
+  return { xs, x0, total };
 };
 const yFor = t => judgeY() - (t - S.tapeNow) * (S.zoom / 1000);
 
@@ -1280,8 +1299,9 @@ function arm(){
   S.events.forEach(e => { e.judged = false; e.missed = false; e.grade = null; e.err = 0; e.playerT = null; });
   const first = S.events.length ? S.events[0].t : S.sec.a;
   S.tapeNow = Math.min(S.sec.a, first) - LEAD_IN;
-  S.pops.length = 0; S.combo = 0; S.bestCombo = 0; S.held = [false,false,false,false];
+  S.pops.length = 0; S.combo = 0; S.bestCombo = 0; S.held = LANES.map(() => false);
   S.hits.length = 0; S.extra = 0;
+  S.gasLifted = 0; S.gasFaultAt = null;
   S.demoFired = new Set();
   $('#results').classList.remove('show');
 }
@@ -1329,6 +1349,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyP'){ e.preventDefault(); pause(); return; }
   if (e.code === 'BracketLeft'){ setSpeed(Math.max(0.10, S.speed - 0.05)); return; }
   if (e.code === 'BracketRight'){ setSpeed(Math.min(1.00, S.speed + 0.05)); return; }
+  if (e.code === GAS.key || e.code === GAS.alt){ e.preventDefault(); S.gasHeld = true; return; }
   const l = laneForCode(e.code);
   if (l < 0) return;
   e.preventDefault();
@@ -1337,6 +1358,15 @@ addEventListener('keydown', e => {
   if (S.state === 'playing' && !S.demo) edge(l, 'press', tapeTimeOf(e));
 });
 addEventListener('keyup', e => {
+  if (e.code === GAS.key || e.code === GAS.alt){
+    e.preventDefault(); S.gasHeld = false;
+    if (S.state === 'playing' && !S.demo && S.tapeNow >= 0 && S.tapeNow <= FINISH_MS && S.gasFaultAt === null){
+      S.gasFaultAt = S.tapeNow;
+      pop(0, 'GAS LIFTED', '#ff5b6e');
+      S.combo = 0;
+    }
+    return;
+  }
   const l = laneForCode(e.code);
   if (l < 0) return;
   e.preventDefault();
@@ -1351,6 +1381,19 @@ function frame(ts){
   S.lastTs = ts;
   if (S.state === 'playing'){
     S.tapeNow += dt * S.speed;
+
+    // Gas is judged as a STATE, continuously, over the race window only.
+    // Continuously matters: a player who never presses ↑ at all produces no key
+    // event to catch, and would otherwise pass as having held it.
+    if (S.demo) S.gasHeld = S.tapeNow >= GAS_DOWN_AT;
+    else if (!S.gasHeld && S.tapeNow >= 0 && S.tapeNow <= FINISH_MS){
+      S.gasLifted += dt * S.speed;
+      if (S.gasFaultAt === null){
+        S.gasFaultAt = Math.max(0, S.tapeNow);
+        pop(0, 'GAS IS UP', '#ff5b6e');
+        S.combo = 0;
+      }
+    }
 
     if (S.demo){
       for (const e of S.events){
@@ -1378,23 +1421,23 @@ requestAnimationFrame(frame);
 
 /* ---------- drawing ---------- */
 function draw(){
-  const { lw, x0 } = laneGeom(), jy = judgeY();
+  const { xs, x0, total } = laneGeom(), jy = judgeY();
   ctx.clearRect(0,0,W,H);
 
   // lane beds
-  for (let i = 0; i < 4; i++){
-    const x = x0 + i * lw;
-    ctx.fillStyle = i % 2 ? 'rgba(255,255,255,.022)' : 'rgba(255,255,255,.04)';
-    ctx.fillRect(x, 0, lw, jy + 60);
+  for (let i = 0; i < LANES.length; i++){
+    const { x, w } = xs[i];
+    ctx.fillStyle = i === 1 ? 'rgba(255,255,255,.015)' : 'rgba(255,255,255,.04)';
+    ctx.fillRect(x, 0, w, jy + 60);
     if (S.held[i]){
       const g = ctx.createLinearGradient(0, jy - 260, 0, jy);
       g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1, LANES[i].dark);
-      ctx.fillStyle = g; ctx.fillRect(x, jy - 260, lw, 260);
+      ctx.fillStyle = g; ctx.fillRect(x, jy - 260, w, 260);
     }
     ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, jy + 60); ctx.stroke();
   }
-  ctx.beginPath(); ctx.moveTo(x0 + 4*lw + .5, 0); ctx.lineTo(x0 + 4*lw + .5, jy + 60); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x0 + total + .5, 0); ctx.lineTo(x0 + total + .5, jy + 60); ctx.stroke();
 
   // time grid
   const tTop = S.tapeNow + (jy / (S.zoom/1000));
@@ -1405,7 +1448,7 @@ function draw(){
     if (y < -20 || y > jy + 40) continue;
     const big = t % 1000 === 0, mid = t % 500 === 0;
     ctx.strokeStyle = big ? 'rgba(255,255,255,.17)' : mid ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.045)';
-    ctx.beginPath(); ctx.moveTo(x0, y + .5); ctx.lineTo(x0 + 4*lw, y + .5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x0, y + .5); ctx.lineTo(x0 + total, y + .5); ctx.stroke();
     if (big){
       ctx.fillStyle = '#54607a';
       ctx.fillText((t/1000).toFixed(3), x0 - 8, y + 4);
@@ -1416,15 +1459,15 @@ function draw(){
   const y0 = yFor(0);
   if (y0 > -30 && y0 < jy + 40){
     ctx.strokeStyle = '#7ee787'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + 4*lw, y0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + total, y0); ctx.stroke();
     ctx.fillStyle = '#7ee787'; ctx.textAlign = 'left'; ctx.font = '600 11px ui-sans-serif,sans-serif';
-    ctx.fillText('0.000  START', x0 + 4*lw + 8, y0 + 4);
+    ctx.fillText('0.000  START', x0 + total + 8, y0 + 4);
   }
   const yf = yFor(FINISH_MS);
   if (yf > -30 && yf < jy + 40){
     ctx.fillStyle = '#ffd75e'; ctx.textAlign = 'left'; ctx.font = '700 12px ui-sans-serif,sans-serif';
-    ctx.fillText('6.323  FINISH', x0 + 4*lw + 8, yf + 4);
-    for (let i = 0; i < 4*lw; i += 12){
+    ctx.fillText('6.323  FINISH', x0 + total + 8, yf + 4);
+    for (let i = 0; i < total; i += 12){
       ctx.fillStyle = (Math.floor(i/12) % 2) ? '#ffd75e' : '#111';
       ctx.fillRect(x0 + i, yf - 3, 12, 6);
     }
@@ -1436,61 +1479,66 @@ function draw(){
     const top = yFor(n.end), bot = yFor(n.start);
     if (bot < -60 || top > H) continue;
     const inSec = n.end >= S.sec.a - 1 && n.start <= S.sec.b + 1;
-    const L = LANES[n.lane], x = x0 + n.lane * lw;
+    const L = LANES[n.lane], { x, w } = xs[n.lane];
     const h = Math.max(5, bot - top);
     const done = S.events.some(e => e.note === n.idx && e.type === 'press' && e.judged);
     const missed = S.events.some(e => e.note === n.idx && e.type === 'press' && e.missed);
 
     ctx.globalAlpha = inSec ? (missed ? .28 : 1) : .16;
-    const pad = 9;
-    roundRect(x + pad, top, lw - 2*pad, h, Math.min(7, h/2));
-    const grad = ctx.createLinearGradient(x, top, x + lw, top + h);
+    const pad = Math.max(5, w * 0.09);
+    roundRect(x + pad, top, w - 2*pad, h, Math.min(7, h/2));
+    const grad = ctx.createLinearGradient(x, top, x + w, top + h);
     grad.addColorStop(0, L.dark); grad.addColorStop(1, L.color);
     ctx.fillStyle = done ? L.dark : grad;
     ctx.fill();
     ctx.lineWidth = 1.5; ctx.strokeStyle = L.color; ctx.stroke();
     // bright caps mark the two moments you are judged on
     ctx.fillStyle = L.color;
-    ctx.fillRect(x + pad, top, lw - 2*pad, 3);
-    if (!n.open) ctx.fillRect(x + pad, bot - 3, lw - 2*pad, 3);
+    ctx.fillRect(x + pad, top, w - 2*pad, 3);
+    if (!n.open) ctx.fillRect(x + pad, bot - 3, w - 2*pad, 3);
     // durations worth reading
     if (h > 15 && n.dur >= 100 && inSec){
       ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.textAlign = 'center';
       ctx.font = '700 11px ui-monospace,Menlo,monospace';
-      ctx.fillText((n.dur/1000).toFixed(3), x + lw/2, top + h/2 + 4);
+      ctx.fillText((n.dur/1000).toFixed(3), x + w/2, top + h/2 + 4);
     } else if (n.dur <= 30 && inSec){
+      // the flicks: too small to label inside, so tag them outside with a leader
       ctx.fillStyle = L.color; ctx.textAlign = 'left';
-      ctx.font = '700 10px ui-monospace,Menlo,monospace';
-      ctx.fillText(n.dur + 'ms', x + lw - pad + 4, top + 4);
+      ctx.font = '700 10.5px ui-monospace,Menlo,monospace';
+      ctx.fillText(n.dur + ' ms', x + w - pad + 6, top + 4);
+      ctx.strokeStyle = L.color; ctx.lineWidth = 1; ctx.globalAlpha *= .5;
+      ctx.beginPath(); ctx.moveTo(x + w - pad, top + 1.5); ctx.lineTo(x + w - pad + 4, top + 1.5); ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
 
   // judgement bar
-  ctx.fillStyle = 'rgba(255,255,255,.10)'; ctx.fillRect(x0, jy - 2, 4*lw, 4);
-  ctx.fillStyle = '#fff'; ctx.fillRect(x0, jy - 1, 4*lw, 2);
+  ctx.fillStyle = 'rgba(255,255,255,.10)'; ctx.fillRect(x0, jy - 2, total, 4);
+  ctx.fillStyle = '#fff'; ctx.fillRect(x0, jy - 1, total, 2);
   // perfect-window band
   const bandPx = WIN[0].abs * (S.zoom/1000);
   ctx.fillStyle = 'rgba(255,215,94,.13)';
-  ctx.fillRect(x0, jy - bandPx, 4*lw, bandPx * 2);
+  ctx.fillRect(x0, jy - bandPx, total, bandPx * 2);
 
   // key caps
   const now = performance.now();
-  for (let i = 0; i < 4; i++){
-    const L = LANES[i], x = x0 + i*lw, cy = jy + 34;
+  for (let i = 0; i < LANES.length; i++){
+    const L = LANES[i], { x, w } = xs[i], cy = jy + 34;
     const fl = Math.max(0, 1 - (now - (S.flash[i]||0)) / 260);
     const wr = Math.max(0, 1 - (now - (S.wrong[i]||0)) / 300);
+    const pad = Math.max(6, w * 0.09);
     ctx.fillStyle = S.held[i] ? L.dark : '#0e121b';
-    roundRect(x + 10, cy - 22, lw - 20, 44, 9); ctx.fill();
+    roundRect(x + pad, cy - 22, w - 2*pad, 44, 9); ctx.fill();
     ctx.strokeStyle = wr > 0 ? 'rgba(255,91,110,' + wr + ')' : (S.held[i] ? L.color : 'rgba(255,255,255,.14)');
     ctx.lineWidth = S.held[i] ? 2 : 1; ctx.stroke();
-    if (fl > 0){ ctx.fillStyle = 'rgba(255,255,255,' + (fl*.22) + ')'; roundRect(x+10, cy-22, lw-20, 44, 9); ctx.fill(); }
+    if (fl > 0){ ctx.fillStyle = 'rgba(255,255,255,' + (fl*.22) + ')'; roundRect(x+pad, cy-22, w-2*pad, 44, 9); ctx.fill(); }
     ctx.fillStyle = S.held[i] ? L.color : '#6b7689';
     ctx.textAlign = 'center'; ctx.font = '700 19px ui-sans-serif,sans-serif';
-    ctx.fillText(L.glyph, x + lw/2, cy + 1);
+    ctx.fillText(L.glyph, x + w/2, cy + 1);
     ctx.font = '600 9.5px ui-sans-serif,sans-serif'; ctx.fillStyle = '#5b6579';
-    ctx.fillText(L.label, x + lw/2, cy + 15);
+    ctx.fillText(L.label, x + w/2, cy + 15);
   }
+  drawGasBar(x0, total, jy);
 
   // popups
   S.pops = S.pops.filter(p => now - p.born < 900);
@@ -1499,13 +1547,32 @@ function draw(){
     ctx.globalAlpha = 1 - k*k;
     ctx.fillStyle = p.color; ctx.textAlign = 'center';
     ctx.font = '700 13px ui-monospace,Menlo,monospace';
-    ctx.fillText(p.text, x0 + p.lane*lw + lw/2, jy - 26 - k*36);
+    ctx.fillText(p.text, xs[p.lane].x + xs[p.lane].w/2, jy - 26 - k*36);
     ctx.globalAlpha = 1;
   }
 
   drawMeter();
   drawStrip();
   drawCountdown();
+}
+
+/* Gas has no lane: it is one state, true for the whole run. It gets a bar that
+   sits lit above the keycaps and goes red the moment you are off it in the
+   race — the one thing a player must know that a falling note cannot say. */
+function drawGasBar(x0, total, jy){
+  const y = jy + 62, h = 22;
+  const racing = S.state === 'playing' && S.tapeNow >= 0 && S.tapeNow <= FINISH_MS;
+  const bad = racing && !S.gasHeld;
+  ctx.fillStyle = bad ? '#3d151b' : (S.gasHeld ? GAS.dark : '#0e121b');
+  roundRect(x0, y, total, h, 7); ctx.fill();
+  ctx.lineWidth = S.gasHeld ? 2 : 1;
+  ctx.strokeStyle = bad ? '#ff5b6e' : (S.gasHeld ? GAS.color : 'rgba(255,255,255,.14)');
+  ctx.stroke();
+  ctx.textAlign = 'center'; ctx.font = '700 11.5px ui-sans-serif,sans-serif';
+  ctx.fillStyle = bad ? '#ff5b6e' : (S.gasHeld ? GAS.color : '#6b7689');
+  ctx.fillText(bad ? '↑  GAS IS UP — HOLD IT' :
+    (S.gasHeld ? '↑  GAS HELD' : '↑  HOLD GAS — down before the lights, never lifted'),
+    x0 + total/2, y + 15);
 }
 
 // ±150 ms gauge: every recent edge leaves a needle, so a bias is visible as a
@@ -1555,12 +1622,17 @@ function drawStrip(){
   ctx.fillStyle = 'rgba(255,255,255,.05)';
   ctx.fillRect(X(Math.max(a,S.sec.a)), y - 3, X(Math.min(b,S.sec.b)) - X(Math.max(a,S.sec.a)), h + 6);
   for (const n of NOTES){
-    if (n.lane === 1) continue;           // gas is always on; it would just be one long bar
     const L = LANES[n.lane];
-    const yy = n.lane === 2 ? y + h - 4 : y;
+    const yy = n.lane === 1 ? y + h - 4 : y;     // brake rides low, as a tick
     ctx.fillStyle = L.color;
     ctx.globalAlpha = n.end <= 0 ? .3 : .95;
-    ctx.fillRect(X(n.start), yy, Math.max(1.2, X(n.end) - X(n.start)), n.lane === 2 ? 4 : h - 6);
+    ctx.fillRect(X(n.start), yy, Math.max(1.2, X(n.end) - X(n.start)), n.lane === 1 ? 4 : h - 6);
+    ctx.globalAlpha = 1;
+  }
+  // gas, as one continuous underline: the run's only always-true fact
+  for (const n of GAS_NOTES){
+    ctx.fillStyle = GAS.color; ctx.globalAlpha = n.end <= 0 ? .25 : .8;
+    ctx.fillRect(X(n.start), y + h + 2, Math.max(1.2, X(n.end) - X(n.start)), 2);
     ctx.globalAlpha = 1;
   }
   ctx.strokeStyle = '#2a3243'; ctx.beginPath(); ctx.moveTo(X(0), y-4); ctx.lineTo(X(0), y+h+4); ctx.stroke();
@@ -1660,7 +1732,13 @@ function showResults(){
       card(sc.counts.MISS + '', 'missed') +
       card(extra + '', 'inputs the tape never makes') +
       card(S.bestCombo + '', 'best combo') +
+      card(S.gasFaultAt === null ? 'held' : 'LIFTED', S.gasFaultAt === null ? 'gas, whole race' :
+           'gas, first at ' + (S.gasFaultAt/1000).toFixed(3)) +
     '</div>' +
+    (S.gasFaultAt !== null && !S.demo ? '<p style="color:#ff5b6e;margin:0 0 8px">You came off the gas ' +
+      (S.gasLifted >= 10 ? 'for ' + (S.gasLifted/1000).toFixed(3) + ' s ' : '') +
+      'during the race. The tape never does: ↑ goes down at ' + (GAS_DOWN_AT/1000).toFixed(3) +
+      ' and stays down through the finish. It is not scored on timing — it is simply never released.</p>' : '') +
     (!S.demo && Math.abs(bias) >= 8 ? '<p style="color:#8b95ab;margin:0 0 8px">Your whole run sits ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) +
        ' ms off centre. Put ' + (bias>=0?'+':'−') + Math.abs(Math.round(bias)) + ' into <b style="color:#e8edf7">input offset</b> and that part stops costing you.</p>' : '') +
     (sc.worst ? '<p style="color:#8b95ab;margin:0 0 12px">Worst edge: <b style="color:#e8edf7">' + LANES[sc.worst.lane].label + ' ' +
@@ -1728,13 +1806,14 @@ function renderTapeInfo(){
   const shortest = holds.reduce((m,n) => n.dur < m.dur ? n : m);
   $('#tapeinfo').innerHTML =
     ROWS.length + ' ticks at 10 ms, ' + (TAPE_START/1000).toFixed(3) + ' → ' + ((TAPE_END-TICK)/1000).toFixed(3) + '.<br>' +
-    holds.length + ' held notes, ' + ev.length + ' judged edges.<br>' +
+    holds.length + ' held notes, ' + ev.length + ' judged edges (gas is a state, not a note).<br>' +
     'shortest hold: <code>' + LANES[shortest.lane].label + ' ' + shortest.dur + ' ms at ' + (shortest.start/1000).toFixed(3) + '</code><br>' +
     RACE_SEGS.length + ' steer segments after 0.000, ' + raceTrans + ' state changes.';
   $('#selfcheck').innerHTML =
     'parsed <b>' + ROWS.length + '</b> ticks · <b>' + NOTES.length + '</b> notes · steer values <b>' +
-    [...new Set(ROWS.map(r => r.steer))].sort((a,b)=>a-b).join(' / ') + '</b> · gas released after the line: <b>' +
-    (ROWS.some(r => r.t >= 0 && r.t <= FINISH_MS && r.accel === 0) ? 'yes' : 'never') + '</b>';
+    [...new Set(ROWS.map(r => r.steer))].sort((a,b)=>a-b).join(' / ') + '</b> · gas down at <b>' +
+    (GAS_DOWN_AT/1000).toFixed(3) + '</b>, released before the line: <b>' +
+    (GAS_LIFTED_IN_RACE ? 'yes' : 'never') + '</b>';
 }
 setSpeed(0.5);
 renderTapeInfo();
@@ -1758,12 +1837,16 @@ function renderCoach(){
       '<span style="color:#8b95ab;width:44px;text-align:right">' + (d/1000).toFixed(3) + '</span>' +
       '<span style="flex:1;background:' + col + ';opacity:.5;height:8px;align-self:center;max-width:' + Math.max(2, d/6) + 'px"></span></div>';
   }).join('');
-  const brake = NOTES.find(n => n.lane === 2 && n.start >= 0);
+  const brake = NOTES.find(n => n.lane === 1 && n.start >= 0);
   $('#coach').innerHTML =
-    'Gas goes down before the light and never comes up. The whole race is your left hand.<br><br>' +
+    '<b style="color:#4ade80">Gas is not a lane, it is a rule.</b> It goes down at ' +
+    (GAS_DOWN_AT/1000).toFixed(3) + ' — before the lights — and is ' +
+    (GAS_LIFTED_IN_RACE ? 'lifted somewhere in the race' : '<b>never lifted</b> before the finish') +
+    '. Hold <code>↑</code> from the countdown and forget about it; the bar above the keys turns red if you let go.<br><br>' +
     '<b style="color:#ff5b6e">The brake tap is a brake-turn</b> — ' + (brake.dur/1000).toFixed(3) + ' s at ' +
     (brake.start/1000).toFixed(3) + ', taken at full left with gas still down. It is not a slowdown: you are ' +
-    'rotating the car, and you never lift.<br><br>' +
+    'rotating the car, and you never lift. It keeps its own lane because it is a real key under another finger ' +
+    'while left stays down — the one moment in the run your hands do two things at once.<br><br>' +
     '<b style="color:#e8edf7">The burst, 2.090 → 3.590</b> — ' + segs.length + ' steer segments, ' +
     stutters.length + ' of them centre stutters of ' + Math.min(...stutters.map(s => s.end - s.start)) + '–' +
     Math.max(...stutters.map(s => s.end - s.start)) + ' ms. Do not read it as ' + segs.length +
