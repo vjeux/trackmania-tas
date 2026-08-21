@@ -7,6 +7,14 @@ about a second, and it is free to anyone driving in the 43–45 second range.**
 The author time has not fallen. The fastest lap here is **1.248 under the
 human world record** and still **0.445** short of the author medal.
 
+**No video: the game will not open this map.** Every other page here carries a
+clip, and this one cannot. The map file is intact — correct path, `Test-Path`
+true, GBX header valid, 3,824,673 bytes, md5 `16e7220f2128587c0d0018626feacb0f` —
+but the editor's `EditMap()` never takes effect on it. Confirmed against the
+obvious alternative explanations: it is not size (a 4.65 MB map films fine), and
+it is not accumulated state in a long-running client, because a freshly launched
+process with zero prior loads cannot open it either.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS** | **38.975** | +0.445 | **−1.248** | analog |
