@@ -153,6 +153,47 @@ pub fn find_entrecord_blob(body: &[u8]) -> Res<(u32, Vec<u8>)> {
     }
 }
 
+/// The byte range of the compressed record payload inside a body, if there is
+/// one: `[start, end)`. Same search as `find_entrecord_blob`, stopping before
+/// the inflate -- callers that only need to know WHERE the record is (so they
+/// can leave it alone) should not pay to decompress it.
+///
+/// Exists because `tmtraj anon` used to bound its string scan at a flat 64 KB
+/// on the reasoning that "the identity lives at the front and the record that
+/// follows is compressed bytes". True of the file it was written for. On
+/// 227654 the identity chunk sits AFTER an 76 KB record, so the login, the
+/// trigram and the zone were all past the limit and the anonymiser reported
+/// success having replaced four strings and left the account id in place --
+/// which the gate then refused, correctly, on a file we had just "anonymised".
+pub fn find_entrecord_span(body: &[u8]) -> Option<(usize, usize)> {
+    let needle = CLASS_CPLUGENTRECORDDATA.to_le_bytes();
+    let mut off: usize = 0;
+    loop {
+        let rel = find(&body[off..], &needle)?;
+        let hit = off + rel;
+        off = hit + 1;
+        let mut q = hit;
+        while q + 8 <= body.len() && body[q + 4..q + 8] == needle {
+            q += 4;
+        }
+        let p = q + 4;
+        if p + 12 > body.len() {
+            continue;
+        }
+        let version = u32::from_le_bytes(body[p..p + 4].try_into().unwrap());
+        let usize_ = u32::from_le_bytes(body[p + 4..p + 8].try_into().unwrap()) as usize;
+        let csize = u32::from_le_bytes(body[p + 8..p + 12].try_into().unwrap()) as usize;
+        if !(1..=20).contains(&version) || csize == 0 || usize_ == 0 || p + 12 + csize > body.len()
+        {
+            continue;
+        }
+        if body[p + 12..p + 14] != [0x78, 0x9c] {
+            continue;
+        }
+        return Some((p + 12, p + 12 + csize));
+    }
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }

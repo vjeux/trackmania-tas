@@ -168,6 +168,12 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
 
     // C3 NO TELEPORT -- the carrier's post-finish tail jumps hundreds of
     // metres. Any step far beyond the run's own step distribution is one.
+    // PER-SECOND, not per-step. A record may have GAPS: 286279 jumps from
+    // 46.200 to 46.850 s, and a car at 131 km/h legitimately covers 23.7 m in
+    // that 650 ms. Measuring raw step distance called that "the car JUMPS
+    // 23.1 m -- a carrier tail or a spliced record" on a file with no splice at
+    // all, and it did so on the PUBLISHED original too. A teleport is a
+    // distance no SPEED explains, so divide by the elapsed time.
     let mut steps: Vec<(f64, i64)> = Vec::new();
     for i in 1..n {
         let mut d = 0.0;
@@ -175,20 +181,162 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
             let q = r[i].pos[k] - r[i - 1].pos[k];
             d += q * q;
         }
-        if d.is_finite() {
-            steps.push((d.sqrt(), r[i].ms));
+        let dt = (r[i].ms - r[i - 1].ms) as f64 / 1000.0;
+        if d.is_finite() && dt > 0.0 {
+            steps.push((d.sqrt() / dt, r[i].ms));
         }
     }
     let mut sv: Vec<f64> = steps.iter().map(|s| s.0).collect();
     sv.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p50 = sv[sv.len() / 2];
     let worst = steps.iter().cloned().fold((0.0, 0i64), |a, b| if b.0 > a.0 { b } else { a });
-    let bar = (p50 * 8.0).max(12.0);
-    if worst.0 <= bar {
-        o.ok("C3", format!("worst step {:.3} m at {:.3} s (median {:.3} m)", worst.0, worst.1 as f64 / 1000.0, p50));
+    // A RESPAWN IS NOT A TELEPORT. On a Trial map the car is thrown back to
+    // its last checkpoint and the engine writes its own speed as 0.0 in that
+    // sample -- measured on 286279 at 45.850 s: 10.60 m in 50 ms (212 m/s) with
+    // the recorded speed dropping 90.6 km/h -> 0.0. A splice leaves the speed
+    // field alone, so the car's OWN speed byte separates the two, and it costs
+    // nothing: drop any step whose landing sample reads a dead stop.
+    let steps: Vec<(f64, i64)> = steps
+        .into_iter()
+        .zip(r.iter().skip(1))
+        // THE SPEEDOMETER IS THE DISCRIMINATOR, not a threshold on distance.
+        // Three cases separate cleanly with no magic constant:
+        //   real driving  implied/recorded ~= 1.00
+        //   RESPAWN       recorded speed EXACTLY 0.0 while the position moves
+        //                 8-11 m in 50 ms (153-213 m/s) -- routine on a Trial
+        //                 map, and a 200 m/s bar runs straight through the
+        //                 middle of that cluster, refusing a genuine human
+        //                 recording (286279 HUMANCUT_236972 at 213.3)
+        //   SPLICE        ratio in the THOUSANDS (227654 TAS_57503: 50090 m/s
+        //                 implied against 19.2 recorded, ratio 2606)
+        .filter(|(_, s)| s.speed > 0.5)
+        .map(|(x, _)| x)
+        .collect();
+    // ...AND A RESPAWN DOES NOT ALWAYS ZERO THE SPEEDOMETER. Measured on
+    // 286279 AUTHORMIN_831ev: nine jumps of 74-146 m whose landing sample
+    // reads 11.87 m/s -- the speed field is FROZEN at its pre-respawn value,
+    // not zeroed, so the speedometer filter above runs straight past them and
+    // C3 called a legal Trial respawn "a spliced record". The channel that
+    // does separate them is MOTION, which is also the channel we trust most:
+    //   RESPAWN  the engine HOLDS the car at the respawn point for exactly
+    //            1.00 s -- 20-21 samples of bit-identical position. Measured
+    //            over the 1.2 s after each landing: <= 0.50 m on 10 of 12
+    //            (the other two are sample-time GAPS, dt 650 and 350 ms,
+    //            which the implied-speed divide already handles).
+    //   SPLICE   the car keeps driving on the far side. 238835 TAS_239133's
+    //            three jumps (186.3 / 268.0 / 96.3 m) are each followed by
+    //            ~1.10 m per 50 ms = 22 m/s of continued motion.
+    // So: exempt a step whose landing is followed by a hold. This is a
+    // NARROW exemption -- it rescues nothing that keeps moving.
+    let held = |i: usize| -> bool {
+        let t0 = r[i].ms;
+        let mut d = 0.0f64;
+        let mut j = i + 1;
+        while j < n && r[j].ms - t0 <= 1000 {
+            let mut q = 0.0;
+            for k in 0..3 {
+                let e = r[j].pos[k] - r[j - 1].pos[k];
+                q += e * e;
+            }
+            if !q.is_finite() {
+                return false;
+            }
+            d += q.sqrt();
+            j += 1;
+        }
+        // A hold needs samples to be held THROUGH; the tail of a file is not
+        // a respawn.
+        j > i + 4 && d <= 0.5
+    };
+    // SECOND RESPAWN SHAPE. 186935 ONE_ATTEMPT_DELETED at 2355.500 s jumps
+    // 237 m and then DRIFTS for 0.35 s (speed 4.65 -> 3.31) before coming to
+    // rest at exactly (920.0001, 249.0000, 834.5001) with the speedometer
+    // reading 0.0000. The car IS brought to a dead stop -- the engine just
+    // takes a third of a second to do it -- so the hold test above, which
+    // measures the first 1.0 s, sees ~0.8 m and says "not a respawn".
+    // This is not a new rule and not a new threshold: it is the SAME
+    // speedometer discriminator already used above, widened from "the landing
+    // sample reads 0.0" to "the car reaches 0.0 within half a second of
+    // landing". NO-CONTROL: no jump in 238835 (6 files) or 227654 TAS_57503
+    // reaches a dead stop after landing -- those cars keep driving at 22 m/s.
+    let stops = |i: usize| -> bool {
+        let t0 = r[i].ms;
+        let mut j = i;
+        while j < n && r[j].ms - t0 <= 500 {
+            if r[j].speed <= 0.5 {
+                return true;
+            }
+            j += 1;
+        }
+        false
+    };
+    // THIRD, AND THE ONE THAT ACTUALLY SETTLES IT: A RESPAWN RETURNS THE CAR
+    // TO A PLACE IT HAS ALREADY BEEN. A splice does not, and cannot.
+    // The two shapes above are symptoms; this is the mechanism. 186935
+    // "Magnet Trial" raised the question -- can a map feature legitimately
+    // displace a car 73 m while it keeps driving at 20 m/s? -- and the answer
+    // is a census, not an opinion. Measured over each file's own samples:
+    //   186935 ONE_ATTEMPT: landings recur at fixed points, up to 29 times at
+    //     (961,331,768), and the restored SPEED is the same every time
+    //     (4.60 m/s x29; 12.10 x3; 9.44 x4; 2.09 x4). The engine restores a
+    //     saved checkpoint STATE -- which is also why 286279's speedometer
+    //     looked "frozen": it is not frozen, it is RESTORED.
+    //   Distance from each landing to the nearest EARLIER sample of the same
+    //     run: 238835 0.052-0.174 m, 186935 0.248-1.362 m -- the car is put
+    //     back on its own track.
+    //   227654 TAS_57503, the known donor seam: 2003.622 m. The car has never
+    //     been there and never goes back.
+    // Three orders of magnitude between the classes, so the bar is not
+    // delicate: 2 m.
+    let revisit = |i: usize| -> bool {
+        // The test READS POSITIONS, so it needs positions. On a file with
+        // non-finite samples (186935 CUT_795034: 15572 of 50293) the earlier
+        // track is partly missing and a "revisit" cannot be trusted, so the
+        // exemption is withheld there and C1 refuses the file anyway.
+        if nf > 0 {
+            return false;
+        }
+        let mut best = f64::INFINITY;
+        for j in 0..i.saturating_sub(1) {
+            let mut e = 0.0;
+            for k in 0..3 {
+                let q = r[j].pos[k] - r[i].pos[k];
+                e += q * q;
+            }
+            if e.is_finite() && e < best {
+                best = e;
+            }
+        }
+        best.sqrt() <= 2.0
+    };
+    let respawn_held: Vec<i64> = if std::env::var("TMTRAJ_NO_HOLD").is_ok() {
+        // Control switch: disables the respawn-hold exemption so the old and
+        // new C3 can be run over the same corpus in one build.
+        Vec::new()
+    } else {
+        (1..n).filter(|&i| held(i) || stops(i) || revisit(i)).map(|i| r[i].ms).collect()
+    };
+    let steps: Vec<(f64, i64)> = steps
+        .into_iter()
+        .filter(|(_, ms)| !respawn_held.contains(ms))
+        .collect();
+    let respawn_only = steps.is_empty();
+    if respawn_only {
+        o.na("C3", "every step lands on a respawn -- nothing to test".into());
+    }
+    let mut sv: Vec<f64> = steps.iter().map(|s| s.0).collect();
+    if sv.is_empty() { sv.push(0.0); }
+    sv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p50 = sv[sv.len() / 2];
+    let worst = steps.iter().cloned().fold((0.0, 0i64), |a, b| if b.0 > a.0 { b } else { a });
+    // 200 m/s = 720 km/h, comfortably above anything this game does.
+    let bar = (p50 * 8.0).max(200.0);
+    if respawn_only {
+    } else if worst.0 <= bar {
+        o.ok("C3", format!("worst implied speed {:.1} m/s at {:.3} s (median {:.1} m/s)", worst.0, worst.1 as f64 / 1000.0, p50));
     } else {
         o.bad("C3", format!(
-            "the car JUMPS {:.1} m at {:.3} s (median step {:.3} m) -- a carrier tail or a spliced record",
+            "the car moves at {:.0} m/s at {:.3} s (median {:.1}) -- no speed explains this, so it is a teleport: a carrier tail or a spliced record",
             worst.0, worst.1 as f64 / 1000.0, p50
         ));
     }
@@ -345,7 +493,20 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
         let turns = |x: &R| -> f64 { x.b(7) as f64 + x.b(6) as f64 / 255.0 };
         let mut rr: Vec<f64> = Vec::new();
         for i in 1..v.len() {
-            if c.cls[i] != Cls::Supported {
+            // NOT "class == Supported". That gate produced "0 usable rolling
+            // steps -- cannot infer a wheel radius" on 145875, INCLUDING on
+            // Nadeo's own downloaded rank-1 ghost of that map -- which reads as
+            // "this map's wheels are dead" and is false. The car descends for
+            // its whole run there, so it has no unambiguously ground-borne
+            // sample, while its wheel bytes carry 88-109 distinct values and
+            // imply a 0.35-0.40 m radius on 50 of 125 steps.
+            //
+            // A wheel that is turning at v/r is evidence of a wheel whatever
+            // the chassis is doing, so the only requirement is that the car is
+            // MOVING and the wheel angle changed. C5/C6/C7 still assert on the
+            // trajectory-derived classes; C8 asks a different question and must
+            // not inherit their sample selection.
+            if c.cls[i] == Cls::Ballistic {
                 continue;
             }
             let mut dt = turns(&v[i]) - turns(&v[i - 1]);
@@ -413,7 +574,21 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
                 c.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 c[c.len() / 2]
             };
-            if share >= 0.15 {
+            // WETNESS EXEMPTION, measured. 173636 "Tap water 01" is the one map
+            // of eleven where the wetness byte varies, and it pins at 255 from
+            // 3 s onward. Its own Nadeo rank-2 download puts 329 of 463 rolling
+            // steps at an implied radius of 0.10 m -- the wheels turning ~3.6x
+            // faster than the road, which is AQUAPLANING, not a small wheel. A
+            // share test cannot see the difference between a car spinning its
+            // wheels on water and a file carrying a stranger's wheels, so on a
+            // soaked run the share is reported and not enforced.
+            let soaked = v.iter().filter(|x| x.b(101) > 200).count() * 2 > v.len();
+            if soaked && share < 0.15 {
+                o.warn("C8", format!(
+                    "only {:.0} % of {} rolling steps imply a car wheel (mode {:.4} m) -- but the car is AQUAPLANING (wetness pinned high), which spins the wheels off the road speed, so this is not enforced",
+                    100.0 * share, rr.len(), rad
+                ));
+            } else if share >= 0.15 {
                 o.ok("C8", format!(
                     "{:.0} % of {} rolling steps imply a car wheel; the mode is {:.4} m",
                     100.0 * share, rr.len(), rad

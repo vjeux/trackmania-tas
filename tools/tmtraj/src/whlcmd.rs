@@ -39,6 +39,7 @@ pub const G_DEFAULT: f64 = 25.2;
 /// One decoded sample, with the raw bytes kept: the surface fields are single
 /// bytes whose semantics are partly a guess, so every consumer here reads the
 /// BYTE, not a derived float.
+#[derive(Clone)]
 pub struct R {
     pub ms: i64,
     pub pos: [f64; 3],
@@ -206,6 +207,7 @@ pub fn cmd(args: &[String]) {
         "cmp" => cmp(&rest),
         "roll" => roll(&rest),
         "twoway" => twoway(&rest),
+        "bits" => bits(&rest),
         "calib" => calib(&rest),
         "surv" => surv(&rest),
         _ => {
@@ -610,7 +612,8 @@ fn surv(args: &[String]) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let rng = |os: &[usize]| -> String {
+        let extra: Vec<usize> = std::env::var("WHL_COLS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+    let rng = |os: &[usize]| -> String {
             let mut lo = 255u8;
             let mut hi = 0u8;
             let mut d = std::collections::BTreeSet::new();
@@ -635,6 +638,12 @@ fn surv(args: &[String]) {
             rng(&[76]),
             rng(&[90])
         );
+        for e in &extra {
+            print!("   b{}={}", e, rng(&[*e]));
+        }
+        if !extra.is_empty() {
+            println!();
+        }
     }
 }
 
@@ -763,6 +772,50 @@ fn twoway(args: &[String]) {
             f.rsplit('/').next().unwrap_or(f),
             n, air, grd, on_air, off_grd,
             100.0 * (on_air + off_grd) as f64 / n.max(1) as f64
+        );
+    }
+}
+
+/// `tmtraj whl bits BYTE GHOST...` -- one byte, bit by bit, per file: how often
+/// each bit is set, and what else is true when it is.
+///
+/// A flag byte is a set of predicates and a range like "0..131" says almost
+/// nothing. This is what tells you that our files never set bit 7 while every
+/// recording that boosts does.
+fn bits(args: &[String]) {
+    let byte: usize = args
+        .iter()
+        .find(|a| !a.starts_with("--") && a.parse::<usize>().is_ok())
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(31);
+    let files: Vec<&String> = args
+        .iter()
+        .filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err())
+        .collect();
+    println!("byte {}: per-bit set counts, and turbo(b21)>0 for comparison", byte);
+    println!(
+        "{:<40} {:>5} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "file", "n", "b21>0", "bit0", "bit1", "bit2", "bit3", "bit4", "bit5", "bit6", "bit7"
+    );
+    for f in files {
+        let r = match decode(f) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let n = r.len();
+        let t21 = r.iter().filter(|x| x.b(21) > 0).count();
+        let mut c = [0usize; 8];
+        for x in &r {
+            for (b, cc) in c.iter_mut().enumerate() {
+                if (x.b(byte) >> b) & 1 == 1 {
+                    *cc += 1;
+                }
+            }
+        }
+        println!(
+            "{:<40} {:>5} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+            f.rsplit('/').next().unwrap_or(f).chars().take(40).collect::<String>(),
+            n, t21, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]
         );
     }
 }

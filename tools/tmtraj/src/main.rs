@@ -46,6 +46,16 @@ tmtraj -- TM2020 ghost trajectory decoder and racing-line analysis
   tmtraj demo [--eps E...]
         Run the clustering on lines.py's two synthetic lines (sanity check:
         ~0.8 m within a line, ~11 m between).
+
+  tmtraj tail scan GHOST... [--tsv OUT] [--thr M] [-v]
+        Physical-continuity scan of the vehicle record: per step, metres moved
+        vs metres the record's OWN speed field allows. A carrier tail left
+        behind by a transplant shows up as metres of unexplainable
+        displacement. Also counts samples before 0.000 and after the finish.
+
+  tmtraj tail fix GHOST --out OUT (--cut MS | --keep N | --auto [--thr M])
+        Truncate the vehicle entity's sample list. --auto cuts at the last
+        sample before the first step whose excess is over --thr.
 ";
 
 fn main() {
@@ -70,6 +80,26 @@ fn main() {
             }
             i32::from(!r.ok)
         }
+        "tail" => cmd_tail(rest),
+        "nan" => { tmtraj::nancmd::cmd(rest); 0 }
+        "whl" => { tmtraj::whlcmd::cmd(rest); 0 }
+        "facing" => tmtraj::facingcmd::cmd(rest),
+
+        "rectime" => match rest.first().map(|s| s.as_str()) {
+            Some("cmp") => tmtraj::rectimecmd::cmd_cmp(&rest[1..]),
+            Some("lag") => tmtraj::rectimecmd::cmd_lag(&rest[1..]),
+            _ => { tmtraj::rectimecmd::cmd(rest); 0 }
+        },
+
+        "recspan" => { tmtraj::recspancmd::cmd(rest); 0 }
+
+        "setdecl" => { tmtraj::setdeclcmd::cmd(rest); 0 }
+
+        "anon" => { tmtraj::anoncmd::cmd(rest); 0 }
+
+        "intg" => { tmtraj::intgcmd::cmd(rest); 0 }
+
+        "check" => { tmtraj::checkcmd::cmd(rest); 0 }
         "cluster" => cmd_cluster(rest, true),
         "rec" => cmd_rec(rest),
         "recdiff" => cmd_recdiff(rest),
@@ -1173,6 +1203,169 @@ fn cmd_body(args: &[String]) -> i32 {
         }
         other => {
             eprintln!("unknown body subcommand {:?}", other);
+            2
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// tail -- the carrier's post-tape telemetry tail
+// ---------------------------------------------------------------------------
+
+fn cmd_tail(args: &[String]) -> i32 {
+    use tmtraj::tailcmd;
+    if args.is_empty() {
+        eprintln!("usage: tmtraj tail scan|fix ...");
+        return 2;
+    }
+    let sub = args[0].as_str();
+    let a = parse_args(&args[1..], &["v", "verbose", "auto", "dry-run"]);
+    let thr: f64 = a.one("thr").map(|v| v.parse().expect("float")).unwrap_or(0.5);
+    match sub {
+        "scan" => {
+            if a.positional.is_empty() {
+                eprintln!("usage: tmtraj tail scan GHOST... [--tsv OUT] [--thr M] [-v]");
+                return 2;
+            }
+            tailcmd::cmd_scan(
+                &a.positional,
+                a.one("tsv"),
+                thr,
+                a.has("v") || a.has("verbose"),
+                a.one("at").map(|v| v.parse().expect("integer")),
+            )
+        }
+        "plan" => {
+            let Some(covp) = a.one("cov") else {
+                eprintln!("tail plan needs --cov tg_coverage_v3.tsv");
+                return 2;
+            };
+            tailcmd::cmd_plan(&a.positional, covp, thr, a.one("tsv"))
+        }
+        "verify" => {
+            let (Some(br), Some(ar)) = (a.one("before"), a.one("after")) else {
+                eprintln!("tail verify needs --before --after");
+                return 2;
+            };
+            let rel: f64 = a.one("rel").map(|v| v.parse().expect("float")).unwrap_or(10.0);
+            tailcmd::cmd_verify(
+                &a.positional,
+                br,
+                ar,
+                a.one("times"),
+                a.one("abs").map(|v| v.parse().expect("float")).unwrap_or(0.30),
+                rel,
+                a.one("tsv"),
+            )
+        }
+        "finishcheck" => {
+            let Some(covp) = a.one("cov") else {
+                eprintln!("tail finishcheck needs --cov");
+                return 2;
+            };
+            tailcmd::cmd_finishcheck(&a.positional, covp, a.one("tsv"))
+        }
+        "apply" => {
+            let (Some(covp), Some(inr), Some(outr)) = (a.one("cov"), a.one("in"), a.one("out")) else {
+                eprintln!("tail apply needs --cov --in --out");
+                return 2;
+            };
+            let rel: f64 = a.one("rel").map(|v| v.parse().expect("float")).unwrap_or(10.0);
+            tailcmd::cmd_apply(
+                &a.positional,
+                inr,
+                outr,
+                covp,
+                a.one("ours"),
+                a.one("times"),
+                a.one("abs").map(|v| v.parse().expect("float")).unwrap_or(0.30),
+                rel,
+                a.one("tsv"),
+            )
+        }
+        "fix" => {
+            let Some(path) = a.positional.first() else {
+                eprintln!("usage: tmtraj tail fix GHOST --out OUT (--cut MS | --keep N | --auto)");
+                return 2;
+            };
+            let Some(out) = a.one("out") else {
+                eprintln!("tail fix needs --out");
+                return 2;
+            };
+            let sc = match tailcmd::scan_file(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}: {}", path, e);
+                    return 3;
+                }
+            };
+            // decide the keep count
+            let keep: usize = if let Some(k) = a.one("keep") {
+                k.parse().expect("integer")
+            } else if let Some(c) = a.one("cut") {
+                let cut: i32 = c.parse().expect("integer ms");
+                sc.steps
+                    .iter()
+                    .take_while(|s| s.t0 <= cut)
+                    .count()
+                    .max(1)
+                    .min(sc.n)
+                    + usize::from(sc.t_first <= cut && sc.n > 0)
+                    - usize::from(sc.t_first <= cut && sc.n > 0)
+                    + 0
+            } else if a.has("auto") {
+                let over = sc.over(thr);
+                match over.first() {
+                    // the jump is the step i -> i+1, so the last genuine
+                    // sample is index i, i.e. keep i+1 samples
+                    Some(s) => s.i + 1,
+                    None => sc.n,
+                }
+            } else {
+                eprintln!("tail fix needs one of --cut MS, --keep N, --auto");
+                return 2;
+            };
+            // --cut is easier to compute directly from the times
+            let keep = if let Some(c) = a.one("cut") {
+                let cut: i32 = c.parse().expect("integer ms");
+                let body = tmtraj::entrec::load_body(path).unwrap();
+                let (v, blob) = tmtraj::entrec::find_entrecord_blob(&body).unwrap();
+                let rd = tmtraj::entrec::parse_record_data(&blob, v).unwrap();
+                let e = tmtraj::tailcmd::vehicle_ent(&rd).unwrap();
+                tailcmd::keep_count(&e.times, cut)
+            } else {
+                keep
+            };
+            if keep >= sc.n {
+                println!(
+                    "{}\tNOCHANGE\t{} samples, nothing to cut",
+                    path, sc.n
+                );
+                if let Err(e) = std::fs::copy(path, out) {
+                    eprintln!("{}: {}", out, e);
+                    return 3;
+                }
+                return 0;
+            }
+            let r = tmtraj::recwrite::rewrite_ghost(path, out, |rd| {
+                tailcmd::truncate_vehicle(rd, keep).map(|_| ())
+            });
+            match r {
+                Ok((a0, b0)) => {
+                    println!(
+                        "{}\tCUT\t{} -> {} samples\trecord {} -> {} B\t{}",
+                        path, sc.n, keep, a0, b0, out
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{}: {}", path, e);
+                    3
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown tail subcommand {:?}", other);
             2
         }
     }

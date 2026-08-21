@@ -201,8 +201,8 @@ pub fn find_rec_site(body: &[u8]) -> Res<RecSite> {
 
 fn zlib_compress(raw: &[u8]) -> Vec<u8> {
     // miniz_oxide, not flate2: the rest of the crate already decompresses with
-    // miniz_oxide and this keeps the dependency list at one entry.  Level 6 is
-    // what the flate2 version used.
+    // miniz_oxide and this keeps the dependency list at one entry. Level 6 is
+    // what the game itself writes.
     miniz_oxide::deflate::compress_to_vec_zlib(raw, 6)
 }
 

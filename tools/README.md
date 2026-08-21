@@ -155,3 +155,47 @@ always on our car, both runs in one scene, and what makes an asset public.
 | `render2.sh` | **the two-car shot**. Imports the TAS ghost first so the camera follows ours, measures the separation and refuses a pairing that would silently look like one car, and reads each imported track's nickname — a tape built on someone else's recording comes back wearing their name |
 | `splitscreen.sh` | only for maps where a chase camera provably cannot hold both cars |
 | `ship-clip.sh` | a clip that is 404 to everyone but us: registers the URL in the release body, then fetches it back under `env -i` with no credential |
+
+## `tmtraj intg` — the publish gate
+
+The gate is now **source in this crate**, not a tarball. `tmtraj intg gate
+GHOST --race MS --refs refs.tsv --mapid ID [--server DIR --map MAP.Map.Gbx]
+[--source SECOND_GENERATION] [--require-manifest]` exits 0 publishable,
+2 refused, 3 unmeasured — and **3 is never folded into 0**: an input the gate
+could not read is not a verdict about the ghost.
+
+It is the thing that decides publishable. `tmtrajcheck` is the weaker check and
+it is the one that passed a contaminated file.
+
+| family | what it asks |
+|---|---|
+| A `C1`–`C10` | is this a physically coherent run of a car |
+| B `B-contam` | bit-exact against **every human recording held for the map**, race-windowed |
+| C `C-oracle` | does the dedicated server re-simulate **the written bytes** to the declared time |
+| `C-header` / `C-ident` | does the file declare its own time, under our login, with no account id |
+| `C-spawn` | is the first in-race sample at the map's spawn **and facing the way every run on it faces** |
+| E `E-stale` | is this a physics tick behind a second independent generation of the same tape |
+| D `D-manifest` | does the file's own account of how it was made hold up |
+
+`C-spawn` is new (2026-08-21). It exists because `fk regen` writes the engine's
+rotation in whichever of three layouts the locate happened to find, the choice
+varies between runs of the same command, and getting it wrong leaves every
+position exact — so C1–C10, the oracle, the tape md5 and the whole contamination
+family pass while the car faces the wrong way for the entire clip. Measured on
+197047: the withdrawn file reads **179.998°** from the human spawn, its
+replacement 0.010°.
+
+### The answer key, per map
+
+`tmtraj` cannot tell you it found the right car. A **downloaded human recording
+of the same map, regenerated through the same pipeline and graded against its
+own recorded bytes**, can:
+
+| map | position | orientation | tick offset |
+|---|---|---|---|
+| 197047 | 0.489 mm | 0.0068° | +0.000025 m |
+| 228811 | 0.483 mm | 0.0070° | +0.000011 m |
+
+~0.5 mm is the client-vs-server floor. Run one before believing any verdict
+about a file you made, and never carry another map's reading over: winning
+parameters do not port.

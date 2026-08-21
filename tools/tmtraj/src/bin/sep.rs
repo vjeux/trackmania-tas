@@ -48,20 +48,32 @@ fn main() {
     let lb = plen(&db.samples);
 
     println!("t_ms\tdist_m\tdlen_m\tax\tay\taz\tbx\tby\tbz");
-    let n = da.samples.len().min(db.samples.len());
-    for i in 0..n {
-        let p = &da.samples[i];
-        let q = &db.samples[i];
-        if p.time_ms != q.time_ms {
-            eprintln!("time grids diverge at i={} ({} vs {})", i, p.time_ms, q.time_ms);
-            break;
-        }
+    // MATCH ON THE TIME KEY, NOT THE INDEX, AND REFUSE AN EMPTY COMPARISON.
+    //
+    // This used to walk the two sample arrays in step and `break` on the first
+    // time-key mismatch, printing only a stderr line. Sample times are SESSION
+    // times, so two recordings made in different sessions disagree at index 0
+    // and the loop emitted ZERO rows -- and a zero-row TSV downstream reads as
+    // "these two cars are never apart", which is the direction that publishes.
+    // `nearident` inherited the same shape and reported `overlap=0` with a mean
+    // of f64::MAX as VERDICT INDEPENDENT.
+    //
+    // An empty denominator is not a measurement. Compare on the instants the
+    // two files actually share, say how many that was, and exit 3 when it is
+    // none.
+    let ib: std::collections::HashMap<i32, usize> =
+        db.samples.iter().enumerate().map(|(i, s)| (s.time_ms, i)).collect();
+    let mut rows = 0usize;
+    for (i, p) in da.samples.iter().enumerate() {
+        let Some(&j) = ib.get(&p.time_ms) else { continue };
+        let q = &db.samples[j];
+        rows += 1;
         let d = ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt();
         println!(
             "{}\t{:.6}\t{:+.6}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}",
             p.time_ms,
             d,
-            lb[i] - la[i], // + => B is further along than A
+            lb[j] - la[i], // + => B is further along than A
             p.x,
             p.y,
             p.z,
@@ -69,5 +81,17 @@ fn main() {
             q.y,
             q.z
         );
+    }
+    eprintln!("compared {} shared instants", rows);
+    if rows == 0 {
+        eprintln!(
+            "REFUSED: {} and {} share no sample instant, so nothing was compared.\n\
+             Sample times are SESSION times; two recordings from different sessions have no\n\
+             time key in common and this tool cannot align them. Use an alignment-free\n\
+             comparison (`seplag`, or `tmtraj intg lag`) instead of reading a zero-row table\n\
+             as agreement.",
+            a[0], a[1]
+        );
+        std::process::exit(3);
     }
 }
