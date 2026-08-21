@@ -5,7 +5,29 @@ the nose goes light, lift off the throttle for 40 ms and get back on it: that is
 worth 0.012, it is the easiest input in the lap to get right, and nobody in a
 field of 334 does it.**
 
-*No clip on this page yet; one will be filmed from the ghost this page ships.*
+**Fall 2025 - 13 Reverse (CP1 end)** — TAS **6.578** (−0.017) | AT 6.595 | WR 6.601 by uelen.
+
+https://github.com/user-attachments/assets/14386b76-b671-4b7a-9a61-4257aa3b615a
+
+**Our 6.578 and uelen.'s world record, both in one camera.** They start together
+on the ice, run inside one another down the straight, and separate through the
+sweeper: **1.57 m at their widest**, mean **0.81 m**, so for the last two seconds
+you can see two cars rather than one — which is the whole 0.023, drawn as
+distance. The camera is bolted to **his** car, not ours: his recording runs
+50 ms longer than ours, and a camera on our ghost would go dark before either
+crossing. Ours is the pink one, in front.
+
+The tape is `BEST_6578_ratcheted`, chosen over `champ_6578` by decode rather
+than by name. The two are the same run to within 8 cm and both land on 6.578,
+both pass the gate with 0 failures and 0 warnings, and both carry six copies of
+their own declared time and none of anybody else's. What separated them was the
+picture: against uelen. the ratcheted tape opens to 1.57 m and `champ` only to
+1.41 m, so the ratcheted one is the one where the margin is visible.
+
+Independence, against the record itself: **4 samples** inside the 1 mm band,
+mean separation 0.81 m — this map's two runs share nothing but the standing
+start.
+
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
