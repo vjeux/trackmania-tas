@@ -1920,3 +1920,39 @@ was being rotated.)*
 > **You cannot classify a map as safe in advance. Check the output of every
 > regeneration.** One line, comparing as a rotation: the first sample's quaternion
 > against any human recording of the same map, |dot| ≈ 1.
+
+### On 208024 the unstable inference is the MAJORITY outcome: 17 of 30
+
+Same tape, same command, 30 regenerations:
+
+| verdict | count |
+|---|---|
+| OK | **8** |
+| **identity quaternion — no rotation at all** | **17** |
+| wrong map or spawn | 5 |
+
+That map is the worst case for the criterion by construction — the car spends the
+run inverted and rotor-flung, so "pointing where it is going" is precisely what it
+does not do.
+
+**Controls in both directions before a single row was trusted:** two downloaded
+human ghosts at |dot| 1.000000 and dpos 0.002 m; the four already-published
+208024 files all |dot| 1.000000 at dpos 0.001 m — **so nothing already on the page
+carries this defect.** And two fabricated failures from a known-good decode: an
+identity quaternion (caught, |dot| 0.707) and telemetry relocated to
+`(1552, 34, 560)`, the other arm's real signature (caught, dpos 449 m).
+
+**The two errors the check prevented are worth more than the count:**
+
+1. The ranker would have accepted a 7.75 m candidate **without ever looking at its
+   facing** — it happens to be a spawn-passer, which would have been luck rather
+   than correctness.
+2. **A tight cluster of 17 identical results would have read as convergence.** It
+   is 17 copies of the same broken inference.
+
+> **Agreement among regenerations is agreement about the inference, not about the
+> car.** The night's oldest rule, arriving one more time from a new direction.
+
+Restricted to the 8 passers the route-dump distances are 7.75 m and 16.3–17.1 m —
+**none near the 2.5 mm the 18.942 reached**, so the true clock was not in the
+batch. Consistent with the measured rate of 4 in 52.
