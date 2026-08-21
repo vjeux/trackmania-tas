@@ -751,3 +751,51 @@ all.
 Fixed in the tool rather than in a note: `pwdense` now refuses a spec that
 relocates the checkpoint its goal substitutes for, so the next arm cannot make
 this mistake by hand.
+
+## Absence of a result is not a result — the retraction of "five files the game refuses"
+
+Claimed to the fleet: **five files across three maps that the game refuses to
+import while our own parser reads them fine.** It was one file. The other four
+were the reading instrument.
+
+The experiment that settled it, one fresh session per subject, with a positive
+control ahead of the subject and a *sibling mirror control* behind it — the
+mirror being the part that could have proved the alternative:
+
+```
+227654  CONTROL 270053/50_tas_4492_v1_v2  Ghost:TAS  4.45   session healthy
+        SUBJECT 03_TAS_57498              Ghost:TAS  147.03  <- had reported NONE
+        SIBLING 02_TAS_57493              Ghost:TAS  147.03
+
+238835  CONTROL 270053/50_tas_4492_v1_v2  Ghost:TAS  4.45
+        SUBJECT 08_TAS_347003_noretry_v4  Ghost:TAS  347.0   <- had reported NONE
+        SIBLING 50_TAS_239133_cut         Ghost:TAS  239.1   <- had reported NONE
+```
+
+Four for four, correct durations. The standing hypothesis — that the game
+deduplicates near-identical siblings, so the *second* copy imports as a no-op —
+died on the same rows: the sibling imported cleanly straight after the subject,
+and on 238835 both alleged-bad files imported back to back.
+
+**The evidence had been sitting in the original table.** The failures came in
+consecutive pairs — 03 and 04 on 227654, then 05–09 all fine; the last two on
+238835. A per-file property does not recover after two rows, and a dedupe does
+not un-dedupe. That shape is a transient stall, and the reader recorded a single
+missed attempt as a verdict.
+
+This is the same disease as the dead game two sections up, one layer in: that
+tool learned to ask whether it existed, and still could not tell a *no* from a
+*not yet*.
+
+> **Absence of a result is not a result.** Distinguish *the answer is no* from
+> *I did not get an answer*, or the table fills up with the second wearing the
+> first's clothes.
+
+Fixed in the tool: `nickcheck.sh` retries a nameless import three times, logging
+each miss, liveness checked between attempts. A genuine refusal now reads
+`NONE-after-3`; a transient no longer reaches the table.
+
+**What survives: one file.** 228607's `01_AUTHOR_LAP_20258_watchable`, refused
+for the malformed skin path documented above — an independent explanation from an
+independent reader, and a sweep of all 174 published files found no second
+specimen.
