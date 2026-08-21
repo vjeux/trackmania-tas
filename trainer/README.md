@@ -15,7 +15,7 @@ tap. A person could learn it.** This is the tool for finding out.
 | | |
 |---|---|
 | tape | `kb6323.csv`, 793 rows at 10 ms, −1.560 → 6.360 |
-| ghost | `KEYBOARD_6323.Ghost.Gbx`, md5 `25e04568c299eccdb867c107f40ed650` |
+| ghost | `BEST_KEYBOARD_6323.Ghost.Gbx`, md5 `40472ddf8733aeaa9ec9a9a5322be21a` (793 of 793 rows verified against its own input archive) |
 | times shown | our **6.323** · author **6.343** · human WR **6.346** (xeap-.-) |
 
 The CSV is embedded verbatim in the HTML and parsed at load. **Nothing about the
@@ -63,6 +63,24 @@ presses at 2.360 and 2.380 are 20 ms apart, so a 12 ms late press on the first
 would be stolen by the second and the cluster would unravel. Each input is
 credited to the earliest edge in its lane it could legitimately be a hit on, so
 playing slightly behind the beat stays a sequence.
+
+Three more things are deliberately not your fault:
+
+- **A drill hands you the state it starts in.** "The burst" opens inside the
+  0.520 s right and "Long left→out" inside a left, so those lanes start held,
+  the lead-in names them (*ALREADY HOLDING → RIGHT*), and pressing them
+  yourself during the lead-in is absorbed rather than counted. Judging the
+  release of a note whose press scrolled past before the drill began is the
+  definition of unfair.
+- **A key pressed before the drill's first note is warm-up**, and letting go
+  after the run is over is you stopping — the tape ends still holding gas and
+  the final right; it does not let go.
+- **Losing window focus drops the held keys and pauses**, because the OS never
+  delivers that keyup and the lane would otherwise stay stuck down for the rest
+  of the run.
+
+Notes outside the drill are drawn as hollow dashed ghosts: visibly not yours to
+play, so the drill cannot bait you into an extra.
 
 You are judged on **edges, not notes**: every held note is a press *and* a
 release, 27 judged edges across the race. That is what makes the 10 ms flick at
@@ -120,6 +138,13 @@ Checks (Node, no dependencies):
 
 | | |
 |---|---|
-| `node test.js` | parses the tape, diffs every race transition against the published table, checks the judging rules |
-| `node headless.js` | boots the page's own script against a stub DOM and plays whole runs through it |
+| `node test.js` | parses the tape, diffs every race transition against the published table, checks the judging rules and the drill arithmetic |
+| `node headless.js` | boots the page's own script against a stub DOM and plays whole runs and drills through it |
+| `sh playtest.sh` | plays the page **in a real headless Chrome** — real canvas, real `KeyboardEvent`s, real DOM, only the frame clock is ours so the run reproduces |
 | `node analyze.js` | raw dump: transitions, notes, burst segments |
+
+The two harnesses answer different questions. `headless.js` is fast and covers
+the judging logic; `playtest.sh` is the one that catches things a stub cannot
+fake — it found a missing `setLineDash` and confirmed a real browser scores an
+on-tape run **S+ 100%, 27/27 perfect, 0 miss, 0 extra**, and a 60 ms-late
+player **C 72.2% with still no misses and no extras**.
