@@ -168,3 +168,53 @@ completely different readout path agrees to **0.48 mm**.
 |---|---|
 | `replays/TAS_12759.Ghost.Gbx` | the run |
 | `inputs/TAS_12759.inputs.csv` | per-tick inputs |
+
+## The route in the video does not convert, and that is now measured
+
+The author's intended journey — the one both reference videos show — climbs the
+lattice, crosses the roof, and comes down onto the finish platform from a great
+height. Our 12.759 does not do that. It stays low, never rising above its own
+spawn altitude, and uses the map's own lift to reach a finish that sits at the
+bottom of the lattice.
+
+**The obvious question is whether the high route is simply better and we had not
+found it. It is not, and here is the census.** Two independent searches, 114
+rounds each, 120 candidates a round — **27,360 evaluations, about 2,700 of them
+genuine finishes on the untouched map** — scored on the untouched map so that
+every accepted candidate really crosses the real gate:
+
+> **Not one finish takes more lift than the 12.759 takes.** The best boost-column
+> apex across all of them is **330.042 m** — the 12.759's own, to the millimetre.
+
+### Why the height cannot be spent
+
+| at x 676 | y | speed | what happens at the platform |
+|---|---|---|---|
+| the only known finishing line | **309.4** | **256 km/h** | arrives with vy −11 and **bounces 4.7 m up through the gate** |
+| the roof route, i.e. the video's shape | **336.0** | **145 km/h** | arrives with vy −22, lands, slides, drops off the edge |
+
+**27 m too high and 111 km/h too slow at the same place — and the two deficits
+are coupled.** The height comes from the long lift, and the long lift is what
+costs the speed. The finish trigger wants a fast, level arrival within about a
+metre: it fires at x 579, 580 and 581, and DNFs at 578 and 582. So the lift buys
+altitude at the price of exactly the speed the trigger needs.
+
+The closest the roof route has come is **0.734 m short** — a tape that fires a
+Goal relocated to y 291.266 and nothing at 291.281, against the real gate at
+292.000.
+
+**For anyone who takes this map next:** the finish wants a level ±1 m arrival at
+roughly 250 km/h, and the only source of height on the map is a lift that costs
+exactly that speed. If someone finds a second way up, or a way to spend roof
+height horizontally instead of in a plunge, that 0.734 m is sitting there.
+
+*(One method note, because it nearly produced a false result. The first version
+of this search ranked candidates by an apex read from live memory, and under load
+that reader can settle on the wrong object: it reported apexes of 349.5 m and
+368.5 m, which would have answered the question the other way. Both were
+phantoms — the winning files were byte-identical to the base and re-measured at
+330.042 three times running — and the search then froze for 44 rounds chasing a
+score it could never beat. The gate was sound throughout; it was the tiebreak
+that lied. **A surrogate measured by a locate is not a number until it
+reproduces**, so the leader is now re-measured before adoption. The census above
+ran with that guard armed and rejected no phantoms at all.)*
