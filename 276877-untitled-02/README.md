@@ -17,11 +17,30 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 **untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
 
-https://github.com/user-attachments/assets/02596352-d4dd-4c96-a613-f0d6c1b7fab3
-
-**untitled 02** — TAS **8.898** (−22.501) | AT 31.399 | WR 14.959 by Its_Cam.
-
-https://github.com/user-attachments/assets/03ba355a-f703-4846-b5c2-7ccae682c632
+> ### ⚠️ Video withdrawn — the tape reports another player's identity
+>
+> The clip that was here has been taken down. It played, and there is nothing
+> wrong with the driving in it: the run is ours, the time re-simulates on the
+> game's own oracle to the millisecond in its name, and the declared time in the
+> file agrees with what the server validates.
+>
+> What is wrong is whose file it is. Read by the game's own parser, this tape
+> reports account `4c3537f3-381d-46d5-879a-45eca500dd4d`, login
+> `TDU38zgdRtWHmkXspQDdTQ` — **a real player, not us.** Our own files report
+> login `TAS` and carry no account at all. The same stranger's identity appears
+> on this map and on its sibling, so it is a person rather than an artefact.
+>
+> A searched tape is built inside a *carrier* — an existing ghost — and inherits
+> that carrier's container unless every field is rewritten. Identity is one of
+> those fields, and on these two tapes it was never rewritten.
+>
+> **This map has no human recording to compare against** (or, for untitled 02,
+> exactly one, set the day this page was written). Every trajectory-based check
+> we have is therefore blind here, and the identity read is not one check among
+> several — it is the whole verdict. That is why this took until now to find.
+>
+> The run stands and the time stands. A replacement clip will be filmed from a
+> tape rebuilt on a clean carrier.
 
 **Somebody finally drove this map, and here is our run beside theirs.** Its_Cam.
 set the first human time here on 20 August 2026 — **14.959** — and took the

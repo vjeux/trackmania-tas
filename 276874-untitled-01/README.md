@@ -19,7 +19,30 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid:
 
-https://github.com/user-attachments/assets/d7912e54-4a9a-49be-b3f8-355a9f26eed1
+> ### ⚠️ Video withdrawn — the tape reports another player's identity
+>
+> The clip that was here has been taken down. It played, and there is nothing
+> wrong with the driving in it: the run is ours, the time re-simulates on the
+> game's own oracle to the millisecond in its name, and the declared time in the
+> file agrees with what the server validates.
+>
+> What is wrong is whose file it is. Read by the game's own parser, this tape
+> reports account `4c3537f3-381d-46d5-879a-45eca500dd4d`, login
+> `TDU38zgdRtWHmkXspQDdTQ` — **a real player, not us.** Our own files report
+> login `TAS` and carry no account at all. The same stranger's identity appears
+> on this map and on its sibling, so it is a person rather than an artefact.
+>
+> A searched tape is built inside a *carrier* — an existing ghost — and inherits
+> that carrier's container unless every field is rewritten. Identity is one of
+> those fields, and on these two tapes it was never rewritten.
+>
+> **This map has no human recording to compare against** (or, for untitled 02,
+> exactly one, set the day this page was written). Every trajectory-based check
+> we have is therefore blind here, and the identity read is not one check among
+> several — it is the whole verdict. That is why this took until now to find.
+>
+> The run stands and the time stands. A replacement clip will be filmed from a
+> tape rebuilt on a clean carrier.
 
 ## What kind of result this is
 
