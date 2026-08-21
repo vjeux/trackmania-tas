@@ -5,7 +5,7 @@ source you can build and run yourself.
 
 ```
 tools/tmtraj/     the Rust crate: `tmtraj` plus 14 single-purpose binaries
-tools/*.sh        the video/render shell scripts
+tools/*.sh        the corpus-audit and video/render shell scripts
 ```
 
 ## Building
@@ -115,3 +115,16 @@ crate came from.
 | `ship-clip.sh` | *A clip that plays for you and 404s for everyone else.* Publishes one rendered mp4 so a **logged-out visitor** can watch it: settle and probe the file, upload the original to the `videos-v1` release, upload to GitHub's user-attachments store, register the asset URL in the release body — then fetch it with no credential at all and require 200 and playable bytes. Every step refuses rather than warns; only the anonymous fetch decides that it is published. |
 | `skincheck.sh` | *A custom car skin in the video.* Refuses any ghost carrying one. Every other identity field is metadata; this is the paint on the car. 276874's two WATCH tapes read login `TAS`, carried no account id and imported as `Ghost:TAS` — clean on all three readers — while carrying a `Skins\Models\CarSport\...` zip and its Nadeo storage URL. |
 | `splitscreen.sh` | *A "comparison" that is one car and a caption that lies.* Two runs side by side, for maps where a chase camera cannot hold both: on 276877 the human record is 61.5 m away and on 228607 it is 356.68 m away, i.e. behind the camera for the whole run. Runs on the render box — the Mac's ffmpeg has no libfreetype, so `drawtext` is unavailable there. |
+| `ghost-splice-audit.sh` | *A published ghost whose telemetry is another driver's.* The corpus-wide audit behind `GHOST-AUDIT.md`, emitted as one TSV row per file. Three tests, and it says which of them is proof: a shared PREFIX is worthless (our own sibling tapes are 67 % bit-identical on 203072), wholesale identity with a human recording means the file simply *is* that recording, and **re-convergence** — identical, then more than 5 m apart, then exactly identical again — is the only one that can only be a splice. Files whose names declare them human-derived (`AUTHORCUT`, `AUTHOR_LAP`, …) are reported `DERIVED-AS-LABELLED`, and a map with no human recording is `NO-HUMAN-REFERENCE`, which means UNTESTED and never clean. Its exact-zero tests predate `nearident` and are blind to a float re-encode; the header says so. |
+| `sep-truncation-scan.sh` | *A CLEAN verdict produced by an instrument falling silent.* `sep` bails out when two files' recorded sample times differ and says so only on stderr, which every pipeline here discards — and sample times are *session* times. All ten of 228607's files produced ZERO compared rows against `AUTHOR_LAP_20258` and the pipeline read that silence as clean. Scans every our-file/reference pair and flags any comparison whose row count falls short of `min(samples)`. The absent-signal bug, hunted in our own instrument. |
+| `jump-recheck-speedometer.sh` | *A distance threshold condemning a published original.* Re-grades every C3/C4 refusal against `CSceneVehicleVis`'s own recorded speed: ratio under 1.5 is driving and the refusal was false, a recorded speed of exactly 0 is a respawn, and the thousands are a splice (227654: 50090 m/s implied against 19.2 recorded). This is the pass that emptied a 24-file work queue across 8 maps. Also prints the last sample's offset from the declared race time, because a record can stop short of the line. |
+| `record-stops-short-scan.sh` | *Filming a finish that is not in the file.* The tail past the line is the familiar shape; this is its opposite, and nothing else looks for it. 126859's published files end 95 ms short of their declared race time, so the crossing is simply not in the record. Flags any file more than 60 ms either side, across the whole corpus. |
+| `gamebot-drive.sh` | *A click that was never delivered looking exactly like a click that was ignored.* One action per call — click (1280×720 coordinates, scaled ×3), key, screenshot, plugin state. `powershell.exe` is a Windows binary and rejects `/mnt/c/...` paths including its own `-File`; with stderr discarded, ffmpeg then re-encoded the PREVIOUS screenshot, so the screen looked frozen and every click looked ignored. `shot` prints the PNG's timestamp beside the wall clock: freshness is stated, never assumed. |
+
+The five above were rescued from the render box's `/tmp` on 2026-08-21, out of
+112 loose scripts written over one night. Fifty-nine more were kept but not
+published — one-off sweeps whose output mattered, and the working copies of the
+render box's own UI automation — and are banked with a manifest at
+**F1994652705**, together with the eight `.tsv` outputs including the corpus
+audit table `GHOST-AUDIT.md` narrates. The remaining forty-eight were
+scaffolding and are gone.
