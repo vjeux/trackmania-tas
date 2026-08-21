@@ -421,3 +421,34 @@ implies the other.**
   are macOS resource forks, not ghosts. The real content there is **165922's
   nine**, which contain no copy of any time at all — consistent with their having
   had no decodable record.
+
+## A seventh time field, invisible to the census: the container's own timeline
+
+199100's cleaned 49.778 arc was repaired on the nickname and on the declared time,
+passed the census, and imported as `Ghost:TAS`. **The MediaTracker still reported a
+52.2 s block** — which is OrmeEssence44's 52.202, the donor's time, in a **third**
+place.
+
+The file declares 49778. Its 998 samples span 49.900. And the container's own
+timeline still runs to 52.2.
+
+**The census cannot see this**, because it counts u32 copies of the *declared*
+time and this is a different field entirely. Only the game reports it, and only
+when the ghost is imported — which means it shares a reader with the nickname and
+was found the same way: by watching what the game said about a file that every
+other instrument had cleared.
+
+**So the field count is at least ten**, and the seventh time-bearing one arrived
+after four hours of looking specifically for time-bearing fields. That is the
+argument against every enumeration: the list is what we have tripped over.
+
+### The check that caught it, and why it was not simply widened
+
+The shoot refuses when the imported block length disagrees with the run's own
+span. It fired three times here before an explicit `SPAN_OK=1` was added, which
+accepts a container timeline longer than the run **and logs the discrepancy with
+its reason**. Default behaviour is unchanged, because that same check caught three
+wrong-ghost imports earlier the same night.
+
+**An override that records why it was used is a decision. Relaxing the default
+would have been a hole.**
