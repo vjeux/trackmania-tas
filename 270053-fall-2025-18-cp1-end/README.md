@@ -6,9 +6,9 @@ what makes the faster corner exit pay.**
 
 **Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 (six players tied)
 
-https://github.com/user-attachments/assets/82fa0be0-16d7-43fa-a56c-5a72a3da7a67
+https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
 
-> **The two-car clip that was here has been pulled.** It was filmed from a tape
+> **The two-car clip that was here was pulled, and has now been replaced.** It was filmed from a tape
 > one physics tick late -- 10 ms, which puts the car 0.336 m behind itself along
 > its own line. On a solo clip that is invisible and harmless; in a side-by-side
 > on THIS map it is not, because the whole subject here is 0.689 ms and about
@@ -25,6 +25,15 @@ https://github.com/user-attachments/assets/82fa0be0-16d7-43fa-a56c-5a72a3da7a67
 > clip never pretended to. What it showed was the sameness: one racing line,
 > driven to the half-metre, by a machine hunting the author medal and by the
 > best human on the board.
+
+> **Replaced 2026-08-21.** Both clips on this page are now filmed from the
+> repaired tape `bb84db2ced762e657fa45359f29e3a81`, which the game imports as
+> `Ghost:TAS` and which sits at the tick the game itself uses. The times and the
+> tapes are unchanged.
+
+**Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 by AffiTM
+
+https://github.com/user-attachments/assets/1279d078-eded-49ea-8b75-8c5085f1cde2
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
