@@ -1,0 +1,91 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787343153",
+  "file": "gen_TAS_49778.Ghost.Gbx",
+  "md5": "fcebc94a1e707bc38bf68c3de6db50a3",
+  "bytes": 30382,
+  "map_id": "199100",
+  "declared_time_ms": 49778,
+  "oracle_time_ms": 49778,
+  "oracle_checkpoints": 10,
+  "container_donor": {
+    "path": "/tmp/w/199100/TAS_49778.Ghost.Gbx",
+    "md5": "ecf23a640ee44bb15d6540f979c64455"
+  },
+  "source_inputs": {
+    "path": "/tmp/w/199100/TAS_49778.Ghost.Gbx",
+    "md5": "ecf23a640ee44bb15d6540f979c64455"
+  },
+  "engine_run": {
+    "note": "GENERATED, not repaired: the input tape came from TAS_49778.Ghost.Gbx and every sample of this record was produced by driving that tape through the dedicated server's own engine (fk regen --inputs, FK_NO_CHOOSER=1, gen_map_v1, --trim-outside, no --quat-kind). THIS IS THE SECOND GENERATION, PROMOTED: the first passed C1-C10, contamination against 6 humans, the oracle, C-ident, C-header and C-spawn, and E-stale then measured it one physics tick BEHIND this one -- 10.010 ms, median 1.0695 m -- so the locate had settled on the stale side of the double buffer. This file is AHEAD on 100 % of samples and is the live copy. C10 fails alone and is the sanctioned exception: the flight flag is sample byte 89, which is INHERITED from the carrier and named as such, and the carrier's flight pattern is not our run's. Everything else in the sample is ours.",
+    "host": "44794.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 996,
+    "samples_in_record": 996,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "0-13",
+    "14",
+    "15",
+    "18",
+    "19-34",
+    "39",
+    "40",
+    "42",
+    "43",
+    "47-68",
+    "69-72",
+    "76",
+    "81-84",
+    "91",
+    "93",
+    "95",
+    "97",
+    "99"
+  ],
+  "fields_inherited": [
+    "89"
+  ],
+  "tools": [
+    {
+      "tool": "fk",
+      "args": "regen --inputs --trim-outside --fieldmap gen_map_v1.tsv"
+    },
+    {
+      "tool": "tmtraj",
+      "args": "body setlogin/setdecl/recspan/intg gate"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00001_52202.Ghost.Gbx",
+        "md5": "25b6105c443c31ed57d71d557d0c96e6"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00002_52495.Ghost.Gbx",
+        "md5": "756d0df445ce57f5b0dc929515cdf97c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00003_52599.Ghost.Gbx",
+        "md5": "44aebdc65c80f0c67c3dfb3cb8369d28"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00004_54918.Ghost.Gbx",
+        "md5": "afac340b059b50be349040ba71c4e085"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00005_57358.Ghost.Gbx",
+        "md5": "50f1603f5792c2259d3720acc8e42af3"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/199100/ghosts/rank00006_113448.Ghost.Gbx",
+        "md5": "c0d3de129f1124981723cd9925beb294"
+      }
+    ],
+    "limits": []
+  }
+}

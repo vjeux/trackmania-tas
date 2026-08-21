@@ -4,22 +4,23 @@
 1.940 s: do not throw the car above the finish gate. Climb flat, fully powered,
 and arrive from below still accelerating.**
 
-**Spring 2023 - 24 (2-UP)** — TAS **47.483** (−4.119) | AT 51.602 | WR 47.838 by uelen.
+**Spring 2023 - 24 (2-UP)** — TAS **49.778** (−1.824) | AT 51.602 | WR 47.838 by uelen.
 
-> ### ⚠️ No video, and the 47.483 is under review
+> ### ⚠️ The 47.483 on this page is under review
 >
-> Both clips have been taken down. **The 47.483 tape shares uelen.'s input tape
-> byte for byte, and its trajectory matches his to under a millimetre for 800
-> consecutive samples** — mean **0.000476 m**, max 0.000906 m — up to **40.000 s**.
-> From 40.100 s the two depart cleanly and genuinely differ, mean 18.71 m and max
-> 52.86 m over the last 157 samples, and that departure is where the 0.355 comes
-> from. Whether that is a result of ours built on a human's flight, or a human's
-> flight with an ending attached, is not settled — so **the claim stands withdrawn
-> until it is measured rather than asserted.**
+> **The 47.483 tape shares uelen.'s input tape byte for byte, and its trajectory
+> matches his to under a millimetre for 800 consecutive samples** — mean
+> **0.000476 m**, max 0.000906 m — up to **40.000 s**. From 40.100 s the two
+> depart cleanly and genuinely differ, mean 18.71 m and max 52.86 m over the last
+> 157 samples, and that departure is where the 0.355 comes from. Whether that is
+> a result of ours built on a human's flight, or a human's flight with an ending
+> attached, is not settled — so **the claim stands withdrawn until it is measured
+> rather than asserted.**
 >
-> The **49.778 file is unaffected** — a different input tape entirely — and the
-> 1.940 s finding about flight shape came from comparing our own two runs, so it
-> does not depend on the 47.483.
+> **The 49.778 is a different input tape entirely and is unaffected.** It is what
+> this page leads with and what the clip shows. The 1.940 s finding about flight
+> shape came from comparing our own two runs, so it does not depend on the
+> 47.483 either.
 
 | run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
