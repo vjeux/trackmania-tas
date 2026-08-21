@@ -18,7 +18,7 @@ its own inputs.
 | **TAS, keyboard only** | **6.595** | **±0** | **−0.009** | **19 events, 3 values** |
 | TAS, 5-value action keys | 6.595 | ±0 | −0.009 | 38 events |
 | Author time (never beaten by a human) | 6.595 | — | −0.009 | — |
-| Human WR — jujumasterr | 6.604 | +0.009 | — | — |
+| Human WR — uelen. | 6.601 | +0.006 | — | — |
 | Best human keyboard run (rank 3) | 6.608 | +0.013 | +0.004 | 17 events, 3 values |
 
 TMX map [279209](https://trackmania.exchange/maps/279209) · author **in-.-** ·

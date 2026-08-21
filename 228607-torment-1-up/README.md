@@ -35,8 +35,8 @@ flag, his is still driving; that held frame *is* the 4.605 s.
 | **TAS** — [`TAS_19907`](replays/TAS_19907.Ghost.Gbx) | **19.907** | **−0.351** | −4.995 |
 | **the forgiving one** — [`FORGIVING_19948`](replays/FORGIVING_19948.Ghost.Gbx) | 19.948 | −0.310 | −4.954 |
 | low-input, 16 steer values | 20.070 | −0.188 | −4.832 |
-| Author time (never beaten by a human) | 20.258 | — | −4.644 |
-| Human WR — surms41 | 24.512 | +4.644 | — |
+| Author time (never beaten by a human) | 20.258 | — | −4.254 |
+| Human WR — surms41 | 24.512 | +4.254 | — |
 
 TMX map [228607](https://trackmania.exchange/maps/228607) · author
 **Bernkastel_.**, the title crediting **Emelius.** · **27 recorded runs**.
@@ -52,7 +52,7 @@ finish moved 64 m higher, and it is a remix of an official campaign map that
 At the base of the end wall the floor is 96 m of boost platform, and running
 through it at z ≈ 709 there is a trigger about a metre wide. Cross it correctly
 and the game fires the car along its own nose: **340 → 769 km/h in a single
-contact**. That one contact is the whole 4.644 s between the author and the
+contact**. That one contact is the whole 4.254 s between the author and the
 board.
 
 **Not one of the 27 recorded runs on this board ever fires it.** They all climb
