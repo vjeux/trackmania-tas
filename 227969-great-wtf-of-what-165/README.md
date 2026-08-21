@@ -4,6 +4,10 @@
 with the same three steering values and one more key press than the world
 record holder uses.**
 
+**Great WTF of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR 8.197 by Titoch_tm
+
+https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS, keyboard only** | **8.075** | **−0.052** | **−0.122** | 14 changes, 12 of them steering |
