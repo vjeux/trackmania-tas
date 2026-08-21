@@ -210,6 +210,7 @@ play**.
 |---|---|
 | [`replays/BEST_218812.Ghost.Gbx`](replays/BEST_218812.Ghost.Gbx) | the fastest run, 218.812, keyboard steering |
 | [`replays/AUTHORCUT_220391_watchable.Ghost.Gbx`](replays/AUTHORCUT_220391_watchable.Ghost.Gbx) | the author's own lap with its nine retries cut — watchable, and the best thing to study |
+| [`replays/AUTHORCUT_220391.Ghost.Gbx`](replays/AUTHORCUT_220391.Ghost.Gbx) | the same cut of the author's own lap before it was made watchable — his driving, not ours, kept for comparison |
 | [`replays/HUMANCUT_236972_watchable.Ghost.Gbx`](replays/HUMANCUT_236972_watchable.Ghost.Gbx) | the world record's own inputs with ten retries cut — watchable |
 | [`replays/KEYBOARD_218877.Ghost.Gbx`](replays/KEYBOARD_218877.Ghost.Gbx) | keyboard-only version of the fastest run, 218.877 |
 | [`replays/TAS_235625.Ghost.Gbx`](replays/TAS_235625.Ghost.Gbx) | the world-record lineage, 26 steer values |
