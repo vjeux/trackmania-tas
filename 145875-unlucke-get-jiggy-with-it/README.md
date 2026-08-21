@@ -49,6 +49,63 @@ https://github.com/user-attachments/assets/ae6e57c3-4f44-4bca-881f-361f573b1571
 TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
 46 recorded runs.
 
+## A version a person can actually press
+
+The tape above is a machine's: it holds inputs for 10 ms and stabs three of them
+for a single tick. Nobody can do that. So the same line was **searched again from
+scratch under a minimum-hold constraint** — never quantised afterwards, which
+does not work here and is worth saying why: at a floor of only 20 ms, **all 112
+minimal repairs of the 6.323 keyboard tape fail to finish.** Those single-tick
+events are load-bearing. A machine tape cannot be smoothed into a human one; it
+has to be re-searched under the constraint.
+
+The result is that the human floor is nearly free:
+
+| minimum hold and gap | best time | vs author time 6.343 | inputs |
+|---|---|---|---|
+| 10 ms — the machine tape | 6.323 | −0.020 | 21 |
+| **50 ms** | **6.338** | −0.005 | **11** |
+| **80 ms** | **6.342** | **−0.001** | **13** |
+| 120 ms | 6.345 | +0.002 | **10** |
+
+**Going from a 10 ms grain to an 80 ms grain costs 19 ms and still beats the
+author time.** At a 120 ms floor — ten presses, nothing held under an eighth of a
+second — the run lands 1 ms under the human world record. For scale, the nine
+human keyboard runs on this board have minimum holds of 30–90 ms, so **80 ms is
+stricter than every human here.** (The two 10 ms holds in the field are not
+presses at all: they are the rollover between opposite arrow keys.)
+
+Every rung is the same line as the machine's — right at 1.45, the short right
+stab at ~2.7, a second right at ~3.1, the long left hold from ~3.4, the flick to
+the line — with the 2.25–3.59 flutter replaced by three or four ordinary presses.
+
+`play_TAPE_80ms_6342.Ghost.Gbx` is the 13-input version: gas held throughout,
+brake never touched, three steering values.
+
+### But do not read "playable" as "forgiving"
+
+**This map tolerates almost no mistiming, and that is true of the world record
+too.** Jitter every input independently by ±10 ms and nothing survives — not our
+tape (0 of 120 trials), and **not the human world record (0 of 120)**. Two other
+human runs manage 1 of 120. Those are positive controls, not excuses: they are
+published here because a number like ours means nothing without them.
+
+Per input, the picture is sharper. **Every tape on this map — ours and all nine
+human keyboard runs — has a zero-millisecond window on every input between about
+1.4 s and 3.5 s**, and ±20–30 ms on everything after 5 s. So a survival
+*percentage* mostly counts how many presses sit in the free endgame. A robustness
+search here duly "improved" one tape from 9.1 % to 45.8 % by adding ten events
+after 4.98 s while leaving all ten knife-edge inputs untouched. **Report the worst
+window and where the zero-window inputs are, never the mean.**
+
+The honest axis is **recoverable** tolerance — mistime one press, then re-time the
+later ones to compensate. Our 6.342 saves 10 of 26 perturbations at ±10 ms, four
+of them inside the hard window; the human r10 saves 11 of 26, about eight of them
+inside it. **The human line recovers roughly twice as often where it matters.**
+That is a property of the route, it is measurable, and it is the thing worth
+improving next.
+
+
 ## The cheapest advice on this map
 
 The one-input change above is not a knife edge. Enumerating that single input
