@@ -8,9 +8,9 @@ half a second.**
 
 **Video — both cars at once:** our **21.022** against Wirtual's **23.068**, the
 only time any human has ever set on this map. The clip runs past our finish, so
-you can watch the world record still driving for another 2.046 s.
+Video — both cars at once: our TAS **21.022** against Wirtual's **23.068**, the only human time ever set on this map.
 
-https://github.com/user-attachments/assets/8096b6e3-13a9-4a99-9b70-2cca8902b025
+https://github.com/user-attachments/assets/1ded7d9a-e78f-44fd-9761-e5abace1282d
 
 *An earlier clip on this page was withdrawn: it was filmed from `TAS_21918_analog`,
 whose telemetry is its carrier's rather than its own — measured against a live
