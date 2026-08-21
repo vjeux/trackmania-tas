@@ -4,6 +4,10 @@
 drives permanently sideways, and the one player who stops doing that is faster
 in eight of the last twelve sectors.**
 
+**Fall 2024 - 25 (pure wet icy wood)** — TAS **96.068** (+1.591) | AT 94.477 | WR 96.281 by iambeeen
+
+https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | [`TAS_96068`](replays/TAS_96068.Ghost.Gbx) | **96.068** | +1.591 | **−0.213** |
