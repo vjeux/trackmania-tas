@@ -2288,3 +2288,75 @@ clean container, so the contact and surface bytes belong to the run that is
 being drawn. The positions are already ours — that is the part this re-measure
 established, and it is the part a regeneration would otherwise be assumed to
 need.
+
+## 186935 "The Magnet Trial" — confirmed unfilmable, and its named falsifier predicts the wrong number
+
+Re-measured 2026-08-21, filming. The entry above says `BEST_793893` has no
+positions. It does, in the sense that the samples exist; it has no *run*:
+
+```
+tmtrajcheck --race 793893
+  FAIL C2   the car travels 0.0000 m over 1 distinct points -- this is not a run
+ghostqc
+  STATIC  15533 samples  pathlen 0.0 m  vmax 0.0 km/h  start (0.0, 0.0, 0.0)
+```
+
+**All 15,533 samples are at the world origin.** C1 passes — every component is
+finite — which is the point of having C2 as well: an all-null file is precisely
+the shape that satisfies a finiteness check vacuously. There is no car in the
+file, so there is nothing for a camera to follow and nothing for a render to
+draw. This is not a close call and no override touches it.
+
+The container is the carrier's throughout:
+
+```
+span              end 2575150  -- 42.9 minutes, keby's 2575.154
+checkpoints       [23548, 102939, ... 2076069, 2138325, 793893]
+                  sixteen carrier splits with our finish appended as a 17th
+entity groups     0x2D001000 x 51503 beside a 15533-sample car
+```
+
+All three files on this map carry the same sixteen splits and the same
+2,575,150 ms span, so the whole family sits in one carrier.
+
+### The other two are not substitutes
+
+| file | verdict |
+|---|---|
+| `CUT_795034` | **NAN** — y is NaN from sample 0. Separately a splice at 1021× the plausible speed ratio. |
+| `ONE_ATTEMPT_DELETED_2501894` | decodes clean (24,569 m, 249.9 km/h) — and it is **keby's own run** with one 73.260 s fall removed, as its page row says. A human's driving, correctly labelled, and not ours to caption. |
+
+So there is no artefact on this map from which an honest TAS clip can be made,
+at any length.
+
+### The falsifier this document names is wrong about its own prediction
+
+The block-end section proposes `186935/CUT_795034` as *"the cheapest
+falsifier — if the rule holds, its import shows a 2575-second block end"*. **The
+rule does not predict 2575.** The settled rule is *block end = the timestamp of
+the last sample*, and that file's last sample is at **2,514,650 ms**:
+
+| file | own time | span | **last sample** | span rule | last-sample rule |
+|---|---|---|---|---|---|
+| `CUT_795034` | 795.034 | 2575.150 | **2514.650** | 2575.15 | **2514.65** |
+| `BEST_793893` | 793.893 | 2575.150 | **776.650** | 2575.15 | **776.65** |
+
+The two rules disagree by **60.5 s** on `CUT_795034` and by **1798.5 s** on
+`BEST_793893`, so both files are genuine discriminators — better than the note
+claimed, while the value it stated as the prediction belongs to the rule it was
+meant to test *against*. A falsifier quoted with the wrong expected value cannot
+falsify anything: whichever number came back, somebody would have read it as
+confirmation.
+
+**And the import is not cheap here.** `CUT_795034` carries NaN from its first
+sample, and the one documented instance of importing a car-less ghost on this
+project — 165922's `01_KEYBOARD_16276_tolerant` — **killed the game**, a fact
+that took weeks to explain. Testing the rule on this map risks the instrument
+for a number that can be read off `inputcount --meta` in a second. If the rule
+is to be tested by import, test it somewhere the file has a car and a finite
+position.
+
+> Both corrections here are the same shape as the 286279 one on the entry above:
+> **the measurement was right and the thing it was compared against was wrong.**
+> A prediction, like a control, has to be derived from the hypothesis it is
+> testing.
