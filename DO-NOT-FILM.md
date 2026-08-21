@@ -2051,3 +2051,56 @@ And the two failure modes separate cleanly:
 - **right address, wrong clock** → spawn position off by metres (the two `pos
   +196` failures read 3.08 m, the same family as the 7.75 m and 16.3 m route-dump
   clusters)
+
+### The anchor is steerable, and the resampling theory was half wrong
+
+197047's repair landed — but **not** by resampling. **Fourteen default-anchor runs
+of the subject never once hit `pos +196`** (all +1644 or +1532), while the
+known-good control on the same map, same command, hit it 40 % of the time.
+
+> **It is not a per-run coin flip for a given file: the TEMPLATE biases where the
+> anchor settles.** Two files on one map can have entirely different hit rates,
+> and one of them can be zero.
+
+`--biastick` moves it — but **not deterministically**, a claim its own author
+withdrew within the hour:
+
+```
+197047 TAS_95839_analog          --biastick 500   2 of 2 landed
+197047 KEYBOARD_96412_twokey     --biastick 500   3 of 8 landed
+197047 KEYBOARD_96759_metronome  default          4 of 10 (already correct)
+```
+
+**Two of two is not determinism — it is a small sample of a weighted coin.** The
+rule that works: **run, read the `pos` line, discard anything not at the good
+address.** Sweep the biastick only when the default never reaches it at all.
+
+Both 197047 tapes repaired and verified: spawn |dot| **1.0000** (was 0.0000),
+independent regenerations byte-identical in their decoded CSVs, oracle exact with
+the human record in the same batch, no GUID/URL/donor skin. **An orientation
+repair does not move the block end** — last samples identical before and after.
+
+### A shared prefix that looks like contamination and is not
+
+The repaired file shares a **155-sample prefix** with rank01's download. The clean
+published sibling shares **150 samples over the same range** with the same human.
+197047 opens with a long standing start, so **every honest run on this map matches
+every other for the first ~7.7 s.**
+
+And the trap inside the trap: **the pre-repair file shared only 2 samples, and
+that low number was a symptom of the defect** — its orientation was wrong from
+sample 1.
+
+> **"Fewer shared samples is better" would have preferred the broken file.** A
+> prefix is not a graft, and a *short* prefix on a map with a standing start is
+> evidence of a defect rather than of independence.
+
+### `COVERAGE: 100.00 %` has now failed as a certificate three times in one night
+
+Ten regenerations of a known-good file — four good, six broken — **all printed
+`COVERAGE: 1917 of 1917 samples are ours (100.00 %)`.** Three distinct defects
+have passed under that figure: twice on frozen slots, once on wrong-anchor
+orientation.
+
+> **It reports that every written sample came from an engine instant, and nothing
+> about whether the instant was the car.**
