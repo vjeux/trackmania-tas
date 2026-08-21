@@ -1231,3 +1231,60 @@ badly.
 — not its declared time, not the 1964.93 span, roughly double the declaration.
 One track, so it is not a render problem. **A third number from a file that
 should have two.**
+
+### The block end follows the LAST CHECKPOINT — the 94 was cleared on the wrong axis
+
+`238835/04_TAS_239133` was logged above as an anomaly: declares 239133, imports at
+462.95, span 1964.930. It is not an anomaly. It is the discriminating case for the
+rule, because its three numbers all differ:
+
+| file | own time | last checkpoint | span | measured block end |
+|---|---|---|---|---|
+| `TAS_239133` | 239.133 | **462.982** | 1964.930 | **462.95** |
+| `TAS_347003_noretry_v4` | 347.003 | 347.003 | 1964.930 | **347.00** |
+| `KEYBOARD_5350` (Ghost track) | 5.350 | 5.350 | 566.080 | **5.35** |
+
+**Every block end measured all night equals the last checkpoint.** So field #7 is
+not a curiosity beside the span — **it is the field that drives the render.** The
+span mattered on the 19 only because extra entity groups produce a *second* track.
+
+> **A class cleared on one axis is not cleared.** The 94 were imported, measured,
+> and found harmless — on the span axis. Two of them were the corpus's worst files
+> on the axis that turned out to matter.
+
+### Two published files that would have rendered for 32 minutes, fixed by accident
+
+```
+NORETRY_347003_watchable   own 347.003   last CP 1964.933   ← Quantiks' time
+NORETRY_407463_watchable   own 407.463   last CP 1964.933   ← Quantiks' time
+```
+
+Both sit in the 94 — one car entity, span correct — so both were cleared as safe
+to film. On the checkpoint axis they were the two worst files in the corpus.
+
+They are already clean, because the `setdecl --from 1964933` repair rewrote
+`0x0309202B+56`, which **is** the last split:
+
+```
+BEFORE [58906, 148023, 347003, 1704277, 1964933]
+AFTER  [58906, 148023, 347003, 1704277,  347003]
+```
+
+The repair was aimed at the declared time and happened to fix the render. **Luck,
+not process** — the exposure was removed by a commit written for another reason,
+before anyone knew it existed.
+
+### The falsifiable prediction
+
+If the rule holds, `146612/KEYBOARD_39706` imports with a block end of **39.555** —
+**below its own declared time of 39.706**. No span-based or declared-time-based
+theory produces a block end lower than the declaration, so one import decides it.
+
+Others predicted, all one-car-entity so no second-track confound: 126859's
+`KEYBOARD_24164` → 24.342 (a human's WR); 228607's `TAS_19907` and seven siblings
+→ 20.034; 279209's `ms_r002_6608_best_6585` → 6.585; 286279's
+`AUTHORMIN_831ev_354781` → 355.181 (the author time).
+
+**The render-cost class is therefore "last checkpoint ≫ own time", not the 19** —
+which is the second-track class, a different set. On the current tree the
+render-cost class is `TAS_239133` alone.
