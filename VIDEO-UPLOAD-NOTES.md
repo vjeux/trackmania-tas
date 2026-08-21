@@ -121,10 +121,106 @@ with the session cookie and read it from there. The three-request dance is then:
 Finalising is what makes the asset *exist*. It is not what makes it *public* —
 see trap 1.
 
+## 5. Before filming two cars, prove they are two cars
+
+**A separation of zero and a separation you cannot see look identical on the
+gate.** Decode both ghosts to their sample CSVs and compare the md5s. If they
+match you are about to film one lap twice, wearing two liveries.
+
+```bash
+for f in <ours> <opponent>; do inputcount --csv "$f" | md5sum; done   # must differ
+seplag <ours> <opponent>                                             # want INDEPENDENT / incidental
+```
+
+This is not hypothetical. On 285268 **all eight of our tapes decode to a human's
+trajectory** — seven of them to burntbagels' 49.446 with one identical CSV md5,
+including the tape named as our best. Every one of them re-simulates to its own
+claimed time, so the *results* are real; what is unreliable is the recording of
+how they got there, which is exactly the material a video is made of. A two-car
+clip from that map would have shown burntbagels racing himself, and its
+separation profile (868 of 986 samples in the "two visible cars" band) looked
+like the *best* pairing in the set.
+
+Run it before every two-car shoot, on the file you are about to film.
+
+## 6. Getting the opponent: the render box can fetch its own
+
+No bridging needed, and reading a leaderboard is not submitting to one:
+
+```bash
+# TMX map id -> Nadeo map uid
+curl -s -A "$UA" https://trackmania.exchange/api/maps/get_map_info/id/<tmxid> | jq -r .TrackUID
+# uid -> the live board, with times, players, timestamps and ghost URLs
+curl -s -A "$UA" https://trackmania.io/api/leaderboard/map/<uid> \
+  | jq -r '.tops[] | "\(.position) \(.time) \(.player.name) \(.url)"'
+# tops[].url -> the recording itself
+curl -s -A "$UA" -L https://trackmania.io/api/download/ghost/<guid> -o rank001_<time>_<player>.Ghost.Gbx
+```
+
+Keep the player's real login in the filename and stage with a `90_`/`91_` prefix
+so it sorts last — the ghost picker selects by **row index**, so inserting a file
+anywhere else silently shifts every row after it. Never relabel another player's
+recording as ours.
+
+Two provenance controls, both cheap: a genuine downloaded ghost **re-simulates to
+its leaderboard time exactly**, and the game itself reads the login off the file
+(`track[1] name=Ghost:AffiTM` in `/mtclip`), so the opponent names itself on
+import.
+
+## 7. A ghost's camera dies with the ghost
+
+A MediaTracker camera bolted to an entity lives exactly as long as that entity's
+sample stream — and **our tapes stop sampling before the finish while downloaded
+human recordings keep going past it.** On 270053 our stream ends at 4.45 s, our
+own crossing is at 4.492, and the human crosses at 4.495: with the camera on our
+car the shot cut to a stray static view of the map at 4.383 and the last 0.6 s
+contained **no car and neither finish**. `duration`, `blackspans=0` and the gate
+all passed it.
+
+So for any pairing where the finish matters, bolt the camera to the
+**longer-lived** entity (`CAMON=wr` in `render2.sh`). Ours is still in frame; it
+is simply not what the camera follows.
+
+## 8. When one camera cannot hold both cars, use two cameras
+
+`tools/splitscreen.sh` renders each run alone and stacks them, clocks aligned at
+the start. Use it whenever the opponent spends the run outside the shot — 276877
+is 61.5 m and 6.061 s away, 228607 is 356 m and 4.605 s away. A two-car label on
+a clip whose second car is behind the camera is **a caption writing a cheque the
+picture cannot cash**.
+
+The shorter run holds on its final frame rather than cutting to black, so the gap
+reads as *time*: our car parked at the flag while the other pane is still driving
+**is** the 4.605 s.
+
+**It only runs on the render box.** The Mac's Homebrew ffmpeg 8.0.1 has no
+libfreetype, so `drawtext` does not exist there (`No such filter: 'drawtext'`);
+WhiteStick's 9.0.1 essentials build has it, and Windows ships the fonts.
+
+## 9. Overriding a gate check without switching the gate off
+
+`GATE_OVERRIDE="C3,C8=<reason>"` films a ghost whose **only** failures are the
+named ones. It exists because a check can be superseded while still wired in —
+197047's C3 fires on a 620 m jump that is a **respawn we actually drove** (proved
+by our own inputs reproducing it at the same instant, which a splice cannot
+survive), and its C8 is the known wheelspin false positive on a map that slides
+for a hundred seconds.
+
+The override must name **every** failure exactly; one unexpected id and it
+refuses. That keeps the distinction between *this check is wrong about this file*
+and *no check ran*, and the reason is echoed into the render log beside the
+verdict. Whoever sets it owns it — and the page must tell the viewer what they
+are seeing.
+
 ## The general shape
 
 Traps 2 and 3 are the same mistake: **a check that was wrong about data that was
 right.** Trap 0 is its mirror image and the more dangerous one: **a check that
 could not fail**, because the instrument was standing inside the thing it was
-supposed to be testing. Before believing a green result, ask what a red one
-would have looked like — and if you cannot answer, you do not have a check.
+supposed to be testing. Traps 5 and 7 are the third face of it: **a check that
+was in no position to see the thing that was wrong** — a gate cannot tell a
+separation of zero from a separation you cannot see, and no file-level check can
+tell you the camera went blind before the flag.
+
+Before believing a green result, ask what a red one would have looked like — and
+if you cannot answer, you do not have a check. Then watch the video.
