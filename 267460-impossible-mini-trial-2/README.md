@@ -10,15 +10,29 @@ cannot convert into a lap.
 
 **Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
 
-The clip runs past our finish, so you see Wirtual still driving — the 2.046 gap
-is on screen.
+> ### ⚠️ Video withdrawn — the tape imports into the game under Wirtual's name
+>
+> The clip that was here has been taken down. Nothing about the run is wrong: the
+> 21.022 is validated, the car path is regenerated from engine memory and
+> accurate to half a millimetre, and the driving is ours.
+>
+> What is wrong is whose file it is. Loaded into the game, the tape announces
+> itself as **`Ghost:WirtualTM`** — the same name as the human world record on
+> this map, whose recording the tape was built inside. Our own files announce
+> themselves as `Ghost:TAS`.
+>
+> The shape of it is worth stating, because it is not bad luck. This map has four
+> tapes; the three nobody filmed all read `Ghost:TAS`, and **the one made
+> specifically for filming is the one carrying his name** — because the watchable
+> version is the *regenerated* one, and a regeneration rewrites the car's
+> telemetry while inheriting every other field of the container it was built in.
+> The file most likely to be published is therefore the file most likely to be
+> wearing somebody else's identity.
+>
+> A replacement will be rebuilt on a clean carrier and re-filmed. The other tape
+> on this map that is already clean, `TAS_21918_analog`, is a **different run** —
+> 0.896 slower — and is not a substitute for this one.
 
-https://github.com/user-attachments/assets/1ded7d9a-e78f-44fd-9761-e5abace1282d
-
-*The car path is regenerated from engine
-memory and is accurate to half a millimetre; the dirt and spark effects are
-wrong, because the ghost's surface-contact byte is still the carrier file's —
-see "What is wrong with this video" at the bottom.*
 
 ---
 
