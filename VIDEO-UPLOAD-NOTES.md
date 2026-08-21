@@ -283,3 +283,57 @@ the time as a u32 only, so a value stored as a float or split across a struct
 boundary is invisible to it. The nickname reader passes files that still carry a
 foreign account underneath. Use them together, and never read a pass from one as
 a verdict from all.
+
+### The two identity readers are exact mirrors, proven on one file
+
+227969's **repaired** file (`0fe68885…`) is the case that settles how these fit
+together. It passed everything: header 8.050 = validated 8.050, **no account id**,
+census clean (`8050 ×6, 8197 ×0`), telemetry bit-identical to our own tape at 162
+of 162 positions and independent of the world record at every lag. It imported
+into the MediaTracker as:
+
+```
+track[0] name=Ghost:Titoch_tm   end=8.05     <- ours
+track[1] name=Ghost:Titoch_tm   end=8.17     <- the actual world record
+```
+
+**Our run, still wearing the record holder's nickname.** The two block ends prove
+the import was right, so this is the field itself, not a mix-up. Set against
+165922's nine — donor's **account id** present, nickname reading `TAS` — the two
+failures are mirror images:
+
+| | nickname | account id |
+|---|---|---|
+| 165922 × 9 | `TAS` ✓ | donor's ✗ |
+| 227969 repaired | `Titoch_tm` ✗ | none ✓ |
+
+**Each reader is blind to exactly the case the other catches.** A container is
+ours only when both agree — and the nickname is the field a byte scan cannot
+read, so the game is the only instrument for it. Both renderers now run that
+check automatically before rendering a frame: if our ghost does not import as
+`Ghost:TAS`, the shoot dies with the name the game gave it.
+
+## 12. "Wrong ghost" is not always the picker
+
+The ghost picker selects by row index, so it is the first suspect when an import
+opens the wrong run — but it is not always guilty, and the fix differs.
+
+199100 failed three times with `wrong ghost: clip end=52.2s, expected span
+49.90s`, twice after a full game restart and once with **exactly two files in the
+folder**. The picker was innocent every time. The file we asked for was the file
+that loaded — and it *declared* 52.202, because it was built in the previous
+record holder's container. The block end the check reads comes from the
+container's declared time, not from the sample stream.
+
+So when a shoot reports the wrong ghost, read the track name before touching the
+staging:
+
+- `name=Ghost:<a human>` — the file is wearing someone else's container. Nothing
+  about the folder will fix it.
+- `name=Ghost:TAS` with an unexpected duration — now suspect the row index, and
+  stage exactly one ghost in the folder, which cannot be mis-indexed.
+
+The check earned its keep either way: keyed to the *outcome* — is this the ghost
+I asked for — rather than to any mechanism, it survived the mechanism being
+wrong, twice, and stopped a video of `Ghost:OrmeEssence44` going out captioned as
+our arc.
