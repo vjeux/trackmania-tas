@@ -279,3 +279,46 @@ earlier.
 | `replays/BEST_KEYBOARD_6323.Ghost.Gbx` | the same time on 47 inputs, before event reduction |
 | `replays/BEST_6322.Ghost.Gbx` | fastest, unconstrained |
 | `replays/tas_6330.Ghost.Gbx` | the analog family, 6.330 |
+
+## An hour spent deciding whether this tape is a 6.342 or a 6.360
+
+It is a **6.342**. The episode is recorded because the wrong answer was reached
+by three independent readers agreeing, which is normally the strongest evidence
+there is.
+
+Every tape in this lineage declares **6360** in its header. That is the time of
+`r03`, the human keyboard run the whole family was searched out of, and the
+container has been inherited ever since. Five different tapes declare it while
+simulating to 6.322, 6.323, 6.338, 6.342 and 6.345 — **a stored field cannot give
+five answers**, so the header describes the seed and the simulation describes the
+run.
+
+What went wrong: a report inverted the server's two columns — writing
+*"declares 6342, validates to 6360"* when the file says the reverse — and once
+that was in the record, three further readings were fitted to it. The three
+readers (`inputcount --meta`, a ghost checker, and a byte census) all agreed on
+`6360`, and all three were reading **the stored field**. The census's `6360 ×6`
+*is* the declared-time sites, by construction. **Three readers of one field are
+one reader.**
+
+And *"the value 6342 appears nowhere in the file"* — which read as damning — is
+exactly what a correct file looks like. The simulated time is not stored anywhere.
+
+The disambiguator needed no field-order judgement at all. The server writes it in
+a sentence:
+
+```
+"Desc" : "validated time is actually better! (6360 > 6342)"
+```
+
+Three rules came out of it, and the third is the one that generalises furthest:
+
+> **Never read a synthesised tape's time off its header, its filename, or its
+> manifest. Re-simulate the file you are holding.**
+
+> **`DeclaredResult` and `ValidatedResult` must never be quoted without their
+> labels.** A mislabelled operand is worse than an invented one, because an
+> invented number gets checked and a mislabelled one gets corroborated.
+
+> **Agreement between readers of the same field is not independent evidence.**
+> Before treating three sources as three, ask what each one read.
