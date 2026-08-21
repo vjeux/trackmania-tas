@@ -4,7 +4,11 @@
 full right about 0.1 s earlier and hold it at ~80 % instead of 100 %. That
 validates at 6.342 — one millisecond under the author time.**
 
-**Video — both cars at once:** <https://pxl.cl/cvB8K> — our keyboard **6.323**
+**Video: withdrawn.** The clip published here was filmed from a copy of our ghost
+that is not the file this page ships — a stale staging copy, superseded before the
+clip was shot. The run and the time are unaffected. A replacement will be filmed
+from a regenerated ghost, whose telemetry is verified against a re-simulation of
+its own inputs.
 against the human world record **6.346** (xeap-.-).
 
 *An earlier clip on this page was withdrawn twice over, and both corrections are
