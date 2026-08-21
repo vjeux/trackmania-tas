@@ -4,6 +4,44 @@
 each with ±10 ms of slack. 903 people have tried; the best of them is 0.003
 short.**
 
+**Fall 2025 - 16 (CP1 end)** — TAS **4.830** (−0.001) | AT 4.831 | WR 4.834 by OriginalCJM
+
+https://github.com/user-attachments/assets/8c9001d7-61df-4dab-923f-cda6a5f6c81f
+
+**Our 4.830 and OriginalCJM's world record, both in one camera — and they are
+never two cars.** Maximum separation over the whole run is **0.184 m**, mean
+**0.055 m**, so the two vehicles render inside one another from the lights to
+the last frame. That is the map: the entire 0.004 between us is 15.6 cm of
+forward progress at the takeoff tick, and the page's own arithmetic says
+0.001 = 4.55 cm. A clip in which you cannot see the gap is an honest picture of
+a gap you cannot see.
+
+Measured, so the sameness is not left to impression: our trajectory sits inside
+**0.5 mm** of his for the first **2.05 s** — 41 consecutive samples — then
+departs smoothly, past 1 cm at 2.20 s and 10 cm at 3.60 s, to 0.184 m. That is
+the page's claim confirmed from the telemetry: this is his route with two
+inputs trimmed, and the trims are what the last two seconds are made of.
+
+**Both recordings stop at 4.800**, 30 ms before our crossing and 34 ms before
+his, and by then the car has been airborne since 4.21 — so the clip ends with
+both cars in flight, still climbing, just short of a finish line neither file
+contains.
+
+*One instrument reading that needs its context.* `nearident`, the contamination
+check, reads **COPY** on this pairing — 41 consecutive samples inside its 1 mm
+band. It is a false positive here, and the reason is measurable: **every ghost
+our pipeline writes places the car 0.000507 m from where the game places it**,
+identically at the spawn on five different maps with five different spawn
+coordinates, including one where our run is 2.4 s faster than the human's and no
+donor relationship is possible. Two of our own tapes sit at exactly 0.000000 m
+from each other; two downloaded human recordings sit at exactly 0.000000 m from
+each other. So the 1 mm band is only twice our own writer's noise floor, and it
+cannot resolve a close following line from a copy on any of-ours-versus-a-
+download pairing. The control that does resolve it is on this map: three
+unrelated pairs of human recordings read **3, 4 and 6** samples inside the band,
+against our 41 — and our input archive is 1073 bytes of dense analog steering
+against his 605 bytes of sparse keyboard, so the two tapes are not one tape.
+
 | run | time | vs author time | vs human WR | slack |
 |---|---|---|---|---|
 | **TAS, human-shaped** | **4.831** | **±0** | **−0.003** | **±10 ms on every input** |
