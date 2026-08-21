@@ -19,7 +19,7 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid:
 
-> ### ⚠️ Video withdrawn — the tape reports another player's identity
+> ### Video withdrawn, then replaced — the tape had reported another player's identity
 >
 > The clip that was here has been taken down. It played, and there is nothing
 > wrong with the driving in it: the run is ours, the time re-simulates on the
@@ -43,6 +43,20 @@ With the inputs overlaid:
 >
 > The run stands and the time stands. A replacement clip will be filmed from a
 > tape rebuilt on a clean carrier.
+>
+> **Replaced 2026-08-21.** The tape was rebuilt: login `TAS`, no account id, the
+> donor's custom car livery and its download URL replaced with our own, and the
+> trajectory **256 of 256 positions bit-identical** to the withdrawn tape. It
+> imports into the game as `Ghost:TAS`. The clip below is that re-shoot — same
+> run, different file.
+>
+> Two fields are still the carrier's and are not being faked: **ground contact
+> and wheel rotation**. Zeroing them would assert that the car was airborne for
+> the whole run and that its wheels never turned, which is a claim rather than a
+> blank. **So the dirt and spark effects in this clip may be wrong; the car's
+> path is ours.**
+
+https://github.com/user-attachments/assets/808e0fe9-7013-4b84-9182-6b3bc4de30e6
 
 ## What kind of result this is
 
