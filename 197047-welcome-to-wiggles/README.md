@@ -3,6 +3,36 @@
 **Wiggle slower than you think: hold each side for a quarter of a second — 250 ms
 — keep it metronomic, and press respawn the instant you touch the far gate.**
 
+**Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
+
+https://github.com/user-attachments/assets/999792f4-397f-4d16-818d-da900a53017e
+
+**Both runs, side by side, and yes — the car really does vanish and reappear at
+the start.** That is not a broken clip and it is not an edit. At **94.250** our
+run presses respawn the instant it touches the far gate, the car returns to
+within 6.6 m of the spawn, sits still for 1.05 s across 22 samples, and then
+drives across the finish. It is ordinary gameplay on a map whose two checkpoints
+are 6 m from the spawn and 620 m away: touching the far one and respawning is
+the route, and the headline of this page tells you to do it.
+
+**How we know it is a respawn and not a splice**, which is the question a 620 m
+jump should always raise: re-simulating **our own inputs** reproduces the jump at
+the same instant. A carrier segment spliced into a recording cannot survive
+re-simulation; a respawn we actually drove must. The tape regenerates 1917 of
+1917 samples, the oracle returns 95.839 exactly, and the regenerated file's
+sample CSV is **identical** to the tape we filmed — an equality, not a tolerance.
+The gate still refuses the file on two checks that have since been superseded (a
+distance-based teleport test, and a wheel-radius test that reads wheelspin as
+foreign telemetry on a map that slides for a hundred seconds), so this clip was
+filmed under a named override, `C3,C8`, recorded in the render log with its
+reason.
+
+Split screen rather than one camera: the two runs finish 5.955 s and hundreds of
+metres apart. Watch both cars hold **GAS and BRAKE together** for the entire
+hundred seconds — that is the wiggle — and watch our pane reach the finish arch
+while Beagle.3 is still creeping down the straight. Opponent is the rank-1
+recording downloaded from the live board, filmed exactly as recorded.
+
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|
 | **TAS** | **95.839** | **−4.945** | **−5.955** | pad |
