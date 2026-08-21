@@ -19,6 +19,21 @@ Edition 2021, one dependency (`miniz_oxide`). Binaries land in
 decompress GBX bodies, so you need that library present; nothing else is
 required.
 
+Built from a clean checkout of exactly these files on a stock Linux box
+(stable toolchain, `cargo build --release --locked`): compiles with no errors
+and produces all 15 binaries.
+
+### Running the self-test
+
+```
+TMTRAJ_GHOST_DIRS=/path/to/your/ghosts tmtraj selftest
+```
+
+The fixtures are game-recorded `.Ghost.Gbx` files and are **not** in this repo,
+so without that variable the self-test finds nothing. It then prints
+`NO CHECKS RAN` and exits non-zero — a run with an empty denominator is not a
+pass.
+
 Everything below is named by **the failure it catches**, because that is why
 each one exists. A tool that reports OK is saying "no known defect", never
 "verified".

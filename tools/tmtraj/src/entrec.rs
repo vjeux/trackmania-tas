@@ -21,7 +21,6 @@
 
 use crate::gbx::Gbx;
 use miniz_oxide::inflate::decompress_to_vec_zlib;
-use std::io::Read;
 
 pub const CLASS_CPLUGENTRECORDDATA: u32 = 0x0911_F000;
 pub const CLASS_CSCENEVEHICLEVIS: u32 = 0x0A01_8000;

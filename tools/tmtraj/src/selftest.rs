@@ -54,8 +54,21 @@ pub fn cases() -> Vec<(&'static str, Vec<&'static str>, Vec<i32>)> {
     ]
 }
 
+/// Where to look for the fixture ghosts: `TMTRAJ_GHOST_DIRS` (colon-separated)
+/// first, then the built-in paths. The fixtures are not in the repo — they are
+/// game files — so on any box but the one this was written on the env var is
+/// the only thing that will find them.
+pub fn ghost_dirs() -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    if let Ok(s) = std::env::var("TMTRAJ_GHOST_DIRS") {
+        v.extend(s.split(':').filter(|x| !x.is_empty()).map(str::to_string));
+    }
+    v.extend(GHOST_DIRS.iter().map(|s| (*s).to_string()));
+    v
+}
+
 pub fn find_ghost(names: &[&str]) -> Option<String> {
-    for d in GHOST_DIRS {
+    for d in ghost_dirs() {
         for n in names {
             let p = format!("{}/{}", d, n);
             if std::path::Path::new(&p).is_file() {
@@ -411,12 +424,27 @@ pub fn selftest(verbose: bool) -> SelfTest {
     }
 
     say!("");
-    say!(
-        "SELFTEST: {} ({} checks, {} failed)",
-        if ok { "ALL PASS" } else { "FAILURES PRESENT" },
-        checks,
-        failures.len()
-    );
+    if checks == 0 {
+        // A run with no fixtures is not a pass. This is the exact shape of the
+        // COVERAGE: 100% failure logged in DO-NOT-FILM.md — a green line whose
+        // denominator is zero. Say which of the two zero cases it is: nothing
+        // found, or everything found broke before a check could run.
+        ok = false;
+        let why = if failures.is_empty() {
+            "not one fixture ghost was found — point TMTRAJ_GHOST_DIRS at a directory holding them"
+        } else {
+            "every fixture that was found failed to decode before a single check ran"
+        };
+        failures.push(format!("no checks ran: {}", why));
+        say!("SELFTEST: NO CHECKS RAN — {}. This is not a pass.", why);
+    } else {
+        say!(
+            "SELFTEST: {} ({} checks, {} failed)",
+            if ok { "ALL PASS" } else { "FAILURES PRESENT" },
+            checks,
+            failures.len()
+        );
+    }
     SelfTest {
         ok,
         report: lines.join("\n"),
