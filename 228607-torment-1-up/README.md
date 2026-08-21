@@ -5,7 +5,7 @@ and on this map, unlike its low-finish twin, you must release the lock about
 200 ms after it fires and then counter-steer, a touch early rather than a touch
 late.**
 
-**Torment (1-UP)** — TAS **19.907** (−0.351) vs WR by Falco_TM_ 24.902 | AT = 20.258
+**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.902 by Falco_TM_
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 

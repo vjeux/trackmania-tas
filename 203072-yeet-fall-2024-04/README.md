@@ -4,7 +4,7 @@
 where it goes — apex at 82 m and spend the boost going forwards, not at 99 m and
 spend a second and a half coming back down.**
 
-**YEET Fall 2024 - 04** — TAS **10.743** (−0.591) vs WR by ayti__ 12.083 | AT = 11.334
+**YEET Fall 2024 - 04** — TAS **10.743** (−0.591) | AT 11.334 | WR 12.083 by ayti__
 
 https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
 

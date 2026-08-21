@@ -6,7 +6,7 @@ this map. Do not brake onto the finish platform. The record holder is on the bra
 carrying speed instead takes 0.258, and that decision alone is worth more than
 half a second.**
 
-**Impossible Mini Trial 2** — TAS **21.022** (+4.134) vs WR by Wirtual 23.068 | AT = 16.888
+**Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
 
 The only time any human has ever set on this map. The clip runs past our finish,
 so you see Wirtual still driving — the 2.046 gap is on screen.

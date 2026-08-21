@@ -34,7 +34,7 @@ either.** A check that cannot see tells you nothing in either direction.
 The runs and the times are unaffected: 6.322, 6.323 and 6.342 all validate on
 the untouched map.
 
-**unluckE - get jiggy with it** — TAS **6.330** (−0.013) vs WR by xeap-.- 6.346 | AT = 6.343
+**unluckE - get jiggy with it** — TAS **6.330** (−0.013) | AT 6.343 | WR 6.346 by xeap-.-
 
 https://github.com/user-attachments/assets/ae6e57c3-4f44-4bca-881f-361f573b1571
 
