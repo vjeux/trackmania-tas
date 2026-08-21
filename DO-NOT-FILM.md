@@ -232,3 +232,51 @@ A file with no manifest gets a manifest requested before it gets filmed — and 
 manifest is a *claim*, so verify it against the bytes in the file you hold. Both
 times this defect was caught, it was caught by someone re-reading a file that had
 already passed a full green gate.
+
+## Nine container fields, two mandatory readers, and one edit that vanishes silently
+
+By the end of 2026-08-21 the count of things a searched tape inherits from its
+**carrier** — the existing ghost it was built inside — stood at nine:
+
+| field | the only reader that sees it |
+|---|---|
+| login → account id (the server derives one from the other) | the game's parser, `/validatepath` |
+| **nickname** | **only a MediaTracker import** |
+| car skin, and the URL it downloads from | plain text at offset 175 |
+| trigram, club tag, zone | fixed in an earlier pass |
+| declared time — stored **six times** | a u32 census, which needs no reference at all |
+| session walltime | nothing yet; derived rather than copied, still unlocated |
+| split vector, chunk `0x0309202B` | `tmmaps splits` |
+
+**Two readers are mandatory and neither subsumes the other.** The proof is a
+matched pair: 165922's nine displayed `TAS` while carrying the donor's account
+id; a repaired 227969 carried no account id while displaying `Titoch_tm`. Each
+reader is blind to exactly the case the other catches.
+
+### The edit that succeeds at doing nothing
+
+Patching the three plain-text strings shortened a file by 142 bytes, and the
+server then **dropped it from the batch without a word** — `1 replay parsed`
+where two were staged, `Can't load: 0%`, no error naming the file. **A file that
+vanishes reads exactly like a file that was never there.** The fix is a u32 at
+**offset 77**, the Gbx header-data size, decremented by the bytes removed.
+
+There is a structural reason an earlier login patch needed none of this: **the
+login lives in the body, where a length change is free; the nickname and skin
+live in the header, where it invalidates the size.** Two identity fields, two
+different rules, and nothing warns you which one you are editing.
+
+> **After any container edit, assert that the parser produced a row FOR YOUR FILE
+> by name.** Not that the batch succeeded. Not that the count looks plausible.
+
+This is the same defect as a publish check that reads status codes: `curl`
+succeeds perfectly at downloading a 404, and the parser succeeds perfectly at
+parsing one file instead of two. Both tools did their job; neither did yours.
+
+### And a filter that deleted the signal
+
+The strings had been missed by an earlier scan because it filtered out anything
+matching `skins|models|zip` as engine noise. The car skin **is** engine noise, and
+it is also a stranger's custom livery with his account uuid in the filename. A
+filter tuned to reduce noise will eventually be tuned past the thing you are
+looking for.
