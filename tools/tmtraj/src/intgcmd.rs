@@ -1727,8 +1727,9 @@ pub fn gate_one(
                 hard += 1;
                 lines.push(
                     "FAIL   C-route   no --route given. The record has NOT been checked against \
-                     the engine by any instrument other than the one that wrote it, and on 227654 \
-                     every other check in this gate passed a file carrying the container's run. \
+                     the engine by any instrument other than the one that wrote it -- every other \
+                     check in this gate READS the record, so none of them can disagree with it \
+                     about where the car was. \
                      Produce one with `fk btraj2 --template THIS FILE ... --out route.csv`."
                         .into(),
                 );
@@ -2017,7 +2018,7 @@ pub fn cmd_dup(args: &[String]) {
         if files.len() < 2 {
             continue;
         }
-        let mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let _mapid: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
         let mut files = files.clone();
         files.sort();
         // decode once per file
