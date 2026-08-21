@@ -560,3 +560,75 @@ It also decides the camera target. Following **our** car makes the divergence
 read as the human falling behind, which is what happened. Following the
 longer-lived ghost keeps a car on screen past both finishes (trap 7) — that is
 worth it when the finish is the story, and not otherwise.
+
+## 22. The dead-camera tail has a number, and every check we own passes it
+
+Trap 7 said a camera bolted to a ghost dies with that ghost's sample stream. It
+happened again on 208024, four and a half times worse than the case that taught
+us, and **the render passed a full gate on the way out**:
+
+```
+duration=21.133s  expected ~21.1s   size=8639326B   blackspans=0   OK
+```
+
+Our stream ends at 18.150 and the human's at 21.100, so the clip runs to 21.13.
+Frame-to-frame difference over the whole render, one number per frame:
+
+| window | mean frame difference |
+|---|---|
+| 0–18 s (the run) | **3.3 – 15.1** |
+| 19 s | **0.044** |
+| 20 s | **0.033** |
+| 21 s | **0.019** |
+
+**2.9 seconds — 13 % of the clip — is one frozen still**, clock stuck at the
+final time, the opponent's car not drawn at all. Not black, so `blackdetect`
+says nothing; the right length, so the duration check says nothing.
+
+The instrument is one filter and it should have existed after trap 7:
+
+```bash
+ffmpeg -v error -i clip.mp4 \
+  -vf "tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" \
+  -f null -   # bucket by second; live footage is ~1e0, a frozen frame is ~1e-2
+# or the cheap version, which reports a freeze that never ends:
+ffmpeg -i clip.mp4 -vf freezedetect=n=0.003:d=0.5 -f null -
+```
+
+**And the fix is not always `CAMON=wr`.** Trap 7's remedy — bolt the camera to
+the longer-lived entity — is right when the finish is the story and the two cars
+are centimetres apart. Here they are **192 m** apart at the end, so following the
+human would have put our car, the subject, off screen for the climax. The clip
+is shot on our car and the dead tail is **cut in post**, at the last live frame
+plus a few. Cutting footage that contains no information is not hiding anything;
+shipping it is.
+
+> **Measure the last live frame, not the last frame.** A render's length is
+> decided by the longest ghost block and its *content* by the shortest one.
+
+## 23. The publish gate 404s on a clip that is published — trap 10, in the other direction
+
+`ship-clip.sh` registered a new asset in the release body and immediately failed
+its own anonymous fetch:
+
+```
+ship: registered in the videos-v1 body (this is what makes it public)
+ship: ANONYMOUS GATE FAILED: http 404 — NOT published
+```
+
+Forty-five seconds later, the same URL with the same scrubbed environment:
+
+```
+http=200   9427991 bytes   18.400000 s   md5 == the local file, byte for byte
+```
+
+Trap 1 says registration flips an asset public "within seconds" and trap 10
+measured up to a minute of lag on the *withdrawal* side. **It is the same
+window, and it applies to publication too.** The gate reads the one instant when
+the answer is still no.
+
+It fails safe — it refuses a good clip rather than passing a dead one — but an
+operator who believes it re-uploads, and the repo grows a duplicate asset per
+attempt. **Retry the anonymous fetch for ~90 s before declaring a failure**, and
+report the reading that decided it. As on the takedown side: one reading is not
+a verdict, and the second one is the truth.

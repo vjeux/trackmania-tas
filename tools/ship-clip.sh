@@ -68,11 +68,26 @@ fi
 
 # --- 5. THE GATE: what a logged-out visitor gets -----------------------------
 # env -i so no cookie jar, no GH_TOKEN, no netrc can leak into the check.
+#
+# RETRY, because registration takes up to a minute to propagate. On 208024 this
+# gate read 404 the instant after the release-body edit and 200 with the full
+# playable file 45 s later. Trap 10 measured the same window on the takedown
+# side; it exists in both directions. One reading is not a verdict.
 OUT="/tmp/anon-$$.mp4"
-CODE="$(env -i /usr/bin/curl -s -L --retry 3 --max-time 300 -o "$OUT" -w '%{http_code}' "$URL" || true)"
-[ "$CODE" = "200" ] || die "ANONYMOUS GATE FAILED: http $CODE for $URL — NOT published"
-ANON_BYTES="$(stat -f%z "$OUT")"
-ANON_DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" 2>/dev/null || true)"
+CODE=""; ANON_BYTES=""; ANON_DUR=""
+for attempt in $(seq 1 10); do
+  CODE="$(env -i /usr/bin/curl -s -L --retry 3 --max-time 300 -o "$OUT" -w '%{http_code}' "$URL" || true)"
+  if [ "$CODE" = "200" ]; then
+    ANON_BYTES="$(stat -f%z "$OUT")"
+    ANON_DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" 2>/dev/null || true)"
+    [ -n "$ANON_DUR" ] && break
+    echo "ship: attempt $attempt fetched $ANON_BYTES bytes that do not probe yet — retrying"
+  else
+    echo "ship: attempt $attempt http $CODE — not public yet, retrying"
+  fi
+  sleep 10
+done
+[ "$CODE" = "200" ] || die "ANONYMOUS GATE FAILED: http $CODE for $URL after 10 tries over ~90s — NOT published"
 [ -n "$ANON_DUR" ] || die "ANONYMOUS GATE FAILED: fetched $ANON_BYTES bytes that do not probe — NOT published"
 rm -f "$OUT"
 echo "ship: ANONYMOUS GATE PASSED  http 200  ${ANON_BYTES} bytes  ${ANON_DUR}s"

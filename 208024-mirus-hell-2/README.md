@@ -1,19 +1,36 @@
 # Miru's Hell 2
 
 **This is not a driving map. It is a wall of 1,173 spinning rotors, and the whole
-run is one question: can you arrive in a state the upper row will accept? Our
-19.427 is the first tape of ours that does — through the low row, caught by the
-upper one at 779 km/h.**
+run is one question: can you arrive in a state the upper row will accept? The
+author time is now beaten — 18.160 against 18.806.**
 
-**Miru's Hell 2** — TAS **18.942** (+0.136) | AT 18.806 | WR 21.105 by deeperjungle
+**Miru's Hell 2** — TAS **18.160** (−0.646) | AT 18.806 | WR 21.105 by deeperjungle
 
-https://github.com/user-attachments/assets/47e8c6a7-e40c-4bf0-8c1f-b2fff67447f9
+https://github.com/user-attachments/assets/f6d9b714-2c3d-4ac8-a39d-6adea8eea3ee
 
-**The fastest run on this map, and it still does not beat the author time.**
-18.942 is **0.136 short of the 18.806** and **2.163 inside the human record** —
-deeperjungle's 21.105, set on 2026-08-20 on a board with three runs on it. That
-is the honest shape of this result: the humans have not converged here, so
-beating them says little, and the author time is the target we have not reached.
+**The author time is beaten, by 0.646.** 18.160 is **0.646 under the 18.806** and
+**2.945 inside the human record** — deeperjungle's 21.105, set on 2026-08-20 and
+still standing when this board was re-pulled on 2026-08-21. This is the first
+author-time beat on this map. It is worth keeping the two margins apart: the
+human board has three runs on it and has not converged, so being 2.945 clear of
+it says little, and **the 0.646 against the author is the result.**
+
+**One camera, both cars.** Ours is the magenta car the camera follows;
+deeperjungle's 21.105 is in the same frame, not in a second pane. They are
+within **25 m of each other for the first 15.5 s** — 232 of 364 paired samples
+sit in the band where two cars read as two cars — and then ours goes: **42 m
+apart at 16 s, 92 m at 17 s, 183 m at 18 s.** deeperjungle leaves the shot in the
+last two seconds and does not come back, which is the whole point of the clip.
+The earlier 19.427 below is a split screen because *that* pairing separates from
+the start; this one does not need one.
+
+**The clip is 18.4 s and the runs are 18.160 and 21.105, which needs saying.**
+A MediaTracker camera lives exactly as long as the ghost it is bolted to, and
+ours stops sampling at 18.150. The full render runs to the longer block at
+21.13 s — and measured frame to frame, **everything after 18.20 s is a frozen
+still**, clock stuck at 18.160, deeperjungle not drawn. That is 2.9 s of dead
+picture that `blackspans=0` and a duration check both pass. It is cut. Nothing
+was lost with it: the last live frame is our car crossing the ring.
 
 **What it cost to get a file worth filming.** Across **52 regeneration attempts
 on this tape, 4 landed on the true clock — under 8 %.** The rest cluster at
@@ -21,21 +38,26 @@ on this tape, 4 landed on the true clock — under 8 %.** The rest cluster at
 in the final batch are byte-identical to each other, and they were picked by
 ranking every attempt against ground truth rather than by taking the answer the
 attempts agreed on: **the largest agreeing cluster was one of the wrong ones.**
+The filmed file is the second reconstruction, `mh2_WATCHABLE_18160_v2`
+(md5 `0f63623a…`), which sits **2.5 mm** from the tape's own route dump where the
+first sat 0.865 m.
 
 **Miru's Hell 2** — TAS **19.427** (+0.621) | AT 18.806 | WR 21.105 by deeperjungle
 
 https://github.com/user-attachments/assets/d7f87580-9b89-4ae3-9eed-ea3f0b232053
 
-**The clip below is the 19.427, our earlier tape, against the record.** Ours on the left, deeperjungle's 21.105 on the right, both clocks from the same
-start.** They take visibly different lines through the red structure from about
-6 s, and by 12.6 s ours is a whole section ahead. It is two panes rather than one
-camera because the runs finish **335 m apart at their widest** — a chase camera
+**The clip above is the 19.427, an earlier tape, against the record.** Ours on
+the left, deeperjungle's 21.105 on the right, both clocks from the same start.
+They take visibly different lines through the red structure from about 6 s, and
+by 12.6 s ours is a whole section ahead. It is two panes rather than one camera
+because *those* two runs finish **335 m apart at their widest** — a chase camera
 would lose the second car within seconds.
 
 | run | time | vs author time | vs the record |
 |---|---|---|---|
-| **TAS, validated (not yet watchable)** | **18.942** | **+0.136** | **−2.163** |
-| **TAS, the filmed one** | **19.427** | +0.621 | −1.678 |
+| **TAS, the filmed one** | **18.160** | **−0.646** | **−2.945** |
+| TAS, previous best | 18.942 | +0.136 | −2.163 |
+| TAS, filmed earlier | 19.427 | +0.621 | −1.678 |
 | TAS, watchable earlier | 20.296 | +1.490 | −0.809 |
 | TAS, earlier still | 20.942 | +2.136 | −0.163 |
 | Author time | 18.806 | — | −2.299 |
@@ -43,13 +65,22 @@ would lose the second car within seconds.
 | lqpzz | 23.689 | +4.883 | +2.584 |
 | Herrlille | 25.681 | +6.875 | +4.576 |
 
-**The author time is not beaten** — but it is close. A newer tape validates
-**18.942**, only **0.136** short, and a second in the same batch reaches 19.276, so
-the basin has depth. That tape is not yet certified as a renderable ghost, so the
-clip above is still the 19.427; the times below are what the game validates. What the
-run is, is the fastest time anyone has recorded on this map — 1.678 under the
-current record — and the first evidence that the author's own launch mechanism is
-reachable at all.
+The 18.942 held this page's headline until 18.160 validated and reconstructed;
+its clip has been withdrawn so the page shows one best. **18.160 is the fastest
+time anyone has recorded on this map**, and the first that reaches the author's
+own launch mechanism rather than merely getting near it.
+
+### What was checked before it was filmed
+
+| check | reading |
+|---|---|
+| gate (`tmtrajcheck --race 18160`) | PUBLISHABLE — 0 failures, 1 warning (C10 geometry) |
+| custom car skin | clean — `Skins\Models\CarSport\TAS.zip`, nothing else |
+| spawn vs deeperjungle's, as a rotation | **0.001 m**, \|dot\| **1.0000** |
+| MediaTracker import name | `Ghost:TAS`, one track, one entity block, end 18.15 |
+| donor strings (nickname, GUID, zone, storage URL) | zero occurrences |
+| contamination vs the human recording | INDEPENDENT — longest near-identical run 53 samples, under the 100 bar |
+| input tapes ours vs theirs | different md5s — two runs, not one lap twice |
 
 ## The rotor wall is the launcher — and the map is a gate CHOICE
 
@@ -66,18 +97,21 @@ link in the chain. What the fast tapes changed is not bypassing it but arriving 
 the *upper* row in a state that row accepts, after the low row has done its part.
 
 **And the map has fifteen finish gates, so the run is a choice of which one to
-reach.** That is where the time is, and our own two best tapes prove it:
+reach.** That is where the time is, and two of our tapes prove it:
 
 | tape | launch speed | gate crossed | time |
 |---|---|---|---|
 | 19.427 | **779 km/h** | #1031 at (1008, 402, 1360) | 19.427 |
 | **18.942** | **696 km/h** | **#1033 at (1104, 394, 1232)** | **18.942** |
 | the author | 884 km/h | #1026 at (1008, 474, 1136) | 18.806 |
+| 18.160 | not measured | not measured | 18.160 |
 
-**The faster of our two launches at 83 km/h LESS.** It reaches a nearer gate and
+**The faster of the two launches at 83 km/h LESS.** It reaches a nearer gate and
 wins by 0.485. So peak launch speed is the wrong objective — **where the launch
 puts you is the objective**, and an earlier note on this page saying the residue is
-"launch quality" was at best incomplete.
+"launch quality" was at best incomplete. Which gate the 18.160 takes has not been
+read off the tape, so it is not in the argument above; it is filmed and
+validated, not characterised.
 
 **The interesting part is a gate nobody has reached.** Geometry says **#1027 at
 (1168, 458, 1072)** is the cheapest of the fifteen — 63 m closer to the launcher
