@@ -28,6 +28,33 @@ cost the author 197 seconds.**
 > Replacements will be regenerated. Until then this page has replay files for
 > nothing, and the numbers below are the result.
 
+> ### ⚠️ And two of the files that stayed were declaring the human's time — now fixed
+>
+> The banner above withdrew five files and left three. **Two of the three that
+> stayed were also carrying Quantiks' 1964.933** — not in their driving, which is
+> ours, but in the container's *declared time*, at two of its six sites each. A
+> reader who followed the banner above would reasonably have assumed the
+> remaining files were clean. They were not.
+>
+> `NORETRY_347003_watchable` and `NORETRY_407463_watchable` have been repaired in
+> place. Each now declares its own validated time at **all six sites, with no
+> foreign value anywhere in the file**, confirmed by two readers that did not make
+> the edit and by a third, independent byte scan. Both still re-simulate on the
+> game's own oracle to the exact millisecond in their names — the repair changed
+> what the file *claims*, never what it *does*.
+>
+> **The third file, `AUTHORCUT_246602_watchable`, is not yet clean**: it declares
+> the map's author time at one site and still carries a donor's skin reference.
+> It is being repaired next, and this line stays until it is.
+>
+> Two things worth saying plainly, since this page is where we said the last one:
+> the tool that repairs a declared time **had a short-circuit that read one chunk,
+> found the right value there, and reported "nothing to do" on a file that was
+> still wrong at two other sites** — which is very likely how these two came to be
+> published in the first place. And a checkpoint split inside both files still
+> belongs to the donor; no tool we have reads that field yet, so this page does
+> not claim it is clean.
+
 | run | time | vs author time |
 |---|---|---|
 | **the author's lap, failures cut, then optimised** — `TAS_239133` *(file withdrawn)* | **239.133** | **−223.849 (−48.3 %)** |
