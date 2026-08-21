@@ -1,45 +1,62 @@
 # Spring 2023 - 24 (2-UP)
 
-> ### ⚠️ This page is out of date and is being rewritten
->
-> **On 2026-08-19 two humans found a flight family we had never searched, and
-> drove it 1.940 s faster than our best run.** uelen. set **47.838** and
-> JuntaoTM **48.685**, against the 49.778 below. The world record on this page —
-> JuntaoTM's 52.202 — is four and a half seconds retired, and the author time is
-> no longer the interesting number on this map.
->
-> **What they changed is the last sector.** The technique described below throws
-> the car at the sky, overshoots the finish gate by 60–100 m and dives back down
-> onto it. Theirs never goes above the gate at all: a flat, fully-powered,
-> continuously-accelerating climb that arrives from below **still climbing**, at
-> its own peak speed. That sector goes from 11.6–12.2 s to **8.2–8.9 s**.
->
-> Everything below is a correct account of the *old* family, and the brake-tap
-> finding is real within it — our own search then spent 175 000 evaluations
-> inside the flight window and found nothing, because no perturbation of a high
-> arc reaches a flat one. Re-seeded inside their family, the same searcher found
-> four improvements in 34 000. **Full rewrite, with the new numbers and the
-> credit where it belongs, is in progress.**
+**Two players found a flight family nobody here had searched, and it is worth
+1.940 s: do not throw the car above the finish gate. Climb flat, fully powered,
+and arrive from below still accelerating.**
 
-**One 10 ms brake tap, six tenths of a second into the reactor climb, is worth
-0.730 on a keyboard run — three quarters of everything on this page.**
+**Spring 2023 - 24 (2-UP)** — TAS **47.483** (−4.119) | AT 51.602 | WR 47.838 by uelen.
 
-| run | time | vs author time | vs the record of the day | device |
+> ### The record on this map was taken from us, and the technique is theirs
+>
+> On 2026-08-19 **uelen.** drove **47.838** and **JuntaoTM** **48.685** — 1.940
+> faster than our best run, on a map where our own search had just spent 175,000
+> evaluations in the flight window and found nothing.
+>
+> They were not driving our line faster. They were in a different family. The
+> technique this page used to describe throws the car at the sky, overshoots the
+> finish gate by 60–100 m and dives back onto it; theirs **never goes above the
+> gate at all**. Apex **223 m** against our **271.8** — fifty metres of climb and
+> fall that buys nothing.
+>
+> **Re-seeded inside their family, the same searcher that had found nothing
+> returned 34 improvements and 47.483.** So the discovery is uelen.'s and
+> JuntaoTM's, and our contribution is 0.355 on top of it.
+>
+> **One thing this page will not claim, because the measurement refuses it.**
+> "The map rewards not going up" is false as stated. It is true *between*
+> families — 271.8 m → 223 m is the whole 1.940 s. Inside the low family, height
+> and time move in **opposite** directions: our fastest tape apexes at **227.5 m**,
+> higher than uelen.'s 223 and higher than our own 47.721's 222.0, and it is
+> 0.238 quicker. The sentence is "the old family went far too high", and nothing
+> stronger.
+
+| run | time | vs author time | vs human WR | device |
 |---|---|---|---|---|
-| **TAS, unconstrained** | **49.778** | **−1.824** | **−2.424** | analog |
-| **keyboard** | **51.062** | **−0.540** | **−1.140** | **3 values** |
-| **a human keyboard run + seven actions** | **51.575** | **−0.027** | **−0.627** | **keyboard** |
-| Author time | 51.602 | — | −0.600 | — |
-| JuntaoTM, the record when this was written | 52.202 | +0.600 | — | pad |
-| **uelen., the record now** | **47.838** | **−3.764** | — | — |
-| **JuntaoTM, now** | **48.685** | **−2.917** | — | — |
+| **TAS** | **47.483** | **−4.119** | **−0.355** | analog |
+| TAS, the old high family | 49.778 | −1.824 | +1.940 | analog |
+| **keyboard**, old family | 51.062 | −0.540 | +3.224 | **3 values** |
+| a human keyboard run + seven actions | 51.575 | −0.027 | +3.737 | keyboard |
+| Author time | 51.602 | — | +3.764 | — |
+| **Human WR — uelen.** | **47.838** | −3.764 | — | — |
+| JuntaoTM | 48.685 | −2.917 | +0.847 | — |
+| JuntaoTM's 52.202, the record until 2026-08-19 | 52.202 | +0.600 | +4.364 | pad |
 
 TMX map [199100](https://trackmania.exchange/maps/199100) · author **.ar** ·
 tags **Reactor, Plastic, Altered Nadeo** · **8 recorded runs**.
 
+**All 34 of our improvements land after CP9** — not one gain anywhere in the
+first 39.6 seconds, across a million evaluations. The ground driving is finished;
+the map is its last sector.
+
 This is an Altered Nadeo copy of **Spring 2023 - 24**, with the geometry and the
 surfaces preserved, so the 200 000 people who drive the official map are driving
 the same road — their lines are directly usable here. That matters below.
+
+## The brake tap, which is a finding about the OLD family
+
+**One 10 ms brake tap, six tenths of a second into the reactor climb, is worth
+0.730 on a keyboard run.** That is real, and it is real *within* the high arc
+described below. It is not where the 1.940 went.
 
 ## What the map is
 
