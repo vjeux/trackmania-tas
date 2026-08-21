@@ -6,7 +6,7 @@ of the fifteen seconds need no steering at all.**
 
 **idm ruinin ur day #460** — TAS **15.217** (−0.426) | AT 15.643 | WR 16.870 by banktm
 
-https://github.com/user-attachments/assets/17613c32-b24c-40d1-8d99-23d101b5cb98
+https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
 > ### The nine replay files were rebuilt again — and the video above is one generation behind
 >
