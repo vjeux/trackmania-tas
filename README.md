@@ -25,7 +25,6 @@ it, and find out whether a person can drive a run no human has driven.
 | [[Turtle Trial] Angustus](238835-turtle-trial-angustus) | 1 | 462.982 | 1964.933 | **239.133** | **−48.3 %** | — |
 | [[Turtle Trial] Leto](286279-turtle-trial-leto) | 5 | 355.181 | 441.002 | **218.812** | **−38.4 %** | — |
 | [Welcome to wiggles](197047-welcome-to-wiggles) | 22 | 100.784 | 101.794 | **95.839** | **−4.945** | — |
-| [Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up) | 8 | 51.602 | 47.838 | **49.778** | **−1.824** | **197 → 51.575** (a human's own lap + 7) |
 | [Tap water 01](173636-tap-water-01) | 602 | 23.325 | 23.298 | **22.072** | **−1.253** | 747 → 23.183 |
 | [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 272 | 11.334 | 12.083 | **10.640** | **−0.694** | **14 in the flight → 10.743** |
 | [Miru's Hell 2](208024-mirus-hell-2) | 3 | 18.806 | 21.105 | **18.160** | **−0.646** | — |
@@ -51,8 +50,7 @@ it, and find out whether a person can drive a run no human has driven.
 
 All times in **seconds**. "Best human" is the online world record as of the last
 refresh of these leaderboards. Every author time here was unbeaten by a human
-when the run was found; on four maps a human has since gone under it —
-[Spring 2023 - 24 (2-UP)](199100-spring-2023-24-2up),
+when the run was found; on three maps a human has since gone under it —
 [Tap water 01](173636-tap-water-01),
 [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) and
 [untitled 02](276877-untitled-02), whose author time is not route-enforced.
