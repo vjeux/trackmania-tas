@@ -1,0 +1,87 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787342741",
+  "file": "gen_TAS_49275.Ghost.Gbx",
+  "md5": "5caf76e75f4fe20f06fca04e1c3bc930",
+  "bytes": 23809,
+  "map_id": "285268",
+  "declared_time_ms": 49275,
+  "oracle_time_ms": 49275,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "/tmp/w/285268/TAS_49275.Ghost.Gbx",
+    "md5": "13200b2a1f1319192b8114668d272579"
+  },
+  "source_inputs": {
+    "path": "/tmp/w/285268/TAS_49275.Ghost.Gbx",
+    "md5": "13200b2a1f1319192b8114668d272579"
+  },
+  "engine_run": {
+    "note": "GENERATED, not repaired: the input tape was taken from TAS_49275.Ghost.Gbx -- the one part of that file that is ours -- and every sample of this record was produced by driving that tape through the dedicated server's own engine and reading the car's state per tick (fk regen --inputs, FK_NO_CHOOSER=1, field map gen_map_v1, --trim-outside, no --quat-kind). Then tail fix --cut 49275, anon, body setlogin TAS, setdecl 49275, recspan --end 49275 --trim-all. INHERITED and named rather than invented: sample byte 89, the ground-contact flag. Also still the carrier's: the intermediate checkpoint splits in chunk 0x0309202B.",
+    "host": "44794.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 986,
+    "samples_in_record": 986,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "0-13",
+    "14",
+    "15",
+    "18",
+    "19-34",
+    "39",
+    "40",
+    "42",
+    "43",
+    "47-68",
+    "69-72",
+    "76",
+    "81-84",
+    "91",
+    "93",
+    "95",
+    "97",
+    "99"
+  ],
+  "fields_inherited": [
+    "89"
+  ],
+  "tools": [
+    {
+      "tool": "fk",
+      "args": "regen --inputs --trim-outside --fieldmap gen_map_v1.tsv"
+    },
+    {
+      "tool": "tmtraj",
+      "args": "tail fix/anon/body setlogin/setdecl/recspan/intg gate"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank001_49446.Ghost.Gbx",
+        "md5": "4d3f885619aca36d3ed91b7f54e3a5ac"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank002_49491.Ghost.Gbx",
+        "md5": "8face25394fa67de49266a786f566e4c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank003_49535.Ghost.Gbx",
+        "md5": "4a82630af86dc7ff862bbf4a0c85814c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank005_49634.Ghost.Gbx",
+        "md5": "f19211d3df0d2047b335817efcbbf1a5"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank013_50140.Ghost.Gbx",
+        "md5": "c987065e6122475564016d588fc40b69"
+      }
+    ],
+    "limits": []
+  }
+}

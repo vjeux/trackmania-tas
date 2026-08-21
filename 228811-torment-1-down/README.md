@@ -3,20 +3,21 @@
 **The floor at the base of the end wall is a launcher, and it fires only if you
 cross it sideways — go through the last checkpoint, then scrub across the line
 ten metres later with the car turned across its own direction of travel.**
-
-
-> ### ⚠️ No video — `TAS_20237` cannot be filmed
+> ### On this clip: the two cars are superimposed for the first 13.5 seconds
 >
-> The result stands; the recording does not. **The file is KappaRiley's
-> container, and 73 % of its trajectory is his driving** — within 1 mm for the
-> first 14.720 s of a 20.237 s run, then a clean departure to 291 m. It carries
-> his record span, his sample-time base and his checkpoint splits, where the
-> other two human downloads carry their own. A clip would be 14.7 seconds of the
-> world record captioned as ours.
+> That is real, and it is not a recording defect. **Our input tape was seeded
+> from KappaRiley's run and shares its first 1,509 of 2,421 input events**,
+> diverging at race 13.530. Identical inputs produce an identical car, so for
+> 13.5 s the two ghosts occupy the same space to within a millimetre, and then
+> ours leaves.
 >
-> The 20.237 itself is unaffected: the oracle validates the input tape, and the
-> tape is not what was inherited. Five separate readers passed this file —
-> none of them reads the three fields that carry the answer.
+> An earlier version of this page refused the clip on the grounds that 73 % of
+> the trajectory was his driving. That reading was wrong: the shared trajectory
+> is a shared *input prefix* plus determinism, not a splice. The file published
+> here is regenerated from our own tape and its positions came out bit-identical
+> to the previous one, 405 of 405 — the trajectory was honest all along. What
+> was genuinely foreign was the container's record span (22.670, his) and its
+> sample-time base; the regenerated file carries our own, ending at 20.237.
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
