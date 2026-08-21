@@ -6,7 +6,7 @@ of the fifteen seconds need no steering at all.**
 
 **idm ruinin ur day #460** — TAS **15.217** (−0.426) | AT 15.643 | WR 16.870 by banktm
 
-https://github.com/user-attachments/assets/497aa5f4-7e45-46fc-b644-6368d58d7c71
+https://github.com/user-attachments/assets/17613c32-b24c-40d1-8d99-23d101b5cb98
 
 **Our run and the world record, side by side.** banktm took this record tonight,
 replacing a ghost that had stood as the board's best; ours is 1.653 faster. Both
