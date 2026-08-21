@@ -224,3 +224,62 @@ tell you the camera went blind before the flag.
 
 Before believing a green result, ask what a red one would have looked like — and
 if you cannot answer, you do not have a check. Then watch the video.
+
+## 10. Verifying a TAKEDOWN: the same instrument in reverse, run twice
+
+Deregistering an asset from the release body **does** take it down. Measured on
+five withdrawn clips, `env -i` with no credential, checking bytes rather than
+status codes:
+
+```
+before deregistration:   all five  200, full playable bytes
+immediately after:       four      404, 9 bytes ("Not Found")
+                         one       200, 13,481,014 bytes   <-- still serving
+30 s later:              that one  404, 9 bytes
+```
+
+**A withdrawn asset returns HTTP 404 with a 9-byte "Not Found" body** — byte for
+byte what an asset that was never published returns. So the withdrawal is real:
+GitHub unmarks an asset when the content authorising it goes away.
+
+**But propagation takes up to a minute, and it fails in the dangerous
+direction.** For that minute the asset keeps serving the whole file to
+logged-out visitors after the reference is gone. An operator who checks once,
+immediately, sees `200` and can reasonably conclude the deregistration did not
+work — and then goes looking for a second mechanism that does not exist.
+
+> **Verify a takedown twice, at least thirty seconds apart, and treat the second
+> reading as the truth.**
+
+This is the publish gate run backwards, and the same principle governs both: the
+question is always *what bytes does an anonymous visitor get*, never what any
+status code or dashboard says. Note the pleasing symmetry with §0 — a dead asset
+and a withdrawn asset are indistinguishable, which is exactly right, because to
+a reader they are the same thing.
+
+## 11. Four independent readers of a ghost's container, and none subsumes another
+
+A tape can be **completely ours in every position it contains and still be
+somebody else's file**. Four readers now exist, each reading a *different* field,
+and each has caught something the other three missed:
+
+| reader | field it reads | what only it catches |
+|---|---|---|
+| MediaTracker import name | **nickname** | a container still wearing its owner's name — `Ghost:OrmeEssence44` where ours all import as `Ghost:TAS` |
+| the game's parser (`/validatepath`) | **login → account id** | a half-cleaned container: 165922's nine display `TAS` and still carry the donor's account |
+| byte scan for a per-player GUID | a second identifier | the 276874/276877 pair, on maps whose parser reads were unavailable |
+| **u32 census of the declared time** | **six time slots** | **needs no reference file and no server at all** |
+
+**The census is the cheapest and the only reference-free one.** The declared time
+is stored exactly **six times** as a little-endian u32, at a structural spacing
+(`+52 / +148 / +4 / … / +20`) confirmed across two different maps. Six copies of
+its own validated time and none of any other is a clean container; zero of its
+own and six of another is a foreign one. There is even a tell for the borrowed
+case — one gap widens from +148 to **+167**, because the carrier's skin path
+string is 19 bytes longer.
+
+**Every one of these is a positive detector, not a clearance.** The census reads
+the time as a u32 only, so a value stored as a float or split across a struct
+boundary is invisible to it. The nickname reader passes files that still carry a
+foreign account underneath. Use them together, and never read a pass from one as
+a verdict from all.
