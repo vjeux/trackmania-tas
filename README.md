@@ -8,6 +8,13 @@ Every run here was found by search against the game's own physics — the headle
 untouched copy of the map before being published. **The point is not the replay.
 The point is the technique, written up so a human can practise it.**
 
+**[▶ Drive one of them.](trainer/)** The 6.323 on
+[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) is 23 steer
+events on three values and one brake tap — so
+[`trainer/index.html`](trainer/index.html) turns its real input tape into a
+falling-note rhythm game you can play in a browser. Save the file, double-click
+it, and find out whether a person can drive a run no human has driven.
+
 ## Results — author time beaten
 
 | map | records | author time | best human | **this TAS** | vs AT | fewest inputs under the AT |

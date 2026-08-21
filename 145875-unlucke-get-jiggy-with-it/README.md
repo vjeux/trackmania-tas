@@ -106,23 +106,72 @@ slower than that.
 
 ## The run as inputs
 
+**[Drive it yourself in the browser](../trainer/) — the falling-note trainer is
+built from this tape.** Notes fall, you hold the keys, and it judges you in
+milliseconds. Nothing below is transcribed by hand; the trainer re-derives all
+of it from `kb6323.csv` when you open it.
+
 `replays/KEYBOARD_23ev_6323.Ghost.Gbx`. **Accelerate is held from the countdown
-to the line and the brake is never touched.** Everything below is steering.
+to the line and never released.** There is exactly one brake input in the whole
+race, and everything else is steering.
+
+*Provenance of the numbers below:* they are measured off the input tape
+`kb6323.csv`, extracted from `KEYBOARD_6323.Ghost.Gbx`
+(md5 `25e04568c299eccdb867c107f40ed650`) — 793 rows at 10 ms. That tape agrees
+with every timing this page previously listed, so it is the same run; but it is
+a *different file* from the shipped `KEYBOARD_23ev_6323.Ghost.Gbx`, and no one
+has yet decoded the shipped ghost's inputs to confirm the two are identical
+byte for byte.
+
+**The brake tap is a brake-turn.** 0.750 → 0.880 — 0.130 s — taken at *full
+left with the gas still down*. It is not a slowdown and you never lift; it
+rotates the car. An earlier version of this page said the brake is never
+touched, which was the input-reduction's steering-only count leaking into the
+prose: the reduction to "23 events" counts **steer segments**, and the brake tap
+is not one of them.
 
 | # | when | input | the cue |
 |---|---|---|---|
 | 1 | before the lights | **hold LEFT** | you are aimed at a near-vertical drop — hold left through the launch and all the way down the face |
-| 2 | 1.45 s (~110 km/h, the wall runs out and the car goes light) | **RIGHT**, hold 0.5 s | you are now falling |
+| — | 0.750, for 0.130 | **BRAKE, still at full left, gas still down** | the brake-turn — the only brake input in the run |
+| 2 | 1.45 s (~110 km/h, the wall runs out and the car goes light) | **RIGHT**, hold 0.520 | you are now falling |
 | 3 | 1.97 s | release to **centre** | |
 | 4 | 2.09 s | **LEFT** into the landing | the landing is violent — the car is thrown along the road |
 | 5–9 | 2.25–2.51 s | **five short LEFT/centre taps** (50, 30, 30, 10, 10 ms) | the keyboard's way of holding a partial steer through the landing: pulse, don't hold |
-| 10 | 2.51 s | **centre**, 0.2 s | |
-| 11 | 2.71 s | **RIGHT**, 80 ms | the flick — a short stab |
-| 12 | 2.79 s | **LEFT**, 0.32 s | |
-| 13–14 | 3.11 s | brief **centre**, then **RIGHT** 0.21 s | you are near the low point of the map |
+| 10 | 2.51 s | **centre**, 0.200 | |
+| 11 | 2.71 s | **RIGHT**, 0.080 | the flick — a short stab |
+| 12 | 2.79 s | **LEFT**, 0.320 | |
+| 13–14 | 3.11 s | brief **centre**, then **RIGHT** 0.210 | you are near the low point of the map |
 | 15–20 | 3.34–3.59 s | **LEFT with two short releases** (20 ms each, at 3.48 and 3.57 s) | the surface turns up under you — this is the kicker |
-| 21 | 3.59 s | **hold LEFT for 1.6 s** | through the kicker and the first half of the climb; the car goes inverted and the thrust takes over |
-| 22 | **5.21 s** | **RIGHT, and hold it to the line** | the aim into the gate — **aim high** |
+| 21 | 3.59 s | **hold LEFT for 1.520** | through the kicker and the first half of the climb; the car goes inverted and the thrust takes over |
+| 22 | **5.230** | **RIGHT, and hold it to the line** | the aim into the gate — **aim high** |
+
+Measured over the race window 0.000 → 6.323: **left 3.820 s · right 1.910 s ·
+centre 0.600 s · brake 0.130 s.**
+
+### The burst is not eighteen inputs
+
+The stretch from 2.090 to 3.590 reads as eighteen steer segments, and read that
+way it is unlearnable. It is not eighteen things. **It is left held with the
+finger twitching off it.**
+
+From 2.250 the centre gaps run **50 → 30 → 10 ms**, with left presses of
+**30 → 10 ms** between them: a converging flutter, like a ball settling, not a
+rhythm. The only two rights in the whole burst — 0.080 at 2.710 and 0.210 at
+3.130 — bracket a 0.320 left. Then the second cluster stutters the same way,
+centre gaps of **20 / 10 / 20 / 20 ms** between left presses of 0.130 and 0.070.
+
+**The shape to hold in your head is four things, not eighteen:**
+
+> **flutter, blip right, long left, blip right, flutter, commit.**
+
+The commit is the 1.520 s of left from 3.590 — the only place in the run where
+you can breathe — and then right at 5.230 to the line.
+
+Three events in the run last a single tick: **left 10 ms at 2.360, centre 10 ms
+at 2.370, centre 10 ms at 3.340.** At full speed nobody hits those; in the
+trainer at 0.15× they are 67 real milliseconds, which is the only honest way to
+learn them.
 
 ## How forgiving it is
 
@@ -135,7 +184,10 @@ to the line and the brake is never touched.** Everything below is steering.
   replayed they have no slack at all — but so do the world record's own tape and
   the best human keyboard run, measured the same way, and 46 people finish this
   map. It is drivable by reacting, not by counting. Expect that stretch to be
-  where the attempts die, and expect to learn it by feel.
+  where the attempts die, and expect to learn it by feel. **Read it as a
+  flutter, not as a list** — see the section above — and practise it on its own
+  in [the trainer](../trainer/), which has that stretch as a section and will
+  run it at a sixth speed.
 
 **If you only want the author time and not the record, practise the one-input
 change.** It is the world record's run with the last flick a tenth of a second
