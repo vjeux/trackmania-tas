@@ -1629,3 +1629,52 @@ that seemed to require a second edit was an artefact of a mis-parse that reporte
 > A repair added to cover a field that another step already covered, justified by
 > a reader that was misreporting the file. **Three wrongs that cancelled into a
 > plausible-looking pipeline.**
+
+### 210218 closed: 95.507, and the attribution control says the chain earned 51 of the 68 ms
+
+| tape | lap | vs 95.575 |
+|---|---|---|
+| `pwch_best_95507_SEARCHTAPE…DO_NOT_PUBLISH_declares_96281` | **95.507** | −68 ms |
+| `pwch_ctl_95558_attribution_control` | 95.558 | −17 ms |
+
+All validated three times with the human record `r01` returning 96281 exact in the
+same sweep. **0.774 s under the human world record, 1.030 s over the author time
+— not beaten.**
+
+The control is the same search from the **plain incumbent**: identical window,
+flags, caps, workers and 70-minute budget, differing only in the seed. **So 51 ms
+belongs to the chain's sector-14 handover and 17 ms is tail search any seed would
+have found.**
+
+And the chain earned *more at the finish* than at its contract rung — 51 ms
+against the 20 ms the rung showed. The S14 edit changes the state at CP15, and the
+tail re-driven from that state beats the tail re-driven from the incumbent's.
+**First positive evidence on this map that an h = 1 handover is worth something
+downstream: small, attributed, controlled.**
+
+### The claim that was published mid-run and withdrawn
+
+> **"The small end of the band fails."** It was the headline for an hour and it
+> was an artefact of elapsed time: **a repair 32 ms behind at half budget was the
+> winner at full budget.**
+
+Compare converged runs, or say the budget out loud. The surviving statement is
+narrower and holds: the convertible band is **small and late** — −20 ms at CP15
+converted, −990 ms at CP12 did not at any budget. Start at the tail and convert
+one sector before moving back.
+
+Three instrument findings from the same arm, each worth more than the millisecond
+it cost: **1e8 score bands invert on a 16-checkpoint map**; **a silent rung still
+pays the depth bonus** (needs `--segstrict`, and strict alone is a cliff);
+**concurrent searches share `/dev/shm/tmsearch` by default.**
+
+### And the tape is a time, not a file
+
+All three laps are raw search output **on r01's container, declaring 96281** — the
+human world record's time — carrying r01's telemetry. Nothing regenerated, no
+container touched, no page written. The arm said so itself rather than being
+asked:
+
+> Treat 95.507 as a search result only until the container gate has looked at it.
+
+`pwiw_TAPE_95575_watchable_v1` remains the last renderable artefact on that map.
