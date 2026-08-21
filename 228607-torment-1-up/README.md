@@ -5,6 +5,18 @@ and on this map, unlike its low-finish twin, you must release the lock about
 200 ms after it fires and then counter-steer, a touch early rather than a touch
 late.**
 
+**Video of the run:**
+
+https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
+
+Single car: this map's human record is 24.902, nearly five seconds slower, so a
+side-by-side would show one car finishing while the other is still most of a
+straight behind. Two more of our tapes are filmed for comparison —
+[19.927](https://github.com/user-attachments/assets/dab645ee-4ec9-4958-b894-b24373ff4c67)
+and the more forgiving
+[19.948](https://github.com/user-attachments/assets/0282a92c-5227-4516-821f-2ae50123991d),
+which is the one to copy if you are driving it yourself.
+
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
 | **TAS** — [`TAS_19907`](replays/TAS_19907.Ghost.Gbx) | **19.907** | **−0.351** | −4.995 |
