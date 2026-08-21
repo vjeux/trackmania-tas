@@ -171,6 +171,16 @@ completely different readout path agrees to **0.48 mm**.
 
 ## The route in the video does not convert, and that is now measured
 
+**Both reference clips show the same human failing the same route, 2.5 minutes
+apart — the HUD reads `Finishes 0`, on attempts 265 and 278.** The route is: a
+turbo bump to 200 km/h, a graze, into the boost column at cell-x 28, **eight
+seconds shuffling in reverse gear**, throttle at 9.737, 11 to 305 km/h, through
+the reset and no-steering columns, and a crash at cell-x 22 that ejects the car
+above the structure. One clip runs at 0.600x, which at 60 fps is exactly one game
+tick per frame, so the inputs could be read off frame by frame; the
+reconstruction matches the video's own speed readout within 5 km/h across
+sixteen consecutive samples.
+
 The author's intended journey — the one both reference videos show — climbs the
 lattice, crosses the roof, and comes down onto the finish platform from a great
 height. Our 12.759 does not do that. It stays low, never rising above its own
