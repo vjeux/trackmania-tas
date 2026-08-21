@@ -2003,3 +2003,51 @@ Two standing consequences:
 - Before pointing a fixed path at broken files, **regenerate a known-good sibling
   and require it back unchanged.** If the good file does not survive the round
   trip, nothing downstream of that path can be trusted.
+
+### The tell is the POSITION address, not the quaternion's — and −16 is not universal
+
+The hypothesis passed to the 208024 arm was that `quat − pos` should read **−16**
+and that its failures would read something else. **Refuted on its own logs:**
+
+```
+quat − pos over 30 runs:   −36 on 28,  −32 on 1,  −16 on 1
+```
+
+On that map the normal relationship is **−36**, it produces both the passes and
+the failures, and the single run that read −16 also passed. **Both relationships
+can be correct; the difference is not there.**
+
+What does separate them is the `pos` offset itself:
+
+| pos offset | OK | total |
+|---|---|---|
+| **+196** | **9** | **11** |
+| +344 | 0 | 8 |
+| +336, +104, +80 | 0 | 2 each |
+| +352, +236, +176, +172, +128 | 0 | 1 each |
+
+**pos +196 → 9 of 11 pass. Any other pos → 0 of 19.**
+
+The record is 452 bytes and +196 is where this container's position actually
+lives. Every other value is the anchor settling on **a different memory slot**,
+and orientation read from bytes near *that* is garbage — which is exactly where
+the identity quaternions come from.
+
+> **The mechanism is one step earlier than either the kind or the quaternion's
+> address: the whole record is located at the wrong place**, and the quaternion
+> inherits the mistake at a consistent offset from it.
+
+So a kind pin could not have helped, and neither could pinning the quaternion's
+offset alone — both permute or relocate *within* a record that is itself
+misplaced.
+
+**The pre-filter is free and total:** `grep 'record layout: pos +196'` before any
+distance ranking. On that batch it cuts 30 candidates to 11 containing 9 good
+ones, at the cost of reading a line the tool already prints.
+
+And the two failure modes separate cleanly:
+
+- **wrong address** → identity quaternion
+- **right address, wrong clock** → spawn position off by metres (the two `pos
+  +196` failures read 3.08 m, the same family as the 7.75 m and 16.3 m route-dump
+  clusters)
