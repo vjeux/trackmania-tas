@@ -4,28 +4,64 @@
 runs reach the first one; getting to that gate instead of the next one down is
 about a second, and it is free to anyone driving in the 43–45 second range.**
 
-The author time has not fallen. The fastest lap here is **1.248 under the
-human world record** and still **0.445** short of the author medal.
+The author time has not fallen. The fastest lap here is **1.255 under the
+human world record** and still **0.438** short of the author medal.
 
-**No video: the game will not open this map.** Every other page here carries a
-clip, and this one cannot. The map file is intact — correct path, `Test-Path`
-true, GBX header valid, 3,824,673 bytes, md5 `16e7220f2128587c0d0018626feacb0f` —
-but the editor's `EditMap()` never takes effect on it. Confirmed against the
-obvious alternative explanations: it is not size (a 4.65 MB map films fine), and
-it is not accumulated state in a long-running client, because a freshly launched
-process with zero prior loads cannot open it either.
+> ### No video yet — and the reason is *not* the map
+>
+> This page has no clip. An earlier version of it said "the game will not open
+> this map", as though that were a property of the map. **That claim has been
+> withdrawn**, and so has the follow-up theory that the map's dependencies were
+> to blame. Both were refuted by measurement rather than argument.
+>
+> A chunk census of the decompressed map body puts 146612 against maps that do
+> film:
+>
+> | | **146612** | 279218 | 133353 | 126859 | 210218 |
+> |---|---|---|---|---|---|
+> | body | 4.12 MB | 1.43 MB | 2.10 MB | 3.22 MB | **11.92 MB** |
+> | GBX nodes | 169 | 84 | 86 | 79 | **254** |
+> | embedded objects | 384 KB | 24 B | 5.8 KB | 258 KB | **7.24 MB** |
+> | items | 112 KB | 215 KB | 76 KB | **1.23 MB** | 727 KB |
+> | header deps | 14 | 8 | 10 | **20** | 17 |
+> | films? | **no** | yes | ? | yes | **yes** |
+>
+> **Everything that only the client processes — embedded objects, skins, item
+> count, sheer size — is larger on maps that film.** 210218 carries nineteen
+> times the embedded object data, 1.5× the nodes and 2.9× the body, and it
+> films. 126859 carries more dependencies and eleven times the items, and it
+> films. 228811 has two car-model skins exactly as this map does, and it films.
+>
+> The container itself is sound on six independent readers — the game engine via
+> `/validatepath`, the block graph (2,881 records), the waypoint list, six
+> derived segment maps, a live-memory trajectory reader and the ghost decoder —
+> and Nadeo's own binary simulated about 1.29 million laps off this file today.
+> md5 `16e7220f2128587c0d0018626feacb0f`, sha256
+> `c6cca762e167eba6e969c07f306798c29c88d0da397b4744d4042c51b21526db`,
+> 3,824,673 bytes.
+>
+> What is left is **that machine, that copy, or that attempt** — not this map.
+>
+> **So the honest status: the ghost side is finished and the video side is not.**
+> `sn2_LAP_38968_watchable_v1` is regenerated, gate-passing and watchable in
+> principle (md5 `6c459ceb546eb8c794084690e4c31cb0`, spawn exact, residual
+> 0.000403 m against a same-batch control of 0.000407 m). Nobody has opened this
+> map in a client and filmed it. **Until somebody does, the 38.968 is a result we
+> hold, not a result we ship** — and this page is not promising a clip.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
-| **TAS** | **38.975** | +0.445 | **−1.248** | analog |
-| TAS, previous | 39.183 | +0.653 | −1.040 | analog, 189 steering values |
+| **TAS** | **38.968** | +0.438 | **−1.255** | analog |
+| TAS, previous | 38.975 | +0.445 | −1.248 | analog |
+| TAS, earlier still | 39.183 | +0.653 | −1.040 | analog, 189 steering values |
 | **TAS, keyboard only** | **39.706** | +1.176 | **−0.517** | 3 values, 101 presses |
 | Author time | 38.530 | — | −1.693 | — |
 | Human WR — jujumasterr | 40.223 | +1.693 | — | pad, 1157 events |
 | Human rank 2 | 40.226 | +1.696 | +0.003 | keyboard, 114 events |
 
-TMX map [146612](https://trackmania.exchange/maps/146612) · authors
-**AmpelJoe10** and **Wakawukwuk** · 181 recorded runs.
+**Read that table correctly: the author time is not beaten.** 38.968 against an
+author medal of 38.530 is still 0.438 short. What this map has is a lap 1.255
+under the fastest human — which is worth watching, and is not a record.
 
 **181 records does not mean the field is settled here.** Only five runs are
 within a second of the world record, and there is an 0.849 cliff between rank 2
