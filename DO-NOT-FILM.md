@@ -280,3 +280,45 @@ matching `skins|models|zip` as engine noise. The car skin **is** engine noise, a
 it is also a stranger's custom livery with his account uuid in the filename. A
 filter tuned to reduce noise will eventually be tuned past the thing you are
 looking for.
+
+## The regenerator is nondeterministic at tick alignment, and a wrong file passes a clean gate
+
+Eleven runs of one identical `fk regen` invocation — same binary, same inputs,
+same map, each in its own directory — produced **three** different published
+files, one tick apart, plus three aborts:
+
+| alignment | runs | relationship |
+|---|---|---|
+| **A** | predecessor, A, C, and two clean-carrier runs | the mode |
+| B | 2 | **A − 1 tick** |
+| ct5 | 1 | **A + 1 tick** |
+| ABORT | 3 | the tool declining to guess, which is correct behaviour |
+
+They are collinear in time: A↔B is 0.229 m, A↔ct5 0.228 m, B↔ct5 0.457 m, at
+~23 m/s — one 10 ms physics tick each. **The spread is symmetric about A and A is
+the mode**, which is what a sampling-phase race looks like rather than a bias. It
+is evidence for A, not proof.
+
+**The dangerous part: the off-by-one-tick file passes a completely clean gate.**
+C2 446.8 m over 442 points, C1–C4 and C9 pass, `IsValid true`, the census clean.
+Nothing we own can tell you which of three passing files is the true alignment.
+
+The arm that found it predicted a bad run would show as an md5 mismatch **plus** a
+C2 collapse — the decoy-anchor signature. That was half wrong: **md5 alone says
+"different", not "wrong".** What caught it was running a third time, after a
+green result had already been reported and had to be withdrawn.
+
+> **Two runs agreeing proves nothing. Tick alignment is a property of the RUN,
+> not the file** — so a pipeline that produced one good file has not been shown
+> to produce good files, and every regenerated file needs its own check.
+
+Three things that follow:
+
+- **Filming does not re-run the regenerator.** A file already in the tree has its
+  bytes decided; the lottery only exists for files we make. So this blocks new
+  derivations, not publication of what we hold.
+- **Any re-derivation must be compared byte-for-byte against the incumbent**,
+  never assumed. Our one known fixed point returned byte-identical on only 2 of
+  5 runs — the rest were two aborts and one neighbour.
+- **Budget one re-attempt in three** for a corpus-wide re-run, and read an abort
+  as the tool refusing rather than as a defect in the file.
