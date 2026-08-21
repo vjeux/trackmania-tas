@@ -1,24 +1,21 @@
 {
   "schema": "tm-ghost-provenance/1",
-  "written_unix": "1787288080",
+  "written_unix": "1787294498",
   "file": "TAS_15285_keyboard.Ghost.Gbx",
-  "md5": "9b16e5a36cc7331611d2c06281a69185",
-  "bytes": 80806,
+  "md5": "5d98cead8e946148fb857fb4855ca9c4",
+  "bytes": 80787,
   "map_id": "165922",
   "declared_time_ms": 15285,
   "oracle_time_ms": 15285,
-  "oracle_checkpoints": null,
+  "oracle_checkpoints": 2,
   "container_donor": {
-    "path": "/home/vjeux/w165922/cont/human_only_record_8790769_wschseng.Ghost.Gbx",
+    "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/165922/rank00001_8790769.Ghost.Gbx",
     "md5": "5b6a6ff1ff91c7863fa5d9ad9705f1ee"
   },
-  "source_inputs": {
-    "path": "/tmp/tmrepo/165922-idm-ruinin-ur-day-460/replays/TAS_15285_keyboard.Ghost.Gbx",
-    "md5": "abfaec69c4753abc4d80d9637e4cec95"
-  },
+  "source_inputs": null,
   "engine_run": {
-    "note": "tapecut 879231->2109; tapeswap; fk regen --fieldmap r165_neutral_map.tsv --trim-outside --quat-kind 1; tail fix --cut 15285; body setlogin TAS; anon; setdecl 15285; recspan --end 15285 --trim-all (entity 0x2D001000 175815 -> 305 samples, undecoded and INHERITED inside the race window)",
-    "host": "74871.od.fbinfra.net"
+    "note": "CONTAINER REPAIR of TAS_15285_keyboard.Ghost.Gbx (md5 9b16e5a36cc7331611d2c06281a69185). The carrier is the map's only historic human record, rank00001_8790769 (wschseng), and the regeneration inherited his login QW4zOg2US6aggp2uG5L4WA -- and with it the account id 416e333a-0d94-4ba6-a082-9dae1b92f858, which the server DERIVES from the login. Repair: the login string 22 bytes -> 'TAS', which removes the account id. Trajectory bit-identical to the pre-repair file. STILL INHERITED: the carrier's session walltime, which the server reports as 'unexcepted walltime (8791s)' -- 8790.769 s is the donor's own recording length. I could not locate that field; it is not a little-endian u32 of 8790769 anywhere in the file. This file is repaired on identity and NOT on walltime.",
+    "host": "73939.od.fbinfra.net"
   },
   "telemetry_coverage": {
     "samples_regenerated": 306,
@@ -26,50 +23,51 @@
     "fraction": 1
   },
   "fields_regenerated": [
-    "14",
-    "15",
-    "18",
-    "47-68"
+    "position",
+    "velocity",
+    "speed",
+    "gear",
+    "rpm",
+    "wheels",
+    "contact",
+    "orientation"
   ],
   "fields_inherited": [
-    "16",
-    "17",
-    "35-38",
-    "41",
-    "44",
-    "45",
-    "46",
-    "73",
-    "74",
-    "75",
-    "77",
-    "78",
-    "79",
-    "80",
-    "85",
-    "86",
-    "87",
-    "88",
-    "90",
-    "92",
-    "94",
-    "96",
-    "98",
-    "100-115"
+    "input-tape",
+    "carrier-walltime"
   ],
   "tools": [
     {
-      "tool": "fk",
-      "args": "tapecut/tapeswap/regen"
-    },
-    {
-      "tool": "tmtraj",
-      "args": "tail fix/body setlogin/anon/setdecl/recspan/intg"
+      "tool": "tmtraj intg pair",
+      "args": "trajectory 100% bit-identical to the pre-repair file"
     }
   ],
   "certification": {
-    "contamination_verdict": "UNCERTIFIED",
-    "references_tested": [],
-    "limits": []
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/home/vjeux/intg/href/165922__rank00001_8790769.Ghost.Gbx",
+        "md5": "5b6a6ff1ff91c7863fa5d9ad9705f1ee"
+      },
+      {
+        "path": "/home/vjeux/intg/href3/165922_r02_18953_Miota.TM_.Ghost.Gbx",
+        "md5": "76b9c1377e6bfc25245e989a3671bd6b"
+      },
+      {
+        "path": "/home/vjeux/intg/href3/165922_r03_42677_Nanachi97_.Ghost.Gbx",
+        "md5": "8b8c54b70f1c538868a083a64021dd63"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/165922/rank00001_8790769.Ghost.Gbx",
+        "md5": "5b6a6ff1ff91c7863fa5d9ad9705f1ee"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/_records/ghosts/165922_16870_banktm_.Ghost.Gbx",
+        "md5": "096edb53dda14c9cde4be702915ba9c7"
+      }
+    ],
+    "limits": [
+      "UNNAMED LIMIT: walltime"
+    ]
   }
 }

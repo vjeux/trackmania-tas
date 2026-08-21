@@ -8,6 +8,45 @@ of the fifteen seconds need no steering at all.**
 
 https://github.com/user-attachments/assets/17613c32-b24c-40d1-8d99-23d101b5cb98
 
+> ### The nine replay files were rebuilt again — and the video above is one generation behind
+>
+> These ghosts have now been through three generations in one night, and the
+> corrections are worth stating because two of them overturned our own work.
+>
+> **They carried the donor's identity.** Every one of the nine reported to the
+> game as `QW4zOg2US6aggp2uG5L4WA` — account
+> `416e333a-0d94-4ba6-a082-9dae1b92f858`, **wschseng, the human whose recording
+> they were seeded on** — with his own 8790.769 s session length attached to a
+> fifteen-second run. The driving was always ours; the file said it was his. Our
+> tapes report login `TAS` and carry no account at all. That is now fixed, and
+> the account id went with it: the server derives one from the other.
+>
+> **And a correction we made earlier today was itself wrong.** A check reported
+> these files as one physics tick late, and they were regenerated with a −10 ms
+> shift to compensate. Putting a **downloaded human ghost — a file the game
+> wrote itself** — through the same check settled it the other way: the game's
+> own recordings sit at −10 ms, our published files on another map sit at
+> −10 ms, and the *original* generation of these nine sat at −10 ms too. The
+> shifted version is the only thing that sits at zero. **The fix moved the files
+> away from the convention rather than onto it**, so the shift is reverted.
+>
+> The rule we keep relearning: **when our instrument and the game disagree, the
+> game is the instrument.** The same map supplied a second instance an hour
+> later — every file here reports `Unvalidable`, including untouched human
+> downloads, because the server lacks one of the map's scripts. Read as a
+> verdict on our repair, that would have been a false negative.
+>
+> **One inherited field remains and each manifest names it**: the carrier's
+> session walltime, which the server still reports as
+> `unexcepted walltime (8791s)`. It is derived rather than copied — it is not
+> stored as that number anywhere in the file — and it has not been located.
+> Nine files with the identity stripped and one field *named* is a better
+> artefact than nine called repaired.
+>
+> **The clip above was filmed from the shifted generation**, so it shows the run
+> 10 ms displaced. It is being re-shot from the reverted files and will be
+> replaced rather than left up.
+
 **Our run and the world record, side by side.** banktm took this record tonight,
 replacing a ghost that had stood as the board's best; ours is 1.653 faster. Both
 panes start together and you can watch the whole flight — nine seconds of a car
