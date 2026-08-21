@@ -5,6 +5,29 @@
 
 **Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
 
+https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
+
+**Our 95.839 and Beagle.3's world record, both in one camera, shot on our car.**
+A hundred seconds of the wiggle, side by side. They separate steadily and
+enormously — **591.5 m** at the widest, mean **20.7 m**, with 1690 of 1917
+samples in the band where both read as cars — because 5.955 s of margin on a
+22 km/h crawl is most of the straight. His ghost is drawn until 101.100 and ours
+stops at 95.850, so the clip is **trimmed at our own last live frame**, 95.867.
+
+Filmed from `replays/gen_TAS_95839_analog.Ghost.Gbx`, generated from our input
+tape through the engine.
+
+**The facing is checked, because facing is what put the last clip on this page
+in the bin.** The withdrawn file's spawn attitude reads **|dot| 0.0000** against
+Beagle.3's — a rotation 180° from the human spawn, on a map that is nothing but
+sliding sideways for a hundred seconds — and this file reads **|dot| 1.0000**.
+Same map, same reference, same instrument: a positive control on exactly the
+defect that caused the withdrawal.
+
+The opponent is Beagle.3's downloaded rank-1 recording, board re-pulled the day
+this was filmed, and the comparison was run against **that** file rather than
+taken from the tape's certificate.
+
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

@@ -33,7 +33,25 @@ SS=/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots
 PS=/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter
 GB="/mnt/c/Users/vjeux/game-bot-cli/GameBot/bin/Release/net6.0-windows/GameBot.exe"
 FFB=/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin
-TJ=/mnt/c/Users/vjeux/tj/target/release
+# The toolkit. Prefer the repo's own build -- tools/tmtraj is the maintained
+# source and the only copy that gets fixes. /mnt/c/Users/vjeux/tj is an older
+# hand-built tree that happened to be what these scripts pointed at, and on
+# 2026-08-21 the two had drifted far enough to change a verdict: the stale
+# tree's C3 measured a position step in METRES and refused 197047's regenerated
+# tape for a 620 m respawn jump, while the maintained C3 measures the implied
+# SPEED and passes the same file with no failures at all. A clip was filmed on a
+# named override that the current gate does not need. Its nearident was three
+# versions behind as well, and would still print a verdict having compared
+# nothing.
+#
+# So: build with `cd tools/tmtraj && cargo build --release`, and let the old
+# tree be the fallback rather than the default.
+TJ_REPO="$HOME/trackmania-tas/tools/tmtraj/target/release"
+TJ_OLD=/mnt/c/Users/vjeux/tj/target/release
+if [ -x "$TJ_REPO/tmtrajcheck" ]; then TJ="$TJ_REPO"; else
+  TJ="$TJ_OLD"
+  echo "[warn] using the STALE toolkit at $TJ_OLD -- build tools/tmtraj to get the maintained one" >&2
+fi
 OVL=/mnt/c/Users/vjeux/ovl/target/release/ovl
 OUTD=$TV/renders_final
 mkdir -p "$OUTD" "$PS"
