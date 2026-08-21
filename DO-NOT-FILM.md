@@ -187,3 +187,48 @@ download that map's human world record and put it through the same gate. **A
 check that refuses the human recording is measuring the map.** Where that is the
 finding, record it as `GATE_OVERRIDE="<id>=<reason>"` — a signed claim in the log
 — and never by widening the rule.
+
+## The defect no positional check can see: our run inside somebody else's file
+
+Found 2026-08-21, twice in ninety minutes, both times by accident. **A tape can be
+completely ours in every position it contains and still be somebody else's file.**
+
+A synthesised tape is built on a *carrier* — an existing ghost — and the search
+overwrites the carrier's telemetry with our own. 173636's carrier turned out to be
+**473 of 473 samples bit-identical to the human world record**: a complete copy of
+his run, with the parts we remembered to overwrite replaced. Identity, walltime and
+declared time are not three separate bugs. **They are three fields nobody got to.**
+
+### The three known cases, and why no single check catches them all
+
+| file | header declares | validates to | account id | caught by |
+|---|---|---|---|---|
+| 227969 film-ready | **8.197** — the WR holder's | 8.050 | Titoch_tm's | header + ident |
+| 173636 regen | 23.638 — rank 1's | 22.072 | rank 1's | `IsValid`, **by accident** |
+| 165922 × 9 | 15.217 — **correct** | 15.217 | wschseng's | **ident only** |
+
+- Declared-vs-validated **misses the nine**: their declared time is right.
+- `IsValid` **misses 227969**: the server is lenient when a header claims a
+  *slower* time than the run achieves. 173636 was caught only because its header
+  happened to claim a *faster* one — a coin flip.
+- **Only the account id catches every one.** Read it on every file, no exceptions
+  and no overrides. Ours carry none and report Login `TAS`.
+
+### Two rules this cost us
+
+**A check must read both of its operands out of the file or the world — never one
+out of the command line.** 227969's manifest verifier compared the header's
+declared time against a number passed to it as `--oracle 8050`. The comparison was
+correct, the oracle was correct, and it never read the file.
+
+**Declaring an inheritance is not checking it.** The same manifest said, truthfully,
+that the header was inherited from the carrier. That line was read as provenance.
+It was a finding.
+
+### What this means before filming
+
+A tape whose **container** is not ours is not filmable, however clean its driving.
+A file with no manifest gets a manifest requested before it gets filmed — and a
+manifest is a *claim*, so verify it against the bytes in the file you hold. Both
+times this defect was caught, it was caught by someone re-reading a file that had
+already passed a full green gate.
