@@ -170,6 +170,23 @@ each station is compensated for the roof's 11.4° slope, so that a rung asks
 *would this tape fire if its crossing moved along the roof*, the fast line fires
 **0 of 425 stations** while the human record fires ~40 in the same invocation.
 
+**And the near miss is real, not a car falling past the plane.** A finish gate
+is a plane you cross rather than a region you occupy, so a candidate can be
+nearer the gate in every spatial sense and still trigger nothing — that trap
+produced a phantom "best result" on another map in this repo. It does not apply
+here, and the control is one validation: a gate placed at the incumbent's own
+crossing point, at the real gate's real height, **fires** (40.964). The car is
+travelling at ~50 m/s horizontally with *positive* vertical velocity — climbing
+the ramp, ratio 0.15 — where a faller would need |vy| to exceed |vx|. What it
+cannot do is fire the gate 5.29 m away where the gate actually is; raise that
+one by 70 mm and it fires (41.074). The deficit is height, and it is genuine.
+
+That also sharpens why the fitted trigger model mis-ranked six probes. They all
+cross; the model simply carries one `ceiling` constant while the real trigger's
+top surface tilts more steeply than the roof and has an interior minimum. A
+probe crossing 5 m further along has both a lower tested point *and* a much
+lower ceiling to clear, and a constant-ceiling model sees only the first half.
+
 Both search windows are frozen: 3483 candidates, 0 improvements, and all 78
 splice handovers after the divergence are dead.
 

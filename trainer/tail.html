@@ -4,12 +4,20 @@
    ==========================================================================*/
 const TICK = 10;          // tape resolution, ms
 const FINISH_MS = 6323;   // our validated finish, 6.323
+/* Three lanes, not four.
+   Gas is down from -0.270 to the finish and never comes up, so a gas lane is a
+   solid bar carrying no information — it is a HELD STATE, drawn as a permanent
+   indicator and checked continuously (see GAS below), not a falling note.
+   Brake keeps a lane because it is a real key you press with another finger,
+   but a narrow one: one tap in the whole run. The two steer lanes take the
+   width that buys, which is where the run is actually hard to read. */
 const LANES = [
-  { id:'left',  label:'LEFT',  glyph:'←', key:'ArrowLeft',  alt:'KeyA', color:'#39d0ff', dark:'#0e3446', on:r => r.steer <  0 },
-  { id:'gas',   label:'GAS',   glyph:'↑', key:'ArrowUp',    alt:'KeyW', color:'#4ade80', dark:'#0f3524', on:r => r.accel === 1 },
-  { id:'brake', label:'BRAKE', glyph:'↓', key:'ArrowDown',  alt:'KeyS', color:'#ff5b6e', dark:'#3d151b', on:r => r.brake === 1 },
-  { id:'right', label:'RIGHT', glyph:'→', key:'ArrowRight', alt:'KeyD', color:'#ffb020', dark:'#3d2c0d', on:r => r.steer >  0 },
+  { id:'left',  label:'LEFT',  glyph:'←', key:'ArrowLeft',  alt:'KeyA', w:1.00, color:'#39d0ff', dark:'#0e3446', on:r => r.steer <  0 },
+  { id:'brake', label:'BRAKE', glyph:'↓', key:'ArrowDown',  alt:'KeyS', w:0.50, color:'#ff5b6e', dark:'#3d151b', on:r => r.brake === 1 },
+  { id:'right', label:'RIGHT', glyph:'→', key:'ArrowRight', alt:'KeyD', w:1.00, color:'#ffb020', dark:'#3d2c0d', on:r => r.steer >  0 },
 ];
+const GAS = { label:'GAS', glyph:'↑', key:'ArrowUp', alt:'KeyW', color:'#4ade80', dark:'#0f3524', on:r => r.accel === 1 };
+const LANE_W = LANES.reduce((s,l) => s + l.w, 0);
 
 function parseTape(raw){
   const lines = raw.trim().split(/\r?\n/);
@@ -28,10 +36,10 @@ function parseTape(raw){
 }
 
 // Contiguous runs of "this control is engaged" become held notes.
-function buildNotes(rows){
+function buildNotes(rows, lanes){
   const last = rows[rows.length - 1].t;
   const notes = [];
-  LANES.forEach((lane, li) => {
+  lanes.forEach((lane, li) => {
     let start = null, prevT = null;
     for (const r of rows){
       const on = lane.on(r);
@@ -140,10 +148,14 @@ function scoreOf(events){
    DATA — built once from the tape above.
    ==========================================================================*/
 const ROWS  = parseTape(RAW_TAPE);
-const NOTES = buildNotes(ROWS);
+const NOTES = buildNotes(ROWS, LANES);
+const GAS_NOTES = buildNotes(ROWS, [GAS]);          // for the indicator, never judged
 const TRANS = transitions(ROWS);
 const TAPE_START = ROWS[0].t, TAPE_END = ROWS[ROWS.length-1].t + TICK;
 const RACE_SEGS = steerSegments(ROWS, 0);
+// The gas fact the lane used to carry, measured rather than asserted.
+const GAS_DOWN_AT = (GAS_NOTES.find(n => n.end > 0) || {}).start;
+const GAS_LIFTED_IN_RACE = ROWS.some(r => r.t >= 0 && r.t <= FINISH_MS && r.accel === 0);
 
 const SECTIONS = [
   { name:'Full run',      a:-500,  b:TAPE_END, hint:'gas and left already down at the line' },
@@ -182,10 +194,13 @@ const S = {
   tapeNow: 0,
   lastTs: 0,
   events: [],
-  held: [false,false,false,false],
+  held: LANES.map(() => false),
+  gasHeld: false,          // ↑ is a STATE, not a note: never judged on timing
+  gasLifted: 0,            // ms of race time spent off the gas
+  gasFaultAt: null,        // first moment they lifted
   pops: [],
-  flash: [0,0,0,0],
-  wrong: [0,0,0,0],
+  flash: LANES.map(() => 0),
+  wrong: LANES.map(() => 0),
   combo: 0, bestCombo: 0,
   offset: 0,
   hits: [],               // recent judged edges, for the error meter
