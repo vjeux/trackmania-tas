@@ -44,9 +44,10 @@ regenerations agreed and all four were wrong.
 | TAS, deep landing | 15.382 | −0.261 | forced to land 40–80 m further into the pad |
 | Keyboard, coarse launch | 16.276 | +0.633 | outside the author time on purpose — the forgiving version |
 | Author time | 15.643 | — | — |
-| The only human record | 8790.769 | — | 2 h 26 m — see below |
+| Human world record — banktm | 16.870 | +1.227 | set 2026-08-20; our tape leads it by 1.653 |
+| The board's previous human record | 8790.769 | — | 2 h 26 m — see below |
 
-TMX map [165922](https://trackmania.exchange/maps/165922) · **one recorded run**.
+TMX map [165922](https://trackmania.exchange/maps/165922) · **two recorded runs** — for most of this page's life there was only one, a 2 h 26 m crawl; banktm set a real time of **16.870** on 2026-08-20.
 
 ## The map in one paragraph
 
@@ -75,7 +76,7 @@ The launch is the only lever that matters, because the glide is unpowered:
 | launch speed off the ramp | flight time to the pad |
 |---|---|
 | 140 m/s | 13.490 — the slowest launch that reaches the pad at all |
-| 182.5 m/s (what the human managed) | 10.470 |
+| 182.5 m/s (what the 8790.769 tape managed) | 10.470 |
 | 200 m/s | 9.930 |
 | 230 m/s | 9.040 |
 
@@ -98,7 +99,7 @@ Holding the throttle flat from 4.46 s to the finish is free in the same way.
 
 ## The run, as keys
 
-The board's only human plays on a keyboard, and so does the fastest tape here.
+The human tape analysed below is the 8790.769 one -- it was the board's only human run when this section was written, and it plays on a keyboard, as does the fastest tape here.
 Across the record, 94.2 % of steering values are exactly `0`, `−127` or `+127`,
 and the winning attempt is 102 input events with the gas held the whole way and
 one 20 ms brake tap:
@@ -110,7 +111,7 @@ onto the ramp         full lock RIGHT
 after the boosters    nothing at all — hands off to the finish
 ```
 
-That is the shape to copy. From about 6.4 s the human's tape reads `steer 0, gas
+That is the shape to copy. From about 6.4 s that tape reads `steer 0, gas
 held` and never changes again.
 
 ### Sector by sector, off what you can see
@@ -146,7 +147,7 @@ Move any one input a single tick (10 ms) earlier or later, and re-drive:
 
 Read the top row carefully: it is a fact about a frozen tape, not about a
 driver — a recorded tape cannot notice it is 30 cm off, and a player corrects by
-eye. Run the same test on the **human's own winning attempt** and 17 of 42 shifts
+eye. Run the same test on the **8790.769 tape's own winning attempt** and 17 of 42 shifts
 survive, **40.5 %**, three of them faster than the original. A launch with real
 one-tick tolerance exists on this map.
 
