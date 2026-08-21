@@ -1394,3 +1394,57 @@ of the three candidates that fits the two edited files. The cheapest falsifier i
 `186935/CUT_795034` — if the rule holds, its import shows a 2575-second block end,
 which is also the single most valuable thing to know before that map is ever
 filmed.
+
+### Confirmed on six files, and one of the night's better stories was false
+
+The block end is **the timestamp of the last sample**. Measured against every
+rival column:
+
+| file | own | span | last cp | last sample | measured |
+|---|---|---|---|---|---|
+| `126859/KEYBOARD_24164` | 24.164 | 24.400 | 24.342 | **24.150** | **24.15** |
+| `126859/TAS_23416` | 23.416 | 27.800 | 27.609 | **23.400** | **23.40** |
+| `279218/KEYBOARD_5350` | 5.350 | 566.080 | 5.350 | **5.350** | **5.35** |
+| `238835/TAS_239133` | 239.133 | 1964.930 | 462.982 | **462.950** | **462.95** |
+| `238835/TAS_347003_noretry_v4` | 347.003 | 1964.930 | 347.003 | **347.000** | **347.00** |
+| `238835/NORETRY_347003_watchable` | 347.003 | 346.970 | **1964.933** | **346.970** | **346.97** |
+
+**Six for six. Every other column fails at least once.**
+
+**The last row retracts a story this file told two sections ago.**
+`NORETRY_347003_watchable` was described as one of the two worst render-cost files
+in the corpus — last checkpoint 1964.933, Quantiks' time — saved by accident when
+`setdecl --from` happened to rewrite that split. The **pre-repair** copy imports
+at **346.97**.
+
+> **It was never an exposure. The checkpoint never drove the block end, so the
+> accidental fix fixed nothing** — there was nothing there to fix. A satisfying
+> narrative about luck, built on a rule that was already wrong.
+
+### The near-miss that fitted eight of ten
+
+`block end = (samples − 1) × 50 ms` — proposed, and correct only when the sample
+grid is unbroken. `TAS_239133` has **9114 samples** and a last sample at
+**462.950**, because a cut leaves gaps: the formula says 455.65 and the file
+renders to 462.95.
+
+**Count the timestamp, not the samples.** And the hypothesis that hung off it —
+that the game sees more samples than our parser — is dead: both readers agree on
+9114, and the game never counts.
+
+### The falsifiers that would have tested nothing, a second time
+
+Three cheap discriminators were proposed from the table: `191465/WIP_pad5` and
+`WIP_keyboard` (last sample 13.050), `279209/kb_gasfull` and `kb20` (6.600). **All
+four coincide with the checkpoint prediction inside the display grid.**
+
+The same trap as the first round, one round later: **rows proposed as tests were
+rows where the hypotheses agree.** Of everything staged, `126859/KEYBOARD_24164`
+was the only clean discriminator, and it decided the question alone.
+
+### The blocklist, computable with no further measurement
+
+19 files whose block end runs more than 2 s past their own time, 16 of them past
+10 s: `186935/CUT_795034` at **+1780 s** (~20 hours of render), 286279's three at
++86 to +441 s, `238835/TAS_239133` at +224 s, and 165922's nine at +24 s each —
+though those carry zero car entities and would render nothing at all.
