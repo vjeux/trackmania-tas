@@ -5,7 +5,7 @@ and on this map, unlike its low-finish twin, you must release the lock about
 200 ms after it fires and then counter-steer, a touch early rather than a touch
 late.**
 
-**Video of the run:**
+Video of the run: our TAS **19.907** against the author time **20.258**.
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
