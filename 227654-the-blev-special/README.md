@@ -5,6 +5,23 @@ respawns cost it 82 seconds, and the seven that are left are all in the
 nine-second crawl into the corner at 47 s — get wedged there by 40.0 s instead
 of 46.9 s and the author time falls.**
 
+> ### ⚠️ Five of the replay files on this page do not show our runs
+>
+> An audit tonight decoded every published tape against every human recording on
+> this map. **`TAS_57493`, `TAS_57498`, `TAS_57573`, `TAS_59912_watchable` and
+> `HUMAN_WR_retries_cut_64871` all carry ailiei.'s 147.031 trajectory** — the
+> human world record — rather than their own. And `TAS_57537` and `TAS_57577`,
+> published as two different runs, are **one trajectory**.
+>
+> **The times below are real.** Every one of these tapes re-simulates on the
+> game's own oracle to the millisecond in its name; what is wrong is the
+> *recording*, not the result. A searched tape is built inside a donor file and
+> inherits that donor's telemetry unless it is regenerated, and these were not.
+>
+> So: the numbers stand, the analysis stands, and **the files should not be
+> loaded as replays** until they are regenerated. Nothing on this page has ever
+> been filmed.
+
 | run | time | vs author time | what it is |
 |---|---|---|---|
 | [`TAS_57493`](replays/TAS_57493.Ghost.Gbx) | **57.493** | **−0.360** | reach the corner about 7 s early, then drive the human's own escape |

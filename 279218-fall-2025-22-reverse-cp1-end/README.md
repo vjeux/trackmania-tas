@@ -206,7 +206,7 @@ forgiving than the driving humans have actually done on this map.
 
 | file | what |
 |---|---|
-| `replays/TAS_5345_starttrick.Ghost.Gbx` | **the fastest run** — the start trick plus a corner line only it can reach |
+| `replays/TAS_5345_starttrick.Ghost.Gbx` | **the fastest run** — the start trick plus a corner line only it can reach. ⚠️ **This file's telemetry is Matik_K's 5.355, not its own** — the 5.345 is real and re-simulates on the oracle, but the recording plays back as the human's run, so do not load it as a replay until it is regenerated. Every other file on this page carries its own trajectory. |
 | `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |
