@@ -452,3 +452,42 @@ wrong-ghost imports earlier the same night.
 
 **An override that records why it was used is a decision. Relaxing the default
 would have been a hole.**
+
+## The majority was wrong: 2 of 24 regenerations were right
+
+208024's regeneration would not certify — its telemetry sat 7.81 m from the tape's
+own route dump. **The cause was not a bad locate. It was a clock offset.** The
+regen's window varied per attempt, and the position error tracked it monotonically:
+
+```
+window  −210 ms  ->   7.81 m        window  −690 ms  ->  43.29 m
+        −300 ms  ->  17.29 m                +290 ms  ->  33.96 m
+```
+
+**The locate was finding the right car every time and attributing it to the wrong
+tick.**
+
+The fix was 24 independent attempts ranked by ground truth — each output compared
+against the tape's own `fk btraj2` route dump — and the distribution is the
+finding:
+
+| outcome | attempts |
+|---|---|
+| **true clock, 0.0026 m, byte-identical to each other** | **2** |
+| clustered at 7.81 m | 5 |
+| 900–1400 m out | 11 |
+
+**Two runs in twenty-four were right.** Five agreed with each other on a wrong
+answer. Any procedure of the form "regenerate a few times and take what agrees"
+would have shipped a file that is metres — or a kilometre — off its own route,
+with a majority behind it.
+
+> **Agreement is a diagnostic on the chooser, never an acceptance test.** Only a
+> check that can *identify* the answer settles it: here, the tape's own route
+> dump; elsewhere, spawn exactness, path length, bit-identity against a known
+> file, or the game's own reader.
+
+Third instance of this shape tonight, and by far the worst ratio — the others
+were four-of-five agreeing wrongly, and three deltas agreeing at the same wrong
+distance. On that map a regeneration needs **~24 attempts and a ranker**, not six
+and a vote.
