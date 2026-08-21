@@ -1866,3 +1866,57 @@ Both tools ship with their calibration in the header comment, and the negative
 control is a genuinely close pairing (270053 against AffiTM, 0.48 m apart at its
 widest) rather than a far-apart one — **a band that only clears easy negatives
 proves nothing.**
+
+### Why ten files got the wrong orientation: the kind is INFERRED, and noise can decide it
+
+From `fk/src/clean.rs::discover_layout` — the quaternion kind is not read from the
+file. For each candidate offset the tool builds the series **both ways**,
+`(x,y,z,w)` and `(w,x,y,z)`, scores each by `heading_spread` (how closely the
+forward vector tracks the velocity direction, as the p90 deviation from the
+circular median), accepts anything under **0.9 rad**, and keeps the lowest.
+
+```rust
+for order in 0..2 {
+    if let Some(sp) = heading_spread(&qq) {
+        if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) { best_o = Some((sp, order, ...)); }
+    }
+}
+```
+
+> **The kind is whichever order makes the car look like it is pointing where it is
+> going.** When the two orders score closely, the winner is decided by whichever
+> samples the probe happened to catch.
+
+That is why the offset is stable at −16 every run while the kind flips — and why
+**two regenerations of the same tape can disagree**: 197047's filmed file came out
+with an identity quaternion and its own regeneration with a 90° error. Not one bug
+with one fix; two outcomes of one unstable choice.
+
+### The predictor that failed, published as a failure
+
+The natural hypothesis — that the criterion goes degenerate on maps where the car
+does not point where it is going, so a human recording could classify a map in
+advance — **does not predict the defect list**:
+
+| map | p90 heading spread | broken files |
+|---|---|---|
+| **197047** | **0.132 — decisive** | **2** ← the withdrawn clip |
+| 238835 | 0.306 — decisive | 1 |
+| 145875 | 2.360 — degenerate | 3 ✓ |
+| 186935 | 3.115 — degenerate | 2 ✓ |
+| **285268** | **2.031 — degenerate** | **0** |
+| **199100** | **1.451 — degenerate** | **0** |
+| **126859** | **1.719 — degenerate** | **0** |
+
+Four hits, four misses, and **the miss that matters reads as the safest map on the
+board.** A map-level number from a human recording cannot see what the probe sees:
+the probe scores a live window of instants on *our* tape, not the whole run.
+
+*(The reader for that table needed its own control: the first version reported
+every map degenerate, including maps whose files are all correct. A positive
+control failing across the board means the reader, not the world — the wrong axis
+was being rotated.)*
+
+> **You cannot classify a map as safe in advance. Check the output of every
+> regeneration.** One line, comparing as a rotation: the first sample's quaternion
+> against any human recording of the same map, |dot| ≈ 1.
