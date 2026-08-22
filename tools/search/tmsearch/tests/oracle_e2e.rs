@@ -22,11 +22,21 @@ const TRUTH_MS: i64 = 22730;
 fn server() -> Option<PathBuf> {
     let d = server_dir(None);
     if d.join("TrackmaniaServer").exists() {
-        Some(d)
-    } else {
-        eprintln!("SKIP: no dedicated server at {} (set TM_SERVER)", d.display());
-        None
+        return Some(d);
     }
+    // A SKIP IS NOT A PASS. The suite this one replaces reported "6 passed" on
+    // any machine without its fixtures -- every check was wrapped in
+    // `if !path.exists() { return }` against an absolute path outside the
+    // repo, so it was green, in 0.00 s, having asserted nothing. On a box with
+    // an engine, set TM_REQUIRE_ENGINE=1 and a missing server is a failure
+    // rather than a silence.
+    assert!(
+        std::env::var("TM_REQUIRE_ENGINE").is_err(),
+        "TM_REQUIRE_ENGINE is set and there is no dedicated server at {} (set TM_SERVER)",
+        d.display()
+    );
+    eprintln!("SKIP: no dedicated server at {} (set TM_SERVER)", d.display());
+    None
 }
 
 fn scratch(tag: &str) -> PathBuf {

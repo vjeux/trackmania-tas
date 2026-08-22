@@ -191,6 +191,30 @@ below 181. Reverting the floor to each worker's own makes it fail at tick 100.
 
 ## 4. The controls, and what each one proved
 
+### First: did the old suite pin anything?
+
+`tmsearch/tests/invariants.rs` had six tests and they are well chosen — the
+factory-identity one pins a real bug that cost an afternoon (a `FROZEN`
+sentinel index added to a stream base offset wrapped into a real bit position
+and clobbered byte 0 of every candidate, silently, and only for the one seed
+that had such packets).
+
+**And on this box, with no fixtures present, the whole suite reports `6 passed`
+in 0.00 s having asserted nothing.** Every test is guarded by
+`if !Path::new(p).exists() { continue }` against absolute paths that live
+outside the repo — `/tmp/m2/ghosts/rank00001_22730.Ghost.Gbx`,
+`/tmp/tmoracle/replays/r4167.Replay.Gbx`. So it pins behaviour on a machine
+that happens to have someone's scratch directory, and is decoration everywhere
+else. The `0.00s` is the tell.
+
+Both halves are fixed here. The fixtures are the two human ghosts and the map
+**checked in beside `tools/ghost`**, addressed by relative path, so a missing
+one is a panic rather than a skip. The engine-dependent tests do skip, and say
+so — and `TM_REQUIRE_ENGINE=1` turns that skip into a failure, so a box with an
+engine cannot quietly stop running them.
+
+### The controls
+
 Everything below was run on this box, against the real dedicated server, with
 the fixtures checked in beside `tools/ghost`.
 
@@ -206,35 +230,52 @@ the fixtures checked in beside `tools/ghost`.
 | **a real search, plain oracle** | 23.013 → **22.935** in 2 minutes, 24 workers, 22 350 evaluations, 178 eval/s. **10 improvements, 10 confirmed, 0 phantoms** |
 | **re-validation from a separate process** | all 10 banked files re-simulate to exactly the time in their name |
 | **a real search, fork oracle** | 23.013 → **22.923** in 2 minutes, 6 workers, 11 700 evaluations. **12 improvements, 12 confirmed by the plain oracle, 0 phantoms** — the fork agreeing with the plain oracle 12 times inside its own regime (late-window perturbation of a human seed) |
+| **the reference line taken from a ghost itself** | gated on the engine re-simulating that file's own tape: **0.0005 m** mean over 461 samples, no phase shift — and the fork search then ran on that line |
 
-### One check that did not work, and the measurement that says so
+### One check that did not work, one that did, and a false negative I nearly published
 
 `--refghost` takes the reference line from a ghost's own telemetry. That is
 only safe if the telemetry belongs to that file's tape, because **a synthesised
 tape carries its template's telemetry** and a search output's recorded
 trajectory is the seed's, byte for byte.
 
-The cheap test looked free: a ghost holds its driver's inputs twice — the 10 ms
-input chunk and byte 14 of every 50 ms sample — and `ghost::verify` scores
-their agreement as chance-corrected Cohen's kappa, published as 1.000 for a
-recording of its own run against 0.120 for a wholesale-contaminated file.
+**The cheap test does not work, and here is the measurement.** A ghost holds
+its driver's inputs twice — the 10 ms input chunk and byte 14 of every 50 ms
+sample — and `ghost::verify` scores their agreement as chance-corrected Cohen's
+kappa, published as 1.000 for a recording of its own run against 0.120 for a
+wholesale-contaminated file. That looks like a free gate. Measured here on
+`human_23013.Ghost.Gbx`, an ordinary game recording: **kappa 0.919**, while
+lightly-grafted search tapes score around 0.83. Nine hundredths apart with a
+sample of one on the good side. No threshold on that statistic separates them,
+so it decides nothing and is reported as context only.
 
-**Measured here on `human_23013.Ghost.Gbx`, an ordinary game recording: kappa
-0.919** — while lightly-grafted search tapes score around 0.83. The two
-populations are 0.09 apart with a sample of one on the good side. No threshold
-on that statistic separates them, so it decides nothing and is reported as
-context only.
-
-The gate is the decisive test instead: the real engine re-simulates the file's
-own tape and the trajectory it produces must match the one the file records
+**The decisive test does work.** The real engine re-simulates the file's own
+tape and the trajectory it produces must match the one the file records
 (`ghost::regen::engine_trajectory_agreement`), with a separate check for a
 whole-sample phase shift, because a one-tick offset is a pure time shift that
-hides inside a small mean. **On this box that check could not run** — the
-regeneration's locate did not identify the car in 24 attempts on this map — so
-`--refghost` currently refuses rather than guessing, and `--refcsv` (a
-trajectory measured out of the engine) is the working path. That is a harness
-limit, not a physics one: the car's state is in memory and `fk` finds it; what
-is missing is a locate that succeeds here, and that is a task.
+hides inside a small mean. On this fixture:
+
+```
+fork: reference line from human_23013.Ghost.Gbx's own telemetry: 461 samples,
+      and the engine's own run of its tape sits 0.0005 m from it (kappa 0.919)
+```
+
+**And the false negative.** The first time I ran that gate it failed with *"the
+engine readout did not identify the car in 24 attempts"*, and I wrote it up as
+a harness limit of this box. It was not. That check shells out to `fk regen`,
+`fk` was not on `PATH` and `FK_BIN` was unset, so all 24 attempts failed to
+launch a binary — and a failure to launch is reported in the same words as a
+failed locate. The same trap is documented inside `ghost::regen` itself for the
+shim ("pointing the fork server at a shim that is not there fails with a bare
+`NotFound` six times in a row and looks like six bad locates"), and I walked
+into the neighbouring version of it and nearly published *map 2's locate is
+flaky* on the strength of it.
+
+Two things came out of that. The failure message now names the wiring as the
+first thing to check, in the words above. And the general rule this project
+already pays for is worth restating: **when a control fails, the null is about
+your instrument until you have shown otherwise** — a negative result needs a
+positive control even when the negative is about your own tooling.
 
 ### The identity control the search was never running
 
@@ -253,15 +294,59 @@ already-improved incumbent and then abort on a control testing the wrong tape.
 Concrete, in the order I would close them.
 
 **1. A state objective.** When finish time cannot cross a valley, the thing to
-score is the STATE at a place: arm a box, score a continuous property of the
-car inside it, and rank in non-overlapping bands — *no fire < did the thing,
-ranked by distance < did it and finished, ranked by time*. Three maps have
-needed this and each hand-rolled it in a fork of the search. It is a third
-`Outcome` variant plus a `--gate` spec, and the ordering discipline it needs is
-already in `score.rs`. Two things make it work and both are easy to get wrong:
-the state must be the WHOLE state (position and velocity were not enough on one
-map — attitude was the trigger), and the key must extend CONTINUOUSLY outside
-the box (`-(500 + miss)`, never `-miss`, or a near miss outscores an arrival).
+score is the STATE at a place. Three maps have needed this and each one
+hand-rolled it in a private fork of the search, which is the definition of a
+missing feature. A sketch, because the shape matters more than the code:
+
+* **A third outcome variant**, so the bands cannot overlap by construction the
+  way the two ladders already cannot:
+
+  ```rust
+  pub enum Outcome {
+      Finish { ms: i64 },
+      /// Reached the place the search was pointed at, but did not finish.
+      Reached { band: u8, key: f64 },
+      Dnf(Progress),
+  }
+  ```
+
+  with `Finish > Reached > Dnf`, and within `Reached`, band first and key
+  second. The whole ordering discipline is already in `score.rs`; this is one
+  more variant and one more test.
+
+* **The gate is a `box` predicate that records instead of aborting.** The
+  watchdog language already has `box`, the child already gathers the 44-byte
+  record every tick, and `R_QUAT / R_POS / R_VEL` are all in it. What is
+  missing is a slot in the 48-byte summary for *the whole record at first
+  entry*. That is the cheap half.
+
+* **The key must be a function of the WHOLE state.** On 228811 position and
+  velocity together were not enough — attitude was the trigger. So the key is
+  named over the recorded record (`speed`, `speed along a direction`, `distance
+  to a point`, `slip angle`, a weighted sum), not over a fixed pair of fields.
+
+* **The key must extend continuously OUTSIDE the box.** `-(500 + miss)`, never
+  `-miss`, or a near miss outscores an arrival. This is band 0, and it is what
+  gives a search that has never once fired the gate something to climb.
+
+* **The identity control changes shape and gets stronger.** In gate mode the
+  classic "does the fork reproduce the seed's millisecond" check is
+  unavailable, and the replacement is better: the fork's measured gate state
+  for the SEED must equal the seed's own decoded telemetry at that place —
+  position, velocity *and* quaternion. One comparison that validates the record
+  layout, the locate and the labelling at once.
+
+* **Print the decoy test at startup.** An objective that can be maximised
+  without achieving the goal is not a proxy, it is a decoy, and one map met
+  three in a row. Before the first candidate, print the key of the incumbent
+  and the key of the do-nothing tape. An objective the parked car scores well
+  on is visible in the first line of output instead of after four hours.
+
+* The guard is unaffected and still governs: a band-2 result is a finish and is
+  re-validated like any other; a band-0 or band-1 result is a *state*, not a
+  time, so there is no time for the oracle to contradict — the bank records the
+  gate state beside the tape so the claim can be checked by hand, and the file
+  never acquires a millisecond it did not earn.
 
 **2. Rungs along our own line.** `Progress::Checkpoints` only understands real
 checkpoints, and on a map with four of them across 95 seconds that ladder has

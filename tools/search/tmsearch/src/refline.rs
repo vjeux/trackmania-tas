@@ -72,8 +72,14 @@ pub fn from_ghost(
     let (mean, worst, n, shifted) = ghost::regen::engine_trajectory_agreement(path, map)
         .map_err(|e| {
             format!(
-                "{}: could not check whether this file's telemetry is its own ({}). \
-                 Measure the line with `fk btraj` and pass --refcsv.",
+                "{}: could not check whether this file's telemetry is its own ({}).\n\
+                 CHECK THE WIRING FIRST: this test shells out to `fk regen`, so it needs FK_BIN \
+                 and FK_SHIM pointing at a built `fk` and `libforkshim.so`, and TM_SERVER at a \
+                 dedicated server. With any of them missing, every attempt fails to launch and \
+                 the failure is reported as \"the engine readout did not identify the car\" -- \
+                 which reads as a fact about the map and is a fact about the shell.\n\
+                 If the wiring is right and it still fails, measure the line with `fk btraj` \
+                 and pass --refcsv.",
                 path, e
             )
         })?;

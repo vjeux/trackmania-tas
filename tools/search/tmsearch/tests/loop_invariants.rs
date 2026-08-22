@@ -81,6 +81,7 @@ fn no_worker_ever_edits_below_the_highest_resume_tick() {
         seed: 5,
         temp_s: 0.0,
         migrate: 0.2,
+        max_drift: 0,
     };
 
     let seen = Arc::clone(&lowest);
@@ -138,6 +139,7 @@ fn a_worker_that_fails_to_start_does_not_wedge_the_others() {
         seed: 1,
         temp_s: 0.0,
         migrate: 0.0,
+        max_drift: 0,
     };
     let seen = Arc::clone(&lowest);
     // worker 1 refuses to start

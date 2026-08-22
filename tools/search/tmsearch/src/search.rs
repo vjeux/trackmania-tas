@@ -88,6 +88,18 @@ pub struct Config {
     /// Metropolis temperature in SECONDS. 0 turns annealing off.
     pub temp_s: f64,
     pub migrate: f64,
+    /// Stop the run once a banked result sits more than this many ticks from
+    /// the reference the fork server checkpointed on. 0 disables it.
+    ///
+    /// The fork oracle is exact for a small, late perturbation of its
+    /// reference and **lies far from it** -- 0 of 312 fork-reported finishes
+    /// survived a plain re-validation once the tape was not that. The guard
+    /// means nothing false gets banked either way; what drifts is the fork's
+    /// RANKING, so a search that has wandered is burning hours ordering
+    /// candidates by a number that no longer means anything. The cure is to
+    /// re-anchor: restart with `--start-from` the banked file, which gives the
+    /// fork servers a reference the search is actually near.
+    pub max_drift: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -319,6 +331,22 @@ where
                             total,
                             rep.op.as_ref().map(|o| o.to_string()).unwrap_or_default()
                         );
+                        if cfg.max_drift > 0
+                            && rep.prov.from_fork
+                            && rep.prov.distance.diff_ticks > cfg.max_drift
+                        {
+                            stop.store(true, Ordering::Relaxed);
+                            eprintln!(
+                                "stopping: this result is {} ticks from the reference the fork \
+                                 servers checkpointed on, past --max-drift {}. It is CONFIRMED -- \
+                                 the plain oracle says so -- but the fork's ranking is not \
+                                 trustworthy this far out. Re-anchor: restart with --start-from \
+                                 {}.",
+                                rep.prov.distance.diff_ticks,
+                                cfg.max_drift,
+                                "the file just banked"
+                            );
+                        }
                     }
                 }
                 Err(()) => {

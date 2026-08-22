@@ -62,6 +62,8 @@ SEARCH
   --minutes M --seed S
   --temp SECONDS      Metropolis temperature; 0 is improvement-only
   --migrate P         chance a worker reseeds from the global best
+  --max-drift N       stop once a banked result is N ticks from the fork's
+                      reference, so it can be re-anchored (0 = never)
 
 FORK MODE (a gradient, never a result)
   --fork              evaluate on mid-simulation fork servers
@@ -104,6 +106,7 @@ struct Args {
     seed: u64,
     temp_s: f64,
     migrate: f64,
+    max_drift: usize,
     n: usize,
     out: String,
     base_ms: i64,
@@ -147,6 +150,7 @@ fn parse() -> Args {
         seed: 1,
         temp_s: 0.0,
         migrate: 0.0,
+        max_drift: 0,
         n: 0,
         out: "/tmp/tmsearch-dump.jsonl".into(),
         base_ms: 0,
@@ -189,6 +193,7 @@ fn parse() -> Args {
             "--seed" => a.seed = num(&next(&mut i), k) as u64,
             "--temp" => a.temp_s = num(&next(&mut i), k),
             "--migrate" => a.migrate = num(&next(&mut i), k),
+            "--max-drift" => a.max_drift = num(&next(&mut i), k) as usize,
             "--n" => a.n = num(&next(&mut i), k) as usize,
             "--out" => a.out = next(&mut i),
             "--base" => a.base_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
@@ -317,6 +322,7 @@ fn cmd_search(a: &Args) {
 
     let start_outcome = measure(&server, &map, &p, &start, &root.path);
     eprintln!("incumbent: {}", start_outcome);
+    check_segment_maps(a, &server, &p, &start, &root.path);
 
     let mut bank = Bank::new(
         Path::new(&a.bestdir),
@@ -340,6 +346,7 @@ fn cmd_search(a: &Args) {
         seed: a.seed,
         temp_s: a.temp_s,
         migrate: a.migrate,
+        max_drift: a.max_drift,
     };
 
     if a.fork {
@@ -458,6 +465,82 @@ fn run_fork(
     tmsearch::search::run(cfg, Arc::clone(&p), start, start_outcome, bank, move |wi| {
         ForkEval::start(&rootp.join(format!("w{:03}", wi)), &setup, &watch, refr.clone())
     });
+}
+
+/// Check every `--seg K:MAP` before the search trusts it as a ladder rung.
+///
+/// A segment map is the same map with the finish moved to checkpoint K, and
+/// **it is a fine ruler and an unsafe objective**: swapping a
+/// `GateCheckpointLeft32m` for a `GateFinish32m` is not a faithful trigger --
+/// one map paid 0.206 s of phantom gain for exactly that -- and the
+/// reference-ghost identity control cannot catch it, because the reference
+/// line passes through both volumes.
+///
+/// Two things are checkable here for the price of one validation each:
+///
+/// * the incumbent must FINISH on the segment map. If it does not, either the
+///   map is not what it claims or the incumbent never reaches that checkpoint,
+///   and in both cases every DNF the search re-scores there is scored on
+///   nothing.
+/// * when the template is a real recording, its own split for checkpoint K is
+///   recorded in the container, and the segment map should return **that
+///   number**. A gate in a different place, or with a different trigger
+///   volume, shows up here as a disagreement of tens of milliseconds.
+fn check_segment_maps(a: &Args, server: &Path, p: &Patcher, start: &Inputs, scratch: &Path) {
+    if a.segs.is_empty() {
+        return;
+    }
+    let f = scratch.join("segcheck.Ghost.Gbx");
+    std::fs::write(&f, p.file(start)).unwrap_or_else(|e| die(format!("{}", e)));
+    let splits: Vec<u32> = ghost::container::Container::load(&a.template)
+        .map(|c| c.splits())
+        .unwrap_or_default();
+    let own_splits = a.start_from.is_none();
+
+    for (k, m) in &a.segs {
+        let r = ghost::oracle::validate(server, &f, ghost::oracle::MapsMode::One(m), "segcheck")
+            .unwrap_or_else(|e| die(format!("--seg {}: {}", k, e)));
+        match r.time_ms {
+            None => die(format!(
+                "--seg {}:{} -- the incumbent does not finish on this segment map (it returns \
+                 {}). Either the map's finish is not where checkpoint {} is, or the incumbent \
+                 never reaches it. Every failure the search re-scores there would be scored on \
+                 nothing.",
+                k,
+                m.display(),
+                r.desc.trim(),
+                k
+            )),
+            Some(ms) => {
+                let expect = if own_splits { splits.get((*k as usize).saturating_sub(1)) } else { None };
+                match expect {
+                    Some(&want) if want as i64 != ms => eprintln!(
+                        "WARNING --seg {}: the segment map returns {} where the template's own \
+                         recorded split for checkpoint {} is {} ({}). A promoted gate is a fine \
+                         ruler and an unsafe objective; that difference is the trigger, not the \
+                         driving.",
+                        k,
+                        secs(ms),
+                        k,
+                        secs(want as i64),
+                        report_delta(ms - want as i64)
+                    ),
+                    Some(&want) => eprintln!(
+                        "--seg {}: {} -- and the template's own recorded split agrees exactly ({})",
+                        k,
+                        secs(ms),
+                        secs(want as i64)
+                    ),
+                    None => eprintln!("--seg {}: the incumbent reaches it at {}", k, secs(ms)),
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&f);
+}
+
+fn report_delta(ms: i64) -> String {
+    tmsearch::report::delta(ms)
 }
 
 fn cmd_dump(a: &Args) {
