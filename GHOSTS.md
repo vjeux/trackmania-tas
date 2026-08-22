@@ -364,14 +364,17 @@ ghost selftest --strict     # a SKIP is a failure
 cargo test --release        # the same suite, through cargo
 ```
 
-40 checks over five checked-in fixtures: two human ghosts, one anonymised
+46 checks over five checked-in fixtures: two human ghosts, one anonymised
 replay that carries its own map, one file this project labelled
 `DO_NOT_PUBLISH`, and one map. Three tiers:
 
 * **PURE** — codec identity, tape round trip, bit identity, expansion, respawn
   write and refusal, the steer-byte table, identity reading, the inline-chunk
   account id, embedded-map detection, map-set round trip, trim coherence, the
-  kappa separation, and two refusals.
+  kappa separation, two refusals, a deterministic uncompressed whole-file image,
+  and the oracle parser against canned server transcripts -- which need no
+  server, no map and no 30 MB binary, so they are the checks that never get
+  skipped.
 * **ORACLE** — the donor's own time; expansion, injection and identity edits are
   no-ops; an edited tick actually changes the run (the writer is not a no-op);
   **the oracle reads the world and not the file's claim** on both asymmetric
