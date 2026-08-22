@@ -67,23 +67,3 @@ impl BitWriter {
     }
 }
 
-/// Overwrite `n` bits at absolute bit position `pos` in an existing buffer.
-/// Clears the target bits first, unlike `BitWriter` which only ORs into fresh
-/// zero bytes. This is what makes candidate generation a patch rather than a
-/// re-encode.
-#[inline]
-pub fn patch_bits(buf: &mut [u8], pos: usize, v: u64, n: usize) {
-    let mut v = if n >= 64 { v } else { v & ((1u64 << n) - 1) };
-    let mut left = n;
-    let mut p = pos;
-    while left > 0 {
-        let byi = p >> 3;
-        let bit = p & 7;
-        let put = left.min(8 - bit);
-        let mask = ((1u32 << put) - 1) as u8;
-        buf[byi] = (buf[byi] & !(mask << bit)) | (((v as u8) & mask) << bit);
-        v >>= put;
-        p += put;
-        left -= put;
-    }
-}

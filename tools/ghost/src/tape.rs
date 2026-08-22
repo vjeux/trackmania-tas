@@ -29,7 +29,7 @@
 //! byte -- which is the round-trip control this module is tested with.
 
 use crate::bits::{BitReader, BitWriter};
-use tmtraj::gbx::{all_skip_chunks, Gbx, SKIP_MAGIC};
+use tmtraj::gbx::{Gbx, SKIP_MAGIC};
 
 pub const INPUTS_CHUNK_ID: u32 = 0x0309201D;
 
@@ -76,13 +76,6 @@ impl Packet {
             accel: 0,
             brake: 0,
             tri: None,
-        }
-    }
-    /// Width of the steer field this packet's mode uses, in bits.
-    pub fn steer_bits(&self) -> usize {
-        match self.mode {
-            12 | 13 => 32,
-            _ => 8,
         }
     }
     /// The respawn input: bit 31 of the state literal, which unpacks into
@@ -782,13 +775,26 @@ fn kv_num(kv: &[(String, String)], key: &str) -> Result<i64, String> {
     v.parse::<i64>().map_err(|_| format!("{}={:?} is not an integer", key, v))
 }
 
-/// Where the declared race time lives. A ghost stores it in `0x03092005` and
-/// in the header; a file built on a borrowed carrier has been caught with the
-/// carrier's value in one of them.
-pub fn declared_time_sites(body: &[u8]) -> Vec<(usize, u32)> {
-    all_skip_chunks(body)
-        .into_iter()
-        .filter(|c| c.0 == 0x03092005)
-        .map(|c| (c.2, u32::from_le_bytes(body[c.2..c.2 + 4].try_into().unwrap())))
-        .collect()
+
+impl Tape {
+    /// The decoded per-tick input channels of archive 0, as plain slices.
+    /// Callers that only want "what did the driver do on tick i" should not
+    /// have to know how a packet is coded.
+    pub fn steer_i8s(&self) -> Vec<i8> {
+        self.archives.first().map(|a| a.packets.iter().map(|p| p.steer_i8()).collect()).unwrap_or_default()
+    }
+    pub fn accels(&self) -> Vec<u8> {
+        self.archives.first().map(|a| a.packets.iter().map(|p| p.accel as u8).collect()).unwrap_or_default()
+    }
+    pub fn brakes(&self) -> Vec<u8> {
+        self.archives.first().map(|a| a.packets.iter().map(|p| p.brake as u8).collect()).unwrap_or_default()
+    }
+    pub fn respawns(&self) -> Vec<bool> {
+        self.archives.first().map(|a| a.packets.iter().map(|p| p.respawn()).collect()).unwrap_or_default()
+    }
+    /// Race time in ms of tick `i` of archive 0. The offset is why: most of
+    /// this project's incumbents are countdown-prefixed, so tick 0 is not race 0.
+    pub fn race_ms(&self, i: usize) -> i64 {
+        self.archives.first().map(|a| a.start_offset_ms as i64 + 10 * i as i64).unwrap_or(0)
+    }
 }

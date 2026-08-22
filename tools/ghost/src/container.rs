@@ -2,14 +2,13 @@
 //! carries, which map it will actually run on, what time it declares, and which
 //! identity strings are in it.
 
+use crate::map_uid_of;
 use tmtraj::gbx::{all_skip_chunks, Gbx};
 
 /// `CGameCtnChallenge` embedded inside a replay's body.
 pub const EMBEDDED_MAP_CHUNK: u32 = 0x03093002;
 pub const RACE_TIME_CHUNK: u32 = 0x03092005;
-pub const WALLTIME_CHUNK: u32 = 0x0309202D;
 pub const SPLITS_CHUNK: u32 = 0x0309202B;
-pub const GHOST_UID_CHUNK: u32 = 0x03092010;
 
 pub struct Container {
     pub path: String,
@@ -149,10 +148,6 @@ pub fn body_strings_in(body: &[u8], from: usize, to: usize) -> Vec<BodyStr> {
     out
 }
 
-pub fn body_strings(body: &[u8], limit: usize) -> Vec<BodyStr> {
-    body_strings_in(body, 0, limit)
-}
-
 /// Replace a set of length-prefixed strings in a body, fixing the size of every
 /// skippable chunk that encloses each edit. Edits must be sorted by offset and
 /// must not overlap.
@@ -260,3 +255,45 @@ thread_local! {
 pub fn unframed_edits() -> Vec<String> {
     UNFRAMED.with(|u| u.borrow().clone())
 }
+pub fn set_embedded_map(c: &Container, newmap: &[u8], newuid: &str) -> Result<Vec<u8>, String> {
+    let (off, size) = c.embedded_map().ok_or(
+        "this file carries no embedded map. It is a pure ghost: it is bound to a map by the uid \
+         it declares, so use `ghost map rebind` and put the target map in the server's \
+         UserData/Maps.",
+    )?;
+    let body = c.body();
+    let olduid = map_uid_of(&body[off..off + size]);
+    let mut out = Vec::with_capacity(body.len() + newmap.len());
+    out.extend_from_slice(&body[..off]);
+    out.extend_from_slice(newmap);
+    out.extend_from_slice(&body[off + size..]);
+    // The size word sits immediately in front of the nested file.
+    out[off - 4..off].copy_from_slice(&(newmap.len() as u32).to_le_bytes());
+    // rewrite the uid literals that named the old map, OUTSIDE the map we just
+    // pasted in (which carries its own). TM2020 uids are 27 characters, so this
+    // is length preserving.
+    if let Some(old) = olduid {
+        if old.len() == newuid.len() {
+            let nb = newuid.as_bytes();
+            let ob = old.as_bytes();
+            let newmap_end = off + newmap.len();
+            let mut i = 0usize;
+            while i + 4 + ob.len() <= out.len() {
+                if i >= off && i < newmap_end {
+                    i = newmap_end;
+                    continue;
+                }
+                if u32::from_le_bytes(out[i..i + 4].try_into().unwrap()) as usize == ob.len()
+                    && &out[i + 4..i + 4 + ob.len()] == ob
+                {
+                    out[i + 4..i + 4 + ob.len()].copy_from_slice(nb);
+                    i += 4 + ob.len();
+                    continue;
+                }
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+

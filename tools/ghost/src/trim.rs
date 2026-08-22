@@ -20,7 +20,7 @@
 use crate::container::{secs, Container};
 use crate::oracle::{self, MapsMode};
 use crate::tape::{Encoding, Tape};
-use crate::{die, flag, has, num};
+use crate::cli::{die, flag, has, num};
 
 pub fn cmd(a: &[String]) {
     let inp = a.first().unwrap_or_else(|| die("ghost trim IN OUT [--from MS] [--to MS]"));

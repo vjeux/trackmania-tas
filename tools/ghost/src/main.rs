@@ -6,37 +6,11 @@
 //! Rust only. There is no interpreter anywhere in this pipeline and no shell
 //! script carries any logic.
 
-mod bits;
-mod container;
-mod ident;
-mod oracle;
-mod regen;
-mod selftest;
-mod tape;
-mod trim;
-mod verify;
-
-use container::{secs, Container};
-use regen::raw_vehicle_samples;
-use tape::{Encoding, Tape};
-
-pub fn die(m: impl AsRef<str>) -> ! {
-    eprintln!("ghost: {}", m.as_ref());
-    std::process::exit(2)
-}
-
-pub fn flag<'a>(a: &'a [String], name: &str) -> Option<&'a str> {
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1)).map(|s| s.as_str())
-}
-pub fn need<'a>(a: &'a [String], name: &str) -> &'a str {
-    flag(a, name).unwrap_or_else(|| die(format!("missing {} FILE", name)))
-}
-pub fn has(a: &[String], name: &str) -> bool {
-    a.iter().any(|x| x == name)
-}
-pub fn num(a: &[String], name: &str) -> Option<i64> {
-    flag(a, name).map(|v| v.parse().unwrap_or_else(|_| die(format!("{} wants a number", name))))
-}
+use ghost::cli::{die, flag, has, need, num};
+use ghost::container::{secs, set_embedded_map, Container};
+use ghost::regen::raw_vehicle_samples;
+use ghost::tape::{Encoding, Tape};
+use ghost::{container, engine, ident, map_uid_of, oracle, regen, selftest, tape, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -143,6 +117,29 @@ fn main() {
                 }
             }
         }
+        "trajdiff" => {
+            // Compare two files' recorded trajectories, at every shift from
+            // -3 to +3 samples. A one-sample offset is a PURE TIME SHIFT and
+            // hides inside a small mean, so the shift is always reported.
+            let a0 = tmtraj::entrec::decode_ghost(&rest[0]).unwrap_or_else(|e| die(e));
+            let b0 = tmtraj::entrec::decode_ghost(&rest[1]).unwrap_or_else(|e| die(e));
+            let n = a0.samples.len().min(b0.samples.len());
+            println!("{} vs {}  ({} / {} samples)", rest[0], rest[1], a0.samples.len(), b0.samples.len());
+            for k in -3i64..=3 {
+                let (mut s, mut c, mut worst) = (0.0f64, 0usize, 0.0f64);
+                for i in 0..n {
+                    let j = i as i64 + k;
+                    if j < 0 || j >= b0.samples.len() as i64 { continue }
+                    let (p, q) = (&a0.samples[i], &b0.samples[j as usize]);
+                    let d = ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt();
+                    s += d; worst = worst.max(d); c += 1;
+                }
+                if c > 0 {
+                    println!("  shift {:+}: mean {:.6} m  worst {:.6} m  over {} samples", k, s / c as f64, worst, c);
+                }
+            }
+        }
+        "engine" => engine::cmd(rest),
         "chunks" => cmd_chunks(rest),
         "dump" => {
             let c = Container::load(&rest[0]).unwrap_or_else(|e| die(e));
@@ -546,6 +543,26 @@ fn cmd_tape(a: &[String]) {
                 );
             }
         }
+        "sync-record" => {
+            // Write the RECORDED input channels from the tape. Useful on its
+            // own: after `ghost tape inject`, the telemetry's steer / gas /
+            // brake bytes are still the old run's even though they are fully
+            // determined by the tape.
+            let inp = rest.first().unwrap_or_else(|| die("ghost tape sync-record IN OUT"));
+            let out = rest.get(1).unwrap_or_else(|| die("ghost tape sync-record IN OUT"));
+            match regen::write_input_channels(inp, out) {
+                Err(e) => die(e),
+                Ok((w, sk)) => {
+                    println!("wrote {} ({} samples rewritten, {} outside the tape)", out, w, sk);
+                    if let Some((k, _, lag, n)) = verify::tape_record_agreement(out) {
+                        println!(
+                            "  tape/record agreement is now kappa {:.3} over {} samples (lag {} ms)",
+                            k, n, lag
+                        );
+                    }
+                }
+            }
+        }
         "bits" => cmd_bits(rest),
         o => die(format!("unknown `ghost tape` operation {:?}", o)),
     }
@@ -760,88 +777,18 @@ fn cmd_map(a: &[String]) {
     }
 }
 
-pub fn map_uid_of(data: &[u8]) -> Option<String> {
-    let head = &data[..data.len().min(60000)];
-    // a .Map.Gbx written by the editor carries an XML header
-    let s = String::from_utf8_lossy(head);
-    if let Some(i) = s.find("uid=\"") {
-        let rest = &s[i + 5..];
-        if let Some(j) = rest.find('"') {
-            return Some(rest[..j].to_string());
-        }
-    }
-    // the copy carried inside a replay has a BINARY header instead: find the
-    // first 27-character uid-shaped literal. Returning None here and calling it
-    // "no uid" would be a harness limit reported as a fact about the file.
-    let mut i = 0usize;
-    while i + 31 <= head.len() {
-        if u32::from_le_bytes(head[i..i + 4].try_into().unwrap()) == 27 {
-            if let Ok(t) = std::str::from_utf8(&head[i + 4..i + 31]) {
-                if t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                    return Some(t.to_string());
-                }
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Replace the carried `CGameCtnChallenge` and every uid literal that named the
-/// old map, fixing the enclosing chunk's size.
-fn set_embedded_map(c: &Container, newmap: &[u8], newuid: &str) -> Result<Vec<u8>, String> {
-    let (off, size) = c.embedded_map().ok_or(
-        "this file carries no embedded map. It is a pure ghost: it is bound to a map by the uid \
-         it declares, so use `ghost map rebind` and put the target map in the server's \
-         UserData/Maps.",
-    )?;
-    let body = c.body();
-    let olduid = map_uid_of(&body[off..off + size]);
-    let mut out = Vec::with_capacity(body.len() + newmap.len());
-    out.extend_from_slice(&body[..off]);
-    out.extend_from_slice(newmap);
-    out.extend_from_slice(&body[off + size..]);
-    // The size word sits immediately in front of the nested file.
-    out[off - 4..off].copy_from_slice(&(newmap.len() as u32).to_le_bytes());
-    // rewrite the uid literals that named the old map, OUTSIDE the map we just
-    // pasted in (which carries its own). TM2020 uids are 27 characters, so this
-    // is length preserving.
-    if let Some(old) = olduid {
-        if old.len() == newuid.len() {
-            let nb = newuid.as_bytes();
-            let ob = old.as_bytes();
-            let newmap_end = off + newmap.len();
-            let mut i = 0usize;
-            while i + 4 + ob.len() <= out.len() {
-                if i >= off && i < newmap_end {
-                    i = newmap_end;
-                    continue;
-                }
-                if u32::from_le_bytes(out[i..i + 4].try_into().unwrap()) as usize == ob.len()
-                    && &out[i + 4..i + 4 + ob.len()] == ob
-                {
-                    out[i + 4..i + 4 + ob.len()].copy_from_slice(nb);
-                    i += 4 + ob.len();
-                    continue;
-                }
-                i += 1;
-            }
-        }
-    }
-    Ok(out)
-}
-
+/// a human and never copied from a search log.
 /// `ghost declare` -- set the time the file DECLARES.
 ///
-/// After the inputs change, the declared time is the old run's. Every check in
-/// this project that compares "what the file says" with "what the file does"
-/// then compares a stale number, and a file that declares somebody else's time
-/// while validating its own is exactly the shape of the container bugs that
-/// cost this project five withdrawn clips.
+/// After the inputs change, the declared time is the old run's. Every check
+/// that compares "what the file says" with "what the file does" then compares a
+/// stale number, and a file that declares somebody else's time while validating
+/// its own is exactly the shape of the container bugs that cost this project
+/// five withdrawn clips.
 ///
 /// `--from-oracle` is the form to use: it asks the plain oracle what the file
-/// actually does and writes THAT, so the number in the file is never typed by
-/// a human and never copied from a search log.
+/// actually does and writes THAT, so the number is never typed by a human and
+/// never copied out of a search log.
 fn cmd_declare(a: &[String]) {
     let inp = a.first().unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
     let out = a.get(1).unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
@@ -872,7 +819,31 @@ fn cmd_declare(a: &[String]) {
     let mut body = c.body().to_vec();
     trim::set_all_declared(&mut body, ms as u32);
     trim::set_result_race_time(&mut body, ms as u32);
-    container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+    let stage = format!("{}.declare-stage", out);
+    container::write_gbx(&c.gbx, body, &stage).unwrap_or_else(|e| die(e));
+    // The telemetry record declares its own span, separately from the samples.
+    // Leaving it at the old run's is the same defect one level down, and
+    // `ghost verify` reports it, so fix it here rather than print it later.
+    let mut span_note = String::new();
+    if tmtraj::recwrite::find_rec_site(&Container::load(&stage).unwrap().gbx.body).is_ok() {
+        let r = tmtraj::recwrite::rewrite_ghost(&stage, out, |rd| {
+            let last = rd.ents.iter().filter_map(|e| e.times.last().copied()).max().unwrap_or(0);
+            rd.end_ms = (ms as i32).max(last);
+            Ok(())
+        });
+        match r {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&stage);
+                span_note = format!("  the record's own span now ends at {}", secs(ms));
+            }
+            Err(e) => {
+                std::fs::rename(&stage, out).ok();
+                span_note = format!("  the record span was left alone: {}", e);
+            }
+        }
+    } else {
+        std::fs::rename(&stage, out).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+    }
     let c2 = Container::load(out).unwrap_or_else(|e| die(e));
     let dt: Vec<u32> = c2.declared_times().into_iter().map(|x| x.1).collect();
     if dt.iter().any(|v| *v as i64 != ms) {
@@ -881,4 +852,7 @@ fn cmd_declare(a: &[String]) {
     println!("wrote {}", out);
     println!("  declared {} in {} copies, all equal (read-back control OK)", secs(ms), dt.len());
     println!("  the ghost-result chunk's race time was set to the same value");
+    if !span_note.is_empty() {
+        println!("{}", span_note);
+    }
 }

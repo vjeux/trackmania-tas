@@ -16,7 +16,7 @@ use crate::container::{secs, Container};
 use crate::ident::{self, Role};
 use crate::oracle::{self, MapsMode};
 use crate::tape::{Encoding, StateEnc, Tape};
-use crate::{flag, has};
+use crate::cli::{flag, has};
 use std::path::{Path, PathBuf};
 
 pub struct Suite {
@@ -453,29 +453,121 @@ fn oracle_tier(s: &mut Suite) {
         }
     }
 
-    // O4 an edited tick actually changes the run (the writer is not a no-op)
+    // O4 an edited tick actually changes the run (the writer is not a no-op),
+    // and the stale declaration it leaves behind is caught
     {
         let src = s.f(GHOSTS[0]);
         let mut t = Tape::from_file(&src).unwrap();
-        let n = t.n();
-        for p in t.archives[0].packets.iter_mut().skip(n / 3).take(60) {
-            p.steer = 127;
+        // a one-unit steer nudge over 300 ms: small enough to still finish,
+        // large enough that the finish moves
+        for p in t.archives[0].packets.iter_mut().skip(1800).take(30) {
+            p.steer = (p.steer_i8().saturating_add(1)) as u8 as u32;
         }
         let c = Container::load(&src).unwrap();
         let out = s.w("o4.Ghost.Gbx");
         let body = t.splice_into(c.body(), Encoding::Explicit).unwrap();
         crate::container::write_gbx(&c.gbx, body, &out).unwrap();
-        match oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o4") {
-            Ok(v) => s.check(
+        let r = oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o4");
+        match r {
+            Ok(ref v) => s.check(
                 "oracle.edit_bites",
-                v.time_ms != Some(DONOR_MS),
+                v.time_ms == Some(22738),
                 format!(
-                    "600 ms of full lock written into the middle of the run changes it: {} (was {})",
-                    v.secs(),
-                    secs(DONOR_MS)
+                    "one steer unit for 300 ms moves the finish from {} to {} -- the writer is not a no-op",
+                    secs(DONOR_MS),
+                    v.secs()
                 ),
             ),
-            Err(e) => s.fail("oracle.edit_bites", e),
+            Err(ref e) => s.fail("oracle.edit_bites", e.clone()),
+        }
+        // THE SERVER PRINTS TWO RESULTS AND THE SECOND IS THE FILE'S OWN CLAIM.
+        // This file simulates 22.738 and still declares 22.730, so it is the
+        // fixture that catches a parser reading the claim instead of the answer
+        // -- which this tool did, until this check was written. NOTE THAT THE
+        // TWO NUMBERS MUST DIFFER: on a file that passes they are equal, and no
+        // equal-number fixture can fail, whatever the parser does.
+        let declared: Vec<u32> = Container::load(&out).unwrap().declared_times().into_iter().map(|x| x.1).collect();
+        let r2 = oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o4b");
+        match r2 {
+            Err(e) => s.fail("oracle.reads_the_world", e),
+            Ok(v) => {
+                s.check(
+                    "oracle.reads_the_world",
+                    v.time_ms == Some(22738) && v.declared_ms == Some(22730) && declared == vec![22730],
+                    format!(
+                        "the server reports BOTH: simulated {} and declared {}. They differ, so a parser that took the second would fail this check",
+                        v.secs(),
+                        v.declared_ms.map(secs).unwrap_or("none".into())
+                    ),
+                );
+                s.check(
+                    "oracle.declaration_holds",
+                    !v.declaration_holds(),
+                    "and `declaration_holds()` says so, which is the one comparison the search layer needs",
+                );
+            }
+        }
+        let vr = crate::verify::run(&out, &["--map".into(), map.clone(), "--server".into(), server.to_string_lossy().to_string()]);
+        s.check(
+            "verify.stale_declaration",
+            vr.failed(),
+            "and `ghost verify` REFUSES that file, because a run that declares one time and does another is exactly the container bug this project keeps paying for",
+        );
+    }
+
+    // O4c THE OTHER ASYMMETRIC SHAPE: a DNF whose DeclaredResult still carries
+    // a time. `ValidatedResult` is null and `DeclaredResult` says 15.000, so a
+    // parser that reads any `"Time"` reports a 15.000 finish for a run that
+    // never finished. The trimmed file is exactly that fixture.
+    {
+        let out = s.w("o4c.Ghost.Gbx");
+        run_self(&["trim", &s.f(GHOSTS[0]), &out, "--to", "15000", "--no-oracle"]);
+        match oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o4c") {
+            Err(e) => s.fail("oracle.dnf_with_declared_time", e),
+            Ok(v) => s.check(
+                "oracle.dnf_with_declared_time",
+                v.time_ms.is_none() && v.declared_ms == Some(15000),
+                format!(
+                    "ValidatedResult is null and DeclaredResult says {} -- reported as DNF, not as a finish ({})",
+                    v.declared_ms.map(secs).unwrap_or("none".into()),
+                    v.desc
+                ),
+            ),
+        }
+    }
+
+    // O4d BATCH VALIDATION. The server validates in batches and the per-launch
+    // cost dominates the per-file cost, so this is the entry point the search
+    // layer uses; it has to key every result to the right file.
+    {
+        let a = s.f(GHOSTS[0]);
+        let b = s.f(GHOSTS[1]);
+        let c = s.w("o4.Ghost.Gbx");
+        let files: Vec<&Path> = vec![Path::new(&a), Path::new(&b), Path::new(&c)];
+        match oracle::validate_many(&server, &files, MapsMode::One(mapp), "o4d") {
+            Err(e) => s.fail("oracle.batch", e),
+            Ok(v) => {
+                let by = |n: &str| v.iter().find(|r| r.file.contains(n)).and_then(|r| r.time_ms);
+                s.check(
+                    "oracle.batch",
+                    v.len() == 3
+                        && by("human_22730") == Some(DONOR_MS)
+                        && by("human_23013") == Some(23013)
+                        && by("o4") == Some(22738),
+                    format!(
+                        "three files in ONE server launch, each keyed to its own name: {}",
+                        v.iter().map(|r| format!("{} {}", r.file, r.secs())).collect::<Vec<_>>().join(", ")
+                    ),
+                );
+                // The engine echoes the tape it decoded. Two files with the same
+                // tape must produce the same echo, and the edited one must not.
+                let inp: Vec<&str> = v.iter().map(|r| r.inputs.as_str()).collect();
+                s.check(
+                    "oracle.inputs_echo",
+                    inp.len() == 3 && !inp[0].is_empty() && inp[0] != inp[1],
+                    "the server's own echo of the decoded tape comes back with each result",
+                );
+            }
         }
     }
 
@@ -621,6 +713,43 @@ fn engine_tier(s: &mut Suite) {
                 if shift { " -- BUT a whole sample out of phase" } else { "" }
             ),
         ),
+    }
+    // E2 THE LOCATE IS DETERMINISTIC. Two regenerations of the same file must
+    // produce the same trajectory, bit for bit. This is the check that would
+    // have failed on the old locate, which found the car about one run in six
+    // and wrote a different answer the rest of the time.
+    let a = s.w("e2a.Ghost.Gbx");
+    let b = s.w("e2b.Ghost.Gbx");
+    let ok1 = run_self(&["regen", &src, &a, "--map", &map]);
+    let ok2 = run_self(&["regen", &src, &b, "--map", &map]);
+    if !ok1 || !ok2 {
+        s.fail("engine.determinism", "a regeneration did not pass its own gate");
+        return;
+    }
+    let (da, db) = (
+        tmtraj::entrec::decode_ghost(&a).ok(),
+        tmtraj::entrec::decode_ghost(&b).ok(),
+    );
+    match (da, db) {
+        (Some(x), Some(y)) => {
+            let n = x.samples.len().min(y.samples.len());
+            let mut worst = 0.0f64;
+            for i in 0..n {
+                let (p, q) = (&x.samples[i], &y.samples[i]);
+                worst = worst.max(
+                    ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt(),
+                );
+            }
+            s.check(
+                "engine.determinism",
+                worst == 0.0 && n > 100,
+                format!(
+                    "two independent regenerations of the same file agree to {:.6} m over {} samples",
+                    worst, n
+                ),
+            );
+        }
+        _ => s.fail("engine.determinism", "could not decode one of the two regenerations"),
     }
 }
 

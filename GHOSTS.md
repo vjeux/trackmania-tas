@@ -22,8 +22,11 @@ TM_SERVER=/path/to/TrackmaniaServer-dir ./target/release/ghost selftest
 | **inject inputs** | `ghost tape inject IN OUT --tape T.gtape` | writes a tape back; every vehicle field explicit so no tick inherits another's |
 | | `ghost tape expand IN OUT` | rewrite every "same as previous tick" packet explicitly; semantically a no-op and the oracle says so |
 | | `ghost tape diff A.gtape B.gtape` · `stats` · `bits` | compare two tapes; summarise one; census which bits of the state literal ever vary |
+| | `ghost tape sync-record IN OUT` | rewrite the telemetry's recorded steer / gas / brake from the tape — they are fully determined by it and need no engine |
 | **car state** | `ghost regen IN OUT --map M` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate |
 | | `ghost regen-control FILE --map M` | the fixed point: regenerate a file that already knows its own answer and require it back |
+| | `ghost trajdiff A B` | two files' recorded trajectories, at every shift from −3 to +3 samples |
+| | `ghost engine classinfo/idsites/vtable` | what the server binary says about its own classes — the evidence behind the locate |
 | **change the map** | `ghost map show FILE` | which map this file will *actually* run on, and whether `--map` is real for it |
 | | `ghost map extract FILE --out M.Map.Gbx` | pull the carried map out |
 | | `ghost map set IN OUT --map M` | replace the **carried** map — the only thing that moves a recording that has one |
@@ -213,6 +216,89 @@ printed PASS without reading the file.
 → every check in `ghost verify` takes both operands from the file or from the
 world. `--expect-ms` only ever *adds* a constraint; it cannot satisfy one.
 
+**THE SERVER PRINTS TWO RESULTS AND THE SECOND IS THE FILE'S OWN CLAIM.**
+Found here, by a control, in this tool's own code. After `"ValidatedResult"` —
+the time it just simulated — the dedicated server prints the result the file
+DECLARES, in the same shape, with another `"Time"` line. A parser that keeps
+reading `"Time"` lines takes the second one, so **"the oracle said 22.730" was
+the file saying 22.730**. Measured on a tape that simulates 22.738 and declares
+22.730: the naive parse returned 22.730 and made a stale declaration look
+correct — the exact failure mode every other check here exists to prevent,
+inside the thing doing the checking.
+→ the parser takes the FIRST time after the validated header and stops. The
+suite now carries that tape as a fixture (`oracle.reads_the_world`), so the bug
+cannot come back silently: the check fails if the tool ever reports 22.730 for
+it again, and a second check requires `ghost verify` to REFUSE the file for
+declaring a time it does not achieve.
+
+**A regenerated file whose locate found something that is not the car.**
+The car used to be found by scanning memory for a self-consistent
+(position, quaternion, velocity) triple. That is a DESCRIPTION of a car, not an
+identification of one, and it has three failure modes at once: the engine holds
+several objects that satisfy it, a frozen memory slot satisfies it *trivially*
+(a constant position has a consistent zero velocity), and which one the scan
+lands on varies between runs.
+
+Three things were done about it, in order of how much they mattered.
+
+1. **THE RIGHT LOCATE WAS ALREADY THERE AND WAS NOT BEING USED FIRST.** There
+   are two: one forks, hunts the child for an object that moves like a car, and
+   hands an address back to the parent; the other locates in the clean process
+   itself and needs no cross-process assumption at all. The forking one ran
+   first and usually won — with a decoy. Measured on the fixture map: **six runs
+   through the in-process locate produced BIT-IDENTICAL trajectories, 13.7 s
+   each; six runs on the default path took about 90 s and disagreed.**
+   `ghost regen` now tries the in-process locate first, alone.
+   It is not universal — it cannot see a car that is barely moving at the
+   handover, and on map 279218's 5.355 s tape it finds nothing — so the search
+   is still there behind it, and on that map it is what produces the file.
+2. **The searching locate's own self-check could not see a frozen slot**, for
+   the reason above. It now requires the candidate to trace a finite, moving,
+   plausible path, and it collects candidates from every checkpoint in the
+   ladder instead of stopping at the first that yields any.
+3. **The gate identifies the car instead of describing it.** The decisive check
+   is `G2`: *the run must start where this map's runs start*. The template is a
+   recording of the same map from the same spawn, so its own first sample is the
+   answer key — free, already in the file, no reference needed. On the fixture
+   map the car starts 0.001 m from it and the surviving decoy — which traces a
+   perfectly plausible 1.6 km path — starts 1629 m from it.
+
+Two things measured along the way that are worth not repeating:
+*diversifying the anchor tick makes it worse* (8 runs on the default ladder
+found the car once; 24 runs over seven hand-picked ladders found it zero times);
+and *the "1 in 8" failure rate was partly an illusion* — five of six runs were
+writing bit-identical trajectories and only looked different because the record
+offsets are reported relative to differently-sized gather windows. **Comparing
+the written trajectories is the measurement; comparing the log lines is not.**
+
+What was tried and does NOT work on this binary, so nobody repeats it: the
+clean type-directed route. `TrackmaniaServer` is stripped and has no RTTI, so
+there is no typeinfo to walk. Its class names *are* in it as plain strings
+(`CSceneVehicleVis`, `CSceneVehicleVisState`, `CGameCtnApp`) and its class ids
+*are* in it as constants — `ghost engine idsites --class-id 0x0A018000` finds 63
+of them, including `mov esi, 0x0A018000; call …` where the engine queries by
+class — but the names live in a merged string pool referenced only by
+RIP-relative code, so there is no descriptor table to read, and there is no
+`mov eax, <classid>; ret` getter, so there is no vtable to find the instances
+by. `ghost engine classinfo` and `ghost engine idsites` are in the tool so the
+next attempt starts from the evidence rather than from scratch.
+
+`fk regen --anchor <bias:pos:clock:quat:kind:vel>` was added as the escape
+hatch: for a given binary and map the car sits at a fixed offset from the module
+base, so an address established once can simply be supplied. It is not wired
+into `ghost` because the in-process locate made it unnecessary.
+
+If no attempt passes the gate, **nothing is written**.
+
+**THE SERVER ONLY VALIDATES FILES WITH THE RIGHT EXTENSION, AND SAYS DNF
+OTHERWISE.** Found here, and it cost 32 wrongly-refused regenerations before the
+diagnostic went in. A candidate written as `out.try3` is not read at all, and
+the answer is indistinguishable from a run that did not finish — so the gate
+above rejected *good* regenerations as bad locates, twice in a row, with a
+plausible story attached each time.
+→ `ghost`'s oracle always links a file into `UserData/Replays` under a name the
+server will read, whatever it is called on disk. A DNF now means a DNF.
+
 ---
 
 ## 4. The tape format
@@ -251,7 +337,7 @@ ghost selftest --strict     # a SKIP is a failure
 cargo test --release        # the same suite, through cargo
 ```
 
-34 checks over five checked-in fixtures: two human ghosts, one anonymised
+36 checks over five checked-in fixtures: two human ghosts, one anonymised
 replay that carries its own map, one file this project labelled
 `DO_NOT_PUBLISH`, and one map. Three tiers:
 
@@ -261,10 +347,29 @@ replay that carries its own map, one file this project labelled
   kappa separation, and two refusals.
 * **ORACLE** — the donor's own time; expansion, injection and identity edits are
   no-ops; an edited tick actually changes the run (the writer is not a no-op);
-  the empty-Maps control both ways; the map swap; the trim cases; the rebind
-  proved in both directions.
+  **the oracle reads the world and not the file's claim**, and `ghost verify`
+  refuses the file that declares one time and does another; the empty-Maps
+  control both ways; the map swap; the trim cases; the rebind proved in both
+  directions.
 * **ENGINE** — the engine's own run of the fixture's tape against the recording
   in it.
+
+### A worked round trip
+
+```
+ghost tape extract donor.Ghost.Gbx --out a.gtape     # 2432 ticks, codec identity OK
+<edit a.gtape: one steer unit for 300 ms>
+ghost tape inject donor.Ghost.Gbx edited.Ghost.Gbx --tape a.gtape
+ghost declare edited.Ghost.Gbx declared.Ghost.Gbx --from-oracle --map map2.Map.Gbx
+                                                     # the oracle says 22.738
+ghost regen declared.Ghost.Gbx final.Ghost.Gbx --map map2.Map.Gbx
+   [6] accepted
+   G3 path length 1620.1 m over 455 samples
+   G2 first sample at (1552.00, 34.00, 560.00)
+   G1 tape/record agreement kappa 1.000 over 455 samples (best lag 0 ms)
+   G4 oracle on the written file: 22.738
+ghost verify final.Ghost.Gbx --map map2.Map.Gbx      # V1..V7 PASS
+```
 
 Every fixture that carries a person's identity has been through
 `ghost identity set --anonymise`, and the suite proves that pass changed no

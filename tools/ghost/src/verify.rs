@@ -9,7 +9,7 @@ use crate::container::{secs, Container};
 use crate::ident::{self, Role};
 use crate::oracle::{self, MapsMode};
 use crate::tape::Tape;
-use crate::{die, flag, has, num};
+use crate::cli::{die, flag, has, num};
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Verdict {
@@ -116,66 +116,6 @@ pub fn tape_record_agreement(path: &str) -> Option<(f64, f64, i64, usize)> {
         }
     }
     best
-}
-
-/// The same comparison, LOCALISED: the worst 2-second window.
-///
-/// Global agreement has a floor it cannot see past. A search tape derived from
-/// its template by editing 3 % of its ticks still agrees with the template's
-/// recording on the other 97 %, so the whole-file statistic reads like a clean
-/// file (measured: three of this project's own files labelled
-/// `SEARCHTAPE_..._DO_NOT_PUBLISH` score kappa 0.83, the same as a human
-/// recording). The disagreement is not small, it is LOCAL -- so look for a
-/// window where the record and the tape have nothing to do with each other.
-///
-/// Returns (worst window kappa, its start time in ms, number of windows).
-pub fn tape_record_worst_window(path: &str, lag_ms: i64) -> Option<(f64, i32, usize)> {
-    let t = Tape::from_file(path).ok()?;
-    let d = tmtraj::entrec::decode_ghost(path).ok()?;
-    let (ss, raw) = crate::regen::raw_vehicle_samples(path).ok()?;
-    let a0 = &t.archives[0];
-    let so = a0.start_offset_ms as i64;
-    let mut pairs: Vec<(i32, u8, u8)> = Vec::new();
-    for (i, s) in d.samples.iter().enumerate() {
-        let idx = (s.time_ms as i64 + lag_ms - so) / 10;
-        if idx < 0 || idx >= a0.packets.len() as i64 || (i + 1) * ss > raw.len() {
-            continue;
-        }
-        pairs.push((
-            s.time_ms,
-            crate::regen::steer_byte(a0.packets[idx as usize].steer_i8()),
-            raw[i * ss + 14],
-        ));
-    }
-    if pairs.len() < 40 {
-        return None;
-    }
-    // global marginals, so a window that sits still does not get a free pass
-    let n = pairs.len();
-    let mut ma = [0u32; 256];
-    let mut mb = [0u32; 256];
-    for (_, x, y) in &pairs {
-        ma[*x as usize] += 1;
-        mb[*y as usize] += 1;
-    }
-    let p_exp: f64 = (0..256).map(|v| (ma[v] as f64 / n as f64) * (mb[v] as f64 / n as f64)).sum();
-    const W: usize = 40; // 2 s at 50 ms
-    let mut worst = (f64::INFINITY, 0i32);
-    let mut count = 0usize;
-    for st in (0..n.saturating_sub(W)).step_by(W / 2) {
-        let w = &pairs[st..st + W];
-        let hit = w.iter().filter(|(_, x, y)| x == y).count() as f64 / W as f64;
-        let k = if (1.0 - p_exp).abs() < 1e-12 { 1.0 } else { (hit - p_exp) / (1.0 - p_exp) };
-        count += 1;
-        if k < worst.0 {
-            worst = (k, w[0].0);
-        }
-    }
-    if count == 0 {
-        None
-    } else {
-        Some((worst.0, worst.1, count))
-    }
 }
 
 pub fn run(path: &str, a: &[String]) -> Report {

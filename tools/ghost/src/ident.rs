@@ -14,7 +14,7 @@
 //! that still carries any of them.
 
 use crate::container::{body_strings_in, replace_strings, write_gbx, Container};
-use crate::{die, flag, has};
+use crate::cli::{die, flag, has};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -55,16 +55,6 @@ pub struct Field {
     pub s: String,
 }
 
-fn is_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.chars().enumerate().all(|(i, c)| {
-            if [8, 13, 18, 23].contains(&i) {
-                c == '-'
-            } else {
-                c.is_ascii_hexdigit()
-            }
-        })
-}
 
 /// Classify the identity strings a ghost carries.
 ///

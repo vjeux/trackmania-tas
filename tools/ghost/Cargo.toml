@@ -12,3 +12,7 @@ tmtraj = { path = "../tmtraj" }
 
 [profile.release]
 opt-level = 2
+
+[lib]
+name = "ghost"
+path = "src/lib.rs"
