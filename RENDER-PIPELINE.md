@@ -202,10 +202,83 @@ the "keep a named copy" step can have identical source and destination, and
 reason it was caught is that the tool printed `done: 0 bytes`. The paths are now
 compared by asking the filesystem, not by comparing strings.
 
+
+## Not paying the same cost twice
+
+The two expensive steps are the game's, not ours, and both were being paid on
+every single render because the pipeline killed the game first.
+
+**Launching costs 11.5 s and none of it is us.** From Openplanet's own log:
+
+```
++0.0s  process created
++1.3s  "Setting up hook callbacks..."
++1.9s  app config request (network, 5 s timeout)
++7.2s  NadeoServices account ID          <- 5.3 s, a web-services LOGIN
++8.3s  loop entry init, sockets, audio
++8.6s  registered 2659 classes
++9.1s  wrote Openplanet.h and the two json dumps
++9.3s  ~20 plugins loaded; GhostShooter's server up
+```
+
+More than half is Openplanet authenticating against Nadeo before it will finish
+initialising. So `launch` does nothing at all if the plugin already answers;
+`--force` restarts anyway, which is what you want after editing the plugin.
+
+**Loading the map costs ~12 s and most of it is the map.** A 115 KB map enters
+the editor in 3.8 s and the 1.9 MB Underwater map takes 11.5 s — about 3.5 s of
+fixed editor entry plus real work proportional to the map. So `setup` does not
+reload a map that is already open. Identity is the **MapUid**, read from the
+`.Map.Gbx` header and compared against `RootMap.MapInfo.MapUid`; comparing names
+would not do, because our own edited copies of a map all carry the same MapName.
+The same uid check catches the other direction too: `EditMap` on a bad path
+returns "ok" and loads nothing.
+
+Measured, three renders back to back: cold 12 s + 12 s + 121 s; **warm 121 s, of
+which 120.0 s is the render.** About a second of overhead.
+
+### IsReady is not a liveness check
+
+`ManiaTitleControlScriptAPI::IsReady` means "ready to accept a command like
+EditMap". It reads **false whenever an editor is open**. Using it to decide
+whether the game was usable killed a perfectly good game between two renders and
+paid the whole 12 s again. Liveness is the plugin answering; `IsReady` is
+checked where it applies, immediately before `EditMap` and after `to_menu()` has
+proved we left the editor.
+
+### The launch fails intermittently, and it is not PreferSystem32
+
+Openplanet injects, initialises, and then **hangs on the Nadeo web-services
+login**. Its log ends at `Did not find update to install.` and never reaches
+`Loop entry initialization`, so the script engine never starts and the plugin
+never exists. Measured 2026-08-22: one launch stalled there for a full 180 s
+while the game ran perfectly.
+
+The old code waited out the timeout and blamed PreferSystem32, which was simply
+wrong — the log proves Openplanet was in the process. Now **the log is the
+diagnosis**:
+
+| log says | meaning | what happens |
+|---|---|---|
+| never opened | Openplanet is not in the process | PreferSystem32; retrying will not help, so it stops |
+| opened, no `Loop entry initialization` | the Nadeo login hung | kill and relaunch, up to 3 times |
+| finished starting | the plugin is at fault, not the launch | stops and says to check for a compile error |
+
+### Finding the output, again
+
+The mtime-window version of "which file is ours" (`.webm` files touched in the
+last second) matched the **previous** render as well, because two back-to-back
+runs finish and start inside the same filesystem second — it failed with
+`2 .webm files were touched; cannot tell which is ours` on a render that was
+working perfectly. That is not a tuning problem. The fix is a **snapshot**:
+record path → (mtime, size) before accepting, and take the one entry that
+changed. Exact at any clock granularity, and it still covers both cases — a
+fresh `VideoNN` and an existing one overwritten in place.
 ## Every gate
 
 | step | gate |
 |---|---|
+| game already usable | the plugin answering a TCP connect (NOT IsReady -- see above) |
 | game gone | the process list |
 | plugin injected | a TCP connect that succeeds |
 | title usable | `ManiaTitleControlScriptAPI::IsReady` |
@@ -214,7 +287,9 @@ compared by asking the filesystem, not by comparing strings.
 | camera aimed | the camera block's `ClipEntId` and target name, read back |
 | shoot dialog up | the `CGameDialogShootParams` nod itself |
 | accepted | that nod going away |
-| render running | the one `.webm` touched since we started |
+| map already loaded | MapUid, from the .Map.Gbx header vs RootMap.MapInfo |
+| Openplanet stage | its own log (injected? past the Nadeo login?) |
+| render running | the one `.webm` whose mtime or size changed |
 | render finished | the encoder closing its file handle |
 
 ## The dev loop

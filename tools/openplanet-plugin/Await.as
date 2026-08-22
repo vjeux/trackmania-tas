@@ -157,3 +157,27 @@ string AwaitFileFree(const string &in path, int timeoutMs) {
     }
     return "{\"err\":\"unreachable\"}";
 }
+
+// ---------------------------------------------------------------------------
+// WHICH MAP IS LOADED, by IDENTITY.
+//
+// Loading a map into the editor is the single most expensive step in the
+// pipeline -- 11.5 s for the 1.9 MB Underwater map, of which only ~3.5 s is
+// entering the editor at all (measured against a 115 KB map, which took 3.8 s).
+// The rest is the game building the scene, and it is real work.
+//
+// So the way to not pay it is to not do it twice. CGameCtnChallengeInfo::MapUid
+// is the map's identity, and it is also readable straight out of the .Map.Gbx
+// header, so the driver can tell whether the map it wants is ALREADY open
+// before deciding to reload it. Comparing names would not do: two files can
+// carry the same MapName, and our own edited copies do.
+string LoadedMap() {
+    auto app = GetApp();
+    auto map = app.RootMap;
+    if (map is null) return "{\"loaded\":false}";
+    string uid = "";
+    if (map.MapInfo !is null) uid = map.MapInfo.MapUid;
+    return "{\"loaded\":true,\"uid\":\"" + uid + "\""
+         + ",\"name\":\"" + map.MapName + "\""
+         + ",\"ctx\":" + CurrentCtx() + "}";
+}

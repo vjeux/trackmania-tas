@@ -787,7 +787,7 @@ fn install(plugin_dir: &str, good_dir: &str, api: &str) -> i32 {
     // A compile error unloads the plugin, so the server may be gone with it.
     if http_get("/ping", 5).is_err() {
         eprintln!("the plugin server is down; restarting the game");
-        launch(180);
+        launch(180, true);  // the plugin is gone, so a restart is the point
     }
     1
 }
@@ -839,11 +839,11 @@ fn main() {
         }
         "webms" => {
             // debug: what the driver can see in the screenshots folder
-            let v = webm_times();
+            let v = webm_snapshot();
             println!("{} webm files", v.len());
             let mut byt: Vec<_> = v.into_iter().collect();
-            byt.sort_by_key(|(_, t)| *t);
-            for (p, _) in byt.iter().rev().take(3) { println!("  {p}"); }
+            byt.sort_by_key(|(_, (t, _))| *t);
+            for (p, (_, n)) in byt.iter().rev().take(3) { println!("  {p}  {n} bytes"); }
             0
         }
         "install" => {
@@ -858,27 +858,38 @@ fn main() {
             save_good(p, "/home/vjeux/gs-good")
         }
         "launch" => {
-            let to = if args.len() > 1 { args[1].parse().unwrap_or(180) } else { 180 };
-            launch(to)
+            let force = args.iter().any(|a| a == "--force");
+            let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);
+            launch(to, force)
         }
         "run" => {
             // THE WHOLE THING: cold game to finished video, one command.
             let mut map = String::new();
             let mut name = String::new();
             let mut gs: Vec<String> = Vec::new();
+            let mut bad = String::new();
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
                     "--map"  => { map  = args[i + 1].clone(); i += 2; }
                     "--name" => { name = args[i + 1].clone(); i += 2; }
+                    "--force" => { i += 1; }   // handled below; not a ghost
+                    other if other.starts_with("--") => {
+                        // An unknown flag silently became a GHOST PATH and the
+                        // run died on "stage --force: No such file". Refuse.
+                        bad = other.to_string();
+                        i += 1;
+                    }
                     _ => { gs.push(args[i].clone()); i += 1; }
                 }
             }
-            if map.is_empty() || gs.is_empty() || name.is_empty() {
-                eprintln!("run --map <map> --name <out> <tas.Ghost.Gbx> [opponent.Ghost.Gbx]");
+            if !bad.is_empty() { eprintln!("unknown option: {bad}"); }
+            if !bad.is_empty() { 2 }
+            else if map.is_empty() || gs.is_empty() || name.is_empty() {
+                eprintln!("run [--force] --map <map> --name <out> <tas.Ghost.Gbx> [opponent.Ghost.Gbx]");
                 2
             } else {
-                let rc = launch(180);
+                let rc = launch(180, args.iter().any(|a| a == "--force"));
                 if rc != 0 { rc }
                 else {
                     let rc = setup(&map, &gs);
@@ -1082,6 +1093,49 @@ fn stage_and_import(files: &[String]) -> i32 {
 
 /// The whole scene, set up and PROVEN, with no clicks and no sleeps:
 ///   map -> editor -> MediaTracker -> ghosts -> camera on our car.
+/// The MapUid of a .Map.Gbx, read from its header.
+///
+/// Not a GBX parser: the uid is the first string in the header string chunk and
+/// is plainly there in the first few hundred bytes -- 27 base64-ish characters,
+/// length-prefixed. Reading it costs a 4 KB read and lets `setup` tell whether
+/// the map it wants is ALREADY open, which is worth 11.5 s.
+///
+/// Returns None rather than guessing; a None simply means "reload it", which is
+/// the old behaviour.
+fn map_uid(path: &str) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 4096];
+    let n = f.read(&mut buf).ok()?;
+    let b = &buf[..n];
+    if &b[..3] != b"GBX" { return None; }
+    // scan for a u32 length followed by that many printable ASCII bytes,
+    // 20..=40 long -- the uid, then the map's collection/author strings.
+    let mut i = 8;
+    while i + 4 < b.len() {
+        let len = u32::from_le_bytes([b[i], b[i+1], b[i+2], b[i+3]]) as usize;
+        if (20..=40).contains(&len) && i + 4 + len <= b.len() {
+            let s = &b[i + 4..i + 4 + len];
+            if s.iter().all(|c| c.is_ascii_graphic()) {
+                return Some(String::from_utf8_lossy(s).to_string());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The uid of the map the game currently has open, if any.
+fn loaded_uid() -> Option<String> {
+    let b = http_get("/loaded", 10).ok()?;
+    if !b.contains("\"loaded\":true") { return None; }
+    let k = "\"uid\":\"";
+    let i = b.find(k)? + k.len();
+    let rest = &b[i..];
+    let e = rest.find('"')?;
+    let u = rest[..e].to_string();
+    if u.is_empty() { None } else { Some(u) }
+}
+
 ///
 /// Every step is checked against the object graph before the next one runs, so
 /// a failure names the step instead of surfacing later as a black video.
@@ -1092,18 +1146,59 @@ fn setup(map: &str, ghosts: &[String]) -> i32 {
         eprintln!("could not write editmap.txt");
         return 2;
     }
-    // EditMap refuses while any editor is open, so get to the menu FIRST and
-    // prove it -- the old code slept and hoped.
-    if let Err(e) = to_menu() { eprintln!("{e}"); return 1; }
-    println!("editmap: {}", http_get("/editmap", 30).unwrap_or_default().trim());
-    match wait_ctx(1, 120) {
-        Ok(t) => println!("  editor after {t:.1}s"),
-        Err(e) => { eprintln!("{e}"); return 1; }
-    }
-    let _ = http_get("/mt2", 30);
-    match wait_ctx(2, 60) {
-        Ok(t) => println!("  MediaTracker after {t:.1}s"),
-        Err(e) => { eprintln!("{e}"); return 1; }
+
+    // DO NOT RELOAD A MAP THAT IS ALREADY OPEN.
+    //
+    // This is the most expensive step there is: 11.5 s for the 1.9 MB
+    // Underwater map. Only ~3.5 s of that is entering the editor -- measured
+    // against a 115 KB map, which took 3.8 s -- the rest is the game building
+    // the scene, which is real work and cannot be made faster. It CAN be not
+    // repeated. Identity is the MapUid, from the file's header and from
+    // RootMap.MapInfo; comparing names would not do, since our own edited
+    // copies of a map all carry the same MapName.
+    let wsl = map.strip_prefix("C:/").map(|r| format!("/mnt/c/{r}"))
+                 .unwrap_or_else(|| map.to_string());
+    let want = map_uid(&wsl);
+    let have = loaded_uid();
+    let already = want.is_some() && want == have && matches!(ctx(), Some(1) | Some(2));
+
+    if already {
+        println!("map already open ({}) -- not reloading", want.clone().unwrap_or_default());
+        // The MediaTracker may or may not be open on top of it.
+        if ctx() != Some(2) {
+            let _ = http_get("/mt2", 30);
+            if let Err(e) = wait_ctx(2, 60) { eprintln!("{e}"); return 1; }
+        }
+        // A previous render's tracks are still in the clip; start clean.
+        let _ = http_get("/rmtracks", 20);
+    } else {
+        // EditMap refuses while any editor is open, so get to the menu FIRST and
+        // prove it -- the old code slept and hoped.
+        if let Err(e) = to_menu() { eprintln!("{e}"); return 1; }
+        // AND THE TITLE MUST BE READY -- here, where it means something.
+        // EditMap on a not-ready ManiaTitleControlScriptAPI returns without
+        // error and loads nothing, which is the failure that reads as "the map
+        // did not open". IsReady is false while an editor is open, so this can
+        // only be asked once to_menu() has proved we left it.
+        if let Err(e) = await_cond("ready", 60) { eprintln!("{e}"); return 1; }
+        println!("editmap: {}", http_get("/editmap", 30).unwrap_or_default().trim());
+        match wait_ctx(1, 120) {
+            Ok(t) => println!("  editor after {t:.1}s"),
+            Err(e) => { eprintln!("{e}"); return 1; }
+        }
+        let _ = http_get("/mt2", 30);
+        match wait_ctx(2, 60) {
+            Ok(t) => println!("  MediaTracker after {t:.1}s"),
+            Err(e) => { eprintln!("{e}"); return 1; }
+        }
+        // AND THE GAME MUST HAVE LOADED WHAT WE ASKED FOR. EditMap on a bad
+        // path returns "ok" and loads nothing; the uid says whether it landed.
+        if let (Some(w), Some(h)) = (&want, &loaded_uid()) {
+            if w != h {
+                eprintln!("asked for map {w} but the game loaded {h}");
+                return 1;
+            }
+        }
     }
     let rc = stage_and_import(ghosts);
     if rc != 0 { return rc; }
@@ -1162,13 +1257,25 @@ fn to_menu() -> Result<(), String> {
     Err(format!("could not get back to the menu; ctx={:?}", ctx()))
 }
 
-/// START THE GAME, and prove Openplanet injected.
+/// START THE GAME -- unless it is already up and usable.
 ///
-/// This replaces launch_tm.sh, whose 38 seconds were almost entirely guesses:
-/// `sleep 6` after the kill, a 3-second process poll, a blind `sleep 25` for the
-/// splash, a synthetic Enter to "clear" it, then a 5-second /ping poll. Measured
-/// with none of that: the plugin answers 11.9 s after the kill, and the Enter
-/// was never needed -- the game reaches the menu on its own.
+/// WHERE THE 11.5 SECONDS GO. From Openplanet's own log, cold:
+///
+///   +0.0s   process created
+///   +1.3s   "Setting up hook callbacks..."
+///   +1.9s   app config request (network, 5 s timeout)
+///   +7.2s   NadeoServices account ID          <- 5.3 s, a web-services LOGIN
+///   +8.3s   loop entry init, sockets, audio
+///   +8.6s   registered 2659 classes
+///   +9.1s   wrote Openplanet.h and the two json dumps
+///   +9.3s   ~20 plugins loaded; GhostShooter's server up
+///
+/// So more than half of it is Openplanet authenticating against Nadeo before it
+/// will finish initialising, and essentially all the rest is its own start-up.
+/// None of it is ours and none of it is avoidable -- but it is a ONCE cost, and
+/// the pipeline used to pay it on every single render by killing the game
+/// first. So: if the plugin answers and the title is ready, this does nothing.
+/// `--force` restarts anyway, which is what you want after editing the plugin.
 ///
 /// Nothing here sleeps. Each wait is a blocking operation whose duration IS the
 /// wait: tasklist for the processes, and connect() for the plugin -- a WSL
@@ -1181,9 +1288,22 @@ fn to_menu() -> Result<(), String> {
 /// never loads. The mitigation is INHERITED, and every shell we have has it ON
 /// while Explorer has it OFF. `explorer.exe <path>` makes the running Explorer
 /// create the process, so it inherits OFF. (Measured 2026-08-21.)
-fn launch(timeout_s: u64) -> i32 {
+fn launch(timeout_s: u64, force: bool) -> i32 {
     let t0 = Instant::now();
     let el = |t: &Instant| t.elapsed().as_secs_f64();
+
+    // LIVENESS IS THE PLUGIN ANSWERING, nothing more. The plugin only exists if
+    // the game is up AND Openplanet injected, which is the whole question.
+    //
+    // NOT IsReady: that is ManiaTitleControlScriptAPI, and it means "ready to
+    // accept a command like EditMap" -- it reads FALSE whenever an editor is
+    // open. Using it as a liveness check killed a perfectly good game between
+    // two renders and paid the whole 12 s over again. It is checked where it
+    // actually applies: immediately before EditMap, in setup().
+    if !force && plugin_up() {
+        println!("[0.0s] game already up -- not restarting");
+        return 0;
+    }
 
     for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
         let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
@@ -1196,31 +1316,90 @@ fn launch(timeout_s: u64) -> i32 {
     }
     println!("[{:.1}s] processes gone", el(&t0));
 
-    let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
-    let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
-    println!("[{:.1}s] launched via explorer (PreferSystem32=OFF)", el(&t0));
+    // TRY, DIAGNOSE, RETRY. The launch fails intermittently and it is not our
+    // fault: Openplanet injects, initialises, and then HANGS on the Nadeo
+    // web-services login. Its own log ends at "Did not find update to
+    // install." and never reaches "Loop entry initialization" -- so the script
+    // engine never starts and our plugin never exists. Measured 2026-08-22:
+    // one launch stalled there for the full 180 s while the game ran fine.
+    //
+    // The old code waited out the timeout and then blamed PreferSystem32,
+    // which was simply wrong -- the log proves Openplanet was in the process.
+    // Now the log IS the diagnosis, and a hung login is retried rather than
+    // reported as a broken install.
+    for attempt in 1..=3 {
+        let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
+        let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
+        println!("[{:.1}s] launched via explorer (attempt {attempt})", el(&t0));
 
-    // Wait for the plugin socket, trying EVERY candidate address each time --
-    // the right one cannot be known before the server exists. connect() blocks;
-    // see the note above.
-    loop {
-        if plugin_up() { break; }
-        if el(&t0) > timeout_s as f64 {
-            eprintln!("[{:.1}s] no plugin. Trackmania running: {}", el(&t0), tm_running());
-            eprintln!("  If the game is up but the plugin is not, the launch inherited");
-            eprintln!("  PreferSystem32=ON and Openplanet's dinput8 proxy was skipped.");
-            return 1;
+        // Wait for the plugin socket, trying EVERY candidate address each time
+        // -- the right one cannot be known before the server exists.
+        // connect() blocks, so it paces itself; nothing sleeps.
+        let a0 = Instant::now();
+        let mut up = false;
+        while a0.elapsed().as_secs() < 45 {
+            if plugin_up() { up = true; break; }
         }
-    }
-    println!("[{:.1}s] plugin up", el(&t0));
+        if up {
+            println!("[{:.1}s] plugin up", el(&t0));
+            // AND THE TITLE MUST BE READY. EditMap on a not-ready
+            // ManiaTitleControlScriptAPI returns without error and loads
+            // nothing -- the failure that reads as "the map did not open".
+            return match await_cond("ready", 60) {
+                Ok(_) => { println!("[{:.1}s] title ready", el(&t0)); 0 }
+                Err(e) => { eprintln!("{e}"); 1 }
+            };
+        }
 
-    // AND THE TITLE MUST BE READY. EditMap on a not-ready
-    // ManiaTitleControlScriptAPI returns without error and loads nothing --
-    // that is the failure that reads as "the map did not open".
-    match await_cond("ready", 60) {
-        Ok(_) => { println!("[{:.1}s] title ready", el(&t0)); 0 }
-        Err(e) => { eprintln!("{e}"); 1 }
+        match openplanet_stage() {
+            OpStage::NotInjected => {
+                eprintln!("[{:.1}s] Openplanet never injected -- its log did not open.", el(&t0));
+                eprintln!("  The launch inherited PreferSystem32=ON and the dinput8 proxy");
+                eprintln!("  was skipped. Retrying will not help; check the launch parent.");
+                return 1;
+            }
+            OpStage::StalledAtLogin => {
+                eprintln!("[{:.1}s] Openplanet hung on the Nadeo login (attempt {attempt}) -- restarting",
+                          el(&t0));
+                for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
+                    let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
+                        .args(["/F", "/IM", exe]).output();
+                }
+                while tm_running() {}
+            }
+            OpStage::Running => {
+                eprintln!("[{:.1}s] Openplanet finished starting but the plugin is not listening.",
+                          el(&t0));
+                eprintln!("  That is a GhostShooter problem, not a launch one -- check the log");
+                eprintln!("  for a compile error, which unloads the plugin and takes the server.");
+                return 1;
+            }
+        }
+        if el(&t0) > timeout_s as f64 { break; }
     }
+    eprintln!("[{:.1}s] gave up after 3 launches", el(&t0));
+    1
+}
+
+/// How far Openplanet got, from its own log.
+enum OpStage {
+    /// The log never opened for this launch: Openplanet is not in the process.
+    NotInjected,
+    /// It injected and stopped at the web-services login -- the intermittent
+    /// hang. Everything after that line ("Loop entry initialization", the
+    /// script engine, our plugin) never happens.
+    StalledAtLogin,
+    /// It finished starting. If the plugin still is not listening, that is the
+    /// plugin's fault, not the launch's.
+    Running,
+}
+
+fn openplanet_stage() -> OpStage {
+    let Ok(log) = std::fs::read_to_string("/mnt/c/Users/vjeux/OpenplanetNext/Openplanet.log")
+    else { return OpStage::NotInjected };
+    if !log.contains("Openplanet starting on") { return OpStage::NotInjected; }
+    if log.contains("Loop entry initialization") { return OpStage::Running; }
+    OpStage::StalledAtLogin
 }
 
 fn tm_running() -> bool {
@@ -1287,33 +1466,44 @@ fn same_file(a: &str, b: &str) -> bool {
 fn wait_shoot_dialog(want: bool, secs: u64) -> Result<f64, String> {
     await_cond(if want { "shootdlg" } else { "noshootdlg" }, secs)
 }
-
-/// Every .webm in the screenshots folder, with its modification time.
+/// Every .webm in the screenshots folder, with its mtime and size.
 ///
 /// NOT a set of names. The game does NOT always create a new file: it takes the
 /// lowest free VideoNN, and if that name already exists it OVERWRITES it --
 /// measured, Video56.webm was rewritten in place and the folder listing never
 /// changed length. A driver watching for a new NAME waits forever on a render
-/// that is running perfectly well. That is exactly what happened here.
-fn webm_times() -> Vec<(String, std::time::SystemTime)> {
+/// that is running perfectly.
+fn webm_snapshot() -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
     let dir = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots";
-    let mut v = Vec::new();
+    let mut m = std::collections::HashMap::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) != Some("webm") { continue; }
-            if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
-                v.push((p.to_string_lossy().to_string(), t));
+            if let Ok(md) = e.metadata() {
+                if let Ok(t) = md.modified() {
+                    m.insert(p.to_string_lossy().to_string(), (t, md.len()));
+                }
             }
         }
     }
-    v
+    m
 }
 
-/// The .webm files touched since `since` -- the render's output, by definition.
-fn webms_since(since: std::time::SystemTime) -> Vec<String> {
-    let mut v: Vec<String> = webm_times().into_iter()
-        .filter(|(_, t)| *t >= since)
+/// Which .webm changed since the snapshot -- created, or rewritten in place.
+///
+/// A SNAPSHOT, NOT A TIMESTAMP WINDOW. The window version asked for "files
+/// touched in the last second" and matched the PREVIOUS render as well, because
+/// two back-to-back runs finish and start inside the same filesystem second --
+/// it failed with "2 .webm files were touched; cannot tell which is ours" on a
+/// render that was working perfectly. That is not a tuning problem: comparing
+/// against what was actually there before is exact, at any clock granularity.
+fn webms_changed(
+    before: &std::collections::HashMap<String, (std::time::SystemTime, u64)>,
+) -> Vec<String> {
+    let mut v: Vec<String> = webm_snapshot()
+        .into_iter()
+        .filter(|(p, now)| before.get(p).map(|was| was != now).unwrap_or(true))
         .map(|(p, _)| p)
         .collect();
     v.sort();
@@ -1322,12 +1512,11 @@ fn webms_since(since: std::time::SystemTime) -> Vec<String> {
 
 /// Shoot, and prove every step of it.
 fn shoot(timeout_s: u64, name: &str) -> i32 {
-    // WHEN WE STARTED. The output is "the .webm the game touched after this
-    // moment" -- which covers both cases, a fresh VideoNN and an existing one
-    // overwritten in place. Identifying it by newest mtime alone was a guess
-    // that pointed at the wrong file whenever anything else had written one.
-    // One second back, because a filesystem timestamp is not that precise.
-    let t_start = std::time::SystemTime::now() - Duration::from_secs(1);
+    // WHAT WAS THERE BEFORE. The output is the one .webm this changed -- which
+    // covers both cases, a fresh VideoNN and an existing one overwritten in
+    // place. Identifying it by newest mtime was a guess that pointed at the
+    // wrong file whenever anything else had written one.
+    let before = webm_snapshot();
 
     println!("rewind: {}", http_get("/rewind", 20).unwrap_or_default().trim());
     println!("shoot:  {}", http_get("/shoot", 20).unwrap_or_default().trim());
@@ -1372,7 +1561,7 @@ fn shoot(timeout_s: u64, name: &str) -> i32 {
     let t_render = Instant::now();
     let mut out = String::new();
     while t_render.elapsed().as_secs() < 30 {
-        let touched = webms_since(t_start);
+        let touched = webms_changed(&before);
         match touched.len() {
             0 => {}
             1 => { out = touched[0].clone(); break; }
