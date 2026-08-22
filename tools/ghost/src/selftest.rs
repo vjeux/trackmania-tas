@@ -549,6 +549,35 @@ fn pure_tier(s: &mut Suite) {
             "and the checkpoint count comes out of the Desc, which is the only place it exists on a DNF -- a search ladder needs it",
         );
 
+        // The "never crossed the line" sentinel: a huge u32 in a time field.
+        // Read as a value it is a finish at 4 294 967.295 s -- a DNF reported
+        // as the slowest run in history, and worse, a Some() where every caller
+        // tests for None. `tmmaps` cleaned it in its own driver for exactly
+        // this reason; the check moved here with the parser.
+        let sentinel = r#"[
+{
+  "ValidatedResult" : {
+    "NbCheckpoints" : 0,
+    "Time" : 4294967295,
+    "Score" : 0
+  },
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 3,
+    "Time" : -1,
+    "Score" : 0
+  },
+  "FileName" : "c.Ghost.Gbx"
+}
+]"#;
+        let v = oracle::parse_many(sentinel);
+        s.check(
+            "oracle.parse.sentinel",
+            v.len() == 1 && v[0].time_ms.is_none() && v[0].declared_ms.is_none(),
+            "a 4294967295 time is the server's never-crossed sentinel, not a finish 49 days long, and a negative declared time is not a time either",
+        );
+
         let two = format!("{}\n{}", finish, dnf);
         let v = oracle::parse_many(&two);
         s.check(

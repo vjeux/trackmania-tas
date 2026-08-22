@@ -26,15 +26,11 @@ pub struct Row {
     pub declared_time: Option<i64>,
 }
 
-/// The server's "never crossed" sentinel shows up as a huge u32.
-pub const BAD_TIME: i64 = 4_294_967_000;
-
-pub fn clean(t: Option<i64>) -> Option<i64> {
-    match t {
-        Some(v) if v > BAD_TIME || v < 0 => None,
-        other => other,
-    }
-}
+// The server's "never crossed" sentinel -- a huge u32 in a time field -- used
+// to be cleaned here, by a `clean()` this module applied to every time it
+// parsed. It moved into `ghost::oracle::sane_time` with the parser: a time of
+// 4 294 967.295 s read as a finish is a bug in any caller of the shared reader,
+// not just in map surgery.
 
 fn link(target: &Path, at: &Path) {
     if std::fs::symlink_metadata(at).is_err() {
@@ -133,66 +129,41 @@ fn finish(ch: std::process::Child) -> Vec<Row> {
 }
 
 /// Parse the `{ "ValidatedResult" ... }` blocks the server prints.
+///
+/// **There is no parser here.** `ghost::oracle` reads the dedicated server's
+/// output for the whole toolchain; this is the projection of its result onto
+/// the four fields map surgery uses. The copy that used to live here was the
+/// sixth in the tree, and it was written for the same reasons all six were.
+///
+/// Two behaviours were checked when they were merged, because a merge that
+/// silently changes an answer is worse than the duplication:
+///
+/// * `cps = Some(0)` for `wrong simu` is kept HERE, not pushed into the shared
+///   parser. It is a sentinel with a local meaning -- "it failed and the
+///   message says nothing about how far it got" -- and `ghost::oracle` reports
+///   the honest `None` for the same case, which is what a caller reading a
+///   checkpoint count wants.
+/// * the huge-u32 "never crossed" sentinel moved the OTHER way, into
+///   `ghost::oracle::sane_time`, because a time of 4 294 967.295 s read as a
+///   finish is a bug in any caller, not just this one.
 pub fn parse_output(text: &str) -> Vec<Row> {
-    let mut out = Vec::new();
-    let mut cur_time: Option<i64> = None;
-    let mut cur_cps: Option<u32> = None;
-    let mut declared: Option<i64> = None;
-    let mut in_validated = false;
-    let mut in_declared = false;
-
-    for line in text.lines() {
-        let t = line.trim();
-        if t.starts_with("\"ValidatedResult\"") {
-            in_declared = false;
-            if t.contains("null") {
-                cur_time = None;
-            } else {
-                in_validated = true;
-            }
-        } else if t.starts_with("\"DeclaredResult\"") {
-            in_validated = false;
-            in_declared = true;
-        } else if t.starts_with("\"Time\"") {
-            let v = t
-                .split(':')
-                .nth(1)
-                .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok());
-            if in_validated {
-                cur_time = v;
-                in_validated = false;
-            } else if in_declared {
-                declared = v;
-                in_declared = false;
-            }
-        } else if t.starts_with("\"Desc\"") {
-            if let Some(p) = t.find("reached some checkpoints (") {
-                let rest = &t[p + "reached some checkpoints (".len()..];
-                cur_cps = rest.split(' ').next().and_then(|s| s.trim().parse::<u32>().ok());
-            } else if t.contains("wrong simu") {
-                cur_cps = Some(0);
-            }
-        } else if t.starts_with("\"FileName\"") {
-            let name = t
-                .split(':')
-                .nth(1)
-                .map(|s| s.trim().trim_matches(|c| c == '"' || c == ',' || c == ' '))
-                .unwrap_or("")
-                .to_string();
-            out.push(Row {
-                file: name,
-                sim_time: clean(cur_time),
-                reached_cps: cur_cps,
-                declared_time: declared,
-            });
-            cur_time = None;
-            cur_cps = None;
-            declared = None;
-            in_validated = false;
-            in_declared = false;
-        }
-    }
-    out
+    ghost::oracle::parse_many(text)
+        .into_iter()
+        .map(|r| Row {
+            reached_cps: match r.cps {
+                Some(n) => Some(n),
+                // `wrong simu` on its own: the run failed and the server said
+                // nothing about the depth. On one map, 45 of 200 such runs had
+                // driven up to 966 m of 1647 m -- so this 0 is a sentinel, and
+                // reading it as a distance is the mistake it exists to name.
+                None if r.desc.contains("wrong simu") => Some(0),
+                None => None,
+            },
+            file: r.file,
+            sim_time: r.time_ms,
+            declared_time: r.declared_ms,
+        })
+        .collect()
 }
 
 /// Validate MANY ghosts against ONE map by sharding them across `jobs`

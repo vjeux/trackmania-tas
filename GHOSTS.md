@@ -324,6 +324,27 @@ equal-number fixture can fail whatever the parser does.
 with a `DeclaredResult` of 15.000, which a careless parser reports as a 15.000
 finish for a run that never finished. `ghost verify` refuses both.
 
+**How many copies of that parser there were, and how many there are.** Six, in
+one tree: here, `fk`'s regen (which took the first `"Time"` line and read a DNF
+as a finish), `tmtraj`'s integrity gate (which read the TIME correctly and then
+scanned forward past a null for `NbCheckpoints`, reporting four validated
+checkpoints for a run the server refused), `tmmaps`'s map-surgery driver,
+`tmsearch`'s, and `forkoracle`'s. Five of the six are gone: `fk`, `tmsearch`,
+`tmtraj` and `tmmaps` all call `ghost::oracle::parse_many`. Each merge paid for
+itself immediately — `tmmaps`'s brought two behaviours with it, the
+`wrong simu → cps 0` sentinel (kept local, where its meaning is local) and the
+huge-u32 "never crossed" time, which is now `sane_time` in the shared parser
+because a 4 294 967.295 s "finish" is a bug for every caller
+(`oracle.parse.sentinel`).
+
+**`forkoracle`'s copy is the one that is still there, deliberately.** It reads
+the fork server's TRUNCATED stream, which stops at `"IsValid"` and never prints
+`"FileName"` — and `parse_many` completes a record only at `FileName`, so it
+would return nothing at all on that input. Merging it needs a flush-on-EOF entry
+point plus its `cps = Some(0)` sentinel preserved, and its consumer is the
+search's scoring hot path: the one place in this project that has already paid
+for a phantom. It is a copy with a reason and a note, not an oversight.
+
 **A regenerated file whose locate found something that is not the car.**
 The car used to be found by scanning memory for a self-consistent
 (position, quaternion, velocity) triple. That is a DESCRIPTION of a car, not an
@@ -430,7 +451,7 @@ ghost selftest --strict     # a SKIP is a failure
 cargo test --release        # the same suite, through cargo
 ```
 
-49 checks over five checked-in fixtures: two human ghosts, one anonymised
+50 checks over five checked-in fixtures: two human ghosts, one anonymised
 replay that carries its own map, one file this project labelled
 `DO_NOT_PUBLISH`, and one map. Three tiers:
 

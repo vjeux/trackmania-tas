@@ -253,7 +253,7 @@ headless browser — it **skips loudly to real stderr with a named reason**, and
 | `cli` | the command line over checked-in fixtures, including the gate end to end at the no-server tier |
 | unit tests | the rules that used to be buried inside a command: the C8b acceptance bar, the C12 growth bar, `outcome`'s empty-denominator rule, C3's three jump classes, `q` vs `−q`, the steer byte's exact inverse, seconds formatting |
 | `oracle_gate` | what the gate believes the dedicated server said, against a CAPTURED transcript with both rows asymmetric — plus the deleted scan-forward parser run on the same bytes and REQUIRED to give the wrong answer |
-| `ghost selftest` | 48 checks against the real dedicated server |
+| `ghost selftest` | 49 checks against the real dedicated server |
 
 ### The controls that say the suite bites
 

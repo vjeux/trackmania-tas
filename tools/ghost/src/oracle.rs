@@ -26,6 +26,25 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The server's "never crossed the line" sentinel, as it appears in a time
+/// field: a huge u32 read as an i64.
+///
+/// Inherited from `tmmaps`'s own driver, which cleaned every time it parsed
+/// through a `clean()` of exactly this shape, and kept when the two parsers
+/// were merged -- a sentinel read as a value would be a finish at 4 294 967.295
+/// seconds, which is a DNF reported as the best run in history.
+pub const BAD_TIME_MS: i64 = 4_294_967_000;
+
+/// A time the server can actually have simulated, or `None`.
+fn sane_time(v: Option<i64>) -> Option<i64> {
+    match v {
+        Some(t) if t > BAD_TIME_MS || t < 0 => None,
+        other => other,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MapsMode<'a> {
     /// Exactly one map linked in.
@@ -129,7 +148,17 @@ pub fn validate_many(
     if ghosts.is_empty() {
         return Ok(Vec::new());
     }
-    let root = std::env::temp_dir().join(format!("ghost-oracle-{}-{}", std::process::id(), tag));
+    let root = std::env::temp_dir().join(format!(
+        "ghost-oracle-{}-{}-{}",
+        std::process::id(),
+        tag,
+        // UNIQUE PER CALL. The first thing done to this directory is
+        // `remove_dir_all`, so two batches running concurrently in one process
+        // -- which a test binary and `tmmaps`'s parallel driver both do -- would
+        // wipe each other's staged files and validate the wrong set. A pid and
+        // a tag are not enough; a counter is.
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&root);
     let replays = root.join("UserData").join("Replays");
     let mapsdir = root.join("UserData").join("Maps");
@@ -211,8 +240,8 @@ pub fn parse_many(text: &str) -> Vec<SimResult> {
             block = if t.contains("null") { Block::None } else { Block::Declared };
         } else if t.starts_with("\"Time\"") {
             match block {
-                Block::Validated => cur.time_ms = numf(t),
-                Block::Declared => cur.declared_ms = numf(t),
+                Block::Validated => cur.time_ms = sane_time(numf(t)),
+                Block::Declared => cur.declared_ms = sane_time(numf(t)),
                 Block::None => {}
             }
         } else if t.starts_with("\"NbCheckpoints\"") {

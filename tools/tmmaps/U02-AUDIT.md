@@ -251,6 +251,15 @@ they are small and they are load-bearing.
 ---
 
 
+> `tmmaps/src/oracle.rs` keeps the (map, ghosts) driver — one worker directory
+> per pair, because every segment map keeps the original mapUid — but **not a
+> parser**: it projects `ghost::oracle`'s result onto the four fields map
+> surgery uses. That was the sixth copy of the server parser in the tree. The
+> merge changed no answer (the ORACLE tier reproduces 7.617 / 13.308 / 16.316 /
+> 19.538 exactly, as before) and moved one behaviour up into the shared reader:
+> the huge-u32 "never crossed" sentinel, which `ghost::oracle` now refuses to
+> report as a finish.
+
 ## 4. One more thing for `tools/ghost`: `Container::splits()` is raw
 
 > **CLOSED 2026-08-22.** `Container::splits()` returns the checkpoint list, the
