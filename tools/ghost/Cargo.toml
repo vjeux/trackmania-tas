@@ -1,0 +1,14 @@
+[package]
+name = "ghost"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "ghost"
+path = "src/main.rs"
+
+[dependencies]
+tmtraj = { path = "../tmtraj" }
+
+[profile.release]
+opt-level = 2

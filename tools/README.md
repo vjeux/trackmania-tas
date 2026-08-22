@@ -244,3 +244,28 @@ where `C-route` cannot run. On 197047: **100.0 % agreement with our tape over
 from our tape even in a record whose *positions* came from somewhere else. It
 answers "was this record written alongside this tape", not "are these positions
 this run". It would not have caught the defect `C-route` was built for.
+
+## tools/ghost — the ghost / replay API
+
+```
+tools/ghost/      one binary, `ghost`: extract and inject inputs, regenerate the
+                  car state from the engine, change the map a recording runs on,
+                  trim a run, edit the car skin / name / trigram, and verify any
+                  of it
+```
+
+Build and run its whole test suite in one command:
+
+```
+cd tools/ghost && cargo build --release
+TM_SERVER=<dir containing TrackmaniaServer> ./target/release/ghost selftest
+```
+
+The API, the file-format facts it is built on, and every trap it now prevents
+are in [`GHOSTS.md`](../GHOSTS.md) at the repo root. `ghost --help` lists the
+commands.
+
+`ghost regen` — the one operation that needs the real physics engine — shells
+out to `fk` (the fork-server state reader) and expects it on `PATH` or at
+`$FK_BIN`. Everything else in this crate is self-contained: one dependency,
+`tmtraj`, in this same directory.
