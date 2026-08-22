@@ -133,7 +133,30 @@ impl<'a> Assembler<'a> {
         }
         let path = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())?;
         let model = self.store.load_model(&path).ok()?;
-        let prefabs = model.refs_ending(".Prefab.Gbx");
+        let mut prefabs = model.refs_ending(".Prefab.Gbx");
+        if prefabs.is_empty() {
+            // Some block families name no prefab of their own and carry their
+            // whole shape in their CLIPS — the pieces that fill the seam
+            // between neighbouring blocks. `DecoWall*` and `Platform*` are
+            // like this, and on 146612 that is 458 placements including the
+            // loop wall the run is driven on, which is why that map's car read
+            // as 2.048 m above the model until this was followed.
+            //
+            // Only when there are none: a road block's clips are extra
+            // geometry at the same height, and drawing them everywhere would
+            // be more than any single placement shows, for no gain.
+            for kind in
+                [".EDClip.Gbx", ".EDVerticalClip.Gbx", ".EDHorizontalClip.Gbx", ".EDClassic.Gbx"]
+            {
+                for clip in model.refs_ending(kind) {
+                    if let Ok(m) = self.store.load_model(&clip) {
+                        prefabs.extend(m.refs_ending(".Prefab.Gbx"));
+                    }
+                }
+            }
+            prefabs.sort();
+            prefabs.dedup();
+        }
         if prefabs.is_empty() {
             return None;
         }
