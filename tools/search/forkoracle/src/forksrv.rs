@@ -641,6 +641,32 @@ fn wait_readable(f: &std::fs::File, ms: i32) -> bool {
 
 
 /// `(time_ms, checkpoints_reached)` from a validator JSON block.
+/// The server's "never crossed the line" sentinel, as it appears in a time
+/// field: a huge u32 read as an i64.
+///
+/// **There are two copies of this number and that is deliberate.** The other is
+/// `ghost::oracle::BAD_TIME_MS`, in the crate that owns the full server
+/// transcript; this crate has no dependencies at all, on purpose, because the
+/// LD_PRELOAD shim compiles part of it into a game server. So the copies are
+/// pinned against each other by a test instead:
+/// `the_two_copies_of_the_never_crossed_sentinel_agree` in `tests/protocol.rs`,
+/// where `ghost` is a dev-dependency and the merge that cannot happen in the
+/// build happens in the suite.
+///
+/// It matters here because the fork's reply is what the STATE OBJECTIVE reads
+/// to decide whether a candidate finished: a sentinel taken as a value is a
+/// finish at 4 294 967.295 seconds, which the gate's top band would accept as
+/// "it did the thing and finished" and the search would adopt a wreck as its
+/// incumbent. The guard catches it at the bank -- the plain oracle disagrees
+/// and the run stops -- but only after the ranking has been wrong.
+pub const BAD_TIME_MS: i64 = 4_294_967_000;
+
+/// Read the fork server's validator reply.
+///
+/// The stream is truncated and has no `FileName`, which is why this is not
+/// `ghost::oracle`'s parser. What it shares is the two rules that parser was
+/// built for: the time comes from `ValidatedResult` and never from the file's
+/// own `DeclaredResult`, and a sentinel is not a time.
 pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
@@ -653,7 +679,8 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
             time = t
                 .split(':')
                 .nth(1)
-                .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok());
+                .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok())
+                .filter(|&ms| (0..=BAD_TIME_MS).contains(&ms));
             in_validated = false;
         } else if t.starts_with("\"Desc\"") {
             if let Some(p) = t.find("reached some checkpoints (") {

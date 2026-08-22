@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 71 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 73 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -572,7 +572,7 @@ it. Any fork search that has not yet found a finisher was affected.
 
 ### 5.9 What it cost, and what it bought
 
-71 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
+73 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
 `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
 `score.rs` and `loop_invariants.rs` and two more in `oracle_e2e.rs` -- a false
 band-2 finish is refused like any other false time, and a state is banked as a
@@ -582,12 +582,44 @@ the engine-backed tests runs with no server, on fixtures checked in beside
 
 On 228811, seeded with the human world record, 24 fork workers, key
 `min(abs(bodyright), 5*(-vz))` — the measured firing conjunction — the search
-took the key from **0.97 to 52.9 in 90 seconds**, and moved the state it is
-scoring from `z = 714.9` to `z = 709.09`: the launcher line is at z ≈ 709. The
+took the key from **0.97 to 57.4 in fifteen minutes**, and moved the state it is
+scoring from `z = 714.9` to `z = 709.1`: the launcher line is at z ≈ 709. The
 author's own contact, measured through the same mechanism from his own recorded
 telemetry, is **86.81** at (71.4, 50.4, 710.3) — which reproduces the published
 figure of 86.8 m/s of body-lateral speed to four digits, and is the strongest
-control available that the key is measuring the thing the map triggers on.
+control available that the key is measuring the thing the map triggers on. The
+human world record scores **0.06** on that key: three orders of magnitude apart,
+which is what a state objective on the right quantity looks like.
+
+**And a second arm reproduced the map's central finding, independently.** Point
+the key at the author's whole contact state, built out of that measurement —
+
+```
+--gate-key '-(dist(71.38,50.36,710.34) + vdist(-56.44,-2.79,-69.84)/5
+             + 10*(1 - nose(0.4798,0.2735,-0.8336)))'
+```
+
+— and in fifteen minutes the search goes from −43.7 (the world record) to −5.12,
+where it stops. Decomposed, that state is **0.28 m from the author's contact
+point with a velocity 3.8 m/s from his**, and it is **54° away in attitude**.
+`TECHNIQUE.md`, written from the private fork six weeks ago:
+
+> We built a run that reached the author's contact point to within **0.3 m**
+> with a velocity within **3 m/s** of his, and nothing happened. Position
+> doesn't trigger it. Speed doesn't trigger it. Which way the car is pointing
+> does.
+
+Two searches, two toolchains, the same two numbers and the same wall. That the
+general mechanism walks into it from a cold start, with the target expressed as
+one line of arithmetic, is the demonstration.
+
+**What it did not do: fire the launcher.** Neither arm reached the state that
+triggers it, and neither would have known if it had. The state objective takes
+the car to a state; what happens NEXT — a one-tick speed rise of tens of m/s,
+downstream of a checkpoint, aimed at the finish — is a different measurement,
+and the private fork needed a launch detector and a closest-approach-to-the-
+finish term to convert its first launches into a validated 20.237. Those are not
+in this feature and §6 says what it would take.
 
 ---
 
@@ -642,6 +674,26 @@ for it — and the reference-ghost identity control cannot catch it, because the
 reference line is inside both volumes. The search takes `--seg K:MAP` on faith.
 It could at least require that the segment map return the reference's own split
 for the reference tape.
+
+**8. An objective for what happens AFTER the state.** The gate takes the car to
+a state. On 228811 the state is worth having because the map then fires the car
+at 750 km/h — and nothing in this feature can see that happen, or aim it. The
+private fork needed two more measurements to convert its first launches into a
+validated lap: a **launch detector** (the largest one-tick rise in speed, and
+where — peak speed cannot do it, the human world record itself reaches 151 m/s
+at the finish) and **closest approach to the finish, measured only after a
+launch** (measured from tick 0 it pins every candidate at the 99 m the ordinary
+route passes within). Both are one-line additions to the child's summary and
+neither fits the gate's shape: a gate is a place, and these are an event and a
+distance conditioned on it. The honest generalisation is probably a second
+`--gate`-like clause whose box is armed by the first one firing — which is also
+what map 210218's backward chain wants, so it is one feature and not two.
+
+**9. `atan2`.** The key language has no inverse tangent, so "the angle of the
+velocity off an axis, in degrees" cannot be written. `nose()`/`along()` give the
+cosine, which is monotone in the angle over the half-turn that matters, and the
+one old mode that wanted an angle was a decoy. One opcode if a map ever needs
+it.
 
 ---
 
