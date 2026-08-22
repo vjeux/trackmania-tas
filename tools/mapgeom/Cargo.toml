@@ -1,0 +1,22 @@
+[package]
+name = "mapgeom"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mapgeom"
+path = "src/main.rs"
+
+[lib]
+name = "mapgeom"
+path = "src/lib.rs"
+
+# `tmmaps` owns `.Map.Gbx` for the whole toolchain -- blocks, items, both
+# chunks, the free-block regime. mapgeom places what tmmaps reads; it does not
+# keep a second map reader. `gbx` is the container (LZO, the chunk walk).
+[dependencies]
+tmmaps = { path = "../tmmaps" }
+gbx = { path = "../gbx" }
+
+[profile.release]
+opt-level = 3

@@ -19,53 +19,11 @@
 //! Times are printed as **seconds with a decimal** (`16.316`), never as raw
 //! milliseconds.
 
-mod census;
-mod controls;
-mod gbx;
-mod ghost;
-mod map;
-mod oracle;
-mod secs;
-mod segments;
-mod selftest;
+use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
+use tmmaps::{census, controls, gbx, map, oracle, secs, segments, selftest};
 
 use std::path::{Path, PathBuf};
 
-fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|a| a == name)
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str())
-}
-
-fn flag_multi(args: &[String], name: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == name {
-            let mut j = i + 1;
-            while j < args.len() && !args[j].starts_with("-") {
-                out.push(args[j].clone());
-                j += 1;
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
-fn has(args: &[String], name: &str) -> bool {
-    args.iter().any(|a| a == name)
-}
-
-fn jobs_of(args: &[String]) -> usize {
-    flag(args, "-j")
-        .or_else(|| flag(args, "--jobs"))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8)
-}
 
 fn fnv1a(b: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -132,7 +90,7 @@ impl Move {
     /// that is always wrong.
     fn reject_baked_cell(&self) {
         if let Move::BakedCell(b) = self {
-            crate::die(&format!(
+            die(&format!(
                 "b{} names a BAKED block (chunk 0x03043048) by CELL. A baked block's cell bytes \
                  are dead, so that write lands on nothing and every control still passes. A baked \
                  block moves by POSITION only: spell it b{}@x,y,z. And note a baked index is NOT \
@@ -193,20 +151,6 @@ fn parse_move(m: &str) -> Move {
     Move::Cell(b, (v[0], v[1], v[2]), d)
 }
 
-fn server_of(args: &[String]) -> String {
-    flag(args, "--server").unwrap_or(oracle::DEFAULT_SERVER).to_string()
-}
-
-/// A refusal the user can act on: exit 3, message on stderr, no backtrace.
-///
-/// A refusal that arrives as a Rust panic tells the reader to run with
-/// `RUST_BACKTRACE=1`, which is exactly the wrong instruction — the tool is
-/// working, the command was wrong. Panics stay for invariants nobody can
-/// trigger from the command line.
-pub fn die(msg: &str) -> ! {
-    eprintln!("tmmaps: {}", msg);
-    std::process::exit(3);
-}
 
 /// A tool whose census is 90 000 lines long will be piped into `head`, and a
 /// Rust binary ignores SIGPIPE by default — so the write fails, and the

@@ -3,6 +3,14 @@ name = "tmmaps"
 version = "0.2.0"
 edition = "2021"
 
+[lib]
+name = "tmmaps"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmmaps"
+path = "src/main.rs"
+
 [dependencies]
 # `tools/ghost` owns the ghost/replay format for the whole toolchain. tmmaps
 # needs exactly one thing out of it -- the checkpoint splits a reference ghost
