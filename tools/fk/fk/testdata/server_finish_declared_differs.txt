@@ -1,0 +1,37 @@
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+Starting validation of 1 ghosts (in 1 maps)... 
+Validating batch of cand.Ghost.Gbx on map 'Summer 2026 - 02' (batch size = 1)...
+[
+{
+  "ValidatedResult" : {
+    "NbCheckpoints" : 3,
+    "NbRespawns" : 0,
+    "Time" : 22754,
+    "Score" : 0
+  },
+  "Desc" : "race finished, time is worse. (22730 < 22754)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 3,
+    "NbRespawns" : 0,
+    "Time" : 22730,
+    "Score" : 0
+  },
+  "Inputs" : "31_151C101E108C4E25C81E9C68D6C58E17C8E20C24D17C88D31C200D15C16D6C16D11C30D6C15D4C18D4C18E3C29D14C22E13C25E7C9E40C17E4C24D10C7E193C10L45C12E22C4E59C17D8C21E7C9E21C15E7C12E10C19E10C24D13C20D3C25E5C10D15C24E10C158E13C10E18C19E28C8E6C12E5C14E2C25E34B",
+  "GameBuild" : "Trackmania date=2026-02-02_17_51 git=128149-c7d05ad2551 GameVersion=3.3.0",
+  "AccountId" : "00000000-0000-0000-0000-000000000000",,
+  "Login" : "REDACTED",,
+  "MapUid" : "6fhmufQJh2EUZI36i6CiE9vvule",
+  "FileName" : "cand.Ghost.Gbx"
+}
+NotAvail replay: cand.Ghost.Gbx (#16.Day.Script)
+]
+---------------- 1 replays parsed --------------
+Can't load :   0% (  0)
+Incompatibl:   0% (  0)
+Is Invalid :   0% (  0)
+Is Valid   :   0% (  0)
+Unvalidable: 100% (  1)
+
+Exiting...

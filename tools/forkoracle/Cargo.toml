@@ -1,0 +1,15 @@
+# The fork server: the driver the search and `fk` both run, and the LD_PRELOAD
+# shim that lives inside the game server.
+#
+# They are one workspace because they are one mechanism split across a process
+# boundary: `forkshim/src/lib.rs` `#[path]`-includes `forkoracle/src/pred_core.rs`
+# so a predicate has EXACTLY ONE definition in the parent and in the child.
+# Two copies of that file would be two judges.
+[workspace]
+members = ["forkoracle", "forkshim"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
