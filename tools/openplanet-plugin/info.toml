@@ -1,0 +1,7 @@
+[meta]
+name = "GhostShooter"
+author = "vjeux+navi"
+category = "Map Editor"
+
+[script]
+imports = [ "HttpServer.as" ]
