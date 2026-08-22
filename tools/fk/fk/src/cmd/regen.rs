@@ -425,7 +425,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         for i in 0..ent.times.len() {
             let ms = ent.times[i] as i64;
-            let Some((fst, lst)) = by_ms.get(&ms) else {
+            // The engine writes the vehicle state twice inside one tick and
+            // which of the two the game's own recorder captured is a
+            // measurable question per field, not a matter of taste (measured:
+            // steer wants the FIRST write, suspension the last). The transform
+            // encoder uses the first; nothing here writes a last-write field
+            // any more, so `_lst` is carried rather than dropped so the pairing
+            // stays visible to whoever adds one.
+            let Some((fst, _lst)) = by_ms.get(&ms) else {
                 missing.push(ms);
                 continue;
             };

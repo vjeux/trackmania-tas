@@ -42,7 +42,7 @@
 //! thing for an aborted and a completed run -- which it does, because the child
 //! computes it identically in both cases.
 
-use crate::pred_core::{Pred, Summary, K_BOX, K_FLOOR, K_NOPROG, K_OFFREF, K_SPEEDDROP, PRED_BYTES};
+use crate::pred_core::{Pred, Summary, PRED_BYTES};
 
 /// One armed, named condition.
 #[derive(Clone)]
@@ -178,23 +178,26 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
         }
     }
     let mut p = Pred::ZERO;
+    // ONE table of predicate names, in `pred_core`, which is the file the shim
+    // compiles into the child. Each arm below used to set `p.kind` itself, so
+    // the language had two name-to-kind maps in one crate and adding a
+    // predicate meant editing both.
+    p.kind = crate::pred_core::kind_of(kind_s)
+        .ok_or_else(|| format!("unknown predicate kind {:?}", kind_s))?;
     p.after = geti(&kv, "after", 0);
     p.until = geti(&kv, "until", i32::MAX);
     match kind_s {
         "speeddrop" => {
-            p.kind = K_SPEEDDROP;
             p.win = geti(&kv, "win", 50).max(1) as u32;
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "frac", 0.5);
             p.p[1] = getf(&kv, "minpeak", 8.0);
         }
         "floor" => {
-            p.kind = K_FLOOR;
             p.need = geti(&kv, "need", 30).max(1) as u32;
             p.p[0] = getf(&kv, "speed", 3.0);
         }
         "box" => {
-            p.kind = K_BOX;
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "xmin", f32::NEG_INFINITY);
             p.p[1] = getf(&kv, "xmax", f32::INFINITY);
@@ -204,12 +207,10 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
             p.p[5] = getf(&kv, "zmax", f32::INFINITY);
         }
         "offref" => {
-            p.kind = K_OFFREF;
             p.need = geti(&kv, "need", 5).max(1) as u32;
             p.p[0] = getf(&kv, "dist", 12.0);
         }
         "noprog" => {
-            p.kind = K_NOPROG;
             p.win = geti(&kv, "win", 100).max(1) as u32;
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "dist", 5.0);

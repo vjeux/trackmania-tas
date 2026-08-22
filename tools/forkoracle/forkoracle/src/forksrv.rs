@@ -247,7 +247,7 @@ impl ForkServer {
         }
         use std::os::unix::io::FromRawFd;
         let cmd_w = unsafe { std::fs::File::from_raw_fd(cmd_w) };
-        let mut res_r = unsafe { std::fs::File::from_raw_fd(res_r) };
+        let res_r = unsafe { std::fs::File::from_raw_fd(res_r) };
 
         // From here on the server is OURS: every exit must take it with us, or
         // it becomes an orphan holding inherited descriptors open. `Drop` does
@@ -639,21 +639,6 @@ fn wait_readable(f: &std::fs::File, ms: i32) -> bool {
     r > 0
 }
 
-fn read_frame_to(f: &mut std::fs::File, ms: i32) -> Option<Vec<u8>> {
-    if !wait_readable(f, ms) {
-        return None;
-    }
-    let mut hdr = [0u8; 4];
-    f.read_exact(&mut hdr).ok()?;
-    let n = u32::from_le_bytes(hdr) as usize;
-    let mut v = vec![0u8; n];
-    if n > 0 {
-        // the body follows immediately; a partial write would be a protocol
-        // violation, so a plain blocking read is fine once the header is in
-        f.read_exact(&mut v).ok()?;
-    }
-    Some(v)
-}
 
 /// `(time_ms, checkpoints_reached)` from a validator JSON block.
 pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {

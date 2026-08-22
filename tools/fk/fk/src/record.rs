@@ -152,7 +152,6 @@ pub fn extra_segs() -> Vec<(i64, u32)> {
         _ => Vec::new(),
     }
 }
-pub const WIN_BACK_DEFAULT: i64 = 192;
 
 
 /// Convert a 3x3 rotation matrix (row-major, world = M * body) to (x, y, z, w).
@@ -394,7 +393,7 @@ fn discover_layout(
 /// Every plausible anchor, fastest candidate first, each with its own measured
 /// (position, quaternion, velocity) layout.
 pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
-    use clock_for_tick;
+
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-anch", c.work));
     let _ = std::fs::create_dir_all(&work);
@@ -460,7 +459,7 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
 /// The engine clock's offset against race time, read at a checkpoint far enough
 /// in for the page-fault probe to be exact.
 pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i64, String> {
-    use clock_for_tick;
+
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-bias", c.work));
     let _ = std::fs::create_dir_all(&work);
@@ -481,17 +480,6 @@ pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i6
 }
 
 /// The clean run itself.
-pub fn run_clean(
-    c: &Ctx,
-    segs_rel: &[(i64, u32)],
-    bias_override: Option<i64>,
-    period: i64,
-    phase_ms: i64,
-    dump: &str,
-    verbose: bool,
-) -> Result<CleanOut, String> {
-    run_clean_anch(c, segs_rel, bias_override, None, period, phase_ms, dump, verbose)
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_clean_anch(
@@ -504,7 +492,7 @@ pub fn run_clean_anch(
     dump: &str,
     verbose: bool,
 ) -> Result<CleanOut, String> {
-    use clock_for_tick;
+
     use std::path::PathBuf;
     let work = PathBuf::from(&c.work);
     let _ = std::fs::create_dir_all(&work);
@@ -932,8 +920,8 @@ pub fn run_clean_anch(
     // reference telemetry: the quaternion 16 B before the position must be a
     // unit quaternion, and the velocity 12 B after it must equal the position's
     // own derivative. Both fail loudly on a wrong address.
-    let mut qerr: f64 = 0.0;
-    let mut verr: f64 = f64::NAN;
+    let qerr: f64;
+    let verr: f64;
     if reclen >= 44 && recs.len() > 4 {
         let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
         let mut qs: Vec<f64> = Vec::new();

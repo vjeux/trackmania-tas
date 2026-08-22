@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 #[path = "../../forkoracle/src/pred_core.rs"]
 pub mod pred_core;
-use pred_core::{Eval, Pred, RefLine, Summary, MAXP, PRED_BYTES, SUMMARY_BYTES};
+use pred_core::{Eval, Pred, RefLine, MAXP, PRED_BYTES, SUMMARY_BYTES};
 
 const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 
@@ -698,7 +698,7 @@ unsafe fn arm_probe(base: usize, n: usize, fd: c_int) {
     PROBE_BASE.store(base, Ordering::SeqCst);
     PROBE_END.store(base + n * STRIDE, Ordering::SeqCst);
     let act = SigactionT {
-        handler: segv_handler as usize,
+        handler: segv_handler as *const () as usize,
         mask: [0; 16],
         flags: SA_SIGINFO,
         restorer: 0,

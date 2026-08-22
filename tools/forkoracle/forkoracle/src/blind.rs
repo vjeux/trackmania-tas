@@ -61,44 +61,20 @@ fn getf32(b: &[u8], o: usize) -> f64 {
 
 /// Find the race clock with no reference at all: stream a wide window and keep
 /// every u32 slot that advances by exactly 10 on every tick.
-pub fn find_clock_blind(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    start_offset_ms: i32,
-    lo: u64,
-    len: u32,
-    stride: u64,
-    ticks: u32,
-) -> Vec<(u64, i64)> {
-
-    let (_j, blob) = srv.run_sampled(probe, recs, lo, len, stride, ticks, (0, len));
-    let recsz = 8 + len as usize;
-    let m = blob.len() / recsz;
-    if m < 50 {
-        return Vec::new();
-    }
-    let g = |i: usize, o: usize| -> u32 {
-        u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 12 + o].try_into().unwrap())
-    };
-    let race0 = crate::layout::sample_ms(probe, 0, start_offset_ms);
-    let mut out = Vec::new();
-    for o in (0..len as usize - 4).step_by(4) {
-        if (0..m - 1).all(|i| g(i + 1, o).wrapping_sub(g(i, o)) == 10) {
-            out.push((lo + o as u64, g(0, o) as i64 - race0));
-        }
-    }
-    out
-}
+/* `find_clock_blind` was here: the v1 blind clock finder. Superseded by
+   `fk::locate::find_clock2`, which scans mapped windows nearest the input
+   array first and confirms a slot over hundreds of ticks instead of tens.
+   Deleted rather than kept: two clock finders is two answers. */
 
 /// Given a clock, find the vehicle struct near it by internal consistency:
 /// position must be finite, in-bounds, smooth, and its derivative must match
 /// the velocity triple 12 bytes later.
-pub fn qualify_blind_window(
+// Not `pub`: `locate_blind` is the entry point. The `start_offset_ms` this used
+// to take was never read -- it labels samples, and nothing here labels one.
+fn qualify_blind_window(
     srv: &mut ForkServer,
     probe: usize,
     recs: &[Rec],
-    start_offset_ms: i32,
     win_lo: u64,
     win_len: u32,
     stride: u64,
@@ -269,7 +245,7 @@ pub fn locate_blind(
     let mut shortlist: Vec<u64> = Vec::new();
     let mut nwin = 0usize;
     for w in &wins {
-        let cands = shortlist_window(srv, probe, recs, start_offset_ms, *w, slice, stride, bounds);
+        let cands = shortlist_window(srv, probe, recs, *w, slice, stride, bounds);
         nwin += 1;
         if dbg {
             eprintln!("DBG win {:#x}: {} candidates", w, cands.len());
@@ -298,7 +274,7 @@ pub fn locate_blind(
     let mut examined = 0usize;
     let mut winner_idx: i64 = -1;
     for (ix, a) in shortlist.iter().take(cap).enumerate() {
-        let mut got = qualify_blind_window(srv, probe, recs, start_offset_ms, *a, 24, stride, 150, bounds);
+        let mut got = qualify_blind_window(srv, probe, recs, *a, 24, stride, 150, bounds);
         for h in got.iter_mut() {
             h.pos = *a;
         }
@@ -390,11 +366,10 @@ pub fn bounds_from(rows: &[Row], margin: f64) -> (f64, f64, f64, f64, f64, f64) 
 
 /// Phase 1: from a few ticks of a wide window, return every 4-byte-aligned
 /// offset whose float triple is finite, inside the map, and actually moving.
-pub fn shortlist_window(
+fn shortlist_window(
     srv: &mut ForkServer,
     probe: usize,
     recs: &[Rec],
-    start_offset_ms: i32,
     lo: u64,
     len: u32,
     stride: u64,

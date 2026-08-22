@@ -96,7 +96,7 @@ fn parse(args: &[String]) -> Cfg {
     };
     let mut i = 0;
     while i < args.len() {
-        let mut next = |i: &mut usize| -> String {
+        let next = |i: &mut usize| -> String {
             *i += 1;
             args.get(*i)
                 .unwrap_or_else(|| panic!("flag {} needs a value", args[*i - 1]))

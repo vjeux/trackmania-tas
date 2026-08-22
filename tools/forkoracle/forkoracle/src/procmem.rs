@@ -156,21 +156,8 @@ pub fn memmem(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 
-pub fn write_at(pid: i32, addr: u64, data: &[u8]) -> bool {
-    use std::io::Write;
-    use std::fs::OpenOptions;
-    let mut f = match OpenOptions::new()
-        .write(true)
-        .open(format!("/proc/{}/mem", pid))
-    {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("open mem w: {}", e);
-            return false;
-        }
-    };
-    if f.seek(SeekFrom::Start(addr)).is_err() {
-        return false;
-    }
-    f.write_all(data).is_ok()
-}
+/* `write_at` was here: writing another process's memory through
+   /proc/<pid>/mem. Its only caller was `fk poke`, which overwrote every
+   in-memory copy of a bitstream to test whether the engine re-reads it. It
+   does not -- the raw stream is decoded once at load and never read again --
+   so the question is answered and the capability is not needed. */

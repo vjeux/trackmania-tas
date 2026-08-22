@@ -35,12 +35,13 @@ pub const K_NOPROG: u32 = 5;
 
 pub fn kind_name(k: u32) -> &'static str {
     match k {
+        K_NONE => "none",
         K_SPEEDDROP => "speeddrop",
         K_FLOOR => "floor",
         K_BOX => "box",
         K_OFFREF => "offref",
         K_NOPROG => "noprog",
-        _ => "none",
+        _ => "unknown",
     }
 }
 
