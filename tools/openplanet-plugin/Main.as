@@ -54,7 +54,8 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
     if (r == "/ping") return HttpResponse(200, "pong");
-    if (r == "/build") return HttpResponse(200, "B1787418159");
+    if (r == "/build") return HttpResponse(200, "B1787418928");
+    if (r == "/shootstatus") return HttpResponse(200, ShootStatus());
     if (r == "/mtquit") return HttpResponse(200, QuitMT());
     if (r == "/import") return HttpResponse(200, ImportGhostRel(PathArg()));
     if (r == "/importfile") return HttpResponse(200, ImportGhostFile(PathArg()));
