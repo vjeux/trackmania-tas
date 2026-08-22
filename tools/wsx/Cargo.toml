@@ -1,0 +1,10 @@
+[package]
+name = "wsx"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wsx"
+path = "src/main.rs"
+
+[dependencies]

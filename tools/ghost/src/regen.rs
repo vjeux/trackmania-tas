@@ -210,17 +210,27 @@ pub fn cmd(a: &[String]) {
     let map = flag(a, "--map").unwrap_or_else(|| die("--map MAP.Map.Gbx"));
     let extra: Vec<String> = {
         let mut v = Vec::new();
-        for k in ["--fieldmap", "--anchorticks", "--segs", "--biastick", "--inputshift"] {
+        // Value flags, forwarded verbatim. `--fieldmap` is NOT among them any
+        // more: `fk` deleted it along with the field-fitting machinery, and a
+        // wrapper that forwards a flag the callee does not know is a silent
+        // no-op wearing the shape of a feature.
+        for k in ["--anchorticks", "--segs", "--biastick", "--inputshift", "--anchor", "--race", "--quat-kind"] {
             if let Some(x) = flag(a, k) {
                 v.push(k.to_string());
                 v.push(x.to_string());
             }
         }
-        if has(a, "--verbose") {
-            v.push("--verbose".into());
-        }
-        if has(a, "--trim-outside") {
-            v.push("--trim-outside".into());
+        // Switches. `--neutralise` is the one that matters and it was
+        // unreachable from here: it is the only way to stop a regenerated file
+        // being quietly part-carrier, since the 49 per-run bytes the transform
+        // encoder does not write -- ground contact, wheels, rpm, surface
+        // effects -- otherwise stay the donor's. Every C5/C6/C7 refusal on this
+        // project's published corpus is those bytes.
+        for k in ["--verbose", "--trim-outside", "--inherit-outside", "--allow-partial",
+                  "--neutralise", "--inputs", "--keep-transform", "--noanchor"] {
+            if has(a, k) {
+                v.push(k.to_string());
+            }
         }
         v
     };

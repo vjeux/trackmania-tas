@@ -1031,8 +1031,37 @@ fn set_arg(v: &str) -> Result<(), String> {
 
 /// Import one ghost and PROVE it landed: the plugin reports the ghost-block
 /// count before and after, and this refuses to report success unless it rose.
+/// Get the game to a state with no modal up, and PROVE it -- dismissing what
+/// will not go away by itself.
+///
+/// Importing a ghost raises `FrameMessage` "Updating data..." with a progress
+/// bar stuck at 0. It is not transient: measured, it sat there for the full
+/// 120 s a `nodialog` wait allowed, and the next `ImportGhosts` opened its file
+/// dialog underneath it, reporting `before:N after:N` -- a silent no-op that
+/// reads exactly like a missing file. `/dismiss` clears it in one frame, and it
+/// answers each frame id its own correct way (message -> Ok, ask-yes-no -> No,
+/// save-as -> Cancel), so the default is always to decline rather than to save
+/// the map we are filming.
+///
+/// So: wait briefly, and if something is still up, dismiss it and wait again.
+/// The short wait is what makes this cheap when nothing is wrong; the dismiss
+/// is what makes it work when something is.
+fn clear_dialogs(what: &str) -> Result<(), String> {
+    for attempt in 0..6 {
+        if await_cond("nodialog", 5).is_ok() {
+            return Ok(());
+        }
+        let d = http_get("/dismiss", 15).unwrap_or_default();
+        println!("  dialog before {what}: dismissed ({}) [{}]", d.trim(), attempt + 1);
+    }
+    Err(format!("a dialog will not clear before {what}: {}", http_get("/ctx", 15).unwrap_or_default().trim()))
+}
+
 fn import_ghost(rel: &str) -> Result<(), String> {
+    clear_dialogs(rel)?;
     set_arg(rel)?;
+
+
     let body = http_get("/import", 30)?;
     let num = |k: &str| -> i64 {
         let key = format!("\"{k}\":");
@@ -1077,6 +1106,7 @@ fn stage_and_import(files: &[String]) -> i32 {
     }
     println!("staged {} ghost(s) into _shoot", names.len());
     if let Err(e) = http_get("/rmtracks", 15) {
+
         eprintln!("{e}");
         return 1;
     }
@@ -1518,7 +1548,17 @@ fn shoot(timeout_s: u64, name: &str) -> i32 {
     // wrong file whenever anything else had written one.
     let before = webm_snapshot();
 
+    // A LEFTOVER MODAL EATS THE SHOOT DIALOG. The ghost import raises a sticky
+    // "Updating data..." FrameMessage and nothing downstream clears it; `/shoot`
+    // then opens the shoot params underneath it and `wait_shoot_dialog` times
+    // out on a game that did exactly what it was told.
+    if let Err(e) = clear_dialogs("the shoot dialog") {
+        eprintln!("{e}");
+        return 1;
+    }
+
     println!("rewind: {}", http_get("/rewind", 20).unwrap_or_default().trim());
+
     println!("shoot:  {}", http_get("/shoot", 20).unwrap_or_default().trim());
 
     // WAIT FOR THE DIALOG ITSELF. Not for a frame name, not for a modal count:

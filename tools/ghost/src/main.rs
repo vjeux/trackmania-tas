@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{engine, hdr, ident, map_uid_of, oracle, regen, selftest, trim, verify};
+use ghost::{engine, hdr, ident, map_uid_of, oracle, record, regen, selftest, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -48,10 +48,17 @@ INPUTS  (operation 1 and 2)
         census that says what is still unnamed in the packet.
 
 CAR STATE  (operation 3)
-  ghost regen IN OUT --map MAP [--fieldmap F] [--anchorticks a,b,c]
+  ghost regen IN OUT --map MAP [--neutralise] [--inputs] [--trim-outside]
+                              [--anchorticks a,b,c] [--noanchor]
         Run the real engine on this file's own inputs, capture per-sample car
         state and write it into the ghost, so the recorded trajectory MATCHES
         the tape. Refuses unless the acceptance gate passes.
+        --neutralise ALSO zeros the 49 per-run bytes the transform encoder does
+        not write (ground contact, wheels, rpm, suspension, surface effects).
+        Without it those bytes stay the donor container's, which is what every
+        C5/C6/C7 refusal in this corpus is; with it they are honestly absent,
+        and `tmtraj check` C10 then fails by design.
+        --inputs also rewrites the record's steer/gas/brake echo from the tape.
   ghost regen-control FILE --map MAP
         The fixed-point control: regenerate a ghost that already carries its own
         true telemetry and require the result to reproduce it.
@@ -195,6 +202,7 @@ fn main() {
                 o => die(format!("unknown `ghost header` operation {:?}", o)),
             }
         }
+        "record" => record::cmd(rest),
         "regen" => regen::cmd(rest),
         "regen-control" => regen::control(rest),
         "verify" => verify::cmd(rest),

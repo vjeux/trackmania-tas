@@ -24,6 +24,7 @@ pub mod engine;
 pub mod hdr;
 pub mod ident;
 pub mod oracle;
+pub mod record;
 pub mod regen;
 pub mod script;
 pub mod selftest;
