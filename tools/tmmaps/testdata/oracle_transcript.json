@@ -1,0 +1,41 @@
+[
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 4,
+    "NbRespawns" : 0,
+    "Time" : 19538,
+    "Score" : 0
+  },
+  "Inputs" : "5C46_121C34D53C17D99C16D69C7D10C38D5C99D6C10D108C12L145C30_11C83E5C55D2C46E12B55E5B176E4C43D5C277E160C9L231C",
+  "GameBuild" : "Trackmania date=2026-02-02_17_51 git=128149-c7d05ad2551 GameVersion=3.3.0",
+  "AccountId" : "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "Login" : "xxxxxxxxxxxxxxxxxxxxxx",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "edited.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : {
+    "NbCheckpoints" : 4,
+    "NbRespawns" : 0,
+    "Time" : 19538,
+    "Score" : 0
+  },
+  "Desc" : "validated time is actually better! (30000 > 19538)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 5,
+    "NbRespawns" : 0,
+    "Time" : 30000,
+    "Score" : 0
+  },
+  "Inputs" : "5C46_121C34D53C17D99C16D69C7D10C38D5C99D6C10D108C12L186C83E5C55D2C46E12B55E5B176E4C43D5C277E160C9L231C",
+  "GameBuild" : "Trackmania date=2026-02-02_17_51 git=128149-c7d05ad2551 GameVersion=3.3.0",
+  "AccountId" : "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "Login" : "xxxxxxxxxxxxxxxxxxxxxx",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "stale_decl.Ghost.Gbx"
+}
+]

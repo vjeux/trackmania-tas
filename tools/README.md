@@ -269,3 +269,32 @@ commands.
 out to `fk` (the fork-server state reader) and expects it on `PATH` or at
 `$FK_BIN`. Everything else in this crate is self-contained: one dependency,
 `tmtraj`, in this same directory.
+
+## tools/tmmaps — the map API
+
+```
+tools/tmmaps/     one binary, `tmmaps`: read a map's blocks and items (both
+                  chunks), move them by position, empty a region and prove it
+                  empty, build segment maps, run arrival ladders, and drive the
+                  dedicated server
+```
+
+```
+cd tools/tmmaps && cargo build --release
+TM_SERVER=<dir containing TrackmaniaServer> ./target/release/tmmaps selftest
+```
+
+**29 checks, seven checked-in fixtures, ~30 s, no external data.** One
+dependency, `tools/ghost` by path — the ghost format is its job, so `tmmaps`
+calls in for the reference ghost's declared splits rather than keeping a second
+reader. [`MAPS.md`](tmmaps/MAPS.md) is the API and the traps;
+[`U02-AUDIT.md`](tmmaps/U02-AUDIT.md) is the audit that produced it.
+
+`tmmaps` and `ghost` do not overlap: `ghost` owns the ghost/replay format,
+`tmmaps` owns `.Map.Gbx`, and `tmmaps` **refuses a recording by GBX class**
+rather than reaching into a carried map. To edit the map a recording runs on,
+compose them — `ghost map extract` → `tmmaps …` → `ghost map set`.
+
+`u02` is deleted; all 24 of its subcommands are covered by one of those two, or
+were one-off probe apparatus. `U02-AUDIT.md` says which, and why, with the
+control behind each verdict.
