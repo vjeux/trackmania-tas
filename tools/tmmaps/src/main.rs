@@ -312,14 +312,14 @@ fn main() {
         }
         "ladder" => {
             let src = PathBuf::from(&args[2]);
-            let out = PathBuf::from(flag(&args, "--out").unwrap_or("/tmp/mladder"));
+            let out = PathBuf::from(flag(&args, "--out").unwrap_or("/tmp/tmmaps-ladder"));
             let jobs = jobs_of(&args);
             let server = server_of(&args);
             let ghosts: Vec<PathBuf> = flag_multi(&args, "--ghosts")
                 .into_iter()
                 .map(PathBuf::from)
                 .collect();
-            assert!(!ghosts.is_empty(), "mladder needs --ghosts");
+            assert!(!ghosts.is_empty(), "ladder needs --ghosts");
             let spec = std::fs::read_to_string(
                 flag(&args, "--spec").expect("--spec FILE (one rung per line)"),
             )
@@ -330,7 +330,7 @@ fn main() {
                 .filter(|l| !l.is_empty())
                 .map(|l| l.split_whitespace().map(parse_move).collect())
                 .collect();
-            assert!(!rungs.is_empty(), "mladder needs rungs");
+            assert!(!rungs.is_empty(), "ladder needs rungs");
             // Refuse baked indices BEFORE anything indexes `m0.blocks`. On a
             // small map a baked index happens to be out of range and panics on
             // bounds; on a big one (210218 has 21 025 unbaked blocks) it is
@@ -568,7 +568,7 @@ fn main() {
                     }
                 }
             }
-            m.write_to(&out).expect("write movemany map");
+            m.write_to(&out).expect("write moved map");
             println!("wrote {}", out.display());
         }
         "oracle" => {
@@ -954,7 +954,7 @@ fn main() {
             }
         }
         "rungspec" => {
-            // `prs`: emit an mladder spec that places a waypoint block ON the
+            // `prs`: emit a `ladder` spec that places a waypoint block ON the
             // reference ghost's own trajectory at a set of known times.
             //
             // This is `ACQUISITION_addendum_vj_gate_trigger_geometry_v1` §1 --

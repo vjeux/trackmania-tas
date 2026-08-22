@@ -191,7 +191,7 @@ pub struct MapFile {
     /// zero and looks exactly like an item-built map.
     ///
     /// Authored by the answer-key agent (session 9f00f635, node 105213), whose
-    /// `allblocks2` / `freeblocks2` and the 267460 census numbers this carries.
+    /// the `census` command and the 267460 numbers this carries.
     ///
     /// **These are NOT addressable by any mover.** A baked block's index is
     /// its position in this list, so it aliases an unrelated `blocks` index;
@@ -1136,7 +1136,7 @@ pub const FREE_POS_CHUNK: u32 = 0x0304305F;
 /// floats in `0x0304305F`, cell bytes dead).
 pub const FREE_BLOCK_FLAG: u32 = 0x2000_0000;
 
-/// `prs`, folding the answer-key agent's `freeblocks2` walk: attach chunk
+/// `prs`, folding the answer-key agent's free-block walk: attach chunk
 /// `0x0304305F` entries to the free blocks of BOTH `0x0304301F` and the baked
 /// chunk `0x03043048`.
 ///
