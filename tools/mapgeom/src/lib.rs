@@ -37,6 +37,7 @@ pub mod pakfile;
 pub mod place;
 pub mod probe;
 pub mod reader;
+pub mod render;
 pub mod scene;
 pub mod store;
 pub mod tables;

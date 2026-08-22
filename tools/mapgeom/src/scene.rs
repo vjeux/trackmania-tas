@@ -392,7 +392,7 @@ impl Scene {
     }
 }
 
-fn colour_for(name: &str) -> [f32; 4] {
+pub fn colour_for(name: &str) -> [f32; 4] {
     for id in 0..=48u8 {
         if physics_name(id) == name {
             return physics_colour(id);

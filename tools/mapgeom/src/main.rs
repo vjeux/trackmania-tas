@@ -21,7 +21,7 @@ COMMANDS
   refs <logical-path>           a file's external reference table
   dump <logical-path>           walk a file's node graph and summarise it
   model <logical-path> --out F  a single file's geometry, as .glb or .obj
-  map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--ghost G]...
+  map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--ghost G]... [--png P]
                                 a whole map, with any ghosts as polylines
 ";
 
@@ -198,6 +198,25 @@ fn main() {
             }
             report(&stats, &scene);
             write_scene(&scene, &out);
+            if let Some(png) = flag(&a.rest, "--png") {
+                // Clip just above the highest point the run reached, so the
+                // stadium roof does not become the picture.
+                let clip = flag(&a.rest, "--clip-y")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or_else(|| {
+                        scene
+                            .lines
+                            .iter()
+                            .flat_map(|l| l.points.iter())
+                            .map(|p| p[1])
+                            .fold(f32::NEG_INFINITY, f32::max)
+                            + 8.0
+                    });
+                let img = mapgeom::render::top_down(&scene, 1.0, 4000, clip);
+                std::fs::write(&png, mapgeom::render::png(&img))
+                    .unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {} ({} x {} px)", png, img.w, img.h);
+            }
         }
         "check" => {
             let mut store = open(&a);
