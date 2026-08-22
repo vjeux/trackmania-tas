@@ -35,7 +35,7 @@ INPUTS  (operation 1 and 2)
         Write a tape back into a ghost. Default writes every vehicle field
         EXPLICITLY so no tick inherits the previous one's inputs; --verbatim
         reproduces the file's original coding exactly.
-  ghost tape expand IN OUT
+  ghost tape expand IN OUT [--state]
         Rewrite every "same as the previous tick" packet in its explicit form.
         Semantically a no-op -- and the oracle control says so -- but afterwards
         every tick is writable.
@@ -694,9 +694,26 @@ fn cmd_tape(a: &[String]) {
         "expand" => {
             let inp = rest.first().unwrap_or_else(|| die("ghost tape expand IN OUT"));
             let out = rest.get(1).unwrap_or_else(|| die("ghost tape expand IN OUT"));
+            let state_too = rest.iter().any(|s| s == "--state");
             let c = Container::load(inp).unwrap_or_else(|e| die(e));
-            let t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+            let mut t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
             let before = t.archives[0].packets.iter().filter(|p| p.vsame).count();
+            // A repeated STATE word carries no literal, and the respawn input
+            // is bit 31 of one, so on a tape like 153527's -- 566 327 packets,
+            // 547 329 of them repeats -- a respawn is unwritable at 96.7% of
+            // ticks. `--state` turns each repeat into the literal the decoder
+            // derives from it anyway.
+            let mut states = 0;
+            if state_too {
+                for a in t.archives.iter_mut() {
+                    for p in a.packets.iter_mut() {
+                        if !matches!(p.state, gbx::tape::StateEnc::Lit(_)) {
+                            p.state = gbx::tape::StateEnc::Lit(gbx::tape::literal_for(p.word0, p.flags));
+                            states += 1;
+                        }
+                    }
+                }
+            }
             let body = t.splice_into(c.body(), Encoding::Explicit).unwrap_or_else(|e| die(e));
             container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
             let back = Tape::from_file(out).unwrap_or_else(|e| die(e));
@@ -704,11 +721,17 @@ fn cmd_tape(a: &[String]) {
                 if p.steer != q.steer || p.accel != q.accel || p.brake != q.brake {
                     die("expansion changed an input value -- refusing");
                 }
+                // With --state the point of the exercise is that the state word
+                // survives the rewrite, so it is checked rather than assumed.
+                if state_too && (p.word0 != q.word0 || p.flags != q.flags) {
+                    die("state expansion changed the state word -- refusing");
+                }
             }
             println!(
-                "wrote {}  ({} same-as-previous packets expanded; every one of {} ticks is now writable)",
+                "wrote {}  ({} same-as-previous packets expanded{}; every one of {} ticks is now writable)",
                 out,
                 before,
+                if state_too { format!(", {} repeated state words turned into literals", states) } else { String::new() },
                 t.n()
             );
         }

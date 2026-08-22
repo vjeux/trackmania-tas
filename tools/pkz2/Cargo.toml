@@ -1,0 +1,11 @@
+[package]
+name = "pkz2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gbx = { path = "../gbx" }
+
+[[bin]]
+name = "pkz2"
+path = "src/main.rs"
