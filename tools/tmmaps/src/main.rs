@@ -918,8 +918,11 @@ fn main() {
             // calibrate a gate whose origin is not where its trigger is (a
             // gate anchored at the road surface under a car 14 m above it).
             let csv = std::fs::read_to_string(&args[2]).expect("read trajectory csv");
-            let bidx: usize = flag(&args, "--block").expect("--block N").parse().unwrap();
-            let also: Option<usize> = flag(&args, "--also").map(|s| s.parse().unwrap());
+            // A String, not a usize: a rung on THIS map is the Goal ITEM, spelled
+            // `i0`, and the movers already understand that spelling. Parsing it as a
+            // number made every item-gate ladder impossible to express.
+            let bidx: String = flag(&args, "--block").expect("--block N (or iN for an item)").to_string();
+            let also: Option<String> = flag(&args, "--also").map(|s| s.to_string());
             let off: [f32; 3] = match flag(&args, "--offset") {
                 Some(s) => {
                     let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect();
@@ -990,7 +993,7 @@ fn main() {
                     p[1] as f32 + off[1],
                     p[2] as f32 + off[2]
                 );
-                if let Some(b2) = also {
+                if let Some(b2) = &also {
                     line.push_str(&format!(
                         " {}@{:.3},{:.3},{:.3}",
                         b2,
