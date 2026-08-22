@@ -1,0 +1,14 @@
+[package]
+name = "forkshim"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "forkshim"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dev-dependencies]
+# The driver that WRITES the payloads this shim reads. Having both sides in one
+# test is the only way to notice the wire format drifting.
+forkoracle = { path = "../forkoracle" }

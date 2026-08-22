@@ -34,7 +34,7 @@ use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_VEL, REC_LEN};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use crate::tape::Tape as Factory;
-use forkoracle::mutate::{mutate_kind, Rng as MRng, State};
+use forkoracle::inputs::{mutate, Inputs as State, OpSet, Rng as MRng};
 
 pub struct Cfg {
     pub template: String,
@@ -401,19 +401,15 @@ fn setup(c: &Cfg) -> Setup {
 }
 
 /// One candidate, generated the way the search generates them.
-fn make(f: &Factory, rng: &mut MRng, lo: usize, hi: usize, nops: i64, ops: &str) -> State {
-    let mut s = State {
-        steer: f.steer.iter().map(|&v| v as i8).collect(),
-        accel: f.accel.clone(),
-        brake: f.brake.clone(),
-    };
+fn make(f: &Factory, rng: &mut MRng, lo: usize, hi: usize, nops: i64, ops: OpSet) -> State {
+    let mut s = State::from_arrays(&f.steer, &f.accel, &f.brake);
     let k = if nops < 0 {
         rng.range(1, -nops) as usize
     } else {
         nops as usize
     };
     for _ in 0..k {
-        mutate_kind(&mut s, rng, lo, hi, 1.0, ops);
+        mutate(&mut s, rng, lo, hi, ops);
     }
     s
 }
@@ -575,9 +571,9 @@ fn audit(c: &Cfg) {
         } else {
             (lo, hi)
         };
-        let st = make(&s.f, &mut rng, l, h, c.nops, &c.ops);
+        let st = make(&s.f, &mut rng, l, h, c.nops, opset(&c.ops));
         let p = cdir.join(format!("c{:04}.Ghost.Gbx", i));
-        write_cand(&s.f, &st.steer_u8(), &st.accel, &st.brake, &p);
+        write_cand(&s.f, &st.steer_u8(), &st.gas_u8(), &st.brake_u8(), &p);
         cands.push((st, p));
     }
 
@@ -585,7 +581,7 @@ fn audit(c: &Cfg) {
     let t0 = Instant::now();
     let mut plain: Vec<(Option<i64>, Option<u32>)> = Vec::with_capacity(c.n);
     for (st, _) in &cands {
-        let recs = tail_recs(&st.steer_u8(), &st.accel, &st.brake, from);
+        let recs = tail_recs(&st.steer_u8(), &st.gas_u8(), &st.brake_u8(), from);
         plain.push(parse_result(&s.srv.run(from, &recs)));
     }
     let t_plain = t0.elapsed().as_secs_f64();
@@ -603,7 +599,7 @@ fn audit(c: &Cfg) {
     let t1 = Instant::now();
     let mut obs: Vec<Outcome> = Vec::with_capacity(c.n);
     for (st, _) in &cands {
-        let recs = tail_recs(&st.steer_u8(), &st.accel, &st.brake, from);
+        let recs = tail_recs(&st.steer_u8(), &st.gas_u8(), &st.brake_u8(), from);
         let (j, b) = s.srv.run_watched(from, &recs);
         obs.push(outcome(&j, &b));
     }
@@ -615,7 +611,7 @@ fn audit(c: &Cfg) {
     let t1 = Instant::now();
     let mut watched: Vec<Outcome> = Vec::with_capacity(c.n);
     for (st, _) in &cands {
-        let recs = tail_recs(&st.steer_u8(), &st.accel, &st.brake, from);
+        let recs = tail_recs(&st.steer_u8(), &st.gas_u8(), &st.brake_u8(), from);
         let (j, b) = s.srv.run_watched(from, &recs);
         watched.push(outcome(&j, &b));
     }
@@ -958,7 +954,7 @@ fn equiv(c: &Cfg) {
     let hi = c.hi.min(n);
     let mut rng = MRng::new(c.seed);
     let cands: Vec<State> = (0..c.n)
-        .map(|_| make(&s.f, &mut rng, lo, hi, c.nops, &c.ops))
+        .map(|_| make(&s.f, &mut rng, lo, hi, c.nops, opset(&c.ops)))
         .collect();
     let mut runs: Vec<Vec<Outcome>> = Vec::new();
     for fast in [1u32, 0u32] {
@@ -975,7 +971,7 @@ fn equiv(c: &Cfg) {
         let t = Instant::now();
         let mut out = Vec::with_capacity(c.n);
         for st in &cands {
-            let recs = tail_recs(&st.steer_u8(), &st.accel, &st.brake, from);
+            let recs = tail_recs(&st.steer_u8(), &st.gas_u8(), &st.brake_u8(), from);
             let (j, b) = s.srv.run_watched(from, &recs);
             out.push(outcome(&j, &b));
         }
@@ -1048,4 +1044,14 @@ fn rearm(s: &mut Setup) {
         &s.segs,
     ));
     assert!(ack.starts_with("ARMED"), "re-arm failed: {}", ack);
+}
+
+/// The search names its operator set; `fk watch` has to name the same one, or
+/// the false-positive rate it measures is a number about a different
+/// distribution of candidates.
+fn opset(name: &str) -> OpSet {
+    name.parse().unwrap_or_else(|e| {
+        eprintln!("fk: {}", e);
+        std::process::exit(2)
+    })
 }

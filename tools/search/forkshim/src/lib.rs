@@ -744,6 +744,85 @@ unsafe fn send_frame(fd: c_int, payload: &[u8]) {
 /// The fork server. Entered once, in the parent, at the checkpoint; never
 /// returns there. Returns in the *child*, so the simulation resumes with the
 /// patched tail.
+/// Parse an `A` (arm) payload into `WCFG`, and return `(predicates,
+/// reference points)`.
+///
+/// Extracted from the command loop so it can be TESTED against the driver that
+/// writes it: `tmoracle::pred::Watch::arm_payload` is the only producer of
+/// these bytes, this is the only consumer, and `tests` in this crate feed one
+/// to the other. The wire format is:
+///
+/// ```text
+/// 'A' | u32 np | np * Pred
+///     | i64 clock0 | u32 off_clock off_pos off_vel rec_len
+///     | u32 nseg | nseg * (u64 addr, u32 len)
+///     | f32 corridor | i32 ahead | i32 back | f32 finish_s | u32 fast
+///     | u32 nref | nref * 3 f32 xyz | nref * f32 arclength
+///     | f32 plane_x        (trailing: an older shim ignores it)
+/// ```
+///
+/// It is parsed ONCE, in the parent, so every later fork inherits it for free.
+/// That matters most for the reference line: it is 30 KB and must not cross the
+/// pipe per candidate.
+unsafe fn parse_arm(payload: &[u8]) -> (usize, usize) {
+    let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
+    let mut o = 1usize;
+    let g4 = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
+    let np = (g4(o) as usize).min(MAXP);
+    o += 4;
+    for i in 0..np {
+        cfg.preds[i] = Pred::decode(&payload[o..o + PRED_BYTES]);
+        o += PRED_BYTES;
+    }
+    cfg.np = np;
+    cfg.clock0 = i64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
+    o += 8;
+    cfg.off_clock = g4(o) as usize;
+    cfg.off_pos = g4(o + 4) as usize;
+    cfg.off_vel = g4(o + 8) as usize;
+    cfg.rec_len = (g4(o + 12) as usize).min(MAXREC);
+    o += 16;
+    let nseg = (g4(o) as usize).min(MAXP);
+    o += 4;
+    cfg.nseg = nseg;
+    for s in 0..nseg {
+        cfg.seg[s] = (
+            u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
+            g4(o + 8) as usize,
+        );
+        o += 12;
+    }
+    let corridor = f32::from_bits(g4(o));
+    let ahead = g4(o + 4) as i32;
+    let back = g4(o + 8) as i32;
+    cfg.finish_s = f32::from_bits(g4(o + 12));
+    cfg.fast = g4(o + 16);
+    o += 20;
+    let nref = g4(o) as usize;
+    o += 4;
+    if nref > 0 {
+        let mut xyz: Vec<f32> = Vec::with_capacity(3 * nref);
+        for i in 0..3 * nref {
+            xyz.push(f32::from_bits(g4(o + 4 * i)));
+        }
+        o += 12 * nref;
+        let mut s: Vec<f32> = Vec::with_capacity(nref);
+        for i in 0..nref {
+            s.push(f32::from_bits(g4(o + 4 * i)));
+        }
+        o += 4 * nref;
+        cfg.rl = RefLine { n: nref, xyz: xyz.as_ptr(), s: s.as_ptr(), corridor, ahead, back };
+        // leaked on purpose: every child must see it at the same address, and
+        // it is written once per server
+        std::mem::forget(xyz);
+        std::mem::forget(s);
+    } else {
+        cfg.rl = RefLine::NONE;
+    }
+    cfg.plane_x = if payload.len() >= o + 4 { f32::from_bits(g4(o)) } else { 0.0 };
+    (np, nref)
+}
+
 unsafe fn forkserver() {
     let cmd = CMD_FD.load(Ordering::SeqCst);
     let res = RES_FD.load(Ordering::SeqCst);
@@ -1156,83 +1235,8 @@ unsafe fn forkserver() {
             return;
         }
         if payload[0] == b'A' {
-            // Arm the watchdog. Parsed and stored in the PARENT, once, so every
-            // later fork inherits it for free -- in particular the reference
-            // line, which is 30 KB and must not be re-sent per candidate.
-            //
-            //   'A' | u32 np | np * Pred
-            //       | i64 clock0 | u32 off_clock off_pos off_vel rec_len
-            //       | u32 nseg | nseg * (u64 addr, u32 len)
-            //       | f32 corridor | i32 ahead | i32 back
-            //       | u32 nref | nref * 3 f32 xyz | nref * f32 arclength
+            let (np, nref) = parse_arm(&payload);
             let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
-            let mut o = 1usize;
-            let g4 = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
-            let np = (g4(o) as usize).min(MAXP);
-            o += 4;
-            for i in 0..np {
-                cfg.preds[i] = Pred::decode(&payload[o..o + PRED_BYTES]);
-                o += PRED_BYTES;
-            }
-            cfg.np = np;
-            cfg.clock0 = i64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
-            o += 8;
-            cfg.off_clock = g4(o) as usize;
-            cfg.off_pos = g4(o + 4) as usize;
-            cfg.off_vel = g4(o + 8) as usize;
-            cfg.rec_len = (g4(o + 12) as usize).min(MAXREC);
-            o += 16;
-            let nseg = (g4(o) as usize).min(MAXP);
-            o += 4;
-            cfg.nseg = nseg;
-            for s in 0..nseg {
-                cfg.seg[s] = (
-                    u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
-                    g4(o + 8) as usize,
-                );
-                o += 12;
-            }
-            let corridor = f32::from_bits(g4(o));
-            let ahead = g4(o + 4) as i32;
-            let back = g4(o + 8) as i32;
-            cfg.finish_s = f32::from_bits(g4(o + 12));
-            cfg.fast = g4(o + 16);
-            o += 20;
-            let nref = g4(o) as usize;
-            o += 4;
-            if nref > 0 {
-                let mut xyz: Vec<f32> = Vec::with_capacity(3 * nref);
-                for i in 0..3 * nref {
-                    xyz.push(f32::from_bits(g4(o + 4 * i)));
-                }
-                o += 12 * nref;
-                let mut s: Vec<f32> = Vec::with_capacity(nref);
-                for i in 0..nref {
-                    s.push(f32::from_bits(g4(o + 4 * i)));
-                }
-                o += 4 * nref;
-                let _ = o;
-                cfg.rl = RefLine {
-                    n: nref,
-                    xyz: xyz.as_ptr(),
-                    s: s.as_ptr(),
-                    corridor,
-                    ahead,
-                    back,
-                };
-                // leaked on purpose: every child must see it at the same
-                // address, and it is written once per server
-                std::mem::forget(xyz);
-                std::mem::forget(s);
-            } else {
-                cfg.rl = RefLine::NONE;
-            }
-            // trailing sub-tick timing plane, if this driver sent one
-            cfg.plane_x = if payload.len() >= o + 4 {
-                f32::from_bits(g4(o))
-            } else {
-                0.0
-            };
             if cfg.out.is_null() {
                 let p = mmap(
                     std::ptr::null_mut(),
@@ -1498,3 +1502,102 @@ static FINI: extern "C" fn() = {
     }
     f
 };
+
+// ---------------------------------------------------------------------- tests
+//
+// The shim runs inside another process's address space and cannot be exercised
+// by ordinary means. What CAN be tested here is the thing most likely to break
+// silently: the wire format between the driver that arms the watchdog and the
+// child that evaluates it. `forkoracle::pred::Watch::arm_payload` is the only
+// producer of those bytes and `parse_arm` above is the only consumer, so the
+// test below runs one against the other. If a field is added on one side and
+// not the other, this fails instead of a search quietly watching for the wrong
+// thing.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forkoracle::pred::{parse_spec, RefLineData, Watch};
+
+    fn a_watch() -> Watch {
+        let mut w = Watch::new();
+        w.corridor = 40.0;
+        w.ahead = 24;
+        w.back = 8;
+        w.finish_s = 1397.0;
+        w.fast = 1;
+        w.plane_x = 123.5;
+        w.refline = RefLineData::from_points(
+            &(0..64).map(|i| [i as f64 * 1.5, 2.0, -i as f64]).collect::<Vec<_>>(),
+        );
+        for s in [
+            "crash:speeddrop:frac=0.5,win=50,minpeak=15,after=200",
+            "stuck:floor:speed=3,need=50,after=250",
+        ] {
+            w.preds.push(parse_spec(s).unwrap());
+        }
+        w
+    }
+
+    #[test]
+    fn the_arm_payload_survives_the_crossing_into_the_child() {
+        let w = a_watch();
+        let segs = [(0x7f00_1000u64, 4u32), (0x7f00_2000, 40)];
+        let payload = w.arm_payload(-1580, 0, 20, 32, 44, &segs);
+
+        let (np, nref) = unsafe { parse_arm(&payload) };
+        assert_eq!(np, 2);
+        assert_eq!(nref, 64);
+
+        let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
+        assert_eq!(cfg.np, 2);
+        assert_eq!(cfg.clock0, -1580);
+        assert_eq!(cfg.off_clock, 0);
+        assert_eq!(cfg.off_pos, 20);
+        assert_eq!(cfg.off_vel, 32);
+        assert_eq!(cfg.rec_len, 44);
+        assert_eq!(cfg.nseg, 2);
+        assert_eq!(cfg.seg[0], (0x7f00_1000, 4));
+        assert_eq!(cfg.seg[1], (0x7f00_2000, 40));
+        assert_eq!(cfg.finish_s, 1397.0);
+        assert_eq!(cfg.fast, 1);
+        assert_eq!(cfg.plane_x, 123.5, "the trailing timing plane was lost");
+        assert_eq!(cfg.rl.n, 64);
+        assert_eq!(cfg.rl.corridor, 40.0);
+        assert_eq!(cfg.rl.ahead, 24);
+        assert_eq!(cfg.rl.back, 8);
+
+        // the reference line itself, point for point
+        for i in 0..64 {
+            let x = unsafe { *cfg.rl.xyz.add(3 * i) };
+            let y = unsafe { *cfg.rl.xyz.add(3 * i + 1) };
+            let z = unsafe { *cfg.rl.xyz.add(3 * i + 2) };
+            assert_eq!((x, y, z), (i as f32 * 1.5, 2.0, -(i as f32)), "reference point {}", i);
+        }
+        let last = unsafe { *cfg.rl.s.add(63) };
+        assert!((last - w.refline.s[63]).abs() < 1e-3, "arclength did not survive");
+
+        // and the predicates, by re-encoding what the child now holds
+        for (i, np) in w.preds.iter().enumerate() {
+            let mut a = [0u8; PRED_BYTES];
+            let mut b = [0u8; PRED_BYTES];
+            np.pred.encode(&mut a);
+            cfg.preds[i].encode(&mut b);
+            assert_eq!(a, b, "predicate {} changed crossing the pipe", i);
+        }
+    }
+
+    /// The timing plane is written last so that a shim built before it existed
+    /// simply ignores it. That is only true if a short payload is safe.
+    #[test]
+    fn an_older_payload_without_the_timing_plane_is_still_read() {
+        let w = a_watch();
+        let full = w.arm_payload(0, 0, 20, 32, 44, &[(0x1000, 4)]);
+        let short = &full[..full.len() - 4];
+        let (np, nref) = unsafe { parse_arm(short) };
+        assert_eq!((np, nref), (2, 64));
+        let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
+        assert_eq!(cfg.plane_x, 0.0, "a missing timing plane must read as disabled");
+        assert_eq!(cfg.rl.n, 64, "the reference line was damaged by the short read");
+    }
+}

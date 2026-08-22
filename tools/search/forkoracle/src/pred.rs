@@ -373,22 +373,38 @@ impl RefLineData {
         nticks: usize,
     ) -> Result<RefLineData, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
-        let mut pts: Vec<Option<[f64; 3]>> = vec![None; nticks];
-        let mut nrow = 0;
+        let mut rows: Vec<(i64, f64, f64, f64)> = Vec::new();
         for line in text.lines().skip(1) {
             let f: Vec<&str> = line.trim().split(',').collect();
             if f.len() < 4 {
                 continue;
             }
-            let (ms, x, y, z) = match (
+            if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (
                 f[0].parse::<i64>(),
                 f[1].parse::<f64>(),
                 f[2].parse::<f64>(),
                 f[3].parse::<f64>(),
             ) {
-                (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
-                _ => continue,
-            };
+                rows.push((a, b, c, d));
+            }
+        }
+        Self::from_samples(&rows, start_offset_ms, nticks).map_err(|e| format!("{}: {}", path, e))
+    }
+
+    /// The same thing from samples already in hand: `(race_ms, x, y, z)`,
+    /// resampled onto tape ticks and linearly interpolated across the gaps.
+    ///
+    /// Interpolation is not a nicety: telemetry is on a 50 ms grid and ticks
+    /// are 10 ms, so at 100 km/h the live position is up to 0.7 m from the
+    /// nearest recorded sample.
+    pub fn from_samples(
+        rows: &[(i64, f64, f64, f64)],
+        start_offset_ms: i32,
+        nticks: usize,
+    ) -> Result<RefLineData, String> {
+        let mut pts: Vec<Option<[f64; 3]>> = vec![None; nticks];
+        let mut nrow = 0;
+        for &(ms, x, y, z) in rows {
             let t = (ms - start_offset_ms as i64) / 10;
             if t >= 0 && (t as usize) < nticks {
                 pts[t as usize] = Some([x, y, z]);
@@ -396,7 +412,7 @@ impl RefLineData {
             }
         }
         if nrow < 10 {
-            return Err(format!("{}: only {} usable rows", path, nrow));
+            return Err(format!("only {} usable rows", nrow));
         }
         let first = pts.iter().position(|p| p.is_some()).unwrap();
         let last = pts.iter().rposition(|p| p.is_some()).unwrap();

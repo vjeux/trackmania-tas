@@ -21,5 +21,5 @@ pub mod forksrv;
 pub mod pred;
 pub mod layout;
 pub mod blind;
-pub mod mutate;
+pub mod inputs;
 pub mod procmem;

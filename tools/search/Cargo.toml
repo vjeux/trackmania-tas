@@ -1,0 +1,19 @@
+# The search and oracle-driver layer, in one workspace so `cargo test` is one
+# command.
+#
+#   forkoracle  the fork oracle: protocol, watchdog, record layout, the car
+#               locator, and the mutation operators the search runs on
+#   forkshim    the LD_PRELOAD half of the fork oracle, loaded into the engine
+#   tmsearch    the search itself, and the guard a result must pass to leave it
+#
+# forkoracle and forkshim are in the same workspace on purpose: the shim
+# `#[path]`-includes `forkoracle/src/pred_core.rs`, so a predicate means exactly
+# one thing in the driver that arms it and in the fork child that evaluates it.
+[workspace]
+members = ["forkoracle", "forkshim", "tmsearch"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
