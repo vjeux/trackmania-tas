@@ -120,3 +120,13 @@ string CameraState() {
     j += "]}";
     return j;
 }
+
+// Leave the MediaTracker. The map editor cannot be left while the MT is open,
+// and EditMap refuses while any editor is open, so this is the first link in
+// the chain back to the menu.
+string QuitMT() {
+    auto api = MTApi();
+    if (api is null) return "not in the MediaTracker";
+    api.Quit();
+    return "ok";
+}

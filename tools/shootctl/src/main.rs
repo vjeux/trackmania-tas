@@ -562,6 +562,23 @@ fn main() {
                 lint(&args[1], &args[2..])
             }
         }
+        "setup" => {
+            let mut map = String::new();
+            let mut gs: Vec<String> = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--map" { map = args[i + 1].clone(); i += 2; }
+                else { gs.push(args[i].clone()); i += 1; }
+            }
+            if map.is_empty() || gs.is_empty() { eprintln!("setup --map <path> <ghost> [ghost]"); 2 }
+            else { setup(&map, &gs) }
+        }
+        "import" => {
+            if args.len() < 2 { 2 } else { stage_and_import(&args[1..]) }
+        }
+        "route" => {
+            if args.len() < 4 { 2 } else { add_route(&args[1], &args[2], &args[3]) }
+        }
         "stamp" => {
             if args.len() < 3 { 2 } else { stamp(&args[1], &args[2]) }
         }
@@ -627,4 +644,178 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Add a route to the plugin's dispatch table if it is not already there.
+/// Keeps Main.as edits out of shell one-liners and out of Python.
+fn add_route(main_as: &str, route: &str, expr: &str) -> i32 {
+    let src = match std::fs::read_to_string(main_as) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("{main_as}: {e}"); return 2; }
+    };
+    let key = format!("\"{route}\"");
+    if src.contains(&key) {
+        println!("route {route} already present");
+        return 0;
+    }
+    let anchor = "    if (r == \"/ping\") return HttpResponse(200, \"pong\");";
+    if !src.contains(anchor) {
+        eprintln!("anchor route not found in {main_as}");
+        return 2;
+    }
+    let line = format!("    if (r == \"{route}\") return HttpResponse(200, {expr});");
+    let out = src.replace(anchor, &format!("{anchor}\n{line}"));
+    if std::fs::write(main_as, out).is_err() { return 2; }
+    println!("added route {route}");
+    0
+}
+
+/// Write the plugin's argument file. Paths carry backslashes and spaces, and a
+/// hand-rolled URL decoder is one more thing to be wrong about, so the plugin
+/// reads them from disk instead of from the query string.
+fn set_arg(v: &str) -> Result<(), String> {
+    let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+    std::fs::create_dir_all(store).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{store}/arg.txt"), v).map_err(|e| e.to_string())
+}
+
+/// Import one ghost and PROVE it landed: the plugin reports the ghost-block
+/// count before and after, and this refuses to report success unless it rose.
+fn import_ghost(rel: &str) -> Result<(), String> {
+    set_arg(rel)?;
+    let body = http_get("/import", 30)?;
+    let num = |k: &str| -> i64 {
+        let key = format!("\"{k}\":");
+        match body.find(&key) {
+            Some(i) => {
+                let rest = &body[i + key.len()..];
+                let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                rest[..end].parse().unwrap_or(-1)
+            }
+            None => -1,
+        }
+    };
+    let (before, after) = (num("before"), num("after"));
+    if after > before {
+        println!("  imported {rel}  ({before} -> {after} ghost blocks)");
+        Ok(())
+    } else {
+        Err(format!("import of {rel} did not take: {body}"))
+    }
+}
+
+/// Stage exactly the ghosts for this render into their own folder, in import
+/// order, and import them. The isolated folder is the point: the picker used to
+/// be a 12-row paged list indexed by `ls | sort`, and one stray file -- or an
+/// `old/` subdirectory -- silently imported the wrong car.
+fn stage_and_import(files: &[String]) -> i32 {
+    let shoot = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Replays/_shoot";
+    let _ = std::fs::create_dir_all(shoot);
+    if let Ok(rd) = std::fs::read_dir(shoot) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let mut names = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        let name = format!("{}_{}.Ghost.Gbx", i + 1, if i == 0 { "TAS" } else { "OPP" });
+        if let Err(e) = std::fs::copy(f, format!("{shoot}/{name}")) {
+            eprintln!("stage {f}: {e}");
+            return 2;
+        }
+        names.push(name);
+    }
+    println!("staged {} ghost(s) into _shoot", names.len());
+    if let Err(e) = http_get("/rmtracks", 15) {
+        eprintln!("{e}");
+        return 1;
+    }
+    // The TAS car goes in FIRST: the camera follows clip entity 1, and the clip
+    // belongs to our run.
+    for n in &names {
+        if let Err(e) = import_ghost(&format!("_shoot/{n}")) {
+            eprintln!("{e}");
+            return 1;
+        }
+    }
+    0
+}
+
+/// The whole scene, set up and PROVEN, with no clicks and no sleeps:
+///   map -> editor -> MediaTracker -> ghosts -> camera on our car.
+///
+/// Every step is checked against the object graph before the next one runs, so
+/// a failure names the step instead of surfacing later as a black video.
+fn setup(map: &str, ghosts: &[String]) -> i32 {
+    let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+    let _ = std::fs::create_dir_all(store);
+    if std::fs::write(format!("{store}/editmap.txt"), map).is_err() {
+        eprintln!("could not write editmap.txt");
+        return 2;
+    }
+    // EditMap refuses while any editor is open, so get to the menu FIRST and
+    // prove it -- the old code slept and hoped.
+    if let Err(e) = to_menu() { eprintln!("{e}"); return 1; }
+    println!("editmap: {}", http_get("/editmap", 30).unwrap_or_default().trim());
+    match wait_ctx(1, 120) {
+        Ok(t) => println!("  editor after {t:.1}s"),
+        Err(e) => { eprintln!("{e}"); return 1; }
+    }
+    let _ = http_get("/mt2", 30);
+    match wait_ctx(2, 60) {
+        Ok(t) => println!("  MediaTracker after {t:.1}s"),
+        Err(e) => { eprintln!("{e}"); return 1; }
+    }
+    let rc = stage_and_import(ghosts);
+    if rc != 0 { return rc; }
+
+    // The camera track: type 23 is CGameCtnMediaBlockCameraGame. It is NOT
+    // creatable until at least one ghost is in the clip, which is why this runs
+    // after the import.
+    let mk = http_get("/mktrack?type=23", 20).unwrap_or_default();
+    if !mk.contains("->") {
+        eprintln!("camera track: {mk}");
+        return 1;
+    }
+    // ent=1 is the FIRST imported ghost -- our car, always. cam=2 is External,
+    // the stock chase. A fresh block targets entity 0 (nobody) and renders
+    // black, which used to pass every size and duration check we had.
+    let set = http_get("/camset?ent=1&cam=2", 20).unwrap_or_default();
+    println!("  camera: {}", set.trim());
+    let st = http_get("/camstate", 20).unwrap_or_default();
+    if st.contains("\"entid\":0") || !st.contains("\"gamecam\":2") {
+        eprintln!("camera did not take: {st}");
+        return 1;
+    }
+    println!("  {}", st.trim());
+    println!("scene ready");
+    0
+}
+
+/// Get back to the menu from wherever we are, and PROVE it.
+///
+/// EditMap refuses while an editor is open ("already in an editor - /back
+/// first") and the old code's answer was to sleep and hope. Leaving is a chain,
+/// not one call: the MediaTracker has to be quit before the map editor can be
+/// left, and leaving a modified map raises a dialog that must be ANSWERED
+/// CORRECTLY -- "yes" to all of them saves the map, silently editing the very
+/// maps we are meant to be filming unmodified.
+fn to_menu() -> Result<(), String> {
+    for _ in 0..12 {
+        match ctx() {
+            Some(0) => return Ok(()),
+            Some(2) => { let _ = http_get("/mtquit", 20); }
+            _ => { let _ = http_get("/back", 20); }
+        }
+        // Answer whatever modal the exit raised; /dismiss picks the right answer
+        // per dialog and defaults to declining.
+        for _ in 0..6 {
+            let c = http_get("/ctx", 10).unwrap_or_default();
+            if c.contains("\"dialog\":null") { break; }
+            let _ = http_get("/dismiss", 10);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        if wait_ctx(0, 8).is_ok() { return Ok(()); }
+    }
+    Err(format!("could not get back to the menu; ctx={:?}", ctx()))
 }

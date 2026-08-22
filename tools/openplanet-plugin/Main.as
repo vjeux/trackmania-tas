@@ -54,8 +54,11 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
     if (r == "/ping") return HttpResponse(200, "pong");
-    if (r == "/build") return HttpResponse(200, "B1787417057");
-    if (r == "/saveselect") return HttpResponse(200, SaveAsSelect(PathArg()));
+    if (r == "/build") return HttpResponse(200, "B1787418159");
+    if (r == "/mtquit") return HttpResponse(200, QuitMT());
+    if (r == "/import") return HttpResponse(200, ImportGhostRel(PathArg()));
+    if (r == "/importfile") return HttpResponse(200, ImportGhostFile(PathArg()));
+    if (r == "/savepath") return HttpResponse(200, SaveAsSetPath(PathArg()));
     if (r == "/saverefresh") return HttpResponse(200, SaveAsRefresh());
     if (r == "/savedlg") return HttpResponse(200, SaveAsState());
     if (r == "/savevalidate") return HttpResponse(200, SaveAsValidate());
