@@ -54,7 +54,22 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
     if (r == "/ping") return HttpResponse(200, "pong");
-    if (r == "/build") return HttpResponse(200, "B1787418928");
+    if (r == "/build") return HttpResponse(200, "B1787423886");
+    if (r == "/greplayers") return HttpResponse(200, GrepLayers(PathArg()));
+    if (r == "/whoapp") return HttpResponse(200, WhoIsManiaApp());
+    if (r == "/layers") return HttpResponse(200, DumpLayers());
+    if (r == "/findnod") return HttpResponse(200, FindNod(PathArg()));
+    if (r == "/dlgtext") return HttpResponse(200, DialogText());
+    if (r == "/setdlgstring") return HttpResponse(200, SetDialogString(PathArg()));
+    if (r == "/dlgstring") return HttpResponse(200, DialogString());
+    if (r == "/edtree") return HttpResponse(200, EditorTree(PathArg()));
+    if (r == "/focusdlg") return HttpResponse(200, FocusDialogs());
+    if (r == "/menus") return HttpResponse(200, MenuReport());
+    if (r == "/menutree") return HttpResponse(200, MenuTree(PathArg()));
+    if (r == "/dlgnods") return HttpResponse(200, DialogNods(PathArg()));
+    if (r == "/shootparams") return HttpResponse(200, ShootParamsState());
+    if (r == "/shootok") return HttpResponse(200, ShootOk());
+    if (r == "/shootcancel") return HttpResponse(200, ShootCancel());
     if (r == "/shootstatus") return HttpResponse(200, ShootStatus());
     if (r == "/mtquit") return HttpResponse(200, QuitMT());
     if (r == "/import") return HttpResponse(200, ImportGhostRel(PathArg()));

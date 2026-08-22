@@ -119,6 +119,22 @@ string ImportGhostRel(const string &in relpath) {
     dlg.DialogSaveAs_OnValidate();
     api.ImportGhosts_OnOk();
 
-    return "{\"before\":" + before + ",\"after\":" + GhostBlockCount()
-         + ",\"path\":\"" + relpath + "\"}";
+    // CLOSE THE FILE DIALOG. ImportGhosts_OnOk performs the import and LEAVES
+    // FrameDialogSaveAs open -- invisibly, since the MediaTracker draws over it.
+    // That leftover modal holds keyboard focus, which is why the shoot dialog
+    // raised afterwards would not accept an Enter: the keystroke was going to a
+    // file browser nobody could see. Cancelling it here is safe: the ghost is
+    // already in the clip (the count below proves it), and OnCancel only closes
+    // the browser.
+    uint after = GhostBlockCount();
+    if (dlg.Dialogs !is null && dlg.Dialogs.CurrentFrame !is null
+        && dlg.Dialogs.CurrentFrame.IdName == "FrameDialogSaveAs") {
+        dlg.DialogSaveAs_OnCancel();
+    }
+
+    string still = "null";
+    if (dlg.Dialogs !is null && dlg.Dialogs.CurrentFrame !is null)
+        still = "\"" + dlg.Dialogs.CurrentFrame.IdName + "\"";
+    return "{\"before\":" + before + ",\"after\":" + after
+         + ",\"path\":\"" + relpath + "\",\"dialog\":" + still + "}";
 }

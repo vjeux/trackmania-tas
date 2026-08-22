@@ -479,6 +479,77 @@ fn lint(api_path: &str, files: &[String]) -> i32 {
                 }
             }
 
+            // A MEMBER READ THAT DOES NOT EXIST. The const-write check only
+            // covered assignments; `mt.EditorInterface` on a class that has no
+            // such member is the same mistake on the read side, and it cost a
+            // restart. Only checked for variables whose class we know, and only
+            // when that class has members in the dump (an empty member list
+            // means the dump has nothing to say, not that the member is absent).
+            for (i, _) in code.match_indices('.') {
+                let before = &code[..i];
+                let vstart = before
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .map(|x| x + 1)
+                    .unwrap_or(0);
+                let var = before[vstart..].trim();
+                let after = &code[i + 1..];
+                let member: String = after
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if var.is_empty() || member.is_empty() { continue; }
+                // a call, not a field read -- methods are not in the dump the
+                // same way, so leave them to the compiler
+                if after[member.len()..].trim_start().starts_with('(') { continue; }
+                if let Some(t) = vartype.get(var) {
+                    if let Some(ms) = api.members.get(t) {
+                        if !ms.is_empty() && !ms.contains_key(&member) {
+                            problems.push(format!(
+                                "{base}:{ln}: {t} has no member {member}"
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // A RESERVED WORD USED AS A VARIABLE NAME.
+            //
+            // `array<CGameMenu@> out;` compiles nowhere: `out` is a parameter
+            // modifier in AngelScript, and the compiler's message ("Expected
+            // expression value / Instead found reserved keyword 'out'") points
+            // at the USE, several lines from the declaration. It cost a game
+            // restart, which is the entire reason this linter exists.
+            //
+            // Only words that plausibly get typed as a variable name are
+            // checked, and only in DECLARATION position (a type token straight
+            // in front). The first cut of this rule listed `null` and `return`
+            // too and fired on eleven correct lines -- a linter that cries wolf
+            // is worse than none.
+            for kw in ["out", "in", "inout", "cast", "class", "interface",
+                       "namespace", "funcdef", "mixin", "shared", "enum"] {
+                for tail in [";", " =", ")", ","] {
+                    let pat = format!(" {kw}{tail}");
+                    let Some(at) = code.find(&pat) else { continue };
+                    // What is in front must be a TYPE: `>` or `@` from a
+                    // template/handle, or a bare identifier that is itself not
+                    // a keyword (so `return out;` and `case in:` do not match).
+                    let before = code[..at].trim_end();
+                    let ends_type = before.ends_with('>') || before.ends_with('@');
+                    let word: String = before.chars().rev()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let ident_type = !word.is_empty()
+                        && !["return", "case", "is", "and", "or", "not", "if",
+                             "while", "for", "else", "const"].contains(&word.as_str());
+                    if ends_type || ident_type {
+                        problems.push(format!(
+                            "{base}:{ln}: '{kw}' is a reserved word and cannot be a variable name"
+                        ));
+                        break;
+                    }
+                }
+            }
+
             // a route calling a helper nobody defined -- routes and helpers live
             // in different files, so only a whole-plugin check can see this.
             if code.contains("HttpResponse(") {
@@ -561,6 +632,10 @@ fn main() {
             } else {
                 lint(&args[1], &args[2..])
             }
+        }
+        "shoot" => {
+            let to = if args.len() > 1 { args[1].parse().unwrap_or(3600) } else { 3600 };
+            shoot(to)
         }
         "setup" => {
             let mut map = String::new();
@@ -802,11 +877,12 @@ fn setup(map: &str, ghosts: &[String]) -> i32 {
 /// maps we are meant to be filming unmodified.
 fn to_menu() -> Result<(), String> {
     for _ in 0..12 {
-        match ctx() {
-            Some(0) => return Ok(()),
-            Some(2) => { let _ = http_get("/mtquit", 20); }
-            _ => { let _ = http_get("/back", 20); }
-        }
+        // MEASURED, not assumed: MTApi::Quit() returns "ok" and leaves the
+        // MediaTracker open, while BackToMainMenu() steps MT -> map editor ->
+        // menu one level at a time, raising the save prompt on the way out.
+        // So /back is the only mover, and it is called repeatedly.
+        if ctx() == Some(0) { return Ok(()); }
+        let _ = http_get("/back", 20);
         // Answer whatever modal the exit raised; /dismiss picks the right answer
         // per dialog and defaults to declining.
         for _ in 0..6 {
@@ -818,4 +894,142 @@ fn to_menu() -> Result<(), String> {
         if wait_ctx(0, 8).is_ok() { return Ok(()); }
     }
     Err(format!("could not get back to the menu; ctx={:?}", ctx()))
+}
+
+/// SYNTHETIC INPUT IS GONE FROM THIS PIPELINE. Nothing here clicks or types.
+///
+/// The history, so nobody re-derives it: the shoot dialog was driven by a click
+/// at a screen coordinate, then briefly by a raw-scancode Enter, and both were
+/// wrong. The click was read off a 1568-wide view of a 3840x2160 screen, landed
+/// 2.45x out and hit the Import Ghosts dialog behind. The Enter was worse: the
+/// dialog opens with EnumFileFormat focused, not OK, so it cycled the output
+/// format and produced an AVI nobody asked for.
+///
+/// The dialog is a frame of the GAME dialog menu -- CGameCtnMenus::Dialogs,
+/// MenuOrder 5 -- not of BasicDialogs (MenuOrder 11), which is where every
+/// earlier search looked. Its controls are bound to the CGameDialogShootParams,
+/// so OnOk is a plain API call. See ShootNod.as.
+
+/// How many modal dialogs the game says are holding focus
+/// (CGameSwitcher::FocusDialogCount). Reported for diagnostics only: it does not
+/// distinguish which dialog, and the ghost import used to leave it at 1.
+fn focus_dialogs() -> Option<i64> {
+    let b = http_get("/focusdlg", 10).ok()?;
+    let k = "\"focusdialogs\":";
+    let at = b.find(k)? + k.len();
+    let rest = &b[at..];
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-')?;
+    rest[..end].parse().ok()
+}
+
+/// Newest .webm in the screenshots folder, with its size.
+fn newest_video() -> Option<(String, u64)> {
+    let dir = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots";
+    let mut best: Option<(std::time::SystemTime, String, u64)> = None;
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("webm") { continue; }
+        let md = e.metadata().ok()?;
+        let t = md.modified().ok()?;
+        if best.as_ref().map(|(bt, _, _)| t > *bt).unwrap_or(true) {
+            best = Some((t, p.to_string_lossy().to_string(), md.len()));
+        }
+    }
+    best.map(|(_, p, s)| (p, s))
+}
+
+/// Shoot, and wait for the file to appear AND stop growing.
+///
+/// The wait is on the artefact rather than on a duration: a render that dies
+/// leaves the file short, and one that is still going keeps growing, so
+/// "unchanged for three consecutive polls" is the completion signal.
+/// Is the game running a long operation? CGameManiaPlanet::Operation_InProgress,
+/// via /shootstatus.
+fn op_in_progress() -> bool {
+    http_get("/shootstatus", 10).unwrap_or_default().contains("\"op\":true")
+}
+
+/// Is the shoot dialog up? The plugin answers from the dialog nod itself
+/// (`"shootdlg":true`), not from a frame name -- see ShootNod.as.
+fn shoot_dialog_up() -> bool {
+    http_get("/shootstatus", 10).unwrap_or_default().contains("\"shootdlg\":true")
+}
+
+fn wait_shoot_dialog(want: bool, secs: u64) -> Result<f64, String> {
+    let t0 = Instant::now();
+    while t0.elapsed().as_secs() < secs {
+        if shoot_dialog_up() == want { return Ok(t0.elapsed().as_secs_f64()); }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Err(format!("the shoot dialog never became {}", if want { "visible" } else { "closed" }))
+}
+
+fn shoot(timeout_s: u64) -> i32 {
+    let before = newest_video();
+    println!("modals: {:?} (diagnostic only)", focus_dialogs());
+    println!("rewind: {}", http_get("/rewind", 20).unwrap_or_default().trim());
+    println!("shoot:  {}", http_get("/shoot", 20).unwrap_or_default().trim());
+
+    // WAIT FOR THE DIALOG ITSELF. Not for a frame name, not for a modal count:
+    // the plugin holds the CGameDialogShootParams nod and says whether it is
+    // there. Both of the earlier gates were wrong in the same way -- they
+    // matched the ghost-import file dialog left over from the previous step and
+    // passed instantly.
+    match wait_shoot_dialog(true, 30) {
+        Ok(t) => println!("  shoot dialog up after {t:.1}s"),
+        Err(e) => { eprintln!("{e}"); return 1; }
+    }
+
+    // READ THE SETTINGS BEFORE ACCEPTING. A render is minutes long; a wrong
+    // format or size is worth catching now, and the numbers are right there.
+    println!("  params: {}", http_get("/shootparams", 10).unwrap_or_default().trim());
+
+    // ACCEPT IT: CGameDialogShootParams::OnOk, the call the OK button makes.
+    // NO KEYSTROKE, NO CLICK. Enter is actively harmful here -- the dialog opens
+    // with EnumFileFormat focused, not OK, so a blind Enter cycles the output
+    // format (that is how a render silently came out as AVI).
+    println!("  ok: {}", http_get("/shootok", 20).unwrap_or_default().trim());
+    match wait_shoot_dialog(false, 15) {
+        Ok(t) => println!("  accepted after {t:.1}s"),
+        Err(e) => { eprintln!("{e}"); return 1; }
+    }
+    // And the game must actually be rendering.
+    let t0 = Instant::now();
+    let mut started = false;
+    while t0.elapsed().as_secs() < 20 {
+        if op_in_progress() || newest_video().map(|(p, _)| p) != before.clone().map(|(p, _)| p) {
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    if !started { eprintln!("the dialog closed but no render started"); return 1; }
+
+    let t0 = Instant::now();
+    let mut last: Option<(String, u64)> = None;
+    let mut stable = 0;
+    while t0.elapsed().as_secs() < timeout_s {
+        std::thread::sleep(Duration::from_secs(5));
+        let now = newest_video();
+        let is_new = match (&before, &now) {
+            (Some((bp, _)), Some((np, _))) => bp != np,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if !is_new { continue; }
+        if now == last { stable += 1; } else { stable = 0; }
+        last = now.clone();
+        if let Some((p, s)) = &now {
+            print!("\r  {} {} bytes   ", p.rsplit('/').next().unwrap_or(p), s);
+            let _ = std::io::stdout().flush();
+        }
+        if stable >= 3 {
+            if let Some((p, s)) = now {
+                println!("\ndone: {p} ({s} bytes)");
+                return 0;
+            }
+        }
+    }
+    eprintln!("\ntimed out after {timeout_s}s waiting for the render");
+    1
 }
