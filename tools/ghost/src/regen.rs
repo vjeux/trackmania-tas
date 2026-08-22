@@ -55,30 +55,51 @@ fn fk_binary() -> String {
     "fk".into()
 }
 
-fn shim() -> String {
+/// Where the LD_PRELOAD shim is.
+///
+/// **Both names are tried.** The crate was renamed `forkshim` and its artefact
+/// with it (`libforkshim.so`); `fk`'s own lookup accepts either, and this one
+/// did not, so from a clean clone `ghost regen` handed the fork server a path
+/// that does not exist. The server then panics inside `forksrv` with a bare
+/// `NotFound` — once per attempt, twenty-four times — and the output reads
+/// exactly like twenty-four bad locates. That is the failure this crate's own
+/// README warns about, reproduced by this crate.
+///
+/// Returns `None` rather than a guess: a made-up default is what turns a
+/// wiring error into a physics story. The caller refuses and names the knob.
+fn shim() -> Option<String> {
     if let Ok(v) = std::env::var("FK_SHIM") {
-        return v;
+        return Some(v);
     }
+    const NAMES: [&str; 2] = ["libforkshim.so", "libfkshim.so"];
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     // beside the fk binary that will actually run -- NOT beside this one. They
-    // are different crates in different trees, and pointing the fork server at
-    // a shim that is not there fails with a bare `NotFound` panic six times in
-    // a row and looks like six bad locates.
+    // are different crates in different trees.
     let fk = fk_binary();
     if let Some(d) = std::path::Path::new(&fk).parent() {
-        let p = d.join("libfkshim.so");
-        if p.exists() {
-            return p.to_string_lossy().into();
-        }
+        dirs.push(d.to_path_buf());
+        // `cargo build` leaves the shim in the SEARCH workspace's target dir,
+        // never in fk's own: the shim and the driver `#[path]`-include one
+        // `pred_core.rs`, so a second copy would be a second judge.
+        dirs.push(d.join("../../../search/target/release"));
     }
     if let Ok(me) = std::env::current_exe() {
         if let Some(d) = me.parent() {
-            let p = d.join("libfkshim.so");
+            dirs.push(d.to_path_buf());
+            dirs.push(d.join("../search/target/release"));
+            dirs.push(d.join("../../search/target/release"));
+        }
+    }
+    dirs.push(std::path::PathBuf::from("/tmp/fk/rs/target/release"));
+    for d in dirs {
+        for n in NAMES {
+            let p = d.join(n);
             if p.exists() {
-                return p.to_string_lossy().into();
+                return Some(p.to_string_lossy().into());
             }
         }
     }
-    "/tmp/fk/rs/target/release/libfkshim.so".into()
+    None
 }
 
 pub struct RegenOut {
@@ -89,6 +110,22 @@ pub struct RegenOut {
 /// Run the regenerator once. `dump` MUST be absolute: a relative path fails
 /// inside the forked server with a bare `go ERR open`.
 pub fn run_regen(template: &str, map: &str, out: &str, extra: &[String]) -> RegenOut {
+    let shim = match shim() {
+        Some(s) => s,
+        None => {
+            // Name the knob rather than launching. A shim that is not there
+            // makes 24 launches that never happened report in the words of 24
+            // failed locates.
+            return RegenOut {
+                ok: false,
+                log: "the LD_PRELOAD shim (libforkshim.so / libfkshim.so) was not found beside \
+                      fk, in tools/search/target/release, or at $FK_SHIM. Build it with \
+                      `cd tools/search && cargo build --release -p forkshim`, or set FK_SHIM. \
+                      NOT LAUNCHING: a missing shim reads exactly like a failed locate."
+                    .into(),
+            };
+        }
+    };
     let dump = std::env::temp_dir()
         .join(format!("ghost-regen-{}-{}.bin", std::process::id(), rand_tag()))
         .to_string_lossy()
@@ -104,7 +141,7 @@ pub fn run_regen(template: &str, map: &str, out: &str, extra: &[String]) -> Rege
         "--dump".into(),
         dump,
         "--shim".into(),
-        shim(),
+        shim,
         "--server".into(),
         crate::oracle::server_dir(None).to_string_lossy().to_string(),
     ];
