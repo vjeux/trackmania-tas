@@ -85,7 +85,12 @@ Reaching this deck is the end of this route, not the start of a lap.
   stops there, **0.15 s before the car reaches the deck**. The touchdown is the
   last 0.75 s of the recording, after that gate.
 * The canopy and its pillars are **byte-identical** between his copy and the
-  untouched map, so the surface the car lands on is the real one.
+  untouched map, so the surface the car lands on is the real one. The car rests
+  at **y = 113.98–114.06**; the deck's drivable surface was measured at
+  **114.16** on the untouched map by dropping a car down 35 separate columns,
+  and the only other surfaces anywhere in that region are the stadium floor at
+  9.16 and the upper canopy at 170.16. His finish gate's own pieces sit at
+  y = 105, 113 and 121.
 * The clip was filmed on a named gate exception (`C4,C6,C10`). C4 is the
   post-finish tail described above — cutting at the finish would cut the landing
   out of the clip. C6 and C10 are the ground-contact byte, which reads as
@@ -106,3 +111,12 @@ their names says which. The engine settles it in one run.
 **A fork-server score is not a result.** Every number above is read off a
 written `.Ghost.Gbx` re-simulated by the plain oracle. The search's own best
 score has been wrong by 12 m on this map before.
+
+**And a control can fail after you have already used the instrument.** To ask
+whether the car lands on the canopy or on the added gate, three maps were built
+— gate removed, deck removed, and a road block the car provably drives on
+removed as the control — and re-simulated. All three gave the same trajectory to
+the centimetre, including the one that should have dropped the car through the
+road. The replays load their map by uid and the surgery never reached the
+engine, so the two informative runs said nothing at all. The height is what
+identifies the surface.
