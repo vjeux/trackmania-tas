@@ -143,6 +143,9 @@ pub struct Solid2 {
     /// Node index per visual slot, as referenced by `ShadedGeom::visual`.
     pub visuals: Vec<i32>,
     pub material_names: Vec<String>,
+    /// Material NODES, in the same index space as `material_names`: a
+    /// CPlugMaterialUserInst per slot when the names are empty.
+    pub material_nodes: Vec<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +202,9 @@ pub struct Graph<'a> {
     pub root: Option<Node>,
     /// Counts of chunks walked, by (class, chunk). Diagnostics only.
     pub seen: HashMap<(u32, u32), u32>,
+    /// Places where a layout this reader does not know forced a scan to the
+    /// node terminator. Never silent: whatever was in the node is missing.
+    pub recovered: Vec<String>,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -213,7 +219,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new() }
     }
 
     /// Parse a whole file body, rooted at `class_id`.

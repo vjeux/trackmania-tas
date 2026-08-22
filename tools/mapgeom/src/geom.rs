@@ -95,6 +95,8 @@ pub struct Stats {
     pub surfaces: usize,
     pub triangles: usize,
     pub visual_meshes: usize,
+    /// Nodes where an unknown layout forced a scan to the terminator.
+    pub recovered: usize,
     /// Files a walk needed and could not open, with the reason. Never silent:
     /// a missing prefab is a hole in the model, and a hole that is not
     /// reported is indistinguishable from geometry the game does not have.
@@ -147,6 +149,7 @@ impl<'a> Collector<'a> {
         // The graph borrows the model, so pull out everything needed first.
         let root = graph.root.clone();
         let slots = graph.slots.clone();
+        self.stats.recovered += graph.recovered.len();
         drop(graph);
         if let Some(n) = root {
             self.node(&n, &slots, at, depth);
@@ -192,11 +195,7 @@ impl<'a> Collector<'a> {
                         Some(v) => *v,
                         None => continue,
                     };
-                    let mat = s
-                        .material_names
-                        .get(g.material as usize)
-                        .cloned()
-                        .unwrap_or_else(|| "Visual".to_string());
+                    let mat = material_label(s, g.material, slots);
                     if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
                         let mut positions = v.inline_positions.clone();
                         for si in &v.vertex_streams {
@@ -309,4 +308,25 @@ fn decode_indices(raw: &[u32], absolute: bool, n: usize) -> Vec<[i32; 3]> {
         }
     }
     flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+/// What to call a shaded geometry's material: the physics id the car feels
+/// where the model says so, the material's own name where it does not.
+fn material_label(s: &crate::node::Solid2, idx: i32, slots: &[Slot]) -> String {
+    if let Some(n) = s.material_names.get(idx.max(0) as usize) {
+        if !n.is_empty() {
+            return n.rsplit(['\\', '/']).next().unwrap_or(n).to_string();
+        }
+    }
+    if let Some(node) = s.material_nodes.get(idx.max(0) as usize) {
+        if let Some(Node::Material(n, phys)) = slots.get((*node).max(0) as usize).and_then(as_node)
+        {
+            let p = crate::scene::physics_name(*phys);
+            if p != "Unknown" {
+                return p.to_string();
+            }
+            return n.rsplit(['\\', '/']).next().unwrap_or(n).to_string();
+        }
+    }
+    "Visual".to_string()
 }

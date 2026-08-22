@@ -303,6 +303,7 @@ fn merge_stats(into: &mut Stats, from: &Stats) {
     into.surfaces += from.surfaces;
     into.triangles += from.triangles;
     into.visual_meshes += from.visual_meshes;
+    into.recovered += from.recovered;
     into.missing.extend(from.missing.iter().cloned());
     for (k, v) in &from.unhandled {
         *into.unhandled.entry(*k).or_insert(0) += v;

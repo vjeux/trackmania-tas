@@ -151,8 +151,9 @@ fn main() {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| "model.glb".to_string());
+            let loaded = load_any(&mut store, &p);
             let mut c = mapgeom::geom::Collector::new(&mut store);
-            c.file(&p, &mapgeom::geom::IDENTITY, 0);
+            c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
             report(&c.stats, &c.scene);
             write_scene(&c.scene, &out);
         }

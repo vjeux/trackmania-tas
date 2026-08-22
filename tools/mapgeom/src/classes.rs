@@ -1016,7 +1016,8 @@ impl<'a> Graph<'a> {
             }
             let n = self.r.u32()? as usize;
             for _ in 0..n {
-                self.noderef()?;
+                let m = self.noderef()?;
+                out.material_nodes.push(m);
             }
         }
         self.noderef()?; // skel
@@ -1128,9 +1129,9 @@ impl<'a> Graph<'a> {
         let n_custom = if version >= 29 { material_count } else { mat_count_lt29 };
         for _ in 0..n_custom {
             let name = self.r.string()?;
-            if name.is_empty() {
-                self.noderef()?;
-            }
+            let node = if name.is_empty() { self.noderef()? } else { -1 };
+            out.material_nodes.push(node);
+            out.material_names.push(name);
         }
         if version < 17 {
             return Ok(());
@@ -1294,6 +1295,7 @@ impl<'a> Graph<'a> {
         struct Decl {
             name: u32,
             ty: u32,
+            space: u32,
         }
         let mut decls = Vec::new();
         let n_decl = self.r.u32()? as usize;
@@ -1303,18 +1305,22 @@ impl<'a> Graph<'a> {
             let w = lo | (hi << 32);
             let name = (w & 0x1FF) as u32;
             let ty = ((w >> 9) & 0x1FF) as u32;
+            let space = ((w >> 28) & 0xF) as u32;
             let ptr_offset = ((w >> 34) & 0x3FF) as u32;
             if ptr_offset != 0 {
                 self.r.take(4)?;
             }
-            decls.push(Decl { name, ty });
+            decls.push(Decl { name, ty, space });
         }
         let compress_local3d = self.r.bool32()?;
         for d in &decls {
-            // Float3 in Local3D space is stored packed when the stream says so.
-            let effective = if d.ty == 2 && compress_local3d { 14 } else { d.ty };
+            // Float3 is packed to Dec3N only in LOCAL 3D space. Applying the
+            // packing to a Position (which is Global3D) reads a mesh's
+            // coordinates out of somebody else's bytes and still produces
+            // numbers, so the space check is load-bearing.
+            let effective =
+                if d.ty == 2 && d.space == 1 && compress_local3d { 14 } else { d.ty };
             match (d.name, effective) {
-                // Position
                 (0, 2) => {
                     for _ in 0..num {
                         out.positions.push(self.r.vec3()?);
@@ -1325,34 +1331,44 @@ impl<'a> Graph<'a> {
                         out.positions.push(dec3n(self.r.u32()?));
                     }
                 }
-                // Normal
-                (5, 2) => {
-                    for _ in 0..num {
-                        out.normals.push(self.r.vec3()?);
-                    }
-                }
-                (5, 14) => {
-                    for _ in 0..num {
-                        out.normals.push(dec3n(self.r.u32()?));
-                    }
-                }
-                // TexCoord0
-                (10, 1) => {
-                    for _ in 0..num {
-                        out.uv0.push(self.r.vec2()?);
-                    }
-                }
-                (_, t) => {
-                    let sz = type_size(t)
-                        .ok_or_else(|| format!("vertex declaration type {} has no size", t))?;
-                    self.r.take(sz * num)?;
+                _ => {
+                    // Everything after the positions is normals, colours and
+                    // UVs, and the layout between the arrays has one field
+                    // this reader does not account for: on a 54-vertex stream
+                    // the normals start 4 bytes later than the declarations
+                    // predict. Rather than guess it and read a mesh out of the
+                    // wrong bytes, stop here and let the node terminator put
+                    // the cursor back — `recover_to_facade` says so out loud.
+                    return self.recover_to_facade("CPlugVertexStream layout after Position");
                 }
             }
         }
         Ok(())
     }
+
+    /// Skip to this node's terminator after meeting a layout we do not know.
+    ///
+    /// A GBX node ends with `0xFACADE01`, and that word is not a plausible
+    /// float or packed normal, so scanning for it recovers the walk instead of
+    /// desynchronising it. This is a REPORTED recovery, not a silent one: the
+    /// node's remaining content is lost and the caller counts it, because a
+    /// mesh quietly missing from a model is the failure this whole tool exists
+    /// to avoid.
+    fn recover_to_facade(&mut self, what: &str) -> R<()> {
+        let mut i = self.r.o;
+        while i + 4 <= self.r.b.len() {
+            if u32::from_le_bytes(self.r.b[i..i + 4].try_into().unwrap()) == 0xFACADE01 {
+                self.r.o = i;
+                self.recovered.push(what.to_string());
+                return Ok(());
+            }
+            i += 1;
+        }
+        Err(format!("{}: no node terminator after it", what))
+    }
 }
 
+#[allow(dead_code)]
 fn type_size(t: u32) -> Option<usize> {
     // GbxPlugVDclTypeBytes
     const B: [usize; 17] = [4, 8, 0xC, 0x10, 4, 4, 4, 8, 4, 4, 8, 4, 8, 4, 4, 4, 8];
