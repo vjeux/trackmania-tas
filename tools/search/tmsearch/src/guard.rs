@@ -266,15 +266,29 @@ impl Bank {
         // that these bytes do not finish the map, and the state itself is the
         // fork's measurement, which is why it is an `Outcome::Gate` and not a
         // time, and why it is written out beside the tape to be checked.
+        // WHAT GOES IN THE BANK IS THE ORACLE'S OWN ANSWER wherever the oracle
+        // has an answer on the same ladder the search ranks on -- which is
+        // exactly the finishing case, where the answer is a millisecond.
+        //
+        // A FAILURE IS BANKED ON THE SEARCH'S OWN LADDER, and returning the
+        // oracle's instead was a silent stall. The plain oracle only ever
+        // reports checkpoints; a fork search ranks failures by METRES along the
+        // reference line, and a plain search with segment maps ranks them by
+        // checkpoints WITH a time. Handing either of those back as a bare
+        // `Checkpoints { cps, seg_ms: None }` returns a value from a different
+        // ladder, `confirmed > incumbent` then compares two unrelated numbers,
+        // and the improvement is confirmed, written to disk, and never adopted.
+        // The guard's job here is done by the kind check above -- it did not
+        // finish -- and the rank is the search's own measurement.
         let banked = match (claimed, actual) {
+            (Outcome::Finish { .. }, Outcome::Finish { ms }) => Outcome::Finish { ms },
             // Band 2 stays on the gate's ladder -- one search, one objective --
             // but it takes the ORACLE's millisecond, like every other time
             // this bank writes. (They are equal: `agrees` above required it.)
             (Outcome::Gate(GateState::Finished { .. }), Outcome::Finish { ms }) => {
                 Outcome::Gate(GateState::Finished { ms })
             }
-            (Outcome::Gate(_), _) => claimed,
-            _ => actual,
+            _ => claimed,
         };
         // A band-0 or band-1 tape that turns out to FINISH is worth saying out
         // loud: the search ranked it at the bottom because it did not do the

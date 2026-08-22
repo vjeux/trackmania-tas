@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 70 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 71 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -556,9 +556,23 @@ A tape that turns out to finish while ranking at the bottom is called out on
 stderr rather than hidden: the search ranked it low on purpose, and the time is
 still real.
 
+**And a defect this walked into, which was not the gate's.** The bank used to
+return the ORACLE's answer for every confirmation, including failures — but the
+plain oracle only ever reports checkpoints, while a fork search ranks failures
+by metres along the reference line and a plain search with segment maps ranks
+them by checkpoints *with a time*. Handing either back as a bare
+`Checkpoints { cps, seg_ms: None }` returns a value from a different ladder;
+`confirmed > incumbent` then compares two unrelated numbers and the improvement
+is confirmed, written to disk, and **never adopted**. The first gate run on
+228811 showed it as 49 confirmations and an incumbent that never moved. A
+failure is now banked on the ladder the search ranks on — the guard's job there
+is the kind check, *it did not finish*, and the rank is the search's own
+measurement — and `a_failure_is_banked_on_the_ladder_the_search_ranks_on` pins
+it. Any fork search that has not yet found a finisher was affected.
+
 ### 5.9 What it cost, and what it bought
 
-70 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
+71 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
 `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
 `score.rs` and `loop_invariants.rs` and two more in `oracle_e2e.rs` -- a false
 band-2 finish is refused like any other false time, and a state is banked as a

@@ -239,3 +239,43 @@ fn a_state_is_banked_with_its_measurement_beside_it() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A FAILURE COMES BACK ON THE LADDER THE SEARCH RANKS ON.
+///
+/// The plain oracle only ever reports checkpoints. A fork search ranks failures
+/// by METRES along the reference line, and a plain search with segment maps
+/// ranks them by checkpoints WITH a time. Handing either of those back as a
+/// bare `Checkpoints { cps, seg_ms: None }` -- which is what the bank used to
+/// do -- returns a value from a different ladder, so `confirmed > incumbent`
+/// compares two unrelated numbers and the improvement is confirmed, written to
+/// disk, and never adopted. The search then reports improvements all afternoon
+/// while its incumbent never moves.
+///
+/// Found by the state objective walking into the same wall: 49 confirmations,
+/// zero adopted.
+#[test]
+fn a_failure_is_banked_on_the_ladder_the_search_ranks_on() {
+    let Some(srv) = server() else { return };
+    let p = Patcher::build(GHOST).unwrap();
+    let d = scratch("guard-ladder");
+
+    // a tape that does not finish: full lock, held, from well before the end
+    let mut s = p.template.clone();
+    for t in 1200..1400 {
+        s.steer[t] = 127;
+    }
+    let f = d.join("probe.Ghost.Gbx");
+    std::fs::write(&f, p.file(&s)).unwrap();
+    let truth = validate(&srv, &f, MapsMode::One(Path::new(MAP)), "ladder").unwrap();
+    let _ = std::fs::remove_file(&f);
+    assert!(truth.time_ms.is_none(), "the probe tape finishes, so it cannot pin this");
+
+    let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
+    let claim = Outcome::Dnf(Progress::Metres { m: 1234.5, of: 1998.0 });
+    let b = bank.offer(&p, &s, claim, &nowhere()).expect("a failure claim was refused");
+    assert_eq!(
+        b.confirmed, claim,
+        "the bank returned a failure on a different ladder from the one the search ranks on"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
