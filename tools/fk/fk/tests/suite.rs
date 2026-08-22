@@ -74,7 +74,7 @@ fn engine_tier() -> Option<PathBuf> {
 
 fn shim() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../forkoracle/target/release/libfkshim.so")
+        .join("../../search/target/release/libforkshim.so")
         .canonicalize()
         .expect("build the workspace first: cargo build --release")
 }

@@ -330,3 +330,28 @@ pub fn tail_recs(
         .map(|t| forkoracle::forksrv::rec_of(steer[t], accel[t], brake[t]))
         .collect()
 }
+
+/// Where `libforkshim.so` is, if the caller did not say.
+///
+/// Beside the `fk` binary first (where a deployment would put it), then
+/// `tools/search/target/release/`, which is where `cargo build` leaves it: the
+/// shim belongs to the SEARCH workspace, because it and the driver
+/// `#[path]`-include one `pred_core.rs` and two copies of that file would be
+/// two judges. So it is never in `fk`'s own target directory, and a lookup that
+/// only checked there would never find it.
+///
+/// It was `libfkshim.so` until the crate was renamed `forkshim`; both names are
+/// accepted, so a stale build reads as a stale build rather than as a mystery.
+pub fn default_shim() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let here = exe.parent()?;
+    for dir in [here.to_path_buf(), here.join("../../../search/target/release")] {
+        for name in ["libforkshim.so", "libfkshim.so"] {
+            let p = dir.join(name);
+            if p.exists() {
+                return p.canonicalize().ok();
+            }
+        }
+    }
+    None
+}

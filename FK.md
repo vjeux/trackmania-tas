@@ -381,6 +381,29 @@ one**. It is not an argument, it is checked per candidate in every
 `fk watch measure` run: 24 of 24, 0 violations on the run below, 2000 of 2000 in
 the original audit.
 
+### Say how far the candidates were from the reference, or the numbers do not
+transfer
+
+Every exactness number the fork server has produced is a number about a
+**regime**. `fk watch measure` and `fk server check` both now report
+`Distance` — earliest divergence, how many ticks differ, largest steering move —
+because "0 false positives" without that is a number that cannot be applied to
+anything.
+
+It earned itself the first time it ran. On the audit below the line reads
+*earliest divergence tick 172 (race 0.140), median 36 of 2432 ticks differ,
+worst 1607* — so **a tick-60 watchdog audit is not in the late-perturbation
+regime at all**; its candidates diverge from the fourteenth of a second and one
+of them differs on two thirds of the tape. That is the regime where cold-start
+work found 0 of 312 fork-reported finishes surviving a full validation.
+
+On this run the fork agreed with the full validation on all 24 anyway. **One run
+of 24 is not evidence against a 312-case failure**, and the two are not in
+contradiction: the cold-start finding was about reported FINISHES, and 17 of
+these 24 are DNFs. The point is not that either number is wrong. It is that
+until now neither was reported next to the distance that makes it mean
+something.
+
 ### What one `fk watch measure` run reports
 
 24 candidates, tick-60 checkpoint, map 2, two predicates armed:

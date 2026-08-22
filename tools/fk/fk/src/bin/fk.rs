@@ -24,7 +24,8 @@ Engine flags, accepted by every command:
   --tape FILE        the .Ghost.Gbx / .Replay.Gbx whose inputs the engine runs
   --map FILE         the map (decoration for a .Replay.Gbx: it carries its own)
   --server DIR       the dedicated-server install       [$TM_SERVER]
-  --shim FILE        libfkshim.so                       [$FK_SHIM, or next to fk]
+  --shim FILE        libforkshim.so                     [$FK_SHIM, or beside fk, or
+                     ../search/target/release/]
   --work DIR         scratch; per-process by default, and never shared
 
 Where to stop the simulation (one of):
@@ -139,8 +140,9 @@ fn common(a: &[String]) -> Result<(Engine, Tape, Checkpoint), String> {
         shim: flag(a, "--shim")
             .map(PathBuf::from)
             .or_else(|| std::env::var("FK_SHIM").ok().map(PathBuf::from))
-            .or_else(default_shim)
-            .ok_or("no --shim: pass one, set FK_SHIM, or put libfkshim.so next to fk")?,
+            .or_else(fk::session::default_shim)
+            .ok_or("no --shim: pass one, set FK_SHIM, or build tools/search (which produces \
+              libforkshim.so)")?,
         work_is_temporary: work.is_none(),
         work: work.unwrap_or_else(Engine::default_work),
     };
@@ -156,7 +158,4 @@ fn common(a: &[String]) -> Result<(Engine, Tape, Checkpoint), String> {
     Ok((engine, tape, at))
 }
 
-fn default_shim() -> Option<PathBuf> {
-    let p = std::env::current_exe().ok()?.parent()?.join("libfkshim.so");
-    p.exists().then_some(p)
-}
+

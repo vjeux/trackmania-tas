@@ -75,7 +75,10 @@ fn parse(args: &[String]) -> Cfg {
         map: String::new(),
         server: std::env::var("TM_SERVER").unwrap_or_else(|_| "/tmp/tmoracle/server".into()),
         work: crate::session::Engine::default_work().to_string_lossy().into(),
-        shim: std::env::var("FK_SHIM").unwrap_or_default(),
+        shim: std::env::var("FK_SHIM")
+            .ok()
+            .or_else(|| crate::session::default_shim().map(|p| p.to_string_lossy().into()))
+            .unwrap_or_default(),
         refcsv: String::new(),
         out: String::new(),
         traj_in: String::new(),
@@ -89,7 +92,8 @@ fn parse(args: &[String]) -> Cfg {
         lo: 0,
         hi: usize::MAX,
         window: 0,
-        ops: "mix".into(),
+        // `local` is what `mix` was called before the operator set was named.
+        ops: "local".into(),
         corridor: 40.0,
         ahead: 24,
         back: 8,
@@ -594,6 +598,46 @@ fn audit(c: &Cfg) {
         let p = cdir.join(format!("c{:04}.Ghost.Gbx", i));
         write_cand(&s.f, &st.steer_u8(), &st.gas_u8(), &st.brake_u8(), &p);
         cands.push((st, p));
+    }
+
+    // ---- HOW FAR IS THIS CANDIDATE SET FROM THE REFERENCE?
+    //
+    // Every exactness number the fork server has ever produced is a number
+    // about a REGIME, not about the fork: it was exact on 4700 of 4700
+    // candidates that perturbed a human reference by a few ticks late in the
+    // run, and it reported 312 finishes out of 312 that were not there on tapes
+    // that differ from their template early or wholesale. Nothing inside a fork
+    // can see which regime it is in.
+    //
+    // So a harness that reports "0 false positives" without saying how far its
+    // candidates were from the reference has reported a number that cannot be
+    // applied to anything. `Distance` (first differing tick, how many differ,
+    // largest steering move) is what makes the number transferable.
+    let reference = State::from_arrays(&s.f.steer, &s.f.accel, &s.f.brake);
+    let dists: Vec<forkoracle::inputs::Distance> =
+        cands.iter().map(|(st, _)| st.distance_from(&reference)).collect();
+    {
+        let firsts: Vec<usize> = dists.iter().filter_map(|d| d.first_diff_tick).collect();
+        let mut diffs: Vec<usize> = dists.iter().map(|d| d.diff_ticks).collect();
+        diffs.sort_unstable();
+        println!(
+            "DISTANCE FROM THE REFERENCE  earliest divergence tick {} (race {}), \
+             median {} of {} ticks differ, worst {}; {} candidates identical to the reference",
+            firsts.iter().min().map(|t| t.to_string()).unwrap_or("-".into()),
+            firsts
+                .iter()
+                .min()
+                .map(|t| crate::secs(*t as i64 * 10 + s.f.start_offset_ms as i64))
+                .unwrap_or("-".into()),
+            diffs.get(diffs.len() / 2).copied().unwrap_or(0),
+            n,
+            diffs.last().copied().unwrap_or(0),
+            dists.iter().filter(|d| d.first_diff_tick.is_none()).count()
+        );
+        println!(
+            "  Every number below is about THAT regime. The fork is exact for late \
+             perturbations of a human seed and lied on 312 of 312 outside it."
+        );
     }
 
     // ---- pass 1: no watchdog at all -- the honest baseline

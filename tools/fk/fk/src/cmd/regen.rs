@@ -588,11 +588,9 @@ fn parse_ctx(a: &[String]) -> Result<crate::session::Ctx, String> {
     });
     let shim = flag("--shim")
         .or_else(|| std::env::var("FK_SHIM").ok())
-        .or_else(|| {
-            let p = std::env::current_exe().ok()?.parent()?.join("libfkshim.so");
-            p.exists().then(|| p.to_string_lossy().into())
-        })
-        .ok_or("no --shim: pass one, set FK_SHIM, or put libfkshim.so next to fk")?;
+        .or_else(|| crate::session::default_shim().map(|p| p.to_string_lossy().into()))
+        .ok_or("no --shim: pass one, set FK_SHIM, or build tools/search (which produces \
+              libforkshim.so)")?;
     let server = flag("--server")
         .or_else(|| std::env::var("TM_SERVER").ok())
         .unwrap_or_else(|| "/tmp/tmoracle/server".into());

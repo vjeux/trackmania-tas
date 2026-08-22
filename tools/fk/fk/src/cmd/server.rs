@@ -301,6 +301,37 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         s.tape.write_candidate(&st, &ac, &br, &p)?;
         cands.push((p, st, ac, br));
     }
+
+    // HOW FAR IS THIS SET FROM THE REFERENCE? Without this line the exactness
+    // number below is a number about an unnamed regime. The fork was exact on
+    // 4700 of 4700 candidates that perturbed a human reference by a few ticks
+    // LATE in the run, and reported 312 finishes out of 312 that were not there
+    // on tapes differing early or wholesale. Nothing inside a fork can see
+    // which of those it is running.
+    {
+        let reference =
+            forkoracle::inputs::Inputs::from_arrays(&s.tape.steer, &s.tape.accel, &s.tape.brake);
+        let ds: Vec<forkoracle::inputs::Distance> = cands
+            .iter()
+            .map(|(_, st, ac, br)| {
+                forkoracle::inputs::Inputs::from_arrays(st, ac, br).distance_from(&reference)
+            })
+            .collect();
+        let mut diffs: Vec<usize> = ds.iter().map(|d| d.diff_ticks).collect();
+        diffs.sort_unstable();
+        let earliest = ds.iter().filter_map(|d| d.first_diff_tick).min();
+        println!(
+            "candidate distance from the reference: earliest divergence {}, \
+             median {} of {} ticks differ, worst {}",
+            match earliest {
+                Some(t) => format!("tick {} (race {})", t, crate::secs(s.tape.race_ms(t))),
+                None => "none -- every candidate is the reference".into(),
+            },
+            diffs.get(diffs.len() / 2).copied().unwrap_or(0),
+            n,
+            diffs.last().copied().unwrap_or(0),
+        );
+    }
     let files: Vec<PathBuf> = cands.iter().map(|x| x.0.clone()).collect();
 
     // 4. the full run, twice
