@@ -31,6 +31,8 @@ pub const C_STATIC_OBJECT: u32 = 0x09159000;
 pub const C_MATERIAL_USER_INST: u32 = 0x090FD000;
 pub const C_ITEM_MODEL: u32 = 0x2E002000;
 pub const C_VARIANT_LIST: u32 = 0x2F0BC000;
+pub const C_BLOCK_ITEM: u32 = 0x2E025000;
+pub const C_CRYSTAL: u32 = 0x09003000;
 pub const C_COMMON_ITEM_ENTITY_MODEL: u32 = 0x2E027000;
 
 /// Classes whose node body is a single struct with no chunk framing.
@@ -119,6 +121,22 @@ pub struct ShadedGeom {
     pub lod: i32,
 }
 
+/// One `CPlugCrystal` layer: an editable mesh of n-gon faces, each with a
+/// material index into the crystal's own material-name list.
+#[derive(Clone, Debug, Default)]
+pub struct CrystalMesh {
+    pub verts: Vec<[f32; 3]>,
+    pub faces: Vec<(Vec<i32>, usize)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Crystal {
+    /// Per slot: the literal material name, and the node index of the
+    /// CPlugMaterialUserInst when the name is empty.
+    pub materials: Vec<(String, i32)>,
+    pub meshes: Vec<CrystalMesh>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Solid2 {
     pub geoms: Vec<ShadedGeom>,
@@ -138,6 +156,9 @@ pub enum Node {
     /// A class this reader walks but keeps nothing from.
     /// A `CGameItemModel` or `CGameCommonItemEntityModel`: a redirection to
     /// the node that actually holds the shape.
+    Crystal(Crystal),
+    /// A material: its name, and the physics id the car feels through it.
+    Material(String, u8),
     ItemModel(i32),
     Other(u32),
 }
@@ -151,6 +172,8 @@ impl Node {
             Node::Solid2(_) => C_SOLID2MODEL,
             Node::Visual(_) => C_VISUAL_INDEXED_TRIANGLES,
             Node::VertexStream(_) => C_VERTEX_STREAM,
+            Node::Crystal(_) => C_CRYSTAL,
+            Node::Material(..) => C_MATERIAL_USER_INST,
             Node::ItemModel(_) => C_ITEM_MODEL,
             Node::Other(c) => *c,
         }
@@ -307,6 +330,10 @@ pub struct Acc {
     /// The node an item model hands its geometry to (`0x2E002019` or
     /// `0x2E027000`). `-1` when the class carries none.
     pub entity_model: i32,
+    pub crystal_materials: Vec<(String, i32)>,
+    pub crystals: Vec<CrystalMesh>,
+    pub material_name: String,
+    pub physics_id: u8,
     pub touched: bool,
 }
 
@@ -322,6 +349,10 @@ impl Acc {
             vstream: VertexStream::default(),
             visual_flags: crate::classes::VisualFlags::default(),
             entity_model: -1,
+            crystal_materials: Vec::new(),
+            crystals: Vec::new(),
+            material_name: String::new(),
+            physics_id: 0,
             touched: false,
         }
     }
@@ -332,8 +363,15 @@ impl Acc {
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
             C_SOLID2MODEL => Node::Solid2(self.solid2),
+            C_MATERIAL_USER_INST => Node::Material(self.material_name, self.physics_id),
+            C_CRYSTAL => Node::Crystal(Crystal {
+                materials: self.crystal_materials,
+                meshes: self.crystals,
+            }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
-            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL => Node::ItemModel(self.entity_model),
+            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
+                Node::ItemModel(self.entity_model)
+            }
             c if is_visual(c) => Node::Visual(self.visual),
             c => Node::Other(c),
         }

@@ -79,6 +79,31 @@ impl Index {
         self.groups.iter().map(|(_, _, t)| t.len()).sum()
     }
 
+    /// Every surface directly under (or over) `(x, z)`, highest first: the
+    /// plumb probe this project used to do by driving a car at a spot and
+    /// watching where it stopped.
+    pub fn column(&self, x: f32, z: f32) -> Vec<(f32, String)> {
+        let i = bucket(x, self.origin[0], self.cell, self.nx);
+        let j = bucket(z, self.origin[1], self.cell, self.nz);
+        let mut out = Vec::new();
+        for (gi, ti) in &self.buckets[j * self.nx + i] {
+            let (name, verts, tris) = &self.groups[*gi as usize];
+            let t = tris[*ti as usize];
+            if let Some(y) = height_at(
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+                x,
+                z,
+            ) {
+                out.push((y, name.clone()));
+            }
+        }
+        out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        out.dedup_by(|a, b| (a.0 - b.0).abs() < 0.002 && a.1 == b.1);
+        out
+    }
+
     /// The highest surface at or below `p`, within `reach` metres.
     pub fn below(&self, p: [f32; 3], reach: f32) -> Option<Hit> {
         let i = bucket(p[0], self.origin[0], self.cell, self.nx);
@@ -143,6 +168,35 @@ impl Report {
         }
         r.gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
         r
+    }
+
+    /// The most samples that share a gap within `width` metres, and the middle
+    /// of that window.
+    ///
+    /// This is the fit criterion, and choosing it correctly matters more than
+    /// it looks. Scoring a candidate height by "how many samples have anything
+    /// under them" picks whichever offset drops the run onto the stadium
+    /// FLOOR, because grass is everywhere: on 134672 that scored 93 % of
+    /// samples over a surface at a wandering 3.2 m, and it was wrong. A car
+    /// resting on a road has ONE ride height for the whole run, so the right
+    /// question is not how many samples found something but how many found the
+    /// same thing.
+    pub fn band(&self, width: f32) -> (usize, f32) {
+        if self.gaps.is_empty() {
+            return (0, f32::NAN);
+        }
+        let mut best = (0usize, f32::NAN);
+        let mut j = 0usize;
+        for i in 0..self.gaps.len() {
+            while j < self.gaps.len() && self.gaps[j] - self.gaps[i] <= width {
+                j += 1;
+            }
+            let n = j - i;
+            if n > best.0 {
+                best = (n, (self.gaps[i] + self.gaps[j - 1]) / 2.0);
+            }
+        }
+        best
     }
 
     pub fn pct(&self, q: f64) -> f32 {

@@ -16,6 +16,7 @@ path = "src/lib.rs"
 # keep a second map reader. `gbx` is the container (LZO, the chunk walk).
 [dependencies]
 tmmaps = { path = "../tmmaps" }
+miniz_oxide = "0.9.1"
 gbx = { path = "../gbx" }
 
 [profile.release]

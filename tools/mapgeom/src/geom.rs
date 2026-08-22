@@ -130,10 +130,16 @@ impl<'a> Collector<'a> {
                 return;
             }
         };
+        self.model(&model, at, depth);
+    }
+
+    /// Add everything an already-parsed file contributes. Separate from
+    /// `file` because a map's EMBEDDED models have no path in any pack.
+    pub fn model(&mut self, model: &crate::store::Model, at: &Xform, depth: usize) {
         let graph = match model.graph() {
             Ok(g) => g,
             Err(e) => {
-                self.stats.missing.push((logical.to_string(), e));
+                self.stats.missing.push((model.path.clone(), e));
                 return;
             }
         };
@@ -208,6 +214,50 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
+            Node::Material(..) => {}
+            Node::Crystal(c) => {
+                self.stats.visual_meshes += 1;
+                for m in &c.meshes {
+                    let verts: Vec<[f32; 3]> = m.verts.iter().map(|v| apply(at, *v)).collect();
+                    let mut by_mat: HashMap<usize, Vec<[i32; 3]>> = HashMap::new();
+                    for (inds, mat) in &m.faces {
+                        // An n-gon, fan-triangulated about its first corner.
+                        for k in 1..inds.len().saturating_sub(1) {
+                            by_mat
+                                .entry(*mat)
+                                .or_default()
+                                .push([inds[0], inds[k], inds[k + 1]]);
+                        }
+                    }
+                    for (mat, tris) in by_mat {
+                        let name = match c.materials.get(mat) {
+                            Some((n, _)) if !n.is_empty() => n.clone(),
+                            Some((_, node)) => match slots.get((*node).max(0) as usize) {
+                                Some(Slot::Node(Node::Material(n, phys))) => {
+                                    // Colour by what the car FEELS, so a custom
+                                    // ice ribbon reads as Ice beside a stock one.
+                                    // A material that LINKS a Nadeo material
+                                    // carries no physics id of its own -- the
+                                    // id lives in the linked game material --
+                                    // so fall back to the link's own name,
+                                    // which is itself a physics name
+                                    // (`Stadium\Media\Material\RoadIce`).
+                                    let p = crate::scene::physics_name(*phys);
+                                    if p != "Unknown" {
+                                        p.to_string()
+                                    } else {
+                                        n.rsplit(['\\', '/']).next().unwrap_or(n).to_string()
+                                    }
+                                }
+                                _ => "CustomMesh".to_string(),
+                            },
+                            None => "CustomMesh".to_string(),
+                        };
+                        self.stats.triangles += tris.len();
+                        self.scene.add_tris(&name, &verts, tris.into_iter());
+                    }
+                }
+            }
             Node::Visual(_) | Node::VertexStream(_) => {}
             Node::Other(c) => {
                 *self.stats.unhandled.entry(*c).or_insert(0) += 1;

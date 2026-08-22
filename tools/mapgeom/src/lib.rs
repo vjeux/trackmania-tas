@@ -26,6 +26,7 @@ pub mod assemble;
 pub mod blowfish;
 pub mod classes;
 pub mod container;
+pub mod embedded;
 pub mod geom;
 pub mod lz4dict;
 pub mod md5;
