@@ -246,10 +246,47 @@ prints two results per file: `ValidatedResult` (what it simulated) and
 starting with `"Time"`*, which is correct only by the order the server happens to
 print in — and on a DNF `"ValidatedResult" : null` carries no `Time` at all, so
 the first one is the declaration. A run that reached 2 of 3 checkpoints read back
-as "finished at 22.730". That value fed `race_end`, which decides which recorded
-instants count as inside the race and therefore which samples a regenerated ghost
-may inherit from its donor. Fixed by calling `ghost::oracle`, which parses the two
-into separate fields. Pinned by a captured DNF from the real server.
+as "finished at 22.730". That value became `race_end`, which decides which
+recorded instants count as inside the race and therefore which samples a
+regenerated ghost may inherit from its donor. Fixed by calling `ghost::oracle`,
+which parses the two into separate fields. Pinned by a captured DNF from the
+real server.
+
+**How far it actually reached — and it is fail-safe, for a reason worth having
+written down.** The guard downstream is *is any IN-RACE instant missing an
+engine instant*, and a DNF makes instants missing under either window:
+
+* correct (`race_end = None`) → the code treats **every** recorded instant as
+  in-race, prints `WARNING: no finish time known`, finds the instants past the
+  point the clean run reached have no engine data → **ABORT, no file written**;
+* buggy (`race_end = the declared finish`) → instants between the DNF point and
+  the declared finish are still in-race, still have no engine data → **ABORT, no
+  file written**.
+
+Both abort. It stops being fail-safe only under `--allow-partial` or
+`--inherit-outside`, whose entire purpose is to say "yes, write a part-carrier
+file", and both print that on their own line. **What was lost is the
+diagnostic**: the operator never saw the warning, and the printed `validator
+Time` line asserted a finish for a run that did not finish. On a transplanted
+container — 165922's carrier declares 8787.035 against a 15.085 run — that line
+would have read 8787.035 and looked like a container problem rather than a
+clean-run failure.
+
+**Was any published ghost regenerated through it? No known one, and this is the
+artefact.** `whl_regen_corpus.sh` keys every file on `nan_validate_after_v1.tsv`
+and skips anything without a validated time (`[ "$ms" = "DNF" ] && SKIP`). That
+table has 171 rows, 3 of them DNF, and those 3 were skipped by construction — so
+no corpus regeneration ever ran on a template the oracle refused.
+
+**The residual exposure I could not close.** A clean run that DNF'd for a
+*run-specific* reason — a bad map link, a shared work directory, a handover that
+perturbed the run — on a file that validates perfectly well on its own. The
+banked `tg_regen_results_v1.tsv` cannot distinguish that case: a finishing run
+and a fabricated window print the same `Some(N)`, because by then N is the same
+number. **The artefact that would settle it is the raw server output of each
+clean run, and it is not banked.** The cheap way to settle it is to re-run
+`ghost regen`'s gate over the published corpus with the fixed binary and diff the
+coverage lines; the expensive way is to re-regenerate.
 
 **2. The input echo was a `round` where the game writes a `floor`.**
 `fk regen --inputs` wrote `round((steer_i8 / 127 + 1) / 2 * 255)` into sample
@@ -308,8 +345,127 @@ The three that are worth reading:
 
 ## 7. Gaps worth closing
 
-See the report. In short: `--inputs` should not be a flag; the resume boundary
-should be per-server everywhere rather than only in the search; there is no
-command that answers "is this checkpoint inside the validated regime"; 91 of each
-sample's 116 bytes are still the carrier's and the engine has all of them; and
-the search still carries the second codec.
+Concrete, and each one is a thing that is missing rather than a thing that is
+hard.
+
+### G1. The fork can express three input channels. The tape has four.
+
+`forksrv::Rec` is `{ steer, gas, brake }` — three `f32` written into the
+engine's 32-byte per-tick record. **A respawn is an editable input** (bit 31 of
+the state literal) and `ghost::tape` models it as one, but a fork resume cannot
+toggle one. On any map where a respawn is part of the fast line, the search is
+not searching that dimension — not because anyone decided against it, but
+because the harness has no word for it.
+
+The four bytes are accounted for and none of them is it: `+12` is `f32 0`,
+`+16` a device-segment constant, `+24` the value 2, `+28` the packet mode. So
+the next step is to find where the engine keeps the respawn input, or to
+establish that it is consumed somewhere other than this array. **That is a task,
+not a conclusion.**
+
+### G2. Nothing scores a candidate below a millisecond, safely
+
+The finish is adjudicated to 1 ms and the search spends most of its time on
+plateaus that are one millisecond wide. Two levers exist, and neither is in `fk`:
+
+* the **sub-tick plane** is a GRADIENT, not a score. Measured: 0.98 ms error on
+  a grounded finish, ~19 ms on an airborne one, where it fabricated a 7.990 that
+  was really 8.004. Per-seed calibration is exact (residual 0.002 ms), which is
+  what makes it dangerous — every internal check passes.
+* the **gate-relocation vernier** does not have that failure mode, because a
+  relocated gate is still adjudicated by the real trigger against the real car
+  body, and it resolves 0.05 ms. It lives in `tmmaps` and costs a plain-oracle
+  run per rank.
+
+Scoring against a relocated gate *inside the fork* would turn the vernier from
+an offline ranking pass into the search's objective. It is the largest single
+lever on a millisecond plateau.
+
+### G3. Nothing measures whether a checkpoint is inside the validated regime
+
+`fk server check` generates its candidates by perturbing the reference — which
+is precisely the regime the 4700/4700 already covers. The regime where the fork
+lied on 312 of 312 is a tape that differs from its template *early or
+structurally*, and nothing measures that.
+
+Concrete: `fk server check --like TAPE`, deriving the candidate set from how
+*that* tape differs from the reference (where the first difference is, how many
+ticks differ, how far below the boundary they sit), so the exactness number
+covers the regime you are about to rely on. `phdiag prefix-audit` was a version
+of this as a screen — 11/11 recall, 11/34 precision — and it should be a
+first-class control rather than a tool somebody remembers.
+
+### G4. The per-server resume floor cannot be measured here
+
+`fk server probe` starts one server and reports one probe tick. The defect
+behind most of map 2's phantoms is that the tick is **per-server**: 104 of 150
+workers stopped later than a single calibration when 150 servers start at once.
+The fix — floor = MAX over workers, behind a startup barrier — lives in the
+search, and a fleet has no way to ask what its floor should be.
+
+`fk server probe --servers N` would start N at once and print the distribution
+and the floor. Forty lines, and it turns a rule of thumb into a measurement.
+
+### G5. Twelve of the twenty-nine trajectory columns are empty, and two of them
+are what a landing is made of
+
+`gear`, `rpm_raw`, `side_speed`, `is_turbo`, **`is_ground_contact`**,
+`turbo_time` and the four **wheel-dampen** columns. The production readout is
+40 bytes of transform plus the race clock.
+
+Ground contact and suspension dampen are exactly the signals that say whether a
+landing stuck or bounced, so landing quality is scored today from position and
+velocity alone. These are **not unavailable** — the engine computes every one of
+them and they are in its memory; `fk fit` measured encodings for several before
+it was deleted. What is true is that nobody has widened the readout window to
+include them. Saying otherwise would be a harness limit reported as a physics
+limit.
+
+### G6. `--inputs` is a flag and should not be
+
+Writing the tape echo into a regenerated sample is always right: those three
+bytes are the run's own inputs and need no engine reading at all. Leaving it
+optional means a regenerated file can silently disagree with the tape it
+carries, which is the cheapest contamination check there is. Make it
+unconditional; add `--no-inputs` only when someone can name the case.
+
+### G7. Nothing measures how often the locate picks a decoy on a given map
+
+The ghost arm measured about 1 in 8 on its fixture map and responded by running
+a dozen attempts at once. `fk regen` has an anchor ladder and retries, but there
+is no way to ask "on this map, what is the success rate" — which is the number
+that decides whether a corpus regeneration takes an hour or a day.
+
+### G8. The search still carries the second codec
+
+`tmsearch/src/{ghost,replay,gbx,bits}.rs` is a complete second implementation of
+the `0x0309201D` codec, and it is the copy with the defect: its writer emits
+mode-12 same-input packets as a one-bit form and **silently drops writes to
+those ticks**, so the search cannot express certain candidates and nothing can
+tell that it failed to. `fk` no longer uses it. Moving `tmsearch` onto
+`ghost::tape` is out of this audit's scope and is ruled to be done.
+
+---
+
+## 8. What I could not make safe
+
+* **`fk regen --allow-partial` and `--inherit-outside`** are the only paths
+  where a wrong race window is not fail-safe. They exist to write a
+  part-carrier file on purpose and they say so on their own line, but they are
+  the sharp edge left in that command.
+* **`fk watch replay` and `fk watch paths` are ported but only compiled, not
+  run.** `fk watch measure` is exercised. The other two verbs are the
+  cross-checks on the in-child evaluator and on the two sampling paths, and I
+  have not re-run either since moving them.
+* **`forkoracle::blind` has no test.** It is the locator the search runs on every
+  candidate, and it came with none; I added tests for the clock-first locator
+  (`fk::locate`) because that is the one `fk` drives.
+* **The `--anchor` calibrated-anchor escape hatch** is carried from the ghost
+  arm's patch and I have not exercised it. Its acceptance test still runs, so a
+  stale calibration should fail rather than produce a wrong file — but "should"
+  is doing work in that sentence.
+* **`ghost regen`'s `write_input_channels`** now duplicates what
+  `fk regen --inputs` does correctly. The ghost arm has settled and cannot drop
+  it. Recommendation for whoever next touches that path: keep it as a belt until
+  someone re-runs the corpus, then remove it.
+
