@@ -10,14 +10,14 @@
 //! No server, no map, no network: the fixtures are the two human ghosts checked
 //! in beside `tools/ghost`.
 
-use ghost::container::Container;
-use ghost::tape::{Encoding, Tape};
+use ghost::Container;
+use ghost::{Encoding, Tape};
 use forkoracle::inputs::{mutate, Inputs, OpSet, Rng};
 use tmsearch::tape::Patcher;
 
 const FIXTURES: [(&str, usize); 2] = [
-    ("../../ghost/testdata/human_22730.Ghost.Gbx", 2432),
-    ("../../ghost/testdata/human_23013.Ghost.Gbx", 2453),
+    (concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/human_22730.Ghost.Gbx"), 2432),
+    (concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/human_23013.Ghost.Gbx"), 2453),
 ];
 
 fn encode_with(path: &str, inputs: &Inputs) -> Vec<u8> {

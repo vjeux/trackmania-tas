@@ -13,4 +13,3 @@ path = "src/main.rs"
 
 [dependencies]
 gbx = { path = "../gbx" }
-tmtraj = { path = "../tmtraj" }

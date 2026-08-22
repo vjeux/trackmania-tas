@@ -35,7 +35,7 @@
 use forkoracle::inputs::{Distance, Inputs};
 use crate::score::{tag, Outcome};
 use crate::tape::Patcher;
-use ghost::container::secs;
+use ghost::secs;
 use ghost::oracle::{validate, MapsMode};
 use std::io::Write;
 use std::path::{Path, PathBuf};

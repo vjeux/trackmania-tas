@@ -1,5 +1,5 @@
-//! `ghost trim` -- cut the head and/or tail of a run and keep the file
-//! coherent.
+//! `ghost trim` -- set a run's WINDOW: cut the head and/or tail, or extend the
+//! tape past the end of the recording, and keep the file coherent either way.
 //!
 //! Coherent means all of this at once, and the command re-reads the file it
 //! wrote and checks every line of it before it reports success:
@@ -16,10 +16,24 @@
 //! A HEAD cut is a recording trim, not an input trim: the surviving tape starts
 //! mid-run, so replaying it from a standing start is a different run. The
 //! command says so, and `--from` refuses to pretend otherwise.
+//!
+//! LENGTHENING IS THE SAME OPERATION, and it lives here rather than in
+//! `ghost tape` for that reason: one command owns a run's length, because the
+//! obligations are one set. `--to` past the end of the tape appends copies of
+//! the last packet -- what `u02 extend` did, with `u02`'s 15 callsites and none
+//! of its coherence. The 173691 landing work is why: it needed a 7000-tick tape
+//! to give the car room to brake after touchdown, and `ghost tape inject`
+//! refuses a length change by design (a tape and its container must agree).
+//!
+//! An extension does not touch the telemetry, the declared time or the splits,
+//! and that is not an omission: no samples exist past the end of the recording,
+//! and the extra ticks are AFTER the finish, so the run's official time is
+//! unchanged. The control for that claim is the oracle -- re-simulating the
+//! lengthened file must return the same time as the original.
 
-use gbx::container::{secs, Container};
+use gbx::container::{secs, Container, GhostResult};
 use crate::oracle::{self, MapsMode};
-use gbx::tape::{Encoding, Tape};
+use gbx::tape::{Encoding, StateEnc, Tape};
 use crate::cli::{die, flag, has, num};
 
 pub fn cmd(a: &[String]) {
@@ -42,11 +56,15 @@ pub fn cmd(a: &[String]) {
     let mut nt = t.clone();
     let mut cut_head = 0usize;
     let mut cut_tail = 0usize;
+    let mut added = 0usize;
+    let n_arch = nt.archives.len();
     for ar in nt.archives.iter_mut() {
         let so = ar.start_offset_ms as i64;
         let n = ar.packets.len() as i64;
         let lo = if from == i64::MIN { 0 } else { (((from - so) + 9) / 10).clamp(0, n) };
-        let hi = if to == i64::MAX { n } else { (((to - so) / 10) + 1).clamp(0, n) };
+        // The window's end BEFORE clamping: past `n` it is an extension.
+        let want_hi = if to == i64::MAX { n } else { ((to - so) / 10) + 1 };
+        let hi = want_hi.clamp(0, n);
         if hi <= lo {
             die(format!(
                 "the window {} .. {} leaves no ticks (this archive spans {} .. {})",
@@ -65,11 +83,40 @@ pub fn cmd(a: &[String]) {
         // and it is exactly the case the format's one-bit form hides.
         if let Some(p) = ar.packets.first_mut() {
             p.vsame = false;
-            if let gbx::tape::StateEnc::Prev | gbx::tape::StateEnc::Prev2(_, _) = p.state {
+            if let StateEnc::Prev | StateEnc::Prev2(_, _) = p.state {
                 // a repeat of a word that is no longer in the file: freeze the
                 // word it decoded to into an explicit literal
                 let lit = ((p.flags as u64 & 0x3F_FFFF) << 5) | (p.word0 as u64 & 0xF);
-                p.state = gbx::tape::StateEnc::Lit(lit);
+                p.state = StateEnc::Lit(lit);
+            }
+        }
+        // ---- the extension ------------------------------------------------
+        if want_hi > n {
+            if n_arch > 1 {
+                die(format!(
+                    "this file has {} input archives; extending it would have to choose one to \
+                     grow, and nothing in the file says which. Refusing.",
+                    n_arch
+                ));
+            }
+            let last = ar
+                .packets
+                .last()
+                .cloned()
+                .unwrap_or_else(|| die("cannot extend a tape with no packets"));
+            added = (want_hi - n) as usize;
+            for _ in 0..added {
+                let mut p = last.clone();
+                // Repeat the last INPUT, not the last EVENT. A respawn is an
+                // input like any other -- bit 31 of the state literal, `word0`
+                // bit 5 -- so copying a respawn tick five thousand times would
+                // hold the respawn key down for the whole extension. The gate
+                // below re-reads the file and asserts no appended tick carries
+                // it.
+                p.word0 &= !0x20;
+                p.state = StateEnc::Prev;
+                p.vsame = true;
+                ar.packets.push(p);
             }
         }
     }
@@ -83,13 +130,18 @@ pub fn cmd(a: &[String]) {
         Some(d) => d,
         None => new_span_hi,
     });
-    let splits_before = gbx::record::read_checkpoints(c.body());
+    let splits_before: Vec<i32> = c.splits();
     let mut body = nt.splice_into(c.body(), Encoding::Explicit).unwrap_or_else(|e| die(e));
     set_all_declared(&mut body, declared as u32);
-    let splits = set_result_chunk(&mut body, declared as u32, |t| {
-        (t as i64) <= declared && (t as i64) >= from.max(0)
+    // Keep the checkpoints inside the window. An EXTENSION keeps all of them:
+    // the appended ticks are after the finish and cross nothing.
+    let keep = |t: i32| (t as i64) <= declared && (t as i64) >= from.max(0);
+    let body = rewrite_result(&body, |r| {
+        r.race_ms = declared as i32;
+        r.entries.retain(|(t, _)| keep(*t));
     })
-    .unwrap_or_default();
+    .unwrap_or_else(|e| die(e));
+    let splits: Vec<i32> = gbx::container::read_result(&body).map(|r| r.checkpoints()).unwrap_or_default();
     let tmp = format!("{}.trim-stage", out);
     gbx::container::write_gbx(&c.gbx, body, &tmp).unwrap_or_else(|e| die(e));
 
@@ -98,7 +150,13 @@ pub fn cmd(a: &[String]) {
     let hi_ms = if to == i64::MAX { i32::MAX } else { to as i32 };
     let mut dropped = 0usize;
     let mut kept = 0usize;
-    let had_record = gbx::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
+    // A pure EXTENSION does not touch the record at all. Recomputing the span
+    // there would move `end_ms` from what the game wrote (19.530 on the map-1
+    // WR) to the last sample's own time (19.500) -- a change to a recording
+    // nobody asked to edit, in a command that only added ticks after it.
+    let cutting = cut_head > 0 || cut_tail > 0;
+    let had_record =
+        cutting && gbx::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
     if had_record {
         let r = gbx::recwrite::rewrite_ghost(&tmp, out, |rd| {
             for e in rd.ents.iter_mut() {
@@ -157,6 +215,22 @@ pub fn cmd(a: &[String]) {
             break;
         }
     }
+    if added > 0 {
+        // The appended ticks, read back off the disk: the inputs the last
+        // recorded tick carried, held, with no respawn.
+        let src = &a2.packets[a2.packets.len() - added - 1];
+        let (s, ac, br) = (src.steer, src.accel, src.brake);
+        for (k, p) in a2.packets[a2.packets.len() - added..].iter().enumerate() {
+            if p.steer != s || p.accel != ac || p.brake != br {
+                fail.push(format!("appended tick {} does not hold the last input", k));
+                break;
+            }
+            if p.respawn() {
+                fail.push(format!("appended tick {} reads as a respawn", k));
+                break;
+            }
+        }
+    }
     let dts: Vec<u32> = c2.declared_times().into_iter().map(|x| x.1).collect();
     if dts.iter().any(|v| *v as i64 != declared) {
         fail.push(format!("declared time copies disagree: {:?}", dts));
@@ -172,7 +246,7 @@ pub fn cmd(a: &[String]) {
                 fail.push(format!("a telemetry sample survives at {}", secs(s.time_ms as i64)));
             }
         }
-        if (d.end_ms as i64) > to && to != i64::MAX {
+        if (d.end_ms as i64) > to && to != i64::MAX && added == 0 {
             fail.push(format!("the record span still ends at {}", secs(d.end_ms as i64)));
         }
     }
@@ -185,7 +259,18 @@ pub fn cmd(a: &[String]) {
 
     println!("wrote {}", out);
     println!("  window          {} .. {}", secs(new_span_lo), secs(new_span_hi));
-    println!("  ticks           {} -> {}  (head -{}, tail -{})", t.n(), t2.n(), cut_head, cut_tail);
+    if added > 0 {
+        println!(
+            "  ticks           {} -> {}  (head -{}, tail -{}, appended +{})",
+            t.n(),
+            t2.n(),
+            cut_head,
+            cut_tail,
+            added
+        );
+    } else {
+        println!("  ticks           {} -> {}  (head -{}, tail -{})", t.n(), t2.n(), cut_head, cut_tail);
+    }
     println!("  declared        {}  in {} copies, all equal", secs(declared), dts.len());
     println!(
         "  checkpoints     {:?}  (was {:?})",
@@ -194,8 +279,19 @@ pub fn cmd(a: &[String]) {
     );
     if had_record {
         println!("  telemetry       {} samples kept, {} dropped", kept, dropped);
+    } else if !cutting {
+        println!("  telemetry       untouched (nothing was cut)");
     } else {
         println!("  telemetry       none in this container");
+    }
+    if added > 0 {
+        println!(
+            "  NOTE: {} ticks were APPENDED, holding the last recorded input. The telemetry, the\n\
+             \x20       declared time and the splits are unchanged, because the appended ticks are\n\
+             \x20       after the finish. The control for that is the oracle: this file must\n\
+             \x20       re-simulate to the same time as the one it came from.",
+            added
+        );
     }
     if cut_head > 0 {
         println!(
@@ -232,48 +328,20 @@ pub fn set_all_declared(body: &mut [u8], ms: u32) {
     }
 }
 
-/// Rewrite the ghost-result chunk `0x0309202B` for a new window.
+/// Edit the ghost-result chunk `0x0309202B` and write it back.
 ///
 /// The chunk is NOT a bare split vector -- treating it as one and filtering it
-/// scrambles the file. Its layout is: `[?, race_time, ?, ?, ?, n_checkpoints,
-/// then n pairs of (checkpoint_time, ?)]`. This keeps the pairs whose time is
-/// inside the window, in order, rewrites the count and the race time, and zeroes
-/// what it dropped. The chunk never changes length.
-pub fn set_result_race_time(body: &mut [u8], ms: u32) {
-    if let Some((_, _, poff, sz)) = gbx::container::all_skip_chunks(body)
-        .into_iter()
-        .find(|c| c.0 == gbx::container::SPLITS_CHUNK)
-    {
-        if sz >= 8 {
-            body[poff + 4..poff + 8].copy_from_slice(&ms.to_le_bytes());
-        }
-    }
-}
-
-fn set_result_chunk(body: &mut [u8], race_ms: u32, keep: impl Fn(i32) -> bool) -> Option<Vec<i32>> {
-    let (_, _, poff, sz) = gbx::container::all_skip_chunks(body)
-        .into_iter()
-        .find(|c| c.0 == gbx::container::SPLITS_CHUNK)?;
-    let n_ints = sz / 4;
-    if n_ints < 6 {
-        return None;
-    }
-    let get = |b: &[u8], i: usize| i32::from_le_bytes(b[poff + i * 4..poff + i * 4 + 4].try_into().unwrap());
-    let n = get(body, 5);
-    if n <= 0 || n >= 200 || 6 + 2 * (n as usize - 1) >= n_ints {
-        return None;
-    }
-    let pairs: Vec<(i32, i32)> = (0..n as usize).map(|i| (get(body, 6 + 2 * i), get(body, 7 + 2 * i))).collect();
-    let kept: Vec<(i32, i32)> = pairs.into_iter().filter(|(t, _)| keep(*t)).collect();
-    let put = |b: &mut [u8], i: usize, v: i32| {
-        b[poff + i * 4..poff + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+/// scrambles the file. It is decoded ONCE, in `gbx::container::GhostResult`;
+/// this is the write half, and every writer in this crate goes through it so
+/// the count word, the entry list, the terminator and the chunk's own size stay
+/// one fact rather than four.
+///
+/// A file with no result chunk is not an error: some synthesised containers
+/// have none, and there is then nothing to keep coherent.
+pub fn rewrite_result(body: &[u8], f: impl FnOnce(&mut GhostResult)) -> Result<Vec<u8>, String> {
+    let Some(mut r) = gbx::container::read_result(body) else {
+        return Ok(body.to_vec());
     };
-    put(body, 1, race_ms as i32);
-    put(body, 5, kept.len() as i32);
-    for i in 0..n as usize {
-        let (t, u) = kept.get(i).copied().unwrap_or((0, 0));
-        put(body, 6 + 2 * i, t);
-        put(body, 7 + 2 * i, u);
-    }
-    Some(kept.into_iter().map(|(t, _)| t).collect())
+    f(&mut r);
+    gbx::container::write_result(body, &r)
 }

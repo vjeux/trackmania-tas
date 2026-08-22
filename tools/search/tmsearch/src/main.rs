@@ -492,7 +492,12 @@ fn check_segment_maps(a: &Args, server: &Path, p: &Patcher, start: &Inputs, scra
     }
     let f = scratch.join("segcheck.Ghost.Gbx");
     std::fs::write(&f, p.file(start)).unwrap_or_else(|e| die(format!("{}", e)));
-    let splits: Vec<u32> = ghost::container::Container::load(&a.template)
+    // The template's own DECLARED checkpoint list. `Container::splits()` used
+    // to return the result chunk's RAW WORD ARRAY, so `splits[k - 1]` for
+    // checkpoint 1 read the chunk's version word -- and this comparison then
+    // announced a 7.616 s "trigger difference" that was an array index. It
+    // returns the decoded list now; the raw words are `splits_raw()`.
+    let splits: Vec<i32> = ghost::Container::load(&a.template)
         .map(|c| c.splits())
         .unwrap_or_default();
     let own_splits = a.start_from.is_none();
@@ -512,7 +517,16 @@ fn check_segment_maps(a: &Args, server: &Path, p: &Patcher, start: &Inputs, scra
                 k
             )),
             Some(ms) => {
-                let expect = if own_splits { splits.get((*k as usize).saturating_sub(1)) } else { None };
+                // A 0 is not a split. `ghost declare --cps N` writes 0.000 for
+                // the intermediate entries of a container borrowed from another
+                // map -- "this file does not know its splits" -- and comparing
+                // a segment map's answer against that would report the entire
+                // time as a trigger difference.
+                let expect = if own_splits {
+                    splits.get((*k as usize).saturating_sub(1)).filter(|w| **w > 0)
+                } else {
+                    None
+                };
                 match expect {
                     Some(&want) if want as i64 != ms => eprintln!(
                         "WARNING --seg {}: the segment map returns {} where the template's own \

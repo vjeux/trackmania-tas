@@ -4,8 +4,14 @@
 //! and say so. A skipped check is not a passing check -- `cargo test` prints
 //! the reason, and CI on a box with an engine should treat a skip as a failure.
 //!
-//! The fixtures are the two human ghosts and the map checked in beside
-//! `tools/ghost`, so there is nothing to fetch.
+//! The fixtures are the two human ghosts and the map in `tools/testdata`, the
+//! corpus every crate shares, resolved from this crate's own manifest
+//! directory: a fixture path relative to the CWD gives a different answer
+//! depending on where you stand, and these pointed at `tools/ghost/testdata`,
+//! which the audit merged into the shared corpus. They had been silently
+//! skipping ever since -- on a box with no server they skip, and on a box with
+//! one they died on a missing file.
+
 
 use ghost::oracle::{server_dir, validate, MapsMode};
 use std::path::{Path, PathBuf};
@@ -14,8 +20,8 @@ use forkoracle::inputs::{mutate, Distance, OpSet, Rng};
 use tmsearch::score::{Outcome, Progress};
 use tmsearch::tape::Patcher;
 
-const GHOST: &str = "../../ghost/testdata/human_22730.Ghost.Gbx";
-const MAP: &str = "../../ghost/testdata/map2.Map.Gbx";
+const GHOST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/human_22730.Ghost.Gbx");
+const MAP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/map2.Map.Gbx");
 /// What the engine gets when it re-simulates that file's own tape.
 const TRUTH_MS: i64 = 22730;
 

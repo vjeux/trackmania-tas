@@ -1,7 +1,7 @@
 //! Printing. Times are **seconds with a decimal**, everywhere, with no
 //! exceptions -- `36.049`, never `36049`.
 
-pub use ghost::container::secs;
+pub use ghost::secs;
 
 /// A signed millisecond difference, as seconds: `-0.021`, `+1.250`.
 pub fn delta(ms: i64) -> String {

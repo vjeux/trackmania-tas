@@ -778,121 +778,38 @@ pub fn wheel_fit(v: &[R], cls: &[crate::whlcmd::Cls]) -> Option<WheelFit> {
     Some(WheelFit { radius, share, n: rr.len() })
 }
 
-/// One oracle verdict: the dedicated server's own answer on the file as it
-/// sits on disk.
-pub struct OracleOut {
-    pub sim_time: Option<i64>,
-    pub declared_time: Option<i64>,
-    pub cps: Option<i64>,
-    pub is_valid: bool,
-    pub desc: String,
-    /// WHOSE FILE THE GAME THINKS THIS IS. 173636's regeneration is clean
-    /// against 31 human recordings -- every position in it is ours -- and it
-    /// still carries the rank-1 human's account id and login, inherited from
-    /// the carrier its template was built on. No positional check can see
-    /// that, however many references you throw at it. It is a different axis.
-    pub account_id: Option<String>,
-    pub login: Option<String>,
-}
-
-
-pub fn oracle_run(server: &str, map: &str, ghost: &str) -> Result<OracleOut, String> {
-    let text = oracle_text(server, map, ghost)?;
-    parse_oracle(&text)
-}
-
-fn oracle_text(server: &str, map: &str, ghost: &str) -> Result<String, String> {
-    use std::os::unix::fs::symlink;
-    let work = format!("/tmp/intg-gate-{}-{}", std::process::id(), rand_tag());
-    let rp = format!("{}/UserData/Replays", work);
-    let mp = format!("{}/UserData/Maps", work);
-    std::fs::create_dir_all(&rp).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&mp).map_err(|e| e.to_string())?;
-    // The map goes in as a COPY under its own name: a worker dir reused across
-    // maps answers as the first map it ever saw, which is a table of plausible
-    // wrong numbers.
-    let mapname = std::path::Path::new(map)
-        .file_name()
-        .ok_or("map has no filename")?
-        .to_string_lossy()
-        .to_string();
-    std::fs::copy(map, format!("{}/{}", mp, mapname)).map_err(|e| format!("map: {}", e))?;
-    let gname = std::path::Path::new(ghost)
-        .file_name()
-        .ok_or("ghost has no filename")?
-        .to_string_lossy()
-        .to_string();
-    let gabs = std::fs::canonicalize(ghost).map_err(|e| e.to_string())?;
-    symlink(&gabs, format!("{}/{}", rp, gname)).map_err(|e| format!("ghost: {}", e))?;
-    for (n, t) in [("Packs", format!("{}/Packs", server)), ("TrackmaniaServer", format!("{}/TrackmaniaServer", server))] {
-        let _ = symlink(&t, format!("{}/{}", work, n));
-    }
-    let out = std::process::Command::new("./TrackmaniaServer")
-        .args(["/nodaemon", "/validatepath=."])
-        .current_dir(&work)
-        .output()
-        .map_err(|e| format!("server: {}", e))?;
-    // The JSON goes to stdout and the SUMMARY to stderr; a parser reading only
-    // stdout sees a truncated document and calls a healthy run a failure.
-    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    let _ = std::fs::remove_dir_all(&work);
-    if !text.contains("replays parsed") {
-        return Err(format!("the server produced no verdict: {}", text.lines().last().unwrap_or("")));
-    }
-    Ok(text)
-}
-
-fn parse_oracle(text: &str) -> Result<OracleOut, String> {
-    let grab_i = |k: &str, after: &str| -> Option<i64> {
-        let at = text.find(after)?;
-        let seg = &text[at..];
-        let p = seg.find(&format!("\"{}\" : ", k))?;
-        let rest = &seg[p + k.len() + 5..];
-        let num: String = rest
-            .chars()
-            .skip_while(|c| !c.is_ascii_digit() && *c != '-')
-            .take_while(|c| c.is_ascii_digit() || *c == '-')
-            .collect();
-        num.parse().ok()
-    };
-    let is_valid = text.contains("\"IsValid\" : true");
-    let sim_time = if text.contains("\"ValidatedResult\" : null") {
-        None
-    } else {
-        grab_i("Time", "\"ValidatedResult\"")
-    };
-    let cps = grab_i("NbCheckpoints", "\"ValidatedResult\"");
-    let declared_time = grab_i("Time", "\"DeclaredResult\"");
-    let desc = text
-        .find("\"Desc\" : \"")
-        .map(|p| {
-            text[p + 10..]
-                .chars()
-                .take_while(|c| *c != '"' && *c != '\\')
-                .collect::<String>()
-        })
-        .unwrap_or_default();
-    let grab_s = |k: &str| -> Option<String> {
-        let p = text.find(&format!("\"{}\" : \"", k))?;
-        Some(
-            text[p + k.len() + 6..]
-                .chars()
-                .take_while(|c| *c != '"')
-                .collect::<String>(),
-        )
-    };
-    let account_id = grab_s("AccountId");
-    let login = grab_s("Login");
-    Ok(OracleOut { sim_time, declared_time, cps, is_valid, desc, account_id, login })
-}
-
-fn rand_tag() -> String {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    format!("{:08x}", t)
+/// THE ORACLE IS `ghost::oracle`, AND THIS GATE NO LONGER HAS A PARSER OF ITS
+/// OWN.
+///
+/// It had one, and the parser was wrong. `parse_oracle` handled the TIME
+/// correctly -- an explicit `"ValidatedResult" : null` test first -- and then
+/// read the checkpoint count with
+/// `grab_i("NbCheckpoints", "\"ValidatedResult\"")`, a helper that finds
+/// `"ValidatedResult"` and scans FORWARD for the key. On a DNF there is no
+/// `NbCheckpoints` inside it -- the whole object is `null` -- so the scan ran
+/// on into `DeclaredResult` and returned THE FILE'S OWN CLAIM. Measured on the
+/// captured transcript in `tools/testdata/oracle_transcript.json`:
+/// `sim_time=None, cps=Some(4), declared=Some(19538)` — the gate reported four
+/// validated checkpoints for a run the server refused outright.
+///
+/// That was the FIFTH copy of the dedicated-server driver in this tree, and the
+/// fix is not a better copy. `ghost::oracle` is the one driver and the one
+/// parser: it tracks which result block it is inside instead of scanning
+/// forward from a key, it keeps the validated and declared numbers in separate
+/// fields so their disagreement is a value rather than a bug, and on a DNF it
+/// takes the checkpoint count out of the server's own prose (`reached some
+/// checkpoints (2 out of 4)`), which is the only place a DNF's count exists.
+///
+/// `tests/oracle_gate.rs` pins both halves against that transcript -- and runs
+/// the WRONG parser on the same bytes and requires the wrong answer, so the
+/// fixture cannot quietly stop being a test.
+pub fn oracle_run(server: &str, map: &str, file: &str) -> Result<ghost::oracle::SimResult, String> {
+    ghost::oracle::validate(
+        std::path::Path::new(server),
+        std::path::Path::new(file),
+        ghost::oracle::MapsMode::One(std::path::Path::new(map)),
+        "intg-gate",
+    )
 }
 
 /// The gate's verdict on one file.
@@ -1182,13 +1099,13 @@ pub fn gate_one(
     match (server, map) {
         (Some(s), Some(m)) => match oracle_run(s, m, ghost) {
             Ok(o) => {
-                let st = o.sim_time;
+                let st = o.time_ms;
                 match st {
                     Some(t) if race > 0 && t == race => lines.push(format!(
                         "PASS   C-oracle  the server re-simulates THIS FILE to {:.3} s, the declared time (cps {}, IsValid {})",
                         t as f64 / 1000.0,
-                        o.cps.unwrap_or(-1),
-                        o.is_valid
+                        o.cps.map(|v| v as i64).unwrap_or(-1),
+                        o.is_valid.unwrap_or(false)
                     )),                    Some(t) if race > 0 => {
                         hard += 1;
                         lines.push(format!(
@@ -1208,7 +1125,7 @@ pub fn gate_one(
                         lines.push(format!(
                             "FAIL   C-oracle  the server REFUSES this file: {} (declared {:?})",
                             if o.desc.is_empty() { "DNF / not validated".into() } else { o.desc.clone() },
-                            o.declared_time
+                            o.declared_ms
                         ));
                     }
                 }
@@ -1235,7 +1152,7 @@ pub fn gate_one(
                 // time happened to match, IsValid would have read true and the
                 // file would have shipped under a real player's account. Point
                 // 2 is the check that would have caught it on purpose.
-                match (o.declared_time, o.sim_time) {
+                match (o.declared_ms, o.time_ms) {
                     (Some(d), Some(v)) if d != v => {
                         // WHOSE time is it? A header declaring another RUN's
                         // time is a borrowed container. A header declaring the
@@ -1288,17 +1205,20 @@ pub fn gate_one(
                         "n/a    C-header  the server returned no declared/validated pair".into(),
                     ),
                 }
-                match (&o.account_id, &o.login) {
-                    (Some(a), l) if !a.is_empty() => {
+                // `ghost::oracle` reports these as plain strings, empty when
+                // the server did not print the field at all -- which is the
+                // state OUR files are supposed to be in.
+                match (o.account_id.as_str(), o.login.as_str()) {
+                    (a, l) if !a.is_empty() => {
                         hard += 1;
                         lines.push(format!(
                             "FAIL   C-ident   this file carries a player account id ({}{}). Ours carry NONE. \
                              The file says it is somebody's; that is a claim about a person, not about a trajectory.",
                             a,
-                            l.as_deref().map(|x| format!(", login {}", x)).unwrap_or_default()
+                            if l.is_empty() { String::new() } else { format!(", login {}", l) }
                         ));
                     }
-                    (_, Some(l)) if l != "TAS" && !l.is_empty() => {
+                    (_, l) if l != "TAS" && !l.is_empty() => {
                         hard += 1;
                         lines.push(format!(
                             "FAIL   C-ident   this file's login is {:?}, not \"TAS\". Ours report \"TAS\" and no account id.",

@@ -20,10 +20,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbx"
+version = "1.0.0"
+dependencies = [
+ "miniz_oxide",
+]
+
+[[package]]
 name = "ghost"
 version = "1.0.0"
 dependencies = [
- "tmtraj",
+ "gbx",
 ]
 
 [[package]]
@@ -40,13 +47,6 @@ name = "tmsearch"
 version = "1.0.0"
 dependencies = [
  "forkoracle",
+ "gbx",
  "ghost",
- "tmtraj",
-]
-
-[[package]]
-name = "tmtraj"
-version = "0.1.0"
-dependencies = [
- "miniz_oxide",
 ]

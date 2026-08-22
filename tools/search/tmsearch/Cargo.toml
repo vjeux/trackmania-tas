@@ -17,6 +17,7 @@ ghost = { path = "../../ghost" }
 # The fork oracle, the watchdog, and the mutation operators -- shared with `fk`,
 # which measures the watchdog's false-positive rate against this exact mix.
 forkoracle = { path = "../forkoracle" }
-# The telemetry decoder, for reading a reference line out of a recording.
-tmtraj = { path = "../../tmtraj" }
+# The telemetry decoder, for reading a reference line out of a recording. It is
+# `gbx`: the record is part of the FORMAT, and tmtraj is the analysis above it.
+gbx = { path = "../../gbx" }
 

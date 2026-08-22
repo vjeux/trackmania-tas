@@ -42,8 +42,8 @@
 //! task; a limit that is silent is a defect.
 
 use forkoracle::inputs::Inputs;
-use ghost::container::Container;
-use ghost::tape::{Encoding, Tape};
+use ghost::Container;
+use ghost::{Encoding, Tape};
 
 /// Where one tick's inputs live in the base image, as absolute bit positions.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -259,6 +259,186 @@ pub const EMBEDDED_MAP_CHUNK: u32 = 0x03093002;
 pub const RACE_TIME_CHUNK: u32 = 0x03092005;
 pub const SPLITS_CHUNK: u32 = 0x0309202B;
 
+/// The `CGameCtnChallenge` a body carries, if any: (payload offset, size).
+///
+/// THE MAP IS INSIDE THE REPLAY. When this returns `Some`, the dedicated
+/// server simulates THIS copy and every `--map` argument, every
+/// `UserData/Maps` entry and the uid in the header are decoration.
+///
+/// The chunk is NOT skippable -- there is no `PIKS` marker and no chunk
+/// table entry: it is the id, a size word, and a whole nested GBX file. A
+/// scan that only knows skippable chunks reports "no embedded map" on every
+/// real replay, which is the most expensive way to get this wrong.
+pub fn embedded_map_in(b: &[u8]) -> Option<(usize, usize)> {
+    let pat = EMBEDDED_MAP_CHUNK.to_le_bytes();
+    let mut i = 0usize;
+    while i + 12 <= b.len() {
+        if b[i..i + 4] == pat {
+            let size = u32::from_le_bytes(b[i + 4..i + 8].try_into().unwrap()) as usize;
+            if size > 1024 && i + 8 + size <= b.len() && &b[i + 8..i + 11] == b"GBX" {
+                return Some((i + 8, size));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The ghost-result chunk `0x0309202B`, decoded.
+///
+/// **This is the project's only decoder of this chunk.** There were four:
+/// `gbx::record`'s (by byte needle), `ghost::trim`'s (inline, for the writer),
+/// `tmmaps`'s (`src/ghost.rs`, 43 lines) and the raw-array reading every caller
+/// of the old `Container::splits()` had to do for itself. Two implementations
+/// of one format agree until they do not, and the last of those four was the
+/// defect: `splits()` handed back the chunk's fifteen raw words and
+/// `ghost inspect` printed them all as seconds, so a version word rendered as
+/// `0.001` and a per-entry tag as `0.002`.
+///
+/// Layout, verified on every reference ghost in `tools/testdata` -- the
+/// extracted times equal the splits quoted independently, and the final entry
+/// always equals the race time:
+///
+/// ```text
+///     u32 version = 1
+///     i32 raceTime_ms          # the official run time
+///     i32 u01, i32 u02
+///     i32 nbRespawns
+///     i32 nCheckpoints
+///     nCheckpoints x (i32 time_ms, i32 stuntsScore-or-flag)
+///     i32 -1                   # terminator
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GhostResult {
+    pub version: u32,
+    pub race_ms: i32,
+    pub u01: i32,
+    pub u02: i32,
+    pub nb_respawns: i32,
+    /// `(checkpoint time ms, per-entry tag)` in driving order. The last entry
+    /// is the finish, and its time is the race time.
+    pub entries: Vec<(i32, i32)>,
+}
+
+/// Header words in front of the `(time, tag)` pairs.
+const RESULT_HEADER_WORDS: usize = 6;
+
+impl GhostResult {
+    /// Decode the chunk's raw word array.
+    ///
+    /// Refuses rather than guessing when the count word and the array length
+    /// disagree: a short array would silently produce a shorter list of splits,
+    /// and a segment builder then verifies each segment against the wrong
+    /// checkpoint.
+    pub fn decode(raw: &[u32]) -> Option<GhostResult> {
+        if raw.len() < RESULT_HEADER_WORDS {
+            return None;
+        }
+        let n = raw[5] as i32;
+        if n <= 0 || n >= 200 || raw.len() < RESULT_HEADER_WORDS + 2 * n as usize {
+            return None;
+        }
+        Some(GhostResult {
+            version: raw[0],
+            race_ms: raw[1] as i32,
+            u01: raw[2] as i32,
+            u02: raw[3] as i32,
+            nb_respawns: raw[4] as i32,
+            entries: (0..n as usize)
+                .map(|k| {
+                    (
+                        raw[RESULT_HEADER_WORDS + 2 * k] as i32,
+                        raw[RESULT_HEADER_WORDS + 2 * k + 1] as i32,
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    /// The checkpoint times, in driving order, in milliseconds.
+    pub fn checkpoints(&self) -> Vec<i32> {
+        self.entries.iter().map(|e| e.0).collect()
+    }
+
+    /// The chunk payload this result serialises to: the canonical form, with
+    /// the count word and the terminator agreeing with the entries.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w: Vec<i32> = Vec::with_capacity(RESULT_HEADER_WORDS + 2 * self.entries.len() + 1);
+        w.push(self.version as i32);
+        w.push(self.race_ms);
+        w.push(self.u01);
+        w.push(self.u02);
+        w.push(self.nb_respawns);
+        w.push(self.entries.len() as i32);
+        for (t, tag) in &self.entries {
+            w.push(*t);
+            w.push(*tag);
+        }
+        w.push(-1);
+        w.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+}
+
+/// Read the ghost-result chunk out of a body.
+pub fn read_result(body: &[u8]) -> Option<GhostResult> {
+    let (_, poff, sz) = result_site_in(body)?;
+    let words: Vec<u32> = (0..sz / 4)
+        .map(|k| u32::from_le_bytes(body[poff + 4 * k..poff + 4 * k + 4].try_into().unwrap()))
+        .collect();
+    GhostResult::decode(&words)
+}
+
+fn result_site_in(body: &[u8]) -> Option<(usize, usize, usize)> {
+    all_skip_chunks(body)
+        .into_iter()
+        .find(|c| c.0 == SPLITS_CHUNK)
+        .map(|c| (c.1, c.2, c.3))
+}
+
+/// Write a ghost result back into a body, **changing the chunk's length** when
+/// the entry count changed.
+///
+/// A LENGTH CHANGE MOVES EVERY BYTE AFTER IT, so this fixes the chunk's own
+/// size word and the size of every skippable chunk that encloses it. It
+/// refuses when the site is inside a carried map: a replay's map has chunk
+/// headers of its own, one of which declares a size running past the map's end,
+/// and "correcting" that size writes into the map -- measured, that turns a
+/// replay validating at 7.241 into one that validates at nothing while every
+/// field still reads back correctly.
+pub fn write_result(body: &[u8], r: &GhostResult) -> Result<Vec<u8>, String> {
+    let (coff, poff, sz) = result_site_in(body).ok_or("this file carries no 0x0309202B ghost-result chunk")?;
+    if let Some((mo, mn)) = embedded_map_in(body) {
+        if coff >= mo && coff < mo + mn {
+            return Err(format!(
+                "the only ghost-result chunk in this file is at {}, INSIDE the map it carries \
+                 ({}..{}). Rewriting it would edit the map.",
+                coff,
+                mo,
+                mo + mn
+            ));
+        }
+    }
+    let pay = r.encode();
+    let delta = pay.len() as i64 - sz as i64;
+    let mut out = Vec::with_capacity((body.len() as i64 + delta) as usize);
+    out.extend_from_slice(&body[..poff]);
+    out.extend_from_slice(&pay);
+    out.extend_from_slice(&body[poff + sz..]);
+    // this chunk's own size word
+    out[coff + 8..coff + 12].copy_from_slice(&(pay.len() as u32).to_le_bytes());
+    if delta != 0 {
+        // every skippable chunk that ENCLOSES this one
+        for (_cid, ecoff, epoff, esz) in all_skip_chunks(body) {
+            if ecoff == coff || epoff > poff || epoff + esz < poff + sz {
+                continue;
+            }
+            let nsz = (esz as i64 + delta) as u32;
+            out[ecoff + 8..ecoff + 12].copy_from_slice(&nsz.to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
 pub struct Container {
     pub path: String,
     pub gbx: Gbx,
@@ -292,19 +472,7 @@ impl Container {
     /// scan that only knows skippable chunks reports "no embedded map" on every
     /// real replay, which is the most expensive way to get this wrong.
     pub fn embedded_map(&self) -> Option<(usize, usize)> {
-        let b = &self.gbx.body;
-        let pat = EMBEDDED_MAP_CHUNK.to_le_bytes();
-        let mut i = 0usize;
-        while i + 12 <= b.len() {
-            if b[i..i + 4] == pat {
-                let size = u32::from_le_bytes(b[i + 4..i + 8].try_into().unwrap()) as usize;
-                if size > 1024 && i + 8 + size <= b.len() && &b[i + 8..i + 11] == b"GBX" {
-                    return Some((i + 8, size));
-                }
-            }
-            i += 1;
-        }
-        None
+        embedded_map_in(&self.gbx.body)
     }
 
     pub fn embedded_map_bytes(&self) -> Option<Vec<u8>> {
@@ -322,18 +490,59 @@ impl Container {
             .collect()
     }
 
-    /// The checkpoint split vector from `0x0309202B`.
-    pub fn splits(&self) -> Vec<u32> {
-        match self.chunks().into_iter().find(|c| c.0 == SPLITS_CHUNK) {
+    /// The chunk `0x0309202B` **as words**, undecoded. Forensics only.
+    ///
+    /// This is what `splits()` used to return, and the rename is the fix for a
+    /// real defect: on the map-1 WR the array is
+    /// `[1, 19538, 0, 0, 3, 4, 7617, 2, 13308, 4, 16316, 0, 19538, 1, -1]`,
+    /// four of whose fifteen words are splits, and `ghost inspect` printed the
+    /// whole thing through the seconds formatter -- rendering the version word
+    /// as `0.001` and a per-entry tag as `0.002`.
+    pub fn splits_raw(&self) -> Vec<u32> {
+        match self.result_site() {
             None => Vec::new(),
-            Some(c) => (0..c.3 / 4)
+            Some((_, poff, sz)) => (0..sz / 4)
                 .map(|k| {
-                    u32::from_le_bytes(
-                        self.gbx.body[c.2 + 4 * k..c.2 + 4 * k + 4].try_into().unwrap(),
-                    )
+                    u32::from_le_bytes(self.gbx.body[poff + 4 * k..poff + 4 * k + 4].try_into().unwrap())
                 })
                 .collect(),
         }
+    }
+
+    /// Where this file's ghost-result chunk lives: (chunk offset, payload
+    /// offset, payload size).
+    ///
+    /// A REPLAY carries a whole map, and a chunk walk that does not know that
+    /// can hand back a site inside it -- the failure that once "corrected" a
+    /// size word inside a carried map and produced a file that reads back
+    /// perfectly and validates to nothing. So a site inside the carried map is
+    /// not a site.
+    pub fn result_site(&self) -> Option<(usize, usize, usize)> {
+        let (plo, phi) = match self.embedded_map() {
+            Some((o, n)) => (o, o + n),
+            None => (usize::MAX, usize::MAX),
+        };
+        self.chunks()
+            .into_iter()
+            .find(|c| c.0 == SPLITS_CHUNK && (c.1 >= phi || c.2 + c.3 <= plo))
+            .map(|c| (c.1, c.2, c.3))
+    }
+
+    /// What the file DECLARES about its own run: race time, respawns and the
+    /// checkpoint list. `None` when the file carries no result chunk, which is
+    /// a real state -- some synthesised containers have none -- and not an
+    /// error.
+    pub fn result(&self) -> Option<GhostResult> {
+        GhostResult::decode(&self.splits_raw())
+    }
+
+    /// The checkpoint times this file declares, in driving order, in
+    /// milliseconds -- the checkpoints and then the finish. Empty when the file
+    /// carries no result chunk.
+    ///
+    /// This is the DECODED list, not the chunk's words: see `splits_raw`.
+    pub fn splits(&self) -> Vec<i32> {
+        self.result().map(|r| r.checkpoints()).unwrap_or_default()
     }
 
     /// Every 27-character uid-shaped literal in the file, with its offset.
@@ -546,3 +755,72 @@ pub fn set_embedded_map(c: &Container, newmap: &[u8], newuid: &str) -> Result<Ve
     Ok(out)
 }
 
+
+#[cfg(test)]
+mod result_tests {
+    use super::{GhostResult, RESULT_HEADER_WORDS};
+
+    /// The map-1 WR's real chunk, word for word. Four of these fifteen words
+    /// are splits; the rest are a version, the race time, two unknowns, the
+    /// respawn count, the entry count, four per-entry tags and a terminator.
+    const WR: &[u32] = &[1, 19538, 0, 0, 3, 4, 7617, 2, 13308, 4, 16316, 0, 19538, 1, 4294967295];
+
+    #[test]
+    fn decodes_the_checkpoint_list() {
+        let r = GhostResult::decode(WR).expect("decodes");
+        assert_eq!(r.checkpoints(), vec![7617, 13308, 16316, 19538]);
+        assert_eq!(r.race_ms, 19538);
+        assert_eq!(r.nb_respawns, 3);
+        assert_eq!(r.version, 1);
+    }
+
+    /// The whole point of the rename: the raw array is NOT the split list, and
+    /// a caller that treats it as one reads the version word as a checkpoint
+    /// time of 0.001 -- which is what `ghost inspect` printed.
+    #[test]
+    fn the_raw_array_is_not_the_split_list() {
+        let raw: Vec<i32> = WR.iter().map(|w| *w as i32).collect();
+        let decoded = GhostResult::decode(WR).unwrap().checkpoints();
+        assert_ne!(raw, decoded);
+        assert_eq!(raw[0], 1, "word 0 is the version, and it reads as 0.001 s");
+        assert_eq!(raw.len(), 15);
+        assert_eq!(decoded.len(), 4);
+    }
+
+    #[test]
+    fn refuses_a_short_array() {
+        // count says 4, the array holds two pairs: refuse rather than return a
+        // two-entry list a segment builder would verify against.
+        assert_eq!(GhostResult::decode(&WR[..10]), None);
+        assert_eq!(GhostResult::decode(&[1, 19538, 0, 0, 3]), None);
+    }
+
+    #[test]
+    fn encode_is_the_inverse_of_decode() {
+        let r = GhostResult::decode(WR).unwrap();
+        let bytes = r.encode();
+        let words: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(words, WR, "the canonical form reproduces the file's own chunk");
+        assert_eq!(GhostResult::decode(&words), Some(r));
+    }
+
+    /// What `ghost declare --cps N` needs: the count word, the payload length
+    /// and the terminator all move together.
+    #[test]
+    fn a_changed_entry_count_changes_the_length_coherently() {
+        let mut r = GhostResult::decode(WR).unwrap();
+        r.entries = vec![(0, 0), (0, 0), (19538, 1)];
+        let words: Vec<u32> = r
+            .encode()
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(words.len(), RESULT_HEADER_WORDS + 2 * 3 + 1);
+        assert_eq!(words[5], 3, "the count word");
+        assert_eq!(*words.last().unwrap(), u32::MAX, "the terminator");
+        assert_eq!(GhostResult::decode(&words).unwrap().checkpoints(), vec![0, 0, 19538]);
+    }
+}

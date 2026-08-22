@@ -17,7 +17,7 @@
 //! construction, for any checkpoint count, any map length and any progress
 //! measure. The constant cannot be got wrong because there is no constant.
 
-use ghost::container::secs;
+use ghost::secs;
 
 /// How far a run that did not finish got. Two ladders, because the two
 /// evaluators can see two different things.

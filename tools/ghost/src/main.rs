@@ -67,9 +67,27 @@ MAP  (operation 4)
 
 TRIM  (operation 5)
   ghost trim IN OUT [--from MS] [--to MS] [--declare MS]
-        Cut the head and/or tail of a run, keeping the file coherent: inputs,
-        telemetry samples, the record span, the splits and every copy of the
-        declared time.
+        Set the run's WINDOW, in race-time milliseconds. Cut the head and/or
+        the tail, keeping the file coherent: inputs, telemetry samples, the
+        record span, the splits and every copy of the declared time. A --to
+        PAST the end of the tape LENGTHENS it instead, appending ticks that
+        hold the last recorded input -- room for the car to keep driving after
+        the recording stopped. One command owns a run's length in both
+        directions.
+
+DECLARE
+  ghost declare IN OUT (--time MS | --from-oracle --map M) [--cps N]
+        Set the time the file DECLARES, in every copy of it, and in the
+        ghost-result chunk. --cps N also sets the NUMBER of checkpoint entries,
+        which a container borrowed from another map gets wrong: it declares the
+        DONOR map's checkpoint list. MEASURED, so that nobody re-derives it from
+        the tool: the dedicated server does NOT gate on this count -- a file
+        declaring 1, 2, 3, 5 or 9 checkpoints on a 4-checkpoint map still
+        validates, and the mismatch shows up only as ValidatedResult and
+        DeclaredResult disagreeing. What the count breaks is THIS toolchain:
+        `tmmaps` refuses to build a segment map against a ghost whose split
+        count is not the map's, because every rung would be verified against
+        the wrong checkpoint.
 
 IDENTITY  (operation 6)
   ghost identity show FILE
@@ -216,10 +234,31 @@ fn cmd_inspect(a: &[String]) {
             if vals.len() > 1 { "   <-- DISAGREE, this file declares two different times" } else { "" }
         );
     }
-    let sp = c.splits();
-    if !sp.is_empty() {
-        let s: Vec<String> = sp.iter().map(|v| secs(*v as i64)).collect();
-        println!("splits        {}", s.join(" "));
+    // The DECODED checkpoint list, not the chunk's raw words. Printing the raw
+    // array through the seconds formatter is what made this line read
+    // `splits 0.001 19.538 0.000 0.000 0.003 0.004 7.617 ...` -- a version
+    // number as 0.001 and a per-entry tag as 0.002.
+    if let Some(r) = c.result() {
+        let s: Vec<String> = r.checkpoints().iter().map(|v| secs(*v as i64)).collect();
+        println!(
+            "splits        {}   ({} checkpoints, the last is the finish)",
+            s.join(" "),
+            r.entries.len()
+        );
+        println!(
+            "              the result chunk declares race {} and {} respawns",
+            secs(r.race_ms as i64),
+            r.nb_respawns
+        );
+        if let Some((_, d)) = c.declared_times().first() {
+            if *d as i32 != r.race_ms {
+                println!(
+                    "              <-- DISAGREE: the header declares {} and the result chunk {}",
+                    secs(*d as i64),
+                    secs(r.race_ms as i64)
+                );
+            }
+        }
     }
 
     match Tape::from_file(path) {
@@ -819,7 +858,44 @@ fn cmd_declare(a: &[String]) {
     };
     let mut body = c.body().to_vec();
     trim::set_all_declared(&mut body, ms as u32);
-    trim::set_result_race_time(&mut body, ms as u32);
+    // The ghost-result chunk carries the race time AND the checkpoint list, and
+    // the server compares the LENGTH of that list with the map's checkpoint
+    // count before it simulates anything.
+    let want_cps = num(a, "--cps");
+    let before: Vec<i32> = c.splits();
+    let body = trim::rewrite_result(&body, |r| {
+        r.race_ms = ms as i32;
+        if let Some(n) = want_cps {
+            // Every intermediate entry becomes 0.000. This is the borrowed-
+            // container case by construction -- the count only changes when the
+            // file moved to a map with a different number of checkpoints -- and
+            // every intermediate time in the list is then the DONOR map's,
+            // measured on a route this file no longer drives. A zero says "this
+            // container does not know its intermediate splits"; carrying the
+            // donor's numbers forward would say something false and look right.
+            //
+            // WHAT THIS IS AND IS NOT FOR. The audit that asked for `--cps`
+            // believed the server refused a count mismatch as `wrong simu`
+            // without simulating. It does not: measured on two maps and six
+            // counts, a finishing tape validates whatever its declared count
+            // says, and `wrong simu` is what the server returns when the
+            // simulation does not reproduce the DECLARED RESULT -- on a
+            // partial run it even says how far it got (`wrong simu, but
+            // reached some checkpoints (1 out of 2)`), which is a simulation,
+            // not a pre-check. The count is a claim this toolchain reads:
+            // `tmmaps` builds a segment map per declared split and refuses a
+            // ghost whose count is not the map's.
+            let n = n.clamp(1, 199) as usize;
+            r.entries = (0..n).map(|k| if k + 1 == n { (ms as i32, 1) } else { (0, 0) }).collect();
+        } else if let Some(last) = r.entries.last_mut() {
+            // The final split is the race time. That holds on every reference
+            // ghost in the corpus, so a `--time` that left it behind would
+            // produce a file whose own last checkpoint disagrees with its own
+            // declared time.
+            last.0 = ms as i32;
+        }
+    })
+    .unwrap_or_else(|e| die(e));
     let stage = format!("{}.declare-stage", out);
     container::write_gbx(&c.gbx, body, &stage).unwrap_or_else(|e| die(e));
     // The telemetry record declares its own span, separately from the samples.
@@ -850,9 +926,46 @@ fn cmd_declare(a: &[String]) {
     if dt.iter().any(|v| *v as i64 != ms) {
         die(format!("read-back control FAILED: declared copies are {:?}", dt));
     }
+    let after: Vec<i32> = c2.splits();
+    if let Some(n) = want_cps {
+        if after.len() as i64 != n.clamp(1, 199) {
+            die(format!(
+                "read-back control FAILED: asked for {} checkpoints, the file declares {}",
+                n,
+                after.len()
+            ));
+        }
+    }
+    if let Some(r) = c2.result() {
+        if r.race_ms as i64 != ms {
+            die(format!(
+                "read-back control FAILED: the result chunk declares {} and the header {}",
+                secs(r.race_ms as i64),
+                secs(ms)
+            ));
+        }
+    }
     println!("wrote {}", out);
     println!("  declared {} in {} copies, all equal (read-back control OK)", secs(ms), dt.len());
     println!("  the ghost-result chunk's race time was set to the same value");
+    if want_cps.is_some() {
+        println!(
+            "  checkpoints {:?}  (was {:?})",
+            after.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>(),
+            before.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>()
+        );
+        println!(
+            "  NOTE: the intermediate times are written as 0.000 because this file's old ones\n\
+             \x20       were another map's, and 0.000 reads as \"this container does not know its\n\
+             \x20       splits\" where a donor's number would read as a measurement. MEASURED on\n\
+             \x20       the dedicated server (build 2026-05-15): neither the COUNT nor the VALUES\n\
+             \x20       gate validation -- counts of 1, 2, 3, 5 and 9 on a 4-checkpoint map all\n\
+             \x20       come back IsValid true at the same time, and so do zeroed splits. The\n\
+             \x20       count matters to THIS toolchain: a segment map is built against the\n\
+             \x20       ghost's declared splits, and tmmaps refuses when there are the wrong\n\
+             \x20       number of them."
+        );
+    }
     if !span_note.is_empty() {
         println!("{}", span_note);
     }

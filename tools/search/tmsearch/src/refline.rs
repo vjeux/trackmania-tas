@@ -102,7 +102,7 @@ pub fn from_ghost(
         ));
     }
 
-    let d = tmtraj::entrec::decode_ghost(path).map_err(|e| format!("{}: {}", path, e))?;
+    let d = gbx::record::decode_ghost(path).map_err(|e| format!("{}: {}", path, e))?;
     let rows: Vec<(i64, f64, f64, f64)> =
         d.samples.iter().map(|s| (s.time_ms as i64, s.x, s.y, s.z)).collect();
     let line = RefLineData::from_samples(&rows, start_offset_ms, nticks)

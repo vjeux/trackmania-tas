@@ -24,7 +24,6 @@ name = "ghost"
 version = "1.0.0"
 dependencies = [
  "gbx",
- "tmtraj",
 ]
 
 [[package]]
@@ -41,6 +40,13 @@ name = "shootctl"
 version = "0.1.0"
 
 [[package]]
+name = "tmmaps"
+version = "0.2.0"
+dependencies = [
+ "ghost",
+]
+
+[[package]]
 name = "tmsite"
 version = "0.1.0"
 dependencies = [
@@ -52,4 +58,5 @@ name = "tmtraj"
 version = "1.0.0"
 dependencies = [
  "gbx",
+ "ghost",
 ]

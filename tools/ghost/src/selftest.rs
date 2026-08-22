@@ -336,7 +336,7 @@ fn pure_tier(s: &mut Suite) {
             let a0 = &t.archives[0];
             let last_tick_ms = a0.start_offset_ms as i64 + 10 * (a0.packets.len() as i64 - 1);
             let decl: Vec<u32> = c.declared_times().into_iter().map(|x| x.1).collect();
-            let cps = gbx::record::read_checkpoints(c.body());
+            let cps = c.splits();
             let ok = last_tick_ms <= 15000
                 && d.samples.last().map_or(false, |x| x.time_ms <= 15000)
                 && d.end_ms <= 15000
@@ -355,6 +355,110 @@ fn pure_tier(s: &mut Suite) {
                 ),
             );
         }
+    }
+
+    // --- trim, the other way: LENGTHEN --------------------------------------
+    //
+    // `u02 extend` had 15 callsites and no coherence at all; when u02 was
+    // deleted the capability went with it, and the 173691 landing work needed a
+    // 7000-tick tape to give the car room to brake after touchdown. The claim
+    // being checked here is not "it got longer" -- it is that everything ELSE
+    // stayed put: the appended ticks hold the last recorded input, carry no
+    // respawn, and the declared time, the splits and the telemetry are
+    // untouched, because ticks after the finish change none of them.
+    {
+        let src = s.f(GHOSTS[0]);
+        let t0 = Tape::from_file(&src).unwrap();
+        let c0 = Container::load(&src).unwrap();
+        let d0 = gbx::record::decode_ghost(&src).unwrap();
+        let a0 = &t0.archives[0];
+        // a window that ends 7000 ticks after the tape starts
+        let want = 7000i64;
+        let to = a0.start_offset_ms as i64 + 10 * (want - 1);
+        let out = s.w("extend7000.Ghost.Gbx");
+        let st = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["trim", &src, &out, "--to", &to.to_string(), "--no-oracle"])
+            .output()
+            .unwrap();
+        if !st.status.success() {
+            s.fail("trim.extend", String::from_utf8_lossy(&st.stderr).to_string());
+        } else {
+            let t = Tape::from_file(&out).unwrap();
+            let c = Container::load(&out).unwrap();
+            let d = gbx::record::decode_ghost(&out).unwrap();
+            let a = &t.archives[0];
+            let added = want as usize - a0.packets.len();
+            let src_last = &a.packets[a0.packets.len() - 1];
+            let held = a.packets[a0.packets.len()..].iter().all(|p| {
+                p.steer == src_last.steer
+                    && p.accel == src_last.accel
+                    && p.brake == src_last.brake
+                    && !p.respawn()
+            });
+            let ok = a.packets.len() == want as usize
+                && a.start_offset_ms == a0.start_offset_ms
+                && held
+                && t.verbatim_is_identity().is_ok()
+                && c.splits() == c0.splits()
+                && c.declared_times().iter().map(|x| x.1).collect::<Vec<_>>()
+                    == c0.declared_times().iter().map(|x| x.1).collect::<Vec<_>>()
+                && d.samples.len() == d0.samples.len()
+                && d.end_ms == d0.end_ms;
+            s.check(
+                "trim.extend",
+                ok,
+                format!(
+                    "{} -> {} ticks (+{}), the appended ticks hold steer {} accel {} brake {} with no respawn, \
+                     codec identity OK, declared and splits unchanged, telemetry {} samples spanning to {} untouched",
+                    a0.packets.len(),
+                    a.packets.len(),
+                    added,
+                    src_last.steer_i8(),
+                    src_last.accel,
+                    src_last.brake,
+                    d.samples.len(),
+                    secs(d.end_ms as i64)
+                ),
+            );
+        }
+    }
+
+    // --- declare --cps: the NUMBER of split entries --------------------------
+    //
+    // `--time` writes every copy of the declared time; it could not change how
+    // MANY checkpoints the file claims, so a container borrowed from another
+    // map went on declaring the donor's checkpoint list. Changing the count
+    // changes the chunk's LENGTH, which moves every byte after it -- so the
+    // check is that the file still reads as a file afterwards, in both
+    // directions, and that the count, the entry list and the race time agree.
+    {
+        let src = s.f(GHOSTS[0]);
+        let c0 = Container::load(&src).unwrap();
+        let before = c0.splits().len();
+        let time = c0.declared_times().first().map(|x| x.1).unwrap_or(0) as i64;
+        let mut detail = Vec::new();
+        let mut ok = true;
+        for n in [before + 2, 1, before] {
+            let out = s.w(&format!("cps{}.Ghost.Gbx", n));
+            let st = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["declare", &src, &out, "--time", &time.to_string(), "--cps", &n.to_string()])
+                .output()
+                .unwrap();
+            if !st.status.success() {
+                ok = false;
+                detail.push(format!("--cps {} FAILED: {}", n, String::from_utf8_lossy(&st.stderr)));
+                continue;
+            }
+            let c = Container::load(&out).unwrap();
+            let r = c.result().expect("a result chunk");
+            let good = r.entries.len() == n
+                && r.race_ms as i64 == time
+                && r.checkpoints().last() == Some(&(time as i32))
+                && Tape::from_file(&out).map(|t| t.n()).unwrap_or(0) == Tape::from_file(&src).unwrap().n();
+            ok &= good;
+            detail.push(format!("{} -> {} entries, race {}", before, r.entries.len(), secs(r.race_ms as i64)));
+        }
+        s.check("declare.cps", ok, detail.join("; "));
     }
 
     // --- the tape/record agreement separates the two populations -------------
@@ -766,6 +870,68 @@ fn oracle_tier(s: &mut Suite) {
             ),
             Err(e) => s.fail("oracle.trim_keeps_finish", e),
         }
+        // O8c LENGTHENING. The control for the whole extension path, and the
+        // one thing a read-back gate cannot check: ticks appended after the
+        // finish must not change the run. 2432 -> 7000 ticks, and the world
+        // must still say 22.730.
+        let out3 = s.w("o8c.Ghost.Gbx");
+        let so = Tape::from_file(&s.f(GHOSTS[0])).unwrap().archives[0].start_offset_ms as i64;
+        let to = so + 10 * (7000 - 1);
+        run_self(&["trim", &s.f(GHOSTS[0]), &out3, "--to", &to.to_string(), "--no-oracle"]);
+        let n3 = Tape::from_file(&out3).map(|t| t.n()).unwrap_or(0);
+        match oracle::validate(&server, Path::new(&out3), MapsMode::One(mapp), "o8c") {
+            Ok(v) => s.check(
+                "oracle.extend_keeps_finish",
+                v.time_ms == Some(DONOR_MS) && n3 == 7000,
+                format!(
+                    "a tape lengthened to {} ticks -- 45 s of held input after a 22.730 finish -- \
+                     still re-simulates to {}",
+                    n3,
+                    v.secs()
+                ),
+            ),
+            Err(e) => s.fail("oracle.extend_keeps_finish", e),
+        }
+    }
+
+    // O8d the declared split COUNT, against the server rather than against a
+    // belief about it.
+    //
+    // `--cps` was asked for because a container borrowed from another map
+    // declares the donor's checkpoint count, and the server was believed to
+    // refuse such a file as `wrong simu` WITHOUT SIMULATING IT. It does not:
+    // measured here, on the file that validates at 22.730, a declared count of
+    // 5 and a declared count of 1 both come back IsValid with the same time,
+    // and so do zeroed intermediate splits. `wrong simu` is what the server
+    // says when the simulation does not reproduce the DECLARED RESULT -- on a
+    // partial run it even reports how far it got.
+    //
+    // This check exists so that the belief cannot come back: if a future build
+    // does start gating on the count, this is the line that turns red.
+    {
+        let src = s.f(GHOSTS[0]);
+        let mut ok = true;
+        let mut detail = Vec::new();
+        for n in [5usize, 1] {
+            let out = s.w(&format!("o8d{}.Ghost.Gbx", n));
+            run_self(&["declare", &src, &out, "--time", "22730", "--cps", &n.to_string()]);
+            match oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o8d") {
+                Ok(v) => {
+                    ok &= v.time_ms == Some(DONOR_MS) && v.declared_cps == Some(n as u32);
+                    detail.push(format!(
+                        "declared {} checkpoints -> validated {} (server echoes {:?})",
+                        n,
+                        v.secs(),
+                        v.declared_cps
+                    ));
+                }
+                Err(e) => {
+                    ok = false;
+                    detail.push(format!("--cps {}: {}", n, e));
+                }
+            }
+        }
+        s.check("oracle.cps_does_not_gate", ok, detail.join("; "));
     }
 
     // O9 rebinding a pure ghost: the uid IS the binding, proved both ways

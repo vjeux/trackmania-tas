@@ -62,13 +62,21 @@ fn testdata() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata")
 }
 
+/// `tools/testdata` — the corpus shared by every crate's tests. A fixture that
+/// more than one tool checks itself against lives there rather than being
+/// copied per crate: two copies of a fixture drift, and a drifted fixture is
+/// how a suite goes green against a format that no longer exists.
+fn shared_testdata() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata")
+}
+
 fn fixture(name: &str) -> Option<PathBuf> {
-    let p = testdata().join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        None
+    for p in [testdata().join(name), shared_testdata().join(name)] {
+        if p.exists() {
+            return Some(p);
+        }
     }
+    None
 }
 
 /// A scratch path unique to this process.

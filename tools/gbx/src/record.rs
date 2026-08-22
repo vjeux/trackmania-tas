@@ -771,7 +771,7 @@ pub fn decode_body(body: &[u8], path: &str) -> Res<Decoded> {
     }
     let veh = veh.ok_or("no CSceneVehicleVis (0x0A018000) entity in record")?;
 
-    let res = read_ghost_result(body);
+    let res = crate::container::read_result(body);
     let ss = veh.sample_size;
     if ss < 103 {
         return Err(format!("vehicle sample size {} < 103, layout unknown", ss));
@@ -806,8 +806,8 @@ pub fn decode_body(body: &[u8], path: &str) -> Res<Decoded> {
         sample_size: ss,
         raw: veh.raw.clone(),
         samples,
-        checkpoints_ms: res.1,
-        race_time_ms: res.0,
+        checkpoints_ms: res.as_ref().map(|r| r.checkpoints()).unwrap_or_default(),
+        race_time_ms: res.as_ref().map(|r| r.race_ms),
         ents: others,
         bytes_consumed: rec.bytes_consumed,
         bytes_total: rec.bytes_total,
@@ -820,53 +820,12 @@ pub fn name_for(path: &str) -> String {
     base.replace(".Ghost.Gbx", "")
 }
 
-/// `CGameCtnGhost` chunk 0x0309202B, stored as a skippable chunk:
-/// ```text
-///     u32 chunkId = 0x0309202B
-///     'PIKS'                       # 0x534B4950 "SKIP" as a LE u32
-///     u32 chunkSize                # 60 for a 4-CP run
-///     --- payload ---
-///     u32 version = 1
-///     i32 raceTime_ms              # the official run time
-///     i32 u01, i32 u02
-///     i32 nbRespawns               # 3 in all our ghosts
-///     i32 nCheckpoints
-///     nCheckpoints x (i32 time_ms, i32 stuntsScore-or-flag)
-///     i32 -1
-/// ```
-/// Verified on all reference ghosts: the extracted times equal the splits
-/// quoted independently, and the final split always equals raceTime.
-pub fn read_ghost_result(body: &[u8]) -> (Option<i32>, Vec<i32>) {
-    let mut needle = Vec::with_capacity(8);
-    needle.extend_from_slice(&0x0309_202Bu32.to_le_bytes());
-    needle.extend_from_slice(b"PIKS");
-    let Some(off) = find(body, &needle) else {
-        return (None, Vec::new());
-    };
-    if off + 12 > body.len() {
-        return (None, Vec::new());
-    }
-    let size = u32::from_le_bytes(body[off + 8..off + 12].try_into().unwrap()) as usize;
-    let p = off + 12;
-    let n_ints = size / 4;
-    if n_ints < 6 || p + n_ints * 4 > body.len() {
-        return (None, Vec::new());
-    }
-    let iat = |i: usize| i32::from_le_bytes(body[p + i * 4..p + i * 4 + 4].try_into().unwrap());
-    let race = iat(1);
-    let n = iat(5);
-    let cps = if n > 0 && n < 200 && 6 + 2 * (n as usize - 1) < n_ints {
-        (0..n as usize).map(|i| iat(6 + 2 * i)).collect()
-    } else {
-        Vec::new()
-    };
-    (Some(race), cps)
-}
-
-pub fn read_checkpoints(body: &[u8]) -> Vec<i32> {
-    read_ghost_result(body).1
-}
-
+/// The ghost-result chunk is decoded ONCE, in `gbx::container`: see
+/// `GhostResult`. This module used to carry a second walk of `0x0309202B`
+/// (`read_ghost_result` / `read_checkpoints`, located by byte needle rather
+/// than by the chunk table), and a second reader of one format is how this
+/// project got silent corruption before. Callers want
+/// `gbx::container::read_result(body)`.
 impl Decoded {
     /// The raw bytes of sample `i`, or `None` past the end.
     pub fn raw_sample(&self, i: usize) -> Option<&[u8]> {
