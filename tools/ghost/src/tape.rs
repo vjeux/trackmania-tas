@@ -798,3 +798,25 @@ impl Tape {
         self.archives.first().map(|a| a.start_offset_ms as i64 + 10 * i as i64).unwrap_or(0)
     }
 }
+
+impl Tape {
+    /// The WHOLE FILE, as bytes, with this tape spliced in.
+    ///
+    /// The body is written UNCOMPRESSED. That is not a shortcut: the dedicated
+    /// server accepts a `U` body, and it is what makes a candidate a byte
+    /// buffer a caller can patch in place instead of a file that has to be
+    /// re-encoded. The search writes tens of thousands of candidates a second
+    /// by building one explicit-encoded image here and then patching the
+    /// steer / accel / brake bits of that image; an LZO round trip in this
+    /// function would make that impossible and force a second writer to exist.
+    ///
+    /// `Encoding::Explicit` is what a patchable base image needs: every vehicle
+    /// field is written out, so every tick has bits at a fixed position. It is
+    /// deterministic -- the same tape always produces the same bytes.
+    pub fn inject_into(&self, c: &crate::container::Container, enc: Encoding) -> Result<Vec<u8>, String> {
+        let body = self.splice_into(c.body(), enc)?;
+        let mut file = c.gbx.header_bytes_u();
+        file.extend_from_slice(&body);
+        Ok(file)
+    }
+}

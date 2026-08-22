@@ -243,9 +243,30 @@ pub fn parse_many(text: &str) -> Vec<SimResult> {
             cur.map_uid = field(t);
         } else if t.starts_with("\"FileName\"") {
             cur.file = field(t);
+            // On a DNF the checkpoint count is only in the prose.
+            if cur.cps.is_none() {
+                cur.cps = cps_from_desc(&cur.desc);
+            }
             out.push(std::mem::take(&mut cur));
             block = Block::None;
         }
     }
     out
+}
+
+/// The checkpoint count the server mentions in its own explanation.
+///
+/// On a DNF there is no `ValidatedResult`, so `NbCheckpoints` never appears --
+/// but the `Desc` says `reached some checkpoints (2 out of 2)`, and a search
+/// ladder that ranks DNFs by depth needs exactly that number. Reading it out of
+/// the sentence is not elegant; losing it is worse.
+fn cps_from_desc(desc: &str) -> Option<u32> {
+    let i = desc.find("checkpoint")?;
+    let rest = &desc[i..];
+    let open = rest.find('(')?;
+    let close = rest[open..].find(')')? + open;
+    rest[open + 1..close]
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
 }

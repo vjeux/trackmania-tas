@@ -1,7 +1,7 @@
 # GHOSTS.md — the TM2020 ghost / replay API
 
 Everything this project does to a `.Ghost.Gbx` or a `.Replay.Gbx`, in one Rust
-binary, with a control behind every operation.
+crate, with a control behind every operation.
 
 ```
 cd tools/ghost && cargo build --release
@@ -10,6 +10,29 @@ TM_SERVER=/path/to/TrackmaniaServer-dir ./target/release/ghost selftest
 
 `ghost --help` lists every command. Times print as **seconds with a decimal**
 (`22.730`), never as raw milliseconds.
+
+## 0. It is a library first
+
+`tools/ghost` owns the ghost and replay format for the whole toolchain.
+Everything else calls in here rather than keeping its own reader, because every
+bug this crate exists to prevent was a second copy of one of these readers
+disagreeing with the first.
+
+| module | what it gives you |
+|---|---|
+| `tape` | the input codec: `Tape::from_file` / `from_text` / `to_text` / `splice_into` / `verbatim_is_identity`, and decoded per-tick slices (`steer_i8s`, `accels`, `brakes`, `respawns`, `race_ms`) |
+| `container` | chunks, the embedded map, every copy of the declared time, the checkpoint chunk, uid literals, framed string edits, `set_embedded_map` |
+| `ident` | every identity string with its role and offset |
+| `oracle` | `validate_many` (the server validates in BATCHES and the per-launch cost dominates), `validate`, `MapsMode::{One, Empty}` |
+| `verify` | the acceptance gate, `tape_record_agreement`, and `SimResult::declaration_holds()` on its own |
+| `regen` | engine-regenerated car state behind a gate, `write_input_channels`, `engine_trajectory_agreement` |
+
+The library surface returns `Result` and never exits. The `cmd` functions are
+the CLI's entry points and are the only things that call `cli::die`.
+
+`SimResult` keeps **both** times the server reports — what it simulated and what
+the file claims — plus the server's own `Desc`, its `Inputs` echo of the tape it
+decoded, `IsValid`, and the account id and login it read out of the file.
 
 ---
 
@@ -217,19 +240,23 @@ printed PASS without reading the file.
 world. `--expect-ms` only ever *adds* a constraint; it cannot satisfy one.
 
 **THE SERVER PRINTS TWO RESULTS AND THE SECOND IS THE FILE'S OWN CLAIM.**
-Found here, by a control, in this tool's own code. After `"ValidatedResult"` —
-the time it just simulated — the dedicated server prints the result the file
-DECLARES, in the same shape, with another `"Time"` line. A parser that keeps
-reading `"Time"` lines takes the second one, so **"the oracle said 22.730" was
-the file saying 22.730**. Measured on a tape that simulates 22.738 and declares
-22.730: the naive parse returned 22.730 and made a stale declaration look
-correct — the exact failure mode every other check here exists to prevent,
-inside the thing doing the checking.
-→ the parser takes the FIRST time after the validated header and stops. The
-suite now carries that tape as a fixture (`oracle.reads_the_world`), so the bug
-cannot come back silently: the check fails if the tool ever reports 22.730 for
-it again, and a second check requires `ghost verify` to REFUSE the file for
-declaring a time it does not achieve.
+Found here, by a control, in this tool's own code. Per file the server prints
+`ValidatedResult` — the time it just simulated — and then `DeclaredResult`, the
+result the file DECLARES, in the same shape with another `"Time"` line. A parser
+that keeps reading `"Time"` lines takes the second one, so **"the oracle said
+22.730" was the file saying 22.730**. Measured on a tape that simulates 22.738
+and declares 22.730: the naive parse returned 22.730 and made a stale
+declaration look correct — the exact failure mode every other check here exists
+to prevent, inside the thing doing the checking.
+→ the parser tracks WHICH block it is inside and keeps both, so the
+disagreement is a value you can read (`SimResult::declaration_holds()`) rather
+than a bug you can have. **Two fixtures pin it, and they have to be ASYMMETRIC
+to pin anything**: on a file that passes, the two numbers are equal, so no
+equal-number fixture can fail whatever the parser does.
+`oracle.reads_the_world` simulates 22.738 and declares 22.730;
+`oracle.dnf_with_declared_time` is the other shape — `ValidatedResult: null`
+with a `DeclaredResult` of 15.000, which a careless parser reports as a 15.000
+finish for a run that never finished. `ghost verify` refuses both.
 
 **A regenerated file whose locate found something that is not the car.**
 The car used to be found by scanning memory for a self-consistent
@@ -337,7 +364,7 @@ ghost selftest --strict     # a SKIP is a failure
 cargo test --release        # the same suite, through cargo
 ```
 
-36 checks over five checked-in fixtures: two human ghosts, one anonymised
+40 checks over five checked-in fixtures: two human ghosts, one anonymised
 replay that carries its own map, one file this project labelled
 `DO_NOT_PUBLISH`, and one map. Three tiers:
 
@@ -347,12 +374,14 @@ replay that carries its own map, one file this project labelled
   kappa separation, and two refusals.
 * **ORACLE** — the donor's own time; expansion, injection and identity edits are
   no-ops; an edited tick actually changes the run (the writer is not a no-op);
-  **the oracle reads the world and not the file's claim**, and `ghost verify`
-  refuses the file that declares one time and does another; the empty-Maps
-  control both ways; the map swap; the trim cases; the rebind proved in both
-  directions.
+  **the oracle reads the world and not the file's claim** on both asymmetric
+  shapes, and `ghost verify` refuses the file that declares one time and does
+  another; a three-file BATCH in one server launch, each result keyed to its own
+  file; the empty-Maps control both ways; the map swap; the trim cases; the
+  rebind proved in both directions.
 * **ENGINE** — the engine's own run of the fixture's tape against the recording
-  in it.
+  in it (0.0005 m mean over 455 samples), and two independent regenerations of
+  the same file agreeing to 0.000000 m.
 
 ### A worked round trip
 

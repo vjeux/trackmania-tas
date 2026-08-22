@@ -369,7 +369,100 @@ fn pure_tier(s: &mut Suite) {
         }
     }
 
-    // --- refusals -------------------------------------------------------------
+    // --- the oracle parser, on canned server transcripts ---------------------
+    //
+    // These need no server and no map, which is the point: the parser is the
+    // one piece of this tool that had a live bug, and a check that needs a
+    // 30 MB binary and a running process is a check that gets skipped.
+    //
+    // BOTH FIXTURES ARE ASYMMETRIC ON PURPOSE. On a file that passes, the
+    // simulated and declared times are equal, so an equal-number transcript
+    // cannot fail whatever the parser does -- it would pin nothing.
+    {
+        let finish = r#"[
+{
+  "ValidatedResult" : {
+    "NbCheckpoints" : 3,
+    "NbRespawns" : 0,
+    "Time" : 23081,
+    "Score" : 0
+  },
+  "Desc" : "race finished, time is worse. (22963 < 23081)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 3,
+    "NbRespawns" : 0,
+    "Time" : 22963,
+    "Score" : 0
+  },
+  "Inputs" : "31_151C101E",
+  "MapUid" : "someuid",
+  "FileName" : "a.Ghost.Gbx"
+}
+]"#;
+        let v = oracle::parse_many(finish);
+        s.check(
+            "oracle.parse.finish",
+            v.len() == 1
+                && v[0].time_ms == Some(23081)
+                && v[0].declared_ms == Some(22963)
+                && v[0].file == "a.Ghost.Gbx"
+                && !v[0].declaration_holds(),
+            "a transcript that SIMULATES 23.081 and DECLARES 22.963 reads as 23.081 -- the world, not the claim",
+        );
+
+        let dnf = r#"[
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (2 out of 4)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 4,
+    "NbRespawns" : 0,
+    "Time" : 23074,
+    "Score" : 0
+  },
+  "Inputs" : "31_151C",
+  "FileName" : "b.Ghost.Gbx"
+}
+]"#;
+        let v = oracle::parse_many(dnf);
+        s.check(
+            "oracle.parse.dnf",
+            v.len() == 1 && v[0].time_ms.is_none() && v[0].declared_ms == Some(23074),
+            "a null ValidatedResult with a DeclaredResult of 23.074 reads as DNF, never as a 23.074 finish",
+        );
+        s.check(
+            "oracle.parse.dnf_cps",
+            v.len() == 1 && v[0].cps == Some(2),
+            "and the checkpoint count comes out of the Desc, which is the only place it exists on a DNF -- a search ladder needs it",
+        );
+
+        let two = format!("{}\n{}", finish, dnf);
+        let v = oracle::parse_many(&two);
+        s.check(
+            "oracle.parse.batch",
+            v.len() == 2 && v[0].file == "a.Ghost.Gbx" && v[1].file == "b.Ghost.Gbx" && v[1].time_ms.is_none(),
+            "two files in one transcript stay keyed to their own names, and one file's state does not leak into the next",
+        );
+    }
+
+    // --- a whole-file image, uncompressed and deterministic -------------------
+    {
+        let src = s.f(GHOSTS[0]);
+        let c = Container::load(&src).unwrap();
+        let t = Tape::from_file(&src).unwrap();
+        let a = t.inject_into(&c, Encoding::Explicit).unwrap();
+        let b = t.inject_into(&c, Encoding::Explicit).unwrap();
+        s.check(
+            "tape.inject_into",
+            a == b && a.len() > 1000 && a[7] == b'U',
+            format!(
+                "the whole file as {} bytes, body UNCOMPRESSED ('U'), and the same tape twice gives the same bytes -- which is what makes a patchable base image possible",
+                a.len()
+            ),
+        );
+    }
     {
         // injecting a tape of the wrong length must be refused
         let src = s.f(GHOSTS[0]);
