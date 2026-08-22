@@ -44,6 +44,8 @@ pub struct Cfg {
     pub shim: String,
     pub refcsv: String,
     pub out: String,
+    /// The trajectory `fk watch replay` reads. An INPUT, despite the old name.
+    pub traj_in: String,
     pub tick: i64,
     pub ckpt: u64,
     pub specs: Vec<String>,
@@ -55,7 +57,6 @@ pub struct Cfg {
     pub hi: usize,
     pub window: usize,
     pub ops: String,
-    pub mode: String,
     pub corridor: f32,
     pub ahead: i32,
     pub back: i32,
@@ -67,13 +68,17 @@ pub struct Cfg {
 
 fn parse(args: &[String]) -> Cfg {
     let mut c = Cfg {
-        template: "/tmp/spot/inc.Ghost.Gbx".into(),
-        map: "/tmp/m2/map2.Map.Gbx".into(),
-        server: "/tmp/tmoracle/server".into(),
-        work: "/tmp/predw/w".into(),
-        shim: "/tmp/fk/rs/target/release/libfkshim.so".into(),
+        // No hardcoded template or map. The old defaults pointed at one
+        // agent's scratch paths, so a missing flag ran a whole measurement
+        // against somebody else's incumbent instead of failing.
+        template: String::new(),
+        map: String::new(),
+        server: std::env::var("TM_SERVER").unwrap_or_else(|_| "/tmp/tmoracle/server".into()),
+        work: crate::session::Engine::default_work().to_string_lossy().into(),
+        shim: std::env::var("FK_SHIM").unwrap_or_default(),
         refcsv: String::new(),
         out: String::new(),
+        traj_in: String::new(),
         tick: 60,
         ckpt: 0,
         specs: Vec::new(),
@@ -85,7 +90,6 @@ fn parse(args: &[String]) -> Cfg {
         hi: usize::MAX,
         window: 0,
         ops: "mix".into(),
-        mode: "audit".into(),
         corridor: 40.0,
         ahead: 24,
         back: 8,
@@ -108,8 +112,9 @@ fn parse(args: &[String]) -> Cfg {
             "--server" => c.server = next(&mut i),
             "--work" => c.work = next(&mut i),
             "--shim" => c.shim = next(&mut i),
-            "--ref" => c.refcsv = next(&mut i),
+            "--reference" => c.refcsv = next(&mut i),
             "--out" => c.out = next(&mut i),
+            "--trajectory" => c.traj_in = next(&mut i),
             "--tick" => c.tick = next(&mut i).parse().unwrap(),
             "--ckpt" => c.ckpt = next(&mut i).parse().unwrap(),
             "--pred" => c.specs.push(next(&mut i)),
@@ -121,15 +126,19 @@ fn parse(args: &[String]) -> Cfg {
             "--hi" => c.hi = next(&mut i).parse().unwrap(),
             "--window" => c.window = next(&mut i).parse().unwrap(),
             "--ops" => c.ops = next(&mut i),
-            "--mode" => c.mode = next(&mut i),
             "--corridor" => c.corridor = next(&mut i).parse().unwrap(),
             "--ahead" => c.ahead = next(&mut i).parse().unwrap(),
             "--back" => c.back = next(&mut i).parse().unwrap(),
             "--every" => c.every = next(&mut i).parse().unwrap(),
             "--finishmargin" => c.finishmargin = next(&mut i).parse().unwrap(),
             "--fast" => c.fast = next(&mut i).parse().unwrap(),
-            "--reftime" => c.reftime = next(&mut i).parse().unwrap(),
-            x => panic!("unknown flag {}", x),
+            "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
+            x => crate::die(format!(
+                "fk watch: unknown flag {:?}. A flag this command does not use is \
+                 a measurement you did not ask for, so it is an error rather than \
+                 something to ignore.",
+                x
+            )),
         }
         i += 1;
     }
@@ -427,7 +436,13 @@ fn make(f: &Factory, rng: &mut MRng, lo: usize, hi: usize, nops: i64, ops: OpSet
 ///            gathering the whole record, on the argument that the state
 ///            cannot change in between. That is an argument; this measures it.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let c = parse(args);
+    let c = parse(&args[1.min(args.len())..]);
+    if c.template.is_empty() || c.map.is_empty() {
+        return Err("fk watch needs --template FILE and --map FILE".into());
+    }
+    if c.shim.is_empty() {
+        return Err("no --shim: pass one or set FK_SHIM".into());
+    }
     match args.first().map(|s| s.as_str()).unwrap_or("") {
         "measure" => audit(&c),
         "replay" => offline(&c),
@@ -456,10 +471,14 @@ fn offline(c: &Cfg) {
     for s in &c.specs {
         watch.preds.push(parse_spec(s).unwrap());
     }
-    let path = if c.out.is_empty() {
-        panic!("--out <trajectory csv to evaluate>")
+    // `--trajectory`, not `--out`: this verb READS a trajectory. The flag was
+    // called `--out` because the file it evaluates is usually one another
+    // command wrote, which is a fact about a workflow and not about this
+    // command's arguments.
+    let path = if c.traj_in.is_empty() {
+        crate::die("fk watch replay needs --trajectory CSV (the trajectory to evaluate)")
     } else {
-        c.out.clone()
+        c.traj_in.clone()
     };
     watch.finish_s = finish_s(&watch.refline.clone(), if c.reftime > 0 { Some(c.reftime) } else { None }, f.start_offset_ms, c.finishmargin);
     let sum = eval_csv(&watch, &path, f.start_offset_ms, n);
@@ -994,21 +1013,32 @@ fn equiv(c: &Cfg) {
                 continue;
             }
         };
+        // WHAT COUNTS AS THE SAME JUDGE. The question this control asks is
+        // whether the two in-child sampling paths reach the same VERDICT, and a
+        // verdict is: the finish time, the checkpoint count, whether it
+        // tripped, which predicate tripped, at which tick, on what value, and
+        // the progress the candidate is scored by. Nothing else feeds a
+        // decision.
+        //
+        // `off_max` and `travelled` are DIAGNOSTICS and they are not in this
+        // list, because the fast path evaluates one more tick than the full one
+        // on a run that reaches the end (the full path only judges a tick once
+        // the clock has moved past it) and both grow by construction with that
+        // tick. Including them made this control report a diagnostic difference
+        // as a verdict difference: it read "2 of 8 REALLY DIFFER" on eight
+        // candidates whose every verdict was identical. A control that cries
+        // wolf gets ignored, which costs more than the one it was guarding.
         let judged = a.time == b.time
             && a.cps == b.cps
             && sa.trip_pred == sb.trip_pred
             && sa.trip_tick == sb.trip_tick
             && sa.trip_value.to_bits() == sb.trip_value.to_bits()
-            && sa.progress.to_bits() == sb.progress.to_bits()
-            && sa.off_max.to_bits() == sb.off_max.to_bits();
+            && sa.progress.to_bits() == sb.progress.to_bits();
         let exact = judged
             && sa.nticks == sb.nticks
             && sa.last_tick == sb.last_tick
+            && sa.off_max.to_bits() == sb.off_max.to_bits()
             && sa.travelled.to_bits() == sb.travelled.to_bits();
-        // The fast path judges the FINAL tick of a run that reaches the end;
-        // the full path never can, because it only judges a tick once the
-        // clock has moved past it. That is one extra evaluated tick and the
-        // distance travelled during it -- no difference in any verdict.
         let tail = judged && !exact && sa.nticks == sb.nticks + 1;
         if exact {
             same += 1;
@@ -1018,9 +1048,10 @@ fn equiv(c: &Cfg) {
             diff += 1;
             if diff <= 8 {
                 println!(
-                    "  DIFFER c{:04}: fast {:?} trip {}@{} prog {:.3} ticks {} | full {:?} trip {}@{} prog {:.3} ticks {}",
-                    i, a.time, sa.trip_pred, sa.trip_tick, sa.progress, sa.nticks,
-                    b.time, sb.trip_pred, sb.trip_tick, sb.progress, sb.nticks
+                    "  DIFFER c{:04}: fast {:?} trip {}@{} prog {:.3} ticks {} off_max {:.3} | \
+                     full {:?} trip {}@{} prog {:.3} ticks {} off_max {:.3}",
+                    i, a.time, sa.trip_pred, sa.trip_tick, sa.progress, sa.nticks, sa.off_max,
+                    b.time, sb.trip_pred, sb.trip_tick, sb.progress, sb.nticks, sb.off_max
                 );
             }
         }

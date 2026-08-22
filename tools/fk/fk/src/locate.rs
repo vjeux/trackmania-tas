@@ -588,20 +588,7 @@ pub fn locate_pos2(
     let base = srv.base;
     let hint = base.saturating_sub(603_616);
     let slice: u32 = 64 * 1024;
-    let regions = writable_regions(srv.pid());
-    let mut wins: Vec<u64> = Vec::new();
-    for r in &regions {
-        let mut a = r.start & !0xFFF;
-        if a < r.start {
-            a += 0x1000;
-        }
-        while a + slice as u64 <= r.end {
-            wins.push(a);
-            a += slice as u64;
-        }
-    }
-    wins.sort_by_key(|w| (*w as i64 - hint as i64).unsigned_abs());
-    wins.truncate(max_windows);
+    let wins = windows_near(srv.pid(), hint, slice, max_windows);
     if verbose {
         println!(
             "state sweep: {} mapped 64 KB windows, nearest first from {:#x}",
@@ -652,12 +639,7 @@ pub fn locate_pos2(
             if !(0..n).all(inb) {
                 continue;
             }
-            let moved = (1..n).any(|i| {
-                (at(i, 0) - at(i - 1, 0)).abs()
-                    + (at(i, 4) - at(i - 1, 4)).abs()
-                    + (at(i, 8) - at(i - 1, 8)).abs()
-                    > 1e-4
-            });
+            let moved = triple_moves(n, &at);
             if moved {
                 shortlist.push(w + (o - 4) as u64);
             }
@@ -912,19 +894,7 @@ pub fn locate_candidates(
     let base = srv.base;
     let hint = base.saturating_sub(603_616);
     let slice: u32 = 64 * 1024;
-    let mut wins: Vec<u64> = Vec::new();
-    for r in writable_regions(srv.pid()) {
-        let mut a = r.start & !0xFFF;
-        if a < r.start {
-            a += 0x1000;
-        }
-        while a + slice as u64 <= r.end {
-            wins.push(a);
-            a += slice as u64;
-        }
-    }
-    wins.sort_by_key(|w| (*w as i64 - hint as i64).unsigned_abs());
-    wins.truncate(max_windows);
+    let wins = windows_near(srv.pid(), hint, slice, max_windows);
     let (xlo, xhi, ylo, yhi, zlo, zhi) = bounds;
     let qmax: f64 = std::env::var("FK_QERR_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-3);
     let qticks: u32 = std::env::var("FK_QUALIFY_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
@@ -954,12 +924,7 @@ pub fn locate_candidates(
             if !(0..n).all(inb) {
                 continue;
             }
-            let moved = (1..n).any(|i| {
-                (at(i, 0) - at(i - 1, 0)).abs()
-                    + (at(i, 4) - at(i - 1, 4)).abs()
-                    + (at(i, 8) - at(i - 1, 8)).abs()
-                    > 1e-4
-            });
+            let moved = triple_moves(n, &at);
             if moved {
                 shortlist.push(w + (o - 4) as u64);
             }
@@ -1026,19 +991,7 @@ pub fn locate_positions_loose(
     let base = srv.base;
     let hint = base.saturating_sub(603_616);
     let slice: u32 = 64 * 1024;
-    let mut wins: Vec<u64> = Vec::new();
-    for r in writable_regions(srv.pid()) {
-        let mut a = r.start & !0xFFF;
-        if a < r.start {
-            a += 0x1000;
-        }
-        while a + slice as u64 <= r.end {
-            wins.push(a);
-            a += slice as u64;
-        }
-    }
-    wins.sort_by_key(|w| (*w as i64 - hint as i64).unsigned_abs());
-    wins.truncate(max_windows);
+    let wins = windows_near(srv.pid(), hint, slice, max_windows);
     let (xlo, xhi, ylo, yhi, zlo, zhi) = bounds;
     let mut out: Vec<PosHit> = Vec::new();
     let mut firsthit = usize::MAX;
@@ -1065,12 +1018,7 @@ pub fn locate_positions_loose(
             if !ok {
                 continue;
             }
-            let moved = (1..n).any(|i| {
-                (at(i, 0) - at(i - 1, 0)).abs()
-                    + (at(i, 4) - at(i - 1, 4)).abs()
-                    + (at(i, 8) - at(i - 1, 8)).abs()
-                    > 1e-4
-            });
+            let moved = triple_moves(n, &at);
             if moved {
                 shortlist.push(w + (o - 4) as u64);
             }
@@ -1136,4 +1084,53 @@ pub fn locate_positions_loose(
     }
     out.sort_by(|a, b| b.mean_speed.total_cmp(&a.mean_speed));
     out
+}
+
+// ---------------------------------------------------------------------------
+// Two things the three sweeps in this file each had their own copy of.
+//
+// They agreed, which is worse than if they had not: a change to the alignment,
+// the ordering or the movement threshold would have been applied to two of
+// them and the third would have gone on quietly disagreeing. Nothing here is
+// new behaviour -- `fk trace` produces a byte-identical CSV before and after.
+
+/// Every page-aligned `slice`-sized window in the process's writable regions,
+/// **ordered nearest first** to a hint address.
+///
+/// The order is the point. The car state sits within a few hundred KB of the
+/// decoded input array, and the input array's address is reported at the
+/// handshake, so sweeping outwards from it finds the car in the first window
+/// most of the time. `cap` then bounds the search instead of choosing where it
+/// looks.
+pub fn windows_near(pid: i32, hint: u64, slice: u32, cap: usize) -> Vec<u64> {
+    let mut wins: Vec<u64> = Vec::new();
+    for r in writable_regions(pid) {
+        let mut a = r.start & !0xFFF;
+        if a < r.start {
+            a += 0x1000;
+        }
+        while a + slice as u64 <= r.end {
+            wins.push(a);
+            a += slice as u64;
+        }
+    }
+    wins.sort_by_key(|w| (*w as i64 - hint as i64).unsigned_abs());
+    wins.truncate(cap);
+    wins
+}
+
+/// Did this float triple MOVE over the sampled ticks?
+///
+/// The cheapest filter on a candidate slot: a car drives, and three floats that
+/// hold the same value for every tick of the window are a frozen copy, a render
+/// transform or scratch. The threshold is 1e-4 m summed over the three axes,
+/// which at map coordinates is below an f32 ULP — so it means "bit-identical",
+/// not "nearly still".
+pub fn triple_moves(n: usize, at: &dyn Fn(usize, usize) -> f64) -> bool {
+    (1..n).any(|i| {
+        (at(i, 0) - at(i - 1, 0)).abs()
+            + (at(i, 4) - at(i - 1, 4)).abs()
+            + (at(i, 8) - at(i - 1, 8)).abs()
+            > 1e-4
+    })
 }

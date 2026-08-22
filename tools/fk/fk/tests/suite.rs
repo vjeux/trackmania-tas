@@ -500,4 +500,112 @@ fn engine_trace_lands_on_the_reference_path() {
         },
     )
     .expect("the trace passed its own self-check and its known-answer control");
+
+    // REPRODUCIBILITY. The locate re-derives every address at each server
+    // start, because the heap layout is bimodal run to run -- two identical
+    // runs of the server can differ by 87 MB. Five consecutive runs gave five
+    // different addresses and byte-identical output, and that is the property
+    // worth holding onto: if the locate starts picking a different copy of the
+    // car, this is what says so. A trajectory that is merely PLAUSIBLE is the
+    // failure this whole crate is built around.
+    let first = std::fs::read(work.join("t.csv")).unwrap();
+    fk::cmd::trace::run(
+        &engine,
+        fk::tape::Tape::load(&human_ghost()).unwrap(),
+        fk::session::Checkpoint::Tick(60),
+        fk::cmd::trace::TraceOpts {
+            reference: Some(refcsv.to_string_lossy().into()),
+            out: Some(work.join("t2.csv").to_string_lossy().into()),
+            nth: 1,
+        },
+    )
+    .expect("the second trace also passed its controls");
+    let second = std::fs::read(work.join("t2.csv")).unwrap();
+    assert_eq!(
+        first, second,
+        "two traces of the same tape at the same checkpoint must be byte-identical; \
+         they are not, so the locate is choosing between copies of the car"
+    );
+}
+
+/// **The whole regeneration path, end to end, pinning the two defects it had.**
+///
+/// `fk regen` runs the real engine on a ghost's own inputs and rewrites the
+/// telemetry from what it read. Two things must hold on the file it writes, and
+/// both were broken:
+///
+/// * the recording must agree with the tape it carries — `ghost`'s Cohen's
+///   kappa on the exact steer byte. This read **0.467** while the echo was
+///   written with a `round`, and **1.000** with the `floor` the game uses.
+/// * the plain oracle must re-simulate the WRITTEN FILE to its declared time. A
+///   banked incumbent is not a result until it does.
+///
+/// It runs the in-process locate (`--noanchor`), which is the path
+/// `ghost regen` tries first and the one measured bit-identical across repeated
+/// runs; the searching locate behind it is nondeterministic by nature (about
+/// one run in eight finds a decoy on some maps) and is not something a test can
+/// assert on without measuring a rate.
+#[test]
+fn engine_regen_writes_a_file_that_agrees_with_its_own_tape() {
+    let Some(server) = engine_tier() else { return };
+    let work = scratch("regen");
+    let out = work.join("regen.Ghost.Gbx");
+    let fk_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/release/fk")
+        .canonicalize()
+        .expect("build the workspace first: cargo build --release");
+    let st = std::process::Command::new(&fk_bin)
+        .args([
+            "regen",
+            "--template",
+            &human_ghost(),
+            "--map",
+            &map2().to_string_lossy(),
+            "--out",
+            &out.to_string_lossy(),
+            "--dump",
+            &work.join("d.bin").to_string_lossy(),
+            "--shim",
+            &shim().to_string_lossy(),
+            "--server",
+            &server.to_string_lossy(),
+            "--work",
+            &work.join("wk").to_string_lossy(),
+            "--noanchor",
+            "--inputs",
+            "--trim-outside",
+        ])
+        .output()
+        .expect("run fk regen");
+    let log = String::from_utf8_lossy(&st.stdout).to_string();
+    assert!(st.status.success(), "fk regen failed:\n{}", log);
+    assert!(out.exists(), "no file written:\n{}", log);
+
+    // the tape echo, which is what the round-vs-floor defect broke
+    let (kappa, _pct, lag, n) = ghost::verify::tape_record_agreement(&out.to_string_lossy())
+        .expect("the written file has both channels");
+    assert!(n > 400, "only {} samples compared", n);
+    assert_eq!(lag, 0, "the recording must line up with the tape at zero lag");
+    assert!(
+        kappa > 0.999,
+        "the recording disagrees with the tape it carries: kappa {:.3} over {} samples \
+         (0.467 was the round-vs-floor defect; 1.000 is a file that agrees with itself)",
+        kappa,
+        n
+    );
+
+    // and the plain oracle on the file as written
+    let r = ghost::oracle::validate(
+        &server,
+        &out,
+        ghost::oracle::MapsMode::One(&map2()),
+        "fktest-regen",
+    )
+    .expect("the oracle ran");
+    assert_eq!(
+        r.time_ms,
+        Some(22_730),
+        "the written file must still run the time it claims (it said {})",
+        r.secs()
+    );
 }

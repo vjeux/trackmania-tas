@@ -94,22 +94,91 @@ pub enum Checkpoint {
 
 /// `clock = 36141 + 25.483 * race_ms`, fitted on three segment maps.
 ///
-/// Linear in SIMULATED time, so it transfers between maps. It is an estimate:
-/// use [`Session::probe_tick`] to learn where the server actually stopped.
+/// Linear in SIMULATED time, so it transfers between maps. **It is an
+/// estimate**: asking for tick 600 on map 2 lands on tick 689. That is fine for
+/// choosing a checkpoint and useless for anything else — use
+/// [`Session::probe_tick`] to learn where the server actually stopped, and
+/// never label a sample from this.
 pub fn clock_for_race_ms(ms: i64) -> u64 {
     (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
 }
 
+/// The TOTAL `lroundf` count for one full validation of `ghost` on `map`.
+///
+/// Measured, not fitted, because `--at frac:F` should mean F of the run on any
+/// map rather than F of a line fitted on three segment maps of one ghost. Costs
+/// one validation with the shim preloaded (~0.5 s); the shim prints the total on
+/// stderr and exits.
+///
+/// A run under load will not give the same total twice — `lroundf` moves in
+/// whole chunks of ~62 calls under contention — so this is a placement aid, not
+/// a measurement to quote.
+pub fn total_clock(
+    work: &Path,
+    server: &Path,
+    map: &Path,
+    ghost: &Path,
+    shim: &Path,
+) -> Result<u64, String> {
+    let dir = work.join("clock");
+    let replays = dir.join("UserData/Replays");
+    let maps = dir.join("UserData/Maps");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&replays).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&maps).map_err(|e| e.to_string())?;
+    let link = |t: PathBuf, a: PathBuf| {
+        if std::fs::symlink_metadata(&a).is_err() {
+            let _ = std::os::unix::fs::symlink(t, a);
+        }
+    };
+    link(server.join("Packs"), dir.join("Packs"));
+    link(server.join("TrackmaniaServer"), dir.join("TrackmaniaServer"));
+    let m = map.canonicalize().map_err(|e| format!("{}: {}", map.display(), e))?;
+    link(m.clone(), maps.join(m.file_name().unwrap()));
+    // A COPY, not a symlink, and under a name the server will read. The server
+    // ignores anything not named *.Ghost.Gbx / *.Replay.Gbx and reports a bare
+    // DNF instead.
+    std::fs::copy(ghost, replays.join("clock.Ghost.Gbx")).map_err(|e| e.to_string())?;
+    let out = std::process::Command::new("./TrackmaniaServer")
+        .args(["/nodaemon", "/validatepath=."])
+        .current_dir(&dir)
+        .env("LD_PRELOAD", shim.canonicalize().map_err(|e| e.to_string())?)
+        .output()
+        .map_err(|e| format!("launching the server: {}", e))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .find_map(|l| l.strip_prefix("FKSHIM lroundf_total ")?.trim().parse().ok())
+        .ok_or_else(|| {
+            "the shim did not report an lroundf total -- is LD_PRELOAD reaching the server?"
+                .to_string()
+        })
+}
+
 impl Checkpoint {
-    pub fn to_clock(self, tape: &Tape) -> u64 {
-        match self {
+    /// Turn a checkpoint into the `lroundf` count the shim stops on.
+    ///
+    /// `Fraction` MEASURES: it runs one full validation with the shim preloaded
+    /// and takes `f` of the real total, so `--at frac:0.95` means 95 % of the
+    /// run on any map. The alternative — `f` of the fitted line — is `f` of a
+    /// line fitted on three segment maps of one ghost, which is a different
+    /// thing that happens to agree on that ghost.
+    pub fn to_clock(self, engine: &Engine, tape: &Tape) -> Result<u64, String> {
+        Ok(match self {
             Checkpoint::Clock(c) => c,
             Checkpoint::Tick(t) => clock_for_race_ms(t * 10 + tape.start_offset_ms as i64),
             Checkpoint::Fraction(f) => {
-                let last = tape.race_ms(tape.n().saturating_sub(1));
-                clock_for_race_ms((last as f64 * f) as i64)
+                if !(0.0..1.0).contains(&f) {
+                    return Err(format!("--at frac:{} is not in [0, 1)", f));
+                }
+                std::fs::create_dir_all(&engine.work).map_err(|e| e.to_string())?;
+                let g = engine.work.join("clockref.Ghost.Gbx");
+                tape.write_reference(&g)?;
+                let total =
+                    total_clock(&engine.work, &engine.server, &engine.map, &g, &engine.shim)?;
+                (total as f64 * f) as u64
             }
-        }
+        })
     }
 }
 
@@ -135,7 +204,7 @@ impl Session {
     pub fn start(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<Session, String> {
         engine.check()?;
         std::fs::create_dir_all(&engine.work).map_err(|e| e.to_string())?;
-        let clock = at.to_clock(&tape);
+        let clock = at.to_clock(engine, &tape)?;
         let refp = engine.work.join("reference.Ghost.Gbx");
         tape.write_reference(&refp)?;
         let key = engine.work.join("key.bin");

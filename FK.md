@@ -304,7 +304,31 @@ ticks sat below every resume boundary — a property of the boundaries we happen
 use, not a guarantee. `ghost::tape` expands them; a test writes a distinct value
 into all 2432 ticks and reads them all back.
 
-**4. `r165_tools_v5.tgz` is two lineages in one tarball.** Its `tmsearch` is
+**4. Two API defects that only appear when you RUN the command.** `fk watch`'s
+`--template` defaulted to `/tmp/spot/inc.Ghost.Gbx` and its `--map` to
+`/tmp/m2/map2.Map.Gbx` — one agent's scratch paths. A missing flag therefore ran
+a whole measurement **against somebody else's incumbent** instead of failing.
+That is the same failure family as everything else in this list: it fails toward
+"it worked". In a swarm it is a correctness bug, not an ergonomics one. And
+`fk watch replay` read its input from a flag called `--out`, named for the
+workflow that usually produces the file rather than for what the command does
+with it.
+
+Neither is visible in the source. Both appeared in the first minute of using the
+commands. **Which is the argument for running everything.**
+
+**5. The equivalence control was reporting a diagnostic as a verdict.**
+`fk watch paths` asks whether the two in-child sampling paths reach the same
+answer. It counted `off_max` — a reported diagnostic that nothing decides on —
+as part of "the same verdict", and the fast path evaluates one more tick than
+the slow one on a run that reaches the end, so `off_max` grows by construction.
+The control read **"2 of 8 REALLY DIFFER"** on eight candidates whose every
+verdict was identical. A control that cries wolf gets ignored, which costs more
+than the thing it was guarding. The verdict is now the finish time, the
+checkpoint count, the trip (predicate, tick, value) and the progress; `off_max`
+and `travelled` are compared under "identical in every field" instead.
+
+**6. `r165_tools_v5.tgz` is two lineages in one tarball.** Its `tmsearch` is
 pre-hardening — `FINISH_BASE = 100_000_000` in `main.rs`, `forksearch.rs` and
 `bin/tmtas.rs`, no `claim_root`, no phantom guard — while its `fk` and `fkdrv`
 have every reliability fix: per-pid `default_work_dir()`, the `.fkowner` lock,
@@ -315,7 +339,9 @@ the constant, not the version.
 
 ---
 
-## 6. The suite
+## 6. The suite, and what the commands measure
+
+### The suite
 
 15 pure checks and 3 engine checks, one command. The fixtures are `ghost`'s —
 `tools/ghost/testdata/` already holds anonymised ghosts, a replay carrying its
@@ -329,17 +355,68 @@ The three that are worth reading:
   simulates 22.754 and declares 22.730. **No fixture where the two agree can ever
   fail this test**, and until now every fixture anyone had was a passing file
   where they agree exactly.
-* **`engine_locate_fails_loudly_when_the_key_does_not_match`** — the brief's
-  "fails loudly when the game binary moves". The same server, map and tape are
-  started twice, once with the tape's own key and once with a key that describes
-  nothing in memory. The negative alone would prove nothing — a run that aborts
-  for an unrelated reason looks the same — so the positive control is half the
-  test.
+* **`engine_locate_fails_loudly_when_the_key_does_not_match`** — the locate must
+  refuse when the game binary moves rather than return garbage. The same server,
+  map and tape are started twice, once with the tape's own key and once with a
+  key that describes nothing in memory. The negative alone would prove nothing —
+  a run that aborts for an unrelated reason looks the same — so the positive
+  control is half the test.
 * **`steer_echo_matches_a_real_recording_byte_for_byte`** — and its own positive
   control, that the old encoding visibly fails on the same data. Its first
   version asserted that floor and round differ at exactly steer 0 and 60, which
   I had taken out of a write-up and turned into a claim about all 255 values
   without measuring it; they differ at 127 of them. It now measures.
+
+### THE SCORE-SAFETY INVARIANT
+
+The watchdog is safe to put in a search because of one property, and the search
+should depend on it by name:
+
+> `progress(aborted candidate) <= progress(the same candidate with nothing
+> armed)`
+
+Progress is a max over ticks and aborting only removes ticks, so arming can only
+LOWER a score — and therefore **a dead candidate can never displace a live
+one**. It is not an argument, it is checked per candidate in every
+`fk watch measure` run: 24 of 24, 0 violations on the run below, 2000 of 2000 in
+the original audit.
+
+### What one `fk watch measure` run reports
+
+24 candidates, tick-60 checkpoint, map 2, two predicates armed:
+
+```
+IDENTITY CONTROL  unarmed 22.730  armed 22.730  reference 22.730  PASS, no trip
+EXACTNESS         10 of 10 non-tripping candidates identical armed vs unarmed
+                  0 disagree with the full validation
+                  0 perturbed by watching alone
+TRIPS             14 of 24 aborted (58.3%); 0 of the 7 that would have finished
+FALSE POSITIVES   0 / 24
+SCORE SAFETY      24 of 24, 0 violations
+THROUGHPUT        1.269x vs the observing control, 2.626x vs full validation
+                  aborted candidates stopped after 52% of the tail
+```
+
+The identity control is the row that makes the rest mean anything: the reference
+tape through both paths must return the reference's own millisecond and must not
+trip.
+
+### The other measurements, as run
+
+* `fk server check` — 12/12 exact at a 95.6 % checkpoint, oracle repeatability
+  0 of 12, **15.5×** against a batched baseline. The *batched* part matters:
+  nearly all of a validation's cost is the server launch, so a
+  one-file-at-a-time baseline would inflate the speedup by most of itself.
+* `fk trace` — median **0.0068 m** against the reference ghost's own telemetry
+  over 2259 compared ticks, p90 0.0150, max 0.373, 99.34 % within 5 cm; whole-run
+  self-check |q|−1 p99.5 1.25e−7, 0 clock gaps.
+* `fk watch replay` — the reference line against itself: `off_max` **0.00 m**
+  over 455 ticks. That is the positive control for the nearest-point tracker,
+  which measured 1123 m of apparent deviation for the reference against itself
+  before it was changed from a hill-descent to an argmin over a small window
+  with ties broken to the later index.
+* `fk regen` — 455 of 455 samples regenerated, 100 % coverage, and the written
+  file re-simulates through the plain oracle to its declared 22.730.
 
 ---
 
@@ -447,7 +524,55 @@ tell that it failed to. `fk` no longer uses it. Moving `tmsearch` onto
 
 ---
 
-## 8. What I could not make safe
+## 8. Migrating off the old command line
+
+There are no callers outside this project, so nothing was preserved for
+compatibility. Anything driving the old `fk` needs these substitutions:
+
+| old | new |
+|---|---|
+| `fk fs --mode auto` / `--mode test` | `fk server check` |
+| `fk fs --mode bench` | `fk server bench` |
+| `fk fs --mode cal` / `--mode edge` | nothing — `fk server check` calibrates and reports the boundary |
+| `fk fsprobe` | `fk server probe` |
+| `fk btraj2` | `fk trace` |
+| `fk btraj` / `fk traj` / `fk traj2` | `fk trace` (one trajectory command, not four) |
+| `fk clean` | `fk regen` — it was only ever `regen`'s recorder |
+| `fk pred --mode audit` | `fk watch measure` |
+| `fk pred --mode offline --out CSV` | `fk watch replay --trajectory CSV` |
+| `fk pred --mode equiv` | `fk watch paths` |
+| `--template` (on the fork-server and trace commands) | `--tape` — `regen` and `watch` still say `--template`, because they run the file rather than perturb it |
+| `--tick N` / `--ckpt N` / `--frac F` | `--at tick:N` / `--at clock:N` / `--at frac:F` |
+| `--ref CSV` (watch) | `--reference CSV` |
+| `--reftime MS` | `--reference-ms MS` |
+| `--out CSV` as `watch`'s INPUT | `--trajectory CSV` |
+| `fk regen --fieldmap none` | drop the flag |
+| `fk regen --fieldmap <a zero-list TSV>` | `--neutralise` (the list is built in) |
+| `fk regen --fieldmap <a slot-mapped TSV>` | gone; see §3, nothing ever wrote one |
+| `fk regen --recshift MS` | gone; it was retracted (§3) |
+| `fk regen --need-wheels` | gone with `fk whl` |
+| every tape and container command | `ghost` — see GHOSTS.md |
+
+`--at frac:F` also changed meaning for the better: it used to be F of a line
+fitted on three segment maps of one ghost, and it now MEASURES the run's real
+`lroundf` total, so it means F of the run on any map. It costs one extra
+validation (~0.5 s).
+
+### The shell scripts
+
+The old workspace carried `build.sh` and nine `whl_*.sh`. None is carried here.
+`build.sh` was `cargo build --release` with an `ls`. The `whl_*.sh` scripts
+drove `fk whl` / `fk fit` / `fk probe` corpus runs and go with the commands they
+drove. Three per-map pipelines in the toolchain tree (`r165_regen_v4.sh`,
+`r165_ticklate_repair.sh`, `r165_c11b_sweep.sh`) call `fk regen` and will need
+the substitutions above; their other steps are all `ghost` and `tmtraj`
+commands now, and they should be rewritten as such rather than repaired.
+**There is no shell script in `tools/fk` or `tools/forkoracle` and there should
+not be one.**
+
+---
+
+## 9. What I could not make safe
 
 * **`fk regen --allow-partial` and `--inherit-outside`** are the only paths
   where a wrong race window is not fail-safe. They exist to write a
