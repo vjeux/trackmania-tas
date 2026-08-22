@@ -54,7 +54,9 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
     if (r == "/ping") return HttpResponse(200, "pong");
-    if (r == "/build") return HttpResponse(200, "B1787425027");
+    if (r == "/build") return HttpResponse(200, "B1787428089");
+    if (r == "/await") return HttpResponse(200, Await(QArg(qs,"c"), Text::ParseInt(QArg(qs,"ms"))));
+    if (r == "/awaitfile") return HttpResponse(200, AwaitFileFree(PathArg(), Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/greplayers") return HttpResponse(200, GrepLayers(PathArg()));
     if (r == "/whoapp") return HttpResponse(200, WhoIsManiaApp());
     if (r == "/layers") return HttpResponse(200, DumpLayers());

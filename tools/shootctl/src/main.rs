@@ -29,18 +29,42 @@ static ADDR: OnceLock<String> = OnceLock::new();
 
 /// The first candidate address that accepts a connection, remembered for the
 /// rest of the run.
-fn plugin_addr() -> &'static str {
-    ADDR.get_or_init(|| {
-        for a in plugin_addrs() {
-            if TcpStream::connect_timeout(
-                &a.parse::<SocketAddr>().unwrap(),
-                Duration::from_millis(400),
-            ).is_ok() {
-                return a;
-            }
+///
+/// CACHED ONLY ON SUCCESS. The first version fell back to "127.0.0.1:29800"
+/// when nothing answered AND cached that -- so a `run` that probed while the
+/// game was still starting locked itself to the WSL loopback (a different
+/// machine from the game's) and then dialled it for three minutes while the
+/// plugin sat there answering on the real address. Exactly the trap host.rs
+/// documents, wearing a different hat: never remember a guess.
+fn plugin_addr() -> String {
+    if let Some(a) = ADDR.get() { return a.clone(); }
+    for a in plugin_addrs() {
+        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
+        if TcpStream::connect_timeout(&sa, Duration::from_millis(400)).is_ok() {
+            let _ = ADDR.set(a.clone());
+            return a;
         }
-        "127.0.0.1:29800".to_string()
-    })
+    }
+    "127.0.0.1:29800".to_string()
+}
+
+/// Is the plugin answering anywhere? Tries every candidate, caches on success.
+/// This is the launch's gate -- it must not depend on an address chosen before
+/// the server existed.
+fn plugin_up() -> bool {
+    if let Some(a) = ADDR.get() {
+        if let Ok(sa) = a.parse::<SocketAddr>() {
+            return TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok();
+        }
+    }
+    for a in plugin_addrs() {
+        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
+        if TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok() {
+            let _ = ADDR.set(a);
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +72,7 @@ fn plugin_addr() -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
-    let mut s = TcpStream::connect(plugin_addr()).map_err(|e| format!("connect: {e}"))?;
+    let mut s = TcpStream::connect(plugin_addr().as_str()).map_err(|e| format!("connect: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_s))).ok();
     s.set_write_timeout(Some(Duration::from_secs(timeout_s))).ok();
     let req = format!("GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
@@ -73,23 +97,36 @@ fn ctx() -> Option<i64> {
     rest[..end].parse().ok()
 }
 
-/// Wait for a CONDITION, with a deadline, and say what was seen if it never
-/// came. The old pipeline slept a fixed 5 or 8 seconds here and then carried on
-/// regardless, which is how a click landed on a screen that had not appeared.
-fn wait_ctx(want: i64, timeout_s: u64) -> Result<f64, String> {
-    let t0 = Instant::now();
-    let mut last = None;
-    while t0.elapsed().as_secs() < timeout_s {
-        let c = ctx();
-        if c == Some(want) {
-            return Ok(t0.elapsed().as_secs_f64());
-        }
-        last = c;
-        std::thread::sleep(Duration::from_millis(200));
+/// WAIT FOR A CONDITION -- and do not poll for it.
+///
+/// `/await` is a long poll: HttpServer runs the request handler inside a
+/// coroutine, so the plugin yields frame by frame until the condition holds and
+/// only then answers. This blocks on the socket. Nothing sleeps, the answer
+/// arrives on the frame the thing actually happened, and the reply carries how
+/// many milliseconds and frames it took.
+///
+/// Conditions (colon, never '=' -- the plugin's query splitter does no URL
+/// decoding, so "ctx%3D0" would arrive literally and time out looking correct):
+///   ctx:N  ready  nodialog  shootdlg  noshootdlg  ghosts:N  tracks:N
+fn await_cond(cond: &str, timeout_s: u64) -> Result<f64, String> {
+    let ms = timeout_s * 1000;
+    let body = http_get(&format!("/await?c={cond}&ms={ms}"), timeout_s + 15)?;
+    if body.contains("\"ok\":true") {
+        let key = "\"ms\":";
+        let took = body.find(key)
+            .and_then(|i| {
+                let r = &body[i + key.len()..];
+                let e = r.find(|c: char| !c.is_ascii_digit())?;
+                r[..e].parse::<f64>().ok()
+            })
+            .unwrap_or(0.0);
+        return Ok(took / 1000.0);
     }
-    Err(format!(
-        "timed out after {timeout_s}s waiting for ctx={want}; last seen ctx={last:?}"
-    ))
+    Err(format!("waiting for {cond}: {}", body.trim()))
+}
+
+fn wait_ctx(want: i64, timeout_s: u64) -> Result<f64, String> {
+    await_cond(&format!("ctx:{want}"), timeout_s)
 }
 
 // ---------------------------------------------------------------------------
@@ -680,12 +717,114 @@ fn stamp(main_as: &str, stamp: &str) -> i32 {
     0
 }
 
+/// The plugin dev loop, in one command: lint, install, reload, prove.
+///
+/// This was `gsdev`, a bash script with `sleep 0.5` in its reload poll and a
+/// `sleep 4` before relaunching. Both are gone: the reload is proven by a build
+/// stamp, and the wait for it is paced by the HTTP round trip.
+///
+/// WHY THERE IS A LINT STEP AT ALL: self-reload takes about a second. What costs
+/// a 90-second game restart is a COMPILE ERROR -- Openplanet unloads the plugin,
+/// the HTTP server goes with it, and there is no /reload left to call. So the
+/// source is checked against the game's own class dump before the game sees it.
+fn install(plugin_dir: &str, good_dir: &str, api: &str) -> i32 {
+    let files: Vec<String> = match std::fs::read_dir(plugin_dir) {
+        Ok(rd) => {
+            let mut v: Vec<String> = rd.flatten()
+                .map(|e| e.path().to_string_lossy().to_string())
+                .filter(|p| p.ends_with(".as"))
+                .collect();
+            v.sort();
+            v
+        }
+        Err(e) => { eprintln!("{plugin_dir}: {e}"); return 2; }
+    };
+    if files.is_empty() { eprintln!("no .as files in {plugin_dir}"); return 2; }
+
+    if lint(api, &files) != 0 { eprintln!("REFUSING to install"); return 1; }
+
+    let mark = format!("B{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+    if stamp(&format!("{plugin_dir}/Main.as"), &mark) != 0 { return 2; }
+    let _ = http_get("/reload", 20);
+
+    // The reload is done when the plugin reports the stamp we just wrote.
+    // Paced by the HTTP round trip; nothing sleeps.
+    let t0 = Instant::now();
+    while t0.elapsed().as_secs() < 15 {
+        if http_get("/build", 5).map(|b| b.trim() == mark).unwrap_or(false) {
+            println!("RELOADED ok ({mark})");
+            return 0;
+        }
+    }
+
+    eprintln!("RELOAD FAILED -- errors the linter did not catch:");
+    if let Ok(log) = std::fs::read_to_string("/mnt/c/Users/vjeux/OpenplanetNext/Openplanet.log") {
+        for line in log.lines().filter(|l| l.contains("ERR") && !l.contains("UltimateMedals"))
+                       .rev().take(5).collect::<Vec<_>>().into_iter().rev() {
+            eprintln!("  {}", line.trim());
+        }
+    }
+    // Put the last good plugin back. A file that is NEW and broken has no
+    // known-good counterpart, so it has to be deleted rather than overwritten --
+    // otherwise it keeps failing the compile forever.
+    for f in &files {
+        let base = f.rsplit('/').next().unwrap_or(f);
+        if !std::path::Path::new(&format!("{good_dir}/{base}")).exists() {
+            let _ = std::fs::remove_file(f);
+            eprintln!("removed new-and-broken {base}");
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(good_dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("as") { continue; }
+            let base = p.file_name().unwrap().to_string_lossy().to_string();
+            let _ = std::fs::copy(&p, format!("{plugin_dir}/{base}"));
+        }
+        eprintln!("restored the last good plugin");
+    }
+    // A compile error unloads the plugin, so the server may be gone with it.
+    if http_get("/ping", 5).is_err() {
+        eprintln!("the plugin server is down; restarting the game");
+        launch(180);
+    }
+    1
+}
+
+/// Save the current plugin as the known-good one to fall back to.
+fn save_good(plugin_dir: &str, good_dir: &str) -> i32 {
+    let _ = std::fs::create_dir_all(good_dir);
+    if let Ok(rd) = std::fs::read_dir(good_dir) {
+        for e in rd.flatten() {
+            if e.path().extension().and_then(|x| x.to_str()) == Some("as") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(plugin_dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("as") { continue; }
+            let base = p.file_name().unwrap().to_string_lossy().to_string();
+            if std::fs::copy(&p, format!("{good_dir}/{base}")).is_ok() { n += 1; }
+        }
+    }
+    println!("saved {n} files as the known-good plugin");
+    0
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!(
             "usage:\n  shootctl lint <api.json> <file.as ...>\n  shootctl stamp <Main.as> <STAMP>\
-             \n  shootctl get <route>\n  shootctl wait --ctx N [--timeout S]\n  shootctl drive --map <path>"
+             \n  shootctl get <route>\n  shootctl wait --ctx N [--timeout S]\n  shootctl drive --map <path>\
+             \n  shootctl launch [timeout_s]\
+             \n  shootctl setup --map <map> <ghost...>\
+             \n  shootctl shoot [timeout_s] --name <out>\
+             \n  shootctl run --map <map> --name <out> <tas> [opponent]   (all of the above)"
         );
         std::process::exit(2);
     }
@@ -706,6 +845,46 @@ fn main() {
             byt.sort_by_key(|(_, t)| *t);
             for (p, _) in byt.iter().rev().take(3) { println!("  {p}"); }
             0
+        }
+        "install" => {
+            // the dev loop: lint, reload, prove -- what gsdev used to be
+            let p = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/GhostShooter";
+            let g = "/home/vjeux/gs-good";
+            let a = "/mnt/c/Users/vjeux/OpenplanetNext/OpenplanetNext.json";
+            install(p, g, a)
+        }
+        "save" => {
+            let p = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/GhostShooter";
+            save_good(p, "/home/vjeux/gs-good")
+        }
+        "launch" => {
+            let to = if args.len() > 1 { args[1].parse().unwrap_or(180) } else { 180 };
+            launch(to)
+        }
+        "run" => {
+            // THE WHOLE THING: cold game to finished video, one command.
+            let mut map = String::new();
+            let mut name = String::new();
+            let mut gs: Vec<String> = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--map"  => { map  = args[i + 1].clone(); i += 2; }
+                    "--name" => { name = args[i + 1].clone(); i += 2; }
+                    _ => { gs.push(args[i].clone()); i += 1; }
+                }
+            }
+            if map.is_empty() || gs.is_empty() || name.is_empty() {
+                eprintln!("run --map <map> --name <out> <tas.Ghost.Gbx> [opponent.Ghost.Gbx]");
+                2
+            } else {
+                let rc = launch(180);
+                if rc != 0 { rc }
+                else {
+                    let rc = setup(&map, &gs);
+                    if rc != 0 { rc } else { shoot(3600, &name) }
+                }
+            }
         }
         "shoot" => {
             // shoot [timeout_s] [--name NAME]
@@ -969,16 +1148,86 @@ fn to_menu() -> Result<(), String> {
         if ctx() == Some(0) { return Ok(()); }
         let _ = http_get("/back", 20);
         // Answer whatever modal the exit raised; /dismiss picks the right answer
-        // per dialog and defaults to declining.
+        // per dialog and defaults to declining. Each answer is followed by a
+        // WAIT ON THE DIALOG GOING AWAY, not by a sleep -- and if a new one
+        // takes its place, /dismiss handles that one on the next turn.
         for _ in 0..6 {
             let c = http_get("/ctx", 10).unwrap_or_default();
             if c.contains("\"dialog\":null") { break; }
             let _ = http_get("/dismiss", 10);
-            std::thread::sleep(Duration::from_millis(300));
+            let _ = await_cond("nodialog", 5);
         }
         if wait_ctx(0, 8).is_ok() { return Ok(()); }
     }
     Err(format!("could not get back to the menu; ctx={:?}", ctx()))
+}
+
+/// START THE GAME, and prove Openplanet injected.
+///
+/// This replaces launch_tm.sh, whose 38 seconds were almost entirely guesses:
+/// `sleep 6` after the kill, a 3-second process poll, a blind `sleep 25` for the
+/// splash, a synthetic Enter to "clear" it, then a 5-second /ping poll. Measured
+/// with none of that: the plugin answers 11.9 s after the kill, and the Enter
+/// was never needed -- the game reaches the menu on its own.
+///
+/// Nothing here sleeps. Each wait is a blocking operation whose duration IS the
+/// wait: tasklist for the processes, and connect() for the plugin -- a WSL
+/// connect to a Windows port that is not listening is dropped rather than
+/// refused, so it blocks the full timeout and paces the retry by itself.
+///
+/// WHY EXPLORER: Openplanet is a dinput8.dll proxy beside Trackmania.exe, and
+/// the PreferSystem32 process-creation mitigation makes the loader take
+/// System32's real dinput8 instead -- the game runs perfectly and the plugin
+/// never loads. The mitigation is INHERITED, and every shell we have has it ON
+/// while Explorer has it OFF. `explorer.exe <path>` makes the running Explorer
+/// create the process, so it inherits OFF. (Measured 2026-08-21.)
+fn launch(timeout_s: u64) -> i32 {
+    let t0 = Instant::now();
+    let el = |t: &Instant| t.elapsed().as_secs_f64();
+
+    for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
+        let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
+            .args(["/F", "/IM", exe]).output();
+    }
+    // Wait for them to be GONE. tasklist is a process spawn, ~100 ms; that is
+    // the pacing, not a sleep.
+    while tm_running() {
+        if el(&t0) > 30.0 { eprintln!("Trackmania will not die"); return 1; }
+    }
+    println!("[{:.1}s] processes gone", el(&t0));
+
+    let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
+    let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
+    println!("[{:.1}s] launched via explorer (PreferSystem32=OFF)", el(&t0));
+
+    // Wait for the plugin socket, trying EVERY candidate address each time --
+    // the right one cannot be known before the server exists. connect() blocks;
+    // see the note above.
+    loop {
+        if plugin_up() { break; }
+        if el(&t0) > timeout_s as f64 {
+            eprintln!("[{:.1}s] no plugin. Trackmania running: {}", el(&t0), tm_running());
+            eprintln!("  If the game is up but the plugin is not, the launch inherited");
+            eprintln!("  PreferSystem32=ON and Openplanet's dinput8 proxy was skipped.");
+            return 1;
+        }
+    }
+    println!("[{:.1}s] plugin up", el(&t0));
+
+    // AND THE TITLE MUST BE READY. EditMap on a not-ready
+    // ManiaTitleControlScriptAPI returns without error and loads nothing --
+    // that is the failure that reads as "the map did not open".
+    match await_cond("ready", 60) {
+        Ok(_) => { println!("[{:.1}s] title ready", el(&t0)); 0 }
+        Err(e) => { eprintln!("{e}"); 1 }
+    }
+}
+
+fn tm_running() -> bool {
+    std::process::Command::new("/mnt/c/Windows/System32/tasklist.exe")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("trackmania.exe"))
+        .unwrap_or(false)
 }
 
 /// SYNTHETIC INPUT IS GONE FROM THIS PIPELINE. Nothing here clicks or types.
@@ -1004,63 +1253,39 @@ fn to_menu() -> Result<(), String> {
 // capture, or a shoot that died before writing all point it at the wrong file
 // with no way to notice. The render names its output now -- see shoot().
 
-/// IS THE GAME STILL WRITING THIS FILE? The OS's answer, not ours.
-///
-/// Nothing in the object graph moves during a shoot -- measured over a whole
-/// 53-second render: Operation_InProgress false, MTApi IsPlaying false,
-/// CurrentTimer 0, no dialog, no progress bar. So the game itself will not say
-/// when it is done, and the old gate was "the file size has not changed for
-/// three polls", which cannot tell a finished render from a stalled one.
-///
-/// Windows can. The encoder holds the output open while it writes, so opening
-/// it for writing with no sharing fails until the game closes it. That is the
-/// writer's own release, and it is exact.
-fn file_locked(win_path: &str) -> Option<bool> {
-    let ps = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
-    let script = format!(
-        "try {{ $f=[IO.File]::Open('{win_path}','Open','Write','None'); $f.Close(); 'UNLOCKED' }} \
-         catch [System.IO.FileNotFoundException] {{ 'MISSING' }} \
-         catch {{ 'LOCKED' }}");
-    let out = std::process::Command::new(ps)
-        .args(["-NoProfile", "-Command", &script])
-        .output().ok()?;
-    let body = String::from_utf8_lossy(&out.stdout);
-    if body.contains("UNLOCKED") { Some(false) }
-    else if body.contains("LOCKED") { Some(true) }
-    else { None }
+// file_locked() over PowerShell is GONE, and so is to_win(). The check now
+// lives in the plugin (/awaitfile) where it costs one CreateFile per frame
+// instead of a process spawn four times a second FOR THE WHOLE RENDER,
+// competing with the encoder for the machine. The finding it was built on
+// stands and is worth keeping: a read-open that also denies writers fails while
+// the game holds the file, and that release is the only exact completion
+// signal there is.
+
+/// Are these two paths the SAME FILE? Not a string compare: fs::copy onto
+/// itself TRUNCATES, and that destroyed a finished 24 MB render -- the only
+/// reason it was caught is that the tool printed "done: 0 bytes". Asked of the
+/// filesystem, so a differently-spelled path cannot slip through.
+/// The WSL path `/mnt/c/...` as a Windows path with forward slashes, which is
+/// what Openplanet's IO takes.
+fn to_win_fwd(p: &str) -> String {
+    p.strip_prefix("/mnt/c/").map(|r| format!("C:/{r}")).unwrap_or_else(|| p.to_string())
 }
 
-/// The WSL path `/mnt/c/...` as the Windows path `C:\...`.
-fn to_win(p: &str) -> String {
-    p.strip_prefix("/mnt/c/")
-        .map(|r| format!("C:\\{}", r.replace('/', "\\")))
-        .unwrap_or_else(|| p.to_string())
+fn same_file(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
 }
 
-/// Shoot, and wait for the file to appear AND stop growing.
-///
-/// The wait is on the artefact rather than on a duration: a render that dies
-/// leaves the file short, and one that is still going keeps growing, so
-/// "unchanged for three consecutive polls" is the completion signal.
 // op_in_progress() is GONE too. CGameManiaPlanet::Operation_InProgress reads
 // FALSE for the entire duration of a shoot -- measured across a 53-second
 // render, along with MTApi IsPlaying (false), CurrentTimer (0) and every
 // progress field (empty). The game exposes no render-in-progress signal at all;
-// the encoder file handle is the signal. See file_locked().
-
-/// Is the shoot dialog up? The plugin answers from the dialog nod itself
-/// (`"shootdlg":true`), not from a frame name -- see ShootNod.as.
-fn shoot_dialog_up() -> bool {
-    http_get("/shootstatus", 10).unwrap_or_default().contains("\"shootdlg\":true")
-}
+// the encoder file handle is the signal -- checked in the plugin, /awaitfile.
 
 fn wait_shoot_dialog(want: bool, secs: u64) -> Result<f64, String> {
-    let t0 = Instant::now();
-    while t0.elapsed().as_secs() < secs {
-        if shoot_dialog_up() == want { return Ok(t0.elapsed().as_secs_f64()); }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    Err(format!("the shoot dialog never became {}", if want { "visible" } else { "closed" }))
+    await_cond(if want { "shootdlg" } else { "noshootdlg" }, secs)
 }
 
 /// Every .webm in the screenshots folder, with its modification time.
@@ -1141,16 +1366,18 @@ fn shoot(timeout_s: u64, name: &str) -> i32 {
     }
 
     // EXACTLY ONE FILE MUST START BEING WRITTEN.
-    let t0 = Instant::now();
+    //
+    // The pacing is the directory read itself -- a stat of ~100 files over
+    // DrvFs, which is not free. No sleep.
+    let t_render = Instant::now();
     let mut out = String::new();
-    while t0.elapsed().as_secs() < 30 {
+    while t_render.elapsed().as_secs() < 30 {
         let touched = webms_since(t_start);
         match touched.len() {
             0 => {}
             1 => { out = touched[0].clone(); break; }
             n => { eprintln!("{n} .webm files were touched; cannot tell which is ours"); return 1; }
         }
-        std::thread::sleep(Duration::from_millis(250));
     }
     if out.is_empty() { eprintln!("the dialog closed but no render started"); return 1; }
     let short = out.rsplit('/').next().unwrap_or(&out).to_string();
@@ -1159,38 +1386,46 @@ fn shoot(timeout_s: u64, name: &str) -> i32 {
     // AND THE GAME MUST LET GO OF IT.
     //
     // Nothing in the object graph moves during a shoot -- measured across a
-    // whole 53-second render. The old gate was "size unchanged for three
-    // polls", which cannot tell a finished render from a stalled one. The
-    // encoder's file handle can: see file_locked().
-    let win = to_win(&out);
-    let t0 = Instant::now();
-    let mut last = 0u64;
-    while t0.elapsed().as_secs() < timeout_s {
-        std::thread::sleep(Duration::from_secs(5));
-        let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-        match file_locked(&win) {
-            Some(false) => {
-                // Released. Anything that never got written is a failed render.
-                if sz == 0 { eprintln!("\n{out} is empty"); return 1; }
-                println!("\nrendered: {short} ({sz} bytes, {:.1}s)", t0.elapsed().as_secs_f64());
-                // GET IT OUT OF THE WAY. The game reuses VideoNN names and
-                // overwrites without asking, so a render left in the
-                // screenshots folder is one render away from being destroyed.
-                let keep = format!(
-                    "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots/{name}.webm");
-                return match std::fs::copy(&out, &keep) {
-                    Ok(n) => { println!("done: {keep} ({n} bytes)"); 0 }
-                    Err(e) => { eprintln!("could not keep a named copy: {e}"); 1 }
-                };
-            }
-            Some(true) => {
-                print!("\r  {short} {sz} bytes   ");
-                let _ = std::io::stdout().flush();
-                last = sz;
-            }
-            None => { /* transient -- the probe itself failed, keep waiting */ }
-        }
+    // whole 53-second render -- so there is no state to wait on. The ENCODER's
+    // file handle is the signal: a read-open that also denies writers fails
+    // while the game holds it. Exact, and unlike "the size stopped changing" it
+    // tells a finished render from a stalled one.
+    //
+    // THE PLUGIN DOES THE CHECK, once per frame, and answers the instant the
+    // handle is released. The driver had been doing it over PowerShell -- a
+    // process spawn four times a second for the whole render, competing with
+    // the encoder for the machine. This is one blocking HTTP call.
+    if let Err(e) = set_arg(&to_win_fwd(&out)) { eprintln!("{e}"); return 1; }
+    let body = match http_get(&format!("/awaitfile?ms={}", timeout_s * 1000), timeout_s + 30) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("waiting for the render: {e}"); return 1; }
+    };
+    if !body.contains("\"ok\":true") {
+        eprintln!("the render never finished: {}", body.trim());
+        return 1;
     }
-    eprintln!("\ntimed out after {timeout_s}s; {out} is at {last} bytes and still open");
-    1
+    let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    if sz == 0 { eprintln!("{out} is empty"); return 1; }
+    println!("rendered: {short} ({sz} bytes, {:.1}s)", t_render.elapsed().as_secs_f64());
+
+    // GET IT OUT OF THE WAY. The game reuses VideoNN names and overwrites
+    // without asking, so a render left under one of those names is one render
+    // away from being destroyed.
+    //
+    // UNLESS IT ALREADY HAS THE NAME. The game honours ShootName SOMETIMES --
+    // Video54.webm on one run, uw_deck_v2.webm on the next, same code -- and
+    // std::fs::copy onto itself TRUNCATES. That destroyed a finished 24 MB
+    // render and reported "done: 0 bytes", which is the only reason it was
+    // noticed. Never copy a file onto itself.
+    let keep = format!(
+        "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots/{name}.webm");
+    if same_file(&out, &keep) {
+        println!("done: {out} ({sz} bytes) -- the game used the name itself");
+        return 0;
+    }
+    match std::fs::copy(&out, &keep) {
+        Ok(n) if n == sz => { println!("done: {keep} ({n} bytes)"); 0 }
+        Ok(n) => { eprintln!("copy is {n} bytes but the render was {sz}"); 1 }
+        Err(e) => { eprintln!("could not keep a named copy: {e}"); 1 }
+    }
 }
