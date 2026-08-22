@@ -7,5 +7,6 @@ edition = "2021"
 name = "shootctl"
 path = "src/main.rs"
 
-[profile.release]
-opt-level = 2
+# No [profile]: this is a workspace member, so cargo IGNORES a profile here and
+# says so on every build. The workspace root sets opt-level 2, which is what
+# this crate asked for anyway.

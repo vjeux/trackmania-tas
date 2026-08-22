@@ -9,6 +9,24 @@ cargo build --release
 TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 41 checks
 ```
 
+> **2026-08-22: this workspace did not compile, and its end-to-end tests had
+> never run.** `tmsearch` still imported `ghost::container`, `ghost::tape` and
+> `tmtraj::entrec`, none of which have existed since the audit reorganised those
+> crates (the record decoder is `gbx::record`; `Container`, `Tape`, `Encoding`
+> and `secs` are re-exported at `ghost`'s root). And the five `oracle_e2e`
+> checks named their fixtures `../../ghost/testdata/...` — a CWD-relative path
+> into a directory the audit merged into `tools/testdata` — so on a box with no
+> server they skipped, and on a box with one they died on a missing file. Both
+> are fixed: the fixtures resolve from `CARGO_MANIFEST_DIR`, and all 41 checks
+> pass, with the five e2e ones actually talking to the server. `TM_REQUIRE_ENGINE=1`
+> turns a skipped e2e check into a failure; use it on any box that has a server.
+>
+> `--seg` also compared a segment map's answer against `splits[k - 1]`, which
+> was reading the ghost-result chunk's **version word** for checkpoint 1:
+> `Container::splits()` used to return the raw chunk. It returns the decoded
+> checkpoint list now, and a `0.000` entry (what `ghost declare --cps` writes
+> for a checkpoint the file does not know) is skipped rather than compared.
+
 Three crates, one workspace, one `cargo test`:
 
 | | |

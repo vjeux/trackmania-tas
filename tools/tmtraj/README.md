@@ -252,7 +252,8 @@ headless browser — it **skips loudly to real stderr with a named reason**, and
 | `golden_cluster`, `golden_stats` | the racing-line maths against the same reference implementation |
 | `cli` | the command line over checked-in fixtures, including the gate end to end at the no-server tier |
 | unit tests | the rules that used to be buried inside a command: the C8b acceptance bar, the C12 growth bar, `outcome`'s empty-denominator rule, C3's three jump classes, `q` vs `−q`, the steer byte's exact inverse, seconds formatting |
-| `ghost selftest` | 44 checks against the real dedicated server |
+| `oracle_gate` | what the gate believes the dedicated server said, against a CAPTURED transcript with both rows asymmetric — plus the deleted scan-forward parser run on the same bytes and REQUIRED to give the wrong answer |
+| `ghost selftest` | 48 checks against the real dedicated server |
 
 ### The controls that say the suite bites
 
@@ -329,11 +330,23 @@ own contact flag, and −22.3 makes the airborne class come out empty so every
 "not airborne" assertion passes vacuously); C3's metres assumed a fixed sample
 period, and a 650 ms hole at 131 km/h is 23.7 m of perfectly ordinary driving.
 
-**`tmtraj`'s oracle parser does not have the `"Time"`-prefix bug** that bit the
-fk arm. `parse_oracle` checks `"ValidatedResult" : null` explicitly and anchors
-its search after that key, so a DNF cannot read back as a finish. Nothing in
-`intg` consumes a race end from a parser of that shape — the race window comes
-from `--race` or from the file's own `0x0309202B` chunk.
+**`tmtraj`'s oracle parser had the bug ONE FIELD OVER, and the paragraph that
+used to stand here is why it survived.** It said: *"`parse_oracle` checks
+`"ValidatedResult" : null` explicitly and anchors its search after that key, so
+a DNF cannot read back as a finish."* True of the TIME, and the sentence stopped
+there. The next line of the function was
+`grab_i("NbCheckpoints", "\"ValidatedResult\"")` — same anchor, and `grab_i`
+scans FORWARD. On a DNF the object is `null` and carries no `NbCheckpoints`, so
+the scan ran on into `DeclaredResult` and returned the file's own claim: **four
+validated checkpoints for a run the server refused**, measured on the captured
+transcript in `tools/testdata/oracle_transcript.json`.
+
+There is no parser here now. `tmtraj` depends on `ghost` and the gate calls
+`ghost::oracle` — one dedicated-server driver, one reader of its output, for the
+whole toolchain — and `tests/oracle_gate.rs` pins the result against that
+transcript, including a check that the deleted parser still gets the same bytes
+wrong. A reader who wants to know whether this crate reads the server correctly
+should look there rather than at a claim in a README.
 
 ---
 

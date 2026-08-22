@@ -193,6 +193,24 @@ gaining the two commands the traps needed.
 
 ## 3. Gaps — things that should exist and do not
 
+> **Asks 1 and 2 were closed on 2026-08-22** (branch `gapfix-20260822`).
+> `ghost trim --to` past the end of the tape now LENGTHENS it, and
+> `ghost declare --cps N` sets the number of split entries.
+>
+> **Ask 2's diagnosis did not survive its own control, and that is worth more
+> than the command.** The claim here — that the server refuses a count mismatch
+> as `wrong simu` *without simulating it at all* — is false. Measured on two
+> maps and six counts (1, 2, 3, 5 declared on a 4-split map, 9 on a 3-split
+> map, intermediate splits zeroed): the server validated every one of them at
+> the right time and echoed the wrong count back in `DeclaredResult`.
+> `wrong simu` is what it says when the simulation does not reproduce the
+> DECLARED RESULT; on a partial run it even reports the depth (`wrong simu, but
+> reached some checkpoints (1 out of 2)`). Correcting the count does not make a
+> borrowed container simulate. What the count really breaks is **this
+> toolchain**: `tmmaps segments` refuses a reference ghost whose split count is
+> not the map's — verified both ways, and now the reason `--cps` exists.
+> Asks 3, 4 and 5 are still open.
+
 These are the concrete asks. Two are for `tools/ghost`, whose arm has settled;
 they are small and they are load-bearing.
 
@@ -234,6 +252,17 @@ they are small and they are load-bearing.
 
 
 ## 4. One more thing for `tools/ghost`: `Container::splits()` is raw
+
+> **CLOSED 2026-08-22.** `Container::splits()` returns the checkpoint list, the
+> words are `splits_raw()`, and `ghost inspect` prints
+> `7.617 13.308 16.316 19.538`. The decode AND the write live once, in
+> `gbx::container::GhostResult`; this file's `src/ghost.rs` keeps no decoder
+> (only the "a missing chunk is `None`, not an empty list" rule that is
+> genuinely tmmaps'), and its two unit tests moved into `gbx` with the layout.
+> Two more readers went with them: `gbx::record`'s needle-based
+> `read_ghost_result` and `ghost::trim`'s inline writer. The third consumer of
+> the raw array was `tmsearch`'s `--seg` check, which compared a segment map's
+> answer against `splits[k-1]` — the chunk's version word for checkpoint 1.
 
 Not a bug, but an API shape that invites one, and it caught me. `splits()`
 returns the chunk's **raw u32 array**, not the checkpoint list. On the map-1 WR

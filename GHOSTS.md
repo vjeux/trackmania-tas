@@ -21,7 +21,7 @@ disagreeing with the first.
 | module | what it gives you |
 |---|---|
 | `tape` | the input codec: `Tape::from_file` / `from_text` / `to_text` / `splice_into` / `verbatim_is_identity`, and decoded per-tick slices (`steer_i8s`, `accels`, `brakes`, `respawns`, `race_ms`) |
-| `container` | chunks, the embedded map, every copy of the declared time, the checkpoint chunk, uid literals, framed string edits, `set_embedded_map` |
+| `container` | chunks, the embedded map, every copy of the declared time, the ghost-result chunk, uid literals, framed string edits, `set_embedded_map` |
 | `ident` | every identity string with its role and offset |
 | `oracle` | `validate_many` (the server validates in BATCHES and the per-launch cost dominates), `validate`, `MapsMode::{One, Empty}` |
 | `verify` | the acceptance gate, `tape_record_agreement`, and `SimResult::declaration_holds()` on its own |
@@ -54,15 +54,36 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | | `ghost map extract FILE --out M.Map.Gbx` | pull the carried map out |
 | | `ghost map set IN OUT --map M` | replace the **carried** map — the only thing that moves a recording that has one |
 | | `ghost map rebind IN OUT --map M` | rebind a **pure ghost** by uid — refused on a file that carries a map |
-| **trim** | `ghost trim IN OUT [--from MS] [--to MS]` | cut head and/or tail keeping tape, telemetry, record span, checkpoints and every copy of the declared time coherent |
+| **length** | `ghost trim IN OUT [--from MS] [--to MS]` | set the run's window: cut head and/or tail, or **lengthen** it (`--to` past the end appends ticks holding the last input), keeping tape, telemetry, record span, checkpoints and every copy of the declared time coherent |
 | **identity** | `ghost identity show FILE` | skin, display name, trigram, zone, club tag, login, account id, locator URL — with offsets |
 | | `ghost identity set IN OUT --name N --trigram XXX --skin S [--anonymise]` | change them, with an oracle no-op control |
 | added | `ghost declare IN OUT --from-oracle --map M` | write the time the file **actually does**, asked of the plain oracle, into every copy |
+| added | `ghost declare IN OUT --time MS --cps N` | and the NUMBER of checkpoint entries, for a container borrowed from another map |
 | added | `ghost verify FILE [--map M] [--engine] [--empty-maps]` | the acceptance gate |
 | added | `ghost selftest [--engine] [--strict]` | the whole suite, one command |
 
 ### Things added beyond the six, and why
 
+* **`ghost trim` lengthens.** `u02 extend` — append copies of the last packet —
+  had 15 callsites, and when `u02` was deleted the capability went with it: the
+  one regression of the audit. The 173691 landing work needed a **7000-tick**
+  tape to give the car room to brake after touchdown. `--to` past the end of the
+  tape appends ticks that hold the last recorded input, with the respawn bit
+  cleared — a respawn is an input, and repeating a respawn tick five thousand
+  times would hold the key down for the whole extension. It lives in `trim`
+  rather than in `ghost tape` because one command should own a run's LENGTH:
+  the coherence obligations are one set, and `tape inject` deliberately refuses
+  a length change so that a tape and its container can never disagree.
+  An extension does not touch the telemetry, the declared time or the splits —
+  no samples exist past the end of the recording, and the appended ticks are
+  after the finish. **The control for that claim is the world**: the lengthened
+  file must re-simulate to the time the original did (`oracle.extend_keeps_finish`,
+  2432 → 7000 ticks, 22.730 → 22.730), and `ghost verify` must still pass on it.
+* **`ghost declare --cps N`** — `--time` writes the declared time into every
+  copy, but a container **borrowed from another map** also declares the *donor
+  map's* checkpoint list, and the count cannot be changed without changing the
+  chunk's length. The intermediate entries are written as `0.000`, deliberately:
+  see "the ghost-result chunk" below.
 * **`ghost declare --from-oracle`** — after the inputs change, the declared time
   is the *old* run's. Every "the file says X, the file does Y" check then
   compares a stale number. This asks the plain oracle what the file does and
@@ -110,7 +131,7 @@ re-encode carries them through.
 | what | where |
 |---|---|
 | declared race time | skippable chunk `0x03092005` (a file can hold more than one copy) |
-| checkpoints + race time | skippable chunk `0x0309202B`: `[?, race_time, ?, ?, ?, n, then n pairs of (checkpoint_ms, ?)]` — **not** a bare split vector |
+| checkpoints + race time | skippable chunk `0x0309202B` — the **ghost-result chunk**, and not a bare split vector: see below |
 | walltime | `0x0309202D` |
 | skin / locator URL / **display name** | the front of skippable chunk `0x03092000`, before the record blob |
 | trigram / zone / club tag | the **tail** of the same chunk, after the record blob |
@@ -118,6 +139,51 @@ re-encode carries them through.
 | map uid (pure ghost) | **inline** chunk `0x03092010`, plus literal copies |
 | telemetry | `CPlugEntRecordData`, zlib, 50 ms samples of 116 bytes; the vehicle entity is `CSceneVehicleVis` `0x0A018000` |
 | **the carried map** | `0x03093002` + a size word + a whole nested GBX — **inline, no `PIKS`** |
+
+### The ghost-result chunk `0x0309202B`, and why `splits()` was a trap
+
+```text
+u32 version = 1 · i32 raceTime_ms · i32 u01 · i32 u02 · i32 nbRespawns
+i32 nCheckpoints · nCheckpoints × (i32 time_ms, i32 tag) · i32 -1
+```
+
+On the map-1 WR that is fifteen words —
+`[1, 19538, 0, 0, 3, 4, 7617, 2, 13308, 4, 16316, 0, 19538, 1, -1]` — of which
+**four are splits**. `Container::splits()` returned the whole array, and
+`ghost inspect` printed it through the seconds formatter, so its `splits` line
+opened `0.001 19.538 0.000 0.000 0.003 0.004 7.617 …`: a version number as
+`0.001`, a per-entry tag as `0.002`. The real answer is
+`7.617 13.308 16.316 19.538`.
+
+The chunk is now decoded and written in exactly one place,
+`gbx::container::GhostResult` (`decode` / `encode` / `checkpoints`), reached as
+`Container::result()`, `Container::splits()` (the checkpoint list) and
+`Container::splits_raw()` (the words, for forensics). Three other readers of
+this chunk are gone with it: `gbx::record`'s needle-based `read_ghost_result`,
+`ghost::trim`'s inline writer, and `tmmaps`'s own `decode`. The defect was found
+exactly that way — `tmmaps` deleted its copy, called this one, and the segment
+builder refused on the spot: *"the map declares 3 checkpoints so the ghost should
+declare 4 splits; it declares 15"*.
+
+**What the server does and does not check, measured rather than assumed.**
+`ghost declare --cps N` exists because a borrowed container declares the donor
+map's checkpoints; the audit that asked for it believed the server refused such
+a file as `wrong simu` *without simulating it*. It does not. On two maps and six
+counts — 1, 2, 3, 5 declared on a 4-split map and 9 on a 3-split map, plus
+intermediate splits written as `0.000` — the server validated every one of them
+at the right time, and simply echoed the wrong count back in `DeclaredResult`.
+`wrong simu` is what it says when the simulation does not reproduce the DECLARED
+RESULT, and on a partial run it says how far it got (`wrong simu, but reached
+some checkpoints (1 out of 2)`) — a simulation, not a pre-check. `ghost selftest`
+pins this as `oracle.cps_does_not_gate` so the belief cannot come back.
+
+What the count really breaks is **this toolchain**: `tmmaps segments` refuses a
+reference ghost whose split count is not the map's, because it verifies every
+segment against a declared split. That refusal is why the intermediate entries
+are written as `0.000` rather than carried over from the donor: with zeros, the
+order measurement REFUSES (*"declared split #2 is 0.000"*); with the donor's
+plausible numbers it would have produced an order — a fabricated result instead
+of a stop.
 
 ### The recorded input channels
 
@@ -364,7 +430,7 @@ ghost selftest --strict     # a SKIP is a failure
 cargo test --release        # the same suite, through cargo
 ```
 
-46 checks over five checked-in fixtures: two human ghosts, one anonymised
+49 checks over five checked-in fixtures: two human ghosts, one anonymised
 replay that carries its own map, one file this project labelled
 `DO_NOT_PUBLISH`, and one map. Three tiers:
 
@@ -380,8 +446,11 @@ replay that carries its own map, one file this project labelled
   **the oracle reads the world and not the file's claim** on both asymmetric
   shapes, and `ghost verify` refuses the file that declares one time and does
   another; a three-file BATCH in one server launch, each result keyed to its own
-  file; the empty-Maps control both ways; the map swap; the trim cases; the
-  rebind proved in both directions.
+  file; the empty-Maps control both ways; the map swap; the trim cases in both
+  directions -- a cut that keeps the finish, a cut that honestly DNFs, and a
+  tape LENGTHENED from 2432 to 7000 ticks that still re-simulates to 22.730;
+  the declared checkpoint count measured against the server rather than
+  believed; the rebind proved in both directions.
 * **ENGINE** — the engine's own run of the fixture's tape against the recording
   in it (0.0005 m mean over 455 samples), and two independent regenerations of
   the same file agreeing to 0.000000 m.

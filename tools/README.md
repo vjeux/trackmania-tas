@@ -18,6 +18,7 @@ something needs doing, it is a subcommand.
 |---|---|---|
 | `gbx` | the GBX file format, once: container, chunks, the 10 ms input tape, the `CPlugEntRecordData` telemetry record, the 116-byte vehicle sample | in-crate |
 | `tmtraj` | read-only analysis of a run: decode, compare, the publish gate, corpus scans, racing-line clustering | [`tmtraj/README.md`](tmtraj/README.md) |
+| `tmmaps` | `.Map.Gbx` surgery: the census, region moves, segment maps, ladders | [`tmmaps/U02-AUDIT.md`](tmmaps/U02-AUDIT.md) |
 | `ghost` | every mutation of a ghost or replay, the plain oracle, the publish decision | [`../GHOSTS.md`](../GHOSTS.md) |
 | `tmsite` | the 3D visualisation page and the TICK input-script export | [`tmsite/README.md`](tmsite/README.md) |
 | `clip` | publishing a rendered clip so a logged-out visitor can watch it; the side-by-side shot; the trainer playtest | [`clip/README.md`](clip/README.md) |
@@ -27,7 +28,15 @@ something needs doing, it is a subcommand.
 | `testdata` | the shared fixture corpus every crate's tests read | — |
 
 `fk` and `forkoracle` are separate workspaces (they pin `-O3` + LTO for the
-engine paths) and are built from their own directories.
+engine paths) and are built from their own directories. So is `search`
+(`tmsearch` + the fork oracle and its shim), for the same reason: `cd search &&
+cargo test --release`.
+
+`tmmaps` **is** a member of this workspace. It was in none — neither a member
+nor excluded — which is not a slow build but a hard error: `cargo build` inside
+it refused to do anything at all ("current package believes it's in a workspace
+when it's not"). One command builds and tests every crate a fresh clone can
+build.
 
 ## The division of labour, and why it is drawn there
 
@@ -58,7 +67,7 @@ human recording, carry a pedal byte that is neither.
 | is it publishable | `tmtraj gate` (physics, contamination, provenance) and `ghost verify` (container, tape, identity, the engine) |
 | is anything wrong across the whole corpus | `tmtraj corpus splice \| span \| qc \| bytes` |
 | what does the racing line look like across a field | `tmtraj lines` |
-| change a ghost | `ghost` — trim, declare, identity, map, tape, regen |
+| change a ghost | `ghost` — trim (which sets a run's length in BOTH directions), declare, identity, map, tape, regen |
 | re-simulate a tape | `fk` |
 | draw it | `tmsite`, `shootctl`, `clip` |
 
