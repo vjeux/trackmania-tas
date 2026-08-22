@@ -23,7 +23,7 @@
 //! inputs, must reproduce that telemetry. If the fixed point does not hold on a
 //! known-good file, nothing the regenerator says about an unknown one counts.
 
-use crate::container::secs;
+use gbx::container::secs;
 use crate::verify;
 use crate::cli::{die, flag, has, num};
 use std::path::Path;
@@ -141,7 +141,7 @@ fn abspath(p: &str) -> String {
 /// sample. `carscan`'s test in one place: a car's path is the map's ribbon, a
 /// wrong memory copy's is 0.0 m or 1e28 m.
 pub fn path_stats(file: &str) -> Option<(f64, [f64; 3], usize, bool)> {
-    let d = tmtraj::entrec::decode_ghost(file).ok()?;
+    let d = gbx::record::decode_ghost(file).ok()?;
     if d.samples.is_empty() {
         return None;
     }
@@ -378,7 +378,7 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
     // is what separates the car from the other moving objects the engine keeps:
     // measured on the fixture map, one candidate in six traces a perfectly
     // plausible 1.6 km path that is nowhere near the track.
-    match tmtraj::entrec::decode_ghost(template).ok().and_then(|d| d.samples.first().cloned()) {
+    match gbx::record::decode_ghost(template).ok().and_then(|d| d.samples.first().cloned()) {
         None => s.push_str("   G2 no telemetry in the template to check the start against\n"),
         Some(t0) => {
             let d = ((first[0] - t0.x).powi(2) + (first[1] - t0.y).powi(2) + (first[2] - t0.z).powi(2)).sqrt();
@@ -419,7 +419,7 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
         if server.join("TrackmaniaServer").exists() {
             match crate::oracle::validate(&server, Path::new(cand), crate::oracle::MapsMode::One(Path::new(map)), "regen") {
                 Ok(res) => {
-                    let decl = crate::container::Container::load(cand)
+                    let decl = gbx::container::Container::load(cand)
                         .ok()
                         .and_then(|c| c.declared_times().first().map(|x| x.1 as i64));
                     match (res.time_ms, decl) {
@@ -454,7 +454,7 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
 pub fn control(a: &[String]) {
     let inp = a.first().unwrap_or_else(|| die("ghost regen-control FILE --map MAP"));
     let map = flag(a, "--map").unwrap_or_else(|| die("--map MAP.Map.Gbx"));
-    let d0 = tmtraj::entrec::decode_ghost(inp)
+    let d0 = gbx::record::decode_ghost(inp)
         .unwrap_or_else(|e| die(format!("{} has no telemetry to control against: {}", inp, e)));
     let out = format!("{}.regen-control", inp);
     let r = run_regen(inp, map, &out, &[]);
@@ -462,7 +462,7 @@ pub fn control(a: &[String]) {
         eprintln!("{}", r.log);
         die("the regenerator did not produce a file");
     }
-    let d1 = tmtraj::entrec::decode_ghost(&out).unwrap_or_else(|e| die(e));
+    let d1 = gbx::record::decode_ghost(&out).unwrap_or_else(|e| die(e));
     let n = d0.samples.len().min(d1.samples.len());
     let mut sum = 0.0;
     let mut worst = 0.0f64;
@@ -525,10 +525,10 @@ pub const CLASS_CSCENEVEHICLEVIS: u32 = 0x0A018000;
 /// The vehicle entity's raw sample block: (sample_size, bytes).
 pub fn raw_vehicle_samples(path: &str) -> Result<(usize, Vec<u8>), String> {
     let data = std::fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
-    let g = tmtraj::gbx::Gbx::parse(&data);
-    let (version, blob) = tmtraj::entrec::find_entrecord_blob(&g.body)?;
-    let rd = tmtraj::entrec::parse_record_data(&blob, version)?;
-    let mut best: Option<&tmtraj::entrec::Ent> = None;
+    let g = gbx::container::Gbx::parse(&data);
+    let (version, blob) = gbx::record::find_entrecord_blob(&g.body)?;
+    let rd = gbx::record::parse_record_data(&blob, version)?;
+    let mut best: Option<&gbx::record::Ent> = None;
     for e in &rd.ents {
         let cid = rd.descs.get(e.type_.max(0) as usize).filter(|_| e.type_ >= 0).map(|d| d.class_id);
         if cid == Some(CLASS_CSCENEVEHICLEVIS) && best.map_or(true, |b| e.times.len() > b.times.len()) {
@@ -567,7 +567,7 @@ pub fn pedal_byte(on: u32) -> u8 {
 /// SHIFT, so it hides inside a small mean and only shows when the comparison is
 /// re-scored against the neighbouring samples.
 pub fn engine_trajectory_agreement(path: &str, map: &str) -> Result<(f64, f64, usize, bool), String> {
-    let d0 = tmtraj::entrec::decode_ghost(path).map_err(|e| e.to_string())?;
+    let d0 = gbx::record::decode_ghost(path).map_err(|e| e.to_string())?;
     if d0.samples.is_empty() {
         return Err("this file has no telemetry to compare".into());
     }
@@ -576,9 +576,9 @@ pub fn engine_trajectory_agreement(path: &str, map: &str) -> Result<(f64, f64, u
     // the test -- two wrong picks have agreed with each other to the metre.
     let out = regen_best(path, map, 12, 24)
         .ok_or("the engine readout did not identify the car in 24 attempts")?;
-    let d1 = tmtraj::entrec::decode_ghost(&out).map_err(|e| e.to_string())?;
+    let d1 = gbx::record::decode_ghost(&out).map_err(|e| e.to_string())?;
     let n = d0.samples.len().min(d1.samples.len());
-    let dist = |a: &tmtraj::entrec::Sample, b: &tmtraj::entrec::Sample| {
+    let dist = |a: &gbx::record::Sample, b: &gbx::record::Sample| {
         ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt()
     };
     let mut sum = 0.0;
@@ -618,12 +618,12 @@ pub fn engine_trajectory_agreement(path: &str, map: &str) -> Result<(f64, f64, u
 ///
 /// It is not a claim about the other 91 bytes. `ghost regen` names those.
 pub fn write_input_channels(inp: &str, out: &str) -> Result<(usize, usize), String> {
-    let t = crate::tape::Tape::from_file(inp)?;
+    let t = gbx::tape::Tape::from_file(inp)?;
     let a0 = &t.archives[0];
     let so = a0.start_offset_ms as i64;
     let mut written = 0usize;
     let mut skipped = 0usize;
-    tmtraj::recwrite::rewrite_ghost(inp, out, |rd| {
+    gbx::recwrite::rewrite_ghost(inp, out, |rd| {
         let mut vehicle: Option<usize> = None;
         for (i, e) in rd.ents.iter().enumerate() {
             let cid = rd.descs.get(e.type_.max(0) as usize).filter(|_| e.type_ >= 0).map(|d| d.class_id);

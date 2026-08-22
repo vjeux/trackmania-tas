@@ -28,7 +28,7 @@ in the recording — fix the recording.
 
 ## 2. One scene, not two panes
 
-Two cars in one frame is the shot. `splitscreen.sh` exists only for maps where a
+Two cars in one frame is the shot. `clip split` exists only for maps where a
 chase camera provably cannot hold both — 276877 (the human 61.5 m away), 228607
 (356.68 m). Distance is the test, and it is measured, not judged.
 
@@ -60,7 +60,7 @@ stale and wrong. Confirm the human ghost you filmed against is actually rank 1 �
 
 ## 5. Nothing publishes without the anonymous fetch
 
-`tools/ship-clip.sh` does the whole chain and refuses at each step. The step that
+`clip ship` (in `tools/clip`) does the whole chain and refuses at each step. The step that
 makes an asset public is **registering its URL in the release body**, not the
 commit that references it — 19 clips were shipped before anyone learned that and
 18 were 404 to everybody but us. The last step fetches the URL back under

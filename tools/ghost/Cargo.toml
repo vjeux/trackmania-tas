@@ -3,16 +3,14 @@ name = "ghost"
 version = "1.0.0"
 edition = "2021"
 
+[lib]
+name = "ghost"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ghost"
 path = "src/main.rs"
 
 [dependencies]
+gbx = { path = "../gbx" }
 tmtraj = { path = "../tmtraj" }
-
-[profile.release]
-opt-level = 2
-
-[lib]
-name = "ghost"
-path = "src/lib.rs"

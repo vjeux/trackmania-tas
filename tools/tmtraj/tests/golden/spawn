@@ -1,0 +1,3 @@
+$ tmtraj spawn $TESTDATA/human_23013.Ghost.Gbx --ref $TESTDATA/human_22730.Ghost.Gbx
+[exit 0]
+human_23013.Ghost.Gbx                        dpos   0.000 m  |dot| 1.0000  SPAWN-OK

@@ -1,0 +1,61 @@
+$ tmtraj fields
+[exit 0]
+
+VERIFIED:
+  time_ms                  sample time in ms from the record start (50 ms grid in TM2020)
+  x                        world position X, metres -- start pos == start block centre to <0.01 m
+  y                        world position Y (up), metres
+  z                        world position Z, metres -- CP1/CP3 crossings within 2.3-2.6 m of the nominal block centres at the declared split times
+  speed_ms                 scalar speed exp(i16/1000) -- equals |d(pos)/dt| to a median of ~0.02 m/s
+  speed_kmh                speed_ms * 3.6
+  vx                       velocity vector X -- direction equals the path tangent, median cos > 0.9999
+  vy                       velocity vector Y
+  vz                       velocity vector Z
+  qx                       orientation quaternion X -- unit norm to 1e-7
+  qy                       orientation quaternion Y
+  qz                       orientation quaternion Z
+  qw                       orientation quaternion W -- local +Z is the car's forward axis (cos to velocity ~1.000 on the ground, correctly diverging in the air)
+  yaw                      derived from the quaternion; yaw 0 = facing +Z, right-handed about +Y
+  pitch                    derived from the quaternion
+  roll                     derived from the quaternion
+  gear                     (byte91 - 1) / 4 -- byte only ever takes values 1+4k (5,9,13,17,21 => 1..5)
+  rpm_raw                  byte 5, 0..255, monotone with engine load; the absolute RPM scale factor is NOT known
+
+DERIVED:
+  steer                    byte 14: ((v/255)-0.5)*2
+  gas                      byte 15/255 + brake
+  brake                    byte 18 / 255
+  side_speed               u16 at bytes 2,3: ((v/65536)-0.5)*2000
+  turbo_time               byte 21 / 255
+  is_turbo                 byte 31 & 0x82
+  is_ground_contact        byte 89 & 0x01
+  is_top_contact           byte 76 & 0x20
+  wetness                  byte 101 / 255
+  sim_time_coef            byte 102 / 255
+  fl_wheel_rot             bytes 6,7: rotation + rotation count, radians
+  fr_wheel_rot             bytes 8,9
+  rr_wheel_rot             bytes 10,11
+  rl_wheel_rot             bytes 12,13
+  fl_dampen                byte 23: ((v/255)-0.5)*4
+  fr_dampen                byte 25
+  rr_dampen                byte 27
+  rl_dampen                byte 29
+
+GUESS:
+  fl_ice                   byte 81 / 255
+  fr_ice                   byte 82 / 255
+  rr_ice                   byte 83 / 255
+  rl_ice                   byte 84 / 255
+  fl_dirt                  byte 93 / 255
+  fr_dirt                  byte 95 / 255
+  rr_dirt                  byte 97 / 255
+  rl_dirt                  byte 99 / 255
+  ground_mode_raw          byte 89, raw
+  booster_air_control_raw  byte 90, raw
+  vehicle_state_raw        byte 76, raw
+  gear_raw                 byte 91, raw (1+4*gear)
+
+NOT DECODED: the non-vehicle entities in the record (classes 0x0A019000,
+0x2F0CB000, 0x032E3000, 0x032AC000, 0x2D001000, 0x032CB000), the notice
+records, and Deltas2 -- their per-byte layouts are not in GBX.NET. Ground
+contact material ids (bytes 24/26/28/30) are GUESS and are not surfaced.

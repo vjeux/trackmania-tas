@@ -13,6 +13,7 @@ name = "fk"
 version = "1.0.0"
 dependencies = [
  "forkoracle",
+ "gbx",
  "ghost",
  "tmtraj",
 ]
@@ -22,9 +23,17 @@ name = "forkoracle"
 version = "1.0.0"
 
 [[package]]
+name = "gbx"
+version = "1.0.0"
+dependencies = [
+ "miniz_oxide",
+]
+
+[[package]]
 name = "ghost"
 version = "1.0.0"
 dependencies = [
+ "gbx",
  "tmtraj",
 ]
 
@@ -39,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "tmtraj"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
- "miniz_oxide",
+ "gbx",
 ]

@@ -32,7 +32,8 @@
 //! longest ballistic stretch of a file and prints it, so a wrong constant
 //! shows up as a wrong fit rather than as a silently empty BALLISTIC class.
 
-use crate::entrec::{find_entrecord_blob, load_body, parse_record_data, read_transform_pub};
+use gbx::record;
+use record::{find_entrecord_blob, load_body, parse_record_data, read_transform_pub};
 
 pub const G_DEFAULT: f64 = 25.2;
 
@@ -96,8 +97,6 @@ pub enum Cls {
 
 pub struct Classified {
     pub cls: Vec<Cls>,
-    /// |a - (0,-g,0)| per sample, NaN where undecidable
-    pub aerr: Vec<f64>,
     pub ay: Vec<f64>,
 }
 
@@ -114,7 +113,7 @@ pub struct Classified {
 pub fn classify(r: &[R], g: f64, tol: f64, margin: f64, run: usize) -> Classified {
     let n = r.len();
     let mut cls = vec![Cls::Unknown; n];
-    let mut aerr = vec![f64::NAN; n];
+
     let mut ay = vec![f64::NAN; n];
     // raw per-sample decision first
     let mut raw = vec![Cls::Unknown; n];
@@ -133,7 +132,7 @@ pub fn classify(r: &[R], g: f64, tol: f64, margin: f64, run: usize) -> Classifie
         }
         ay[i] = a[1];
         let e = (a[0] * a[0] + (a[1] + g) * (a[1] + g) + a[2] * a[2]).sqrt();
-        aerr[i] = e;
+
         // SUPPORTED is deliberately narrower than "not falling at g".
         // Measured on 276874: from 4.9 s to 11.3 s the car climbs 20 m and
         // comes back down with a_y between -5 and +13 -- REACTOR FLIGHT, no
@@ -169,153 +168,9 @@ pub fn classify(r: &[R], g: f64, tol: f64, margin: f64, run: usize) -> Classifie
         }
         i = j;
     }
-    Classified { cls, aerr, ay }
+    Classified { cls, ay }
 }
 
-fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
-}
-fn fnum(args: &[String], name: &str, d: f64) -> f64 {
-    flag(args, name).and_then(|v| v.parse().ok()).unwrap_or(d)
-}
-fn inum(args: &[String], name: &str, d: i64) -> i64 {
-    flag(args, name).and_then(|v| v.parse().ok()).unwrap_or(d)
-}
-
-const USAGE: &str = "\
-tmtraj whl dump  GHOST [--csv OUT] [--race MS]      every surface/contact byte, per sample
-tmtraj whl grav  GHOST [--race MS]                  fit g on the longest ballistic stretch
-tmtraj whl air   GHOST [--race MS] [--g G] [--tol T] [--margin M] [--run N]
-                                                    classify, and cross-tab against the flags
-tmtraj whl gate  GHOST [--race MS] ...              the ACCEPTANCE gate: both directions
-tmtraj whl cmp   A B [--race MS]                    per-sample surface-byte agreement
-tmtraj whl calib GHOST...                           a_y grouped by the RECORDED contact flag
-";
-
-pub fn cmd(args: &[String]) {
-    if args.is_empty() {
-        print!("{}", USAGE);
-        std::process::exit(2);
-    }
-    let sub = args[0].as_str();
-    let rest: Vec<String> = args[1..].to_vec();
-    match sub {
-        "dump" => dump(&rest),
-        "grav" => grav(&rest),
-        "air" => air(&rest, false),
-        "gate" => air(&rest, true),
-        "cmp" => cmp(&rest),
-        "roll" => roll(&rest),
-        "twoway" => twoway(&rest),
-        "bits" => bits(&rest),
-        "calib" => calib(&rest),
-        "surv" => surv(&rest),
-        _ => {
-            print!("{}", USAGE);
-            std::process::exit(2);
-        }
-    }
-}
-
-fn load(args: &[String], idx: usize) -> (Vec<R>, i64) {
-    let p = args.get(idx).cloned().unwrap_or_default();
-    let r = match decode(&p) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("ABORT: {}: {}", p, e);
-            std::process::exit(3)
-        }
-    };
-    let race = inum(args, "--race", i64::MAX);
-    (r, race)
-}
-
-fn dump(args: &[String]) {
-    let (r, race) = load(args, 0);
-    let out = flag(args, "--csv");
-    let mut s = String::from(
-        "time_ms,x,y,z,speed_ms,contact,b89,b76,ice81,ice82,ice83,ice84,\
-dirt93,dirt95,dirt97,dirt99,wet101,rpm5,gear91,boost90,turbo21,\
-w6,w7,w8,w9,w10,w11,w12,w13,d23,d25,d27,d29\n",
-    );
-    for x in r.iter().filter(|x| x.ms <= race) {
-        s.push_str(&format!(
-            "{},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            x.ms, x.pos[0], x.pos[1], x.pos[2], x.speed,
-            u8::from(x.contact()), x.b(89), x.b(76),
-            x.b(81), x.b(82), x.b(83), x.b(84),
-            x.b(93), x.b(95), x.b(97), x.b(99),
-            x.b(101), x.b(5), x.b(91), x.b(90), x.b(21),
-            x.b(6), x.b(7), x.b(8), x.b(9), x.b(10), x.b(11), x.b(12), x.b(13),
-            x.b(23), x.b(25), x.b(27), x.b(29)
-        ));
-    }
-    match out {
-        Some(f) => {
-            std::fs::write(&f, s).unwrap();
-            println!("wrote {}", f);
-        }
-        None => print!("{}", s),
-    }
-}
-
-/// Fit g on the longest stretch where the horizontal acceleration is ~0.
-fn grav(args: &[String]) {
-    let (r, race) = load(args, 0);
-    let v: Vec<&R> = r.iter().filter(|x| x.ms <= race && x.finite()).collect();
-    let n = v.len();
-    if n < 5 {
-        println!("ABORT: too few samples");
-        return;
-    }
-    // a sample is a free-fall candidate when the HORIZONTAL acceleration is
-    // near zero -- that test does not mention g, so fitting g on it is not
-    // circular.
-    let mut cand = vec![false; n];
-    let mut ay = vec![f64::NAN; n];
-    for i in 1..n - 1 {
-        let dt = (v[i].ms - v[i - 1].ms) as f64 / 1000.0;
-        if dt <= 0.0 || ((v[i + 1].ms - v[i].ms) as f64 / 1000.0 - dt).abs() > 1e-6 {
-            continue;
-        }
-        let ax = (v[i + 1].pos[0] - 2.0 * v[i].pos[0] + v[i - 1].pos[0]) / (dt * dt);
-        let az = (v[i + 1].pos[2] - 2.0 * v[i].pos[2] + v[i - 1].pos[2]) / (dt * dt);
-        ay[i] = (v[i + 1].pos[1] - 2.0 * v[i].pos[1] + v[i - 1].pos[1]) / (dt * dt);
-        cand[i] = (ax * ax + az * az).sqrt() < 1.0 && ay[i] < -5.0;
-    }
-    let (mut bi, mut bl, mut i) = (0usize, 0usize, 0usize);
-    while i < n {
-        if cand[i] {
-            let mut j = i;
-            while j < n && cand[j] {
-                j += 1;
-            }
-            if j - i > bl {
-                bl = j - i;
-                bi = i;
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-    if bl == 0 {
-        println!("no free-fall stretch (no sample with horizontal |a| < 1.0 and a_y < -5)");
-        return;
-    }
-    let mut s: Vec<f64> = (bi..bi + bl).map(|k| ay[k]).collect();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med = s[s.len() / 2];
-    let mean = s.iter().sum::<f64>() / s.len() as f64;
-    println!(
-        "longest free-fall stretch: {} samples, {:.3} .. {:.3} s",
-        bl,
-        v[bi].ms as f64 / 1000.0,
-        v[bi + bl - 1].ms as f64 / 1000.0
-    );
-    println!("  a_y median {:.4} m/s^2   mean {:.4}   min {:.4}   max {:.4}", med, mean, s[0], s[s.len() - 1]);
-    println!("  => g = {:.4}", -med);
-}
 
 fn pct(a: usize, b: usize) -> f64 {
     if b == 0 {
@@ -325,12 +180,62 @@ fn pct(a: usize, b: usize) -> f64 {
     }
 }
 
-fn air(args: &[String], gate: bool) {
-    let (r, race) = load(args, 0);
-    let g = fnum(args, "--g", G_DEFAULT);
-    let tol = fnum(args, "--tol", 2.0);
-    let margin = fnum(args, "--margin", 5.0);
-    let run = inum(args, "--run", 3) as usize;
+
+
+// ---------------------------------------------------------------------------
+// tmtraj motion — what the trajectory says, beside what the flag claims
+// ---------------------------------------------------------------------------
+
+const MOTION_USAGE: &str = "\
+usage: tmtraj motion GHOST [--race S] [--g G] [--tol T] [--margin M] [--run N]
+                           [--fit-g] [--per-sample]
+
+Classifies every sample BALLISTIC / SUPPORTED / UNKNOWN from the second
+difference of its own position, then prints what the recorded contact,
+dirt and ice bytes say on each class.
+
+Three classes, not two: a car held up by a reactor, a boost or a wall it is
+scraping is neither in free fall nor ground-borne, and a two-class rule has to
+call it one of them.
+
+--fit-g fits gravity from THIS file's own longest free-fall stretch instead of
+using the fleet constant, and reports the vertical-speed range it was fitted
+over -- a fit whose lever arm is a few m/s of v_y cannot identify a drag term
+and must not be quoted as if it had.
+";
+
+pub fn cmd_motion(argv: &[String]) -> i32 {
+    let a = crate::cli::parse("tmtraj motion", argv, &["fit-g", "per-sample"]);
+    let race: i64 = a.num("race", i64::MAX);
+    let g: f64 = a.num("g", G_DEFAULT);
+    let tol: f64 = a.num("tol", 2.0);
+    let margin: f64 = a.num("margin", 5.0);
+    let run: usize = a.num("run", 3);
+    let fit = a.has("fit-g");
+    let per_sample = a.has("per-sample");
+    let a = a.finish(MOTION_USAGE);
+    let Some(path) = a.positional.first() else {
+        eprint!("{}", MOTION_USAGE);
+        return 2;
+    };
+    let r = match decode(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("UNMEASURED: {}: {}", path, e);
+            return 3;
+        }
+    };
+    if fit {
+        fit_gravity(&r, race);
+    }
+    motion_report(r, race, g, tol, margin, run, per_sample)
+}
+fn motion_report(r: Vec<R>, race: i64, g: f64, tol: f64, margin: f64, run: usize, per_sample: bool) -> i32 {
+
+
+
+
+
     let v: Vec<R> = r.into_iter().filter(|x| x.ms <= race).collect();
     let c = classify(&v, g, tol, margin, run);
     let n = v.len();
@@ -397,7 +302,7 @@ fn air(args: &[String], gate: bool) {
         v.iter().map(|x| x.ice_max()).max().unwrap_or(0)
     );
 
-    if args.iter().any(|a| a == "--tl") {
+    if per_sample {
         println!("\n  t(s)      y      a_y   class      contact dirt ice");
         for i in 0..n {
             println!(
@@ -408,7 +313,7 @@ fn air(args: &[String], gate: bool) {
             );
         }
     }
-    if gate {
+    {
         // A: OFF in the air. B: ON on the ground. A zeroed field passes A and
         // fails B; the carrier's field fails A. BOTH must hold.
         //
@@ -446,224 +351,90 @@ fn air(args: &[String], gate: bool) {
         println!("{} C  dirt never RISES during ballistic flight ({} violations)", if d_ok { "PASS" } else { "FAIL" }, dirt_rise);
         println!("{} D  ice  never RISES during ballistic flight ({} violations)", if i_ok { "PASS" } else { "FAIL" }, ice_rise);
         if !(a_ok && (b_ok || b_na) && d_ok && i_ok) {
-            std::process::exit(1);
+            return 1;
         }
     }
+    0
 }
 
-/// Per-sample agreement of the surface/contact bytes between two files, matched
-/// on sample time. This is how a regenerated file is graded against a
-/// downloaded recording's own bytes.
-fn cmp(args: &[String]) {
-    let a = match decode(&args[0]) {
+// ---------------------------------------------------------------------------
+// tmtraj wheels
+// ---------------------------------------------------------------------------
+
+const WHEELS_USAGE: &str = "\
+usage: tmtraj wheels GHOST [--race S] [--g G] [--tol T] [--margin M] [--run N]
+
+Two different questions, both answered, because conflating them once produced a
+false refusal of Nadeo's own recording:
+
+  1. IS THERE A WHEEL RADIUS. Fitted from the SUPPORTED steps only, as
+     distance / (turns * 2pi). Reported as a measured value with the number of
+     steps behind it -- never compared against a constant. A published 0.30-0.45 m
+     band is the STADIUM wheel; a snow car measures 0.4700 m, and 267460's wheel
+     block reads 0.3636-0.3644 m.
+  2. ARE THE WHEEL BYTES ALIVE AT ALL. Distinct quantised values per wheel.
+     Dead or donor-blanked telemetry is constant: 145875's download carries
+     88-109 distinct values per wheel, a zeroed field carries 1. Reported for
+     the LEAST varying of the four, because one dead wheel renders wrongly.
+
+A run that descends the whole way has no ground-supported sample, so question 1
+can honestly answer 'no evidence'. An n/a is a statement about the CHECK, not
+about the file.
+";
+
+pub fn cmd_wheels(argv: &[String]) -> i32 {
+    let a = crate::cli::parse("tmtraj wheels", argv, &[]);
+    let race: i64 = a.num("race", i64::MAX);
+    let g: f64 = a.num("g", G_DEFAULT);
+    let tol: f64 = a.num("tol", 2.0);
+    let margin: f64 = a.num("margin", 5.0);
+    let run: usize = a.num("run", 3);
+    let a = a.finish(WHEELS_USAGE);
+    let Some(path) = a.positional.first() else {
+        eprint!("{}", WHEELS_USAGE);
+        return 2;
+    };
+    let r = match decode(path) {
         Ok(v) => v,
         Err(e) => {
-            println!("ABORT: {}", e);
-            std::process::exit(3)
+            eprintln!("UNMEASURED: {}: {}", path, e);
+            return 3;
         }
     };
-    let b = match decode(&args[1]) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("ABORT: {}", e);
-            std::process::exit(3)
-        }
-    };
-    let race = inum(args, "--race", i64::MAX);
-    let bm: std::collections::HashMap<i64, &R> = b.iter().map(|x| (x.ms, x)).collect();
-    let cols: Vec<(&str, usize)> = vec![
-        ("b89 ground_mode", 89), ("b76 vehicle_state", 76),
-        ("b81 fl_ice", 81), ("b82 fr_ice", 82), ("b83 rr_ice", 83), ("b84 rl_ice", 84),
-        ("b93 fl_dirt", 93), ("b95 fr_dirt", 95), ("b97 rr_dirt", 97), ("b99 rl_dirt", 99),
-        ("b101 wetness", 101), ("b5 rpm", 5), ("b91 gear", 91), ("b90 booster", 90),
-        ("b21 turbo", 21), ("b102 simcoef", 102),
-        ("b6 fl_frac", 6), ("b7 fl_turn", 7), ("b8 fr_frac", 8), ("b9 fr_turn", 9),
-        ("b10 rr_frac", 10), ("b11 rr_turn", 11), ("b12 rl_frac", 12), ("b13 rl_turn", 13),
-        ("b23 fl_damp", 23), ("b25 fr_damp", 25), ("b27 rr_damp", 27), ("b29 rl_damp", 29),
-    ];
-    let mut m = 0usize;
-    let mut exact = vec![0usize; cols.len()];
-    let mut within1 = vec![0usize; cols.len()];
-    let mut maxd = vec![0i64; cols.len()];
-    let mut contact_agree = 0usize;
-    for x in a.iter().filter(|x| x.ms <= race) {
-        let Some(y) = bm.get(&x.ms) else { continue };
-        m += 1;
-        if x.contact() == y.contact() {
-            contact_agree += 1;
-        }
-        for (k, (_, o)) in cols.iter().enumerate() {
-            let d = (x.b(*o) as i64 - y.b(*o) as i64).abs();
-            if d == 0 {
-                exact[k] += 1;
-            }
-            if d <= 1 {
-                within1[k] += 1;
-            }
-            maxd[k] = maxd[k].max(d);
-        }
-    }
-    println!("matched {} samples", m);
-    println!("{:<20} {:>8} {:>10} {:>8}", "byte", "exact %", "within1 %", "maxdiff");
-    for (k, (nm, _)) in cols.iter().enumerate() {
-        println!("{:<20} {:>8.2} {:>10.2} {:>8}", nm, pct(exact[k], m), pct(within1[k], m), maxd[k]);
-    }
-    println!("contact bit agreement: {:.2} %", pct(contact_agree, m));
-}
-
-/// The calibration that is NOT circular, run on GENUINE RECORDINGS ONLY.
-///
-/// A downloaded human ghost carries the game's own contact flag. Group its
-/// interior samples by that flag and print the vertical acceleration measured
-/// from its own positions. If bit 0 of byte 89 really is ground contact then
-/// the flag-OFF group must pile up at a single value -- and that value is `g`.
-/// Two facts fall out of one measurement, and neither is assumed:
-///   * what `g` is in this engine, and
-///   * that byte 89 bit 0 means what the decoder says it means.
-fn calib(args: &[String]) {
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    println!(
-        "{:<44} {:>6} {:>7} {:>9} {:>9} {:>9} {:>7} {:>9} {:>9}",
-        "recording", "n", "off", "ay_med", "ay_p10", "ay_p90", "on", "ay_med", "|ah|med"
-    );
-    let mut all_off: Vec<f64> = Vec::new();
-    for f in files {
-        let r = match decode(f) {
-            Ok(v) => v,
-            Err(e) => {
-                println!("{:<44} ABORT {}", f, e);
-                continue;
-            }
-        };
-        let n = r.len();
-        let (mut off, mut on, mut ahon) = (Vec::new(), Vec::new(), Vec::new());
-        for i in 1..n.saturating_sub(1) {
-            let dt = (r[i].ms - r[i - 1].ms) as f64 / 1000.0;
-            if dt <= 0.0 || ((r[i + 1].ms - r[i].ms) as f64 / 1000.0 - dt).abs() > 1e-6 {
-                continue;
-            }
-            if !r[i - 1].finite() || !r[i].finite() || !r[i + 1].finite() {
-                continue;
-            }
-            let a: Vec<f64> = (0..3)
-                .map(|k| (r[i + 1].pos[k] - 2.0 * r[i].pos[k] + r[i - 1].pos[k]) / (dt * dt))
-                .collect();
-            let ah = (a[0] * a[0] + a[2] * a[2]).sqrt();
-            if r[i].contact() {
-                on.push(a[1]);
-                ahon.push(ah);
-            } else {
-                // only samples whose HORIZONTAL acceleration is tiny: a car
-                // clipping a wall in mid-air is airborne and not in free fall.
-                if ah < 1.0 {
-                    off.push(a[1]);
-                    all_off.push(a[1]);
-                }
-            }
-        }
-        let q = |v: &mut Vec<f64>, p: f64| -> f64 {
-            if v.is_empty() {
-                return f64::NAN;
-            }
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            v[((v.len() - 1) as f64 * p) as usize]
-        };
-        let mut o2 = off.clone();
-        let mut o3 = off.clone();
-        let mut o4 = off.clone();
-        let mut n2 = on.clone();
-        let mut h2 = ahon.clone();
-        println!(
-            "{:<44} {:>6} {:>7} {:>9.3} {:>9.3} {:>9.3} {:>7} {:>9.3} {:>9.3}",
-            f.rsplit('/').next().unwrap_or(f),
-            n,
-            off.len(),
-            q(&mut o2, 0.5),
-            q(&mut o3, 0.1),
-            q(&mut o4, 0.9),
-            on.len(),
-            q(&mut n2, 0.5),
-            q(&mut h2, 0.5)
-        );
-    }
-    if !all_off.is_empty() {
-        all_off.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let m = all_off[all_off.len() / 2];
-        let p10 = all_off[all_off.len() / 10];
-        let p90 = all_off[all_off.len() * 9 / 10];
-        println!(
-            "\nPOOLED contact-OFF, horizontal |a| < 1: {} samples   a_y median {:.4}  p10 {:.4}  p90 {:.4}   => g = {:.4}",
-            all_off.len(), m, p10, p90, -m
-        );
-    }
-}
-
-/// Which files carry a VARYING surface field? A field that is constant on a
-/// recording is invisible to a correlation sweep -- the answer key has no
-/// column there -- so the choice of control map is not free.
-fn surv(args: &[String]) {
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    println!(
-        "{:<52} {:>5} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9}",
-        "file", "n", "dirt", "ice", "wet101", "b89", "b76", "b90"
-    );
-    for f in files {
-        let r = match decode(f) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let extra: Vec<usize> = std::env::var("WHL_COLS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-    let rng = |os: &[usize]| -> String {
-            let mut lo = 255u8;
-            let mut hi = 0u8;
-            let mut d = std::collections::BTreeSet::new();
-            for x in &r {
-                for o in os {
-                    let b = x.b(*o);
-                    lo = lo.min(b);
-                    hi = hi.max(b);
-                    d.insert(b);
-                }
-            }
-            format!("{}-{}/{}", lo, hi, d.len())
-        };
-        println!(
-            "{:<52} {:>5} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9}",
-            f.rsplit('/').next().unwrap_or(f),
-            r.len(),
-            rng(&[93, 95, 97, 99]),
-            rng(&[81, 82, 83, 84]),
-            rng(&[101]),
-            rng(&[89]),
-            rng(&[76]),
-            rng(&[90])
-        );
-        for e in &extra {
-            print!("   b{}={}", e, rng(&[*e]));
-        }
-        if !extra.is_empty() {
-            println!();
-        }
-    }
-}
-
-/// `tmtraj whl roll` -- the wheel-to-car rate, per class.
-///
-/// A rolling wheel covers |v| dt per tick, so `turns * 2 pi * r / (|v| dt)` is
-/// 1.0. This prints it split by the trajectory-derived class, because the
-/// airborne answer is NOT the ground answer: a free wheel does whatever the
-/// engine does with it, and what that is has to be read off real recordings
-/// rather than assumed. The radius is fitted on the SUPPORTED samples of the
-/// same file, so the ground ratio is 1.0 by construction and the number that
-/// carries information is the AIRBORNE one and the SPREAD.
-fn roll(args: &[String]) {
-    let (r, race) = load(args, 0);
-    let g = fnum(args, "--g", G_DEFAULT);
-    let tol = fnum(args, "--tol", 2.0);
-    let margin = fnum(args, "--margin", 5.0);
-    let run = inum(args, "--run", 3) as usize;
     let v: Vec<R> = r.into_iter().filter(|x| x.ms <= race).collect();
-    let c = classify(&v, g, tol, margin, run);
+    liveness(&v);
+    wheel_radius(&v, g, tol, margin, run);
+    0
+}
+
+/// Question 2: are the bytes alive. One number, no threshold.
+fn liveness(v: &[R]) {
+    let mut worst = (usize::MAX, 0usize);
+    for (w, (lo, hi)) in [(6usize, 7usize), (8, 9), (10, 11), (12, 13)].iter().enumerate() {
+        let mut set = std::collections::BTreeSet::new();
+        for s in v {
+            set.insert((s.b(*lo), s.b(*hi)));
+        }
+        if set.len() < worst.0 {
+            worst = (set.len(), w);
+        }
+    }
+    println!(
+        "wheel bytes: least varying wheel is #{} with {} distinct values over {} samples{}",
+        worst.1,
+        worst.0,
+        v.len(),
+        if worst.0 <= 1 { "   -- DEAD or donor-blanked" } else { "" }
+    );
+}
+fn wheel_radius(v: &[R], g: f64, tol: f64, margin: f64, run: usize) {
+
+
+
+
+
+
+    let c = classify(v, g, tol, margin, run);
     let n = v.len();
     // turns of wheel 0, unwrapped across the byte pair's own 256-turn range
     let turns = |x: &R| -> f64 { x.b(7) as f64 + x.b(6) as f64 / 255.0 };
@@ -715,107 +486,60 @@ fn roll(args: &[String]) {
         );
     }
 }
+fn fit_gravity(r: &[R], race: i64) {
 
-/// `tmtraj whl twoway` -- the OTHER arm's classification, implemented exactly
-/// as described, and pointed at recordings whose flag is not in dispute.
-///
-/// Their rule: central-difference a_y; a sample is AIRBORNE when a_y is near
-/// -g and GROUNDED otherwise; then count "contact ON while airborne" and
-/// "contact OFF while grounded". It is a two-class partition of every sample.
-///
-/// Mine has THREE classes and asserts only on the outer two, because a car
-/// held up by anything other than the ground -- a reactor, a boost, a wall it
-/// is scraping -- is neither in free fall nor ground-borne, and a two-class
-/// rule must call it one of them.
-///
-/// Which is right is not a matter of taste: run BOTH against a downloaded
-/// recording, whose contact flag the game itself wrote. Whichever rule
-/// disagrees with a real recording is the rule that is wrong.
-fn twoway(args: &[String]) {
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    let g = fnum(args, "--g", G_DEFAULT);
-    let tol = fnum(args, "--tol", 2.0);
-    println!(
-        "{:<44} {:>6} {:>8} {:>8} {:>9} {:>9} {:>8}",
-        "file", "n", "air", "ground", "ON@air", "OFF@grnd", "wrong%"
-    );
-    for f in files {
-        let r = match decode(f) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let n = r.len();
-        let (mut air, mut grd, mut on_air, mut off_grd) = (0usize, 0usize, 0usize, 0usize);
-        for i in 1..n.saturating_sub(1) {
-            let dt = (r[i].ms - r[i - 1].ms) as f64 / 1000.0;
-            if dt <= 0.0 || ((r[i + 1].ms - r[i].ms) as f64 / 1000.0 - dt).abs() > 1e-6 {
-                continue;
-            }
-            if !r[i - 1].finite() || !r[i].finite() || !r[i + 1].finite() {
-                continue;
-            }
-            let ay = (r[i + 1].pos[1] - 2.0 * r[i].pos[1] + r[i - 1].pos[1]) / (dt * dt);
-            if (ay + g).abs() < tol {
-                air += 1;
-                if r[i].contact() {
-                    on_air += 1;
-                }
-            } else {
-                grd += 1;
-                if !r[i].contact() {
-                    off_grd += 1;
-                }
-            }
-        }
-        println!(
-            "{:<44} {:>6} {:>8} {:>8} {:>9} {:>9} {:>7.1}%",
-            f.rsplit('/').next().unwrap_or(f),
-            n, air, grd, on_air, off_grd,
-            100.0 * (on_air + off_grd) as f64 / n.max(1) as f64
-        );
+    let v: Vec<&R> = r.iter().filter(|x| x.ms <= race && x.finite()).collect();
+    let n = v.len();
+    if n < 5 {
+        println!("ABORT: too few samples");
+        return;
     }
+    // a sample is a free-fall candidate when the HORIZONTAL acceleration is
+    // near zero -- that test does not mention g, so fitting g on it is not
+    // circular.
+    let mut cand = vec![false; n];
+    let mut ay = vec![f64::NAN; n];
+    for i in 1..n - 1 {
+        let dt = (v[i].ms - v[i - 1].ms) as f64 / 1000.0;
+        if dt <= 0.0 || ((v[i + 1].ms - v[i].ms) as f64 / 1000.0 - dt).abs() > 1e-6 {
+            continue;
+        }
+        let ax = (v[i + 1].pos[0] - 2.0 * v[i].pos[0] + v[i - 1].pos[0]) / (dt * dt);
+        let az = (v[i + 1].pos[2] - 2.0 * v[i].pos[2] + v[i - 1].pos[2]) / (dt * dt);
+        ay[i] = (v[i + 1].pos[1] - 2.0 * v[i].pos[1] + v[i - 1].pos[1]) / (dt * dt);
+        cand[i] = (ax * ax + az * az).sqrt() < 1.0 && ay[i] < -5.0;
+    }
+    let (mut bi, mut bl, mut i) = (0usize, 0usize, 0usize);
+    while i < n {
+        if cand[i] {
+            let mut j = i;
+            while j < n && cand[j] {
+                j += 1;
+            }
+            if j - i > bl {
+                bl = j - i;
+                bi = i;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    if bl == 0 {
+        println!("no free-fall stretch (no sample with horizontal |a| < 1.0 and a_y < -5)");
+        return;
+    }
+    let mut s: Vec<f64> = (bi..bi + bl).map(|k| ay[k]).collect();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = s[s.len() / 2];
+    let mean = s.iter().sum::<f64>() / s.len() as f64;
+    println!(
+        "longest free-fall stretch: {} samples, {:.3} .. {:.3} s",
+        bl,
+        v[bi].ms as f64 / 1000.0,
+        v[bi + bl - 1].ms as f64 / 1000.0
+    );
+    println!("  a_y median {:.4} m/s^2   mean {:.4}   min {:.4}   max {:.4}", med, mean, s[0], s[s.len() - 1]);
+    println!("  => g = {:.4}", -med);
 }
 
-/// `tmtraj whl bits BYTE GHOST...` -- one byte, bit by bit, per file: how often
-/// each bit is set, and what else is true when it is.
-///
-/// A flag byte is a set of predicates and a range like "0..131" says almost
-/// nothing. This is what tells you that our files never set bit 7 while every
-/// recording that boosts does.
-fn bits(args: &[String]) {
-    let byte: usize = args
-        .iter()
-        .find(|a| !a.starts_with("--") && a.parse::<usize>().is_ok())
-        .and_then(|a| a.parse().ok())
-        .unwrap_or(31);
-    let files: Vec<&String> = args
-        .iter()
-        .filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err())
-        .collect();
-    println!("byte {}: per-bit set counts, and turbo(b21)>0 for comparison", byte);
-    println!(
-        "{:<40} {:>5} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "file", "n", "b21>0", "bit0", "bit1", "bit2", "bit3", "bit4", "bit5", "bit6", "bit7"
-    );
-    for f in files {
-        let r = match decode(f) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let n = r.len();
-        let t21 = r.iter().filter(|x| x.b(21) > 0).count();
-        let mut c = [0usize; 8];
-        for x in &r {
-            for (b, cc) in c.iter_mut().enumerate() {
-                if (x.b(byte) >> b) & 1 == 1 {
-                    *cc += 1;
-                }
-            }
-        }
-        println!(
-            "{:<40} {:>5} {:>7} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-            f.rsplit('/').next().unwrap_or(f).chars().take(40).collect::<String>(),
-            n, t21, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]
-        );
-    }
-}

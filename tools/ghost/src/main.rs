@@ -7,10 +7,11 @@
 //! script carries any logic.
 
 use ghost::cli::{die, flag, has, need, num};
-use ghost::container::{secs, set_embedded_map, Container};
+use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
-use ghost::tape::{Encoding, Tape};
-use ghost::{container, engine, ident, map_uid_of, oracle, regen, selftest, tape, trim, verify};
+use gbx::tape::{Encoding, Tape};
+use gbx::{container, tape};
+use ghost::{engine, ident, map_uid_of, oracle, regen, selftest, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -88,7 +89,7 @@ VERIFY
 "#;
 
 fn main() {
-    { tmtraj::gbx::lzo_init(); };
+    { gbx::container::lzo_init(); };
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.is_empty() || a[0] == "-h" || a[0] == "--help" || a[0] == "help" {
         println!("{}", HELP);
@@ -121,8 +122,8 @@ fn main() {
             // Compare two files' recorded trajectories, at every shift from
             // -3 to +3 samples. A one-sample offset is a PURE TIME SHIFT and
             // hides inside a small mean, so the shift is always reported.
-            let a0 = tmtraj::entrec::decode_ghost(&rest[0]).unwrap_or_else(|e| die(e));
-            let b0 = tmtraj::entrec::decode_ghost(&rest[1]).unwrap_or_else(|e| die(e));
+            let a0 = gbx::record::decode_ghost(&rest[0]).unwrap_or_else(|e| die(e));
+            let b0 = gbx::record::decode_ghost(&rest[1]).unwrap_or_else(|e| die(e));
             let n = a0.samples.len().min(b0.samples.len());
             println!("{} vs {}  ({} / {} samples)", rest[0], rest[1], a0.samples.len(), b0.samples.len());
             for k in -3i64..=3 {
@@ -249,7 +250,7 @@ fn cmd_inspect(a: &[String]) {
         }
     }
 
-    match tmtraj::entrec::decode_ghost(path) {
+    match gbx::record::decode_ghost(path) {
         Err(e) => println!("telemetry     NONE ({})", e),
         Ok(d) => {
             println!(
@@ -366,7 +367,7 @@ fn cmd_tape(a: &[String]) {
                 "wrote {}  ({} ticks, {} explicitly coded, read-back control OK)",
                 out, n, writable
             );
-            let dec = tmtraj::entrec::decode_ghost(out).ok();
+            let dec = gbx::record::decode_ghost(out).ok();
             if let Some(d) = dec {
                 if !d.samples.is_empty() && !has(rest, "--allow-telemetry-mismatch") {
                     println!(
@@ -456,7 +457,7 @@ fn cmd_tape(a: &[String]) {
         "recinputs" => {
             let f = &rest[0];
             let t = Tape::from_file(f).unwrap_or_else(|e| die(e));
-            let d = tmtraj::entrec::decode_ghost(f).unwrap_or_else(|e| die(e));
+            let d = gbx::record::decode_ghost(f).unwrap_or_else(|e| die(e));
             let raw = raw_vehicle_samples(f).unwrap_or_else(|e| die(e));
             let a0 = &t.archives[0];
             let so = a0.start_offset_ms as i64;
@@ -825,8 +826,8 @@ fn cmd_declare(a: &[String]) {
     // Leaving it at the old run's is the same defect one level down, and
     // `ghost verify` reports it, so fix it here rather than print it later.
     let mut span_note = String::new();
-    if tmtraj::recwrite::find_rec_site(&Container::load(&stage).unwrap().gbx.body).is_ok() {
-        let r = tmtraj::recwrite::rewrite_ghost(&stage, out, |rd| {
+    if gbx::recwrite::find_rec_site(&Container::load(&stage).unwrap().gbx.body).is_ok() {
+        let r = gbx::recwrite::rewrite_ghost(&stage, out, |rd| {
             let last = rd.ents.iter().filter_map(|e| e.times.last().copied()).max().unwrap_or(0);
             rd.end_ms = (ms as i32).max(last);
             Ok(())

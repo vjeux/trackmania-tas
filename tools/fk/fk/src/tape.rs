@@ -27,7 +27,7 @@
 //! `ghost`'s writer expands every such packet, so every tick of a tape written
 //! through here is writable. `tests/suite.rs` pins it.
 
-use ghost::tape::{Encoding, Tape as GTape};
+use gbx::tape::{Encoding, Tape as GTape};
 use std::path::Path;
 
 /// A ghost's input tape, decoded into the channels the engine consumes, plus
@@ -129,8 +129,8 @@ impl Tape {
             p.vsame = false;
         }
         let body = t.splice_into(&self.body, Encoding::Explicit)?;
-        let g = tmtraj::gbx::Gbx::parse(&std::fs::read(&self.path).map_err(|e| e.to_string())?);
-        ghost::container::write_gbx(&g, body, &out.to_string_lossy())
+        let g = gbx::container::Gbx::parse(&std::fs::read(&self.path).map_err(|e| e.to_string())?);
+        gbx::container::write_gbx(&g, body, &out.to_string_lossy())
     }
 
     /// Write this tape back out unmodified, under a new name.

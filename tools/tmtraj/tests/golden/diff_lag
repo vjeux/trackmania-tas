@@ -1,0 +1,6 @@
+$ tmtraj diff $TESTDATA/human_22730.Ghost.Gbx $TESTDATA/human_23013.Ghost.Gbx --lag
+[exit 0]
+best lag 0 samples  overlap 455  exact zeros 2  longest identical run 2  mean 9.744900 m
+VERDICT incidental: 2 scattered identical positions, longest run 2
+--- stderr ---
+A 455 samples, declared 22.730   B 461 samples, declared 23.013

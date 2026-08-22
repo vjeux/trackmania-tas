@@ -1,0 +1,35 @@
+
+=== 01_19538.Ghost.Gbx ===
+  chunk version 11, 391 samples @ 50 ms, sample size 116, record start=0 end=19530
+  [PASS] T0 blob fully consumed: 55306 / 55306 bytes
+  [PASS] T1 ghost chunk 0x0309202B checkpoints [7617, 13308, 16316, 19538] == declared [7617, 13308, 16316, 19538]
+  [PASS] T2 t=0 position (1584.000, 18.002, 784.000) vs start block centre (1584, -, 784): 0.000 m
+  [PASS] T3 CP1: at t=7617 decoded (1233.4, 973.3); nominal (1232.0, 976.0); dist 3.01 m; closest approach 2.61 m at t=7634 (+17 ms)
+  [PASS] T3 CP2: at t=13308 decoded (1152.7, 1317.2); nominal (1154.0, 1328.0); dist 10.84 m; closest approach 9.42 m at t=13351 (+43 ms)
+  [PASS] T3 CP3: at t=16316 decoded (1357.7, 1104.9); nominal (1360.0, 1104.0); dist 2.45 m; closest approach 2.25 m at t=16324 (+8 ms)
+  [PASS] T3 FINISH: last sample t=19500 at (1362.7, 706.8); extrapolated +38 ms at 441 km/h -> (1362.8, 702.1); finish block cell x[1344,1376] z[672,704]
+  [PASS] T4 continuity: max inter-sample implied speed 473.0 km/h
+  [PASS] T5 speed: v(0)=0.81 km/h, peak 471.0 km/h at t=16800
+  [PASS] T6 |d(pos)/dt| vs decoded speed: median error 0.046 m/s, p95 0.391 m/s
+  [PASS] T7 velocity direction vs path tangent: median cos 0.99995, min 0.9957
+  [PASS] T8 quaternion: max |1-|q|| = 2.22e-16; median cos(local +Z, velocity) = 0.9999
+  [PASS] T9 independent 4 m gate timings [614, 946, 1188, 1388, 1563, 1720] -> arc-length gaps [4.048, 4.051, 4.043, 4.02, 4.071] m (expect 4.00)
+  [PASS] T10 gear byte quantised as 1+4*gear: raw values [5, 9, 13, 17, 21]
+
+=== slow_p10000_19812.Ghost.Gbx ===
+  chunk version 11, 397 samples @ 50 ms, sample size 116, record start=0 end=19810
+  [PASS] T0 blob fully consumed: 56168 / 56168 bytes
+  [PASS] T1 ghost chunk 0x0309202B checkpoints [7630, 13406, 16572, 19812] == declared [7630, 13406, 16572, 19812]
+  [PASS] T2 t=0 position (1584.000, 18.002, 784.000) vs start block centre (1584, -, 784): 0.000 m
+  [PASS] T3 CP1: at t=7630 decoded (1233.4, 971.7); nominal (1232.0, 976.0); dist 4.48 m; closest approach 4.23 m at t=7646 (+16 ms)
+  [PASS] T3 CP2: at t=13406 decoded (1152.9, 1319.2); nominal (1154.0, 1328.0); dist 8.89 m; closest approach 7.34 m at t=13450 (+44 ms)
+  [PASS] T3 CP3: at t=16572 decoded (1365.8, 1104.9); nominal (1360.0, 1104.0); dist 5.91 m; closest approach 5.83 m at t=16579 (+7 ms)
+  [PASS] T3 FINISH: last sample t=19800 at (1363.3, 703.5); extrapolated +12 ms at 440 km/h -> (1363.3, 702.0); finish block cell x[1344,1376] z[672,704]
+  [PASS] T4 continuity: max inter-sample implied speed 470.2 km/h
+  [PASS] T5 speed: v(0)=0.81 km/h, peak 468.2 km/h at t=17000
+  [PASS] T6 |d(pos)/dt| vs decoded speed: median error 0.045 m/s, p95 0.398 m/s
+  [PASS] T7 velocity direction vs path tangent: median cos 0.99996, min 0.9981
+  [PASS] T8 quaternion: max |1-|q|| = 2.22e-16; median cos(local +Z, velocity) = 0.9999
+  [PASS] T10 gear byte quantised as 1+4*gear: raw values [5, 9, 13, 17, 21]
+
+SELFTEST: ALL PASS

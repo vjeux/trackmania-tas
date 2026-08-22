@@ -17,9 +17,9 @@
 //! mid-run, so replaying it from a standing start is a different run. The
 //! command says so, and `--from` refuses to pretend otherwise.
 
-use crate::container::{secs, Container};
+use gbx::container::{secs, Container};
 use crate::oracle::{self, MapsMode};
-use crate::tape::{Encoding, Tape};
+use gbx::tape::{Encoding, Tape};
 use crate::cli::{die, flag, has, num};
 
 pub fn cmd(a: &[String]) {
@@ -65,11 +65,11 @@ pub fn cmd(a: &[String]) {
         // and it is exactly the case the format's one-bit form hides.
         if let Some(p) = ar.packets.first_mut() {
             p.vsame = false;
-            if let crate::tape::StateEnc::Prev | crate::tape::StateEnc::Prev2(_, _) = p.state {
+            if let gbx::tape::StateEnc::Prev | gbx::tape::StateEnc::Prev2(_, _) = p.state {
                 // a repeat of a word that is no longer in the file: freeze the
                 // word it decoded to into an explicit literal
                 let lit = ((p.flags as u64 & 0x3F_FFFF) << 5) | (p.word0 as u64 & 0xF);
-                p.state = crate::tape::StateEnc::Lit(lit);
+                p.state = gbx::tape::StateEnc::Lit(lit);
             }
         }
     }
@@ -83,7 +83,7 @@ pub fn cmd(a: &[String]) {
         Some(d) => d,
         None => new_span_hi,
     });
-    let splits_before = tmtraj::entrec::read_checkpoints(c.body());
+    let splits_before = gbx::record::read_checkpoints(c.body());
     let mut body = nt.splice_into(c.body(), Encoding::Explicit).unwrap_or_else(|e| die(e));
     set_all_declared(&mut body, declared as u32);
     let splits = set_result_chunk(&mut body, declared as u32, |t| {
@@ -91,16 +91,16 @@ pub fn cmd(a: &[String]) {
     })
     .unwrap_or_default();
     let tmp = format!("{}.trim-stage", out);
-    crate::container::write_gbx(&c.gbx, body, &tmp).unwrap_or_else(|e| die(e));
+    gbx::container::write_gbx(&c.gbx, body, &tmp).unwrap_or_else(|e| die(e));
 
     // ---- the telemetry --------------------------------------------------
     let lo_ms = if from == i64::MIN { i32::MIN } else { from as i32 };
     let hi_ms = if to == i64::MAX { i32::MAX } else { to as i32 };
     let mut dropped = 0usize;
     let mut kept = 0usize;
-    let had_record = tmtraj::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
+    let had_record = gbx::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
     if had_record {
-        let r = tmtraj::recwrite::rewrite_ghost(&tmp, out, |rd| {
+        let r = gbx::recwrite::rewrite_ghost(&tmp, out, |rd| {
             for e in rd.ents.iter_mut() {
                 if e.times.is_empty() || e.sample_size == 0 {
                     continue;
@@ -161,7 +161,7 @@ pub fn cmd(a: &[String]) {
     if dts.iter().any(|v| *v as i64 != declared) {
         fail.push(format!("declared time copies disagree: {:?}", dts));
     }
-    if let Ok(d) = tmtraj::entrec::decode_ghost(out) {
+    if let Ok(d) = gbx::record::decode_ghost(out) {
         if let Some(s) = d.samples.last() {
             if (s.time_ms as i64) > to {
                 fail.push(format!("a telemetry sample survives at {}", secs(s.time_ms as i64)));
@@ -222,9 +222,9 @@ pub fn cmd(a: &[String]) {
 }
 
 pub fn set_all_declared(body: &mut [u8], ms: u32) {
-    let sites: Vec<usize> = tmtraj::gbx::all_skip_chunks(body)
+    let sites: Vec<usize> = gbx::container::all_skip_chunks(body)
         .into_iter()
-        .filter(|c| c.0 == crate::container::RACE_TIME_CHUNK)
+        .filter(|c| c.0 == gbx::container::RACE_TIME_CHUNK)
         .map(|c| c.2)
         .collect();
     for o in sites {
@@ -240,9 +240,9 @@ pub fn set_all_declared(body: &mut [u8], ms: u32) {
 /// inside the window, in order, rewrites the count and the race time, and zeroes
 /// what it dropped. The chunk never changes length.
 pub fn set_result_race_time(body: &mut [u8], ms: u32) {
-    if let Some((_, _, poff, sz)) = tmtraj::gbx::all_skip_chunks(body)
+    if let Some((_, _, poff, sz)) = gbx::container::all_skip_chunks(body)
         .into_iter()
-        .find(|c| c.0 == crate::container::SPLITS_CHUNK)
+        .find(|c| c.0 == gbx::container::SPLITS_CHUNK)
     {
         if sz >= 8 {
             body[poff + 4..poff + 8].copy_from_slice(&ms.to_le_bytes());
@@ -251,9 +251,9 @@ pub fn set_result_race_time(body: &mut [u8], ms: u32) {
 }
 
 fn set_result_chunk(body: &mut [u8], race_ms: u32, keep: impl Fn(i32) -> bool) -> Option<Vec<i32>> {
-    let (_, _, poff, sz) = tmtraj::gbx::all_skip_chunks(body)
+    let (_, _, poff, sz) = gbx::container::all_skip_chunks(body)
         .into_iter()
-        .find(|c| c.0 == crate::container::SPLITS_CHUNK)?;
+        .find(|c| c.0 == gbx::container::SPLITS_CHUNK)?;
     let n_ints = sz / 4;
     if n_ints < 6 {
         return None;

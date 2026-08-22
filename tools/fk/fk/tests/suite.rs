@@ -21,7 +21,7 @@
 //!
 //! # The fixtures are `ghost`'s
 //!
-//! `tools/ghost/testdata/` already holds anonymised ghosts, a replay that
+//! `tools/testdata/` already holds anonymised ghosts, a replay that
 //! carries its own map, and a map. A second corpus of the same files in
 //! `tools/fk/testdata/` would be one more thing to keep in step, so this suite
 //! reads ghost's. What lives in `fk`'s own testdata is only what is `fk`'s:
@@ -33,11 +33,11 @@ use std::path::{Path, PathBuf};
 // ---------------------------------------------------------------- fixtures
 
 fn ghost_testdata() -> PathBuf {
-    // tools/fk/fk/tests/ -> tools/ghost/testdata/
+    // tools/fk/fk/tests/ -> tools/testdata/
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../ghost/testdata")
+        .join("../../testdata")
         .canonicalize()
-        .expect("tools/ghost/testdata must exist -- fk shares ghost's fixture corpus")
+        .expect("tools/testdata must exist -- fk shares ghost's fixture corpus")
 }
 
 fn fk_testdata() -> PathBuf {
@@ -200,7 +200,7 @@ fn tape_refuses_a_file_it_would_have_to_guess_about() {
     // it happens to hold exactly one, the refusal is still worth asserting on
     // the code path, so assert only when the premise holds.
     let p = ghost_testdata().join("replay_kacky_7241.Replay.Gbx");
-    if let Ok(g) = ghost::tape::Tape::from_file(&p.to_string_lossy()) {
+    if let Ok(g) = gbx::tape::Tape::from_file(&p.to_string_lossy()) {
         if g.archives.len() > 1 {
             let e = match fk::tape::Tape::load(&p.to_string_lossy()) {
                 Err(e) => e,

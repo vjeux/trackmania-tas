@@ -1,0 +1,156 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>TM2020 Summer 2026-01 : %(n)d racing lines</title><style>
+html,body{margin:0;height:100%%;background:#0b0e13;color:#c9d4e3;overflow:hidden;
+ font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+#w{display:flex;height:100vh}#v{flex:1;position:relative}
+canvas{display:block;width:100%%;height:100%%;cursor:grab}canvas:active{cursor:grabbing}
+#s{width:250px;overflow-y:auto;background:#11151d;border-left:1px solid #232a36;padding:12px}
+h1{font-size:14px;margin:0 0 2px;color:#e8eef7}.sub{color:#6f7d92;font-size:11px;margin-bottom:12px}
+label{display:block;color:#8b9bb0;font-size:10px;margin:9px 0 3px;text-transform:uppercase;letter-spacing:.06em}
+input[type=range]{width:100%%}
+button{background:#1b2230;color:#c9d4e3;border:1px solid #2b3648;border-radius:5px;
+ padding:4px 8px;font-size:11px;cursor:pointer;margin:2px 2px 0 0}
+button:hover{background:#232d3e}button.on{background:#2d6cdf;border-color:#3b7ff0;color:#fff}
+table{width:100%%;border-collapse:collapse;font-size:11px;margin-top:8px}
+td{padding:2px;border-bottom:1px solid #1a2029}tr{cursor:pointer}tr:hover td{background:#182031}
+tr.sel td{background:#1e2b45}.sw{width:8px;height:8px;border-radius:2px;display:inline-block}
+.t{text-align:right;color:#9fb0c6;font-variant-numeric:tabular-nums}
+#hud{position:absolute;left:12px;top:12px;background:rgba(12,16,22,.86);border:1px solid #232a36;
+ border-radius:6px;padding:8px 10px;font-size:11px;line-height:1.6;pointer-events:none}
+#hud b{color:#e8eef7}.k{color:#6f7d92}
+#lg{position:absolute;right:12px;bottom:12px;background:rgba(12,16,22,.86);border:1px solid #232a36;
+ border-radius:6px;padding:7px 9px;font-size:10px}
+.gr{width:120px;height:7px;border-radius:2px;margin:3px 0;
+ background:linear-gradient(90deg,#2b3a8f,#1f8fbf,#31c46a,#ffd23f,#ff5b3d)}
+.rw{display:flex;justify-content:space-between;color:#6f7d92}
+.note{color:#6f7d92;font-size:10px;margin-top:3px}
+</style></head><body><div id=w><div id=v><canvas id=c></canvas><div id=hud></div>
+<div id=lg><div>speed</div><div class=gr></div><div class=rw><span>0</span><span>%(vmax)d km/h</span></div></div>
+</div><div id=s>
+<h1>Summer 2026 - 01</h1><div class=sub>%(n)d human runs &middot; %(nsamp)d samples<br>decoded from ghost files</div>
+<label>colour by</label><button id=bs class=on>speed</button><button id=br>run</button>
+<label>lateral exaggeration <span id=xl class=t>1x</span></label>
+<input type=range id=xe min=1 max=40 value=1>
+<div class=note>all %(n)d lines overlap at 1x &mdash; the field is within a few metres.
+Push to 10-15x to see the structure.</div>
+<label>vertical exaggeration <span id=zl class=t>3x</span></label>
+<input type=range id=ze min=1 max=12 value=3>
+<label>replay <span id=tl class=t>off</span></label>
+<input type=range id=tm min=0 max=1000 value=0>
+<button id=pl>play</button><button id=rs>reset</button>
+<label>runs</label><button id=ba>all</button><button id=bn>none</button><button id=bt>top 5</button>
+<table id=lst></table></div></div><script>
+const META=%(meta)s, X0=%(x0)f, Y0=%(y0)f, Z0=%(z0)f, VMAX=%(vmax)d, CPS=%(cps)s;
+// unpack: 6 bytes/sample, x/z uint16 dm, y uint8 dm, speed uint8 (km/h/2)
+const BIN=Uint8Array.from(atob("%(b64)s"),c=>c.charCodeAt(0));
+const dv=new DataView(BIN.buffer);
+const RUNS=[];{let o=0;for(const m of META){const p=[];
+ for(let i=0;i<m[2];i++){const b=o+i*6;
+  p.push([X0+dv.getUint16(b,true)/10,Y0+BIN[b+4]/10,Z0+dv.getUint16(b+2,true)/10,BIN[b+5]*2]);}
+ o+=m[2]*6;RUNS.push({name:m[0],time:m[1],cps:m[3],p});}}
+
+const cv=document.getElementById('c'),g=cv.getContext('2d');let W=0,H=0;
+let mnx=1e9,mxx=-1e9,mnz=1e9,mxz=-1e9,mny=1e9;
+for(const r of RUNS)for(const p of r.p){mnx=Math.min(mnx,p[0]);mxx=Math.max(mxx,p[0]);
+ mnz=Math.min(mnz,p[2]);mxz=Math.max(mxz,p[2]);mny=Math.min(mny,p[1]);}
+const cx=(mnx+mxx)/2,cz=(mnz+mxz)/2,cy=mny,EXT=Math.max(mxx-mnx,mxz-mnz);
+let yaw=-0.7,pitch=0.85,dist=EXT*1.5,zex=3,xex=1,cby='speed';
+let sel=new Set(RUNS.map((_,i)=>i)),hov=-1,tcur=-1,playing=false;
+
+const NS=Math.min(...RUNS.map(r=>r.p.length)),MEAN=[];
+for(let k=0;k<NS;k++){let sx=0,sy=0,sz=0;for(const r of RUNS){
+ const j=Math.round(k*(r.p.length-1)/(NS-1));sx+=r.p[j][0];sy+=r.p[j][1];sz+=r.p[j][2];}
+ MEAN.push([sx/RUNS.length,sy/RUNS.length,sz/RUNS.length]);}
+function crom(pts,mul){ // Catmull-Rom resample: coarse samples -> smooth curve
+ if(mul<=1)return pts;const o=[];const n=pts.length;
+ for(let i=0;i<n-1;i++){const p0=pts[Math.max(0,i-1)],p1=pts[i],p2=pts[i+1],p3=pts[Math.min(n-1,i+2)];
+  for(let s=0;s<mul;s++){const t=s/mul,t2=t*t,t3=t2*t,q=[0,0,0,0];
+   for(let c=0;c<4;c++)q[c]=0.5*((2*p1[c])+(-p0[c]+p2[c])*t+
+    (2*p0[c]-5*p1[c]+4*p2[c]-p3[c])*t2+(-p0[c]+3*p1[c]-3*p2[c]+p3[c])*t3);
+   o.push(q);}}
+ o.push(pts[n-1]);return o;}
+function exg(r,k){const j=Math.round(k*(r.p.length-1)/(NS-1)),p=r.p[j],m=MEAN[k];
+ return [m[0]+(p[0]-m[0])*xex,m[1]+(p[1]-m[1])*xex,m[2]+(p[2]-m[2])*xex,p[3]];}
+
+function resize(){const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;
+ W=r.width;H=r.height;cv.width=W*d;cv.height=H*d;g.setTransform(d,0,0,d,0,0);draw();}
+addEventListener('resize',resize);
+function proj(x,y,z){const dx=x-cx,dy=(y-cy)*zex,dz=z-cz;
+ const c1=Math.cos(yaw),s1=Math.sin(yaw);const rx=dx*c1-dz*s1,rz=dx*s1+dz*c1;
+ const c2=Math.cos(pitch),s2=Math.sin(pitch);const ry=dy*c2-rz*s2;let rw=dy*s2+rz*c2+dist;
+ if(rw<1)rw=1;const f=(Math.min(W,H)*0.9)/rw;return [W/2+rx*f,H/2-ry*f];}
+const ST=[[43,58,143],[31,143,191],[49,196,106],[255,210,63],[255,91,61]];
+function sc(v){const t=Math.max(0,Math.min(1,v/VMAX)),s=t*(ST.length-1),i=Math.floor(s),f=s-i;
+ const a=ST[i],b=ST[Math.min(ST.length-1,i+1)];
+ return 'rgb('+(a[0]+(b[0]-a[0])*f|0)+','+(a[1]+(b[1]-a[1])*f|0)+','+(a[2]+(b[2]-a[2])*f|0)+')';}
+function rc(i){return 'hsl('+((i*47)%%360)+' 70%% 60%%)';}
+function draw(){g.fillStyle='#0b0e13';g.fillRect(0,0,W,H);
+ g.strokeStyle='#1a212c';g.lineWidth=1;const R=EXT*0.8;
+ for(let x=-R;x<=R;x+=64){let a=proj(cx+x,cy,cz-R),b=proj(cx+x,cy,cz+R);
+  g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();
+  a=proj(cx-R,cy,cz+x);b=proj(cx+R,cy,cz+x);
+  g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();}
+ g.font='11px sans-serif';
+ for(const k in CPS){const p=CPS[k],s=proj(p[0],cy+2,p[1]);
+  g.fillStyle='#7d8ca3';g.beginPath();g.arc(s[0],s[1],4,0,7);g.fill();
+  g.fillStyle='#9fb0c6';g.fillText(k,s[0]+7,s[1]+3);}
+ const idx=[...sel].sort((a,b)=>RUNS[b].time-RUNS[a].time);
+ for(const i of idx){const r=RUNS[i];
+  const raw=xex>1?Array.from({length:NS},(_,k)=>exg(r,k)):r.p;
+  const pts=crom(raw,3);
+  const lim=tcur<0?pts.length:Math.min(pts.length,Math.max(2,Math.round(pts.length*tcur)));
+  g.lineWidth=(i===hov)?3.2:1.5;g.globalAlpha=(hov<0||i===hov)?0.95:0.28;
+  if(cby==='run'){g.strokeStyle=rc(i);g.beginPath();
+   for(let k=0;k<lim;k++){const s=proj(pts[k][0],pts[k][1],pts[k][2]);
+    k?g.lineTo(s[0],s[1]):g.moveTo(s[0],s[1]);}g.stroke();
+  }else{for(let k=1;k<lim;k++){const a=proj(pts[k-1][0],pts[k-1][1],pts[k-1][2]),
+    b=proj(pts[k][0],pts[k][1],pts[k][2]);g.strokeStyle=sc(pts[k][3]);
+    g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();}}
+  if(tcur>=0&&lim>1){const p=pts[lim-1],s=proj(p[0],p[1],p[2]);g.globalAlpha=1;
+   g.fillStyle=cby==='run'?rc(i):sc(p[3]);g.beginPath();g.arc(s[0],s[1],3.4,0,7);g.fill();}}
+ g.globalAlpha=1;let t='<b>'+sel.size+'</b> of '+RUNS.length+' runs';
+ if(hov>=0){const r=RUNS[hov];t='<b>'+r.name+'</b><br><span class=k>time</span> '+
+  (r.time/1000).toFixed(3)+' s';
+  if(r.cps&&r.cps.length)t+='<br><span class=k>splits</span> '+
+   r.cps.map(v=>(v/1000).toFixed(2)).join(' / ');}
+ if(tcur>=0)t+='<br><span class=k>t</span> '+(tcur*100).toFixed(0)+'%%';
+ if(xex>1)t+='<br><span class=k>lateral</span> '+xex+'x exaggerated';
+ document.getElementById('hud').innerHTML=t;}
+let drag=null;
+cv.addEventListener('mousedown',e=>drag={x:e.clientX,y:e.clientY,yaw,pitch});
+addEventListener('mouseup',()=>drag=null);
+addEventListener('mousemove',e=>{if(!drag)return;
+ yaw=drag.yaw+(e.clientX-drag.x)*0.006;
+ pitch=Math.max(0.05,Math.min(1.5,drag.pitch+(e.clientY-drag.y)*0.005));draw();});
+cv.addEventListener('wheel',e=>{e.preventDefault();dist*=Math.exp(e.deltaY*0.0011);draw();},
+ {passive:false});
+const lst=document.getElementById('lst');
+RUNS.forEach((r,i)=>{const tr=document.createElement('tr');tr.className='sel';
+ tr.innerHTML='<td><span class=sw style="background:'+rc(i)+'"></span></td><td>'+r.name+
+  '</td><td class=t>'+(r.time/1000).toFixed(3)+'</td>';
+ tr.onmouseenter=()=>{hov=i;draw();};tr.onmouseleave=()=>{hov=-1;draw();};
+ tr.onclick=()=>{sel.has(i)?sel.delete(i):sel.add(i);tr.className=sel.has(i)?'sel':'';draw();};
+ lst.appendChild(tr);});
+function setAll(f){sel=new Set(RUNS.map((_,i)=>i).filter(f));
+ [...lst.children].forEach((tr,i)=>tr.className=sel.has(i)?'sel':'');draw();}
+document.getElementById('ba').onclick=()=>setAll(()=>true);
+document.getElementById('bn').onclick=()=>setAll(()=>false);
+document.getElementById('bt').onclick=()=>setAll(i=>i<5);
+document.getElementById('bs').onclick=e=>{cby='speed';e.target.className='on';
+ document.getElementById('br').className='';draw();};
+document.getElementById('br').onclick=e=>{cby='run';e.target.className='on';
+ document.getElementById('bs').className='';draw();};
+const xe=document.getElementById('xe');
+xe.oninput=()=>{xex=+xe.value;document.getElementById('xl').textContent=xex+'x';draw();};
+const ze=document.getElementById('ze');
+ze.oninput=()=>{zex=+ze.value;document.getElementById('zl').textContent=zex+'x';draw();};
+const tm=document.getElementById('tm'),tl=document.getElementById('tl');
+tm.oninput=()=>{tcur=tm.value/1000;tl.textContent=(tcur*100).toFixed(0)+'%%';draw();};
+document.getElementById('rs').onclick=()=>{playing=false;tcur=-1;tm.value=0;
+ tl.textContent='off';draw();};
+document.getElementById('pl').onclick=()=>{playing=!playing;if(playing)tick();};
+function tick(){if(!playing)return;tcur=(tcur<0?0:tcur)+0.005;if(tcur>1)tcur=0;
+ tm.value=tcur*1000;tl.textContent=(tcur*100).toFixed(0)+'%%';draw();
+ requestAnimationFrame(tick);}
+resize();
+</script></body></html>

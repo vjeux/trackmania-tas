@@ -26,23 +26,20 @@
 //!
 //! The record stores the quaternion as (x,y,z,w).
 
-fn decode_csv(path: &str) -> Vec<[f64; 8]> {
-    // ms, vx,vy,vz, qx,qy,qz,qw
-    let txt = std::fs::read_to_string(path).unwrap_or_default();
-    let mut out = Vec::new();
-    for (i, l) in txt.lines().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let f: Vec<&str> = l.split(',').collect();
-        if f.len() < 16 {
-            continue;
-        }
-        let g = |k: usize| f[k].parse::<f64>().unwrap_or(f64::NAN);
-        out.push([g(0), g(6), g(7), g(8), g(12), g(13), g(14), g(15)]);
-    }
-    out
+use gbx::record;
+/// (ms, vx,vy,vz, qx,qy,qz,qw) straight off the decoded samples.
+///
+/// This used to decode the ghost, write `entrec::csv_string` to a temp file
+/// under /tmp, read it back and parse it by HARDCODED COLUMN INDEX (0,6,7,8,
+/// 12,13,14,15) — three times in this file. Reordering `CSV_COLUMNS` would
+/// have silently changed what `facing` measured, with no compile error.
+fn rows_of(d: &record::Decoded) -> Vec<[f64; 8]> {
+    d.samples
+        .iter()
+        .map(|s| [s.time_ms as f64, s.vx, s.vy, s.vz, s.qx, s.qy, s.qz, s.qw])
+        .collect()
 }
+
 
 /// Rotate v by the unit quaternion (x,y,z,w).
 fn rot(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
@@ -138,14 +135,11 @@ pub fn cmd(args: &[String]) -> i32 {
     // map's car spends real time pointing where it is not going.
     let (refmed, refname) = match &refp {
         Some(p) => {
-            let tmp = format!("/tmp/facing-ref-{}.csv", std::process::id());
-            let Ok(d) = crate::entrec::decode_ghost(p) else {
+            let Ok(d) = record::decode_ghost(p) else {
                 eprintln!("cannot decode reference {}", p);
                 return 3;
             };
-            std::fs::write(&tmp, crate::entrec::csv_string(&d)).unwrap();
-            let rows = decode_csv(&tmp);
-            let _ = std::fs::remove_file(&tmp);
+            let rows = rows_of(&d);
             let (m, t) = measure(&rows, minspeed);
             println!(
                 "reference {}: median {:.2} deg between body +z and the velocity ({} samples over {} m/s)",
@@ -169,15 +163,12 @@ pub fn cmd(args: &[String]) -> i32 {
 
     let mut worst = 0i32;
     for f in &files {
-        let tmp = format!("/tmp/facing-{}.csv", std::process::id());
-        let Ok(d) = crate::entrec::decode_ghost(f) else {
+        let Ok(d) = record::decode_ghost(f) else {
             println!("{:<40} DECODE-FAIL", f);
             worst = worst.max(3);
             continue;
         };
-        std::fs::write(&tmp, crate::entrec::csv_string(&d)).unwrap();
-        let rows = decode_csv(&tmp);
-        let _ = std::fs::remove_file(&tmp);
+        let rows = rows_of(&d);
         let (m, t) = measure(&rows, minspeed);
         let verdict = if !m.is_finite() {
             worst = worst.max(3);
@@ -253,30 +244,19 @@ pub fn cmd_route(args: &[String]) -> i32 {
     }
     let mut worst = 0i32;
     for f in &files {
-        let Ok(d) = crate::entrec::decode_ghost(f) else {
+        let Ok(d) = record::decode_ghost(f) else {
             println!("{:<40} DECODE-FAIL", f);
             worst = worst.max(3);
             continue;
         };
-        let tmp = format!("/tmp/facing-route-{}.csv", std::process::id());
-        std::fs::write(&tmp, crate::entrec::csv_string(&d)).unwrap();
-        let txt = std::fs::read_to_string(&tmp).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp);
         let mut angs: Vec<f64> = Vec::new();
         let mut angs_perm: Vec<f64> = Vec::new();
         let mut dpos: Vec<f64> = Vec::new();
-        for (i, l) in txt.lines().enumerate() {
-            if i == 0 {
-                continue;
-            }
-            let fl: Vec<&str> = l.split(',').collect();
-            if fl.len() < 16 {
-                continue;
-            }
-            let g = |k: usize| fl[k].parse::<f64>().unwrap_or(f64::NAN);
-            let t = fl[0].parse::<i64>().unwrap_or(i64::MIN) + shift;
+        for s in &d.samples {
+            let pos = [s.x, s.y, s.z];
+            let t = s.time_ms as i64 + shift;
             let Some((qr, pr)) = rq.get(&t) else { continue };
-            let qs = [g(12), g(13), g(14), g(15)];
+            let qs = [s.qx, s.qy, s.qz, s.qw];
             let perm = [qs[1], qs[2], qs[3], qs[0]];
             let ang = |a: [f64; 4], b: &[f64; 4]| -> f64 {
                 let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]).sqrt();
@@ -298,7 +278,7 @@ pub fn cmd_route(args: &[String]) -> i32 {
             }
             let mut s = 0.0;
             for k in 0..3 {
-                let q = g(1 + k) - pr[k];
+                let q = pos[k] - pr[k];
                 s += q * q;
             }
             dpos.push(s.sqrt());

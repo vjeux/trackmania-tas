@@ -1,0 +1,17 @@
+[package]
+name = "tmsite"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The single implementation of the GBX container, the ghost input tape and the
+# bit codec. tmsite used to carry its own copy of each; it does not any more.
+gbx = { path = "../gbx" }
+
+[lib]
+name = "tmsite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmsite"
+path = "src/main.rs"

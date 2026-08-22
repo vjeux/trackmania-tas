@@ -1,0 +1,9 @@
+$ tmtraj show $TESTDATA/replay_kacky_7241.Replay.Gbx --head 2
+[exit 0]
+$TESTDATA/replay_kacky_7241.Replay.Gbx
+  version 11  samples 205  period 50 ms  sample_size 116  span 0.000 .. 10.220
+  declared 7.241   checkpoints 7.241
+  entities 0x0A018000x205@116B 0x2D001000x145@13B 0x032CB000x0@0B
+        t          x        y          z      km/h   gear   rpm
+    0.000    816.000   89.733    781.143      0.88    1.0     0
+    0.050    816.000   89.715    781.110      6.04    1.0     3

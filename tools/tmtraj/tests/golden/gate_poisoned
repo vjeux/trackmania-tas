@@ -1,0 +1,21 @@
+$ tmtraj gate $TESTDATA/poisoned_searchtape.Ghost.Gbx --race 13984 --refs $TMP/refs.tsv --mapid 2
+[exit 2]
+=== $TESTDATA/poisoned_searchtape.Ghost.Gbx  --  REFUSED
+  PASS C1     every position and velocity component is finite (1369 samples)
+  PASS C2     the car travels 2622.0 m over 1369 distinct points
+  PASS C3     worst implied speed 67.8 m/s at 20.600 s (median 36.7 m/s)
+  FAIL C4     1088 samples AFTER the finish at 13.984 s (last 68.400 s)
+  PASS C5     ground contact is OFF on all 14 provably airborne samples
+  PASS C6     ground contact is ON on 100.0 % of 156 ground-borne samples
+  PASS C7     no surface material accumulates during free fall
+  n/a  C10    no claimed flight lasts 0.5 s -- nothing to hold to account
+  PASS C8     55 % of 263 rolling steps imply a car wheel; the mode is 0.3645 m
+  PASS C9     the throttle echo agrees with the car's acceleration (0 of 156 disagree)
+FAIL   C-checks  1 failing (C4) -- only a LONE C5, C10 or C8 is sanctioned
+PASS   B-contam  no splice against 2 human recording(s); closest human_22730.Ghost.Gbx (0 of 455 samples bit-identical, max separation 997.3 m)
+n/a    C12       no human reference whose tape differs from this one, so the near-copy test could not run
+n/a    C-oracle  no --server/--map given -- THE FILE HAS NOT BEEN RE-SIMULATED
+n/a    E-stale    no --source given -- THIS FILE HAS NOT BEEN CHECKED against the one-tick-stale buffer copy, which passes every other check in this gate
+FAIL   C-spawn   the first in-race sample is 679.2596 m and 0.000 deg from human_22730.Ghost.Gbx's. Every run of this map starts in the same place facing the same way; this position is another object, or the orientation encoding is permuted.
+FAIL   C-route   no --route given. The record has NOT been checked against the engine by any instrument other than the one that wrote it -- every other check in this gate READS the record, so none of them can disagree with it about where the car was. Produce one with `fk btraj2 --template THIS FILE ... --out route.csv`.
+n/a    D-manifest  no manifest at $TESTDATA/poisoned_searchtape.Ghost.Gbx.manifest.json -- THIS FILE IS UNPROVENANCED. It may be perfectly good; nothing in it says so. (--require-manifest makes this a refusal.)

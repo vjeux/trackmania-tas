@@ -306,31 +306,6 @@ pub fn dtw_separation(a: &[[f64; 3]], b: &[[f64; 3]], band: usize) -> f64 {
     prev[m] / n.max(m) as f64
 }
 
-/// `lines.lateral_profile`: signed lateral offset of `other` from `ref` at
-/// matched stations (the cheap station-to-station variant; the projection
-/// metric uses [`lateral_profile`] instead).
-pub fn lateral_profile_stationwise(rf: &[[f64; 3]], other: &[[f64; 3]]) -> Vec<f64> {
-    let n = rf.len().min(other.len());
-    let mut out = Vec::with_capacity(n);
-    for k in 0..n {
-        let (tx, tz) = if k + 1 < n {
-            (rf[k + 1][0] - rf[k][0], rf[k + 1][2] - rf[k][2])
-        } else {
-            (rf[k][0] - rf[k - 1][0], rf[k][2] - rf[k - 1][2])
-        };
-        let l = {
-            let h = tx.hypot(tz);
-            if h == 0.0 {
-                1.0
-            } else {
-                h
-            }
-        };
-        let (nx, nz) = (-tz / l, tx / l);
-        out.push((other[k][0] - rf[k][0]) * nx + (other[k][2] - rf[k][2]) * nz);
-    }
-    out
-}
 
 // ---------------------------------------------------------------------------
 // clustering

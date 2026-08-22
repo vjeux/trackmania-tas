@@ -34,14 +34,14 @@ string and compare md5s at both ends. Windows-side paths are visible under
 | replays | `/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Replays/` |
 
 `ffprobe.exe` cannot read a WSL path — stage the file under `/mnt/c` and hand
-it the `C:/...` spelling. `tools/ship-clip.sh` does this for you.
+it the `C:/...` spelling. `clip ship` does this for you.
 
 ## Publishing a clip, end to end on this box
 
 ```
 export PATH=$HOME/bin:$PATH
 export GH_COOKIE="$(cat ~/.gh-upload/cookie)"
-cd ~/trackmania-tas && tools/ship-clip.sh <clip.mp4> <map-dir>
+cd ~/trackmania-tas/tools && cargo run --release -p clip -- ship <clip.mp4> <map-dir>
 ```
 
 That runs the whole chain: settle and probe the local file, upload the

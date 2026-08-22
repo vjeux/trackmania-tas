@@ -64,7 +64,7 @@ impl SimResult {
     pub fn secs(&self) -> String {
         match self.time_ms {
             None => "DNF".into(),
-            Some(t) => crate::container::secs(t),
+            Some(t) => gbx::container::secs(t),
         }
     }
     /// Does the file's own declaration match what it actually does?

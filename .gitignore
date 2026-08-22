@@ -1,2 +1,4 @@
 .ghvid/
 tools/tmtraj/target/
+tools/target/
+tools/*/target/

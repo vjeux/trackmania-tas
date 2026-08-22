@@ -5,14 +5,15 @@
 //! `tests/selftest.rs` runs exactly this and asserts every check passes;
 //! `tmtraj selftest` prints the same report the Python printed.
 
-use crate::entrec::{decode_ghost, quat_rotate, Decoded, Sample};
+use gbx::record;
+use record::{decode_ghost, quat_rotate, Decoded, Sample};
 
 /// Where to look for the reference ghosts.
 pub const GHOST_DIRS: &[&str] = &[
-    "/tmp/m1/ghosts",
-    "/tmp/m1",
-    "/tmp/tmtas/tmtas/ghosts",
-    "/tmp/entrec/ghosts",
+    // Checked in at tools/testdata/decoder-goldens/ghosts. This list used to be
+    // four /tmp paths; with none of them present `tmtraj selftest` printed
+    // "SELFTEST: ALL PASS (0 checks, 0 failed)" and exited 0 — a vacuous pass.
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata/decoder-goldens/ghosts"),
 ];
 
 /// Known "Summer 2026 - 01" geometry (32 m cells, centre = 32*cell + 16).

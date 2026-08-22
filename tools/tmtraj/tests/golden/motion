@@ -1,0 +1,14 @@
+$ tmtraj motion $TESTDATA/human_22730.Ghost.Gbx --race 22730
+[exit 0]
+samples 455 (0.000 .. 22.700 s, dt 0.050)   g=25.20 tol=2.00 margin=5.00 run=3
+BALLISTIC    3 (  0.7 %, 0.150 s, longest run 0.150 s)   SUPPORTED   89 ( 19.6 %)   UNKNOWN  363 ( 79.8 %)
+                              on BALLISTIC        on SUPPORTED
+  ground contact (b89&1)         0/3      0.0 %     89/89   100.0 %
+  dirt  > 0 (b93/95/97/99)       3/3    100.0 %     65/89    73.0 %
+  ice   > 0 (b81..84)            0/3      0.0 %      0/89     0.0 %
+  whole file: contact 367/455 (80.7 %)  dirt>0 366 (80.4 %)  ice>0 0 (0.0 %)  max dirt 255  max ice 0
+
+PASS A  contact OFF on every BALLISTIC sample (0 violations)
+PASS B  contact ON on >=95 % of SUPPORTED samples (100.0 % of 89) -- THE TEST A ZEROED FIELD FAILS
+PASS C  dirt never RISES during ballistic flight (0 violations)
+PASS D  ice  never RISES during ballistic flight (0 violations)

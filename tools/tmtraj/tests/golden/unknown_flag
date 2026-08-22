@@ -1,0 +1,6 @@
+$ tmtraj show $TESTDATA/human_22730.Ghost.Gbx --nonsense 1
+[exit 2]
+--- stderr ---
+tmtraj show: unknown flag --nonsense
+
+usage: tmtraj show GHOST... [--head N]

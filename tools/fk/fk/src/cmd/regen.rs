@@ -17,7 +17,7 @@
 
 use crate::record::{grid_of, measure_anchors, read_samples_pair, run_clean_anch};
 use crate::record::{neutralise, written_bytes};
-use tmtraj::recwrite::rewrite_ghost;
+use gbx::recwrite::rewrite_ghost;
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let c = parse_ctx(args)?;
@@ -453,7 +453,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     for k in 0..9 {
                         m[k] = gq(fst, o.quat_off + k * 4);
                     }
-                    tmtraj::recwrite::mat_to_quat_pub(&m)
+                    gbx::recwrite::mat_to_quat_pub(&m)
                 }
                 _ => [
                     gq(fst, o.quat_off + 4),
@@ -462,7 +462,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     gq(fst, o.quat_off),
                 ],
             };
-            let x = tmtraj::recwrite::Xform {
+            let x = gbx::recwrite::Xform {
                 pos: [
                     f32::from_le_bytes(fst[o.pos_off..o.pos_off + 4].try_into().unwrap()),
                     f32::from_le_bytes(fst[o.pos_off + 4..o.pos_off + 8].try_into().unwrap()),
@@ -476,7 +476,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 ],
             };
             if !keepx {
-                tmtraj::recwrite::write_transform(s, 47, &x);
+                gbx::recwrite::write_transform(s, 47, &x);
             }
             if neutral {
                 neutralise(s);

@@ -1,0 +1,240 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TM2020 Summer 2026 - 01 : %(n)d racing lines</title>
+<style>
+ html,body{margin:0;height:100%%;background:#0b0e13;color:#c9d4e3;
+   font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ #wrap{display:flex;height:100%%}
+ #view{flex:1;position:relative}
+ canvas{display:block;width:100%%;height:100%%;cursor:grab}
+ canvas:active{cursor:grabbing}
+ #side{width:290px;overflow-y:auto;background:#11151d;border-left:1px solid #232a36;padding:14px}
+ h1{font-size:15px;margin:0 0 2px;color:#e8eef7}
+ .sub{color:#6f7d92;font-size:11px;margin-bottom:14px}
+ .ctl{margin:10px 0}
+ label{display:block;color:#8b9bb0;font-size:11px;margin-bottom:3px;
+   text-transform:uppercase;letter-spacing:.06em}
+ input[type=range]{width:100%%}
+ button{background:#1b2230;color:#c9d4e3;border:1px solid #2b3648;border-radius:5px;
+   padding:5px 9px;font-size:11px;cursor:pointer;margin:2px 2px 2px 0}
+ button:hover{background:#232d3e}
+ button.on{background:#2d6cdf;border-color:#3b7ff0;color:#fff}
+ table{width:100%%;border-collapse:collapse;font-size:11px;margin-top:6px}
+ td{padding:2px 3px;border-bottom:1px solid #1a2029}
+ tr{cursor:pointer}
+ tr:hover td{background:#182031}
+ tr.sel td{background:#1e2b45}
+ .sw{width:9px;height:9px;border-radius:2px;display:inline-block}
+ .t{text-align:right;color:#9fb0c6;font-variant-numeric:tabular-nums}
+ #hud{position:absolute;left:12px;top:12px;background:rgba(12,16,22,.86);
+   border:1px solid #232a36;border-radius:6px;padding:9px 11px;font-size:11px;
+   line-height:1.7;pointer-events:none}
+ #hud b{color:#e8eef7}
+ .k{color:#6f7d92}
+ #legend{position:absolute;right:12px;bottom:12px;background:rgba(12,16,22,.86);
+   border:1px solid #232a36;border-radius:6px;padding:8px 10px;font-size:11px}
+ .grad{width:130px;height:8px;border-radius:2px;margin:4px 0 2px;
+   background:linear-gradient(90deg,#2b3a8f,#1f8fbf,#31c46a,#ffd23f,#ff5b3d)}
+ .row{display:flex;justify-content:space-between;color:#6f7d92;font-size:10px}
+</style>
+<div id=wrap>
+ <div id=view>
+  <canvas id=c></canvas>
+  <div id=hud></div>
+  <div id=legend><div>speed</div><div class=grad></div>
+    <div class=row><span>0</span><span>%(vmax)d km/h</span></div></div>
+ </div>
+ <div id=side>
+  <h1>Summer 2026 - 01</h1>
+  <div class=sub>%(n)d human runs, per-tick paths<br>decoded from ghost files</div>
+
+  <div class=ctl>
+   <label>colour by</label>
+   <button id=bSpeed class=on>speed</button><button id=bRun>run</button>
+  </div>
+  <div class=ctl>
+   <label>lateral exaggeration <span id=xlab class=t>1x</span></label>
+   <input type=range id=xex min=1 max=40 value=1>
+   <div style="color:#6f7d92;font-size:10px;margin-top:3px">
+    the runs differ by only a few metres on a 500 m track; push this up to
+    separate them visually (deviation from the mean line is scaled, the mean
+    line itself is not)</div>
+  </div>
+  <div class=ctl>
+   <label>replay <span id=tlab class=t>off</span></label>
+   <input type=range id=time min=0 max=1000 value=0>
+   <button id=play>play</button><button id=stopb>reset</button>
+  </div>
+  <div class=ctl>
+   <label>vertical exaggeration <span id=zlab class=t>3x</span></label>
+   <input type=range id=zex min=1 max=12 value=3>
+  </div>
+  <div class=ctl>
+   <button id=all>all</button><button id=none>none</button><button id=top>top 5</button>
+  </div>
+  <table id=list></table>
+ </div>
+</div>
+<script>
+const RUNS = %(runs)s;
+const CPS  = %(cps)s;
+const VMAX = %(vmax)d;
+
+const cv=document.getElementById('c'), g=cv.getContext('2d');
+let W=0,H=0;
+function resize(){const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;
+  W=r.width;H=r.height;cv.width=W*d;cv.height=H*d;g.setTransform(d,0,0,d,0,0);draw();}
+addEventListener('resize',resize);
+
+// centre the world
+let cx=0,cz=0,cy=0;
+{let mnx=1e9,mxx=-1e9,mnz=1e9,mxz=-1e9,mny=1e9;
+ for(const r of RUNS) for(const p of r.p){
+   mnx=Math.min(mnx,p[0]);mxx=Math.max(mxx,p[0]);
+   mnz=Math.min(mnz,p[2]);mxz=Math.max(mxz,p[2]);mny=Math.min(mny,p[1]);}
+ cx=(mnx+mxx)/2; cz=(mnz+mxz)/2; cy=mny;
+ var EXTENT=Math.max(mxx-mnx,mxz-mnz);}
+
+let yaw=-0.7, pitch=0.85, dist=EXTENT*1.5, zex=3, xex=1, colourBy='speed';
+
+// mean line, resampled by index: the reference the exaggeration works from
+const NS=Math.min(...RUNS.map(r=>r.p.length));
+const MEAN=[];
+for(let k=0;k<NS;k++){let sx=0,sy=0,sz=0;
+  for(const r of RUNS){const j=Math.round(k*(r.p.length-1)/(NS-1));
+    sx+=r.p[j][0];sy+=r.p[j][1];sz+=r.p[j][2];}
+  MEAN.push([sx/RUNS.length,sy/RUNS.length,sz/RUNS.length]);}
+function exaggerate(r,k){
+  const j=Math.round(k*(r.p.length-1)/(NS-1)), p=r.p[j], m=MEAN[k];
+  return [m[0]+(p[0]-m[0])*xex, m[1]+(p[1]-m[1])*xex, m[2]+(p[2]-m[2])*xex, p[3]];
+}
+let sel=new Set(RUNS.map((_,i)=>i)), hover=-1, tcur=-1, playing=false;
+
+// --- projection: plain 3D -> screen, no library
+function proj(x,y,z){
+  const dx=x-cx, dy=(y-cy)*zex, dz=z-cz;
+  const cy_=Math.cos(yaw), sy=Math.sin(yaw);
+  let rx=dx*cy_-dz*sy, rz=dx*sy+dz*cy_;
+  const cp=Math.cos(pitch), sp=Math.sin(pitch);
+  let ry=dy*cp-rz*sp, rw=dy*sp+rz*cp+dist;
+  if(rw<1) rw=1;
+  const f=(Math.min(W,H)*0.9)/rw;
+  return [W/2+rx*f, H/2-ry*f, rw];
+}
+function speedColour(v){
+  const t=Math.max(0,Math.min(1,v/VMAX));
+  const stops=[[43,58,143],[31,143,191],[49,196,106],[255,210,63],[255,91,61]];
+  const s=t*(stops.length-1), i=Math.floor(s), f=s-i;
+  const a=stops[i], b=stops[Math.min(stops.length-1,i+1)];
+  return `rgb(${a[0]+(b[0]-a[0])*f|0},${a[1]+(b[1]-a[1])*f|0},${a[2]+(b[2]-a[2])*f|0})`;
+}
+function runColour(i){return `hsl(${(i*47)%%360} 70%% 60%%)`;}
+
+function ground(){
+  g.strokeStyle='#1a212c'; g.lineWidth=1;
+  const step=64, R=EXTENT*0.8;
+  for(let x=-R;x<=R;x+=step){
+    const a=proj(cx+x,cy,cz-R), b=proj(cx+x,cy,cz+R);
+    g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();
+    const c=proj(cx-R,cy,cz+x), d=proj(cx+R,cy,cz+x);
+    g.beginPath();g.moveTo(c[0],c[1]);g.lineTo(d[0],d[1]);g.stroke();
+  }
+}
+function markers(){
+  g.font='11px sans-serif';
+  for(const k in CPS){
+    const p=CPS[k], s=proj(p[0],cy+2,p[1]);
+    g.fillStyle='#7d8ca3';
+    g.beginPath(); g.arc(s[0],s[1],4,0,7); g.fill();
+    g.fillStyle='#9fb0c6'; g.fillText(k,s[0]+7,s[1]+3);
+  }
+}
+function draw(){
+  g.fillStyle='#0b0e13'; g.fillRect(0,0,W,H);
+  ground(); markers();
+  const idx=[...sel].sort((a,b)=>RUNS[b].time-RUNS[a].time);
+  for(const i of idx){
+    const r=RUNS[i];
+    const pts = xex>1 ? Array.from({length:NS},(_,k)=>exaggerate(r,k)) : r.p;
+    const lim = tcur<0 ? pts.length : Math.min(pts.length,
+        Math.max(2, Math.round(pts.length*tcur)));
+    g.lineWidth = (i===hover)?3.2:1.6;
+    if(colourBy==='run'){
+      g.strokeStyle=runColour(i); g.globalAlpha=(hover<0||i===hover)?0.95:0.25;
+      g.beginPath();
+      for(let k=0;k<lim;k++){const s=proj(pts[k][0],pts[k][1],pts[k][2]);
+        k?g.lineTo(s[0],s[1]):g.moveTo(s[0],s[1]);}
+      g.stroke();
+    }else{
+      g.globalAlpha=(hover<0||i===hover)?0.95:0.3;
+      for(let k=1;k<lim;k++){
+        const a=proj(pts[k-1][0],pts[k-1][1],pts[k-1][2]);
+        const b=proj(pts[k][0],pts[k][1],pts[k][2]);
+        g.strokeStyle=speedColour(pts[k][3]);
+        g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke();
+      }
+    }
+    if(tcur>=0&&lim>1){        // the car
+      const p=pts[lim-1], s=proj(p[0],p[1],p[2]);
+      g.globalAlpha=1; g.fillStyle=colourBy==='run'?runColour(i):speedColour(p[3]);
+      g.beginPath();g.arc(s[0],s[1],3.4,0,7);g.fill();
+    }
+  }
+  g.globalAlpha=1;
+  const h=document.getElementById('hud');
+  let txt=`<b>${sel.size}</b> of ${RUNS.length} runs shown`;
+  if(hover>=0){const r=RUNS[hover];
+    txt=`<b>${r.name}</b><br><span class=k>time</span> ${(r.time/1000).toFixed(3)} s`;
+    if(r.cps&&r.cps.length)txt+=`<br><span class=k>splits</span> ${r.cps.map(v=>(v/1000).toFixed(2)).join(' / ')}`;}
+  if(tcur>=0)txt+=`<br><span class=k>t</span> ${(tcur*100).toFixed(0)}%% of run`;
+  h.innerHTML=txt;
+}
+
+// --- interaction
+let drag=null;
+cv.addEventListener('mousedown',e=>drag={x:e.clientX,y:e.clientY,yaw,pitch});
+addEventListener('mouseup',()=>drag=null);
+addEventListener('mousemove',e=>{
+  if(!drag)return;
+  yaw=drag.yaw+(e.clientX-drag.x)*0.006;
+  pitch=Math.max(0.05,Math.min(1.5,drag.pitch+(e.clientY-drag.y)*0.005));
+  draw();
+});
+cv.addEventListener('wheel',e=>{e.preventDefault();
+  dist*=Math.exp(e.deltaY*0.0011); draw();},{passive:false});
+
+const list=document.getElementById('list');
+RUNS.forEach((r,i)=>{
+  const tr=document.createElement('tr'); tr.className='sel';
+  tr.innerHTML=`<td><span class=sw style="background:${runColour(i)}"></span></td>`+
+    `<td>${r.name}</td><td class=t>${(r.time/1000).toFixed(3)}</td>`;
+  tr.onmouseenter=()=>{hover=i;draw();};
+  tr.onmouseleave=()=>{hover=-1;draw();};
+  tr.onclick=()=>{sel.has(i)?sel.delete(i):sel.add(i);
+    tr.className=sel.has(i)?'sel':''; draw();};
+  list.appendChild(tr);
+});
+function setAll(f){sel=new Set(RUNS.map((_,i)=>i).filter(f));
+  [...list.children].forEach((tr,i)=>tr.className=sel.has(i)?'sel':''); draw();}
+document.getElementById('all').onclick=()=>setAll(()=>true);
+document.getElementById('none').onclick=()=>setAll(()=>false);
+document.getElementById('top').onclick=()=>setAll(i=>i<5);
+document.getElementById('bSpeed').onclick=e=>{colourBy='speed';
+  e.target.className='on';document.getElementById('bRun').className='';draw();};
+document.getElementById('bRun').onclick=e=>{colourBy='run';
+  e.target.className='on';document.getElementById('bSpeed').className='';draw();};
+const tr_=document.getElementById('time'), tl=document.getElementById('tlab');
+tr_.oninput=()=>{tcur=tr_.value/1000; tl.textContent=(tcur*100).toFixed(0)+'%%'; draw();};
+document.getElementById('stopb').onclick=()=>{playing=false;tcur=-1;tr_.value=0;
+  tl.textContent='off';draw();};
+document.getElementById('play').onclick=()=>{playing=!playing;if(playing)tick();};
+function tick(){if(!playing)return;
+  tcur=(tcur<0?0:tcur)+0.004; if(tcur>1)tcur=0;
+  tr_.value=tcur*1000; tl.textContent=(tcur*100).toFixed(0)+'%%';
+  draw(); requestAnimationFrame(tick);}
+const xr=document.getElementById('xex');
+xr.oninput=()=>{xex=+xr.value;document.getElementById('xlab').textContent=xex+'x';draw();};
+const zr=document.getElementById('zex');
+zr.oninput=()=>{zex=+zr.value;document.getElementById('zlab').textContent=zex+'x';draw();};
+resize();
+</script>

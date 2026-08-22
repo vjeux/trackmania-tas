@@ -1,0 +1,23 @@
+[package]
+name = "clip"
+version = "0.1.0"
+edition = "2021"
+
+# std only, no dependencies: this has to build on the render box's WSL side with
+# no network and no vendoring, exactly like the rest of this workspace.
+
+[lib]
+name = "clip"
+path = "src/lib.rs"
+
+[[bin]]
+name = "clip"
+path = "src/main.rs"
+
+# The trainer's browser playtest lives here rather than in its own crate: it is
+# the same job as `clip` -- drive an external binary that is absent on most
+# boxes, and gate on what it produced -- and it reuses this crate's process and
+# temp-dir plumbing verbatim. One member, one build.
+[[bin]]
+name = "playtest"
+path = "src/bin/playtest.rs"

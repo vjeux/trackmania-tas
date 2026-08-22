@@ -1,0 +1,7 @@
+$ tmtraj wheels $TESTDATA/human_22730.Ghost.Gbx --race 22730
+[exit 0]
+wheel bytes: least varying wheel is #1 with 454 distinct values over 455 samples
+radius fitted on 89 supported steps: 0.3644 m
+Supported  n    89   wheel/car rate  p10   0.943  median   1.000  p90   1.003
+Ballistic  n     3   wheel/car rate  p10   1.031  median   1.034  p90   1.035
+Unknown    n   361   wheel/car rate  p10   0.915  median   0.997  p90   1.007

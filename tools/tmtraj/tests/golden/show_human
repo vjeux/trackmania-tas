@@ -1,0 +1,10 @@
+$ tmtraj show $TESTDATA/human_22730.Ghost.Gbx --head 3
+[exit 0]
+$TESTDATA/human_22730.Ghost.Gbx
+  version 11  samples 455  period 50 ms  sample_size 116  span 0.000 .. 22.730
+  declared 22.730   checkpoints 7.208 16.402 22.730
+  entities 0x0A018000x455@116B 0x2D001000x454@13B 0x032CB000x0@0B
+        t          x        y          z      km/h   gear   rpm
+    0.000   1552.000   34.002    560.000      0.81    1.0     0
+    0.050   1552.000   34.002    560.015      2.78    1.0     3
+    0.100   1552.000   34.004    560.070      5.65    1.0     7

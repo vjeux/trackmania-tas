@@ -331,7 +331,41 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
     let worst = steps.iter().cloned().fold((0.0, 0i64), |a, b| if b.0 > a.0 { b } else { a });
     // 200 m/s = 720 km/h, comfortably above anything this game does.
     let bar = (p50 * 8.0).max(200.0);
+    // THE SPEEDOMETER IS THE WITNESS, and it needs no corpus bar at all.
+    //
+    // `CSceneVehicleVis` records the car's own scalar speed per sample,
+    // independently of position. If position says 212 m/s and the speedometer
+    // agrees, it drove there; if the speedometer says 40 m/s, the position
+    // moved without the car. The classification separates the three cases that
+    // the bar above cannot: ORIGIN (a first sample at (0,0,0) is a placeholder,
+    // not a place the car was), RESPAWN (recorded speed exactly 0 — normal on
+    // Trial maps) and SPLICE (a ratio in the thousands: 227654 reads 50090 m/s
+    // implied against 19.2 recorded).
+    //
+    // This is `intg c3`, which has existed since the night the bar produced a
+    // work queue of 24 files across 8 maps that were mostly never broken — and
+    // which the gate has never called, because the gate shells out to this
+    // command and this command kept the bar. It is C3 now.
+    let classified = crate::intgcmd::jumps(&r);
+    let splices: Vec<&crate::intgcmd::JumpVerdict> =
+        classified.iter().filter(|j| j.kind.starts_with("SPLICE")).collect();
+    let benign = classified.len() - splices.len();
     if respawn_only {
+    } else if let Some(j) = splices.first() {
+        o.bad("C3", format!(
+            "the car moves {:.1} m in {:.3} s at {:.3} s -- {:.0} m/s implied against {:.1} m/s on \
+             its own speedometer. No speed explains this: it is a teleport, a carrier tail or a \
+             spliced record. ({} further jump(s), {} of them explained as origin or respawn)",
+            j.dist, 0.05, j.ms as f64 / 1000.0, j.dist / 0.05, j.recorded,
+            classified.len().saturating_sub(1), benign
+        ));
+    } else if worst.0 > bar && benign > 0 {
+        o.ok("C3", format!(
+            "worst implied speed {:.1} m/s at {:.3} s (median {:.1}) -- above the {:.0} m/s bar, \
+             but the car's own speedometer explains every one of the {} jumps (origin/respawn), \
+             which is why the bar alone once condemned published originals",
+            worst.0, worst.1 as f64 / 1000.0, p50, bar, benign
+        ));
     } else if worst.0 <= bar {
         o.ok("C3", format!("worst implied speed {:.1} m/s at {:.3} s (median {:.1} m/s)", worst.0, worst.1 as f64 / 1000.0, p50));
     } else {

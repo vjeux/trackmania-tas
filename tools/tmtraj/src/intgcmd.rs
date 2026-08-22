@@ -11,7 +11,9 @@
 //! different physical states, and no input sequence returns them to EXACTLY
 //! 0.000000 m -- the same f32 bits in all three components. So the sequence
 //!
-//!     bit-identical  ->  diverge past a threshold  ->  bit-identical again
+//! ```text
+//! bit-identical  ->  diverge past a threshold  ->  bit-identical again
+//! ```
 //!
 //! cannot be produced by driving. It is a splice: two runs' samples in one
 //! record. That is what a partially-regenerated ghost is.
@@ -30,6 +32,8 @@
 //! certificate; the NO-REFERENCE case is reported as its own verdict and must
 //! never be collapsed into CLEAN.
 
+
+use gbx::record;
 use crate::whlcmd::{decode, R};
 
 /// One maximal run of bit-identical samples.
@@ -38,7 +42,6 @@ pub struct ZeroRun {
     pub i0: usize,
     pub i1: usize, // inclusive
     pub ms0: i64,
-    pub ms1: i64,
 }
 
 impl ZeroRun {
@@ -50,17 +53,12 @@ impl ZeroRun {
 pub struct Pair {
     /// samples present in both records, by time
     pub n: usize,
-    pub times: Vec<i64>,
     pub d: Vec<f64>,
     pub ident: Vec<bool>,
     pub runs: Vec<ZeroRun>,
     pub max_d: f64,
-    pub max_ms: i64,
     /// biggest divergence strictly BETWEEN two bit-identical runs
     pub gap_d: f64,
-    pub gap_ms: i64,
-    pub a_n: usize,
-    pub b_n: usize,
 }
 
 /// Bit-identical position: the same twelve bytes, not "close".
@@ -105,15 +103,13 @@ pub fn pair(a: &[R], b: &[R]) -> Pair {
         while j + 1 < n && ident[j + 1] {
             j += 1;
         }
-        runs.push(ZeroRun { i0: i, i1: j, ms0: times[i], ms1: times[j] });
+        runs.push(ZeroRun { i0: i, i1: j, ms0: times[i] });
         i = j + 1;
     }
     let mut max_d = 0.0f64;
-    let mut max_ms = 0i64;
     for k in 0..n {
         if d[k].is_finite() && d[k] > max_d {
             max_d = d[k];
-            max_ms = times[k];
         }
     }
     // The divergence that precedes an identical block -- the load-bearing
@@ -121,28 +117,21 @@ pub fn pair(a: &[R], b: &[R]) -> Pair {
     // run, so a file whose donor block starts at sample 1 is scored too. Non-finite counts as infinite separation: a NaN sample is not
     // "close" to anything, and 270051's files diverge that way.
     let mut gap_d = 0.0f64;
-    let mut gap_ms = 0i64;
     if let Some(r) = runs.iter().find(|r| r.i0 > 0) {
         for k in 0..r.i0 {
             let v = if d[k].is_finite() { d[k] } else { f64::INFINITY };
             if v > gap_d {
                 gap_d = v;
-                gap_ms = times[k];
             }
         }
     }
     Pair {
         n,
-        times,
         d,
         ident,
         runs,
         max_d,
-        max_ms,
         gap_d,
-        gap_ms,
-        a_n: a.len(),
-        b_n: b.len(),
     }
 }
 
@@ -208,271 +197,76 @@ pub fn verdict(p: &Pair, minsep: f64) -> Verdict {
     Verdict::Clean
 }
 
-fn fmt_s(ms: i64) -> String {
-    format!("{:.3}", ms as f64 / 1000.0)
-}
 
-pub fn report(a_path: &str, b_path: &str, p: &Pair, v: Verdict, minsep: f64) {
-    println!("=== {}", a_path);
-    println!("    vs {}", b_path);
-    println!(
-        "    {} shared sample instants ({} in the file, {} in the reference)",
-        p.n, p.a_n, p.b_n
-    );
-    let nid = p.ident.iter().filter(|x| **x).count();
-    println!(
-        "    bit-identical positions: {} of {} ({:.1} %) in {} run(s)",
-        nid,
-        p.n,
-        100.0 * nid as f64 / p.n.max(1) as f64,
-        p.runs.len()
-    );
-    for (k, r) in p.runs.iter().enumerate() {
-        let where_ = if r.i0 == 0 {
-            "HEAD"
-        } else if r.i1 == p.n - 1 {
-            "TAIL"
-        } else {
-            "interior"
-        };
-        println!(
-            "      run {:>2}  {:<8} samples [{}..{}]  {} .. {} s  ({} samples)",
-            k + 1,
-            where_,
-            r.i0,
-            r.i1,
-            fmt_s(r.ms0),
-            fmt_s(r.ms1),
-            r.n()
-        );
-    }
-    println!(
-        "    max separation {:.4} m at {} s",
-        p.max_d,
-        fmt_s(p.max_ms)
-    );
-    if p.runs.len() >= 2 {
-        println!(
-            "    separation BETWEEN the outer identical runs: {:.4} m at {} s (threshold {:.1} m)",
-            p.gap_d,
-            fmt_s(p.gap_ms),
-            minsep
-        );
-    }
-    println!("    VERDICT {}", v.word());
-    if v == Verdict::Contaminated {
-        println!(
-            "      identical -> {:.1} m apart -> identical again. Two runs' samples in one record.",
-            p.gap_d
-        );
-    }
-}
 
-fn load(path: &str) -> Result<Vec<R>, String> {
-    decode(path)
-}
-
+/// `tmtraj gate` — the publish gate.
+///
+/// Exit 0 publishable, 2 refused, 3 UNMEASURED — and **3 is never folded into
+/// 0**: an input the gate could not read is not a verdict about the ghost.
+///
+/// WHAT WAS DELETED FROM HERE, AND WHY. This module used to expose eighteen
+/// subcommands. Fourteen were the manual faces of an investigation — `pair`,
+/// `sweep`, `lag`, `stale`, `c3`, `c12`, `echo`, `c11b`, `selfsim`, `qrule`,
+/// `poison`, `corrupt`, `tapecsv`, `md5`. The ENGINES behind the load-bearing
+/// ones are still here and the gate calls them; the CLIs are gone, because a
+/// command that exists only so a person can eyeball one number during one
+/// night's work is not an API.
+///
+/// Three of them were worse than unused:
+///
+/// * **`c12` was a correct check wired to nothing.** It plugs B-contam's
+///   documented blind spot — the near-copy that is never byte-equal — and no
+///   pipeline ran it. It is now a gate check.
+/// * **`c3` was the corrected teleport test, and the gate ran the old one.**
+///   Its speedometer rule is now C3 in `tmtraj check`, which is what the gate
+///   shells out to.
+/// * **`c11b`'s CLI could only ever print NO-VERDICT**, because it called
+///   `c11b_verdict` with a hard-coded `control = None`, so the
+///   MATCHES-THE-GAME and STALE-BUFFER arms were unreachable from the command
+///   line. Its lesson survives in C-route, which scans the lag: *a magnitude
+///   cannot see which side of a tick a file is on.* 227654's record reads
+///   0.5485 m at lag 0 and 0.0000 m at lag −1, because 0.5485 m is exactly how
+///   far that car travels in one 10 ms tick, and the first version of the check
+///   convicted an honest file inside an hour.
 pub fn cmd(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    if args.is_empty() {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
         print_usage();
         std::process::exit(2);
     }
-    match args[0].as_str() {
-        "pair" => {
-            let rest = &args[1..];
-            let mut pos: Vec<&String> = Vec::new();
-            let mut i = 0;
-            while i < rest.len() {
-                if rest[i].starts_with("--") {
-                    if matches!(rest[i].as_str(), "--minsep" | "--tsv" | "--kind") {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                    continue;
-                }
-                pos.push(&rest[i]);
-                i += 1;
-            }
-            if pos.len() != 2 {
-                eprintln!("tmtraj intg pair FILE REFERENCE [--minsep M] [--tsv]");
-                std::process::exit(2);
-            }
-            let minsep: f64 = flag("--minsep").and_then(|v| v.parse().ok()).unwrap_or(5.0);
-            let a = match load(pos[0]) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("=== {}\n    DECODE-FAIL {}", pos[0], e);
-                    std::process::exit(2)
-                }
-            };
-            let b = match load(pos[1]) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("=== {}\n    reference DECODE-FAIL {}", pos[1], e);
-                    std::process::exit(2)
-                }
-            };
-            let p = pair(&a, &b);
-            let v = verdict(&p, minsep);
-            if args.iter().any(|x| x == "--tsv") {
-                for k in 0..p.n {
-                    println!(
-                        "{}\t{}\t{:.6}\t{}",
-                        k,
-                        p.times[k],
-                        p.d[k],
-                        if p.ident[k] { 1 } else { 0 }
-                    );
-                }
-            } else {
-                report(pos[0], pos[1], &p, v, minsep);
-            }
-            std::process::exit(if v == Verdict::Contaminated { 2 } else { 0 });
-        }
-        "sweep" => cmd_sweep(&args[1..]),
-        "audit" => cmd_audit(&args[1..]),
-        "gate" => cmd_gate(&args[1..]),
-        "dup" => cmd_dup(&args[1..]),
-        "manifest" => crate::manifest::cmd(&args[1..]),
-        "lag" => cmd_lag(&args[1..]),
-        "c3" => cmd_c3(&args[1..]),
-        "corrupt" => cmd_corrupt(&args[1..]),
-        "stale" => cmd_stale(&args[1..]),
-        "poison" => cmd_poison(&args[1..]),
-        "selfsim" => cmd_selfsim(&args[1..]),
-        "c11b" => cmd_c11b(&args[1..]),
-        "tapecsv" => cmd_tapecsv(&args[1..]),
-        "echo" => {
-            let flag = |n: &str| -> Option<String> {
-                args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-            };
-            let g = flag("--ghost").expect("--ghost G.Ghost.Gbx");
-            for t in args.iter().enumerate().filter(|(_, a)| *a == "--tape-csv").filter_map(|(i, _)| args.get(i + 1)) {
-                match echo_compare(&g, t) {
-                    Ok((n, s, b)) => println!(
-                        "{} vs {}: {} shared instants, steer agrees on {:.1} %, gas/brake on {:.1} %",
-                        g, t, n, 100.0 * s as f64 / n as f64, 100.0 * b as f64 / n as f64
-                    ),
-                    Err(e) => println!("{} vs {}: UNMEASURED -- {}", g, t, e),
-                }
-            }
-        }
-        "qrule" => cmd_qrule(&args[1..]),
-        "c12" => cmd_c12(&args[1..]),
-        "md5" => {
-            for f in &args[1..] {
-                match std::fs::read(f) {
-                    Ok(b) => println!("{}", md5_hex(&b)),
-                    Err(e) => {
-                        eprintln!("{}: {}", f, e);
-                        std::process::exit(2)
-                    }
-                }
-            }
-        }
-        _ => {
-            print_usage();
-            std::process::exit(2);
-        }
-    }
+    cmd_gate(args);
 }
 
 fn print_usage() {
     print!(
         "\
-tmtraj intg -- ghost integrity: is this file's telemetry its own?
+usage: tmtraj gate GHOST... --race S --refs refs.tsv --mapid ID
+                   [--map M.Map.Gbx --server DIR] [--source SECOND_GENERATION]
+                   [--route route.csv | --route-dir D] [--manifest F]
+                   [--require-manifest] [--minsep M]
 
-  tmtraj intg pair FILE REFERENCE [--minsep M] [--tsv]
-        Align two ghosts on their shared sample instants and report every
-        maximal run of BIT-IDENTICAL positions, the separation between them,
-        and the re-convergence verdict.
+The publish gate. Exit 0 publishable, 2 REFUSED, 3 UNMEASURED -- and 3 is never
+folded into 0: an input the gate could not read is not a verdict about the file.
 
-  tmtraj intg sweep --file F --refs R1,R2,... [--kind human|sibling]
-                    [--minsep M] [--tsv]
-        Same test against several references; prints one TSV row per (file,
-        reference) pair plus the worst verdict. --kind only LABELS the rows:
-        human references and same-pipeline siblings are never merged.
+  A  C1-C10    is this a physically coherent run of a car   (via `tmtraj check`)
+  B  B-contam  bit-exact against every human recording held for the map
+     C12       and, where the tapes differ, the trajectories must part
+  C  C-oracle  does the dedicated server re-simulate THE WRITTEN BYTES
+     C-header  does the file declare the time it actually does
+     C-ident   our login, no account id
+  F  C-spawn   the first in-race sample at the map's spawn, FACING the way
+               every run on it faces
+  G  C-route   the record against the engine's own trajectory, read by an
+               instrument that never touches the record
+  E  E-stale   is this a physics tick behind a second independent generation
+  D  D-manifest  does the file's own account of how it was made hold up
 
-A shared PREFIX proves nothing (determinism). RE-CONVERGENCE to exactly
-0.000000 m after a real separation cannot be driven, only spliced.
+A shared PREFIX proves nothing -- the simulation is deterministic. Only
+RE-CONVERGENCE to exactly 0.000000 m after a real separation cannot be driven.
 "
     );
 }
 
-fn cmd_sweep(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let file = flag("--file").expect("--file");
-    let refs = flag("--refs").expect("--refs");
-    let kind = flag("--kind").unwrap_or_else(|| "unknown".into());
-    let minsep: f64 = flag("--minsep").and_then(|v| v.parse().ok()).unwrap_or(5.0);
-    let tsv = args.iter().any(|a| a == "--tsv");
-    let a = match load(&file) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("{}\t{}\tDECODE-FAIL\t{}", file, kind, e);
-            std::process::exit(2);
-        }
-    };
-    let mut worst = Verdict::NoComparison;
-    if tsv {
-        println!(
-            "file\tref\tkind\tn_common\tn_ident\tn_runs\thead_n\thead_end_s\ttail_n\ttail_start_s\t\
-             max_sep_m\tgap_sep_m\tgap_s\tverdict"
-        );
-    }
-    for rp in refs.split(',').filter(|s| !s.is_empty()) {
-        let b = match load(rp) {
-            Ok(v) => v,
-            Err(e) => {
-                println!("{}\t{}\t{}\tref-DECODE-FAIL\t{}", file, rp, kind, e);
-                continue;
-            }
-        };
-        let p = pair(&a, &b);
-        let v = verdict(&p, minsep);
-        // worst-of: contaminated beats clean beats identical beats none
-        let rank = |v: Verdict| match v {
-            Verdict::Contaminated => 3,
-            Verdict::Identical => 2,
-            Verdict::Clean => 1,
-            Verdict::NoComparison => 0,
-        };
-        if rank(v) > rank(worst) {
-            worst = v;
-        }
-        if tsv {
-            let nid = p.ident.iter().filter(|x| **x).count();
-            let head = p.runs.first().filter(|r| r.i0 == 0);
-            let tail = p.runs.last().filter(|r| p.n > 0 && r.i1 == p.n - 1);
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{}\t{}",
-                file,
-                rp,
-                kind,
-                p.n,
-                nid,
-                p.runs.len(),
-                head.map_or(0, |r| r.n()),
-                head.map_or("-".into(), |r| fmt_s(r.ms1)),
-                tail.map_or(0, |r| r.n()),
-                tail.map_or("-".into(), |r| fmt_s(r.ms0)),
-                p.max_d,
-                p.gap_d,
-                if p.runs.len() >= 2 { fmt_s(p.gap_ms) } else { "-".into() },
-                v.word()
-            );
-        } else {
-            report(&file, rp, &p, v, minsep);
-        }
-    }
-    std::process::exit(if worst == Verdict::Contaminated { 2 } else { 0 });
-}
+
 
 // ---------------------------------------------------------------------------
 // md5, so a row can carry the identity of the bytes it describes. No crate: the
@@ -681,7 +475,7 @@ fn worst_over(a: &[R], refs: &[&Ref], minsep: f64, cache: &mut Cache) -> Option<
     best
 }
 
-pub fn cmd_audit(args: &[String]) {
+pub(crate) fn cmd_audit(args: &[String]) {
     let flag = |n: &str| -> Option<String> {
         args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
     };
@@ -1001,14 +795,6 @@ pub struct OracleOut {
     pub login: Option<String>,
 }
 
-/// Re-simulate ONE ghost with the real dedicated server.
-///
-/// This is deliberately the file on disk, not the tape it was made from. The
-/// whole failure class this gate exists for is a file whose payloads disagree,
-/// and the only way to speak about the artefact is to hand the artefact over.
-pub fn oracle_raw(server: &str, map: &str, ghost: &str) -> Result<String, String> {
-    oracle_text(server, map, ghost)
-}
 
 pub fn oracle_run(server: &str, map: &str, ghost: &str) -> Result<OracleOut, String> {
     let text = oracle_text(server, map, ghost)?;
@@ -1115,74 +901,6 @@ pub struct GateOut {
     pub lines: Vec<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
-/// The record a ghost carries, against the engine's own trajectory for the same
-/// tape as dumped by `fk btraj2`. Returns
-/// `(shared instants, median, mean, max, the route's own quantisation step)`.
-///
-/// The route CSV is written with six significant digits, so its resolution
-/// depends on where the map sits in world coordinates -- ~0.01 m at 1400, ~0.001
-/// at 140. The step is derived from the data rather than assumed, so the caller
-/// compares against the instrument's own reach instead of a constant somebody
-/// picked on one map.
-/// The record's own per-sample INPUT ECHO against a tape.
-///
-/// A ghost's samples carry the steering, throttle and brake the car was being
-/// given at that instant. `fk regen --inputs` writes that channel from the
-/// engine, so it says WHICH TAPE THE ENGINE WAS RUNNING when the sample was
-/// taken -- and a record poisoned with the container's run echoes the
-/// container's inputs, not ours.
-///
-/// This is the third instrument, and the cheapest: it needs no locate, no fork
-/// server and no second simulation. It reads the file and a `tmtas trace` CSV.
-/// It is what settles a map where `fk btraj2` cannot find the car.
-///
-/// Returns `(compared, steer agreements, gas/brake agreements)`. Steering is a
-/// signed byte in the tape and a normalised float in the record, so it is
-/// compared after scaling with one quantisation step of slack.
-pub fn echo_compare(ghost: &str, tape_csv: &str) -> Result<(usize, usize, usize), String> {
-    let txt = std::fs::read_to_string(tape_csv).map_err(|e| format!("{}: {}", tape_csv, e))?;
-    let mut tape: std::collections::HashMap<i64, (i64, i64, i64)> = std::collections::HashMap::new();
-    for (i, l) in txt.lines().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let f: Vec<&str> = l.split(',').collect();
-        if f.len() < 4 {
-            continue;
-        }
-        if let (Ok(t), Ok(s), Ok(a), Ok(b)) = (
-            f[0].parse::<i64>(),
-            f[1].parse::<i64>(),
-            f[2].parse::<i64>(),
-            f[3].parse::<i64>(),
-        ) {
-            tape.insert(t, (s, a, b));
-        }
-    }
-    if tape.is_empty() {
-        return Err(format!("{} has no usable rows", tape_csv));
-    }
-    let d = crate::entrec::decode_ghost(ghost).map_err(|e| format!("{}: {}", ghost, e))?;
-    let (mut n, mut sok, mut bok) = (0usize, 0usize, 0usize);
-    for s in &d.samples {
-        let Some(&(ts, ta, tb)) = tape.get(&(s.time_ms as i64)) else { continue };
-        n += 1;
-        if ((s.steer * 127.0).round() as i64 - ts).abs() <= 1 {
-            sok += 1;
-        }
-        if (s.gas > 0.5) == (ta != 0) && (s.brake > 0.5) == (tb != 0) {
-            bok += 1;
-        }
-    }
-    if n == 0 {
-        return Err(format!(
-            "the record and {} share no instant -- the trace was made from a different run",
-            tape_csv
-        ));
-    }
-    Ok((n, sok, bok))
-}
 
 pub fn route_compare(ghost: &str, route: &str) -> Result<(usize, i64, f64, f64, f64, f64, f64), String> {
     let rows = std::fs::read_to_string(route).map_err(|e| format!("{}: {}", route, e))?;
@@ -1212,7 +930,7 @@ pub fn route_compare(ghost: &str, route: &str) -> Result<(usize, i64, f64, f64, 
     if rmap.is_empty() {
         return Err(format!("{} has no usable rows", route));
     }
-    let d = crate::entrec::decode_ghost(ghost).map_err(|e| format!("{}: {}", ghost, e))?;
+    let d = record::decode_ghost(ghost).map_err(|e| format!("{}: {}", ghost, e))?;
     // SCAN INTEGER TICK OFFSETS. Comparing at lag 0 and reporting a MAGNITUDE is
     // how the first version of this check convicted an honest file: 227654 reads
     // 0.5485 m at lag 0 and 0.0000 m at lag -1, because 0.5485 m is how far that
@@ -1298,7 +1016,7 @@ pub fn gate_one(
                     let v: Vec<R> = r.into_iter().filter(|x| race <= 0 || x.ms <= race).collect();
                     let c = crate::whlcmd::classify(&v, crate::whlcmd::G_DEFAULT, 2.0, 5.0, 3);
                     match wheel_fit(&v, &c.cls) {
-                        Some(w) if w.share >= 0.15 && w.radius.is_finite() => {
+                        Some(w) if c8b_accepts(w.share, w.radius) => {
                             lines.push(format!(
                                 "EXCEPTION C8 applied -- C8b PASSES: {:.0} % of {} rolling steps sit within 15 % of one radius, {:.4} m. \
                                  Upstream C8's 0.30-0.45 m band is the STADIUM wheel; a snow car measures 0.4700 m.",
@@ -1401,6 +1119,62 @@ pub fn gate_one(
                     )),
                 }
             }
+        }
+    }
+
+    // ---- B2. C12: after the tapes part, the trajectories MUST part -------
+    //
+    // B-contam is bit-exact, and it says so: a near-copy that tracks the
+    // reference without ever being byte-equal passes it by construction. This
+    // is the check that plugs that hole, and until now it was implemented in
+    // this file and WIRED TO NOTHING — reachable only from `intg c12`, which
+    // no pipeline ran. A correct check nobody calls is not coverage.
+    //
+    // It asks the physics question exactness cannot: the inputs diverge at some
+    // tick, so the trajectories must separate. Staying together is the anomaly.
+    // The bar is GROWTH relative to the file's own pre-divergence separation,
+    // not a distance — on 279218 five independent clean runs sit 0.29-0.62 m
+    // from the human, so a metre bar refuses honest work, while the two
+    // populations here are six orders of magnitude apart (0.000509 m against
+    // 1113 m) and a factor of ten is a gulf rather than a tuned edge.
+    if let Ok(a) = &a {
+        let humans: Vec<&Ref> =
+            refs.iter().filter(|r| r.map == mapid && r.kind == "human").collect();
+        let mut ran = false;
+        for h in &humans {
+            let Some(fd) = first_sustained_diff(ghost, &h.path) else { continue };
+            let Ok(b) = decode(&h.path) else { continue };
+            let Some(d) = divergence_growth(a, &b, fd) else { continue };
+            ran = true;
+            let growth = d.sep_after / d.sep_before.max(1e-9);
+            if c12_is_near_copy(d.sep_before, d.sep_after) {
+                hard += 1;
+                lines.push(format!(
+                    "FAIL   C12       NEAR-COPY of {}: the tapes part at {} and differ over the \
+                     {} samples after it, yet the trajectories stay {:.6} m apart ({:.1}x the \
+                     {:.6} m they were already apart). Bit-exact tests cannot see this.",
+                    std::path::Path::new(&h.path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    crate::fmt::secs(d.first_diff_ms),
+                    d.n_after,
+                    d.sep_after,
+                    growth,
+                    d.sep_before
+                ));
+            }
+        }
+        if !ran {
+            lines.push(
+                "n/a    C12       no human reference whose tape differs from this one, so the \
+                 near-copy test could not run"
+                    .into(),
+            );
+        } else if !lines.iter().any(|l| l.starts_with("FAIL   C12")) {
+            lines.push(
+                "PASS   C12       the trajectories part after the inputs part, as they must".into(),
+            );
         }
     }
 
@@ -1627,14 +1401,14 @@ pub fn gate_one(
     // The bars are wide on purpose. This separates 0.004 deg from 90 deg; it is
     // not a precision instrument and must never be read as one.
     {
-        let firstpos = |d: &crate::entrec::Decoded| -> Option<crate::entrec::Sample> {
+        let firstpos = |d: &record::Decoded| -> Option<record::Sample> {
             d.samples.iter().find(|s| s.time_ms >= 0).cloned()
         };
         let mut done = false;
         for r in refs.iter().filter(|r| r.map == mapid && r.kind == "human") {
             let (a, b) = match (
-                crate::entrec::decode_ghost(ghost),
-                crate::entrec::decode_ghost(&r.path),
+                record::decode_ghost(ghost),
+                record::decode_ghost(&r.path),
             ) {
                 (Ok(a), Ok(b)) => (a, b),
                 _ => continue,
@@ -1976,7 +1750,7 @@ fn run_checks(ghost: &str, race: i64) -> (i32, usize, usize, Vec<String>) {
 // UNSAFE. (`FK_NO_CHOOSER=1` is the enforcement upstream.)
 // ===========================================================================
 
-pub fn cmd_dup(args: &[String]) {
+pub(crate) fn cmd_dup(args: &[String]) {
     let flag = |n: &str| -> Option<String> {
         args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
     };
@@ -2045,9 +1819,18 @@ pub fn cmd_dup(args: &[String]) {
                 // not an explanation, at ANY alignment: the same reasoning as
                 // `intg lag`, and it subsumes the 100 % case.
                 let hits = lag_scan(a, b, 20.min(p.n));
-                let (best_run, best_lag) =
-                    hits.first().map_or((0, 0), |h| (h.best_run, h.lag));
+                let (best_run, best_lag, best_free_run) = hits
+                    .first()
+                    .map_or((0, 0, 0), |h| (h.best_run, h.lag, h.best_free_run));
                 let all_ident = best_run >= 10;
+                // Reported, not acted on: see LagHit::best_free_run. If these
+                // two differ the identical run began at a shared restore point,
+                // which is what a respawn does and not what a graft does.
+                let free_note = if best_free_run < best_run {
+                    format!(" (only {} of it unanchored by a respawn)", best_free_run)
+                } else {
+                    String::new()
+                };
                 // THE INPUT KEY IS TAKEN OVER THE IDENTICAL RUN ITSELF, not over
                 // the whole recorded window. Two of our tapes seeded from one
                 // human tape share a DETERMINISTIC PREFIX -- identical f32
@@ -2161,7 +1944,7 @@ pub fn cmd_dup(args: &[String]) {
                         best_run,
                         p.max_d,
                         inp,
-                        verdict
+                        format!("{}{}", verdict, free_note)
                     );
                 }
             }
@@ -2170,46 +1953,7 @@ pub fn cmd_dup(args: &[String]) {
     std::process::exit(if refused > 0 { 2 } else { 0 });
 }
 
-/// The validator's own decoded input string for one ghost -- the engine's
-/// account of what it simulated. `None` if the oracle could not answer.
-pub fn oracle_inputs(server: &str, map: &str, ghost: &str) -> Option<String> {
-    let o = oracle_raw(server, map, ghost).ok()?;
-    let p = o.find("\"Inputs\" : \"")?;
-    Some(o[p + 12..].chars().take_while(|c| *c != '"').collect())
-}
 
-/// The tape's decoded inputs over the recorded window, as a digest.
-///
-/// Shells out to `fk tapeinputs`: decoding a ghost's input archive needs
-/// `tmsearch::ghost::Factory`, which lives in the `fk` crate, and `tmtraj` does
-/// not depend on it. Same reasoning as running `tmtraj check` as a subprocess
-/// -- the alternative is a second decoder that can drift from the one every
-/// other tool in the project uses.
-pub fn tape_inputs(ghost: &str, from_ms: i64, to_ms: i64) -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let fk = exe.parent()?.join("fk");
-    let out = std::process::Command::new(if fk.exists() { fk } else { "fk".into() })
-        .args([
-            "tapeinputs",
-            "--ghost",
-            ghost,
-            "--from",
-            &from_ms.to_string(),
-            "--to",
-            &to_ms.to_string(),
-        ])
-        .output()
-        .ok()?;
-    let t = String::from_utf8_lossy(&out.stdout).to_string();
-    let p = t.find("digest=")?;
-    let d: String = t[p + 7..].chars().take_while(|c| !c.is_whitespace()).collect();
-    let ticks: i64 = t
-        .find("ticks=")
-        .and_then(|q| t[q + 6..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
-        .unwrap_or(0);
-    // A window that captured no ticks is not an answer.
-    if d.is_empty() || ticks == 0 { None } else { Some(d) }
-}
 
 // ===========================================================================
 // `intg lag` -- alignment-free comparison, for a reference from ANOTHER
@@ -2238,9 +1982,13 @@ pub fn tape_inputs(ghost: &str, from_ms: i64, to_ms: i64) -> Option<String> {
 pub struct LagHit {
     pub lag: i64,
     pub ident: usize,
-    pub overlap: usize,
     pub best_run: usize,
-    /// the longest run that is NOT anchored at a shared restore point
+    /// The longest identical run that is NOT anchored at a shared restore
+    /// point. A respawn puts both cars at the same trigger, so a run that
+    /// begins there is what the game does, not what a graft does -- and this is
+    /// the number that separates them. It is REPORTED beside `best_run` rather
+    /// than substituted for it: changing which one the rule reads is a change
+    /// to who gets refused, and that needs a control this arm did not run.
     pub best_free_run: usize,
 }
 
@@ -2302,7 +2050,7 @@ pub fn lag_scan(a: &[R], b: &[R], min_overlap: usize) -> Vec<LagHit> {
             }
         }
         if overlap >= min_overlap && ident > 0 {
-            out.push(LagHit { lag, ident, overlap, best_run, best_free_run });
+            out.push(LagHit { lag, ident, best_run, best_free_run });
         }
     }
     out.sort_by(|x, y| y.ident.cmp(&x.ident));
@@ -2348,157 +2096,7 @@ fn anchored_within(a: &[R], start: usize, end: usize, grid_ms: i64) -> bool {
     false
 }
 
-pub fn cmd_lag(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let pos: Vec<&String> = {
-        let mut v = Vec::new();
-        let mut i = 0usize;
-        while i < args.len() {
-            if args[i].starts_with("--") {
-                if matches!(args[i].as_str(), "--min-overlap" | "--min-run") {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            v.push(&args[i]);
-            i += 1;
-        }
-        v
-    };
-    if pos.len() != 2 {
-        eprintln!("tmtraj intg lag FILE REFERENCE [--min-overlap N] [--min-run N]");
-        std::process::exit(2);
-    }
-    let min_ov: usize = flag("--min-overlap").and_then(|v| v.parse().ok()).unwrap_or(20);
-    // A run of identical positions long enough that coincidence is not an
-    // explanation. Ten samples is half a second of driving agreeing to the
-    // last bit in all three components.
-    let min_run: usize = flag("--min-run").and_then(|v| v.parse().ok()).unwrap_or(10);
-    let a = decode(pos[0]).unwrap_or_else(|e| {
-        println!("DECODE-FAIL {}: {}", pos[0], e);
-        std::process::exit(2)
-    });
-    let b = decode(pos[1]).unwrap_or_else(|e| {
-        println!("reference DECODE-FAIL {}: {}", pos[1], e);
-        std::process::exit(2)
-    });
-    let hits = lag_scan(&a, &b, min_ov);
-    println!("=== {}", pos[0]);
-    // COVERAGE, always, even (especially) on a CLEAN verdict: this scan has
-    // already misfired in BOTH directions tonight, and a negative from it is
-    // unquantified without the number of alignments it actually tried.
-    {
-        let lo = -(b.len() as i64) + min_ov as i64;
-        let hi = a.len() as i64 - min_ov as i64;
-        let tried = if hi >= lo { (hi - lo + 1) as usize } else { 0 };
-        println!(
-            "    COVERAGE: {} integer lags in range, {} produced any bit-identical position; \
-             min overlap {} samples",
-            tried,
-            hits.len(),
-            min_ov
-        );
-        if tried == 0 {
-            println!(
-                "    NO VERDICT -- no alignment has {} overlapping samples. This is not a CLEAN \
-                 result, it is an unrun test.",
-                min_ov
-            );
-            std::process::exit(3);
-        }
-    }
-    println!("    vs {} (alignment-free: every integer sample lag)", pos[1]);
-    println!("    {} samples in the file, {} in the reference", a.len(), b.len());
-    if hits.is_empty() {
-        println!("    no lag produces a single bit-identical position");
-        println!("    VERDICT CLEAN (no shared samples at any alignment)");
-        return;
-    }
-    println!("    best lags by bit-identical count:");
-    for h in hits.iter().take(5) {
-        println!(
-            "      lag {:>6} ({:>8.3} s)   {} of {} overlapping positions identical, longest run {} (unanchored {})",
-            h.lag,
-            h.lag as f64 * 0.05,
-            h.ident,
-            h.overlap,
-            h.best_run,
-            h.best_free_run
-        );
-    }
-    let worst = &hits[0];
-    // A head-anchored block is only honest if it is a PROPER PREFIX -- it must
-    // END where the two runs' inputs diverge. A head-anchored block covering
-    // essentially the whole overlap is not determinism, it is a whole-file
-    // copy: exempting it made `intg lag` clear 227654 TAS_57493, which is 365
-    // of 365 the human WR. Caught by control C13, which is exactly why the
-    // known donor copy is in the control set.
-    let covers_all = worst.best_run * 10 >= worst.overlap * 9;
-    if covers_all && worst.best_run >= min_run {
-        println!(
-            "    VERDICT CONTAMINATED -- {} of {} overlapping positions are ONE bit-identical run \
-             at lag {}. A head-anchored block that never ends is not a shared prefix, it is a \
-             copy of the whole recording.",
-            worst.best_run, worst.overlap, worst.lag
-        );
-        std::process::exit(2);
-    }
-    if worst.best_run >= min_run && worst.best_free_run < min_run {
-        println!(
-            "    the longest identical run ({}) begins at a SHARED RESTORE POINT -- the race start\n\
-             \x20   or a respawn -- from which identical inputs give identical positions. That is\n\
-             \x20   determinism, not a splice. Longest run NOT so anchored: {}.",
-            worst.best_run, worst.best_free_run
-        );
-    }
-    if worst.best_free_run >= min_run {
-        println!(
-            "    VERDICT CONTAMINATED -- {} consecutive positions are bit-identical to the reference at lag {}. \
-             Two different drives do not agree to the last f32 bit for {:.2} s.",
-            worst.best_free_run,
-            worst.lag,
-            worst.best_free_run as f64 * 0.05
-        );
-        std::process::exit(2);
-    }
-    println!(
-        "    VERDICT CLEAN -- the longest bit-identical run at any lag is {} sample(s), below the {} needed to exclude coincidence",
-        worst.best_run, min_run
-    );
-}
 
-/// The recorded time span of the longest bit-identical run at a given lag.
-fn find_run_span(a: &[R], b: &[R], lag: i64, want: usize) -> Option<(i64, i64)> {
-    fn key(r: &R) -> Option<&[u8]> {
-        if r.raw.len() >= 59 { Some(&r.raw[47..59]) } else { None }
-    }
-    let mut run = 0usize;
-    let mut start = 0usize;
-    for i in 0..a.len() {
-        let j = i as i64 - lag;
-        let same = if j < 0 || j as usize >= b.len() {
-            false
-        } else {
-            matches!((key(&a[i]), key(&b[j as usize])), (Some(x), Some(y)) if x == y)
-        };
-        if same {
-            if run == 0 {
-                start = i;
-            }
-            run += 1;
-            if run == want {
-                return Some((a[start].ms, a[i].ms));
-            }
-        } else {
-            run = 0;
-        }
-    }
-    None
-}
 
 /// The first race instant at which two tapes' decoded inputs differ.
 /// `None` when the two tapes are identical, or the answer is unavailable.
@@ -2528,7 +2126,7 @@ pub fn first_input_diff(a: &str, b: &str) -> Option<i64> {
 /// Counting it as contamination inflates the finding and, worse, spends
 /// somebody's evening on a benign file.
 pub fn declared_race_ms(path: &str) -> Option<i64> {
-    let d = crate::entrec::decode_ghost(path).ok()?;
+    let d = record::decode_ghost(path).ok()?;
     d.race_time_ms
         .map(|v| v as i64)
         .or_else(|| d.checkpoints_ms.last().map(|v| *v as i64))
@@ -2577,9 +2175,7 @@ pub fn in_race(r: &[R], race_ms: Option<i64>) -> Vec<R> {
 pub struct JumpVerdict {
     pub ms: i64,
     pub dist: f64,
-    pub implied: f64,
     pub recorded: f64,
-    pub after: f64,
     pub kind: &'static str,
 }
 
@@ -2620,9 +2216,9 @@ pub fn jumps(r: &[R]) -> Vec<JumpVerdict> {
             out.push(JumpVerdict {
                 ms: r[i].ms,
                 dist,
-                implied,
+
                 recorded,
-                after: f64::NAN,
+
                 kind: "ORIGIN PLACEHOLDER (a sample at the world origin, not a position)",
             });
             continue;
@@ -2683,105 +2279,13 @@ pub fn jumps(r: &[R]) -> Vec<JumpVerdict> {
         } else {
             "SPLICE (the record continues somewhere this run has never been)"
         };
-        out.push(JumpVerdict { ms: r[i].ms, dist, implied, recorded, after: after_med, kind });
+        let _ = (implied, after_med);
+        out.push(JumpVerdict { ms: r[i].ms, dist, recorded, kind });
     }
     out
 }
 
-pub fn cmd_c3(args: &[String]) {
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if files.is_empty() {
-        eprintln!("tmtraj intg c3 GHOST...   (the speedometer teleport test)");
-        std::process::exit(2);
-    }
-    let mut worst = 0;
-    for f in files {
-        let race = declared_race_ms(f);
-        let r = match decode(f).map(|v| in_race(&v, race)) {
-            Ok(v) => v,
-            Err(e) => {
-                println!("=== {}\n  FAIL C3b  {}", f, e);
-                worst = 2;
-                continue;
-            }
-        };
-        let mut js = jumps(&r);
-        calibrate(&mut js);
-        let splices: Vec<&JumpVerdict> = js.iter().filter(|j| j.kind.starts_with("SPLICE")).collect();
-        println!(
-            "=== {}  --  {}",
-            f,
-            if splices.is_empty() { "PASS C3b" } else { "FAIL C3b" }
-        );
-        if js.is_empty() {
-            println!("  no step exceeds the car's own recorded speed");
-        }
-        for j in &js {
-            println!(
-                "  {:>9.3} s  {:>9.2} m in one step = {:>9.1} m/s implied, speedometer {:>7.1} m/s, \
-                 motion after {:>7.1} m/s  --  {}",
-                j.ms as f64 / 1000.0,
-                j.dist,
-                j.implied,
-                j.recorded,
-                j.after,
-                j.kind
-            );
-        }
-        if !splices.is_empty() {
-            worst = 2;
-        }
-    }
-    std::process::exit(worst);
-}
 
-/// Second pass over one file's jumps: a run that demonstrably respawns is a
-/// run whose OTHER jumps of the same size are respawns too.
-///
-/// WHY THIS PASS EXISTS, and it is the honest limit of C3b. Respawn
-/// displacements on a Trial map cluster at 153-213 m/s implied. Three
-/// discriminators separate most of them from a splice -- the speedometer
-/// reading zero, the car arriving at a standstill, the car returning somewhere
-/// it has already been -- and NONE of the three fires on every respawn: a
-/// respawn to a checkpoint the 50 ms grid never sampled within 10 m, after
-/// which the car drives away, looks exactly like a splice by all three. On
-/// 286279 that left three genuine human runs refused, including
-/// `HUMANCUT_236972` -- the same false positive the old 200 m/s distance bar
-/// produced, reached by a better route.
-///
-/// So the file's own confirmed respawns calibrate the rest of it: if this run
-/// respawns at all, an unexplained jump inside the same magnitude band is a
-/// respawn, not a splice. What stays a splice is a jump ORDERS of magnitude
-/// outside that band. This is deliberately conservative -- it can miss a splice
-/// disguised as a respawn on a respawning map -- because a gate that refuses
-/// genuine files teaches people to override gates, and contamination has two
-/// other instruments (`intg pair`/`lag` and the manifest's coverage) while a
-/// teleport has only this one.
-pub fn calibrate(js: &mut Vec<JumpVerdict>) {
-    let band: Vec<f64> = js
-        .iter()
-        .filter(|j| j.kind.starts_with("RESPAWN"))
-        .map(|j| j.implied)
-        .collect();
-    if band.is_empty() {
-        return;
-    }
-    // The ceiling is this file's own worst confirmed respawn, doubled -- but
-    // never below 300 m/s. A file can contain ONE respawn, and calibrating a
-    // band from a single sample is not calibration: 286279's
-    // AUTHORCUT_220391_watchable has one confirmed respawn at 104 m/s and a
-    // second jump at 233.7, which its own sibling file shows at 234.2 and
-    // confirms as a respawn by returning to a known point. No respawn measured
-    // anywhere in this corpus exceeds ~234 m/s, and every real splice is in
-    // the THOUSANDS (227654: 50 090 m/s), so the two populations are three
-    // orders of magnitude apart and 300 sits in the empty space between them.
-    let hi = (band.iter().cloned().fold(0.0f64, f64::max) * 2.0).max(300.0);
-    for j in js.iter_mut() {
-        if j.kind.starts_with("SPLICE") && j.implied <= hi {
-            j.kind = "RESPAWN (within this run's own confirmed respawn band)";
-        }
-    }
-}
 
 pub fn new_cache() -> Cache {
     Cache::new()
@@ -2854,65 +2358,7 @@ pub fn certify_now(
     (worst, tested, limits)
 }
 
-/// `intg corrupt` -- overwrite every sample's position with a fixed value.
-///
-/// THE POSITIVE CONTROL FOR THE WRITER. `fk regen` producing a file
-/// byte-identical to its input has two explanations -- the input was already
-/// exactly what the engine writes (an honest no-op), or the tool skipped the
-/// work and passed its input through -- and no amount of reading the tool's
-/// own log distinguishes them.
-///
-/// Corrupting the telemetry and regenerating FROM the corrupted file does:
-///
-///   regen(corrupt(X)) == X   the writer genuinely writes engine state, so
-///                            out == in on a clean file is an honest no-op
-///   regen(corrupt(X)) == corrupt(X)
-///                            the writer passed its input through
-///
-/// This needs no locate, no clock bias and no reference recording, so it
-/// cannot fail the way the re-simulation grade just did -- where the POSITIVE
-/// CONTROL (a downloaded human ghost, which the tg arm measured at 0.50 mm on
-/// this very map) also read 11.96 m, proving the fault was in the measurement
-/// and not in the file.
-pub fn cmd_corrupt(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let inp = args.iter().find(|a| !a.starts_with("--")).cloned().expect("GHOST");
-    let out = flag("--out").expect("--out");
-    let mut n = 0usize;
-    let res = tmtraj_rewrite(&inp, &out, &mut n);
-    match res {
-        Ok(()) => println!("corrupted {} samples -> {}", n, out),
-        Err(e) => {
-            println!("ABORT: {}", e);
-            std::process::exit(2)
-        }
-    }
-}
 
-fn tmtraj_rewrite(inp: &str, out: &str, n: &mut usize) -> Result<(), String> {
-    crate::recwrite::rewrite_ghost(inp, out, |rd| {
-        let ent = rd
-            .ents
-            .iter_mut()
-            .filter(|e| e.sample_size >= 100 && !e.times.is_empty())
-            .max_by_key(|e| e.times.len())
-            .ok_or("no vehicle entity")?;
-        let ss = ent.sample_size;
-        for i in 0..ent.times.len() {
-            let s = &mut ent.raw[i * ss..(i + 1) * ss];
-            // a recognisable, obviously-wrong position: 12345.0, 678.0, 9012.0
-            for (k, v) in [12345.0f32, 678.0, 9012.0].iter().enumerate() {
-                s[47 + k * 4..51 + k * 4].copy_from_slice(&v.to_le_bytes());
-            }
-            *n += 1;
-        }
-        Ok(())
-    })
-    .map(|_| ())
-    .map_err(|e| e.to_string())
-}
 
 // ===========================================================================
 // E -- THE STALE-BUFFER CHECK. Is this file the LIVE car, or a copy of it one
@@ -2942,7 +2388,6 @@ fn tmtraj_rewrite(inp: &str, out: &str, n: &mut usize) -> Result<(), String> {
 // ===========================================================================
 
 pub struct StaleVerdict {
-    pub n: usize,
     pub median_m: f64,
     pub max_m: f64,
     pub implied_ms: f64,
@@ -2985,7 +2430,7 @@ pub fn stale_check(a: &[R], b: &[R]) -> Option<StaleVerdict> {
     }
     ds.sort_by(|x, y| x.total_cmp(y));
     Some(StaleVerdict {
-        n: ds.len(),
+
         median_m: ds[ds.len() / 2],
         max_m: ds[ds.len() - 1],
         implied_ms: if rn == 0 { f64::NAN } else { 1000.0 * ratio / rn as f64 },
@@ -2994,37 +2439,6 @@ pub fn stale_check(a: &[R], b: &[R]) -> Option<StaleVerdict> {
     })
 }
 
-pub fn cmd_stale(args: &[String]) {
-    let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if pos.len() != 2 {
-        eprintln!("tmtraj intg stale FILE REFERENCE-OF-THE-SAME-RUN");
-        std::process::exit(2);
-    }
-    let a = decode(pos[0]).unwrap_or_else(|e| {
-        println!("DECODE-FAIL {}", e);
-        std::process::exit(2)
-    });
-    let b = decode(pos[1]).unwrap_or_else(|e| {
-        println!("reference DECODE-FAIL {}", e);
-        std::process::exit(2)
-    });
-    match stale_check(&a, &b) {
-        None => {
-            println!("=== {}\n  n/a  too few shared instants to compare", pos[0]);
-        }
-        Some(v) => {
-            println!("=== {}\n    vs {}", pos[0], pos[1]);
-            println!(
-                "    {} shared instants, median {:.6} m, max {:.6} m, implied offset {:.3} ms",
-                v.n, v.median_m, v.max_m, v.implied_ms
-            );
-            println!("    this file is AHEAD on {} samples, BEHIND on {}", v.ahead, v.behind);
-            let (code, word) = stale_verdict(&v);
-            println!("    VERDICT {}", word);
-            std::process::exit(code);
-        }
-    }
-}
 
 /// The rule. A file is refused when it is consistently BEHIND its reference by
 /// about one tick.
@@ -3121,42 +2535,7 @@ pub fn stale_verdict(v: &StaleVerdict) -> (i32, String) {
 /// renderings that are near-copies but not bit-equal at any lag -- which the
 /// same arm has now measured on 267460, where two of six candidate objects sit
 /// 0.494 mm from the car and neither rule catches them.
-pub struct Lag1 {
-    pub decidable: usize,
-    pub equal: usize,
-}
 
-pub fn lag1_equal(a: &[R], b: &[R]) -> Lag1 {
-    let bm: std::collections::HashMap<i64, &R> = b.iter().map(|r| (r.ms, r)).collect();
-    let mut decidable = 0usize;
-    let mut equal = 0usize;
-    for x in a {
-        // b's sample one tick (10 ms) earlier; the record grid is 50 ms, so
-        // compare against the previous RECORDED instant instead when 10 ms is
-        // not present.
-        let prev = bm.get(&(x.ms - 10)).or_else(|| bm.get(&(x.ms - 50)));
-        let Some(y) = prev else { continue };
-        if x.raw.len() < 59 || y.raw.len() < 59 {
-            continue;
-        }
-        // only ticks where the car actually moved are decidable: a stationary
-        // car is bit-equal to its own past for reasons that mean nothing.
-        let moved = {
-            let mut d = 0.0;
-            for k in 0..3 {
-                let q = x.pos[k] - y.pos[k];
-                d += q * q;
-            }
-            d > 1e-12
-        };
-        let _ = moved;
-        decidable += 1;
-        if x.raw[47..59] == y.raw[47..59] {
-            equal += 1;
-        }
-    }
-    Lag1 { decidable, equal }
-}
 
 // ===========================================================================
 // `intg poison` -- THE DECLARED-TIME DETECTOR. One field, no simulation.
@@ -3178,121 +2557,6 @@ pub fn lag1_equal(a: &[R], b: &[R]) -> Lag1 {
 // contamination test, which is the sufficient one and costs a reference.
 // ===========================================================================
 
-pub fn cmd_poison(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let root = flag("--root").expect("--root");
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from(&root)];
-    while let Some(d) = dirs.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                if p.file_name().map_or(false, |n| n == ".git") {
-                    continue;
-                }
-                dirs.push(p);
-            } else if p.to_string_lossy().ends_with(".Ghost.Gbx") {
-                files.push(p);
-            }
-        }
-    }
-    files.sort();
-    println!("file\tname_ms\tdeclared_ms\tdelta_ms\tsamples\tverdict");
-    let mut n_bad = 0usize;
-    let mut n_read = 0usize;
-    let mut n_unreadable = 0usize;
-    let mut n_noname = 0usize;
-    let mut n_notime = 0usize;
-    for f in &files {
-        let fp = f.to_string_lossy().to_string();
-        let name = f.file_name().unwrap().to_string_lossy().to_string();
-        // the time the FILENAME claims: the last 4-7 digit group
-        let mut claim: Option<i64> = None;
-        let mut cur = String::new();
-        for c in name.chars() {
-            if c.is_ascii_digit() {
-                cur.push(c);
-            } else {
-                if cur.len() >= 4 && cur.len() <= 7 {
-                    claim = cur.parse().ok();
-                }
-                cur.clear();
-            }
-        }
-        if cur.len() >= 4 && cur.len() <= 7 {
-            claim = cur.parse().ok();
-        }
-        let Some(claim) = claim else {
-            n_noname += 1;
-            continue;
-        };
-        let Ok(d) = crate::entrec::decode_ghost(&fp) else {
-            println!("{}\t{}\t-\t-\t-\tDECODE-FAIL", fp, claim);
-            n_unreadable += 1;
-            continue;
-        };
-        n_read += 1;
-        let decl = d
-            .race_time_ms
-            .map(|v| v as i64)
-            .or_else(|| d.checkpoints_ms.last().map(|v| *v as i64));
-        let Some(decl) = decl else {
-            println!("{}\t{}\t-\t-\t{}\tNO-DECLARED-TIME", fp, claim, d.samples.len());
-            n_notime += 1;
-            n_read -= 1;
-            continue;
-        };
-        let delta = decl - claim;
-        // A map id in the filename can look like a time; only flag a mismatch
-        // when the two are close enough to be the same run's two candidates,
-        // which is what a poisoning looks like -- a neighbouring leaderboard
-        // time, not an unrelated number.
-        let verdict = if delta == 0 {
-            "OK"
-        } else if delta.abs() <= claim / 4 {
-            n_bad += 1;
-            "MISMATCH -- the header declares a different run's time"
-        } else {
-            "name-is-not-a-time"
-        };
-        if verdict != "name-is-not-a-time" {
-            println!(
-                "{}\t{}\t{}\t{:+}\t{}\t{}",
-                fp,
-                claim,
-                decl,
-                delta,
-                d.samples.len(),
-                verdict
-            );
-        }
-    }
-    // COVERAGE. A sweep that reports "N mismatches" without saying how many
-    // files it actually read is unquantified: the `take(64)` bug reported
-    // "0 passing" after dropping 6161 of 6637 addresses unprobed.
-    let cov = Coverage {
-        considered: files.len(),
-        examined: n_read,
-        skipped_unreadable: n_unreadable,
-        skipped_no_reference: n_noname + n_notime,
-        skipped_capped: 0,
-        found: n_bad,
-    };
-    eprintln!("{}", cov.report("poison sweep"));
-    eprintln!(
-        "  of the {} skipped: {} unreadable, {} with no time in the filename, {} with no \
-         declared time in the header",
-        cov.dropped(), n_unreadable, n_noname, n_notime
-    );
-    if let Err(e) = cov.verdict("poison sweep", "--root (widen it) or the filename time rule") {
-        eprintln!("ERROR: {}", e);
-        std::process::exit(3);
-    }
-    std::process::exit(if n_bad > 0 { 2 } else { 0 });
-}
 
 // ===========================================================================
 // `intg selfsim` -- IS THIS TELEMETRY THIS CAR'S? (the `csvcmp` requirement)
@@ -3321,78 +2585,6 @@ pub fn cmd_poison(args: &[String]) {
 // too. A number from this command means nothing without its control.
 // ===========================================================================
 
-pub fn cmd_selfsim(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let ghost = flag("--ghost").expect("--ghost");
-    let dump = flag("--dump").expect("--dump");
-    let bias: i64 = flag("--bias").expect("--bias").parse().unwrap();
-    let reclen: usize = flag("--reclen").unwrap_or_else(|| "44".into()).parse().unwrap();
-    let posoff: usize = flag("--posoff").unwrap_or_else(|| "20".into()).parse().unwrap();
-    let control = flag("--control");
-    let b = std::fs::read(&dump).unwrap_or_default();
-    let recsz = 8 + reclen;
-    let mut sim: std::collections::HashMap<i64, [f64; 3]> = Default::default();
-    for i in 0..b.len() / recsz.max(1) {
-        let r = &b[i * recsz + 8..i * recsz + 8 + reclen];
-        let clk = u32::from_le_bytes(r[0..4].try_into().unwrap()) as i64 - bias;
-        if posoff + 12 > r.len() {
-            continue;
-        }
-        let mut p = [0.0f64; 3];
-        for k in 0..3 {
-            p[k] = f32::from_le_bytes(r[posoff + k * 4..posoff + k * 4 + 4].try_into().unwrap())
-                as f64;
-        }
-        sim.insert(clk, p);
-    }
-    let rec = decode(&ghost).unwrap_or_else(|e| {
-        println!("DECODE-FAIL {}", e);
-        std::process::exit(2)
-    });
-    let mut ds: Vec<f64> = Vec::new();
-    for x in &rec {
-        let Some(p) = sim.get(&x.ms) else { continue };
-        let mut s = 0.0;
-        for k in 0..3 {
-            let q = x.pos[k] - p[k];
-            s += q * q;
-        }
-        let d = s.sqrt();
-        if d.is_finite() {
-            ds.push(d);
-        }
-    }
-    if ds.len() < 5 {
-        println!("=== {}\n  n/a  only {} instants matched the dump (bias wrong?)", ghost, ds.len());
-        std::process::exit(0);
-    }
-    ds.sort_by(|a, b| a.total_cmp(b));
-    let med = ds[ds.len() / 2];
-    println!("=== {}", ghost);
-    println!(
-        "    {} paired instants, median {:.6} m, p90 {:.6}, max {:.6} m",
-        ds.len(),
-        med,
-        ds[(ds.len() as f64 * 0.9) as usize],
-        ds[ds.len() - 1]
-    );
-    if let Some(c) = control {
-        println!("    control: {}", c);
-    }
-    if med < 0.01 {
-        println!("    VERDICT OWN-TELEMETRY (median under the 0.01 m bar)");
-    } else {
-        println!(
-            "    VERDICT FOREIGN-TELEMETRY -- {:.3} m median against this tape's OWN simulated \
-             route. A recording of this run agrees with its own inputs to the noise floor; this \
-             does not, so the recorded block belongs to another run.",
-            med
-        );
-        std::process::exit(2);
-    }
-}
 
 // ===========================================================================
 // C11b -- WHICH of the three telemetry defects is this?
@@ -3423,356 +2615,12 @@ pub fn cmd_selfsim(args: &[String]) {
 // "FOREIGN-TELEMETRY" on a stale file is a verdict that costs a withdrawal.
 // ===========================================================================
 
-pub struct C11b {
-    pub n: usize,
-    pub median_m: f64,
-    pub median_speed: f64,
-    pub implied_ms: f64,
-    pub tick_like: f64, // share of samples whose offset is within 20 % of one tick
-}
 
-/// `route` is (ms -> position) from the tape's own re-simulation.
-pub fn c11b(rec: &[R], route: &std::collections::HashMap<i64, [f64; 3]>) -> Option<C11b> {
-    let mut ds: Vec<f64> = Vec::new();
-    let mut sp: Vec<f64> = Vec::new();
-    let mut offs: Vec<f64> = Vec::new();
-    for x in rec {
-        let Some(p) = route.get(&x.ms) else { continue };
-        let mut s = 0.0;
-        for k in 0..3 {
-            let q = x.pos[k] - p[k];
-            s += q * q;
-        }
-        let d = s.sqrt();
-        if !d.is_finite() {
-            continue;
-        }
-        ds.push(d);
-        if x.speed > 1.0 {
-            sp.push(x.speed);
-            offs.push(1000.0 * d / x.speed);
-        }
-    }
-    if ds.len() < 5 {
-        return None;
-    }
-    ds.sort_by(|a, b| a.total_cmp(b));
-    let mut sps = sp.clone();
-    sps.sort_by(|a, b| a.total_cmp(b));
-    let mut os = offs.clone();
-    os.sort_by(|a, b| a.total_cmp(b));
-    // one physics tick is 10 ms; "tick-like" allows 8..12 ms for sampling noise
-    let tick_like = if offs.is_empty() {
-        0.0
-    } else {
-        offs.iter().filter(|v| (8.0..=12.0).contains(*v)).count() as f64 / offs.len() as f64
-    };
-    Some(C11b {
-        n: ds.len(),
-        median_m: ds[ds.len() / 2],
-        median_speed: if sps.is_empty() { 0.0 } else { sps[sps.len() / 2] },
-        implied_ms: if os.is_empty() { f64::NAN } else { os[os.len() / 2] },
-        tick_like,
-    })
-}
 
-/// (exit code, verdict word, explanation)
-// THE ZERO OF THIS CHECK IS THE MAP'S OWN DOWNLOADED HUMAN GHOST, NEVER LAG 0.
-//
-// r165 put a DOWNLOADED human recording -- a file the game wrote itself, which
-// we have never regenerated -- through this check and it read the same
-// signature we had been treating as our defect:
-//
-//   267460 human_WR_23068_Wirtual (downloaded)  0.4538 m at 45.42 m/s = 10.004 ms, 98 %
-//   227969 human_WR_8197_Titoch_tm (downloaded) 1.1931 m at 119.34 m/s = 10.022 ms, 100 %
-//
-// The game's own recordings carry the offset. So a tick-shaped result does NOT
-// mean "we made this file wrong"; it means the record convention and btraj2's
-// route labelling are one tick apart, for everyone -- and by how much VARIES BY
-// MAP: 267460 and 227969 sit at -10 (control and ours alike), 203072 sits at +0
-// (control and ours alike). It is btraj2's own bias estimate that moves, not
-// the record format, which is why no absolute bar can ever be right.
-//
-// That retraction cost a landed commit: 165922's v4 files were "corrected" by
-// -10 ms and thereby moved one tick AWAY from the convention the game itself
-// writes, on the strength of a lag-0 zero.
-//
-// So: SAME direction as this map's control = the file matches the game.
-// OPPOSITE direction = the real stale-buffer case. NO CONTROL = NO VERDICT.
-//
-// And a downloaded ghost is not automatically a working control: about a third
-// of the ones r165 tried are not (203072's rank 1 read 57.6 m at 2 % tick-shaped
-// and its rank 2 only covered -370..1280 ms; rank 3 gave a clean 0.000090 m).
-// 165922 has NO usable control at all -- its 2.44-hour session recording reads
-// a flat 2040 m at every lag from -60 to +60.
-pub fn c11b_verdict(v: &C11b) -> (i32, &'static str, String) {
-    c11b_verdict_vs(v, None)
-}
 
-/// `control` is THIS MAP's downloaded human ghost measured through the identical
-/// path. Without one there is no verdict to give.
-pub fn c11b_verdict_vs(v: &C11b, control: Option<&C11b>) -> (i32, &'static str, String) {
-    if v.median_m < 0.001 {
-        return (
-            0,
-            "OWN-TELEMETRY",
-            format!("median {:.6} m against its own route -- the noise floor", v.median_m),
-        );
-    }
-    if v.tick_like >= 0.8 {
-        return match control {
-            None => (
-                3,
-                "NO-VERDICT",
-                format!(
-                    "median {:.4} m at {:.2} m/s = {:.3} ms, {:.0} % tick-shaped -- BUT NO \
-                     DOWNLOADED HUMAN GHOST OF THIS MAP HAS BEEN MEASURED THROUGH THE SAME PATH, \
-                     so there is no zero to read this against. The game's own recordings carry a \
-                     tick offset too, and its sign is per-map. Measure a control first; do not \
-                     regenerate on this line.",
-                    v.median_m, v.median_speed, v.implied_ms, 100.0 * v.tick_like
-                ),
-            ),
-            Some(c) if c.tick_like >= 0.8 && c.implied_ms.signum() == v.implied_ms.signum() => (
-                0,
-                "MATCHES-THE-GAME",
-                format!(
-                    "median {:.4} m = {:.3} ms, {:.0} % tick-shaped -- and this map's DOWNLOADED \
-                     human control sits at {:.3} ms, the same direction. The offset is the record \
-                     convention, not a defect in this file. Do NOT regenerate.",
-                    v.median_m, v.implied_ms, 100.0 * v.tick_like, c.implied_ms
-                ),
-            ),
-            Some(c) => (
-                2,
-                "STALE-BUFFER",
-                format!(
-                    "median {:.4} m at {:.2} m/s = {:.3} ms, {:.0} % tick-shaped, and this map's \
-                     downloaded human control sits at {:.3} ms -- the OPPOSITE direction. That is \
-                     the real double-buffer case: our run one physics tick in the past. REFUSE to \
-                     write it; do NOT withdraw an already-published render, which shows the right \
-                     run 10 ms late.",
-                    v.median_m, v.median_speed, v.implied_ms, 100.0 * v.tick_like, c.implied_ms
-                ),
-            ),
-        };
-    }
-    if v.median_m < 0.01 {
-        return (
-            0,
-            "OWN-TELEMETRY",
-            format!("median {:.6} m -- under the 0.01 m bar and not tick-shaped", v.median_m),
-        );
-    }
-    (
-        2,
-        "TEMPLATE-POISONING",
-        format!(
-            "median {:.4} m at a median {:.2} m/s = {:.1} ms, and only {:.0} % of samples are \
-             tick-shaped. This telemetry does not describe the run its own inputs produce: it \
-             belongs to another run. WITHDRAW anything filmed from it.",
-            v.median_m,
-            v.median_speed,
-            v.implied_ms,
-            100.0 * v.tick_like
-        ),
-    )
-}
 
-pub fn cmd_c11b(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let ghost = flag("--ghost").expect("--ghost");
-    let csv = flag("--route").expect("--route");
-    let txt = std::fs::read_to_string(&csv).unwrap_or_default();
-    let mut route: std::collections::HashMap<i64, [f64; 3]> = Default::default();
-    for (i, l) in txt.lines().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let f: Vec<&str> = l.split(',').collect();
-        if f.len() < 4 {
-            continue;
-        }
-        let (Ok(t), Ok(x), Ok(y), Ok(z)) = (
-            f[0].parse::<i64>(),
-            f[1].parse::<f64>(),
-            f[2].parse::<f64>(),
-            f[3].parse::<f64>(),
-        ) else {
-            continue;
-        };
-        route.insert(t, [x, y, z]);
-    }
-    let rec = decode(&ghost).unwrap_or_else(|e| {
-        println!("DECODE-FAIL {}", e);
-        std::process::exit(2)
-    });
-    match c11b(&rec, &route) {
-        None => {
-            println!("=== {}\n  n/a  too few paired instants", ghost);
-            std::process::exit(3)
-        }
-        Some(v) => {
-            let (code, word, why) = c11b_verdict(&v);
-            println!("=== {}", ghost);
-            println!(
-                "    {} paired instants, median {:.6} m, median speed {:.2} m/s, implied {:.3} ms, \
-                 {:.0} % tick-shaped",
-                v.n, v.median_m, v.median_speed, v.implied_ms, 100.0 * v.tick_like
-            );
-            println!("    VERDICT {} -- {}", word, why);
-            std::process::exit(code);
-        }
-    }
-}
 
-/// `intg tapecsv` -- does a published `race_ms,steer,accel,brake` CSV match a
-/// ghost's own input archive?
-///
-/// The public trainer teaches a CSV, not a ghost, and a CSV cannot be
-/// telemetry-poisoned -- it has no telemetry. What it CAN be is a tape from a
-/// file other than the one it names. That is the question worth asking about
-/// anything we teach: is this the run the page says it is?
-pub fn cmd_tapecsv(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let csv = flag("--csv").expect("--csv");
-    let txt = std::fs::read_to_string(&csv).unwrap_or_default();
-    let mut rows: Vec<(i64, i64, i64, i64)> = Vec::new();
-    for (i, l) in txt.lines().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let f: Vec<&str> = l.split(',').collect();
-        if f.len() < 4 {
-            continue;
-        }
-        let (Ok(t), Ok(s), Ok(a), Ok(b)) = (
-            f[0].parse::<i64>(),
-            f[1].parse::<f64>().map(|v| v.round() as i64),
-            f[2].parse::<i64>(),
-            f[3].parse::<i64>(),
-        ) else {
-            continue;
-        };
-        rows.push((t, s, a, b));
-    }
-    println!("csv {}: {} rows, {} .. {} ms", csv, rows.len(), rows[0].0, rows[rows.len() - 1].0);
-    for g in args.iter().filter(|a| a.ends_with(".Ghost.Gbx")) {
-        // read the tape through `fk tapeinputs`' own decoder via a dump of the
-        // per-tick values -- here we only need the count and the digest, which
-        // the caller compares; printing the row-by-row disagreement is the
-        // useful part.
-        println!("  vs {}", g);
-    }
-}
 
-/// `intg qrule` -- rule 3: a candidate is the VEHICLE STATE only if a VARYING
-/// unit quaternion sits 16 bytes before its position.
-///
-/// The car-state arm's discriminator, and the sharpest of the three: on
-/// 267460 it rejected the zeroed slot, the back buffer and both 0.494 mm
-/// shadows in one test, keeping only the real vehicle-state structs. A bare
-/// position copy has no orientation beside it; the vehicle state does.
-///
-/// "Varying" is load-bearing and is checked rather than assumed -- on a map
-/// that is one long straight the car barely rotates, so a quaternion drifting
-/// in the fifth decimal would pass a naive "does it change" test while being
-/// indistinguishable from padding. This reports the actual angular travel so
-/// the caller can see whether the variation is real.
-pub fn cmd_qrule(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let dump = flag("--dump").expect("--dump");
-    let reclen: usize = flag("--reclen").expect("--reclen").parse().unwrap();
-    let offs: Vec<usize> = flag("--offs")
-        .expect("--offs a,b,c")
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    let qoff: i64 = flag("--qoff").unwrap_or_else(|| "-16".into()).parse().unwrap();
-    let b = std::fs::read(&dump).unwrap_or_default();
-    let recsz = 8 + reclen;
-    let n = b.len() / recsz.max(1);
-    println!("{} ticks, reclen {}", n, reclen);
-    println!("offset\t|q|-1 p99\tvary%\tang_travel_deg\tverdict");
-    for o in offs {
-        let q = (o as i64 + qoff) as usize;
-        if q + 16 > reclen {
-            println!("{}\t-\t-\t-\tout of window", o);
-            continue;
-        }
-        let mut norms: Vec<f64> = Vec::new();
-        let mut prev: Option<[f64; 4]> = None;
-        let mut varied = 0usize;
-        let mut travel = 0.0f64;
-        let mut tot = 0usize;
-        // DEDUP BY CLOCK FIRST. The gather writes the state SEVERAL TIMES per
-        // tick (here 9576 records for 180 ticks, ~53 each), so counting raw
-        // records makes a genuinely varying quaternion look constant on 96 % of
-        // them -- which is how a real vehicle state reads as "not varying".
-        // Keep the last record of each clock value, as `read_samples` does.
-        let mut seen: Vec<usize> = Vec::new();
-        {
-            let mut last: Option<u32> = None;
-            for i in 0..n {
-                let r = &b[i * recsz + 8..i * recsz + 8 + reclen];
-                let c = u32::from_le_bytes(r[0..4].try_into().unwrap());
-                if last != Some(c) {
-                    seen.push(i);
-                    last = Some(c);
-                } else if let Some(l) = seen.last_mut() {
-                    *l = i;
-                }
-            }
-        }
-        for &i in &seen {
-            let r = &b[i * recsz + 8..i * recsz + 8 + reclen];
-            let mut v = [0.0f64; 4];
-            for k in 0..4 {
-                v[k] = f32::from_le_bytes(r[q + k * 4..q + k * 4 + 4].try_into().unwrap()) as f64;
-            }
-            let nn: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if !nn.is_finite() {
-                continue;
-            }
-            tot += 1;
-            norms.push((nn - 1.0).abs());
-            if let Some(p) = prev {
-                if v != p {
-                    varied += 1;
-                }
-                // angular distance between successive quaternions
-                let dot: f64 = (0..4).map(|k| v[k] * p[k]).sum::<f64>().abs().clamp(0.0, 1.0);
-                travel += 2.0 * dot.acos().to_degrees();
-            }
-            prev = Some(v);
-        }
-        if tot < 5 {
-            println!("{}\t-\t-\t-\tno data", o);
-            continue;
-        }
-        norms.sort_by(|a, b| a.total_cmp(b));
-        let p99 = norms[((norms.len() as f64 * 0.99) as usize).min(norms.len() - 1)];
-        let varyp = 100.0 * varied as f64 / tot.max(1) as f64;
-        // a unit quaternion that MOVES: normalised to within 1e-4, changing on
-        // most ticks, and with real angular travel rather than fifth-decimal
-        // drift (1 degree over a whole run is not a car turning).
-        let ok = p99 < 1e-4 && varyp > 50.0 && travel > 5.0;
-        println!(
-            "{}\t{:.2e}\t{:.0}%\t{:.1}\t{}",
-            o,
-            p99,
-            varyp,
-            travel,
-            if ok { "VEHICLE STATE" } else { "not the vehicle state" }
-        );
-    }
-}
 
 // ===========================================================================
 // COVERAGE ACCOUNTING FOR NEGATIVE-RETURNING TOOLS.
@@ -3795,57 +2643,6 @@ pub fn cmd_qrule(args: &[String]) {
 // signal whatsoever.
 // ===========================================================================
 
-#[derive(Default)]
-pub struct Coverage {
-    pub considered: usize,
-    pub examined: usize,
-    pub skipped_unreadable: usize,
-    pub skipped_no_reference: usize,
-    pub skipped_capped: usize,
-    pub found: usize,
-}
-
-impl Coverage {
-    pub fn dropped(&self) -> usize {
-        self.skipped_unreadable + self.skipped_no_reference + self.skipped_capped
-    }
-    /// One line, always printed, even (especially) when nothing was found.
-    pub fn report(&self, what: &str) -> String {
-        format!(
-            "COVERAGE {}: examined {} of {} considered; {} found. \
-             Dropped {} (unreadable {}, no reference {}, capped {}).",
-            what,
-            self.examined,
-            self.considered,
-            self.found,
-            self.dropped(),
-            self.skipped_unreadable,
-            self.skipped_no_reference,
-            self.skipped_capped
-        )
-    }
-    /// A zero finding is only a result if nothing was dropped.
-    pub fn verdict(&self, what: &str, knob: &str) -> Result<(), String> {
-        if self.found == 0 && self.dropped() > 0 {
-            return Err(format!(
-                "{} found nothing, but {} of {} candidates were never examined. \
-                 THAT IS NOT A NEGATIVE RESULT. Raise {} and re-run, or explain each drop.",
-                what,
-                self.dropped(),
-                self.considered,
-                knob
-            ));
-        }
-        if self.examined == 0 {
-            return Err(format!(
-                "{} examined NOTHING ({} considered). A tool that produces no output and a \
-                 tool that produces wrong output are both silent failures; this is the first.",
-                what, self.considered
-            ));
-        }
-        Ok(())
-    }
-}
 
 /// The first race instant after which two tapes differ and KEEP differing.
 ///
@@ -3949,67 +2746,154 @@ pub fn divergence_growth(a: &[R], b: &[R], first_diff_ms: i64) -> Option<Diverge
     })
 }
 
-pub fn cmd_c12(args: &[String]) {
-    let flag = |n: &str| -> Option<String> {
-        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
-    };
-    let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if pos.len() != 2 {
-        eprintln!("tmtraj intg c12 FILE REFERENCE   -- do the trajectories part when the tapes do?");
-        std::process::exit(2);
-    }
-    let Some(fd) = first_sustained_diff(pos[0], pos[1]) else {
-        println!("=== {}\n    the two tapes are IDENTICAL -- identical trajectories are correct here", pos[0]);
-        return;
-    };
-    let a = decode(pos[0]).unwrap_or_else(|e| { println!("DECODE-FAIL {}", e); std::process::exit(2) });
-    let b = decode(pos[1]).unwrap_or_else(|e| { println!("ref DECODE-FAIL {}", e); std::process::exit(2) });
-    // --growth: how many times its own pre-divergence separation a file must
-    // move before we believe it drove its own tape. Not a distance: a metre
-    // bar refuses honest short-segment files (see cmd_c12's verdict).
-    let bar: f64 = flag("--growth").and_then(|v| v.parse().ok()).unwrap_or(10.0);
 
-    match divergence_growth(&a, &b, fd) {
-        None => println!("=== {}\n    n/a  too few samples after the divergence", pos[0]),
-        Some(d) => {
-            println!("=== {}\n    vs {}", pos[0], pos[1]);
-            println!(
-                "    the tapes first differ (sustained) at {:.3} s; separation before {:.6} m, \
-                 after {:.6} m over {} samples",
-                d.first_diff_ms as f64 / 1000.0,
-                d.sep_before,
-                d.sep_after,
-                d.n_after
-            );
-            // GROWTH, not magnitude. A metre bar refuses honest files: on
-            // 279218 five independent clean runs sit 0.29-0.62 m from the
-            // human, and 270053's clean file departs by 0.363 m over a 4.5 s
-            // segment. What separates a copy from a run is not how far it got
-            // but whether it moved AT ALL once the inputs stopped being
-            // shared. The populations are six orders of magnitude apart
-            // (0.000509 m against 1113 m), so a factor of ten is a gulf, not
-            // a tuned edge -- and it is dimensionless, which a metre bar is
-            // not.
-            let floor = d.sep_before.max(1e-9);
-            let growth = d.sep_after / floor;
-            println!("    growth after divergence: {:.1}x the pre-divergence separation", growth);
-            if growth > bar {
-                println!("    VERDICT DIVERGES -- the trajectories part after the inputs part, as they must");
-            } else {
-                println!(
-                    "    VERDICT SUSPECT NEAR-COPY -- the inputs part at {:.3} s and the tapes \
-                     differ over the {} samples that follow, yet the trajectories stay {:.6} m \
-                     apart ({:.1}x the {:.6} m they were already apart). That is not physics: \
-                     this file is tracking the reference rather than driving its own tape. \
-                     Bit-exact tests CANNOT see this, by construction.",
-                    d.first_diff_ms as f64 / 1000.0,
-                    d.n_after,
-                    d.sep_after,
-                    growth,
-                    d.sep_before
-                );
-                std::process::exit(2);
+/// The C8b acceptance rule, as a function, so it can be tested without a
+/// fixture that fails C8.
+///
+/// C8 upstream asks whether the implied wheel radius sits in a 0.30-0.45 m
+/// band. That band is the STADIUM wheel: a snow car measures 0.4700 m, and the
+/// check therefore refused files for driving the wrong car. C8b asks the
+/// question the band was standing in for -- *is there a consistent wheel of
+/// SOME size* -- and the bar is the share of rolling steps that agree on one
+/// radius to within 15 %.
+///
+/// The 0.15 bar is deliberately low. It is not "most steps look like a wheel";
+/// it is "enough steps agree that a wheel exists at all", on maps where the car
+/// spends most of the run sideways (134672 has 24-35 % of ticks within 3 % of
+/// pure rolling, against 96.1 % on 173636). Raising it turns a permissive
+/// exception into a refusal of exactly the files it was written to admit.
+pub fn c8b_accepts(share: f64, radius: f64) -> bool {
+    share >= C8B_MIN_SHARE && radius.is_finite()
+}
+
+/// The share of rolling steps that must agree on one radius for C8b to accept.
+pub const C8B_MIN_SHARE: f64 = 0.15;
+
+/// C12: after the tapes part, has the trajectory stayed with the reference?
+///
+/// GROWTH relative to the pre-divergence separation, never a distance. A metre
+/// bar refuses honest files -- on 279218 five independent clean runs sit
+/// 0.29-0.62 m from the human, and 270053's clean file departs by 0.363 m over
+/// a 4.5 s segment. What separates a copy from a run is not how far it got but
+/// whether it moved AT ALL once the inputs stopped being shared, and the two
+/// populations are six orders of magnitude apart.
+pub fn c12_is_near_copy(sep_before: f64, sep_after: f64) -> bool {
+    sep_after / sep_before.max(1e-9) <= C12_GROWTH_BAR
+}
+
+pub const C12_GROWTH_BAR: f64 = 10.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::whlcmd::R;
+
+    fn r(ms: i64, x: f64, speed: f64) -> R {
+        R { ms, pos: [x, 0.0, 0.0], vel: [speed, 0.0, 0.0], speed, raw: vec![0u8; 116] }
+    }
+
+    /// The three classes C3 has to tell apart, built by hand so the test does
+    /// not depend on a corpus file happening to contain each one.
+    ///
+    /// The distinction is what emptied a work queue of 24 files across 8 maps
+    /// that were mostly never broken: a bar on distance, or even on implied
+    /// speed alone, cannot tell a teleport from fast driving, and these cars
+    /// are very fast.
+    #[test]
+    fn a_teleport_a_respawn_and_fast_driving_are_three_different_things() {
+        // Fast but real: 8 m per 50 ms sample is 160 m/s, well past any fixed
+        // distance bar and past the 5 m floor -- and the car's own speedometer
+        // agrees. The fastest thing in this corpus is a 546 km/h reactor run.
+        let fast: Vec<R> = (0..10).map(|i| r(i * 50, i as f64 * 8.0, 160.0)).collect();
+        assert!(
+            jumps(&fast).is_empty(),
+            "ordinary fast driving is not a jump: {:?}",
+            jumps(&fast).iter().map(|j| j.kind).collect::<Vec<_>>()
+        );
+
+        // a teleport: 400 m in one 50 ms sample while the speedometer reads 19.2
+        let mut spliced = fast.clone();
+        spliced.push(r(500, 900.0, 19.2));
+        let js = jumps(&spliced);
+        assert_eq!(js.len(), 1, "one jump expected");
+        assert!(js[0].kind.starts_with("SPLICE"), "got {}", js[0].kind);
+
+        // a respawn: the same jump, but the car reports EXACTLY zero speed and
+        // then stays put. Normal on Trial maps; not a defect.
+        let mut resp = fast.clone();
+        for k in 0..8 {
+            resp.push(r(500 + k * 50, 900.0, 0.0));
+        }
+        let js = jumps(&resp);
+        assert_eq!(js.len(), 1);
+        assert!(js[0].kind.starts_with("RESPAWN"), "got {}", js[0].kind);
+
+        // the world origin is not a place the car was: the step away from a
+        // (0,0,0) placeholder first sample is the record starting, not motion.
+        let mut orig = vec![r(0, 0.0, 0.0)];
+        orig.extend((1..10).map(|i| r(i * 50, 1000.0 + i as f64 * 8.0, 160.0)));
+        let js = jumps(&orig);
+        assert_eq!(js.len(), 1);
+        assert!(js[0].kind.starts_with("ORIGIN"), "got {}", js[0].kind);
+    }
+
+    #[test]
+    fn the_c8b_bar_admits_a_drift_map_and_refuses_noise() {
+        // 134672 drives permanently sideways: 24-35 % of its ticks are within
+        // 3 % of pure rolling. It must be admitted.
+        assert!(c8b_accepts(0.24, 0.3643));
+        // a snow car's 0.4700 m is a real wheel and outside upstream C8's band
+        assert!(c8b_accepts(0.50, 0.4700));
+        // no agreement at all is not a wheel
+        assert!(!c8b_accepts(0.05, 0.3643));
+        // and a radius that is not a number is not a radius
+        assert!(!c8b_accepts(0.90, f64::NAN));
+        // The bar itself, pinned: moving it to 0.95 refuses the drift map,
+        // which is the file the exception exists for.
+        assert_eq!(C8B_MIN_SHARE, 0.15);
+    }
+
+    #[test]
+    fn c12_growth_bar_separates_the_two_populations() {
+        // A run that drives its own tape separates by three orders of
+        // magnitude after the inputs part; a near-copy tracks the reference.
+        // Measured populations: 0.000509 m against 1113 m.
+        assert!(c12_is_near_copy(0.000509, 0.000512));
+        assert!(!c12_is_near_copy(0.000509, 1113.0));
+        // and an honest short segment (270053 departs 0.363 m over 4.5 s from
+        // a 0.0005 m start) must NOT be called a copy
+        assert!(!c12_is_near_copy(0.0005, 0.363));
+    }
+}
+
+fn fmt_s(ms: i64) -> String {
+    format!("{:.3}", ms as f64 / 1000.0)
+}
+
+fn find_run_span(a: &[R], b: &[R], lag: i64, want: usize) -> Option<(i64, i64)> {
+    fn key(r: &R) -> Option<&[u8]> {
+        if r.raw.len() >= 59 { Some(&r.raw[47..59]) } else { None }
+    }
+    let mut run = 0usize;
+    let mut start = 0usize;
+    for i in 0..a.len() {
+        let j = i as i64 - lag;
+        let same = if j < 0 || j as usize >= b.len() {
+            false
+        } else {
+            matches!((key(&a[i]), key(&b[j as usize])), (Some(x), Some(y)) if x == y)
+        };
+        if same {
+            if run == 0 {
+                start = i;
             }
+            run += 1;
+            if run == want {
+                return Some((a[start].ms, a[i].ms));
+            }
+        } else {
+            run = 0;
         }
     }
+    None
 }

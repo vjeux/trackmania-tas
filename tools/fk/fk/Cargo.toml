@@ -20,5 +20,6 @@ path = "src/bin/fk.rs"
 
 [dependencies]
 ghost = { path = "../../ghost" }
+gbx = { path = "../../gbx" }
 tmtraj = { path = "../../tmtraj" }
 forkoracle = { path = "../../search/forkoracle" }

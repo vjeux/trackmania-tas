@@ -13,7 +13,7 @@
 //! `--anonymise` clears every class at once -- and `ghost verify` fails a file
 //! that still carries any of them.
 
-use crate::container::{body_strings_in, replace_strings, write_gbx, Container};
+use gbx::container::{body_strings_in, replace_strings, write_gbx, Container};
 use crate::cli::{die, flag, has};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,7 +75,7 @@ pub fn scan(c: &Container) -> Vec<Field> {
 
     // the main ghost chunk, and where the record blob starts inside it
     let main = chunks.iter().find(|k| k.0 == 0x03092000);
-    let rec = tmtraj::recwrite::find_rec_site(body).ok().map(|s| s.hdr);
+    let rec = gbx::recwrite::find_rec_site(body).ok().map(|s| s.hdr);
     // A REPLAY nests its ghost node without a skippable 0x03092000 chunk, so
     // the structural walk has nothing to anchor on. Fall back to the whole
     // region in front of the input chunk, which is where the same fields sit.
@@ -85,7 +85,7 @@ pub fn scan(c: &Container) -> Vec<Field> {
         // finds the MAP AUTHOR and offers to rename them, which is a different
         // person and a different file.
         let start = c.embedded_map().map(|(o, n)| o + n).unwrap_or(0);
-        let end = crate::tape::find_inputs_chunk(body)
+        let end = gbx::tape::find_inputs_chunk(body)
             .map(|x| x.0)
             .unwrap_or(body.len())
             .max(start);
@@ -116,7 +116,7 @@ pub fn scan(c: &Container) -> Vec<Field> {
         // --- after the record: trigram, zone, club tag
         let tailstart = rec
             .and_then(|r| {
-                tmtraj::recwrite::find_rec_site(body).ok().map(|s| r + 12 + s.csize)
+                gbx::recwrite::find_rec_site(body).ok().map(|s| r + 12 + s.csize)
             })
             .unwrap_or(mpoff);
         let tail = body_strings_in(body, tailstart, mpend);
@@ -309,7 +309,7 @@ pub fn cmd(a: &[String]) {
             }
             let protect = c.embedded_map();
             let body = replace_strings(&pre, &edits, protect).unwrap_or_else(|e| die(e));
-            let unframed = crate::container::unframed_edits();
+            let unframed = gbx::container::unframed_edits();
             write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
             // control: read it back and require every field to be what we asked
             let c2 = Container::load(out).unwrap_or_else(|e| die(e));

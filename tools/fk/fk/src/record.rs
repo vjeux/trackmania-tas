@@ -756,7 +756,7 @@ pub fn run_clean_anch(
                 let (times, raws) = crate::record::targets_from_ghost(&c.template).ok()?;
                 let mut out = Vec::new();
                 for (i, t) in times.iter().enumerate() {
-                    let (p, _, _, _) = tmtraj::entrec::read_transform_pub(&raws[i], 47);
+                    let (p, _, _, _) = gbx::record::read_transform_pub(&raws[i], 47);
                     if !p.iter().all(|v| v.is_finite()) {
                         return None;
                     }
@@ -1024,7 +1024,7 @@ pub fn grid_of(times: &[i64]) -> (i64, i64) {
 /// carrier already has, or the record declares a span it does not cover. The
 /// vehicle entity is the one with >= 100-byte samples and the most of them.
 pub fn targets_from_ghost(path: &str) -> Result<(Vec<i64>, Vec<Vec<u8>>), String> {
-    use tmtraj::entrec::{find_entrecord_blob, load_body, parse_record_data};
+    use gbx::record::{find_entrecord_blob, load_body, parse_record_data};
     let body = load_body(path)?;
     let (ver, blob) = find_entrecord_blob(&body)?;
     let rd = parse_record_data(&blob, ver)?;

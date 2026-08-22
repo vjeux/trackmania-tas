@@ -207,7 +207,7 @@ pub fn to_csv(rows: &[Row], tape: &crate::tape::Tape) -> String {
     out.push_str(&COLS.join(","));
     out.push_str("\r\n");
     for r in rows {
-        let (yaw, pitch, roll) = tmtraj::entrec::quat_to_ypr([r.qx, r.qy, r.qz, r.qw]);
+        let (yaw, pitch, roll) = gbx::record::quat_to_ypr([r.qx, r.qy, r.qz, r.qw]);
         let speed_ms = (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt();
         let t = tick_of(r.time_ms);
         let inp = |g: &dyn Fn(usize) -> f64| -> String {

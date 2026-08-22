@@ -1,0 +1,13 @@
+$ tmtraj check $TESTDATA/human_22730.Ghost.Gbx --race 22730
+[exit 0]
+=== $TESTDATA/human_22730.Ghost.Gbx  --  PUBLISHABLE (0 fail, 0 warn)
+  PASS C1     every position and velocity component is finite (455 samples)
+  PASS C2     the car travels 1621.3 m over 455 distinct points
+  PASS C3     worst implied speed 99.1 m/s at 19.900 s (median 80.1 m/s)
+  PASS C4     no samples after the finish at 22.730 s
+  PASS C5     ground contact is OFF on all 3 provably airborne samples
+  PASS C6     ground contact is ON on 100.0 % of 89 ground-borne samples
+  PASS C7     no surface material accumulates during free fall
+  PASS C10    the longest claimed flight (3.45 s at 12.850 s) falls 24.5 m against 26.7 m predicted
+  PASS C8     100 % of 450 rolling steps imply a car wheel; the mode is 0.3643 m
+  PASS C9     the throttle echo agrees with the car's acceleration (0 of 89 disagree)

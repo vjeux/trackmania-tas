@@ -1,0 +1,24 @@
+MOST GEOMETRICALLY SEPARATED PAIR: p00004_19556 <-> slow_p10000_19812 at RMS 8.83 m
+  their lateral difference: max |-16.26| m, and 7.70 m RMS over the part of the lap BEFORE CP3
+  CP3 is station 234 of 300 (1424 m of 1820)
+  RMS lateral separation using only start..CP3: mean 2.41  max 6.89 m (vs 3.07 / 8.83 for the whole lap)
+
+SECTOR TIMES (ms): where the field loses time relative to the WR
+  WR sectors: S1 7617  S2 5691  S3 3008  S4 3222  (total 19538)
+  run                   total       S1      S2      S3      S4
+  p00001_19538          19538       +0      +0      +0      +0
+  p00002_19551          19551       -5     +13     -14     +19
+  p00003_19552          19552      -10      +8     +21      -5
+  p09993_19812          19812      +16     +82    +114     +62
+  p09994_19812          19812      +24     +92    +116     +42
+  slow_p10000_19812     19812      +13     +85    +158     +18
+  S1 (start-CP1)   field vs WR: median    +10 ms, worst    +39 ms   (fraction of the total 274 ms spread: 11%)
+  S2 (CP1-CP2)     field vs WR: median    +59 ms, worst   +171 ms   (fraction of the total 274 ms spread: 66%)
+  S3 (CP2-CP3)     field vs WR: median    +20 ms, worst   +158 ms   (fraction of the total 274 ms spread: 22%)
+  S4 (CP3-fin)     field vs WR: median    +19 ms, worst    +62 ms   (fraction of the total 274 ms spread: 21%)
+
+SPEED: WR vs the field, at 12 stations round the lap (km/h)
+  s (m)           0    164    329    493    657    822    992   1156   1321   1485   1649   1820
+  WR            0.8  304.4  330.5  324.4  358.9  370.8  404.1  426.9  447.8  471.0  446.7  440.5
+  field med     0.8  304.7  330.9  323.7  358.7  366.4  400.9  424.2  445.0  467.7  444.1  436.6
+  WR - med     +0.0   -0.3   -0.4   +0.7   +0.3   +4.4   +3.2   +2.7   +2.8   +3.3   +2.6   +3.9

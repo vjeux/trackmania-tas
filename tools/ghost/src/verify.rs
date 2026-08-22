@@ -5,10 +5,10 @@
 //! A check that cannot get its second operand says NA and says why; it never
 //! passes by default.
 
-use crate::container::{secs, Container};
+use gbx::container::{secs, Container};
 use crate::ident::{self, Role};
 use crate::oracle::{self, MapsMode};
-use crate::tape::Tape;
+use gbx::tape::Tape;
 use crate::cli::{die, flag, has, num};
 
 #[derive(PartialEq, Clone, Copy)]
@@ -72,7 +72,7 @@ impl Report {
 /// Returns (kappa, raw hit rate, best lag ms, samples compared).
 pub fn tape_record_agreement(path: &str) -> Option<(f64, f64, i64, usize)> {
     let t = Tape::from_file(path).ok()?;
-    let d = tmtraj::entrec::decode_ghost(path).ok()?;
+    let d = gbx::record::decode_ghost(path).ok()?;
     if d.samples.is_empty() {
         return None;
     }
@@ -210,7 +210,7 @@ pub fn run(path: &str, a: &[String]) -> Report {
     }
 
     // ---- V5 telemetry span -------------------------------------------------
-    match tmtraj::entrec::decode_ghost(path) {
+    match gbx::record::decode_ghost(path) {
         Err(e) => r.add("V5", Verdict::Na, format!("no telemetry record ({})", e)),
         Ok(d) => {
             let last = d.samples.last().map(|s| s.time_ms).unwrap_or(0) as i64;

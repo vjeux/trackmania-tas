@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn testdata() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../testdata")
 }
 
 #[test]

@@ -12,10 +12,10 @@
 //! why, and `--strict` turns a SKIP into a failure so a green run in CI cannot
 //! be a green run that tested nothing.
 
-use crate::container::{secs, Container};
+use gbx::container::{secs, Container};
 use crate::ident::{self, Role};
 use crate::oracle::{self, MapsMode};
-use crate::tape::{Encoding, StateEnc, Tape};
+use gbx::tape::{Encoding, StateEnc, Tape};
 use crate::cli::{flag, has};
 use std::path::{Path, PathBuf};
 
@@ -65,17 +65,24 @@ const POISONED: &str = "poisoned_searchtape.Ghost.Gbx";
 const DONOR_MS: i64 = 22730;
 const REPLAY_MS: i64 = 7241;
 
+/// Checked into the repo at `tools/testdata`, shared by every crate in the
+/// workspace so there is one corpus and not one per tool.
+const DEFAULT_TESTDATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata");
+
 pub fn cmd(a: &[String]) {
-    let data = PathBuf::from(flag(a, "--data").unwrap_or({
-        // next to the binary, then the source tree, then the cwd
-        if Path::new("ghostapi/testdata").is_dir() {
-            "ghostapi/testdata"
-        } else if Path::new("testdata").is_dir() {
-            "testdata"
-        } else {
-            "rs/ghostapi/testdata"
-        }
-    }));
+    // The fixture directory is resolved AT COMPILE TIME from this crate's own
+    // manifest path, not searched for relative to the cwd. The old ladder
+    // ("ghostapi/testdata", then "testdata", then "rs/ghostapi/testdata")
+    // silently picked a different answer depending on where you stood, and the
+    // last rung named a tree that has not existed since the crate moved into
+    // this repo — so running the suite from anywhere but one directory failed
+    // with "No such file or directory" on every fixture rather than saying the
+    // path was wrong.
+    let data = PathBuf::from(flag(a, "--data").unwrap_or(DEFAULT_TESTDATA));
+    if !data.is_dir() {
+        eprintln!("ghost selftest: no fixture directory at {}", data.display());
+        std::process::exit(2);
+    }
     let work = std::env::temp_dir().join(format!("ghost-selftest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -150,7 +157,7 @@ fn pure_tier(s: &mut Suite) {
             Ok(re) => {
                 let c = Container::load(&src).unwrap();
                 let body = re.splice_into(c.body(), Encoding::Verbatim).unwrap();
-                crate::container::write_gbx(&c.gbx, body, &out).unwrap();
+                gbx::container::write_gbx(&c.gbx, body, &out).unwrap();
                 let back = Tape::from_file(&out).unwrap();
                 std::fs::write(&t2, back.to_text(&src)).unwrap();
                 let a = std::fs::read_to_string(&t1).unwrap();
@@ -187,7 +194,7 @@ fn pure_tier(s: &mut Suite) {
         let c = Container::load(&src).unwrap();
         let out = s.w("expanded.Ghost.Gbx");
         let body = t.splice_into(c.body(), Encoding::Explicit).unwrap();
-        crate::container::write_gbx(&c.gbx, body, &out).unwrap();
+        gbx::container::write_gbx(&c.gbx, body, &out).unwrap();
         let back = Tape::from_file(&out).unwrap();
         let after = back.archives[0].packets.iter().filter(|p| p.vsame).count();
         let same_values = t.archives[0]
@@ -229,7 +236,7 @@ fn pure_tier(s: &mut Suite) {
                 let c = Container::load(&src).unwrap();
                 let out = s.w("respawn.Ghost.Gbx");
                 let body = t.splice_into(c.body(), Encoding::Explicit).unwrap();
-                crate::container::write_gbx(&c.gbx, body, &out).unwrap();
+                gbx::container::write_gbx(&c.gbx, body, &out).unwrap();
                 let back = Tape::from_file(&out).unwrap();
                 s.check(
                     "tape.respawn",
@@ -325,11 +332,11 @@ fn pure_tier(s: &mut Suite) {
         } else {
             let t = Tape::from_file(&out).unwrap();
             let c = Container::load(&out).unwrap();
-            let d = tmtraj::entrec::decode_ghost(&out).unwrap();
+            let d = gbx::record::decode_ghost(&out).unwrap();
             let a0 = &t.archives[0];
             let last_tick_ms = a0.start_offset_ms as i64 + 10 * (a0.packets.len() as i64 - 1);
             let decl: Vec<u32> = c.declared_times().into_iter().map(|x| x.1).collect();
-            let cps = tmtraj::entrec::read_checkpoints(c.body());
+            let cps = gbx::record::read_checkpoints(c.body());
             let ok = last_tick_ms <= 15000
                 && d.samples.last().map_or(false, |x| x.time_ms <= 15000)
                 && d.end_ms <= 15000
@@ -559,7 +566,7 @@ fn oracle_tier(s: &mut Suite) {
         let c = Container::load(&src).unwrap();
         let out = s.w("o4.Ghost.Gbx");
         let body = t.splice_into(c.body(), Encoding::Explicit).unwrap();
-        crate::container::write_gbx(&c.gbx, body, &out).unwrap();
+        gbx::container::write_gbx(&c.gbx, body, &out).unwrap();
         let r = oracle::validate(&server, Path::new(&out), MapsMode::One(mapp), "o4");
         match r {
             Ok(ref v) => s.check(
@@ -820,8 +827,8 @@ fn engine_tier(s: &mut Suite) {
         return;
     }
     let (da, db) = (
-        tmtraj::entrec::decode_ghost(&a).ok(),
-        tmtraj::entrec::decode_ghost(&b).ok(),
+        gbx::record::decode_ghost(&a).ok(),
+        gbx::record::decode_ghost(&b).ok(),
     );
     match (da, db) {
         (Some(x), Some(y)) => {

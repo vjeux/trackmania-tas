@@ -1,0 +1,17 @@
+$ tmtraj lines report --metric xyz
+[exit 2]
+--- stderr ---
+tmtraj lines: --metric must be one of projection | station | dtw, got "xyz"
+
+usage: tmtraj lines report|matrix|stats|demo --dir D
+         [--stations N] [--eps E,...] [--ref NAME]
+         [--metric projection|station|dtw] [--sort time|name]
+         [--out FILE] [--no-plots]
+
+  report   full: per-run lateral summary, distance distribution, clusters,
+           a seed per line at each eps, ASCII plots
+  matrix   the pairwise distance matrix and its distribution, nothing else
+  stats    population analysis: separation histogram, centrality of --ref,
+           lateral spread along the lap, most separated pair, sector times
+  demo     the two synthetic lines, as a smoke test (~0.8 m within a line,
+           ~11 m between) -- needs no data

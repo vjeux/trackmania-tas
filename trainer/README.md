@@ -139,17 +139,24 @@ There is no build system and no Python. The page is assembled by concatenation:
 cat head.html kb6323.csv tail.html > index.html
 ```
 
-Checks (Node, no dependencies):
+Checks (Node for the three JS harnesses, Rust for the browser one; no
+dependencies either way):
 
 | | |
 |---|---|
 | `node test.js` | parses the tape, diffs every race transition against the published table, checks the judging rules and the drill arithmetic |
 | `node headless.js` | boots the page's own script against a stub DOM and plays whole runs and drills through it |
-| `sh playtest.sh` | plays the page **in a real headless Chrome** — real canvas, real `KeyboardEvent`s, real DOM, only the frame clock is ours so the run reproduces |
+| `cd ../tools && cargo run --release --bin playtest -- --trainer ../trainer` | plays the page **in a real headless Chrome** — real canvas, real `KeyboardEvent`s, real DOM, only the frame clock is ours so the run reproduces |
 | `node analyze.js` | raw dump: transitions, notes, burst segments |
 
 The two harnesses answer different questions. `headless.js` is fast and covers
-the judging logic; `playtest.sh` is the one that catches things a stub cannot
+the judging logic; `playtest` is the one that catches things a stub cannot
 fake — it found a missing `setLineDash` and confirmed a real browser scores an
 on-tape run **S+ 100%, 27/27 perfect, 0 miss, 0 extra**, and a 60 ms-late
 player **C 72.2% with still no misses and no extras**.
+
+`playtest` assembles `index.html` + `playtest-pump.js` + `playtest-drive.js`
+itself (it was a `node -e` splice inside a shell script until it became
+`tools/clip`), runs the browser, waits for the verdict to reach the dumped DOM
+and then kills it. It exits 0 **only** when the browser actually scored a run:
+a page still wearing its own title is no verdict, not a pass.
