@@ -20,7 +20,7 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, gbx, map, oracle, rotate, secs, segments, selftest};
+use tmmaps::{census, controls, dropscan, gbx, map, oracle, rotate, secs, segments, selftest};
 
 use std::path::{Path, PathBuf};
 
@@ -1004,6 +1004,7 @@ fn main() {
         }
         "origin" => controls::cmd_origin(&args),
         "census" => census::cmd_census(&args),
+        "dropscan" => dropscan::cmd(&args),
         "chunks" => {
             // Every skippable chunk in the body, with its size. Needed to
             // reason about FREE blocks (0x0304305F) and to tell at a glance

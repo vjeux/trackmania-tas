@@ -37,6 +37,11 @@ pub mod trim;
 pub mod verify;
 
 pub use gbx::container::{secs, Container};
+// `tools/gbx` owns the format; the crates above this one address it through
+// `ghost`, so the two modules they name must be reachable here by name and not
+// only through the handful of types re-exported above. (Without these two the
+// search crate does not compile at all: `ghost::container`, `ghost::tape`.)
+pub use gbx::{container, tape};
 pub use gbx::tape::{Encoding, Tape};
 
 pub use gbx::map_uid_of;
