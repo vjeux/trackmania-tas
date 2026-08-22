@@ -54,7 +54,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
     if (r == "/ping") return HttpResponse(200, "pong");
-    if (r == "/build") return HttpResponse(200, "B1787423886");
+    if (r == "/build") return HttpResponse(200, "B1787425027");
     if (r == "/greplayers") return HttpResponse(200, GrepLayers(PathArg()));
     if (r == "/whoapp") return HttpResponse(200, WhoIsManiaApp());
     if (r == "/layers") return HttpResponse(200, DumpLayers());
@@ -64,6 +64,10 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/dlgstring") return HttpResponse(200, DialogString());
     if (r == "/edtree") return HttpResponse(200, EditorTree(PathArg()));
     if (r == "/focusdlg") return HttpResponse(200, FocusDialogs());
+    if (r == "/renderprobe") return HttpResponse(200, RenderProbe());
+    if (r == "/shootsetup") return HttpResponse(200, ShootSetup(PathArg(),
+            Text::ParseInt(QArg(qs,"fps")), Text::ParseInt(QArg(qs,"w")),
+            Text::ParseInt(QArg(qs,"h")), Text::ParseInt(QArg(qs,"ext"))));
     if (r == "/menus") return HttpResponse(200, MenuReport());
     if (r == "/menutree") return HttpResponse(200, MenuTree(PathArg()));
     if (r == "/dlgnods") return HttpResponse(200, DialogNods(PathArg()));

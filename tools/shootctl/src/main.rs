@@ -265,6 +265,12 @@ struct Api {
     classes: HashSet<String>,
     /// class -> member -> is_const (const means "no set accessor")
     members: HashMap<String, HashMap<String, bool>>,
+    /// class -> the enum type names it actually declares.
+    ///
+    /// A member's enum is often called "UnnamedEnum" in the dump, which means
+    /// AngelScript has NO name for it: `CGameDialogShootParams::EExtVideo(1)`
+    /// looks obvious, compiles nowhere, and costs a game restart.
+    enums: HashMap<String, HashSet<String>>,
 }
 
 fn load_api(path: &str) -> Result<Api, String> {
@@ -274,6 +280,7 @@ fn load_api(path: &str) -> Result<Api, String> {
     let ns = v.get("ns").ok_or("no ns")?;
     let mut classes = HashSet::new();
     let mut own: HashMap<String, HashMap<String, bool>> = HashMap::new();
+    let mut enums: HashMap<String, HashSet<String>> = HashMap::new();
     let mut parent: HashMap<String, String> = HashMap::new();
     if let J::Obj(namespaces) = ns {
         for (_nsname, cs) in namespaces {
@@ -283,6 +290,18 @@ fn load_api(path: &str) -> Result<Api, String> {
                     if let Some(p) = info.get("p").and_then(|x| x.as_str()) {
                         parent.insert(cname.clone(), p.to_string());
                     }
+                    // The enum type names this class really declares. "e" at
+                    // class level is the named list; a member's own "e" is
+                    // usually "UnnamedEnum" and is deliberately NOT collected.
+                    let mut es = HashSet::new();
+                    if let Some(list) = info.get("e").and_then(|x| x.as_arr()) {
+                        for e in list {
+                            if let Some(n) = e.get("n").and_then(|x| x.as_str()) {
+                                if n != "UnnamedEnum" { es.insert(n.to_string()); }
+                            }
+                        }
+                    }
+                    enums.insert(cname.clone(), es);
                     let mut m = HashMap::new();
                     if let Some(ms) = info.get("m").and_then(|x| x.as_arr()) {
                         for mem in ms {
@@ -297,10 +316,12 @@ fn load_api(path: &str) -> Result<Api, String> {
             }
         }
     }
-    // fold in inherited members
+    // fold in inherited members AND inherited enums
     let mut members = HashMap::new();
+    let mut all_enums: HashMap<String, HashSet<String>> = HashMap::new();
     for c in classes.iter() {
         let mut acc: HashMap<String, bool> = HashMap::new();
+        let mut eacc: HashSet<String> = HashSet::new();
         let mut cur = Some(c.clone());
         let mut guard = 0;
         while let Some(name) = cur {
@@ -313,11 +334,15 @@ fn load_api(path: &str) -> Result<Api, String> {
                     acc.entry(k.clone()).or_insert(*v);
                 }
             }
+            if let Some(e) = enums.get(&name) {
+                for k in e { eacc.insert(k.clone()); }
+            }
             cur = parent.get(&name).cloned();
         }
         members.insert(c.clone(), acc);
+        all_enums.insert(c.clone(), eacc);
     }
-    Ok(Api { classes, members })
+    Ok(Api { classes, members, enums: all_enums })
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -550,6 +575,46 @@ fn lint(api_path: &str, files: &[String]) -> i32 {
                 }
             }
 
+            // A SCOPED NAME THE CLASS DOES NOT DECLARE.
+            //
+            // `CGameDialogShootParams::EExtVideo(ext)` reads like the obvious
+            // way to build that enum value. There is no such symbol: the dump
+            // calls the enum "UnnamedEnum", which means AngelScript has no name
+            // for it at all. Cost a game restart. Members are checked too, so
+            // `CFoo::Bar` typos are caught the same way.
+            {
+                let mut rest = code;
+                while let Some(p) = rest.find("::") {
+                    let before = &rest[..p];
+                    let cls: String = before.chars().rev()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<Vec<_>>().into_iter().rev().collect();
+                    let after = &rest[p + 2..];
+                    let sym: String = after.chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    rest = after;
+                    if cls.is_empty() || sym.is_empty() { continue; }
+                    // only classes we know about; namespaces (Dev::, IO::,
+                    // Reflection::, Text::, Meta::) are not in the dump
+                    if !known.contains(cls.as_str()) { continue; }
+                    let has_enum = api.enums.get(&cls).map(|e| e.contains(&sym)).unwrap_or(false);
+                    let has_member = api.members.get(&cls)
+                        .map(|m| m.is_empty() || m.contains_key(&sym)).unwrap_or(true);
+                    if !has_enum && !has_member {
+                        let known_enums: Vec<&str> = api.enums.get(&cls)
+                            .map(|e| e.iter().map(|s| s.as_str()).collect())
+                            .unwrap_or_default();
+                        let hint = if known_enums.is_empty() {
+                            " (it declares no named enum -- the dump calls it UnnamedEnum)".to_string()
+                        } else {
+                            format!(" (it declares: {})", known_enums.join(", "))
+                        };
+                        problems.push(format!("{base}:{ln}: {cls} has no {sym}{hint}"));
+                    }
+                }
+            }
+
             // a route calling a helper nobody defined -- routes and helpers live
             // in different files, so only a whole-plugin check can see this.
             if code.contains("HttpResponse(") {
@@ -633,9 +698,29 @@ fn main() {
                 lint(&args[1], &args[2..])
             }
         }
+        "webms" => {
+            // debug: what the driver can see in the screenshots folder
+            let v = webm_times();
+            println!("{} webm files", v.len());
+            let mut byt: Vec<_> = v.into_iter().collect();
+            byt.sort_by_key(|(_, t)| *t);
+            for (p, _) in byt.iter().rev().take(3) { println!("  {p}"); }
+            0
+        }
         "shoot" => {
-            let to = if args.len() > 1 { args[1].parse().unwrap_or(3600) } else { 3600 };
-            shoot(to)
+            // shoot [timeout_s] [--name NAME]
+            let mut to = 3600u64;
+            let mut name = String::new();
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--name" { name = args[i + 1].clone(); i += 2; }
+                else { to = args[i].parse().unwrap_or(3600); i += 1; }
+            }
+            if name.is_empty() {
+                name = format!("shoot_{}", std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+            }
+            shoot(to, &name)
         }
         "setup" => {
             let mut map = String::new();
@@ -910,32 +995,46 @@ fn to_menu() -> Result<(), String> {
 /// earlier search looked. Its controls are bound to the CGameDialogShootParams,
 /// so OnOk is a plain API call. See ShootNod.as.
 
-/// How many modal dialogs the game says are holding focus
-/// (CGameSwitcher::FocusDialogCount). Reported for diagnostics only: it does not
-/// distinguish which dialog, and the ghost import used to leave it at 1.
-fn focus_dialogs() -> Option<i64> {
-    let b = http_get("/focusdlg", 10).ok()?;
-    let k = "\"focusdialogs\":";
-    let at = b.find(k)? + k.len();
-    let rest = &b[at..];
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-')?;
-    rest[..end].parse().ok()
+// CGameSwitcher::FocusDialogCount is not used: it does not distinguish WHICH
+// dialog, it does not stack, and the ghost import used to leave it at 1 with
+// nothing on screen. /focusdlg is still there for probing by hand.
+
+// newest_video() is GONE. "the newest .webm in the folder" was how the driver
+// found its own result, and it is a guess: another render, an unrelated
+// capture, or a shoot that died before writing all point it at the wrong file
+// with no way to notice. The render names its output now -- see shoot().
+
+/// IS THE GAME STILL WRITING THIS FILE? The OS's answer, not ours.
+///
+/// Nothing in the object graph moves during a shoot -- measured over a whole
+/// 53-second render: Operation_InProgress false, MTApi IsPlaying false,
+/// CurrentTimer 0, no dialog, no progress bar. So the game itself will not say
+/// when it is done, and the old gate was "the file size has not changed for
+/// three polls", which cannot tell a finished render from a stalled one.
+///
+/// Windows can. The encoder holds the output open while it writes, so opening
+/// it for writing with no sharing fails until the game closes it. That is the
+/// writer's own release, and it is exact.
+fn file_locked(win_path: &str) -> Option<bool> {
+    let ps = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+    let script = format!(
+        "try {{ $f=[IO.File]::Open('{win_path}','Open','Write','None'); $f.Close(); 'UNLOCKED' }} \
+         catch [System.IO.FileNotFoundException] {{ 'MISSING' }} \
+         catch {{ 'LOCKED' }}");
+    let out = std::process::Command::new(ps)
+        .args(["-NoProfile", "-Command", &script])
+        .output().ok()?;
+    let body = String::from_utf8_lossy(&out.stdout);
+    if body.contains("UNLOCKED") { Some(false) }
+    else if body.contains("LOCKED") { Some(true) }
+    else { None }
 }
 
-/// Newest .webm in the screenshots folder, with its size.
-fn newest_video() -> Option<(String, u64)> {
-    let dir = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots";
-    let mut best: Option<(std::time::SystemTime, String, u64)> = None;
-    for e in std::fs::read_dir(dir).ok()?.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("webm") { continue; }
-        let md = e.metadata().ok()?;
-        let t = md.modified().ok()?;
-        if best.as_ref().map(|(bt, _, _)| t > *bt).unwrap_or(true) {
-            best = Some((t, p.to_string_lossy().to_string(), md.len()));
-        }
-    }
-    best.map(|(_, p, s)| (p, s))
+/// The WSL path `/mnt/c/...` as the Windows path `C:\...`.
+fn to_win(p: &str) -> String {
+    p.strip_prefix("/mnt/c/")
+        .map(|r| format!("C:\\{}", r.replace('/', "\\")))
+        .unwrap_or_else(|| p.to_string())
 }
 
 /// Shoot, and wait for the file to appear AND stop growing.
@@ -943,11 +1042,11 @@ fn newest_video() -> Option<(String, u64)> {
 /// The wait is on the artefact rather than on a duration: a render that dies
 /// leaves the file short, and one that is still going keeps growing, so
 /// "unchanged for three consecutive polls" is the completion signal.
-/// Is the game running a long operation? CGameManiaPlanet::Operation_InProgress,
-/// via /shootstatus.
-fn op_in_progress() -> bool {
-    http_get("/shootstatus", 10).unwrap_or_default().contains("\"op\":true")
-}
+// op_in_progress() is GONE too. CGameManiaPlanet::Operation_InProgress reads
+// FALSE for the entire duration of a shoot -- measured across a 53-second
+// render, along with MTApi IsPlaying (false), CurrentTimer (0) and every
+// progress field (empty). The game exposes no render-in-progress signal at all;
+// the encoder file handle is the signal. See file_locked().
 
 /// Is the shoot dialog up? The plugin answers from the dialog nod itself
 /// (`"shootdlg":true`), not from a frame name -- see ShootNod.as.
@@ -964,9 +1063,47 @@ fn wait_shoot_dialog(want: bool, secs: u64) -> Result<f64, String> {
     Err(format!("the shoot dialog never became {}", if want { "visible" } else { "closed" }))
 }
 
-fn shoot(timeout_s: u64) -> i32 {
-    let before = newest_video();
-    println!("modals: {:?} (diagnostic only)", focus_dialogs());
+/// Every .webm in the screenshots folder, with its modification time.
+///
+/// NOT a set of names. The game does NOT always create a new file: it takes the
+/// lowest free VideoNN, and if that name already exists it OVERWRITES it --
+/// measured, Video56.webm was rewritten in place and the folder listing never
+/// changed length. A driver watching for a new NAME waits forever on a render
+/// that is running perfectly well. That is exactly what happened here.
+fn webm_times() -> Vec<(String, std::time::SystemTime)> {
+    let dir = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots";
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("webm") { continue; }
+            if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
+                v.push((p.to_string_lossy().to_string(), t));
+            }
+        }
+    }
+    v
+}
+
+/// The .webm files touched since `since` -- the render's output, by definition.
+fn webms_since(since: std::time::SystemTime) -> Vec<String> {
+    let mut v: Vec<String> = webm_times().into_iter()
+        .filter(|(_, t)| *t >= since)
+        .map(|(p, _)| p)
+        .collect();
+    v.sort();
+    v
+}
+
+/// Shoot, and prove every step of it.
+fn shoot(timeout_s: u64, name: &str) -> i32 {
+    // WHEN WE STARTED. The output is "the .webm the game touched after this
+    // moment" -- which covers both cases, a fresh VideoNN and an existing one
+    // overwritten in place. Identifying it by newest mtime alone was a guess
+    // that pointed at the wrong file whenever anything else had written one.
+    // One second back, because a filesystem timestamp is not that precise.
+    let t_start = std::time::SystemTime::now() - Duration::from_secs(1);
+
     println!("rewind: {}", http_get("/rewind", 20).unwrap_or_default().trim());
     println!("shoot:  {}", http_get("/shoot", 20).unwrap_or_default().trim());
 
@@ -980,9 +1117,18 @@ fn shoot(timeout_s: u64) -> i32 {
         Err(e) => { eprintln!("{e}"); return 1; }
     }
 
-    // READ THE SETTINGS BEFORE ACCEPTING. A render is minutes long; a wrong
-    // format or size is worth catching now, and the numbers are right there.
-    println!("  params: {}", http_get("/shootparams", 10).unwrap_or_default().trim());
+    // Set what is worth setting and CHECK the container.
+    //
+    // ShootName is written and reads back, but it does NOT name the output:
+    // measured -- the dialog reported "name":"uw_deck_v1" and the game wrote
+    // Video54.webm off its own counter anyway. It is set as a label, and this
+    // copies the result to that name at the end instead. ExtVideo is CHECKED
+    // rather than written: the dump gives its enum no name to construct.
+
+    if let Err(e) = set_arg(name) { eprintln!("{e}"); return 1; }
+    let params = http_get("/shootsetup?ext=1", 15).unwrap_or_default();
+    println!("  params: {}", params.trim());
+    if params.contains("\"err\"") { eprintln!("refusing to render"); return 1; }
 
     // ACCEPT IT: CGameDialogShootParams::OnOk, the call the OK button makes.
     // NO KEYSTROKE, NO CLICK. Enter is actively harmful here -- the dialog opens
@@ -993,43 +1139,58 @@ fn shoot(timeout_s: u64) -> i32 {
         Ok(t) => println!("  accepted after {t:.1}s"),
         Err(e) => { eprintln!("{e}"); return 1; }
     }
-    // And the game must actually be rendering.
+
+    // EXACTLY ONE FILE MUST START BEING WRITTEN.
     let t0 = Instant::now();
-    let mut started = false;
-    while t0.elapsed().as_secs() < 20 {
-        if op_in_progress() || newest_video().map(|(p, _)| p) != before.clone().map(|(p, _)| p) {
-            started = true;
-            break;
+    let mut out = String::new();
+    while t0.elapsed().as_secs() < 30 {
+        let touched = webms_since(t_start);
+        match touched.len() {
+            0 => {}
+            1 => { out = touched[0].clone(); break; }
+            n => { eprintln!("{n} .webm files were touched; cannot tell which is ours"); return 1; }
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    if !started { eprintln!("the dialog closed but no render started"); return 1; }
+    if out.is_empty() { eprintln!("the dialog closed but no render started"); return 1; }
+    let short = out.rsplit('/').next().unwrap_or(&out).to_string();
+    println!("  writing {short}");
 
+    // AND THE GAME MUST LET GO OF IT.
+    //
+    // Nothing in the object graph moves during a shoot -- measured across a
+    // whole 53-second render. The old gate was "size unchanged for three
+    // polls", which cannot tell a finished render from a stalled one. The
+    // encoder's file handle can: see file_locked().
+    let win = to_win(&out);
     let t0 = Instant::now();
-    let mut last: Option<(String, u64)> = None;
-    let mut stable = 0;
+    let mut last = 0u64;
     while t0.elapsed().as_secs() < timeout_s {
         std::thread::sleep(Duration::from_secs(5));
-        let now = newest_video();
-        let is_new = match (&before, &now) {
-            (Some((bp, _)), Some((np, _))) => bp != np,
-            (None, Some(_)) => true,
-            _ => false,
-        };
-        if !is_new { continue; }
-        if now == last { stable += 1; } else { stable = 0; }
-        last = now.clone();
-        if let Some((p, s)) = &now {
-            print!("\r  {} {} bytes   ", p.rsplit('/').next().unwrap_or(p), s);
-            let _ = std::io::stdout().flush();
-        }
-        if stable >= 3 {
-            if let Some((p, s)) = now {
-                println!("\ndone: {p} ({s} bytes)");
-                return 0;
+        let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        match file_locked(&win) {
+            Some(false) => {
+                // Released. Anything that never got written is a failed render.
+                if sz == 0 { eprintln!("\n{out} is empty"); return 1; }
+                println!("\nrendered: {short} ({sz} bytes, {:.1}s)", t0.elapsed().as_secs_f64());
+                // GET IT OUT OF THE WAY. The game reuses VideoNN names and
+                // overwrites without asking, so a render left in the
+                // screenshots folder is one render away from being destroyed.
+                let keep = format!(
+                    "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots/{name}.webm");
+                return match std::fs::copy(&out, &keep) {
+                    Ok(n) => { println!("done: {keep} ({n} bytes)"); 0 }
+                    Err(e) => { eprintln!("could not keep a named copy: {e}"); 1 }
+                };
             }
+            Some(true) => {
+                print!("\r  {short} {sz} bytes   ");
+                let _ = std::io::stdout().flush();
+                last = sz;
+            }
+            None => { /* transient -- the probe itself failed, keep waiting */ }
         }
     }
-    eprintln!("\ntimed out after {timeout_s}s waiting for the render");
+    eprintln!("\ntimed out after {timeout_s}s; {out} is at {last} bytes and still open");
     1
 }

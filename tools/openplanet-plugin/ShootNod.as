@@ -283,3 +283,77 @@ CGameDialogShootParams@ ShootDialogNod() {
     }
     return null;
 }
+
+// ---------------------------------------------------------------------------
+// EVERYTHING THAT MIGHT SAY "THE RENDER IS RUNNING", in one probe.
+//
+// Operation_InProgress reads false throughout a shoot, so the pipeline falls
+// back to watching the output file's size -- the last thing in the pipeline not
+// gated on the game's own word. This dumps every candidate at once so a single
+// render can settle which one moves.
+string RenderProbe() {
+    string j = "{";
+    auto mp = MPl();
+    j += "\"op\":" + ((mp !is null && mp.Operation_InProgress) ? "true" : "false");
+    auto api = MTApi();
+    if (api !is null) {
+        j += ",\"playing\":" + (api.IsPlaying() ? "true" : "false");
+        j += ",\"timer\":" + api.CurrentTimer;
+        j += ",\"playspeed\":" + api.PlaySpeed;
+    } else {
+        j += ",\"mt\":null";
+    }
+    auto dlg = GetApp().BasicDialogs;
+    if (dlg !is null) {
+        j += ",\"dialog\":" + int(dlg.Dialog);
+        j += ",\"waitprogress\":" + dlg.WaitMessage_Progress;
+        j += ",\"waitbar\":" + (dlg.WaitMessage_ShowProgressBar ? "true" : "false");
+        j += ",\"waitlabel\":\"" + dlg.WaitMessage_LabelText + "\"";
+        j += ",\"frame\":\"" + ((dlg.Dialogs !is null && dlg.Dialogs.CurrentFrame !is null)
+                                ? dlg.Dialogs.CurrentFrame.IdName : "") + "\"";
+    }
+    auto sw = GetApp().Switcher;
+    j += ",\"focusdlg\":" + ((sw is null) ? -1 : sw.FocusDialogCount);
+    j += ",\"shootdlg\":" + ((ShootDialogNod() is null) ? "false" : "true");
+    // the menus, so a dialog raised BY the render is visible too
+    array<string> names;
+    auto menus = AllMenus(names);
+    j += ",\"menus\":[";
+    for (uint i = 0; i < menus.Length; i++) {
+        if (i > 0) j += ",";
+        j += "\"" + names[i] + ":"
+          + ((menus[i].CurrentFrame is null) ? "-" : menus[i].CurrentFrame.IdName) + "\"";
+    }
+    j += "]}";
+    return j;
+}
+
+// ---------------------------------------------------------------------------
+// SET THE OUTPUT UP BEFORE ACCEPTING.
+//
+// The driver used to find its result by taking the NEWEST .webm in the
+// screenshots folder. That is a guess: two renders in the same folder, an
+// unrelated capture, or a render that dies before writing all leave it pointing
+// at the wrong file -- and it has no way to know.
+//
+// ShootName / VideoFps / Width / Height / ExtVideo are all writable members of
+// CGameDialogShootParams (the dialog is on screen and these are the fields it
+// shows), so the pipeline can NAME its own output and then wait for exactly
+// that file.
+string ShootSetup(const string &in name, int fps, int w, int h, int ext) {
+    auto sp = ShootDialogNod();
+    if (sp is null) return "{\"err\":\"no shoot dialog\"}";
+    if (name != "") sp.ShootName = name;
+    if (fps > 0) sp.VideoFps = fps;
+    if (w > 0) sp.Width = w;
+    if (h > 0) sp.Height = h;
+    // ExtVideo is NOT settable by name: the dump calls its enum "UnnamedEnum",
+    // so there is no CGameDialogShootParams::EExtVideo to construct (that cost a
+    // game restart). It is CHECKED instead -- 1 is Webm, which is what we want,
+    // and a render in the wrong container is worth refusing before it starts.
+    if (ext >= 0 && int(sp.ExtVideo) != ext)
+        return "{\"err\":\"ExtVideo is " + int(sp.ExtVideo) + ", wanted " + ext + "\"}";
+    // Read back, always: a field that refused the write is worth knowing about
+    // before committing to a render that takes minutes.
+    return ShootParamsState();
+}

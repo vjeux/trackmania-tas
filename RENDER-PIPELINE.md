@@ -151,14 +151,12 @@ A cold start to a finished video, one command, nothing synthetic:
 ```
 launch → EditMap → MediaTracker → stage ghosts → import each by name
        → create the camera track → aim it (ent=1, cam=2)
-       → rewind → ShootVideo → read the params → OnOk → wait on the file
+       → rewind → ShootVideo → read the params → OnOk
+       → wait for the encoder to release the file
 ```
 
-Measured end to end on 2026-08-22 from a killed game: setup 16 s, render
-52.934 s of 1280×720 VP8 out in about three minutes, `shoot rc=0`. Repeated
-from a second cold start with the same result.
-
-Every gate is a fact from the game, never a duration and never a pixel:
+Every gate is a fact from the game or the OS, never a duration and never a
+pixel:
 
 | step | gate |
 |---|---|
@@ -167,8 +165,49 @@ Every gate is a fact from the game, never a duration and never a pixel:
 | camera aimed | the camera block's `ClipEntId` and target name, read back |
 | shoot dialog up | the `CGameDialogShootParams` nod itself |
 | accepted | that nod going away |
-| render finished | the file existing and its size unchanged |
+| render running | the one `.webm` touched since we started |
+| render finished | the encoder closing its file handle |
 
-The one thing still not gated on the game's own word is render completion —
-`Operation_InProgress` reads false throughout a shoot, so the pipeline falls
-back to the output file's size going stable.
+## Knowing when the render is finished
+
+The game will not tell you. Measured across a whole 53-second render, polling
+every 3 seconds: `Operation_InProgress` false throughout, `MTApi::IsPlaying()`
+false, `CurrentTimer` 0, `PlaySpeed` 1, no dialog, no progress bar, no menu
+frame. There is no render-in-progress signal in the object graph at all.
+
+**The encoder's file handle is the signal.** The game holds the output open
+while it writes and closes it when it is done, so opening the file for writing
+with no sharing (`[IO.File]::Open(path,'Open','Write','None')`) fails until the
+render finishes. That is the writer's own release — exact, and it distinguishes
+a finished render from a stalled one, which "the size has not changed for three
+polls" cannot.
+
+## Finding the output file
+
+Two traps here, both measured.
+
+**`ShootName` does not name the file.** It is writable and reads back — the
+dialog reported `"name":"uw_deck_v1"` — and the game still wrote `Video54.webm`
+off its own counter.
+
+**The game OVERWRITES existing files.** It takes the lowest free `VideoNN`, and
+if that name already exists it rewrites it in place: `Video56.webm` was
+overwritten and the folder listing never changed length. So "wait for a new
+filename to appear" waits forever on a render that is running perfectly, and
+"the newest `.webm`" is a guess that lands on the wrong file whenever anything
+else has written one.
+
+What works: note the time before accepting, then take the `.webm` whose mtime is
+newer than that — one file, or it is an error. And because the next render will
+happily destroy it, `shoot --name X` copies the result to `X.webm` when the
+handle is released.
+
+## The command
+
+```
+shootctl setup --map <map.Map.Gbx> <tas.Ghost.Gbx> <opponent.Ghost.Gbx>
+shootctl shoot [timeout_s] --name <output>
+```
+
+Measured cold-start on 2026-08-22, from a killed game: launch 38 s, setup 16 s,
+render 123 s for 52.934 s of 1280×720 VP8, `shoot rc=0`.
