@@ -11,6 +11,8 @@
 //! * [`batch`] and [`forkeval`] are the two evaluators: the authoritative one
 //!   and the fast one.
 //! * [`search`] is the island/Metropolis loop over either.
+//! * [`seedstate`] is the identity control a state-objective search runs in
+//!   place of the millisecond one, and it is stronger.
 //! * [`guard`] is the phantom guard, and it owns the output directory: the only
 //!   way to bank a result is to offer it to the plain oracle first.
 
@@ -24,4 +26,5 @@ pub mod report;
 pub mod root;
 pub mod score;
 pub mod search;
+pub mod seedstate;
 pub mod tape;

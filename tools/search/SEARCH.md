@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 41 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 68 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -67,7 +67,8 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--lo --hi --window --stride` | which ticks may be edited, and the sliding window over them |
 | `--temp SECONDS --migrate P` | Metropolis temperature and island migration |
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
-| `--fork --forktick --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
+| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
+| `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
 
 **Added, because the behaviour existed but was not addressable:**
 
@@ -249,6 +250,10 @@ the fixtures checked in beside `tools/ghost`.
 | **re-validation from a separate process** | all 10 banked files re-simulate to exactly the time in their name |
 | **a real search, fork oracle** | 23.013 → **22.923** in 2 minutes, 6 workers, 11 700 evaluations. **12 improvements, 12 confirmed by the plain oracle, 0 phantoms** — the fork agreeing with the plain oracle 12 times inside its own regime (late-window perturbation of a human seed) |
 | **the reference line taken from a ghost itself** | gated on the engine re-simulating that file's own tape: **0.0005 m** mean over 461 samples, no phase shift — and the fork search then ran on that line |
+| **the state objective's key against the eleven modes it replaces** | seven expressions against the arithmetic they were, transcribed, over 400 states — agreement to 1e-3 relative |
+| **the state objective through the engine, on the map it was proven on** | the fork's measured gate state for the seed against the seed's own recorded telemetry: **0.0002 m, 0.067 m/s of speed, 0.965° of heading, 0.009° of attitude** — and the author's own contact, measured the same way, scores **86.81**, reproducing the published 86.8 m/s of body-lateral speed |
+| **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
+| **the search climbing a state key** | 228811, 24 fork workers, seeded with the human world record: key **0.97 → 55.8** in 2.5 minutes, and the state it scores moves from z = 714.9 to **z = 709.15**, the launcher line |
 
 ### One check that did not work, one that did, and a false negative I nearly published
 
@@ -307,66 +312,274 @@ already-improved incumbent and then abort on a control testing the wrong tape.
 
 ---
 
-## 5. What the search still cannot express
+## 5. The state objective
+
+Built here. Three maps had needed it and each one hand-rolled it in a private
+fork of the search, which is what a missing feature looks like. §5.1 of the
+previous version of this file was a sketch; this is what it turned into, what
+each part cost, and the two places the sketch was wrong.
+
+**When finish time cannot cross a valley, score the car's STATE at a place.**
+
+```
+tmsearch search --fork ... \
+  --gate 'xmin=56,xmax=136,ymin=48,ymax=54,zmin=704,zmax=715,minspeed=60' \
+  --gate-key 'min(abs(bodyright), 5*(-vz))' \
+  --gate-min-key 60 \
+  --gate-seed-state humanWR.Ghost.Gbx
+```
+
+That is the objective that found map 228811's launcher, written down instead of
+compiled in. It needs `--fork`: the plain oracle returns a time and a checkpoint
+count and cannot see the car at all, so `--gate` without `--fork` is refused
+rather than silently scoring every candidate as a miss.
+
+### 5.1 The bands are variants, not numbers
+
+```rust
+pub enum Outcome {
+    Finish { ms: i64 },
+    Gate(GateState),
+    Dnf(Progress),
+}
+
+pub enum GateState {
+    Missed { miss_m: f64 },   // never got in; ranked by closest approach
+    Reached { key: f64 },     // got in; ranked by the state key
+    Finished { ms: i64 },     // got in well enough, and finished; ranked by time
+}
+```
+
+The failure this shape exists to prevent is **a near miss outscoring an
+arrival**, and it is not hypothetical: the working version extended the key
+below the box as `-miss`, the in-box key was itself large and negative, and
+grazing the boundary at −0.001 beat every candidate that got inside. The search
+then spent 100 000 evaluations perfecting a miss.
+
+The fix at the time was `-(500 + miss)`. That is a convention, a constant, and
+one more number to get wrong — the same shape as the `FINISH_BASE` this crate
+deleted. Here the bands are variants: `Reached` outranks `Missed` for every pair
+of values either can hold, there is no arithmetic between them and no constant
+to tune. `a_near_miss_never_outranks_an_arrival` sweeps misses from 0 to
+infinity against keys from −1e9 to +1e9.
+
+**The sketch had two bands and it needed three**, because the third is where
+"did it and finished" lives, and that band is a time again — so it is
+re-validated by the plain oracle exactly like any other time.
+
+### 5.2 The key is a program, not a mode number
+
+The version that worked had eleven hard-coded `gate_mode` integers, each one a
+match arm added to the shim that runs inside the game server. Two of them turned
+out to be decoys and one was a sign error, and none of them could be tried
+without rebuilding the shim.
+
+So `--gate-key` is an expression, compiled in the parent into a fixed-size
+postfix program that the child runs on a 16-slot stack: no allocation, no
+strings, nothing to add to `pred_core.rs` the next time a map wants a different
+quantity.
+
+| term | value |
+|---|---|
+| `speed` `vx` `vy` `vz` `px` `py` `pz` | the plain ones |
+| `bodyright` `bodyup` `bodyfwd` | velocity in the CAR's frame — `bodyright` is the ghost format's `side_speed` |
+| `along(x,y,z)` | speed along a world direction |
+| `nose(x,y,z)` `roof(x,y,z)` `flank(x,y,z)` | how well the car's forward / up / right axis points along a direction |
+| `dist(x,y,z)` `vdist(vx,vy,vz)` | metres from a point, m/s from a target velocity |
+| `abs()` `min()` `max()` `+ - * /` and parentheses | |
+
+Bigger is always better, so a quantity to be minimised is negated in the open by
+whoever writes it. `the_key_language_reproduces_the_objectives_it_replaces`
+checks the expressions for seven of the eleven old modes against the arithmetic
+they were, transcribed, over 400 states — two implementations agreeing is the
+only evidence that deleting one changed nothing.
+
+**Not expressible: `atan2`.** Old mode 2 was "the angle of the velocity off the
+−x axis, in degrees", and there is no inverse tangent in the language. It was
+one of the decoys, so nothing was lost here, but a map that wants an angle wants
+either `nose()`/`along()` (a cosine, which is monotone in the angle over the
+half-turn that matters) or a new opcode.
+
+### 5.3 The key must be a function of the WHOLE state
+
+Position and velocity together were not enough on 228811: the launcher ignores
+both and triggers on which way the car is pointing. So the child's record now
+carries the quaternion, the 48-byte summary grew to 108, and
+`the_key_can_tell_two_identical_velocities_apart_by_attitude` pins it — two
+states identical in every metre and every metre per second, differing only in
+attitude, must score differently.
+
+The quaternion was already in the gathered record (`R_QUAT`, 16 bytes at
+`pos − 16`); what was missing was passing its offset to the child and four loads
+per tick. The whole cost of the "whole state" requirement was that.
+
+### 5.4 Outside the box, and inside it
+
+The key is a **maximum over ticks** inside the box, and the whole state at the
+tick that achieved it is what is recorded — not the state at first entry, which
+is what the sketch said. Maximum-over-ticks is what makes the mode safe to run
+with the watchdog armed: aborting a candidate only removes ticks, so an aborted
+run's key is never higher than the same run left alone
+(`aborting_can_only_lower_the_key` checks every prefix).
+
+Outside the box the measure is the closest approach in metres, over the same
+ticks the key would have been measured on, so "how close did it come" and "did
+it arrive" are one measurement and cannot disagree. That is the gradient that
+points a search which has never once fired the gate towards it — without it
+every run outside the box scores the same and the search is a random walk
+(measured on 228811: 160k evaluations, no gradient, nothing found).
+
+### 5.5 `--gate-min-key`, which the sketch did not have and the map needed
+
+**Entering a box is not doing the thing.** 228811's gate sits on 96 m of boost
+deck that all 48 runs on the leaderboard drive across. The human world record
+clips it with a key of **0.06** — doing none of the thing — and then finishes at
+22.637. With three bands and no bar that is a band-2 result: the seed is
+unbeatable except by a faster ordinary lap, and the state hunt is a finish-time
+search with extra steps, which is exactly the moat the mode exists to cross.
+
+This was not foreseen; it was measured, on the first run of the feature on that
+map. `--gate-min-key K` is the bar: a state under it does not count as having
+done the thing, so a tape that clips the box and finishes still ranks as a
+state. It defaults to no bar. It is the one knob here that is a number someone
+has to choose, and it is the general form of what the private fork hard-coded as
+a launch detector (`max_jump >= 10 m/s` at `x <= 80`).
+
+### 5.6 The identity control gets stronger, and it found a clock
+
+In gate mode "did the fork reproduce the seed's millisecond" is unavailable: the
+seed is normally aborted by a predicate long before the finish. The replacement
+is the fork's measured gate state for the SEED against the seed's own recorded
+telemetry — position, velocity **and** the quaternion. One comparison validates
+the record layout, the car locator, the clock labelling, the box arithmetic and
+the key at once.
+
+On 228811, measured:
+
+```
+seed identity control at race 18.580 (PASS):
+  position 0.0002 m (bar 1.7442)   speed 0.0669 m/s (bar 1.0839)
+  heading 0.965 deg (bar 2.209)    attitude 0.009 deg (bar 4.339)
+  clock: best fit at a shift of -1 tick(s); unshifted the position residual is 1.1954 m
+```
+
+Two things came out of building it, and both are properties of the data rather
+than of this code:
+
+* **The two clocks are one tick apart.** The child labels a state by the clock
+  value it was gathered at; the sampler's own `sample_ms` labels the first
+  record of tick `t` as the END of tick `t − 1`. At 118 m/s that one tick is
+  **1.20 m**, and with the shift assumed to be zero the control failed on a
+  measurement that is otherwise exact to 0.0002 m. So the shift is measured over
+  ±2 ticks, reported, and allowed up to one tick; more than one is not a
+  labelling convention and fails.
+* **A ghost stores the velocity DIRECTION in two signed bytes.** `read_transform`
+  decodes it as `vh = i8/127 * pi`, `vp = i8/127 * pi/2` — a quantisation step of
+  1.42° — while the speed is `exp(i16/1000)`, a tenth of a per cent. So a single
+  "velocity error in m/s" bar either fails a perfect measurement at speed or
+  passes a bad one at walking pace: at 118 m/s one step of that byte is 1.5 m/s
+  per axis, and the first version of this control duly failed at 1.99 m/s
+  against a 1.95 bar while the position matched to 0.2 mm. Speed and direction
+  are now checked separately, each against a bar derived from how the recording
+  stores that quantity.
+
+The bars are derived, not chosen: a floor plus a quarter of what that quantity
+changed across the 50 ms sample interval the state falls in (the interpolation),
+plus one quantisation step where the format has one.
+
+If the seed never enters the box, the control cannot run and the search refuses
+to start — "this recording never enters the gate box above 60 m/s, so it cannot
+say what the fork should have measured". That is worth knowing in the first
+second rather than the first hour.
+
+**A shim that ignored the gate would score every candidate "never reached it"**,
+which is a perfectly plausible answer. So the ARM ack now reports how many key
+operations it installed and `ForkEval` refuses a mismatch: an `libforkshim.so`
+older than the binary arming it is an abort, not a silent zero.
+
+### 5.7 The decoy test, printed before the first candidate
+
+> An objective that can be maximised without achieving the goal is not a proxy,
+> it is a decoy.
+
+The laziest tape the search can write is the one with every editable tick set to
+no steering, no throttle and no brake. It is evaluated first, through the same
+evaluator, and its score is printed next to the incumbent's before anything else
+happens. If it wins, the run stops there.
+
+**In fork mode this is not a parked car, and that is the point.** The server has
+already consumed the seed's prefix, so the do-nothing tape is "the incumbent up
+to the resume boundary, then hands off the wheel" — which is exactly the laziest
+tape inside the search's real action space. It is therefore measured between the
+two startup barriers, after the fleet's mutation floor is known: a probe that
+blanks ticks below the floor is measuring edits the engine silently drops.
+
+**It fired on the real map, first time out, and it was right.** With the tight
+box (z ≤ 713) the human world record misses the gate by 1.53 m, while a tape
+that simply stops driving at tick 1850 drifts into the corner of it and scores
+0.014 — so a non-arrival was the incumbent and doing nothing beat it:
+
+```
+decoy test: the do-nothing tape (300 editable ticks blanked) scores GATE key
++0.0140; the incumbent scores no gate, 1.53 m away -- THE DO-NOTHING TAPE WINS.
+This objective can be maximised without driving the map: it is a decoy, not a
+proxy. Nothing was searched.
+```
+
+That is a true statement about that box: a search would have hill-climbed from a
+tape that had thrown the race away. The cure is the box — a gate the incumbent
+is outside and a blank tape is inside is a gate measuring the wrong event — and
+the run that follows uses z ≤ 715, where the seed is inside and the key does the
+work.
+
+**What it does not catch.** The three decoys 228811 actually met were not of
+this class: `-vz` alone, body-lateral speed alone, and progress along the
+author's line are all objectives a *fast, driven* tape maximises without firing
+anything. A parked car scores nothing on any of them. This check catches the
+family where doing less scores more — a sign error, a box round the spawn, a key
+that rewards slowness — and it catches it in the first line of output. It is not
+a proxy for thinking about what the laziest way to maximise the objective is.
+
+### 5.8 What the guard does with a state
+
+A band-2 result is a finish and is re-validated exactly like any other: the
+oracle's millisecond must equal the claim, and the bank writes the oracle's
+number. A band-0 or band-1 result is a **state**, not a time, so there is
+nothing for the oracle to contradict — a candidate the watchdog aborted has no
+time by construction, and one that finishes without clearing the bar is what
+band 0 and band 1 are for. The tape is banked with its state written out beside
+it as `best_gate_*.state.json` (position, velocity, quaternion, body-frame
+velocity, the key, the tick), so the claim can be checked by hand, and the file
+never acquires a millisecond it did not earn.
+
+A tape that turns out to finish while ranking at the bottom is called out on
+stderr rather than hidden: the search ranked it low on purpose, and the time is
+still real.
+
+### 5.9 What it cost, and what it bought
+
+68 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
+`tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
+`score.rs` and `loop_invariants.rs`. Everything but the engine-backed tests runs
+with no server, on fixtures checked in beside `tools/ghost` and addressed by
+relative path.
+
+On 228811, seeded with the human world record, 24 fork workers, key
+`min(abs(bodyright), 5*(-vz))` — the measured firing conjunction — the search
+took the key from **0.97 to 52.9 in 90 seconds**, and moved the state it is
+scoring from `z = 714.9` to `z = 709.09`: the launcher line is at z ≈ 709. The
+author's own contact, measured through the same mechanism from his own recorded
+telemetry, is **86.81** at (71.4, 50.4, 710.3) — which reproduces the published
+figure of 86.8 m/s of body-lateral speed to four digits, and is the strongest
+control available that the key is measuring the thing the map triggers on.
+
+---
+
+## 6. What the search still cannot express
 
 Concrete, in the order I would close them.
 
-**1. A state objective.** When finish time cannot cross a valley, the thing to
-score is the STATE at a place. Three maps have needed this and each one
-hand-rolled it in a private fork of the search, which is the definition of a
-missing feature. A sketch, because the shape matters more than the code:
-
-* **A third outcome variant**, so the bands cannot overlap by construction the
-  way the two ladders already cannot:
-
-  ```rust
-  pub enum Outcome {
-      Finish { ms: i64 },
-      /// Reached the place the search was pointed at, but did not finish.
-      Reached { band: u8, key: f64 },
-      Dnf(Progress),
-  }
-  ```
-
-  with `Finish > Reached > Dnf`, and within `Reached`, band first and key
-  second. The whole ordering discipline is already in `score.rs`; this is one
-  more variant and one more test.
-
-* **The gate is a `box` predicate that records instead of aborting.** The
-  watchdog language already has `box`, the child already gathers the 44-byte
-  record every tick, and `R_QUAT / R_POS / R_VEL` are all in it. What is
-  missing is a slot in the 48-byte summary for *the whole record at first
-  entry*. That is the cheap half.
-
-* **The key must be a function of the WHOLE state.** On 228811 position and
-  velocity together were not enough — attitude was the trigger. So the key is
-  named over the recorded record (`speed`, `speed along a direction`, `distance
-  to a point`, `slip angle`, a weighted sum), not over a fixed pair of fields.
-
-* **The key must extend continuously OUTSIDE the box.** `-(500 + miss)`, never
-  `-miss`, or a near miss outscores an arrival. This is band 0, and it is what
-  gives a search that has never once fired the gate something to climb.
-
-* **The identity control changes shape and gets stronger.** In gate mode the
-  classic "does the fork reproduce the seed's millisecond" check is
-  unavailable, and the replacement is better: the fork's measured gate state
-  for the SEED must equal the seed's own decoded telemetry at that place —
-  position, velocity *and* quaternion. One comparison that validates the record
-  layout, the locate and the labelling at once.
-
-* **Print the decoy test at startup.** An objective that can be maximised
-  without achieving the goal is not a proxy, it is a decoy, and one map met
-  three in a row. Before the first candidate, print the key of the incumbent
-  and the key of the do-nothing tape. An objective the parked car scores well
-  on is visible in the first line of output instead of after four hours.
-
-* The guard is unaffected and still governs: a band-2 result is a finish and is
-  re-validated like any other; a band-0 or band-1 result is a *state*, not a
-  time, so there is no time for the oracle to contradict — the bank records the
-  gate state beside the tape so the claim can be checked by hand, and the file
-  never acquires a millisecond it did not earn.
-
-**2. Rungs along our own line.** `Progress::Checkpoints` only understands real
+**1. Rungs along our own line.** `Progress::Checkpoints` only understands real
 checkpoints, and on a map with four of them across 95 seconds that ladder has
 almost no gradient. Dense rungs placed along the incumbent's own trajectory
 (~1.3 s apart) are what made a sectional search work on 210218, and they were
@@ -374,13 +587,13 @@ built outside the search. This wants to be `--rung` plus the strictness switch
 that arm needed: a DNF must not collect a depth bonus for a rung it never
 fired, or the first wreck to stumble deep outranks every on-line tape.
 
-**3. A drift bound on the fork.** The search now REPORTS how far a candidate
+**2. A drift bound on the fork.** The search now REPORTS how far a candidate
 is from the fork's reference; it cannot BOUND it. `--max-drift N` would keep a
 fork search inside the regime where the fork is known exact instead of relying
 on the guard to catch it afterwards. Cheap, and it turns a property we monitor
 into one we enforce.
 
-**4. The fork clock fit is per map and this one is map 2's.**
+**3. The fork clock fit is per map and this one is map 2's.**
 `clock_for_tick` uses `clock = 36141 + 25.483 * race_ms`; another map fitted
 `5431 + 26.49 * race_ms`, and using the wrong one there put a requested race
 1.200 at race 4.325. Today that costs a checkpoint in the wrong place and is
@@ -388,13 +601,13 @@ visible (the tick the server actually stopped at is probed and printed), so it
 is not a wrong answer — but `--forktick` means different things on different
 maps. Two probes at two requested clocks solve the fit in about a minute.
 
-**5. A keyboard-legal search.** Many of this project's published results have a
+**4. A keyboard-legal search.** Many of this project's published results have a
 "keyboard" sibling, and restricting steering to a human-reachable alphabet is a
 constraint the search should carry (`--alphabet`), not something to filter for
 afterwards. This existed once, in the `lowinput` overlays, and never came back
 into the maintained lineage — see [`../LINEAGE.md`](../LINEAGE.md).
 
-**6. The banked file still declares the template's time.** Every file this
+**5. The banked file still declares the template's time.** Every file this
 search writes says 23.013 and does 22.923, because a patched tape inherits its
 template's header. `tmsearch validate` prints the disagreement, and
 `ghost declare --from-oracle` fixes it, but the search should do it on the way
@@ -402,12 +615,12 @@ into the bank. That needs a library entry point in `ghost`; every other piece
 is here. The whole "our run can be ours and the file somebody else's" family
 starts with this field.
 
-**7. `--start-from` demands an identical tick count.** A tape of a different
+**6. `--start-from` demands an identical tick count.** A tape of a different
 length cannot seed a search at all, though a tape can be lengthened. That
 forecloses seeding from a sibling map's run, which is how one map's best lap
 was found.
 
-**8. A segment map is trusted, not checked.** Swapping a checkpoint gate for a
+**7. A segment map is trusted, not checked.** Swapping a checkpoint gate for a
 finish gate is not a faithful trigger — one map paid 0.206 s of phantom gain
 for it — and the reference-ghost identity control cannot catch it, because the
 reference line is inside both volumes. The search takes `--seg K:MAP` on faith.
@@ -416,7 +629,7 @@ for the reference tape.
 
 ---
 
-## 6. What I deliberately did not touch
+## 7. What I deliberately did not touch
 
 * **The car locator (`forkoracle::blind`) and the shim's memory scanning.**
   Delicate, hard-won, and covered by `fk`'s own suite. I deleted two dead

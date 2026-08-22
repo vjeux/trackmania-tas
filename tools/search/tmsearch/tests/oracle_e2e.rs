@@ -62,6 +62,7 @@ fn nowhere() -> Provenance {
             ticks: 0,
             max_steer_delta: 0,
         },
+        gate: None,
     }
 }
 

@@ -135,11 +135,17 @@ impl Evaluator for BatchEval {
         out
     }
 
-    fn provenance(&self, inputs: &Inputs) -> Provenance {
+    fn provenance(&self, _idx: usize, inputs: &Inputs) -> Provenance {
         Provenance {
             from_fork: false,
             resume_tick: None,
             distance: inputs.distance_from(&self.reference),
+            // The plain oracle reports a time and a checkpoint count and
+            // nothing about the car, so a state objective is not available on
+            // this evaluator at all -- `--gate` requires `--fork`, and
+            // `cmd_search` refuses the combination rather than quietly
+            // producing this `None` for every candidate.
+            gate: None,
         }
     }
 }

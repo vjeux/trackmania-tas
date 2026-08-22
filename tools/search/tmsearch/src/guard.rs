@@ -33,7 +33,8 @@
 //! no method that does that.
 
 use forkoracle::inputs::{Distance, Inputs};
-use crate::score::{tag, Outcome};
+use forkoracle::pred::GateRecord;
+use crate::score::{tag, GateState, Outcome};
 use crate::tape::Patcher;
 use ghost::secs;
 use ghost::oracle::{validate, MapsMode};
@@ -56,6 +57,13 @@ pub struct Provenance {
     /// re-validation when the tape was not a small, late perturbation of its
     /// reference.
     pub distance: Distance,
+    /// The car's whole state where the state objective scored it, when the
+    /// search was armed with a gate and this candidate reached it.
+    ///
+    /// A band-0 or band-1 result is a STATE, not a time, so there is no
+    /// millisecond for the oracle to contradict. This is what makes the claim
+    /// checkable by hand instead: it is written out beside the tape.
+    pub gate: Option<GateRecord>,
 }
 
 impl std::fmt::Display for Provenance {
@@ -66,10 +74,14 @@ impl std::fmt::Display for Provenance {
                 "fork resume at tick {}, {}",
                 self.resume_tick.map(|t| t.to_string()).unwrap_or_else(|| "?".into()),
                 self.distance
-            )
+            )?;
         } else {
-            write!(f, "full simulation, {}", self.distance)
+            write!(f, "full simulation, {}", self.distance)?;
         }
+        if let Some(g) = &self.gate {
+            write!(f, "; gate {}", g)?;
+        }
+        Ok(())
     }
 }
 
@@ -216,6 +228,17 @@ impl Bank {
             // oracle to contradict -- but it must still not FINISH, or the
             // search is scoring on something unrelated to the file.
             (Outcome::Dnf(_), Outcome::Dnf(_)) => true,
+            // THE STATE OBJECTIVE, band 2: it reached the gate AND finished,
+            // so it is a time again and it is checked like any other time.
+            (Outcome::Gate(GateState::Finished { ms: a }), Outcome::Finish { ms: b }) => a == b,
+            // Bands 0 and 1 are a STATE, not a time, and the oracle has no
+            // state to offer. There is nothing here for it to contradict: a
+            // candidate the watchdog aborted has no time by construction, and
+            // one that finishes without reaching the gate is exactly what
+            // band 0 is for. The claim is checkable by hand instead -- the
+            // measured state is written out beside the tape -- and the file
+            // never acquires a millisecond it did not earn.
+            (Outcome::Gate(_), _) => true,
             _ => false,
         };
 
@@ -237,16 +260,69 @@ impl Bank {
             return Err(ph);
         }
 
-        let path = self.dir.join(format!("best_{}.Ghost.Gbx", tag(&actual)));
-        let _ = std::fs::rename(&tmp, &path);
+        // WHAT GOES IN THE BANK IS THE ORACLE'S OWN ANSWER, never the search's
+        // claim -- with one exception the type makes visible. For a gate
+        // result the oracle has no such answer to give: what it confirmed is
+        // that these bytes do not finish the map, and the state itself is the
+        // fork's measurement, which is why it is an `Outcome::Gate` and not a
+        // time, and why it is written out beside the tape to be checked.
+        let banked = match (claimed, actual) {
+            // Band 2 stays on the gate's ladder -- one search, one objective --
+            // but it takes the ORACLE's millisecond, like every other time
+            // this bank writes. (They are equal: `agrees` above required it.)
+            (Outcome::Gate(GateState::Finished { .. }), Outcome::Finish { ms }) => {
+                Outcome::Gate(GateState::Finished { ms })
+            }
+            (Outcome::Gate(_), _) => claimed,
+            _ => actual,
+        };
+        // A band-0 or band-1 tape that turns out to FINISH is worth saying out
+        // loud: the search ranked it at the bottom because it did not do the
+        // thing, and a human reading the bank should still know it exists.
+        if let (Outcome::Gate(g), Outcome::Finish { ms }) = (claimed, actual) {
+            if !matches!(g, GateState::Finished { .. }) {
+                eprintln!(
+                    "note: this tape does not reach the gate and the plain oracle says it \
+                     FINISHES at {}. The state objective ranks it at the bottom on purpose; \
+                     the time is real.",
+                    secs(ms)
+                );
+            }
+        }
+        let path = self.dir.join(format!("best_{}.Ghost.Gbx", tag(&banked)));        let _ = std::fs::rename(&tmp, &path);
         self.confirmed += 1;
+        // THE STATE BESIDE THE TAPE. A gate result never acquires a
+        // millisecond it did not earn: what it earned is a state, so that is
+        // what is written down, next to the file, in the units it was measured
+        // in. Anyone can check it by hand against the same map.
+        if let Some(g) = &prov.gate {
+            let side = path.with_extension("state.json");
+            let b = g.body_vel();
+            let _ = std::fs::write(
+                &side,
+                format!(
+                    "{{\"claim\":\"{}\",\"gate_tick\":{},\"key\":{},\
+                     \"pos\":[{},{},{}],\"vel\":[{},{},{}],\"quat\":[{},{},{},{}],\
+                     \"speed\":{},\"body_right\":{},\"body_up\":{},\"body_fwd\":{},\
+                     \"tape\":\"{}\"}}\n",
+                    claimed,
+                    g.tick,
+                    g.key,
+                    g.pos[0], g.pos[1], g.pos[2],
+                    g.vel[0], g.vel[1], g.vel[2],
+                    g.quat[0], g.quat[1], g.quat[2], g.quat[3],
+                    g.speed(), b[0], b[1], b[2],
+                    path.display()
+                ),
+            );
+        }
         self.note(&format!(
             "{{\"confirmed\":\"{}\",\"provenance\":\"{}\",\"file\":\"{}\"}}",
-            actual,
+            banked,
             prov,
             path.display()
         ));
-        Ok(Banked { path, confirmed: actual })
+        Ok(Banked { path, confirmed: banked })
     }
 
     fn note(&mut self, line: &str) {
