@@ -164,6 +164,12 @@ log "loading map $MAP"
 R=$(OP /editmap 30); case "$R" in ok*) : ;; *) die "editmap: $R" ;; esac
 MB=$(( $(stat -c%s "$MAPS/$MAP.Map.Gbx") / 1048576 ))
 LOADW=$(( 30 + MB * 30 )); [ "$LOADW" -lt 90 ] && LOADW=90; [ "$LOADW" -gt 300 ] && LOADW=300
+# MAP_LOADW overrides the size-derived wait. File size is a poor proxy for how
+# long the editor takes to build a map: 173691 "Underwater" is 1.9 MB and holds
+# 77,688 free water blocks, so it builds far more slowly than a 1.9 MB track of
+# ordinary road. A timeout here aborts the shoot, which is the safe direction --
+# but re-running with a longer wait is the fix, not working around it.
+[ -n "${MAP_LOADW:-}" ] && LOADW="$MAP_LOADW"
 log "waiting up to ${LOADW}s for a ${MB}MB map to load"
 await_ctx 1 "$LOADW" || die "map did not open within ${LOADW}s"
 
@@ -248,7 +254,14 @@ CLIPEND=$(echo "$CLIP" | grep -oE 'end=[0-9.]+' | cut -d= -f2 | sort -g | tail -
 # scrubbed and the account was not. Passing this check means "the game does not
 # say it is somebody else's"; it does not mean the container is ours. The
 # account-id read is the backstop and it lives outside this pipeline.
-if true; then
+# ALLOW_FOREIGN_CONTAINER=1 films a tape that is DELIBERATELY somebody else's
+# container -- the case this was written for is a GRAFT: the clip's inputs
+# written into the donor's own input array, which is the only way to compare
+# "his run" with "his run plus these inputs" on his own map. Both cars then
+# import under HIS nickname and none under Ghost:TAS, so the check below fires
+# correctly and must be waived explicitly rather than dodged by scrubbing the
+# nickname (165922 scrubbed the name and still carried the player's account id).
+if [ "${ALLOW_FOREIGN_CONTAINER:-0}" != "1" ]; then
   OURNAME=$(echo "$CLIP" | grep -oE 'name=Ghost:[^ ]*' | grep -v -F -e 'Ghost:TAS' | head -1)
   if [ -n "$OURNAME" ] && [ "$(echo "$CLIP" | grep -c 'name=Ghost:TAS')" = "0" ]; then
     die "container identity: the game imported this as ${OURNAME#name=} -- our tapes import as Ghost:TAS, so this file is wearing someone else's container"
