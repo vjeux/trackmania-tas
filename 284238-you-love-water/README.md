@@ -325,6 +325,16 @@ Each line is **MEASURED**, with its control named.
 x 933.3 rather than at the kicker plane — and the water start (1.30 s, never
 searched, independent of all of this).
 
+**The conversion has a new address.** Overwrite the INCUMBENT LAP's steering over
+tape ticks 1900:2320 with the shot's own spline — no splice, no phase search, the
+lap's own prefix and tail — and it grafts cleanly and gives a **strictly better
+copy-1 cycle**: kicker +3.9 m/s, wall 4.4 m closer and 3.9 m/s faster, checkpoint
+region **1.88 m against the incumbent's 6.53**. And the lap DNFs at `cps 1`. The
+published reason transplants fail here (115 tapes, handover state off by 10.6 m
+and 1.76 rad) **does not describe this failure** — there is no handover and the
+checkpoint state is better, so whatever kills it is downstream of copy 1's
+checkpoint, in a part of the lap nobody has looked at.
+
 **And a seed, banked with its caveat.** Two SHOTS (both `DNF cps 1`, both on the
 record's container — **a shot is not a lap**) reach the wall at **80-82 m/s**
 against the human's 79.49 and put the car through the checkpoint region at
