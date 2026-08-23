@@ -253,6 +253,34 @@ about a claim surviving the trip from where it was measured to where it is used.
 
 Every item here is something that passed, confidently, in this project.
 
+## A two-sided control can pass because it tests the only case that cannot fail
+
+The first entry here where the control itself is the thing that lies, and it
+looks *sound*: both halves fired correctly.
+
+285885 needed an airborne detector, so one was built as a gate 8 m above the
+reference line's own trajectory. Its control was two-sided and both sides
+passed — the reference tape fires **none** of the 8 m rungs and **all** of the
+0.4 m ones. Silent when grounded, not silent in general.
+
+Then **26 of 920 candidates fired it, and every one traced as firmly on the
+ground**: `u_y 0.982` at 154 km/h, climbing smoothly, no ballistic signature at
+all. They were driving further up a ramp whose *surface* is 8 m higher there.
+**A gate at a fixed height above one line is a height detector wherever another
+line differs — and the reference is the single line it cannot detect.**
+
+> **Any detector calibrated on a reference, then applied to candidates that
+> differ from it, has a control of exactly this shape available — and passing it
+> means nothing.**
+
+The repair is a detector that needs no reference: `tmtraj airborne` fits `y`
+by least squares against the map's own gravity, and its positive control is a
+**known-good answer** — the hand-found 35.060–35.400 window, and the fall off
+the world at x = 507 — rather than the line it was fitted to. That it then
+returns a completely different true answer (17 candidates with real air,
+0.10–0.15 s each, all of them **after** the patch rather than before it) is what
+confirms the first detector was measuring the ramp.
+
 ## It can fail toward *clean*
 
 `tmtraj corpus dup` — the check that catches one run published twice — decided
