@@ -7,8 +7,10 @@ y = 114.0, stationary, 0.6 km/h.**
 
 TMX map [173691](https://trackmania.exchange/maps/173691) by **Reddnox** ·
 3 checkpoints · author time **2672.290** · **0 online records**.
-**The map is not beaten and this does not beat it** — see "not a win" and
-"which map this is" below.
+**This landing does not beat the map** — it stops on a deck 15.7 m below a
+finish that fires; see "not a win" and "which map this is" below. The map
+itself was beaten separately, on 2026-08-22, by a route that reaches the
+finish; that run is not this page's.
 
 **Spring 2023 - 15 (Underwater)** — TAS **36.049** (not a completion — a landing) | AT 2672.290 | WR — by nobody (0 online records)
 
@@ -130,6 +132,8 @@ neither of two independent routes closes that 15.7 m:
   against a 340 m half-life.
 
 Reaching this deck is still the end of this route, not the start of a lap.
+**The map was beaten on 2026-08-22 by a different route**, which reaches the
+finish; this landing remains what it says it is.
 
 ## The file
 
