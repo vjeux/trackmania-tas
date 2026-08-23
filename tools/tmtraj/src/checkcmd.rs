@@ -523,7 +523,28 @@ fn check_one(path: &str, race_in: i64, g: f64, contact_inherited: bool) -> (i32,
     let sup: Vec<usize> = (0..v.len()).filter(|i| c.cls[*i] == Cls::Supported).collect();
     let con_b = ball.iter().filter(|i| v[**i].contact()).count();
     let con_s = sup.iter().filter(|i| v[**i].contact()).count();
-    if ball.is_empty() {
+    // IS THE FLAG ABSENT, OR IS IT SOMEBODY ELSE'S?
+    //
+    // Those are opposite verdicts and C6 and C10 called both of them FAIL.
+    // `fk regen --neutralise` zeros the 49 per-run bytes it does not write --
+    // ground contact among them -- precisely so that no per-run byte of the
+    // donor container survives, which is the ONLY repair this project has for
+    // the contact-byte contamination that 286279's three tapes were refused
+    // for. Refusing the repair as loudly as the defect is how a gate teaches
+    // people to reach for the override.
+    //
+    // The condition is not "the contact bit is zero" -- an honest recording has
+    // that on every airborne sample. It is that all forty-nine bytes are zero
+    // on every sample, which no recording of a driven car ever is: rpm, gear
+    // and wheel rotation move every sample of every run.
+    let neutralised = !v.is_empty() && v.iter().all(|x| x.neutralised());
+    if neutralised {
+        o.na(
+            "C5",
+            "NEUTRALISED: this file's 49 per-run bytes are all zero on every sample, so the              contact flag is absent rather than wrong. It cannot be checked -- and it cannot be              another driver's, which is what removing it was for."
+                .into(),
+        );
+    } else if ball.is_empty() {
         o.na("C5", "the car is never unambiguously airborne on this run".into());
     } else if con_b == 0 {
         o.contact(contact_inherited, "C5", true, format!("ground contact is OFF on all {} provably airborne samples", ball.len()));
@@ -535,7 +556,16 @@ fn check_one(path: &str, race_in: i64, g: f64, contact_inherited: bool) -> (i32,
     }
     // C6 is the half a ZEROED field fails. Without it, blanking the byte scores
     // a clean pass on C5 and the file is just as wrong.
-    if sup.len() < 5 {
+    if neutralised {
+        o.na(
+            "C6",
+            format!(
+                "NEUTRALISED: the contact flag is absent on all {} samples (see C5), so the                  {} provably ground-borne samples cannot be tested against it",
+                v.len(),
+                sup.len()
+            ),
+        );
+    } else if sup.len() < 5 {
         o.na("C6", format!("only {} unambiguously ground-borne samples -- cannot test", sup.len()));
     } else if pct(con_s, sup.len()) >= 95.0 {
         o.contact(contact_inherited, "C6", true, format!("ground contact is ON on {:.1} % of {} ground-borne samples", pct(con_s, sup.len()), sup.len()));
@@ -578,7 +608,17 @@ fn check_one(path: &str, race_in: i64, g: f64, contact_inherited: bool) -> (i32,
     // that claims 7.75 s of flight must fall about 757 m; if it descends 30 m,
     // or climbs, it was on a surface. No classification, no thresholds on
     // acceleration, and it covers every sample the flag speaks about.
-    {
+    if neutralised {
+        // Every sample reads contact-off, so the whole run is one claimed
+        // flight and the check computes a free-fall demand of hundreds of
+        // kilometres. That is not a finding about the run; it is this check
+        // reading a field that is not there.
+        o.na(
+            "C10",
+            "NEUTRALISED: the contact flag is absent (see C5), so there is no claim of flight to              hold to account"
+                .into(),
+        );
+    } else {
         let mut worst: Option<(f64, f64, f64, f64)> = None; // dur, actual, predicted, t0
         let mut i = 0usize;
         while i < v.len() {

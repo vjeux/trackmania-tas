@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clip::{platform, ship, split};
+use clip::{cut, platform, ship, split};
 
 const USAGE: &str = "\
 clip ship  <file.mp4> <map-dir> [release-asset-name]
@@ -11,6 +11,13 @@ clip ship  <file.mp4> <map-dir> [release-asset-name]
     file, upload it to the release, upload it to user-attachments, register the
     URL in the release body (this is what makes it public), then fetch it back
     with no credential and require 200 and playable bytes. Refuses at every step.
+
+clip cut   <in.webm> <out.mp4> [--to SECONDS]
+    The game's VP8/WebM into the mp4 `ship` takes, cut to the length the run
+    actually is. The MediaTracker renders the LONGEST ghost in the scene, so a
+    218.812 run filmed against a 441.002 human record comes out 441 s long.
+    Trimming the opponent ghost before staging is the cheaper fix; this is for
+    the ones already rendered. The output is probed, not assumed.
 
 clip split <left.mp4> <right.mp4> <left-label> <right-label> <out.mp4>
     Two runs side by side, for maps where a chase camera provably cannot hold
@@ -52,6 +59,19 @@ fn go(args: &[String]) -> Result<(), String> {
                 Path::new(mapdir),
                 args.get(3).map(String::as_str),
             )
+        }
+        "cut" => {
+            if args.len() < 3 {
+                return Err(format!("usage:\n{USAGE}"));
+            }
+            let to = args
+                .iter()
+                .position(|a| a == "--to")
+                .and_then(|i| args.get(i + 1))
+                .map(|v| v.parse::<f64>().map_err(|e| format!("--to: {e}")))
+                .transpose()?;
+            let ff = platform::from_env()?;
+            cut::run(&ff, Path::new(&args[1]), Path::new(&args[2]), to)
         }
         "split" => {
             if args.len() != 6 {

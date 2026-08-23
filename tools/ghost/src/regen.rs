@@ -55,52 +55,29 @@ fn fk_binary() -> String {
     "fk".into()
 }
 
-/// Where the LD_PRELOAD shim is.
+/// The shim `fk` will load, when the caller names one.
 ///
-/// **Both names are tried.** The crate was renamed `forkshim` and its artefact
-/// with it (`libforkshim.so`); `fk`'s own lookup accepts either, and this one
-/// did not, so from a clean clone `ghost regen` handed the fork server a path
-/// that does not exist. The server then panics inside `forksrv` with a bare
-/// `NotFound` — once per attempt, twenty-four times — and the output reads
-/// exactly like twenty-four bad locates. That is the failure this crate's own
-/// README warns about, reproduced by this crate.
+/// This used to be a SECOND copy of `fk`'s own lookup, and it knew only the
+/// shim's old name (`libfkshim.so`) with a hard-coded `/tmp/fk/rs/...`
+/// fallback. `tools/search` builds `libforkshim.so`, so the copy here never
+/// found the current shim and always handed `fk` the stale one left in `/tmp`
+/// by an old bundle -- and a mismatched shim does not fail, it HANGS: the
+/// child answers the `G` command with something that is not the `GO` ack, and
+/// four regenerations sat in that state for forty-five minutes each before
+/// anyone looked (measured 2026-08-22; the same run against the repo's shim
+/// finishes in 10 s).
 ///
-/// Returns `None` rather than a guess: a made-up default is what turns a
-/// wiring error into a physics story. The caller refuses and names the knob.
-fn shim() -> Option<String> {
-    if let Ok(v) = std::env::var("FK_SHIM") {
-        return Some(v);
-    }
-    const NAMES: [&str; 2] = ["libforkshim.so", "libfkshim.so"];
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    // beside the fk binary that will actually run -- NOT beside this one. They
-    // are different crates in different trees.
-    let fk = fk_binary();
-    if let Some(d) = std::path::Path::new(&fk).parent() {
-        dirs.push(d.to_path_buf());
-        // `cargo build` leaves the shim in the SEARCH workspace's target dir,
-        // never in fk's own: the shim and the driver `#[path]`-include one
-        // `pred_core.rs`, so a second copy would be a second judge.
-        dirs.push(d.join("../../../search/target/release"));
-    }
-    if let Ok(me) = std::env::current_exe() {
-        if let Some(d) = me.parent() {
-            dirs.push(d.to_path_buf());
-            dirs.push(d.join("../search/target/release"));
-            dirs.push(d.join("../../search/target/release"));
-        }
-    }
-    dirs.push(std::path::PathBuf::from("/tmp/fk/rs/target/release"));
-    for d in dirs {
-        for n in NAMES {
-            let p = d.join(n);
-            if p.exists() {
-                return Some(p.to_string_lossy().into());
-            }
-        }
-    }
-    None
+/// So there is no lookup here any more. `fk` owns resolving the shim, because
+/// `fk` is what loads it; this only forwards an explicit choice.
+///
+/// This was fixed twice on the same day, independently, and the other fix
+/// taught this one both names and both search roots. That version is the reason
+/// the diagnosis below is precise -- but it left TWO lookups in the tree, which
+/// is the defect that produced the bug in the first place. One owner.
+fn explicit_shim() -> Option<String> {
+    std::env::var("FK_SHIM").ok()
 }
+
 
 pub struct RegenOut {
     pub ok: bool,
@@ -140,11 +117,13 @@ pub fn run_regen(template: &str, map: &str, out: &str, extra: &[String]) -> Rege
         abspath(out),
         "--dump".into(),
         dump,
-        "--shim".into(),
-        shim,
         "--server".into(),
         crate::oracle::server_dir(None).to_string_lossy().to_string(),
     ];
+    if let Some(s) = explicit_shim() {
+        args.push("--shim".into());
+        args.push(s);
+    }
     args.extend_from_slice(extra);
     let o = Command::new(fk_binary()).args(&args).output();
     match o {
@@ -425,22 +404,78 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
     // is what separates the car from the other moving objects the engine keeps:
     // measured on the fixture map, one candidate in six traces a perfectly
     // plausible 1.6 km path that is nowhere near the track.
-    match gbx::record::decode_ghost(template).ok().and_then(|d| d.samples.first().cloned()) {
-        None => s.push_str("   G2 no telemetry in the template to check the start against\n"),
+    //
+    // AND THE ANSWER KEY IS ONLY AN ANSWER KEY IF THE TEMPLATE STARTS AT RACE
+    // ZERO. Compare two samples taken at DIFFERENT race times and the check
+    // measures how far the car drove in between: 227654's carrier begins at
+    // race 1.310 s doing 66 km/h, so a candidate that is correctly at the spawn
+    // reads 11.2 m out and is refused, while a candidate that is 11.2 m down
+    // the road passes. That is the check inverted, on the exact class of file
+    // this pipeline exists to repair. So compare at a COMMON INSTANT: the
+    // candidate's own sample nearest the template's first, and refuse to judge
+    // at all when there is no overlap rather than judging against the wrong
+    // moment.
+    // The reference defaults to the template, which is right when the template
+    // is a real recording of this map. It is NOT right when the template is a
+    // grid `ghost record rebuild` laid down -- every sample there is a copy of
+    // one, so the record does not move and identifies nothing. Name a
+    // downloaded recording with `--spawn-ref` for those.
+    let spawn_ref = flag(a, "--spawn-ref").unwrap_or(template);
+    let ref_moves = gbx::record::decode_ghost(spawn_ref)
+        .ok()
+        .map(|d| {
+            d.samples
+                .windows(2)
+                .map(|w| {
+                    ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2)).sqrt()
+                })
+                .sum::<f64>()
+                > 5.0
+        })
+        .unwrap_or(false);
+    match gbx::record::decode_ghost(spawn_ref)
+        .ok()
+        .filter(|_| ref_moves)
+        .and_then(|d| d.samples.first().cloned())
+    {
+        None => s.push_str(
+            "   G2 UNMEASURED: the reference record has no motion in it (a rebuilt grid is a \
+             constant), so it identifies nothing. Name a downloaded recording of this map with \
+             --spawn-ref. The start position has NOT been checked.\n",
+        ),
         Some(t0) => {
-            let d = ((first[0] - t0.x).powi(2) + (first[1] - t0.y).powi(2) + (first[2] - t0.z).powi(2)).sqrt();
+            let here = gbx::record::decode_ghost(cand)
+                .ok()
+                .and_then(|d| {
+                    d.samples
+                        .iter()
+                        .min_by_key(|s| (s.time_ms - t0.time_ms).abs())
+                        .map(|s| (s.time_ms, [s.x, s.y, s.z]))
+                });
             let tol: f64 = flag(a, "--spawn-tol").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-            if d > tol {
-                return Err(format!(
-                    "   G2 the run starts at ({:.2}, {:.2}, {:.2}), {:.1} m from where this map's \
-                     runs start ({:.2}, {:.2}, {:.2}) -- this is not the car",
-                    first[0], first[1], first[2], d, t0.x, t0.y, t0.z
-                ));
+            match here {
+                Some((t, p)) if (t - t0.time_ms).abs() <= 60 => {
+                    let d = ((p[0] - t0.x).powi(2) + (p[1] - t0.y).powi(2) + (p[2] - t0.z).powi(2)).sqrt();
+                    if d > tol {
+                        return Err(format!(
+                            "   G2 at {} ms the run is at ({:.2}, {:.2}, {:.2}), {:.1} m from where \
+                             the template is at the same instant ({:.2}, {:.2}, {:.2}) -- this is \
+                             not the car",
+                            t, p[0], p[1], p[2], d, t0.x, t0.y, t0.z
+                        ));
+                    }
+                    s.push_str(&format!(
+                        "   G2 at {} ms, {:.3} m from the template at the same instant\n",
+                        t, d
+                    ));
+                }
+                _ => s.push_str(&format!(
+                    "   G2 UNMEASURED: the template's first sample is at {} ms and this record has \
+                     none within 60 ms of it, so there is no common instant to compare. The start \
+                     position has NOT been checked.\n",
+                    t0.time_ms
+                )),
             }
-            s.push_str(&format!(
-                "   G2 starts at ({:.2}, {:.2}, {:.2}), {:.3} m from the template's own start\n",
-                first[0], first[1], first[2], d
-            ));
         }
     }
     match verify::tape_record_agreement(cand) {

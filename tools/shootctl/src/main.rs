@@ -1058,29 +1058,48 @@ fn clear_dialogs(what: &str) -> Result<(), String> {
 }
 
 fn import_ghost(rel: &str) -> Result<(), String> {
-    clear_dialogs(rel)?;
-    set_arg(rel)?;
-
-
-    let body = http_get("/import", 30)?;
-    let num = |k: &str| -> i64 {
-        let key = format!("\"{k}\":");
-        match body.find(&key) {
-            Some(i) => {
-                let rest = &body[i + key.len()..];
-                let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-                rest[..end].parse().unwrap_or(-1)
+    // RETRY, because the modal that eats the import ARRIVES DURING IT.
+    //
+    // Clearing dialogs first is necessary and not sufficient: entering the
+    // MediaTracker and importing both queue an "Updating data..." FrameMessage
+    // that can surface a frame or two AFTER the driver has looked and found
+    // nothing. The import then opens its file dialog underneath it and returns
+    // `before:N after:N` with the message frame named in its own reply -- the
+    // whole no-op is visible in that one line, which is what makes a retry
+    // safe: success here is the ghost-block count going UP, never an
+    // assumption, so a retry cannot import twice or import the wrong thing.
+    //
+    // Measured 2026-08-22: with only the up-front clear, two of three queued
+    // renders died here, each on a different ghost of the pair, on a game that
+    // was working perfectly.
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        clear_dialogs(rel)?;
+        set_arg(rel)?;
+        let body = http_get("/import", 30)?;
+        let num = |k: &str| -> i64 {
+            let key = format!("\"{k}\":");
+            match body.find(&key) {
+                Some(i) => {
+                    let rest = &body[i + key.len()..];
+                    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                    rest[..end].parse().unwrap_or(-1)
+                }
+                None => -1,
             }
-            None => -1,
+        };
+        let (before, after) = (num("before"), num("after"));
+        if after > before {
+            println!("  imported {rel}  ({before} -> {after} ghost blocks, attempt {attempt})");
+            return Ok(());
         }
-    };
-    let (before, after) = (num("before"), num("after"));
-    if after > before {
-        println!("  imported {rel}  ({before} -> {after} ghost blocks)");
-        Ok(())
-    } else {
-        Err(format!("import of {rel} did not take: {body}"))
+        println!("  import of {rel} did not take (attempt {attempt}): {}", body.trim());
+        last = body;
     }
+    Err(format!(
+        "import of {rel} did not take in 4 attempts, last: {last}. The ghost-block count never \
+         rose, so nothing was imported -- this is not a timing wobble."
+    ))
 }
 
 /// Stage exactly the ghosts for this render into their own folder, in import

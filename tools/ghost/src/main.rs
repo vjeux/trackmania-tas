@@ -59,6 +59,9 @@ CAR STATE  (operation 3)
         C5/C6/C7 refusal in this corpus is; with it they are honestly absent,
         and `tmtraj check` C10 then fails by design.
         --inputs also rewrites the record's steer/gas/brake echo from the tape.
+        --spawn-ref FILE names the recording G2 checks the start against, for a
+        template whose own record is a rebuilt grid (a constant identifies
+        nothing, and G2 says UNMEASURED rather than passing).
   ghost regen-control FILE --map MAP
         The fixed-point control: regenerate a ghost that already carries its own
         true telemetry and require the result to reproduce it.

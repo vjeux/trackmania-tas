@@ -966,7 +966,29 @@ pub fn run_clean_anch(
             }
             // d(pos)/dt is a one-step difference over a 50 ms grid, so a couple
             // of per cent of the speed is normal; ten per cent is not.
-            if verr > (0.15 * sp).max(1.0) {
+            //
+            // EXCEPT ON A MAP WHERE THE CAR IS ALWAYS IN CONTACT WITH SOMETHING.
+            // A one-step difference averages the 50 ms between two samples,
+            // while the stored velocity is the state AT one of them, so the two
+            // only agree when the velocity is smooth across the step. On a
+            // turtle trial the car rocks on its roof at walking pace and the
+            // velocity is discontinuous at every rock: 238835's real car scores
+            // 1.41 m/s at a median speed of 7.6, and 0.15 x 7.6 = 1.14 refuses
+            // it. That is this project's oldest failure shape -- a threshold
+            // that condemns the honest case -- and it is why 186935 and 238835
+            // have been unregenerable since the `nan` arm.
+            //
+            // FK_VERR_FRAC raises the fraction, and it is NOT to be reached for
+            // on a hunch: raise it only with a POSITIVE CONTROL on the same map
+            // -- regenerate a DOWNLOADED recording of it at the same setting
+            // and grade the result against that recording's own bytes. If the
+            // known-good run comes back sub-millimetre, the bar was the problem;
+            // if it does not, a higher bar is admitting a decoy.
+            let frac: f64 = std::env::var("FK_VERR_FRAC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.15);
+            if verr > (frac * sp).max(1.0) {
                 return Err(format!(
                     "self-check: median |d(pos)/dt - v| is {:.2} m/s at median speed {:.1} -- \
                      the sampled window is not the vehicle state (wrong anchor)",
@@ -1082,22 +1104,10 @@ pub fn targets_from_ghost(path: &str) -> Result<(Vec<i64>, Vec<Vec<u8>>), String
 // that are identical in every ghost of every driver, so leaving them alone
 // carries no provenance.
 
-/// The 49 per-run sample bytes that neither the transform encoder nor the tape
-/// echo writes. Derived from a byte-by-byte census of the corpus
-/// (`whl_bytemap_v1`), not from a guess about what each byte means.
-pub const NEUTRALISE: &[usize] = &[
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 32, 33, 34, 39, 40, 42, 43, 69, 70, 71, 72, 76, 81, 82, 83, 84, 89, 91, 93, 95, 97, 99,
-];
-
-/// Zero every byte in [`NEUTRALISE`] that the sample is long enough to have.
-pub fn neutralise(sample: &mut [u8]) {
-    for &o in NEUTRALISE {
-        if o < sample.len() {
-            sample[o] = 0;
-        }
-    }
-}
+// The list and the writer live in `gbx::record` -- `tmtraj` has to RECOGNISE
+// a neutralised record to tell a removed field from a stolen one, and two
+// copies of this list would be the oldest bug in this project.
+pub use gbx::record::{neutralise, NEUTRALISE};
 
 /// Which sample bytes a run WRITES, for the provenance line.
 ///

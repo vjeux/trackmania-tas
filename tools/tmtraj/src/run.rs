@@ -56,6 +56,11 @@ IS IT A COHERENT RUN, AND IS IT OURS
 
 WHAT DOES THE TRAJECTORY SAY (not the flag)
   motion  FILE [--race S] [--g G]    ballistic / supported / unknown, and the flag beside it
+  provenance FILE --carrier C        which of the 116 bytes are ours and which
+                                     are still the container donor's
+  impacts FILE... [--bar KMH] [--race S] [--against OTHER]
+                                     one-sample speed losses: what the car hit,
+                                     and whether a second engine reading agrees
   wheels  FILE [--race S]            wheel radius, and whether the wheel bytes are alive
   facing  FILE... [--ref R] [--route CSV] [--shift-ms N]
   route   CSV [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
@@ -116,6 +121,8 @@ pub fn run() {
             crate::manifest::cmd(rest);
             0
         }
+        "impacts" => crate::impactcmd::cmd(rest),
+        "provenance" => crate::provcmd::cmd(rest),
         "motion" => crate::whlcmd::cmd_motion(rest),
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),

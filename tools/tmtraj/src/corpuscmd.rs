@@ -350,9 +350,29 @@ fn pct(a: usize, b: usize) -> f64 {
 /// The opposite is that the record stops SHORT. 126859's published files end
 /// 0.095 s before their declared race time, so the crossing is simply not in
 /// the record and no clip can show it. Nothing else looks for that.
+/// AND A THIRD CASE, which cost an afternoon before anything looked for it:
+/// the samples stop where they should and the RECORD NODE's own declared span
+/// does not. 286279's `BEST_218812` reads `span 0.000 .. 441.000` for a 218.812
+/// run -- the span of Bald_tm's 441.002 recording, the container it was
+/// regenerated in -- with the car's last sample correctly at 217.95. Every
+/// check above passes it.
+///
+/// The bar for this one is PROPORTIONATE, not flat: a record that runs a
+/// fraction of a second past the finish is the game's own tail (58 files here,
+/// none of them a defect), while a carrier's span is 87 % to 10 500 % long.
+/// There is nothing in between.
+///
+/// It is not cosmetic. The MediaTracker renders a clip as long as its longest
+/// block, so filming that file produced 441 s of video for a 218 s run, and
+/// when the camera's target entity ended at 218 s the camera drifted to the top
+/// of the map and stayed there for the second half. Both were reported as
+/// rendering faults. The same inheritance keeps the carrier's non-vehicle
+/// entities (0x2D001000, 13 bytes a sample) at their own full length, which is
+/// what holds the scene open.
 fn span(maps: &[MapDir], tol: i64) -> i32 {
-    println!("map\tfile\trace\tlast_sample\tdelta\tnote");
+    println!("map\tfile\trace\tlast_sample\tdelta\tspan_end\toutliving\tnote");
     let (mut short, mut long, mut ok) = (0usize, 0usize, 0usize);
+    let mut outlive = 0usize;
     for m in maps {
         for f in m.ours.iter().chain(m.refs.iter()) {
             let Ok(d) = record::decode_ghost(f) else {
@@ -365,32 +385,69 @@ fn span(maps: &[MapDir], tol: i64) -> i32 {
                 continue;
             };
             let dt = last as i64 - race as i64;
+            // Does anything in this file outlive the car? The record's own
+            // declared end, and every entity's own last sample.
+            let over: Vec<String> = d
+                .ents
+                .iter()
+                .filter(|e| e.t_last.unwrap_or(0) as i64 > last as i64 + tol)
+                .map(|e| format!("0x{:08X}@{}", e.class_id.unwrap_or(0), secs(e.t_last.unwrap_or(0) as i64)))
+                .collect();
+            // HOW FAR PAST THE CAR, AS A FRACTION OF THE RUN -- not a flat bar.
+            //
+            // A record legitimately runs a little past the finish: the game
+            // keeps sampling for a moment and 58 of this corpus's files sit
+            // within 2 s, none of which is a defect. A carrier's span is a
+            // different population entirely: 87 % to 10 500 % long. There is
+            // nothing in the gap, which is what makes it safe to separate them,
+            // and it is the project's own GROWTH-NOT-MAGNITUDE rule -- a flat
+            // bar in seconds would refuse a 5-second run's honest tail and pass
+            // a 13-minute run carrying somebody else's.
+            let scene_end = (d.end_ms as i64).max(
+                d.ents.iter().filter_map(|e| e.t_last).max().unwrap_or(0) as i64,
+            );
+            let past = scene_end - last as i64;
+            let frac = past as f64 / (last as f64).max(1.0);
+            let outliving = if past <= 2000 || frac < 0.10 {
+                "-".to_string()
+            } else {
+                outlive += 1;
+                let what = if over.is_empty() { "the record's span".to_string() } else { over.join(",") };
+                format!("{} (+{:.0} %)", what, frac * 100.0)
+            };
             let note = if dt < -tol {
                 short += 1;
                 "RECORD STOPS SHORT -- the finish is not in it"
             } else if dt > tol {
                 long += 1;
                 "tail past the finish -- a transplant carries the carrier's car"
+            } else if !outliving.starts_with('-') {
+                "THE SCENE OUTLIVES THE CAR -- the render runs long and the camera loses its target"
             } else {
                 ok += 1;
                 continue;
             };
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 m.id,
                 base(f),
                 secs(race as i64),
                 secs(last as i64),
                 delta(dt),
+                secs(d.end_ms as i64),
+                outliving,
                 note
             );
         }
     }
     println!(
-        "\n{} stop short of the line, {} run past it, {} within {} ms",
-        short, long, ok, tol
+        "\n{} stop short of the line, {} run past it, {} within {} ms.\n\
+         {} have something that OUTLIVES THE CAR -- the record's own declared span, or an \
+         entity the container donor left in. Those film long and lose the camera; \
+         `ghost record rebuild IN OUT --span MS` is the repair.",
+        short, long, ok, tol, outlive
     );
-    i32::from(short + long > 0) * 2
+    i32::from(short + long + outlive > 0) * 2
 }
 
 // ---------------------------------------------------------------------------

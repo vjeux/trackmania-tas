@@ -243,6 +243,79 @@ pub fn run(path: &str, a: &[String]) -> Report {
         None => r.add("V4", Verdict::Pass, "no embedded map: --map is real for this file"),
     }
 
+    // ---- V10 the record's OWN declared span ---------------------------------
+    //
+    // V5 asks whether the car's last SAMPLE outlives the declared time. That
+    // misses the case that cost a whole afternoon: the samples are right and
+    // the RECORD NODE's own span is the carrier's.
+    //
+    // 286279's published `BEST_218812` declares `span 0.000 .. 441.000` for a
+    // 218.812 run whose car stops at 217.95, because the record was
+    // regenerated in the container of Bald_tm's 441.002 recording and the span
+    // was inherited. Two symptoms, one cause, neither of them obviously about a
+    // span: the MediaTracker renders a clip as long as its longest block, so
+    // the video came out 441 s -- twice the run -- and when the camera's target
+    // entity ran out at 218 s the camera drifted to the top of the map and
+    // stayed there for the remaining half of the clip. It was reported as "the
+    // camera flies away".
+    //
+    // The same shape hides a foreign entity: a carrier's non-vehicle entity
+    // (0x2D001000, 13 bytes a sample) also inherits its own length, and 8820
+    // samples of it is the 441 s that keeps the scene alive after our car has
+    // gone. `ghost record rebuild` drops those; this is the check that says
+    // when it is needed.
+    match gbx::record::decode_ghost(path) {
+        Err(_) => {}
+        Ok(d) => {
+            let last = d.samples.last().map(|s| s.time_ms).unwrap_or(0) as i64;
+            let end = d.end_ms as i64;
+            let over: Vec<String> = d
+                .ents
+                .iter()
+                .filter(|e| e.t_last.unwrap_or(0) as i64 > last + 2000)
+                .map(|e| {
+                    format!(
+                        "0x{:08X} runs to {}",
+                        e.class_id.unwrap_or(0),
+                        secs(e.t_last.unwrap_or(0) as i64)
+                    )
+                })
+                .collect();
+            if end > last + 2000 || !over.is_empty() {
+                r.add(
+                    "V10",
+                    Verdict::Fail,
+                    format!(
+                        "the record declares a span of {} .. {} but the car's last sample is at \
+                         {}{}. A scene built from this file outlives the run: the render is as \
+                         long as the longest block and the camera loses its target when the car \
+                         ends. Rebuild the record with `ghost record rebuild IN OUT --span {}`.",
+                        secs(d.start_ms as i64),
+                        secs(end),
+                        secs(last),
+                        if over.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", and {} other entity/entities outlive it ({})", over.len(), over.join(", "))
+                        },
+                        last
+                    ),
+                );
+            } else {
+                r.add(
+                    "V10",
+                    Verdict::Pass,
+                    format!(
+                        "the record's span ends at {} and the car's last sample is at {} -- \
+                         nothing in this file outlives the run",
+                        secs(end),
+                        secs(last)
+                    ),
+                );
+            }
+        }
+    }
+
     // ---- V5 telemetry span -------------------------------------------------
     match gbx::record::decode_ghost(path) {
         Err(e) => r.add("V5", Verdict::Na, format!("no telemetry record ({})", e)),

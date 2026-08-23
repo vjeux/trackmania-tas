@@ -1358,10 +1358,41 @@ pub fn gate_one(
                 (Ok(a), Ok(b)) => (a, b),
                 _ => continue,
             };
-            let (sa, sb) = match (firstpos(&a), firstpos(&b)) {
-                (Some(x), Some(y)) => (x, y),
-                _ => continue,
+            // COMPARE AT A COMMON INSTANT, not at "each file's first sample".
+            //
+            // "Every run of this map starts in the same place" is true, and it
+            // is a statement about RACE ZERO. A carrier's record does not
+            // always begin there: 227654's rank-1 recording starts at race
+            // 1.310 s doing 66 km/h, so a regenerated run that correctly begins
+            // on the start block reads 11.2 m and 49 deg out and is refused,
+            // while a file 11.2 m down the road would pass. The check inverted,
+            // on exactly the class of file this gate exists to admit once it is
+            // repaired.
+            //
+            // So take the reference's first in-race sample and the SUBJECT's
+            // sample nearest that same instant. When there is none within one
+            // sample period the two records do not overlap at the start at all,
+            // and the honest answer is that the spawn is unchecked -- never a
+            // refusal computed against the wrong moment.
+            let Some(sb) = firstpos(&b) else { continue };
+            let Some(sa) = a
+                .samples
+                .iter()
+                .filter(|s| s.time_ms >= 0)
+                .min_by_key(|s| (s.time_ms - sb.time_ms).abs())
+                .cloned()
+            else {
+                continue;
             };
+            if (sa.time_ms - sb.time_ms).abs() > 60 {
+                lines.push(format!(
+                    "n/a    C-spawn   UNMEASURED: the reference's first in-race sample is at                      {:.3} s and this record has none within 60 ms of it, so there is no common                      instant. THE SPAWN AND THE FACING ARE UNCHECKED.",
+                    sb.time_ms as f64 / 1000.0
+                ));
+                unmeasured += 1;
+                done = true;
+                break;
+            }
             let dpos =
                 ((sa.x - sb.x).powi(2) + (sa.y - sb.y).powi(2) + (sa.z - sb.z).powi(2)).sqrt();
             // rotation angle between two unit quaternions: 2 acos |a.b|
@@ -1374,16 +1405,20 @@ pub fn gate_one(
             if dpos > 0.5 || dang > 5.0 {
                 hard += 1;
                 lines.push(format!(
-                    "FAIL   C-spawn   the first in-race sample is {:.4} m and {:.3} deg from {}'s. \
-                     Every run of this map starts in the same place facing the same way; \
-                     {} is another object, or the orientation encoding is permuted.",
-                    dpos, dang, nm,
+                    "FAIL   C-spawn   at {:.3} s this run is {:.4} m and {:.3} deg from {}'s sample \
+                     at the same instant. Every run of this map starts in the same place facing \
+                     the same way; {} is another object, or the orientation encoding is permuted.",
+                    sa.time_ms as f64 / 1000.0, dpos, dang, nm,
                     if dpos > 0.5 { "this position" } else { "this attitude" }
                 ));
             } else {
                 lines.push(format!(
-                    "PASS   C-spawn   first in-race sample {:.4} m and {:.3} deg from {}'s",
-                    dpos, dang, nm
+                    "PASS   C-spawn   at {:.3} s, {:.4} m and {:.3} deg from {}'s sample at {:.3} s",
+                    sa.time_ms as f64 / 1000.0,
+                    dpos,
+                    dang,
+                    nm,
+                    sb.time_ms as f64 / 1000.0
                 ));
             }
             done = true;
