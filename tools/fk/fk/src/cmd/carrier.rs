@@ -1666,7 +1666,22 @@ pub fn gather_fields(
     // run). Conservative: never coarser than 4, which is a 4x saving with 60+
     // instants left on a typical run and cannot approach the guard's floor.
     let n_samples = (truth.len() as i64 * 10 / period.max(1)).max(1);
-    let stride = ((n_samples / PHASE_A_TARGET as i64).max(1)).min(4);
+    // PHASE A'S STRIDE IS AN OPTIMISATION AND MUST NOT CHANGE THE ANSWER.
+    //
+    // A strided gather lands on instants the clean run may not have measured,
+    // so the pairing is looser and the chosen copy scored 0.110236 m against
+    // the 1e-3 m bar -- the guard refusing a correct copy because the probe was
+    // sparse. The copy search is cheap once the record is in hand; it is the
+    // GATHER that costs. So phase A stays dense by default and the stride is
+    // opt-in via FK_PHASE_A_STRIDE for anyone who has measured that it is safe
+    // on their run. The real saving is the calibration below: once
+    // FK_FIELD_REL is known, phase A does not happen at all.
+    let stride = std::env::var("FK_PHASE_A_STRIDE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1)
+        .min((n_samples / PHASE_A_TARGET as i64).max(1));
     let wide_period = if cached_rel.is_some() { period } else { period * stride };
     let g = GatherOpts {
         period: wide_period,
@@ -2098,6 +2113,31 @@ pub fn gather_fields(
         if layout_mode {
             let g = GatheredRec { b, base: po as i64 - 0x50, reclen };
             let packed = crate::vislayout::pack(&g);
+            // WHERE DOES A CONSTANT CHANNEL BECOME CONSTANT? At the source (the
+            // state window is dead or misplaced), in the transcription, or
+            // downstream in the write mask. Naming the three and printing the
+            // first two is what tells them apart; guessing between them cost a
+            // day.
+            if std::env::var_os("FK_LAYOUT_DEBUG").is_some() && i < 6 {
+                let base = po as i64 - 0x50;
+                let raw = |s: usize| -> u8 {
+                    let o = base + s as i64;
+                    if o < 0 || o as usize >= reclen { 0 } else { b[o as usize] }
+                };
+                let mut h: u64 = 0xcbf29ce484222325;
+                for s in 0..0x360usize {
+                    h ^= raw(s) as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+                println!(
+                    "  layout[{}] t={} state-fnv={:016x} packed 6={} 31={} 89={} 90={} 91={} \
+                     76={} | raw 0x28c={} 0x290={} 0x294={} covered={}",
+                    i, ms[i], h,
+                    packed[6], packed[31], packed[89], packed[90], packed[91], packed[76],
+                    raw(0x28c), raw(0x290), raw(0x294),
+                    base >= 0 && (base as usize + 0x360) <= reclen
+                );
+            }
             for ch in 0..116usize {
                 if crate::vislayout::UNPREDICTED.contains(&ch)
                     || crate::vislayout::DEAD_IN_SERVER.contains(&ch)

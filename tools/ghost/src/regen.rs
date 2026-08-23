@@ -433,7 +433,19 @@ pub fn cmd(a: &[String]) {
     // is barely moving at the handover, and on a short tape it finds nothing --
     // so the search is still there behind it. But it is the right thing to try
     // first, and when it works there is no search at all.
-    if !has(a, "--no-inprocess") {
+    // ...EXCEPT WHEN THE CARRIER FIELDS ARE WANTED.
+    //
+    // This path passes `--noanchor`, and the field gather is driven off the
+    // anchors: with none measured it does not run at all. So `--carrier` was
+    // silently dropped on the path that usually wins, and the acceptance gate
+    // then refused the file for having dead wheel rotations -- correctly, and
+    // for a reason two layers away from the cause. The log's tell is that
+    // "carrier" appears zero times in it.
+    //
+    // A flag that is quietly ignored is worse than one that fails, so when
+    // fields are asked for this path is skipped rather than run without them.
+    let want_fields = flag(a, "--carrier").is_some();
+    if !has(a, "--no-inprocess") && !want_fields {
         let cand = format!("{}.ip", out);
         let raw = format!("{}.raw", cand);
         let mut ex = extra.clone();
