@@ -19,6 +19,28 @@
 //! | `UNLISTED-FILE` | `X` is there; does the page ever name it? | ditto |
 //! | `HEADLINE-UNBACKED` | the headline claims a time faster than anything the directory declares | ditto |
 //!
+//! ## `NAME-VS-HEADER` IS A QUESTION, NOT A VERDICT
+//!
+//! **A header is not the authority on what a tape does. The oracle is.** A
+//! searched tape is built inside a carrier and routinely inherits that
+//! carrier's declared time, which `ghost declare --from-oracle` rewrites and
+//! which changes no physics.
+//!
+//! This scan flagged 146612's `TAS_39183` and `KEYBOARD_39706` as declaring
+//! 39.555 apiece, and the audit read that as "these times are not supported by
+//! anything published" and rewrote two pages around it. Then the oracle was
+//! actually asked:
+//!
+//! ```text
+//! TAS_39183.Ghost.Gbx        PASS V7   oracle re-simulated the written file: 39.183
+//! KEYBOARD_39706.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.706
+//! ```
+//!
+//! The names were right and the headers were stale — and `tools/LINEAGE.md` had
+//! already recorded exactly that for this directory, before the scan ran. So a
+//! flag from this command means **go and ask the oracle**, and if the map is not
+//! to hand, say the question is open rather than answering it from the header.
+//!
 //! It says nothing about whether a declared time is *true* — that is the
 //! oracle's job, and the oracle needs the map, which this repo does not
 //! redistribute. A clean `claims` run means the page and the directory agree,
@@ -181,7 +203,7 @@ pub fn claims(maps: &[MapDir], root: &str) -> i32 {
                 continue;
             }
             println!(
-                "{}\tNAME-VS-HEADER\t{}\tthe name says {} — the header says {}",
+                "{}\tNAME-VS-HEADER\t{}\tthe name says {} — the header says {} (ASK THE ORACLE: a stale declaration is common and harmless)",
                 m.id,
                 name,
                 named.iter().map(|v| secs(*v)).collect::<Vec<_>>().join(" / "),

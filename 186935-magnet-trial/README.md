@@ -24,6 +24,18 @@ their failed attempts each lasted longer than that.**
 > speed are this run's; the tyre and contact effects are absent rather than
 > somebody else's.
 >
+> **Update, 2026-08-22 — ICE is no longer one of them.** The carrier-bytes arm
+> has located it: `Icing01`, per wheel, at `car + 88 + 44k + 28`, encoded
+> `floor(v x 255)`, and it reads **100.00 % exact** on two independent
+> recordings on two different maps (462 samples on 267460, 1370 on 134672)
+> against constant-predictor baselines of 71.9 % and 79.0 %, with no refit
+> between them. So the honest count here is now **ten** channels, and ice is a
+> regeneration away rather than unavailable. **Dirt, by contrast, is refuted**
+> rather than merely unfound: pre-registered across all eight remaining slots
+> of the wheel record and beaten by a constant (best worst-key lift -7.35
+> points). Byte 89, ground contact, has been refused four times.
+
+>
 > **Still no video.** At 793.893 s this is the longest run in the project and
 > the render box became unavailable before it could be filmed.
 

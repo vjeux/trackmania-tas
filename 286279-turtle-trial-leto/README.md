@@ -23,6 +23,18 @@ Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 > line and the speed are this run's. The tyre effects are absent rather than
 > somebody else's.**
 >
+> **Update, 2026-08-22 — ICE is no longer one of them.** The carrier-bytes arm
+> has located it: `Icing01`, per wheel, at `car + 88 + 44k + 28`, encoded
+> `floor(v x 255)`, and it reads **100.00 % exact** on two independent
+> recordings on two different maps (462 samples on 267460, 1370 on 134672)
+> against constant-predictor baselines of 71.9 % and 79.0 %, with no refit
+> between them. So the honest count here is now **ten** channels, and ice is a
+> regeneration away rather than unavailable. **Dirt, by contrast, is refuted**
+> rather than merely unfound: pre-registered across all eight remaining slots
+> of the wheel record and beaten by a constant (best worst-key lift -7.35
+> points). Byte 89, ground contact, has been refused four times.
+
+>
 > One further defect, found by watching a render: the file declared a record
 > span of **441.000** — Bald_tm's, inherited — for a car that stops at 217.95,
 > and kept his 8820-sample non-vehicle entity at full length. The MediaTracker

@@ -23,7 +23,7 @@ call.
 | path does not resolve on the Windows side | `powershell Test-Path '<abs path>'` | `True` |
 | file missing or truncated | `stat` = 3,824,673 bytes; GBX header intact (`GBX\6\0BUCR...`) | fine |
 | the map is too large | 285268 is 4.65 MB and films fine; 210218 is 10.0 MB | not size |
-| a stale copy of the map file | md5 `16e7220f2128587c0d0018626feacb0f`; the repo ships no `.Map.Gbx` to compare against | unresolved, but the file is self-consistent |
+| a stale copy of the map file | md5 `16e7220f2128587c0d0018626feacb0f`; **the shared store has a byte-identical second copy, and the engine loads and simulates the map** | **CLOSED 2026-08-22 — see below** |
 
 The accumulated-state hypothesis was the strongest candidate, because the editor
 genuinely does stop accepting maps after roughly forty loads — `/ping` answers,
@@ -55,12 +55,44 @@ hand-probe was.
 
 ## What has not been tried
 
+**Two of the three below have now been answered — 2026-08-22.**
+
+> ### The map file is not corrupt, and the second copy exists
+>
+> The table above lists *"a stale copy of the map file … the repo ships no
+> `.Map.Gbx` to compare against"* as **unresolved**. There is a second copy: the
+> shared store carries `tm-unbeaten/146612/map.Map.Gbx`, and it is **byte-identical
+> to the staged file** — md5 `16e7220f2128587c0d0018626feacb0f`, 3 824 673 bytes,
+> the same figures this page already records.
+>
+> And the stronger test, which needs no second copy at all: **the game's own
+> engine loads this map and simulates on it.** The dedicated server was pointed
+> at it and re-simulated every publishable ghost in the directory to exactly the
+> time in its name — eight of eight, with the `SEGMENT_…_DO_NOT_PUBLISH` file
+> returning DNF at cps 5 as its name says, which is the negative control:
+>
+> ```
+> TAS_39183.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.183
+> TAS_39430.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.430
+> ...
+> SEGMENT_cp5_32702_…   FAIL V7   oracle: DNF (cps Some(5))
+> ```
+>
+> A file that parses, loads, spawns a car and runs 40 seconds of physics
+> **is not corrupt**. So *"the staged file is corrupt in a way that keeps the
+> header valid"* is **closed**, and with it the "re-download and diff" item.
+>
+> **What this does not settle** is the actual symptom. `EditMap()` still returns
+> `ok` and never opens the editor, and that remains unexplained — but it is now
+> known to be a fault in the **editor path**, not in the map. The remaining
+> untried item below is the one that would localise it.
+
+- ~~Re-downloading the `.Map.Gbx` from TMX and comparing.~~ **Done differently
+  and closed**: the store copy is byte-identical, and the engine runs the map.
 - Opening the map through the game's own UI rather than the scripting API. If it
   opens by hand, the fault is in `EditMap` for this file specifically; if it does
-  not, the file is bad in a way the editor rejects silently.
-- Re-downloading the `.Map.Gbx` from TMX and comparing. There is no second copy
-  to diff against, so "the staged file is corrupt in a way that keeps the header
-  valid" remains open.
+  not, the file is bad in a way the editor rejects silently — **though the
+  oracle result above makes "the file is bad" much harder to sustain.**
 - Reading the game's own client log at load time for a rejected-path or parse
   error. Openplanet's log shows nothing, but that is the plugin's log, not the
   client's.

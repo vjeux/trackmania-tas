@@ -207,6 +207,22 @@ anchor that survives a change of map, not a limit of the data. Saying so
 precisely is the point: the previous wording called it cosmetic, and it was
 somebody else's run.
 
+> **Update, 2026-08-22 — ice is no longer one of the eleven, and on this map
+> that matters.** The carrier-bytes arm has located it: `Icing01`, per wheel, at
+> `car + 88 + 44k + 28`, encoded `floor(v × 255)`. It reads **100.00 % exact on
+> 1370 samples of this map's own rank-2 recording** — against a 79.0 % constant
+> baseline — and **100.00 % on 462 samples of 267460**, with no refit between the
+> two. So the count is **ten**, and *the ice spray on a 2620 m ice ribbon is a
+> regeneration away rather than unavailable.*
+>
+> **Dirt is a different verdict and should not be lumped in with it: refuted,
+> not unfound.** Pre-registered across all eight remaining slots of the wheel
+> record and beaten by a constant (best worst-key lift **−7.35 points**). Byte
+> 89, ground contact, has now been refused four times — most recently at
+> `car+58`, where an affine fit scored 91–100 % on five keys because *an integer
+> read as an f32 is a denormal*; scored as a raw byte on eight keys with no refit
+> it is **0.00 %**.
+
 **The line and the speed in the replay are this run's. The tyre effects are
 absent.**
 

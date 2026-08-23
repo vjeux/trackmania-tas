@@ -735,3 +735,69 @@ only at two independent recordings on two maps; and a quaternion reported "exact
 0.00000 rad" **from a median of a bimodal population** — honest figure 75.0 %
 exact, p90 0.00042 rad. *The project has "split before you quote a spread"
 written down, and the arm walked into it anyway and said so.*
+
+---
+
+# K. AFTER THE REBASE — the third wrong claim of mine, and 146612 closed
+
+Rebased onto `main` = `dc332a7` (the render arm's ten commits, regen-sweep-B's
+work, and both of my own pushes). Re-swept, and re-ran every check.
+
+### K1. **My 146612 finding was wrong. The names are right; the headers are stale.**
+`tmtraj corpus claims` flagged `TAS_39183` and `KEYBOARD_39706` as declaring
+**39.555** apiece instead of the time in their names. That fact is true. I turned
+it into *"neither figure is backed by the file that bears its name"* and rewrote
+**two pages** around it.
+
+Then I asked the oracle, with the map from the store:
+
+```
+TAS_39183.Ghost.Gbx        PASS V7   oracle re-simulated the written file: 39.183
+KEYBOARD_39706.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.706
+```
+
+**Eight of eight publishable files re-simulate to exactly the time in their
+name**, and the ninth returns **DNF at cps 5** as its own name says — the
+negative control, in the same batch. A stale declaration inherited from a
+carrier, which `ghost declare --from-oracle` fixes and which changes no physics.
+
+**And `tools/LINEAGE.md` had already recorded it** before this audit started:
+*"146612 · 9 · 8 + the file named `SEGMENT_cp5_…`, which returns DNF cp5 as its
+name says."* I had read that file — I quoted it twice as a model — and did not
+search it for the map I was flagging.
+
+Fixed in three places, and the tool now says so in its own output:
+`NAME-VS-HEADER … (ASK THE ORACLE: a stale declaration is common and harmless)`.
+**Rule added to `CLAIMS.md`: before writing that something is unsupported,
+search the repo for the arm that already measured it.**
+
+### K2. `146612/CANNOT-OPEN.md` — two of three open items CLOSED
+The page listed *"the repo ships no `.Map.Gbx` to compare against"*, so *"the
+staged file is corrupt in a way that keeps the header valid"* stood as
+unresolved. **The store has a byte-identical second copy** (same md5, same
+3 824 673 bytes) — and the stronger test needs no second copy at all: **the
+engine loads this map and runs 40 seconds of physics on it, eight times.** A
+file that parses, spawns a car and simulates is not corrupt.
+**What is not settled** is the symptom itself: `EditMap()` still returns `ok`
+and never opens. Now localised to the editor path rather than the file.
+
+### K3. Ice was being called unavailable on four pages after it shipped
+Three map pages and the tools doc say eleven channels *"cannot yet be read out
+of the engine — rpm, per-wheel ice and dirt, ground contact, gear"*. The
+carrier-bytes arm shipped **ice** hours earlier: `Icing01` at
+`car + 88 + 44k + 28`, **100.00 % exact on two independent recordings on two
+maps** (462 and 1370 samples) against 71.9 % and 79.0 % constants, no refit.
+A harness limit written as permanent — my own category 1, inside the correction
+notes for category 1. Count is now **ten**, on all three pages, with dirt marked
+**refuted** rather than unfound and byte 89 as refused four times.
+On 134672 this is not cosmetic: it is the ice spray on a 2620 m ice ribbon.
+
+### K4. The pages other arms rewrote tonight — checked, and they hold
+186935, 227654, 286279, 134672, 238835, 173691, 228607, 285885, 284238, plus the
+two pages that did not exist when I swept (`203169-cobalt-cove`, 431 lines, and
+`tools/vidread`). **They apply the convention without having been asked to**:
+absent-not-zero stated explicitly, controls named inline, mechanisms separated
+from correlations. Cobalt Cove is the strongest new page in the repo — it
+distinguishes *"the instrument works"* (99.6 % against a 43.7 % runner-up) from
+*"it declines when it should"* (no peak on earlier builds) and says outright
+that a second channel's meaning *"has not been established"*.

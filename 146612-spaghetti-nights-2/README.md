@@ -15,27 +15,30 @@ human world record** and still **0.438** short of the author medal.
 > 38.968 is a result we hold, not a result we ship**, and it is not among the
 > tapes in `replays/`.
 
-> ### ⚠️ Two files in `replays/` do not declare the time in their names
+> ### The two odd-looking files are fine. Their headers are stale; the times are real.
 >
-> **MEASURED 2026-08-22**, `tmtraj corpus claims --root .`:
+> `tmtraj corpus claims` flags that `TAS_39183` and `KEYBOARD_39706` each declare
+> **39.555** in their header rather than the time in their name. **That is a
+> stale declaration inherited from the template, and nothing more** — the game's
+> own oracle, re-simulating the written files against this map, returns:
 >
-> | file | its name says | its header says | path |
-> |---|---|---|---|
-> | `TAS_39183.Ghost.Gbx` | 39.183 | **39.555** | 3715.3 m |
-> | `KEYBOARD_39706.Ghost.Gbx` | 39.706 | **39.555** | 3716.6 m |
-> | every other file here | — | matches its name | ~3555 m |
+> ```
+> TAS_39183.Ghost.Gbx        PASS V7   oracle re-simulated the written file: 39.183
+> KEYBOARD_39706.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.706
+> ```
 >
-> Two different names, **one declared time**, and a route 160 m longer than the
-> rest of the family. So the rows below for 39.183 and 39.706 are **not backed
-> by the files that carry those names**, and neither figure should be quoted
-> until somebody re-validates them against the map. The fastest time anything in
-> this directory declares is **39.430** (`TAS_39430`), and that is the number
-> the top-level page now uses.
+> **All eight publishable files in this directory re-simulate to exactly the time
+> in their name.** The ninth,
+> `SEGMENT_cp5_32702_DO_NOT_PUBLISH_declares_40226`, returns **DNF at cps 5** — as
+> its name says, and it is the negative control that shows the check can fail.
+> `ghost declare --from-oracle` fixes the two headers and changes no physics.
 >
-> This is not a claim that the times are wrong — the oracle reads the tape and
-> the map is not in this repo, so it cannot be settled here. It is a claim that
-> **the page and the directory disagree**, which is the failure mode
-> [`CLAIMS.md`](../CLAIMS.md) exists for.
+> *An earlier version of this box claimed the reverse — that the two figures were
+> "not supported by anything published". They are supported by the only authority
+> that counts, and `tools/LINEAGE.md` had already recorded this exact result
+> ("8 + the file named `SEGMENT_cp5_…`") before this audit looked. **A name
+> disagreeing with a header is a question, not a verdict; the oracle answers
+> it.***
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|

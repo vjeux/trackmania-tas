@@ -384,6 +384,38 @@ Four passages are the model, all written before this convention existed:
   a defect invalidates into three parts and puts the uncomfortable one in the
   middle.
 
+## Check the record before you write the correction
+
+The audit's third wrong claim, and the cheapest one to have avoided.
+
+`tmtraj corpus claims` flagged that 146612's `TAS_39183` and `KEYBOARD_39706`
+each declare **39.555** in their header instead of the time in their name. That
+is a true fact about two files. The audit turned it into *"neither figure is
+backed by the file that bears its name"* and rewrote two pages around it.
+
+Then the oracle was asked:
+
+```
+TAS_39183.Ghost.Gbx        PASS V7   oracle re-simulated the written file: 39.183
+KEYBOARD_39706.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.706
+```
+
+**The names were right and the headers were stale** — a searched tape is built
+inside a carrier and inherits its declared time; `ghost declare --from-oracle`
+fixes it and changes no physics. All eight publishable files there re-simulate
+to exactly the time in their name, and the ninth returns DNF at cps 5 as its own
+name says, which is the negative control.
+
+**And `tools/LINEAGE.md` already said so**, in a row written before the audit
+started: *"146612 · 9 · 8 + the file named `SEGMENT_cp5_…_DO_NOT_PUBLISH`, which
+returns DNF cp5 as its name says."*
+
+> **Before writing that something is unsupported, search the repo for the arm
+> that already measured it.** A header is not the authority on what a tape does;
+> the oracle is. A flag from a consistency check is a **question**, and if you
+> cannot answer it, the honest output is an open question — not the answer the
+> check's own framing suggests.
+
 ## A settled question beats a standing suspicion
 
 The 46 `corpus dup` refusals were adjudicated rather than left as caveats:
