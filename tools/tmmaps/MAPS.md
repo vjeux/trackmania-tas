@@ -336,13 +336,15 @@ tmmaps selftest --strict     # a SKIP is a failure
 cargo test --release         # the same suite, through cargo
 ```
 
-**45 checks over seven checked-in fixtures**: two campaign maps with their
+**52 checks over seven checked-in fixtures**: two campaign maps with their
 reference ghosts, 173691's author map with the added finish gate that taught us
 the structure lesson, and a **captured dedicated-server transcript**. Two tiers:
 
-* **PURE** — the writer's five splice controls on all three maps (the stream
-  walk against liblzo2; a no-edit write byte-identical to its input; one cell
-  move changing one body byte with 97–99 % of the stock stream carried; the
+* **PURE** — the writer's splice controls on all three maps (the stream walk
+  against liblzo2; a no-edit write byte-identical to its input; one move in
+  **each of the three regimes** — grid cell, free block, item — changing only
+  its own bytes with 97–99 % of the stock stream carried, and a regime-coverage
+  assertion so a regime no fixture has is a failure rather than a silence; the
   re-emit negative control that shares nothing; and a rename reporting
   re-emission rather than pretending); container round trip on all three maps;
   the origin control (81 094 movers on the big map, 0 failures); the census

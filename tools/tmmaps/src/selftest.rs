@@ -735,6 +735,7 @@ fn fname(p: &Path) -> String {
 /// anything: the re-emitted form of the SAME body must share nothing, or an
 /// "identical" verdict would be one a broken comparison also returns.
 fn splice_checks(s: &mut Suite) {
+    let mut covered: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
         let Some(p) = fixture(name) else {
             s.skipped("PURE", &format!("splice {}", name), "fixture missing");
@@ -779,40 +780,76 @@ fn splice_checks(s: &mut Suite) {
             &format!("{} bytes in, {} out, method {:?}", stock_file.len(), written.len(), sp.method),
         );
 
-        // 3. ONE CELL MOVE CHANGES THREE BYTES AND NOTHING ELSE.
-        let Some(b) = m.blocks.iter().find(|b| b.free_off.is_none() && b.flags != 0xFFFF_FFFF).cloned()
-        else {
-            s.skipped("PURE", &format!("splice.edit_is_local {}", name), "no grid block");
-            continue;
-        };
-        let mut m2 = MapFile::load(&p);
-        let (cx, cy, cz) = b.coords();
-        m2.move_block_cell(b.index, (cx, cy + 1, cz));
-        let (edited, sp2) = m2.build_reporting();
-        let body2 = crate::gbx::Gbx::parse(&edited).body;
-        let diff = m
-            .gbx
-            .body
+        // 3. ONE MOVE CHANGES THE BYTES OF THAT MOVE AND NOTHING ELSE — for
+        //    each REGIME the movers have, because they write different
+        //    amounts: a grid cell is three bytes, a free block is twelve f32
+        //    bytes of position, an item is twelve more. A splicer that only
+        //    ever met a cell byte would be untested against the two edits that
+        //    actually carry a gate.
+        let grid = m
+            .blocks
             .iter()
-            .zip(&body2)
-            .filter(|(x, y)| x != y)
-            .count();
-        let carried = sp2.shared_prefix + sp2.shared_suffix;
-        s.check(
-            "PURE",
-            &format!("splice.edit_is_local {}", name),
-            body2.len() == m.gbx.body.len() && diff <= 3 && carried * 100 / stock_stream.len() >= 90,
-            &format!(
-                "block#{} one cell up: {} body bytes differ, {} of {} stream bytes carried \
-                 verbatim ({} %), method {:?}",
-                b.index,
-                diff,
-                carried,
-                stock_stream.len(),
-                carried * 100 / stock_stream.len(),
-                sp2.method
-            ),
-        );
+            .find(|b| b.free_off.is_none() && b.flags != 0xFFFF_FFFF)
+            .map(|b| (format!("grid block#{}", b.index), Regime::Grid(b.index), 3));
+        let free = m
+            .blocks
+            .iter()
+            .find(|b| b.free_off.is_some())
+            .map(|b| (format!("free block#{}", b.index), Regime::Free(b.index), 12));
+        let item = m
+            .items
+            .first()
+            .map(|it| (format!("item#{}", it.index), Regime::Item(it.index), 12));
+        for (label, regime, most) in [grid.clone(), free.clone(), item.clone()].into_iter().flatten() {
+            let mut m2 = MapFile::load(&p);
+            match regime {
+                Regime::Grid(i) => {
+                    let (cx, cy, cz) = m.blocks[i].coords();
+                    m2.move_block_cell(i, (cx, cy + 1, cz));
+                }
+                Regime::Free(i) => {
+                    let mut v = m.blocks[i].free_pos.unwrap();
+                    v[1] += 8.0;
+                    m2.move_block_free(i, v);
+                }
+                Regime::Item(i) => {
+                    let mut v = m.items[i].pos;
+                    v[1] += 8.0;
+                    m2.move_item_pos(i, v);
+                }
+            }
+            let (edited, sp2) = m2.build_reporting();
+            let body2 = crate::gbx::Gbx::parse(&edited).body;
+            let diff = m.gbx.body.iter().zip(&body2).filter(|(x, y)| x != y).count();
+            let carried = sp2.shared_prefix + sp2.shared_suffix;
+            s.check(
+                "PURE",
+                &format!("splice.edit_is_local {} {}", name, label.split(' ').next().unwrap()),
+                body2.len() == m.gbx.body.len()
+                    && diff <= most
+                    && carried * 100 / stock_stream.len() >= 90,
+                &format!(
+                    "{} moved: {} body bytes differ (at most {}), {} % of the stock stream carried \
+                     verbatim, method {:?}",
+                    label,
+                    diff,
+                    most,
+                    carried * 100 / stock_stream.len(),
+                    sp2.method
+                ),
+            );
+        }
+
+        // Which regimes this fixture could exercise is accumulated and
+        // asserted once, after the loop: a regime no fixture has is a real gap
+        // in the suite, while a regime THIS map does not have is not.
+        for (kind, present) in
+            [("grid", grid.is_some()), ("free", free.is_some()), ("item", item.is_some())]
+        {
+            if present {
+                *covered.entry(kind).or_insert(0) += 1;
+            }
+        }
 
         // 4. THE NEGATIVE CONTROL FOR 3. Recompressing the same body shares
         //    essentially nothing with the stock stream, so check 3 is a test
@@ -835,16 +872,41 @@ fn splice_checks(s: &mut Suite) {
         // 5. A RENAME CANNOT BE SPLICED, AND THE WRITER SAYS SO rather than
         //    pretending. The name is a length change in the body, so every
         //    offset after it moves and no part of the stock stream survives.
+        let Some((_, Regime::Grid(bi), _)) = grid else {
+            s.skipped("PURE", &format!("splice.rename_falls_back {}", name), "no grid block");
+            continue;
+        };
         let mut m3 = MapFile::load(&p);
-        m3.set_block_name(b.index, &format!("{}XX", b.name));
+        m3.set_block_name(bi, &format!("{}XX", m.blocks[bi].name));
         let (_, sp3) = m3.build_reporting();
         s.check(
             "PURE",
             &format!("splice.rename_falls_back {}", name),
             sp3.method == crate::splice::Method::Reemit,
-            &format!("renaming block#{} reports method {:?}", b.index, sp3.method),
+            &format!("renaming block#{} reports method {:?}", bi, sp3.method),
         );
     }
+    // Every regime must have been exercised SOMEWHERE. A fixture without free
+    // blocks is fine; a suite without a free-block splice anywhere is not.
+    for kind in ["grid", "free", "item"] {
+        let n = covered.get(kind).copied().unwrap_or(0);
+        s.check(
+            "PURE",
+            &format!("splice.regime_covered {}", kind),
+            n > 0,
+            &format!("the {} mover was spliced on {} of 3 fixtures", kind, n),
+        );
+    }
+}
+
+/// Which mover a splice check is exercising. The three regimes write different
+/// numbers of bytes into different chunks, and a writer tested on one of them
+/// is untested on the other two.
+#[derive(Clone, Copy)]
+enum Regime {
+    Grid(usize),
+    Free(usize),
+    Item(usize),
 }
 
 /// THE TWO WRITERS MUST AGREE WITH THE ENGINE.
