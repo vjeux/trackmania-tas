@@ -24,6 +24,9 @@ pub const COLS: &[&str] = &[
     "time_ms", "x", "y", "z", "speed_kmh", "speed_ms", "vx", "vy", "vz", "yaw", "pitch", "roll",
     "qx", "qy", "qz", "qw", "gear", "rpm_raw", "steer", "gas", "brake", "side_speed", "is_turbo",
     "is_ground_contact", "turbo_time", "fl_dampen", "fr_dampen", "rr_dampen", "rl_dampen",
+    // Read out of the engine as of 2026-08-22, and named by matching the
+    // game's own recording rather than by inspection: see layout::WET_OFF.
+    "wetness",
 ];
 
 /// One decoded row of somebody else's trajectory — a reference, not a
@@ -239,6 +242,7 @@ pub fn to_csv(rows: &[Row], tape: &crate::tape::Tape) -> String {
                 "qy" => fmt_g6(r.qy),
                 "qz" => fmt_g6(r.qz),
                 "qw" => fmt_g6(r.qw),
+                "wetness" => fmt_g6(r.wetness),
                 "steer" => inp(&|t| ((tape.steer[t] as i8) as f64) / 127.0),
                 "gas" => inp(&|t| if tape.accel[t] != 0 { 1.0 } else { 0.0 }),
                 "brake" => inp(&|t| if tape.brake[t] != 0 { 1.0 } else { 0.0 }),
@@ -249,4 +253,68 @@ pub fn to_csv(rows: &[Row], tape: &crate::tape::Tape) -> String {
         out.push_str("\r\n");
     }
     out
+}
+
+/// One named column of a reference CSV, held on its own so a probe can ask for
+/// a channel by name without every consumer of `Reference` growing a field.
+///
+/// A channel is a STEP function of race time, not an interpolated one: the
+/// values it exists to match — wetness, gear, a contact bit — are quantised in
+/// the record and interpolating them would invent values the game never had.
+pub struct Channel {
+    pts: Vec<(i64, f64)>,
+}
+
+impl Channel {
+    /// The value in force at `ms`: the last sample at or before it, within one
+    /// sampling period. `None` outside the record.
+    pub fn at(&self, ms: i64) -> Option<f64> {
+        if self.pts.is_empty() {
+            return None;
+        }
+        let period = if self.pts.len() > 1 { self.pts[1].0 - self.pts[0].0 } else { 50 };
+        let i = match self.pts.binary_search_by_key(&ms, |p| p.0) {
+            Ok(i) => i,
+            Err(0) => return None,
+            Err(i) => i - 1,
+        };
+        if ms - self.pts[i].0 > period {
+            return None;
+        }
+        Some(self.pts[i].1)
+    }
+}
+
+impl Reference {
+    /// A column of the CSV this reference was loaded from, by name.
+    /// Re-reads the file: a probe asks for one channel, once.
+    pub fn channel_from(path: &str, name: &str) -> Option<Channel> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut lines = text.lines();
+        let hdr: Vec<&str> = lines.next()?.split(',').collect();
+        let ct = hdr.iter().position(|h| h.trim() == "time_ms")?;
+        let cv = hdr.iter().position(|h| h.trim() == name)?;
+        let mut pts = Vec::new();
+        for l in lines {
+            if l.trim().is_empty() {
+                continue;
+            }
+            let r: Vec<&str> = l.split(',').collect();
+            let (Some(Ok(t)), Some(v)) = (r.get(ct).map(|v| v.trim().parse::<i64>()), r.get(cv))
+            else {
+                continue;
+            };
+            // Booleans print as True/False in this CSV; take them as 1 and 0.
+            let val = match v.trim() {
+                "True" => 1.0,
+                "False" => 0.0,
+                s => match s.parse::<f64>() {
+                    Ok(x) => x,
+                    Err(_) => continue,
+                },
+            };
+            pts.push((t, val));
+        }
+        (!pts.is_empty()).then_some(Channel { pts })
+    }
 }

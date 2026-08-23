@@ -12,6 +12,7 @@ mod align;
 mod digits;
 mod enginecmp;
 mod frame;
+mod glyphs;
 mod ink;
 mod keylag;
 mod keyphys;
@@ -19,6 +20,7 @@ mod keytape;
 mod lamps;
 mod sections;
 mod trace;
+mod wetread;
 mod xcheck;
 
 use digits::{Field, Patch, Templates};
@@ -62,6 +64,7 @@ fn main() {
     let mut o = BufWriter::new(out.lock());
     let mut f = Frame::new(w, h);
     let at = |i: u64| t0 + i as f64 / fps;
+    let at2 = at;
 
     match cmd.as_str() {
         "lamps" => {
@@ -102,6 +105,75 @@ fn main() {
             let gap: usize = num(&args, "--gap", 2);
             let rows = sections::read_table(&mut r);
             sections::sections(&rows, min_len, gap, &mut o);
+        }
+
+        // Per-frame ink in a rectangle, as a series. `ink` sums over every frame
+        // and answers "where are the cells"; this answers "on which frames is
+        // there anything to read at all", which is the question that decides
+        // whether a readout can be an objective.
+        "inkseries" => {
+            let n: Vec<usize> =
+                need(&args, "--rect").split(',').map(|s| s.parse().unwrap()).collect();
+            // Contrast, not level: this text is white over backgrounds that run
+            // from a dark tunnel to a white wall, so an absolute threshold
+            // measures the scenery. The span between the rectangle's brightest
+            // and darkest pixels is what a glyph adds.
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            writeln!(o, "t\tp95\tp05\tspan\tpresent").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                let mut v: Vec<f32> = Vec::with_capacity(n[2] * n[3]);
+                for y in n[1]..n[1] + n[3] {
+                    for x in n[0]..n[0] + n[2] {
+                        v.push(f.minc(x, y));
+                    }
+                }
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let hi = v[(v.len() - 1) * 95 / 100];
+                let lo = v[(v.len() - 1) * 5 / 100];
+                writeln!(
+                    o,
+                    "{:.4}\t{:.1}\t{:.1}\t{:.1}\t{}",
+                    at(i),
+                    hi,
+                    lo,
+                    hi - lo,
+                    ((hi - lo) >= span_min) as u8
+                )
+                .unwrap();
+                i += 1;
+            }
+        }
+
+        // A rectangle as TEXT. The contact-sheet PGM is the right tool when a
+        // human can look at it; this is the right tool when the readout is 30
+        // pixels wide and the labeller is working down a pipe.
+        "ascii" => {
+            let n: Vec<usize> =
+                need(&args, "--rect").split(',').map(|s| s.parse().unwrap()).collect();
+            let at: Vec<u64> = arg(&args, "--frames")
+                .unwrap_or_else(|| "0".into())
+                .split(',')
+                .map(|s| s.parse().unwrap())
+                .collect();
+            let ramp: Vec<char> = " .:-=+*#%@".chars().collect();
+            let lo: f32 = num(&args, "--lo", 60.0);
+            let hi: f32 = num(&args, "--hi", 230.0);
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if at.contains(&i) {
+                    writeln!(o, "# frame {} t {:.4}  rect {:?}", i, at2(i), n).unwrap();
+                    for y in n[1]..n[1] + n[3] {
+                        let mut s = String::new();
+                        for x in n[0]..n[0] + n[2] {
+                            let v = ((f.minc(x, y) - lo) / (hi - lo)).clamp(0.0, 1.0);
+                            s.push(ramp[(v * (ramp.len() - 1) as f32).round() as usize]);
+                        }
+                        writeln!(o, "{}", s).unwrap();
+                    }
+                }
+                i += 1;
+            }
         }
 
         "ink" => {
@@ -363,6 +435,173 @@ fn main() {
             let engine = enginecmp::load_engine(&need(&args, "--engine")).unwrap_or_else(|e| die(&e));
             enginecmp::report(&video, &engine, num(&args, "--tol", 8.0f64), num(&args, "--run", 6usize), num(&args, "--tol-ms", 50i64), &mut o);
         }
+        // Train the wetness glyphs: same eye-labelling path as the speed field,
+        // but the cells are found from the `%` anchor rather than fixed.
+        "wettrain" => {
+            let mut samples: BTreeMap<(usize, char), Vec<Patch>> = BTreeMap::new();
+            // --labels "FRAME=PCTX:DIGITS", the % x measured off an ascii dump.
+            let mut want: BTreeMap<u64, (usize, Vec<char>)> = BTreeMap::new();
+            for spec in need(&args, "--labels").split(',') {
+                let (i, rest) = spec.split_once('=').unwrap_or_else(|| die("IDX=PCTX:DIGITS"));
+                let (px, ds) = rest.split_once(':').unwrap_or_else(|| die("IDX=PCTX:DIGITS"));
+                want.insert(i.parse().unwrap(), (px.parse().unwrap(), ds.chars().collect()));
+            }
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if let Some((px, ds)) = want.get(&i) {
+                    let fd = |x: usize| {
+                        digits::Field::parse(&format!(
+                            "{x};{};{};{}",
+                            wetread::CELL_Y,
+                            wetread::CELL_W,
+                            wetread::CELL_H
+                        ))
+                    };
+                    samples.entry((0, '%')).or_default().push(Patch::cut(&f, &fd(*px), 0, 0, 0));
+                    for (k, c) in ds.iter().rev().enumerate() {
+                        let x = *px as f32 - wetread::PITCH * (k + 1) as f32;
+                        samples
+                            .entry((0, *c))
+                            .or_default()
+                            .push(Patch::cut(&f, &fd(x.round() as usize), 0, 0, 0));
+                    }
+                }
+                i += 1;
+            }
+            for (k, v) in &samples {
+                eprintln!("glyph {}: {} samples", k.1, v.len());
+            }
+            Templates::from_samples(wetread::CELL_W, wetread::CELL_H, false, &samples).write(&mut o);
+        }
+
+        // Cluster every digit box in the run. The alphabet comes out of the
+        // data; only the NAMES are left for the law to pin down.
+        // The ink profile and the right edge it yields, per frame. The check
+        // before any glyph exists.
+        "wetedge" => {
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let min_ink: f32 = num(&args, "--min-ink", 0.25);
+            let max_gap: usize = num(&args, "--max-gap", 3);
+            let show = args.iter().any(|a| a == "--profile");
+            writeln!(o, "t\tpresent\tright_edge\tprofile").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                let p = wetread::icon_present(&f, span_min);
+                let e = if p { wetread::right_edge(&f, min_ink, max_gap) } else { None };
+                write!(o, "{:.4}\t{}\t{}", at(i), p as u8, e.map(|v| v.to_string()).unwrap_or_default()).unwrap();
+                if show && p {
+                    let prof = wetread::ink_profile(&f);
+                    write!(o, "\t").unwrap();
+                    for v in prof {
+                        write!(o, "{}", (v * 9.0).round() as u8).unwrap();
+                    }
+                }
+                writeln!(o).unwrap();
+                i += 1;
+            }
+        }
+
+        "wetcluster" => {
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let radius: f32 = num(&args, "--radius", 0.82);
+            let min_members: usize = num(&args, "--min-members", 8);
+            // --pct-x 0 means: find the right edge per frame from the ink
+            // profile, which is the only way to cut a left-aligned field whose
+            // cells move with its value.
+            let pctx: f32 = num(&args, "--pct-x", 0.0);
+            let min_ink: f32 = num(&args, "--min-ink", 0.25);
+            let max_gap: usize = num(&args, "--max-gap", 3);
+            // --edges 2159,2165 restricts to frames whose detected right edge is
+            // one of these. Two uses: drop the frames where the detector failed
+            // loudly (it pins to the band end), and BUCKET BY EDGE, which is
+            // the sub-pixel phase test -- each edge value is its own phase, and
+            // if the count collapses within a bucket the spread was phase.
+            let only: Vec<usize> = arg(&args, "--edges")
+                .map(|s| s.split(',').map(|x| x.parse().unwrap()).collect())
+                .unwrap_or_default();
+            let mut cl = glyphs::Clusters::new(wetread::CELL_W, wetread::CELL_H);
+            let mut i = 0u64;
+            let mut frames = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if wetread::icon_present(&f, span_min) {
+                    let base = if pctx > 0.0 {
+                        Some(pctx)
+                    } else {
+                        wetread::right_edge(&f, min_ink, max_gap).map(|v| v as f32)
+                    };
+                    let Some(base) = base else {
+                        i += 1;
+                        continue;
+                    };
+                    if !only.is_empty() && !only.contains(&(base as usize)) {
+                        i += 1;
+                        continue;
+                    }
+                    frames += 1;
+                    // --cell N clusters ONLY the Nth cell left of the edge. Pooling
+                    // all three is what produced 45 clusters: a 1-digit value
+                    // has one digit and two cells of BACKGROUND, and pooling
+                    // mixes glyphs with scenery. One cell at a time, in one
+                    // edge bucket, is the only combination in which every
+                    // sample is the same KIND of thing.
+                    let cells: Vec<usize> = match num::<i64>(&args, "--cell", 0) {
+                        0 => vec![1, 2, 3],
+                        n => vec![n as usize],
+                    };
+                    for k in cells {
+                        let x = base - wetread::PITCH * k as f32;
+                        if x < 1.0 {
+                            break;
+                        }
+                        let fd = digits::Field::parse(&format!(
+                            "{};{};{};{}",
+                            x.round() as usize,
+                            wetread::CELL_Y,
+                            wetread::CELL_W,
+                            wetread::CELL_H
+                        ));
+                        cl.add(&Patch::cut(&f, &fd, 0, 0, 0), (i, k), radius);
+                    }
+                }
+                i += 1;
+            }
+            let dropped = cl.prune(min_members);
+            eprintln!(
+                "{frames} frames with the icon, {} clusters ({dropped} pruned below {min_members} members)",
+                cl.c.len()
+            );
+            cl.print_ascii(&mut o);
+        }
+
+        "wetread" => {
+            let t = Templates::read(
+                &std::fs::read_to_string(need(&args, "--templates"))
+                    .unwrap_or_else(|e| die(&e.to_string())),
+            );
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let pct_min: f32 = num(&args, "--pct-min", 0.55);
+            let digit_min: f32 = num(&args, "--digit-min", 0.55);
+            writeln!(o, "t\tpct\ttext\tpct_x\tpct_score\tworst").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                match wetread::read(&f, &t, span_min, pct_min, digit_min) {
+                    None => writeln!(o, "{:.4}\t\t\t\t\t", at(i)).unwrap(),
+                    Some(rd) => writeln!(
+                        o,
+                        "{:.4}\t{}\t{}\t{}\t{:.3}\t{:.3}",
+                        at(i),
+                        rd.value.map(|v| format!("{v}")).unwrap_or_default(),
+                        rd.text,
+                        rd.pct_x,
+                        rd.pct_score,
+                        rd.worst
+                    )
+                    .unwrap(),
+                }
+                i += 1;
+            }
+        }
+
         _ => die("usage: vidread lamps|sections|ink|patches|train|read|trace ..."),
     }
 }

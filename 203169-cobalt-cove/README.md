@@ -27,7 +27,7 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
 | reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
 | where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
-| the next observable | **tyre wetness** — on screen, in the telemetry, a positional integral, and it separates two human runs at 49 % of instants |
+| the next observable | **tyre wetness** — a positional integral, on screen, and now READ OUT OF THE ENGINE at `car+180` (95.4–96.0 % exact, negative control declines at 44 %) |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -394,17 +394,168 @@ three different points of the run.
 * **And it is on screen**, so it can be read for the whole run the same way the
   speed was.
 
-**One thing has to be built before it can be a search objective**, and it is a
-harness limit rather than a physics one: `fk trace`'s per-tick readout is a
-**44-byte window** — clock, quaternion, position, velocity
-(`forkoracle::layout`) — and wetness is not inside it. The engine plainly
-computes wetness, since the recording carries it; the readout simply does not
-reach that far. Widening the window to include it is the task, and it is the
-last piece: with wetness read off the video and out of the engine, the
-objective becomes positional over the *whole* run, including the reroute where
-no human line exists to compare against.
+**One thing had to be built, and it is now built.** `fk trace`'s per-tick
+readout gathered 44 bytes — clock, quaternion, position, velocity — and wetness
+was outside it. That was a decision, not a limit: the engine computes it, since
+the recording carries it.
 
-## 9. What is banked
+`fk probe` (new) finds a named channel by asking the recording. Gather a wide
+window around the located car, take the game's own series for the channel, and
+report every offset whose bytes reproduce it — a search with a ground-truth
+answer key, which cannot talk itself into a wrong answer the way a
+self-consistency argument can.
+
+**Result: `wetness` is an f32 at `car+180`.**
+
+| | |
+|---|---|
+| exact on steady ticks | **95.63 %** and 95.95 % (two probe ticks, Sapi), **95.37 %** (Bren, a different ghost) |
+| correlation | **0.9997** |
+| next-best offset anywhere in 2 KB | 31–47 % |
+| **negative control** | the same tape against **another run's** answer key: **44.10 %, NOT FOUND** — the probe declines |
+| end to end | `fk trace` now emits a `wetness` column agreeing with the recordings to a mean \|diff\| of **0.00104** (Sapi) and 0.00079 (Bren) — inside the record's own u8 quantisation of 1/255 = 0.0039 |
+| the widening disturbs nothing | the same tape traced before and after: 8060 shared instants, position max difference **0.000 m** |
+
+Three things the probe had to be taught, each of which produced a wrong answer
+first: a channel that barely varies matches everywhere (so it states the
+reference's own variation and refuses to rank without enough of it);
+mid-transition ticks are not comparable, because the record is on a 50 ms grid
+and the fork reports every 10 ms; and **which rounding the record uses is not
+something to assume** — round-to-nearest and truncation differ by 17 percentage
+points here, so both are scored. An unscaled `u8` encoding is tried too, after
+scoring a gear as a 0..1 quantity gave 0.00 % exact beside a 0.9953 correlation,
+which is the shape of a right answer being told the wrong question.
+
+**What remains** is to make it the objective: read the wetness percentage off
+the video's HUD the way the speed was read, and score candidates on it. That is
+the same work as §1 and §5, on a channel that constrains the route rather than
+the speed.
+
+## 9. The wetness readout on screen: located, and not yet decoded
+
+The simulator side is done (§8). The video side is where this arm stops, and
+precisely where matters.
+
+**Located.** The bottom-right status box draws a **droplet icon at x 2119–2130,
+y 1230–1242** (2560×1440 master) followed by the percentage: digit cells about
+9 px apart from x ≈ 2135, glyph box ≈ 10×15, then a `%`. Read by eye off ASCII
+dumps: **43 %** at video 565, **20 %** at 567 and 569.
+
+**A trap for whoever finishes it.** The same box draws a **`! Slip` line at the
+same y**, so the line's content varies and a reader that assumes digits will
+decode letters as numbers. `S`, `l`, `i`, `p` at 540 is what that looks like.
+
+**Available on 62.2 % of the run.** Over all 4380 frames of the final run the
+droplet is on screen on **2726** of them (`wetness/wetpresence.tsv` lists the
+stretches). Detected by **contrast** — p95 − p05 of `min(r,g,b)` over the icon
+rect ≥ 45 — not by an absolute level, because the box sits over everything from
+a dark tunnel to a white wall. Controls: present at 540/565/567/569 where the
+icon is visible in the dump; absent at 556 and 571 where it is not.
+
+**Not done: decoding the digits.** They are ~9×13 px over wildly varying
+backgrounds. `vidread wetread` is written — it anchors on the `%` glyph and
+reads right-aligned digits leftwards from it, which is both what the variable
+field needs and the guard against the `! Slip` trap — but its **templates are
+not trained**, because with the labelling budget I had the honest options were
+a reader I could not control or no reader. Four glyphs (0, 2, 3, 4) are legible
+in the frames I read; the other six need eye readings I did not get to, and one
+frame I tried to read produced a string no percentage can be, which is exactly
+the failure mode a half-trained alphabet has.
+
+### The acceptance test that reader will need, measured
+
+Whoever finishes it does not have to trust it. Over three human replays (283
+decreasing steps) the dry-out law is exact:
+
+* **Every decrease is an integer number of 1/255 units — 0 of 283 are not.**
+  The channel is a u8 and nothing between samples is interpolated.
+* Decreases come in exactly **two kinds**: gradual dry-out at **1 or 2 units
+  per 50 ms** (213 of 283), and an **instant reset to 0.000 in 100 ms** when
+  the car leaves the water.
+* Gradual stretches run at **0.098, 0.099 and 0.101 /s** on the three
+  replays — 10 percentage points per second, so a soaked car dries in about
+  ten seconds.
+
+So a decoded series can be checked **without any ground truth for the run being
+read**: every decrease is 1–2 units per 50 ms or a reset; gradual stretches run
+at 0.10 /s; and it never rises except in water. A mis-decoded tens digit is a
+10–30 point step with no reset, and a mis-decoded units digit breaks the
+quantisation. Three independent checks, none of which needs the run simulated.
+
+### The labelling attempt: the circle, and the geometric way out of it
+
+Rather than read six more glyphs by eye, I clustered: extract every digit box
+from every frame where the droplet is up, cluster the 10×15 bitmaps, and the
+alphabet falls out with only the *names* unknown — which the dry-out law above
+can then pin down, since a descending dry-out stretch spells its own labels.
+`vidread wetcluster` does that.
+
+**The first run returned 72 clusters, not 10**, and that named the blocker
+exactly: **the digit cells cannot be cut until the `%` is found, and the `%`
+cannot be found without a template.** The field is left-aligned after the icon,
+so its cells move with the value; cutting at a fixed x — all an untrained
+reader can do — samples a different part of the field on every frame, and what
+clusters is the background.
+
+**The way out is geometric, and it works.** The `%` is the rightmost ink in the
+box, so a per-frame **ink profile** gives the field's right edge with no
+template at all. `vidread wetedge` measures it: ink per column over the glyph
+*rows only* (the `! Slip` line shares this y, and a full-height profile mixes
+it in), thresholded against the band's own dark level rather than an absolute
+one, anchored on the droplet so the whole measurement rides with the HUD.
+
+Over the run's 2726 droplet frames it finds an edge on **2725**, and the
+distribution is exactly what a right-aligned `%` after a 1-, 2- or 3-digit
+number should give — **three sharp modes**:
+
+| right edge | frames | |
+|---|---|---|
+| 2159 | **1334** | |
+| 2165 | **480** | |
+| 2174 | **169** | |
+| 2193 | 402 | the band's own right end — a saturated background, i.e. the detector failing *loudly* |
+| everything else | ~340 | scattered singletons |
+
+So the edge is measurable on about 85 % of the frames the icon is up, and the
+15 % where it is not announce themselves by pinning to the band edge.
+
+**Re-clustering on those per-frame cuts took 72 → 45**, with membership roughly
+tripled — a real cut finds three digits where a fixed cut found background.
+Bucketing by edge (the sub-pixel phase test) took it further: **16, 13 and 11
+clusters** in the three modes. Still not ten, and the reason turned out not to
+be phase at all.
+
+**Pooling the three cells is what was left.** A 1-digit value has one digit and
+*two cells of background*; clustering all three together mixes glyphs with
+scenery no matter how well the cells are cut. Clustering **one cell within one
+edge bucket** — the only combination in which every sample is the same kind of
+thing — gives:
+
+| edge (frames) | clusters in the units cell |
+|---|---|
+| 2159 (1334) | **9** |
+| 2165 (480) | **2** |
+| 2174 (169) | **6** |
+
+And at edge 2159 the units cell is dominated by **one shape with 889 of 1334
+members**, whose averaged bitmap is plainly a `0`; the smaller clusters are the
+same glyph over different backgrounds. That is a reader working, not a reader
+failing — 1334 frames of `0%` is what a run that spends most of its length dry
+should look like.
+
+**What is left, precisely.** Merge the background variants (a
+contrast-normalised template already ignores background, so this is a clustering
+radius question, not a new idea), name the merged shapes with the dry-out law,
+and run the law as the gate. The instrument is built and the cells are right;
+what remains is bookkeeping I did not have the session for.
+
+**Do not read 72, or 45, as noise.** A cluster count far from ten, on data where
+ten is the answer, is the instrument reporting that its cells are wrong, which
+is what it is for. **Nine would have been the dangerous outcome**: two glyphs
+merged, unseparable afterwards, and a reader subtly wrong on one digit forever.
+A result that fails visibly beats one that fails invisibly.
+
+## 10. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
 
@@ -422,7 +573,7 @@ recording), **`recon`** (grow a tape against a speed trace), `ghost tape
 script` (an event list to a tape) and `tmtraj csvdiff` (two trajectories on the
 instants they share).
 
-## 10. Attribution
+## 11. Attribution
 
 The run is **Wirtual's**, on **Nadeo's** map, made with **Acepter's**
 Trackmania Input Control Kit. Video:
