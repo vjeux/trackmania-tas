@@ -105,3 +105,17 @@ copy of the map. The car reaches the deck at 164 s and runs on to x = 1 067,
 Three checkpoints of eleven. The map is still not driven and the author time is
 not beaten. Details, controls and what is still open: `tools/pkz2`, and the
 arm's write-up in the store.
+
+## Past the third checkpoint: he does not drive there, he is thrown
+
+The section from CP3 to CP4 is not more of the same driving. It is a **chain of
+two turbo gates**: a `GateSpecial8mTurbo` at (904, 153, 438) that takes him from
+135 to 188 km/h in a quarter of a second, and a `GateSpecial32mTurbo` at
+(880, 138, 481) that holds him at **215–238 km/h** down a 250 m corridor and
+throws him into the checkpoint's cell. Nothing on this map has driven at those
+speeds.
+
+So the objective for that section is the first gate, not the checkpoint — and
+the first gate sits **15 m above the deck the car is driving on**. Scoring on it
+takes our best approach from 57.5 m to 21.5 m immediately and then stops
+improving, which says the way up to it is a move we have not written yet.
