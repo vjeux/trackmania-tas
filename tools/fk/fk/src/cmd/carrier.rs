@@ -40,6 +40,10 @@ fk carrier -- name the 91 sample bytes a regenerated ghost inherits from its car
 
   fk carrier scan     sweep engine memory against one recording   [PROPOSES]
   fk carrier confirm  score a frozen table on another recording   [DECIDES]
+  fk carrier layout   score the DISASSEMBLED 116-byte writer, all bytes at once
+                      -- no fit anywhere in it, so it can only be right or wrong
+  fk carrier bytes    print that layout without running anything
+  fk carrier rollup   collapse several layout runs into one row per byte
   fk carrier merge    intersect several scans into one frozen table
   fk carrier write    write the named bytes into a ghost, from engine memory
 
@@ -71,9 +75,17 @@ pub fn run(a: &[String]) -> Result<(), String> {
     match verb {
         "scan" => scan(rest),
         "confirm" => confirm(rest),
+        "layout" => layout(rest),
+        "bytes" => {
+            println!("byte\tfield\tencoding");
+            for d in crate::vislayout::DOC {
+                println!("{}\t{}\t{}", d.byte, d.field, d.encoding);
+            }
+            Ok(())
+        }
         "merge" => merge(rest),
-        "write" => write(rest),
-        x => Err(format!("fk carrier <scan|confirm|merge|write>, got {:?}", x)),
+        "rollup" => rollup(rest),        "write" => write(rest),
+        x => Err(format!("fk carrier <scan|confirm|layout|bytes|merge|write>, got {:?}", x)),
     }
 }
 
@@ -529,6 +541,315 @@ fn confirm(a: &[String]) -> Result<(), String> {
     if let Some(o) = flag(a, "--out") {
         std::fs::write(&o, &tsv).map_err(|e| format!("{}: {}", o, e))?;
         println!("wrote {}", o);
+    }
+    Ok(())
+}
+
+/// One instant of a gathered `CSceneVehicleVisState`, read straight out of the
+/// engine-memory columns. `base` is the record offset of state+0, i.e. the
+/// car's position offset minus `Loc.translation`'s 0x50.
+struct Gathered<'a> {
+    p: &'a Paired,
+    w: Write,
+    base: i64,
+    i: usize,
+}
+
+impl Gathered<'_> {
+    fn byte(&self, off: usize) -> u8 {
+        let o = self.base + off as i64;
+        if o < 0 || o as usize >= self.p.reclen {
+            return 0;
+        }
+        let n = self.p.n();
+        self.p.cols[self.w as usize][o as usize * n + self.i]
+    }
+}
+
+impl crate::vislayout::State for Gathered<'_> {
+    fn f32(&self, off: usize) -> f32 {
+        f32::from_le_bytes([
+            self.byte(off),
+            self.byte(off + 1),
+            self.byte(off + 2),
+            self.byte(off + 3),
+        ])
+    }
+    fn u32(&self, off: usize) -> u32 {
+        u32::from_le_bytes([
+            self.byte(off),
+            self.byte(off + 1),
+            self.byte(off + 2),
+            self.byte(off + 3),
+        ])
+    }
+    fn u8(&self, off: usize) -> u8 {
+        self.byte(off)
+    }
+}
+
+/// Score the DISASSEMBLED layout: rebuild all 116 bytes from the engine state
+/// and compare them, byte for byte, with the recording the game wrote.
+///
+/// This is the confirmation `confirm` cannot give. `confirm` scores a table of
+/// per-channel coefficients that a sweep FITTED; this scores a transcription of
+/// the game's own writer, in which there is no coefficient to fit and no offset
+/// to choose. Every byte is either right or wrong, and the three verdicts of
+/// `CARRIER.md` still apply: a byte the run never moves cannot be tested by it.
+fn layout(a: &[String]) -> Result<(), String> {
+    let c = ctx(a)?;
+    let verbose = a.iter().any(|x| x == "--verbose");
+    let dump = flag(a, "--dump")
+        .unwrap_or_else(|| format!("/tmp/fkcarrier-{}.bin", std::process::id()));
+    let tag = flag(a, "--tag").unwrap_or_else(|| crate::record::name_of(&c.template));
+    // The state runs from car-0x50 to car-0x50+0x360, so the window only has to
+    // reach 80 bytes back and 784 forward -- but the car is IDENTIFIED inside
+    // the window, so the width stays the scan's. `confirm` paid for that lesson.
+    let p = gather_wide(&c, num(a, "--back", 1048576), num(a, "--fwd", 262144), &dump, verbose)?;
+    let n = p.n();
+    let base = p.pos_off as i64 - 0x50;
+
+    println!("\n{} instants, state base at record offset {}", n, base);
+    println!(
+        "{:>5} {:>7} {:>8} {:>8}  {:<44} {}",
+        "byte", "write", "exact%", "const%", "field", "verdict"
+    );
+    let mut tsv = String::from("byte\twrite\texact\tn\trate\tbaseline\tfield\tencoding\tverdict\tkey\n");
+    let (mut held, mut lost, mut no_power, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+    // Predict once per write, then score every byte off the same prediction.
+    let mut pred: [Vec<[u8; 116]>; 2] = [Vec::with_capacity(n), Vec::with_capacity(n)];
+    for w in [Write::Car, Write::Other] {
+        for i in 0..n {
+            let g = Gathered { p: &p, w, base, i };
+            pred[w as usize].push(crate::vislayout::pack(&g));
+        }
+    }
+    for d in crate::vislayout::DOC {
+        if crate::vislayout::UNPREDICTED.contains(&d.byte) {
+            skipped += 1;
+            println!(
+                "{:>5} {:>7} {:>8} {:>8}  {:<44} not predicted here ({})",
+                d.byte, "-", "-", "-", d.field, d.encoding
+            );
+            continue;
+        }
+        let t: Vec<u8> = p.sample.iter().map(|s| s[d.byte]).collect();
+        let mut h = std::collections::HashMap::<u8, usize>::new();
+        for v in &t {
+            *h.entry(*v).or_insert(0) += 1;
+        }
+        let baseline = h.values().copied().max().unwrap_or(0) as f64 / n.max(1) as f64;
+        // The write is not a free parameter to fit either: the table takes the
+        // write the CAR was identified on, and the other one is printed only
+        // when it disagrees, as evidence about the instant rather than a choice.
+        let mut best = (0usize, Write::Car);
+        for w in [Write::Car, Write::Other] {
+            let e = (0..n).filter(|&i| pred[w as usize][i][d.byte] == t[i]).count();
+            if e > best.0 {
+                best = (e, w);
+            }
+        }
+        let car_exact = (0..n).filter(|&i| pred[0][i][d.byte] == t[i]).count();
+        let rate = car_exact as f64 / n.max(1) as f64;
+        // A byte that is right at a SHIFTED instant is a pairing error, not a
+        // wrong field: the engine writes the vehicle state more than once per
+        // tick and some fields are updated by a later stage than the one the
+        // recorder captured. Measuring the shift separates the two, and this
+        // project has already been bitten by reading a tick-late field as a
+        // refuted law.
+        let mut shift = (car_exact, 0i64);
+        for s in [-2i64, -1, 1, 2] {
+            let e = (0..n)
+                .filter(|&i| {
+                    let j = i as i64 + s;
+                    j >= 0 && (j as usize) < n && pred[0][j as usize][d.byte] == t[i]
+                })
+                .count();
+            if e > shift.0 {
+                shift = (e, s);
+            }
+        }
+        let verdict = if baseline >= 0.95 && (rate - baseline).abs() < 1e-9 {
+            no_power += 1;
+            "no power (the byte never moves on this key)".to_string()
+        } else if rate > baseline {
+            held += 1;
+            "holds".to_string()
+        } else {
+            lost += 1;
+            let modal = |v: &[u8]| {
+                let mut m = std::collections::HashMap::<u8, usize>::new();
+                for x in v {
+                    *m.entry(*x).or_insert(0) += 1;
+                }
+                m.into_iter().max_by_key(|&(_, c)| c).map(|(v, _)| v).unwrap_or(0)
+            };
+            let pv: Vec<u8> = (0..n).map(|i| pred[0][i][d.byte]).collect();
+            // THE FOURTH VERDICT. A layout read out of the writer can be right
+            // about the field and still score nothing, because the SOURCE SLOT
+            // is not populated in this binary: the dedicated server runs the
+            // simulation, not the presentation, and some of what a client
+            // records is written by code the server never executes. That is a
+            // different fact from a wrong offset, and the discriminator is
+            // whether the prediction moves at all while the recording does.
+            let dead = pv.iter().all(|&x| x == pv[0]) && baseline < 0.95;
+            format!(
+                "{} (other write {:.2}%, modal recorded {} vs predicted {}, best shift {:+} at {:.2}%)",
+                if dead {
+                    "SOURCE SLOT DEAD in this binary -- the prediction never moves, the recording does"
+                } else {
+                    "FAILS"
+                },
+                100.0 * best.0 as f64 / n.max(1) as f64,
+                modal(&t),
+                modal(&pv),
+                shift.1,
+                100.0 * shift.0 as f64 / n.max(1) as f64
+            )
+        };
+        println!(
+            "{:>5} {:>7} {:>7.2}% {:>7.2}%  {:<44} {}",
+            d.byte, "car", 100.0 * rate, 100.0 * baseline, d.field, verdict
+        );
+        tsv.push_str(&format!(
+            "{}\tcar\t{}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\n",
+            d.byte, car_exact, n, rate, baseline, d.field, d.encoding, verdict, tag
+        ));
+    }
+    println!(
+        "\n{} hold, {} fail, {} could not be tested (the byte never moves on this key), \
+         {} not predicted here.",
+        held, lost, no_power, skipped
+    );
+
+    // The packed bytes, field by field. A byte can pass on the strength of one
+    // of the six quantities in it, and for the reactor that is exactly the
+    // trap: byte 89 is 100 % on a run with no reactor because IsGroundContact
+    // is 100 %.
+    println!(
+        "\n{:<30} {:>8} {:>8} {:>7}  {}",
+        "packed field", "exact%", "const%", "values", "verdict"
+    );
+    for f in crate::vislayout::BITFIELDS {
+        let t: Vec<u32> = p.sample.iter().map(|s| f.read(s)).collect();
+        let mut h = std::collections::HashMap::<u32, usize>::new();
+        for v in &t {
+            *h.entry(*v).or_insert(0) += 1;
+        }
+        let baseline = h.values().copied().max().unwrap_or(0) as f64 / n.max(1) as f64;
+        let e = (0..n).filter(|&i| f.read(&pred[0][i]) == t[i]).count();
+        let rate = e as f64 / n.max(1) as f64;
+        let verdict = if h.len() <= 1 {
+            "the field never moves on this key -- untested"
+        } else if rate > baseline {
+            "holds"
+        } else {
+            "FAILS"
+        };
+        println!(
+            "{:<30} {:>7.2}% {:>7.2}% {:>7}  {}",
+            f.name,
+            100.0 * rate,
+            100.0 * baseline,
+            h.len(),
+            verdict
+        );
+        tsv.push_str(&format!(
+            "{}\tcar\t{}\t{}\t{:.4}\t{:.4}\t{}\tbitfield\t{}\t{}\n",
+            f.byte, e, n, rate, baseline, f.name, verdict, tag
+        ));
+    }
+    if let Some(o) = flag(a, "--out") {
+        std::fs::write(&o, &tsv).map_err(|e| format!("{}: {}", o, e))?;
+        println!("wrote {}", o);
+    }
+    Ok(())
+}
+
+/// Collapse several `fk carrier layout` runs into one row per sample byte.
+///
+/// The column that decides is the WORST key that had power, exactly as
+/// `CARRIER.md` reports its table: a byte that is 100 % on six keys and 3 % on
+/// the seventh has not been named. The count of keys with power is printed
+/// beside it, because a byte that no key exercises is neither confirmed nor
+/// contradicted and saying so is not optional.
+fn rollup(a: &[String]) -> Result<(), String> {
+    let list = flag(a, "--tables").ok_or("--tables A.tsv,B.tsv,... is required")?;
+    #[derive(Default, Clone)]
+    struct Agg {
+        field: String,
+        power: Vec<(String, f64)>,
+        no_power: usize,
+        worst: f64,
+        dead: usize,
+    }
+    let mut rows: std::collections::BTreeMap<String, Agg> = std::collections::BTreeMap::new();
+    let mut keys: Vec<String> = Vec::new();
+    for path in list.split(',') {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 10 {
+                continue;
+            }
+            let byte: usize = f[0].parse().map_err(|_| format!("bad byte {:?}", f[0]))?;
+            let rate: f64 = f[4].parse().unwrap_or(0.0);
+            let baseline: f64 = f[5].parse().unwrap_or(0.0);
+            let key = f[9].to_string();
+            if !keys.contains(&key) {
+                keys.push(key.clone());
+            }
+            // Bitfield rows and byte rows share a byte number, so the row
+            // identity has to carry both.
+            let id = if f[7] == "bitfield" {
+                format!("f{:03}:{}", byte, f[6])
+            } else {
+                format!("b{:03}", byte)
+            };
+            let e = rows.entry(id).or_default();
+            e.field = f[6].to_string();
+            if f[8].starts_with("SOURCE SLOT DEAD") {
+                e.dead += 1;
+            }
+            // "power" is the recording moving, not the prediction being right.
+            if baseline >= 0.95 && (rate - baseline).abs() < 1e-9 {
+                e.no_power += 1;
+            } else {
+                e.power.push((key, rate));
+            }
+        }
+    }
+    println!("{} keys: {}", keys.len(), keys.join(", "));
+    println!(
+        "\n{:>10} {:>7} {:>9} {:>8}  {:<44} {}",
+        "row", "power", "worst%", "no-power", "field", "worst key"
+    );
+    for (id, e) in &rows {
+        let worst = e
+            .power
+            .iter()
+            .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+            .cloned();
+        match worst {
+            Some((k, r)) => println!(
+                "{:>10} {:>7} {:>8.2}% {:>8}  {:<44} {}{}",
+                id,
+                e.power.len(),
+                100.0 * r,
+                e.no_power,
+                e.field,
+                k,
+                if e.dead > 0 {
+                    format!("   [source slot dead on {} key(s)]", e.dead)
+                } else {
+                    String::new()
+                }
+            ),
+            None => println!(
+                "{:>10} {:>7} {:>9} {:>8}  {:<44} -",
+                id, 0, "-", e.no_power, e.field
+            ),
+        }
     }
     Ok(())
 }
