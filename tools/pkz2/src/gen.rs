@@ -44,9 +44,20 @@ pub struct Zig {
     pub brake_ms: i64,
     pub start_ms: i64,
     pub leg_ms: i64,
+    /// The reverse leg. The driver's own traverses are NOT symmetric -- his
+    /// +z legs and -z legs differ by up to 2x -- so a switchback with one leg
+    /// length cannot express the line he drives.
+    pub leg2_ms: i64,
     pub legs: i64,
     pub first: i64,
     pub gas: bool,
+    /// Alternate legs run in REVERSE.
+    ///
+    /// The driver's own switchback is not a steering pattern. At each end of
+    /// a traverse he comes to 1.8-7.4 km/h and goes back the other way, and
+    /// in this game holding the brake at rest is reverse gear. A zig-zag that
+    /// only steers cannot express the manoeuvre he uses to climb this hill.
+    pub rev: bool,
 }
 
 pub fn zigzag(z: &Zig, fixed: &[Edit]) -> Spec {
@@ -55,21 +66,28 @@ pub fn zigzag(z: &Zig, fixed: &[Edit]) -> Spec {
         edits.push(e(z.brake_from, z.brake_from + z.brake_ms, "brake", 1));
         edits.push(e(z.brake_from, z.brake_from + z.brake_ms, "accel", 0));
     }
-    if z.gas {
-        let span = z.legs * z.leg_ms;
+    if z.gas && !z.rev {
+        let span = (z.legs / 2) * (z.leg_ms + z.leg2_ms) + (z.legs % 2) * z.leg_ms;
         edits.push(eo(z.start_ms, z.start_ms + span, "accel", 1));
         edits.push(eo(z.start_ms, z.start_ms + span, "brake", 0));
     }
+    let mut t0 = z.start_ms;
     for k in 0..z.legs {
-        let t0 = z.start_ms + k * z.leg_ms;
         let side = if k % 2 == 0 { z.first } else { -z.first };
-        edits.push(eo(t0, t0 + z.leg_ms, "steer", side));
+        let len = if k % 2 == 0 { z.leg_ms } else { z.leg2_ms };
+        edits.push(eo(t0, t0 + len, "steer", side));
+        if z.rev {
+            let up = k % 2 == 0;
+            edits.push(eo(t0, t0 + len, "accel", if up { 1 } else { 0 }));
+            edits.push(eo(t0, t0 + len, "brake", if up { 0 } else { 1 }));
+        }
+        t0 += len;
     }
     Spec {
         name: format!(
-            "zz_b{}_{}_s{}_l{}_n{}_f{}{}",
-            z.brake_from, z.brake_ms, z.start_ms, z.leg_ms, z.legs, z.first,
-            if z.gas { "_g" } else { "" }
+            "zz_b{}_{}_s{}_l{}_{}_n{}_f{}{}",
+            z.brake_from, z.brake_ms, z.start_ms, z.leg_ms, z.leg2_ms, z.legs, z.first,
+            if z.rev { "_rev" } else if z.gas { "_g" } else { "" }
         ),
         edits,
     }

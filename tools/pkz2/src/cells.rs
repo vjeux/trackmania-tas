@@ -72,3 +72,40 @@ pub fn report_check(s: &[Sample], claims: &[String]) {
     }
     println!("{} of {} claims fail", fails, claims.len());
 }
+
+/// The one line a climb candidate is judged on: how high it got, where, how
+/// fast it was going there, and when it stopped moving.
+///
+/// `pkzprog`'s rule for this map, kept: quote no position at an instant
+/// without the first-stall time beside it -- 41 of one arm's 131 candidates
+/// were parked from ~158 s and every divergence figure quoted while they were
+/// parked had to be retracted.
+pub fn report_apex(name: &str, s: &[Sample], target: Option<(f64, f64, f64)>) {
+    let mut top = s[0];
+    for r in s {
+        if r.y > top.y {
+            top = *r;
+        }
+    }
+    let mut stall = f64::NAN;
+    let mut run0 = f64::NAN;
+    for r in s {
+        if r.v < 1.0 {
+            if run0.is_nan() { run0 = r.t; } else if r.t - run0 >= 2.0 { stall = run0; break; }
+        } else {
+            run0 = f64::NAN;
+        }
+    }
+    let maxx = s.iter().fold(f64::NEG_INFINITY, |m, r| m.max(r.x));
+    let dist = match target {
+        Some((tx, ty, tz)) => s.iter().fold(f64::INFINITY, |m, r| {
+            m.min(((r.x - tx).powi(2) + (r.y - ty).powi(2) + (r.z - tz).powi(2)).sqrt())
+        }),
+        None => f64::NAN,
+    };
+    println!(
+        "{:>8.2}  {:<52} apex y {:>7.2} at {:>8.3} s  (x {:>7.2} z {:>7.2} v {:>5.1})   max x {:>7.2}   first stall {}",
+        dist, name, top.y, top.t, top.x, top.z, top.v, maxx,
+        if stall.is_nan() { "none".to_string() } else { format!("{:.3}", stall) }
+    );
+}

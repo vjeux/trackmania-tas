@@ -10,6 +10,7 @@
 
 mod csv;
 mod cells;
+mod climb;
 mod dev;
 mod gen;
 mod mkcand;
@@ -93,6 +94,31 @@ fn main() {
                 );
             }
         }
+        "climb" => {
+            let base = flag(&a, "base").expect("--base");
+            let outdir = flag(&a, "outdir").expect("--outdir");
+            let nums = |n: &str, d: &str| -> Vec<i64> {
+                flag(&a, n).unwrap_or_else(|| d.to_string()).split(',').map(|s| s.parse().unwrap()).collect()
+            };
+            let mut fixed = Vec::new();
+            for (i, s) in a.iter().enumerate() {
+                if s == "--edit" { fixed.push(edit::parse_edit(&a[i + 1]).unwrap()); }
+            }
+            let mut zigs = Vec::new();
+            for bf in nums("brakefrom", "147600") { for bm in nums("brakems", "0") {
+              for lg in nums("legms", "450") { for l2 in nums("legms2", "0") {
+                for n in nums("legs", "20") { for f in nums("first", "127") {
+                  for rv in nums("rev", "0") {
+                  zigs.push(gen::Zig { brake_from: bf, brake_ms: bm, start_ms: bf + bm,
+                                       leg_ms: lg, leg2_ms: if l2 == 0 { lg } else { l2 },
+                                       legs: n, first: f, gas: true, rev: rv != 0 }); }
+            } } } } } }
+            climb::run(&climb::Cfg { base, map: flag(&a, "map").expect("--map"), outdir,
+                                     at: flag(&a, "at").unwrap_or_else(|| "tick:14400".into()),
+                                     par: fnum(&a, "par", 20.0) as usize,
+                                     from: fnum(&a, "from", 146.0), to: fnum(&a, "to", 300.0),
+                                     target: flag(&a, "target").map(|s| { let p: Vec<f64> = s.split(',').map(|x| x.parse().unwrap()).collect(); (p[0], p[1], p[2]) }) }, &zigs, &fixed);
+        }
         "sweep" => {
             let base = flag(&a, "base").expect("--base");
             let outdir = flag(&a, "outdir").expect("--outdir");
@@ -113,11 +139,16 @@ fn main() {
                                 for n in nums("legs", "12") {
                                     for f in nums("first", "127,-127") {
                                         for g in nums("gas", "1") {
-                                            v.push(gen::zigzag(&gen::Zig {
-                                                brake_from: bf, brake_ms: bm,
-                                                start_ms: bf + bm, leg_ms: lg, legs: n,
-                                                first: f, gas: g != 0,
-                                            }, &fixed));
+                                          for rv in nums("rev", "0") {
+                                            for l2 in nums("legms2", "0") {
+                                                v.push(gen::zigzag(&gen::Zig {
+                                                    brake_from: bf, brake_ms: bm,
+                                                    start_ms: bf + bm, leg_ms: lg,
+                                                    leg2_ms: if l2 == 0 { lg } else { l2 },
+                                                    legs: n, first: f, gas: g != 0, rev: rv != 0,
+                                                }, &fixed));
+                                            }
+                                          }
                                         }
                                     }
                                 }
@@ -148,6 +179,12 @@ fn main() {
         "jumps" => {
             let s = csv::read(&path, from, to).unwrap_or_else(|e| { eprintln!("{}", e); std::process::exit(1) });
             jumps::report(&s, fnum(&a, "min", 5.0));
+        }
+        "apex" => {
+            for p in a.iter().skip(1).filter(|s| !s.starts_with("--")) {
+                let tg = flag(&a, "target").map(|s| { let q: Vec<f64> = s.split(',').map(|x| x.parse().unwrap()).collect(); (q[0], q[1], q[2]) });
+                match csv::read(p, from, to) { Ok(s) => cells::report_apex(p, &s, tg), Err(e) => eprintln!("{}", e) }
+            }
         }
         "cells" => {
             let s = csv::read(&path, from, to).unwrap_or_else(|e| { eprintln!("{}", e); std::process::exit(1) });
