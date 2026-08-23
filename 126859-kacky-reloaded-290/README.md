@@ -6,7 +6,7 @@ gate is a third of a second shorter.**
 
 **Kacky Reloaded #290** — TAS **23.416** (−0.646) | AT 24.062 | WR 24.342 by zetos.
 
-https://github.com/user-attachments/assets/2e7527fc-121b-4682-b83a-35e91ae04ccf
+https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
