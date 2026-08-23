@@ -38,6 +38,11 @@ pub struct Index {
 }
 
 impl Index {
+    /// Build the plumb/ray index over a scene.
+    ///
+    /// **`NotCollidable` and `OffZone` triangles are left out.** They are real
+    /// geometry and a render should show them, but a car cannot rest on one,
+    /// and a probe that counts them reports coverage the game does not have.
     pub fn build(scene: &Scene, cell: f32) -> Index {
         let (lo, hi) = scene.bounds().unwrap_or(([0.0; 3], [1.0; 3]));
         let nx = (((hi[0] - lo[0]) / cell).ceil() as usize + 1).max(1);
@@ -51,6 +56,9 @@ impl Index {
             groups: Vec::new(),
         };
         for (name, g) in &scene.groups {
+            if !crate::scene::is_collidable(name) {
+                continue;
+            }
             idx.groups.push((name.clone(), g.verts.clone(), g.tris.clone()));
         }
         for (gi, (_, verts, tris)) in idx.groups.iter().enumerate() {

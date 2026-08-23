@@ -12,7 +12,15 @@
 
 use std::collections::BTreeMap;
 
-/// `EPlugSurfacePhysicsId` — what the car feels under a wheel.
+/// `EPlugSurfaceMaterialId` — what the car feels under a wheel.
+///
+/// Transcribed from the game's own class reference
+/// (`next.openplanet.dev/MetaNotPersistent/GmSurfaceIds`, build 2026-01-26),
+/// not inferred. **The list this replaced was right to 25 and wrong from 26
+/// on**, and wrong in a way that mattered rather than cosmetically: it called
+/// 27 `RoadIce` when 27 is `Bumper_Deprecated` and RoadIce is 74, and — worse
+/// — it called **28 `Bumper` when 28 is `NotCollidable`**, so triangles the
+/// car cannot touch were being counted as surface underneath it.
 pub fn physics_name(id: u8) -> &'static str {
     match id {
         0 => "Concrete",
@@ -41,30 +49,87 @@ pub fn physics_name(id: u8) -> &'static str {
         23 => "GolfBall",
         24 => "GolfWall",
         25 => "GolfGround",
-        26 => "Turbo",
-        27 => "RoadIce",
-        28 => "Bumper",
-        29 => "NotCollidable",
-        30 => "FreeWheeling",
-        31 => "TurboRoulette",
-        32 => "WallJump",
-        33 => "MetalTrans",
-        34 => "Turbo2",
-        35 => "Fabric",
-        36 => "TechMagnetic",
-        37 => "TechMagneticAccel",
-        38 => "TechSuperMagnetic",
-        39 => "TechNucleus",
-        40 => "TurboTechMagnetic",
-        41 => "Bumper2",
-        42 => "TurboTechMagnetic2",
-        43 => "TechArrow",
-        44 => "RoadSynthetic",
-        45 => "Green",
-        46 => "Plastic",
-        47 => "DevDebug",
-        48 => "Free3",
+        26 => "Turbo2_Deprecated",
+        27 => "Bumper_Deprecated",
+        28 => "NotCollidable",
+        29 => "FreeWheeling_Deprecated",
+        30 => "TurboRoulette_Deprecated",
+        31 => "WallJump",
+        32 => "MetalTrans",
+        33 => "Stone",
+        34 => "Player",
+        35 => "Trunk",
+        36 => "TechLaser",
+        37 => "SlidingWood",
+        38 => "PlayerOnly",
+        39 => "Tech",
+        40 => "TechArmor",
+        41 => "TechSafe",
+        42 => "OffZone",
+        43 => "Bullet",
+        44 => "TechHook",
+        45 => "TechGround",
+        46 => "TechWall",
+        47 => "TechArrow",
+        48 => "TechHook2",
+        49 => "Forest",
+        50 => "Wheat",
+        51 => "TechTarget",
+        52 => "PavementStair",
+        53 => "TechTeleport",
+        54 => "Energy",
+        55 => "TechMagnetic",
+        56 => "TurboTechMagnetic_Deprecated",
+        57 => "Turbo2TechMagnetic_Deprecated",
+        58 => "TurboWood_Deprecated",
+        59 => "Turbo2Wood_Deprecated",
+        60 => "FreeWheelingTechMagnetic_Deprecated",
+        61 => "FreeWheelingWood_Deprecated",
+        62 => "TechSuperMagnetic",
+        63 => "TechNucleus",
+        64 => "TechMagneticAccel",
+        65 => "MetalFence",
+        66 => "TechGravityChange",
+        67 => "TechGravityReset",
+        68 => "RubberBand",
+        69 => "Gravel",
+        70 => "Hack_NoGrip_Deprecated",
+        71 => "Bumper2_Deprecated",
+        72 => "NoSteering_Deprecated",
+        73 => "NoBrakes_Deprecated",
+        74 => "RoadIce",
+        75 => "RoadSynthetic",
+        76 => "Green",
+        77 => "Plastic",
+        78 => "DevDebug",
+        79 => "Free3",
+        80 => "XXX_Null",
         _ => "Unknown",
+    }
+}
+
+/// A surface the car cannot rest on, however solid it looks in a render.
+///
+/// `NotCollidable` speaks for itself; `OffZone` is the volume that resets a
+/// run. Both are real triangles in the pack and both would happily hold up a
+/// plumb probe, so the coverage index leaves them out. On this corpus that is
+/// currently a change of nothing — no map has a sample over either — which is
+/// worth knowing and is not the same as not checking.
+pub fn is_collidable(name: &str) -> bool {
+    !matches!(name, "NotCollidable" | "OffZone")
+}
+
+/// The name a triangle's group carries: the physics material, and where the
+/// enum runs past what is written down here, the raw id.
+///
+/// The table above is the whole enum as the reference gives it, so an
+/// id past its end is a value the reference does not have. It used to read as
+/// a bare `Unknown` — a class of ids, not an id, which tells you nothing about
+/// which one to go and look up. The number is free and it is the diagnosis.
+pub fn material_name(id: u8) -> String {
+    match physics_name(id) {
+        "Unknown" => format!("Unknown({})", id),
+        n => n.to_string(),
     }
 }
 
@@ -79,14 +144,17 @@ fn physics_colour(id: u8) -> [f32; 4] {
         "Dirt" | "DirtRoad" | "WetDirtRoad" => [0.55, 0.36, 0.20, 1.0],
         "Water" => [0.15, 0.35, 0.75, 0.65],
         "Wood" => [0.52, 0.36, 0.18, 1.0],
-        "Turbo" | "Turbo2" | "TurboTechMagnetic" | "TurboTechMagnetic2" | "TurboRoulette" => {
+        "Turbo_Deprecated" | "Turbo2_Deprecated" | "TurboRoulette_Deprecated" => {
             [0.95, 0.72, 0.10, 1.0]
         }
         "Danger" => [0.85, 0.10, 0.10, 1.0],
-        "Rubber" | "SlidingRubber" | "Bumper" | "Bumper2" => [0.30, 0.16, 0.34, 1.0],
+        "Rubber" | "SlidingRubber" | "RubberBand" | "Bumper_Deprecated" | "Bumper2_Deprecated" => {
+            [0.30, 0.16, 0.34, 1.0]
+        }
         "Snow" => [0.93, 0.95, 0.98, 1.0],
         "Rock" => [0.42, 0.40, 0.38, 1.0],
-        "Plastic" | "Fabric" => [0.70, 0.55, 0.60, 1.0],
+        "Plastic" => [0.70, 0.55, 0.60, 1.0],
+        "Stone" | "PavementStair" | "Gravel" => [0.50, 0.48, 0.45, 1.0],
         _ => [0.60, 0.60, 0.62, 1.0],
     }
 }
@@ -393,7 +461,7 @@ impl Scene {
 }
 
 pub fn colour_for(name: &str) -> [f32; 4] {
-    for id in 0..=48u8 {
+    for id in 0..=80u8 {
         if physics_name(id) == name {
             return physics_colour(id);
         }

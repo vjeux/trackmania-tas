@@ -17,7 +17,7 @@
 //! too; it is simply never exercised by the stock blocks on this box.
 
 use crate::node::{Node, Slot};
-use crate::scene::{physics_name, Scene};
+use crate::scene::Scene;
 use crate::store::DataStore;
 use std::collections::HashMap;
 
@@ -201,7 +201,7 @@ impl<'a> Collector<'a> {
                     }
                     self.stats.triangles += m.tris.len();
                     for (phys, tris) in by_mat {
-                        self.scene.add_tris(physics_name(phys), &verts, tris.into_iter());
+                        self.scene.add_tris(&crate::scene::material_name(phys), &verts, tris.into_iter());
                     }
                 }
             }
