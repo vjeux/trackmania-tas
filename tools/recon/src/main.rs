@@ -393,14 +393,8 @@ fn cmd_wetcmp(a: &[String]) {
     let get = |k: &str, d: &str| -> String {
         a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned().unwrap_or(d.into())
     };
-    // The reference side takes either shape: the decoded video series, or a
-    // simulated/recorded one. Holding two HUMANS against each other is how you
-    // ask whether this observable discriminates at all, which is a question
-    // about the objective and not about any candidate.
     let vpath = get("--video", "wet_video.tsv");
-    let video = wet::load_video(&vpath)
-        .or_else(|| wet::load_series(&vpath))
-        .expect("reference wetness series");
+    let video = load_ref(a, &vpath, get("--wet-shift-ms", "0").parse().unwrap());
     let tol: f64 = get("--wet-tol", "5").parse().unwrap();
     let run: usize = get("--wet-run", "6").parse().unwrap();
     let match_ms: i64 = get("--match-ms", "50").parse().unwrap();
@@ -436,6 +430,42 @@ fn cmd_wetcmp(a: &[String]) {
     }
 }
 
+/// Load the reference wetness series the way both the gate and the report see
+/// it: the decoded file, plus any control shift, plus any asserted band.
+/// One function so a report can never be shown a different series from the one
+/// the search scored against.
+fn load_ref(a: &[String], path: &str, shift_ms: i64) -> wet::Wet {
+    let mut w = wet::load_video(path)
+        .or_else(|| wet::load_series(path))
+        .expect("reference wetness series");
+    if shift_ms != 0 {
+        eprintln!("wetness: series shifted {shift_ms} ms -- this is the CONTROL, not a measurement");
+        w = wet::shift(&w, shift_ms);
+    }
+    // --wet-zero FROM:TO asserts a DRY window the reader could not read,
+    // because the HUD draws nothing when there is nothing to draw. On this run
+    // the supports for race 10100..20600 are four and independent: the reset
+    // MEASURED at 10.038; the frames, which show the car on dry blue surfaces
+    // throughout; the run's author saying "flat lining into the water pool" at
+    // race 20.3; and the soak rate, which puts the entry behind the 100 % at
+    // 22.355 no earlier than race 21.1. It is still an ASSERTION and the log
+    // says so on every run.
+    for (i, k) in a.iter().enumerate() {
+        if k != "--wet-zero" {
+            continue;
+        }
+        let (f, t) = a[i + 1].split_once(':').expect("--wet-zero FROM_MS:TO_MS");
+        let (f, t) = (f.parse().unwrap(), t.parse().unwrap());
+        eprintln!(
+            "wetness: ASSERTING 0 % over race {:.3}..{:.3} s -- not read, inferred",
+            f as f64 / 1000.0,
+            t as f64 / 1000.0
+        );
+        w = wet::assert_band(&w, f, t, 0.0, 60.0);
+    }
+    w
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.first().map(|x| x.as_str()) == Some("onsurface") {
@@ -468,19 +498,13 @@ fn main() {
         // --wet FILE turns the decoded wetness on as an objective. Off by
         // default: a gate that is on when nobody asked for it is a gate whose
         // effect on a number cannot be measured.
+        // --wet FILE turns the decoded wetness on as an objective. Off by
+        // default: a gate that is on when nobody asked for it is a gate whose
+        // effect on a number cannot be measured.
         wet_video: a
             .iter()
             .position(|x| x == "--wet")
-            .map(|i| wet::load_video(&a[i + 1]).expect("decoded video wetness"))
-            // --wet-shift-ms is the gate's negative control: the same tape,
-            // the same code, a series the tape cannot possibly satisfy.
-            .map(|w| match get("--wet-shift-ms", "0").parse::<i64>().unwrap() {
-                0 => w,
-                s => {
-                    eprintln!("wetness: series shifted {s} ms -- this is the CONTROL, not a measurement");
-                    wet::shift(&w, s)
-                }
-            }),
+            .map(|i| load_ref(&a, &a[i + 1], get("--wet-shift-ms", "0").parse().unwrap())),
         wet_tol: get("--wet-tol", "5").parse().unwrap(),
         wet_run: get("--wet-run", "6").parse().unwrap(),
         from_ms: get("--from-ms", "0").parse().unwrap(),

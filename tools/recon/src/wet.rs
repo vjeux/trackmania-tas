@@ -104,6 +104,25 @@ pub fn shift(w: &Wet, ms: i64) -> Wet {
     w.iter().map(|(t, v)| (t + ms, *v)).collect()
 }
 
+/// Assert a value across a race-time window at `fps`, for instants the reader
+/// could not read.
+///
+/// **This is not a reading and it must never be presented as one.** It exists
+/// because the HUD stops drawing the readout when there is nothing to draw, so
+/// the longest dry stretch of the run — which is exactly where the search is
+/// working — comes back as an absence. An absence is a refusal; an assertion
+/// is a claim, and a claim needs its supports named at the call site.
+pub fn assert_band(w: &Wet, from_ms: i64, to_ms: i64, pct: f64, fps: f64) -> Wet {
+    let mut out = w.clone();
+    let step = (1000.0 / fps).round() as i64;
+    let mut t = from_ms;
+    while t <= to_ms {
+        out.entry(t).or_insert(pct);
+        t += step;
+    }
+    out
+}
+
 /// The race time at which `eng` stops reproducing the video's wetness, or
 /// `None` if it never does.
 ///
