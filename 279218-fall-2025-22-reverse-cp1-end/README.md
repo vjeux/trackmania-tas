@@ -10,7 +10,7 @@ neither did any of the 40 runs on the leaderboard.
 
 **Fall 2025 - 22 Reverse (CP1 end)** — TAS **5.352** (+0.002) | AT 5.350 | WR 5.355 by Matik_K
 
-https://github.com/user-attachments/assets/94309fe3-6a88-430d-931c-abf09fba0a49
+https://github.com/user-attachments/assets/bcb31623-8366-4924-9289-f268be4f7f35
 
 Single car: against the human 5.355 the two stay within 0.42 m for the whole run, so a side-by-side would show one car.
 
