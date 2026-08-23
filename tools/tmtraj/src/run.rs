@@ -127,6 +127,7 @@ pub fn run() {
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),
         "route" => crate::routecmd::cmd(rest),
+        "blockdiff" => crate::blockdiffcmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
         // Settle a corpus-dup UNRESOLVED pair against the engine.
         "adjudicate" => crate::adjudicate::cmd(rest),

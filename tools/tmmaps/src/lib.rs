@@ -31,6 +31,7 @@ pub mod gbx;
 pub mod ghost;
 pub mod map;
 pub mod oracle;
+pub mod rotate;
 pub mod secs;
 pub mod segments;
 pub mod selftest;

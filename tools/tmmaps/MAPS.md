@@ -27,6 +27,7 @@ which is machine-readable and keeps integer ms.
 | | `tmmaps region MAP --box A:B [--filter PAT]` | everything inside a world box. **A gate is a structure, not a block** |
 | | `tmmaps chunks MAP` | every skippable body chunk with its size |
 | **change** | `tmmaps move MAP --out F --move SPEC…` | position-only surgery: grid cell, free block, baked free block, item |
+| | `tmmaps rotate MAP --out F --rot\|--drot BLK:y,p,r · --tilt N,N --about X,Y,Z --dir DEG --angle RAD` | rotate FREE blocks — the only non-position surgery here, and still no model swap |
 | | `tmmaps clear MAP --out F --box A:B --to X,Y,Z` | empty a region **and prove it is empty** in the written file |
 | | `tmmaps segments MAP --ref-ghost G` | a map per checkpoint, each verified against the ghost's own split |
 | **measure** | `tmmaps ladder MAP --spec F --ghosts G…` | arrival-time ladders, with an origin control and a distinctness assert |
@@ -222,6 +223,27 @@ Measured on 210218: `--cell 20,12,31` puts the gate at y = 34 while the car is
 at y ≈ 108; y = 34/58/74 all silent, 82/90/98 all fire.
 
 → `move` refuses a cell spec on a free block and names the form that works.
+
+### A PER-BLOCK ROTATION SHEARS A SURFACE INSTEAD OF TILTING IT
+
+A block's stored rotation turns it about **its own anchor**, so a road made of
+32 m tiles is not tilted by giving every tile the same roll: at 3.4 ° each
+tile's far edge lifts 1.9 m above its neighbour's near edge and the road becomes
+a staircase. Measured on 279008: the same tilt applied per-block deflected the
+human's car from a crossing angle of −25.29 to −8.28 and cost it 3.4 m/s before
+it reached the obstacle at all; applied about a common axis 100 m long, it lifted
+the far tile into the neighbouring untilted road and **stopped the car dead 100 m
+short**. Both read, from a distance, exactly like "the tilt did not matter".
+
+→ `rotate --tilt` writes position and rotation together about one named axis, and
+prints that the orientation is a first-order decomposition so the surface is
+measured rather than assumed. And the general lesson underneath it, which is the
+same one as the gate: **the object you are rotating is not the object you think
+you are rotating** — on 284238 the ice kicker is FOUR blocks sharing an anchor to
+the millimetre, of which one is free-placed, and two arms ran "raise the kicker
+by 1.00 m" as their decisive experiment, raised a quarter of it, built a 1 m step
+(entry speed 99.81 → 50.84 m/s) and got a null. `rotate` REFUSES when a free
+block within `--group-radius` of the rotation is not in it, and names it.
 
 ### READ EVERY RESULT DIRECTORY BY MTIME, NEVER BY FILENAME
 

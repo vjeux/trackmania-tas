@@ -140,13 +140,6 @@ copy 0's kicker by 1.00 m in a matched A/B — one block's f32 `y`, so the car
 arrives in a bit-identical state — leaves the roll profile essentially unchanged
 (+105.2 against +108.4, both locking at +89.5 and driving the wall).
 
-> **That kicker-height experiment is VOID, 2026-08-22.** The 1.00 m kicker is a
-> **four-block assembly with one free block**, so moving "one block's f32 `y`"
-> moved a quarter of the kicker and built a step in it. The same mistake voids
-> the raise experiment. **A matched A/B is only matched if it moved the whole
-> object** — and the car arriving bit-identically is exactly what makes that
-> invisible.
-
 The one encouraging measurement: a standing start off copy 0 flies the good line
 to within 2–7 m of it, point for point. The line is not exotic and this car can
 drive it — copy 0 has the run-up that produces it and the others do not.
@@ -156,108 +149,204 @@ dropping"**, which shares 167 of its 186 blocks with this map but replaces the
 water ramps with tech blocks that give every copy a flat run-up. A human beats
 that map's author time. Nobody has beaten this one.
 
-## What the obstacle actually is: the engagement point
+## What the obstacle actually is: the state at the kicker is matched, and it is not enough
 
-> ### ⚠️ RETRACTED 2026-08-22 — the discriminator is the crossing angle, not `engage_x`
->
-> **Everything in this section is a real measurement and the law it states is
-> not the mechanism.** `engage_x` correlates with the frozen roll rate across
-> the 27 tapes below, and the later work shows what it was standing in for:
-> **the crossing angle `vz` at the ice kicker.**
->
-> The correction was earned the right way round — **by perturbing the run that
-> WORKS** instead of inferring a bar from our own failures. Taking Yhomas's own
-> 46.112 on the sibling map and moving one flag at a time: he **rides at
-> vz −23.72 and unloads at −22.91**, and his checkpoint arrival falls
-> 69.40 → 55.47 → 43.83 → **22.44 m/s** as vz weakens to −18.4. **Our record
-> engages at vz −2.3**, and the best shot at −18.2. That is the whole 47 s.
->
-> And the reason it cannot simply be steered to — **superseded, see below.**
-> The measured coupling is real: **the water launcher is a shallow trough**
-> (−0.78 °/m, floor at Z 927.4) where his tech deck is flat (0.09 °/m).
->
-> **SUPERSEDED THE SAME DAY: the roll IS reachable, and it is not enough.**
-> The four searches behind "loading and rotating are the same variable" all
-> minimised a **weighted sum** of position, velocity and attitude — and a
-> weighted sum lets a candidate *buy attitude with crossing angle*, which is
-> exactly the trade the surface forces. So the search settled on the surface's
-> own trade curve and reported it back as a frontier. Put the crossing angle and
-> the speed on **hard bars** instead and roll comes down to **+1.13 at
-> vz −22.8**, and **+1.29 at vz −23.6 at 95.9 m/s** — the human's own attitude,
-> on the lane that had just been published as unable to produce it.
->
-> **What the retraction did NOT overturn is any measurement.** The coupling, the
-> threshold and the matched pair all stand. What changed is a **sufficiency**
-> claim: both cars now cross the kicker within 2.6° of roll and both reach
-> ~240 °/s, and the difference appears **17 m later** — his wheels stay loaded
-> and the rate bleeds 242 → 189 → 129 → 87, while ours goes rigid and holds
-> **240.3 to the last digit**. The stronger negative was hiding behind the
-> weaker one, and the scoring shape is what kept it hidden.
->
-> Details: `tm-unbeaten/284238/RESULT.md` and branch
-> `wtr-284238-crossing-angle`.
->
-> **Two experiments on this page are additionally void**, and for a reason worth
-> keeping: **the 1.00 m kicker is a four-block assembly with one free block**, so
-> both "raise/lower the kicker" A/Bs moved a *quarter* of it and built a step
-> (99.81 → 50.84). A matched A/B is only matched if it moved the whole object.
->
-> Read the rest of this section as **the measurements, which stand**, and not as
-> the law. Details: memory key `tm2020-map284238-symmetry.md`.
+*Claims below are tagged **MEASURED** (with the control named), **INFERRED**
+(with the inference stated), **UNKNOWN** (an open task, never "there is no X")
+and **SUPERSEDED** (pointing forward).*
 
-**The obstacle is governed by one number — `engage_x`, the point on the curved
-ice kicker where the car first engages it.** That sets the car's roll rate at the
-suspension unload, and after that instant every input is bit-exactly inert. 27
-tapes across five families of intervention fall on one monotone curve:
+> **SUPERSEDED — the "engagement point law" that used to stand here.** It said
+> the frozen roll rate is a monotone function of `engage_x` — 912.5 → 145 °/s,
+> 914.6 → 126, 918.0 → 71 — measured over 27 tapes. The 27 rows are correct and
+> the law is not. Move the *kicker* instead of the car, one f32 on the map with
+> the same tape and the same inputs, and `engage_x` travels 3.6 m for **12 °/s**:
+>
+> | map | engage_x | frozen roll rate | the law predicted |
+> |---|---|---|---|
+> | untouched | 910.76 | **284.1** | — |
+> | kicker −0.50 m | 912.85 | **258.7** | ≈ 140 |
+> | kicker −1.00 m | 914.34 | **272.7** | ≈ 126 |
+>
+> It was a within-family correlation of the brake sweep — the only family in
+> that table with any variation, and the one in which the engagement point and
+> the crossing angle move together.
 
-| engage_x | frozen roll rate | how it was reached |
+### The number that decides it, measured on the human's own tape
+
+**MEASURED.** The control is inside the experiment: these are perturbations of
+the run that WORKS, on its own map, so the positive case is not assumed.
+
+The discriminator is **`vz` at the kicker: the crossing angle.** It is not
+inferred from our failures — it is measured by perturbing the run that works.
+Twenty-four one-flag perturbations of Yhomas_TM's 46.112, on his own map,
+through one readout:
+
+| crossing angle at the kicker | outcome | speed at the checkpoint |
 |---|---|---|
-| 911.0–911.7 | **250 … 284** | no intervention; **all three lifts**; all six steer pulse pairs; brakes ≤ 40 ticks |
-| 912.54 | 145.3 | brake 60 |
-| 913.76 | 136.9 | brake 30, ended 40 ticks early |
-| 916.57 | 121.1 | brake 30, ended 60 ticks early |
-| 916.86 | 120.8 | brake 75 |
-| **917.99** | **71.0** | brake 80 |
-| 920.23 | −4.9 | brake 30, ended 80 ticks early |
+| −26.34 | rides | 65.26 |
+| −25.00 (unperturbed) | rides | **69.40** |
+| −23.72 | rides | 71.70 |
+| **−22.91** | **unloads** | 72.34 |
+| −22.09 | unloads | 55.47 |
+| −19.77 | unloads | 43.83 |
+| −18.37 | unloads | **22.44** |
 
-**The roll the finish needs — about +86 at the wall, a rate near 90–100 — is
-bracketed by measured points at 916.86 and 917.99.** Not extrapolated. And note
-the shape: the curve sheds 24 °/s across the 4.4 m from 912.5 to 916.9, then
-**50 °/s in the next 1.1 m.** The window that matters is roughly **half a metre
-wide, sitting on a knee.**
+Every row at −23.72 or steeper keeps its wheels loaded; every row at −22.91 or
+shallower launches. **The threshold is a 0.8 m/s window at 99.4 m/s** and a
+6/127 steer offset held half a second crosses it. His tolerance in lateral
+position is the same size: +0.26 m still rides, +0.43 m does not.
 
-**It is not speed, and the control that proves it is the lift family.** Lifting
-the throttle sheds speed 98.55 → 95.24 m/s and moves the roll rate by 16,
-non-monotonically. Braking over the same speed span moves it by **279.** Two
-interventions costing the same speed, differing seventeen-fold — so what braking
-does that lifting does not is *move where the car meets the ramp.*
+**284238's own record engages the kicker at vz −2.3**, and the best synthesised
+shot at −18.2. The perturbation that puts *him* at −18.4 arrives at the
+checkpoint at 22.44 m/s against his own 69.40. That is this map's whole deficit,
+in one number, on his map, with his car.
 
-### Two levers, and the door is shut between them
+### What our lane can deliver: everything, and it is not enough
 
-**The free one.** A pair of equal and opposite steer pulses shifts the car
-1.67 m sideways, hands the heading back to within 0.05°, and costs no speed at
-all. It moves `engage_x` by **0.24 m** — a gearing of 0.14 m per metre of shift,
-so reaching 917 would need about **38 m of lateral shift on a lane that is not
-38 m wide.** The lever is real, monotone in both directions and free, and it is
-thirty times too weak.
+**MEASURED.** Every restart was replayed through the readout and scored on the
+OUTCOME, not on the objective it minimised — the argmin of a proxy is not the
+population that does the thing.
 
-**The paid one.** Braking reaches the window and destroys the line. Composed
-properly — brake in the seed, steering free to re-aim around it, a hard gate
-requiring the wall be reached — ten seeds over two passes: every seed that kept
-enough brake to move the engagement point was **gated out 48–50 m short of the
-wall**, and the one seed per pass that did reach the wall had spent its brake and
-arrived at roll −147 and −172 against the target of +86.
+Six searches, 60 restarts, aimed at his kicker state shifted by the launcher
+assembly's own offset so it is the same place relative to the kicker. The last
+two put the crossing angle and the speed on **hard bars** instead of into a
+weighted sum, which is what a weighted sum could never do — let a candidate buy
+attitude with crossing angle is exactly the trade the surface is trying to force:
 
-So inside a 190-tick window the steering cannot recover the ~50 m that the
-required brake costs. **That is a mechanism, not a budget.**
+| | target | best reached on our lane |
+|---|---|---|
+| position | 0.00 | **0.07 – 0.19 m** |
+| speed | 99.22 | **100.00** |
+| crossing angle | −25.20 | **−25.13** |
+| body angular velocity | (−54.0, +15.2, −57.3) | **(−55.4, +15.3, −58.7)** |
+| roll | +1.23 | **+1.13** |
 
-**The open question, for anyone who wants it:** the two levers above are
-superseded by the crossing-angle finding at the top of this section — the target
-is **vz ≤ −24 at the kicker with the wheels still loaded**, and the trough
-geometry makes those two demands the same variable pulling opposite ways. The
-one lead nobody has spent: **the water start is 1.30 s with no upstream coupling
-and has never been searched** with a time-varying control. It may simply be
-worth more than any of this.
+**Every one of them is reachable, and the car still launches.** Across that whole
+frontier the frozen rotation only falls from 284 to **208 °/s** — against the
+~90–100 the wall contact needs, and against a human tape that never freezes at
+all. Every restart was replayed and scored on the **outcome** rather than on the
+objective it minimised; none of them rides.
+
+### Where the two runs actually part: 17 m after the kicker
+
+**MEASURED** (both traces from the live engine at 10 ms, aligned on canonical x).
+**INFERRED**: that the 4.3 m/s our car is down at that point is WHY contact ends
+there. That is one pair, not a control. The causal test is a tape at his speed
+AND his attitude 17 m up the curl, and it is **UNKNOWN** — a search for exactly
+that is running as this is written, and had reached his place and his attitude
+at 68.93 m/s against his 92.84.
+
+Aligned on canonical x, his tape against our best:
+
+| x | his height above the deck | his roll | his ω_z | his speed | our height | our roll | our ω_z | our speed |
+|---|---|---|---|---|---|---|---|---|
+| 913.0 | 2.735 | +2.8 | +96 | 98.17 | 1.63 | +3.2 | +37 | 94.09 |
+| 925.9 | 8.682 | +16.7 | +157 | 94.83 | 7.97 | +16.4 | +157 | 90.65 |
+| 933.3 | 14.450 | +40.6 | **+242** | 92.84 | 13.29 | +38.0 | **+240** | 88.54 |
+| 936.9 | 17.305 | +52.9 | +189 | 91.94 | 15.88 | +49.5 | **+240 frozen** | 87.69 |
+| 940.5 | 20.083 | +61.2 | +129 | 91.05 | — airborne — | | **+240 frozen** | |
+| 950.6 | 27.480 | +76.2 | **+87** | 88.65 | — airborne — | | **+240 frozen** | |
+
+The two cars cross the ice kicker within 2.6° of roll and 0.7 m of height of one
+another and **both reach about 240 °/s**. At x 933.7 ours goes rigid and holds
+240.3 to the last printed digit. His keeps a wheel loaded for another 17 m and
+the rate bleeds off — 242 → 189 → 129 → **87** — arriving at the wall at exactly
+the rate the contact needs.
+
+**So the obstacle is not decided by the state at the kicker.** It is decided by
+whether contact survives the last 17 m of the curl, and by then our car is
+4.3 m/s slower, having paid that on the water lane.
+
+### The lane is a trough, and the trough is the block
+
+**MEASURED** (the profile, 25 tapes; the stored rotations, read off both maps).
+**INFERRED**: that the car's ROLL is the proximate cause rather than some other
+property of the water block. It is the residual by elimination and the direct
+trend is weak — across tapes holding vz in [−26,−22] at ≥ 93 m/s the frozen rate
+against arrival roll reads +2.2 → 217, +2.8 → 238, +3.5 → 242, +3.6 → 217,
++4.5 → 249, +4.8 → 245, which does not extrapolate to a ride at +1.2.
+
+The launcher deck on copies 1–3 is a shallow **valley** — the car's own height on
+it, at canonical x 902.5, over ten tapes at 99–100 m/s:
+
+```
+z 921.7  y 1873.258  roll +4.8      z 927.5  y 1873.088  roll -0.1   <- the floor
+z 924.9  y 1873.104  roll +2.4      z 933.2  y 1873.428  roll -4.2
+```
+
+**−0.78 ° of roll per metre across the lane**, level only at z ≈ 927.4, where the
+sibling's tech deck and our own copy 0's start platform are flat (0.09 °/m). It
+is a real coupling between roll and lateral position and it is why the naive
+searches could not hold both — but it is **not a bound**, because a barred search
+beats it.
+
+And it is not a placement. Every launcher deck block on both maps is stored with
+**pitch = roll = 0**; the trough is the shape of `PlatformWaterRampBase`, which is
+a channel, against `PlatformTechBase`, which is a flat platform. The author did
+not tilt anything — he changed the block. So "is it the roll or is it the water?"
+is not a question that can be asked here: they are one property of one block, and
+neither the position mover nor the new rotator can take them apart.
+
+### The matched pair, on one map
+
+**MEASURED.** One map, one car, one kicker model, the crossing angle matched to
+0.30 m/s.
+
+| | deck | speed | crossing angle | roll | frozen ω | checkpoint |
+|---|---|---|---|---|---|---|
+| our copy 0 | `PlatformTechBase` | 91.06 | −17.94 | **+0.82** | **55.8** | 52.85 |
+| our copy 1 | `PlatformWaterRampBase` | 99.81 | −18.24 | **+4.96** | **284.1** | 37.10 |
+| 279008 copy 1 | `PlatformTechBase` | 99.35 | −25.00 | +1.80 | never freezes | 69.40 |
+
+Same map, same car, same kicker model, the same crossing angle to 0.30 m/s — and
+the flat deck rides while the trough does not. **And 4° of roll is not
+driveable**: eighteen steer deltas on copy 0's flat deck span the whole reachable
+band, −5.90 … +1.62, so copy 1's +4.96 is the deck and not the driving.
+
+### What this closes
+
+Each line is **MEASURED**, with its control named.
+
+* **The 1.00 m kicker.** A rigid offset on a **four-block assembly**
+  (`tmtraj blockdiff`; found independently by the claims audit on the same day), of which exactly one block is free-placed — so the two
+  earlier experiments that "raised the kicker by 1.00 m" raised a quarter of it
+  and built a step: entry speed 99.81 → **50.84**. And the deck already pays for
+  it: the car's height above its own kicker matches the human's to **8 mm**.
+* **Copies 2 and 3.** The vector from a water ramp's anchor to the ice kicker is
+  (32.572, −1.000, −0.164) on copy 1, copy 2 and copy 3 — identical to 1 mm.
+* **An airborne approach.** The only candidate crest is the floor of the trough,
+  and a floor is not a crest: `y` never rises above the local surface on any of
+  the ten tapes that cross it.
+* **Tilting a deck under a run that works.** Rotating a tiled road makes a step:
+  a 1.15° tilt of four tiles about a common axis stops the human's car dead
+  100 m short of the kicker.
+
+**What is left**: the last 17 m of the curl — aim at his state at canonical
+x 933.3 rather than at the kicker plane — and the water start (1.30 s, never
+searched, independent of all of this).
+
+**The conversion has a new address.** Overwrite the INCUMBENT LAP's steering over
+tape ticks 1900:2320 with the shot's own spline — no splice, no phase search, the
+lap's own prefix and tail — and it grafts cleanly and gives a **strictly better
+copy-1 cycle**: kicker +3.9 m/s, wall 4.4 m closer and 3.9 m/s faster, checkpoint
+region **1.88 m against the incumbent's 6.53**. And the lap DNFs at `cps 1`. The
+published reason transplants fail here (115 tapes, handover state off by 10.6 m
+and 1.76 rad) **does not describe this failure** — there is no handover and the
+checkpoint state is better, so whatever kills it is downstream of copy 1's
+checkpoint, in a part of the lap nobody has looked at.
+
+**And a seed, banked with its caveat.** Two SHOTS (both `DNF cps 1`, both on the
+record's container — **a shot is not a lap**) reach the wall at **80-82 m/s**
+against the human's 79.49 and put the car through the checkpoint region at
+**46.90**, against our own record's 45.8. One of them RECOVERS contact 45 m past
+the kicker — its frozen rate starts decaying again at canonical x 979, 229.6 to
+193.3 over 1.8 s — the first tape on this lane to do so at all. Converting a shot
+into a lap is the unsolved half of this map and has beaten three arms.
+
+Full account, tables and md5s: `tm-unbeaten/284238/RESULT.md`, which points at
+`wtr_CORRECTION_v2_roll_is_reachable_and_it_is_not_enough.tsv` and
+`wtr_RESULT_v1_the_cross_slope_couples_roll_to_the_line.md`.
+
 
 ## The record's time is mostly retries
 

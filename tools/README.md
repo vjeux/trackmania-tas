@@ -67,6 +67,7 @@ human recording, carry a pedal byte that is neither.
 | is it publishable | `tmtraj gate` (physics, contamination, provenance) and `ghost verify` (container, tape, identity, the engine) |
 | is anything wrong across the whole corpus | `tmtraj corpus splice \| span \| qc \| bytes` |
 | what does the racing line look like across a field | `tmtraj lines` |
+| what differs between two copies of the same module, or two maps that share one | `tmtraj blockdiff` (per-block three-axis residuals in one frame, and `NO-IMAGE` when a block has no counterpart) |
 | change a ghost | `ghost` — trim (which sets a run's length in BOTH directions), declare, identity, map, tape, regen |
 | re-simulate a tape | `fk` |
 | draw it | `tmsite`, `shootctl`, `clip` |
