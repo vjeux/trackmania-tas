@@ -949,6 +949,94 @@ quiet*) is wrong for a launch detector (which asks *did something happen*), and
 the sample rate decides how wrong. A `(bar, need)` pair is a statement about a
 sample rate as much as about a car.
 
+### 5.18 Every threshold in this feature, and the map it was calibrated on
+
+A threshold without its calibration set is the same defect as an offset without
+its anchor: both are a number that looks like a measurement and is actually a
+memory of one situation. This feature introduces exactly five tuned numbers and
+they are all in the seed identity control (`tmsearch/src/seedstate.rs`). Here
+is every one of them with its provenance, so a future reader can tell which
+ones travel.
+
+| Number | Where | Derived from | Calibration set |
+|---|---|---|---|
+| `0.002` (relative speed term) | `speed_bar` | speed is stored as `exp(i16/1000)` — a tenth of a per cent is one representable step | **the ghost format**, no map |
+| `1.5°` (heading floor) | `vdir_bar_deg` | the velocity heading is two signed bytes, π/127 = 1.417° per step | **the ghost format**, no map |
+| `0.25 m`, `0.25 m/s`, `3.0°` (floors) | `pos_bar`, `speed_bar`, `ang_bar_deg` | nothing — chosen to sit above what one map showed | **{228811}, n = 1** |
+| `0.25`, `0.5` (interpolation coefficients) | all four bars | "linear interpolation of a curve may be off by a fraction of a sample step" is general; *which* fraction is not | **{228811}, n = 1** |
+| `MAX_SHIFT_TICKS = 1` | the clock-shift sweep | 228811's two clocks are one tick apart | **{228811}, n = 1** |
+
+The two format-derived numbers are checkable without running anything and
+transfer to any map recorded by this game. **The other three rows do not, and
+saying so is the point of this section.** On the one map they were set against,
+the margins were:
+
+```
+position   0.0002 / 1.744   (>6900x)
+speed      0.0669 / 1.084   (16x)
+heading    0.965  / 2.209   (2.3x)   <- tightest
+attitude   0.009  / 4.339   (~480x)
+```
+
+So heading has 2.3× of room and everything else has orders of magnitude — on
+n = 1. A map whose telemetry is noisier in heading than 228811's by a factor of
+2.3 fails this control **on a correct measurement**, and the failure message
+says the fork is not simulating the seed. That is an accusation against the
+engine sourced from a floor fitted to one map, which is precisely the failure
+mode this table exists to make visible before someone hits it.
+
+`MAX_SHIFT_TICKS = 1` is the same shape and slightly worse: a toolchain with a
+two-tick labelling convention anywhere would fail the control identically. The
+sweep already goes to ±2 to *measure* the shift, so the number that would
+retire this one is cheap — run `check` on a second map's seed and read the
+shift it reports.
+
+**What retires the fitted rows:** run the identity control against the seed of
+a map recorded by a different recorder or at a different sample rate and report
+the four margins. Two maps is not a calibration set either, but it is the first
+number that can contradict this one. Nothing in this repo currently can.
+
+Three numbers elsewhere in the feature look like thresholds and are not:
+`1e-9` in `body_omega` is a divide-by-zero guard on a vector norm, `100.0 m`
+in the travelled-distance accumulator predates this work, and the migration
+report **has no threshold at all** — deliberately, because the only two points
+available to fit one were the decoy (80 % of the box on x) and the answer
+(51 % on z), and a threshold fitted between two points is fitted to those two
+points.
+
+### 5.19 A suite encodes what its author already understood
+
+Ninety-two checks pass, and four real defects in this feature were found by
+someone else anyway. That is not a coincidence and it is not fixable by writing
+more of the same tests: **a suite is a record of the failures its author had
+already thought of, so it cannot fail on the one they had not.** Every one of
+these was live in code with a green suite:
+
+1. **A window whose end the candidate chooses is a decoy the instrument
+   builds** (284238). `--after-ticks` measured from a point the search was
+   optimising, so a candidate could win by moving the window rather than by
+   doing anything. Cure: `--after-from end`, and the end is the event's, not
+   the candidate's.
+2. **A double canonicalisation** (284238). The shortest-arc flip was applied on
+   both sides of a difference, which silently halves a rotation near π.
+3. **An event has a duration, and the interesting quantity may be where it
+   comes back** (284238). `fire_tick` alone said *whether*; their map needed
+   *how long* and *how many times*. Cure: `fire_end_tick`, `fire_runs`.
+4. **The sample rate is part of the answer** (284238, §5.17). `--fire-need N`
+   is 30 ms in a search and 150 ms on recorded telemetry. The warning added for
+   it immediately caught **me** failing my own launch detector on my own map.
+
+A fifth came from the coordinator — a sixth copy of the result parser with no
+sanity bound on the time it accepts — and one I only found by grepping my own
+prose at the end: a number I had quoted as a control in §4 was a tautology.
+
+The common shape is that all six were *outside the frame the tests were written
+in*. Tests pin the defects you can state. The things that found these were a
+second implementation on different data, a reader with a different map, and a
+grep run against my own claims. **Budget for those the way you budget for
+tests** — and when a suite is green and someone else finds a defect anyway,
+that is the suite working as designed, not the suite failing.
+
 ---
 
 ## 6. What the search still cannot express

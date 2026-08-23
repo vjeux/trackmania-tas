@@ -82,6 +82,15 @@ pub struct Agreement {
 
 /// A shift of more than this many ticks is not a labelling convention -- it is
 /// the wrong instant, or the wrong car.
+///
+/// **CALIBRATION SET: ONE MAP.** This is 1 because 228811's two clocks are one
+/// tick apart, and for no other reason. A toolchain with a two-tick convention
+/// somewhere would fail this control on a correct measurement, and the failure
+/// would read as "the fork is not simulating the seed" -- which is a statement
+/// about the engine, from a constant fitted to a single map.
+///
+/// A threshold without its calibration set is the same defect as an offset
+/// without its anchor. This one's set is `{228811}`.
 pub const MAX_SHIFT_TICKS: i64 = 1;
 
 impl Agreement {
@@ -206,21 +215,73 @@ pub fn check(
     );
     let sample_turn = quat_angle_deg([a.qw, a.qx, a.qy, a.qz], [b.qw, b.qx, b.qy, b.qz]);
 
+    // ---------------------------------------------------------------------
+    // THE FOUR BARS AND THEIR CALIBRATION SETS.
+    //
+    // Each bar is `floor + format_term + interpolation_term * <how far the
+    // recording moves between the two samples being interpolated>`. The three
+    // parts have very different standing and the difference is the point of
+    // this comment: a threshold without its calibration set is the same defect
+    // as an offset without its anchor.
+    //
+    //   FORMAT-DERIVED (calibration set: the ghost format, not any map).
+    //   Read off the on-disk encoding and checkable without running anything:
+    //     * `0.002` in `speed_bar` -- speed is stored as `exp(i16/1000)`, so a
+    //       tenth of a per cent is one representable step.
+    //     * `1.5` in `vdir_bar_deg` -- the velocity heading is two signed
+    //       bytes, pi/127 = 1.417 deg per step; 1.5 is one step with the
+    //       rounding.
+    //   These transfer to any map that uses this format. They are the only
+    //   numbers here that do.
+    //
+    //   INTERPOLATION COEFFICIENTS (`0.25`, `0.25`, `0.5`, `0.5`): fractions
+    //   of the distance the tape covers between the bracketing samples. They
+    //   say "the interpolation may be off by a quarter (or half) of a sample
+    //   step", which is a statement about linear interpolation of a curve, not
+    //   about a map -- but the fractions themselves were not derived, they
+    //   were chosen to sit above what 228811 showed and were never tried
+    //   anywhere else.
+    //
+    //   FLOORS (`0.25` m, `0.25` m/s, `3.0` deg): CALIBRATION SET = {228811},
+    //   n = 1. Fitted, not derived. On 228811 the margins were
+    //     position   0.0002 / 1.744   (>6900x)
+    //     speed      0.0669 / 1.084   (16x)
+    //     heading    0.965  / 2.209   (2.3x)  <- tightest
+    //     attitude   0.009  / 4.339   (~480x)
+    //   so on the ONE map these were set against, heading has 2.3x of room and
+    //   the rest have orders of magnitude. That is the whole evidence. A map
+    //   whose recording is noisier in heading than 228811's by a factor of
+    //   2.3 would fail this control on a CORRECT measurement, and the failure
+    //   would read as "the fork is not simulating the seed" -- an accusation
+    //   against the engine, sourced from a floor fitted to one map.
+    //
+    //   WHAT WOULD RETIRE THE FLOORS: run `check` against the seed of a map
+    //   whose telemetry came from a different recorder or a different sample
+    //   rate and report the four margins. Two maps is not a calibration set
+    //   either, but it is the first number that can contradict this one.
+    // ---------------------------------------------------------------------
     Ok(Agreement {
         race_ms,
         measured: *measured,
         expected,
         pos_err,
+        // floor: fitted on {228811}. interpolation term: a quarter of a step.
         pos_bar: 0.25 + 0.25 * sample_move,
         speed_err: (measured.speed() - expected.speed()).abs() as f64,
-        // the stored speed is `exp(i16/1000)`: a tenth of a per cent, so the
-        // bar is relative with a floor for the interpolation.
+        // `0.002` is format-derived (`exp(i16/1000)`, a tenth of a per cent);
+        // the 0.25 floor and the 0.25 interpolation term are fitted on {228811}.
         speed_bar: 0.25 + 0.002 * expected.speed() as f64 + 0.25 * sample_dspeed,
         vdir_err_deg: angle_between(measured.vel, expected.vel),
-        // ONE QUANTISATION STEP of the recording's own velocity heading byte
-        // (pi/127 = 1.417 deg), plus room for the interpolation.
+        // `1.5` is ONE QUANTISATION STEP of the recording's own velocity
+        // heading byte (pi/127 = 1.417 deg) -- format-derived, no map. The 0.5
+        // interpolation term is fitted on {228811}, and this is the bar with
+        // the least margin there (0.965 of 2.209).
         vdir_bar_deg: 1.5 + 0.5 * sample_vturn,
         ang_err_deg: quat_angle_deg(f4(measured.quat), f4(expected.quat)),
+        // both terms fitted on {228811}. The quaternion is stored at full
+        // precision, so unlike the two above there is no format step to
+        // anchor the floor to -- 3.0 deg is a guess that 228811 did not
+        // contradict.
         ang_bar_deg: 3.0 + 0.5 * sample_turn,
         expected_key: expected.key as f64,
         shift_ticks,
