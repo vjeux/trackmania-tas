@@ -305,3 +305,27 @@ that build. What the old server changes is that the question can now be asked
 *under the right physics*: `ksi2`'s 10 m envelope over this field says the route
 is worth 50.978, and that envelope is built from lines which, as of tonight, can
 be re-simulated and searched instead of only read.
+
+## 9. Beyond this map: how much of the corpus needs this
+
+**MEASURED** — the recording build of every ghost we hold, read offline
+(`chunkswap --show FILE 0x0309202D | grep date=`, no server needed) across 685
+files in `tm-unbeaten`: **457 are build 128149, and all but four are 126529 or
+later** (2024 onward). Only KEKL- SAUSAGE ICE's records carry **113150**, and
+one file on **Spring 2023 - 24 (2-UP)** carries **120733**.
+
+So the old-build problem is rare in this corpus — which is itself the reason it
+went unexplained for so long: on most maps the whole field is modern and
+everything re-simulates. *Control: Kacky Reloaded #290's top six, all 2024-2025
+builds, all validate exactly on the current server in one batch.*
+
+**MEASURED, and a limit** — the rank-6 ghost on **Spring 2023 - 24 (2-UP)**,
+recorded **2023-03-31 on build 120733**, does **not** re-simulate today, while
+the five 2026 ghosts on the same map validate exactly in the same batch. The
+same symptom, a different map, a *later* build. It is also out of reach: the
+2022-06-21 server will not load a 2023 client's file, and Nadeo publishes no
+dedicated server between 2022-06-21 and 2026-05-15.
+
+**INFERRED** — the physics that recorded build 120733 are neither today's nor
+(as far as we can test) 2022's, and no archived binary can run them. Old-build
+validation is available for the 2020-2022 era and for nothing since.
