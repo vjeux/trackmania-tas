@@ -82,6 +82,25 @@ pub fn cmd(a: &[String]) {
                 Err(e) => die(e),
             }
         }
+        Some("notices") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record notices IN OUT --from DONOR.Ghost.Gbx | --strip")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record notices IN OUT --from DONOR.Ghost.Gbx | --strip")
+            });
+            let from = flag(a, "--from");
+            let strip = crate::cli::has(a, "--strip");
+            if from.is_some() == strip {
+                die("exactly one of --from DONOR (restore) or --strip (remove) -- the two \
+                     directions of the same experiment, and a run that does neither, or both, \
+                     measures nothing");
+            }
+            match set_notices(inp, out, from, strip) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("entfields") => {
             let inp = a.get(1).unwrap_or_else(|| {
                 die("ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]")
@@ -104,6 +123,9 @@ pub fn cmd(a: &[String]) {
              \x20                               fields, for the client-import bisect\n\
              ghost record graft-scene IN OUT --from DONOR\n\
              \x20                            -- put the container's non-vehicle entities back\n\
+             ghost record notices IN OUT --from DONOR | --strip\n\
+             \x20                            -- restore or remove the record's notice lists:\n\
+             \x20                               the two directions of one experiment\n\
              ghost record show FILE",
         ),
     }
@@ -392,8 +414,24 @@ pub fn rebuild_to(
         let n_kept = kept.len();
         kept.push(car);
         rd.ents = kept;
-        rd.bulk_notices.clear();
-        rd.custom_modules.clear();
+        // KEEP THE NOTICE LISTS. These were cleared in the same lines that used
+        // to drop the scene records, on the reasoning that a notice describes
+        // entities that no longer exist. That reasoning has now cost two files:
+        // the container's notices are the field separating every importable
+        // file tested from `blev_regen`, the first with an empty list, which
+        // crashes with V1..V11 PASS and its scene record present. `graft_scene`
+        // preserved the donor's 79 as a side effect, which is why X5 and X7
+        // imported.
+        //
+        // NOT A MECHANISM, AND ITS OWN COUNTER-EVIDENCE: notices alone are not
+        // sufficient -- TAS_67319 carries 82, has NO live scene record, and
+        // imports cleanly. The shape that fits all six specimens is "the
+        // container's notices AND, where the container had one, its live scene
+        // record", which rests on a single crasher and wants the mirror swap
+        // (strip the notices from a file that imports) before anyone writes it
+        // down as a rule. Keeping what the container had is the conservative
+        // choice regardless: the game wrote them, and nothing here has a reason
+        // to remove them.
         rd.start_ms = 0;
         rd.end_ms = span_ms as i32;
         note = format!(
@@ -428,6 +466,86 @@ pub fn rebuild_to(
 ///
 /// It touches no sample and no time: the car's trajectory is required to come
 /// back byte-identical, exactly as `shorten` requires.
+/// Restore or remove the record's NOTICE LISTS — the two directions of one
+/// experiment.
+///
+/// `rebuild_to` used to clear `notices` / `bulk_notices` / `custom_modules`
+/// alongside the scene records, and the notice list is the single field that
+/// separates every ghost known to import from `blev_regen`, which crashes the
+/// game client with V1..V10 passing and its scene record present.
+///
+/// This command exists so that claim can be TESTED IN BOTH DIRECTIONS, because
+/// one specimen in one direction is how the `u01` lead survived a week before
+/// its reverse swap killed it:
+///
+/// * `--from DONOR` — put the container's notices back into a file that crashes.
+/// * `--strip` — take them out of a file that imports.
+///
+/// Nothing headless can see any of this: the dedicated server re-simulates the
+/// input chunk and never reads the record, so both outputs re-simulate to the
+/// same time as their input. A client import is the only instrument.
+pub fn set_notices(
+    inp: &str,
+    out: &str,
+    donor: Option<&str>,
+    strip: bool,
+) -> Result<String, String> {
+    let taken = match donor {
+        None => None,
+        Some(d) => {
+            let dbody = gbx::record::load_body(d)?;
+            let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
+            let drd = gbx::record::parse_record_data(&dblob, dver)?;
+            if drd.notices.is_empty() && drd.bulk_notices.is_empty() {
+                return Err(format!(
+                    "{d} has no notices to give: restoring nothing would look like a passing \
+                     experiment"
+                ));
+            }
+            Some((drd.notices, drd.bulk_notices, drd.custom_modules))
+        }
+    };
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        before = format!(
+            "{} notices, {} bulk, {} custom",
+            rd.notices.len(),
+            rd.bulk_notices.len(),
+            rd.custom_modules.len()
+        );
+        if strip {
+            rd.notices.clear();
+            rd.bulk_notices.clear();
+            rd.custom_modules.clear();
+        } else if let Some((n, b, c)) = taken.clone() {
+            rd.notices = n;
+            rd.bulk_notices = b;
+            rd.custom_modules = c;
+        }
+        after = format!(
+            "{} notices, {} bulk, {} custom",
+            rd.notices.len(),
+            rd.bulk_notices.len(),
+            rd.custom_modules.len()
+        );
+        Ok(())
+    })?;
+    // The car must be untouched: this changes the record's notices and nothing
+    // about the driving, and an import result means nothing if the tape moved.
+    let a = gbx::record::decode_ghost(inp)?;
+    let b = gbx::record::decode_ghost(out)?;
+    let av = a.samples.len();
+    let bv = b.samples.len();
+    if av != bv {
+        return Err(format!(
+            "the car changed: {av} samples in, {bv} out -- refusing to write a file whose import \
+             result would not be about notices"
+        ));
+    }
+    Ok(format!("{before} -> {after}; car unchanged ({av} samples)"))
+}
+
 pub fn set_ent_fields(
     inp: &str,
     out: &str,
