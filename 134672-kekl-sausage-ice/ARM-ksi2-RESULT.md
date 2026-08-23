@@ -158,44 +158,35 @@ a current-build recording:
 * Two different fork points (tick 60 and tick 120) give bit-identical
   divergence curves, so the resume is not the thing being measured.
 
-Against that floor:
+Against that floor -- ALL FIFTEEN records (full table: `bank/divergence_all15.txt`):
 
-| ghost | build | tracks its own recording to | first departs |
-|---|---|---|---|
-| rank02 68.442 | current | **0.0002 m over the whole lap** | never |
-| rank01 63.546 (WR) | 2022 | 0.0003 m to 3.56 s | **3.990** |
-| rank05 73.922 | 2022 | — | **4.040** |
-| rank09 79.967 | 2022 | — | **4.140** |
-| rank04 70.543 | 2022 | — | **4.240** |
-| rank08 76.919 | 2022 | — | **4.240** |
-| rank15 103.785 | 2022 | — | **4.240** |
+THE TEN THAT DO NOT REPLAY, first departure past 5 cm: 4.040 4.090 4.090 4.190
+4.190 4.190 4.240 4.290 4.390 4.690 -- nine of them inside a third of a second.
+THE FIVE THAT DO REPLAY: never (0.0002 m over a whole lap; rank14 has one
+isolated sample at 85.890 with 0.0002 m either side).
 
-**Six of six, in a 0.25 s window, in the same corner** — cell (27, 14, 23),
+**Ten of ten and five of five -- perfect separation, in the same corner** — cell (27, 14, 23),
 `RoadBumpCurve1`, a STOCK block, at the onset of the lap's first big slide
 (side speed climbing 0 → 30 m/s). Not on a custom ice block: there is no
 `FlinkIceBlock` within four cells of it.
 
-### It has a sign, and the sign is the same in all six
+### It has a sign, and the sign is the same in all ten
 
 `tmtraj geom track` reports the SIGNED lateral offset — which side of the
 recording's own direction of travel the engine ends up on. About 90 % of the
-divergence is lateral, and in all six it is the same sign:
+divergence is lateral, and in all ten it is the same sign. At race 5.06:
 
 ```
-rank01  4.060 lat -0.041   4.560 -0.404   5.060 -0.866   6.060 -1.408
-rank04  4.060 lat +0.001   4.560 -0.281   5.060 -0.525   5.560 -0.813
-rank05  4.060 lat -0.021   4.560 -0.312   5.060 -0.856
-rank08  4.060 lat +0.001   4.560 -0.025   5.060 -0.164   5.560 -0.510
-rank09  4.060 lat -0.001   4.560 -0.288   5.060 -0.570   5.560 -1.249
-rank15  4.060 lat +0.002   4.560 -0.187   5.060 -0.505   5.560 -0.878
-rank02  4.050 lat +0.000   4.550 +0.000   5.050 +0.000   6.050 -0.000
+rank01 -0.866   rank03 -0.890   rank04 -0.525   rank05 -0.856   rank06 -0.832
+rank07 -0.685   rank08 -0.164   rank09 -0.570   rank12 -1.087   rank15 -0.505
+rank02 +0.000   rank10 +0.000   rank13 +0.000       <- the ones that replay
 ```
 
-Negative is the outside of the corner. **Today's car rotates LESS than the 2022
+Negative is the outside of the corner. **Today's car rotates LESS than the old
 car did, on the same inputs, at the same place** — and it does so whether that
 recording was holding full lock (rank01, rank15: steer +127) or no steering at
 all (rank05, rank08: steer 0). An arbitrary rounding seed amplified by a chaotic
-map would take a random side: six of six agreeing is 1 in 64, and they agree on
+map would take a random side: ten of ten agreeing is 1 in 512, and they agree on
 the place as well.
 
 ### It is a STEP, not a drift, and it is far bigger than one steering unit
@@ -394,3 +385,53 @@ envelope,track}`, `fk resync`, `tmmaps rungspec --cells --curtain`, plus four
 repo bugs fixed on the way — `tmsearch` did not compile; `tmtraj export --csv`
 was unreachable; `tmmaps segments` refused a rung that was exactly right; and
 **the search guard logged 234 banked files it never wrote**.
+
+---
+
+## Addendum: the sibling-map test was attempted, and the instrument refused
+
+The natural experiment is **134525** (same author, same week, 15 records): six
+DNF and nine replay, and the split is nearly by date — every DNF is 2023-05 to
+2023-08, every pass 2023-08-29 onward, with **one pair 54 seconds apart** on
+either side of the line (r01 42.058 at 05:19:54 replays; r06 43.749 at 05:20:48
+does not).
+
+| ghost | result | fk trace |
+|---|---|---|
+| r01 42.058 (replays) | 42.058 | fork 900: 0.0003 m, **never diverges past 5 cm** — the positive control |
+| r15 44.504 (DNF) | DNF cp0 | fork 900: already off the line (175.7 m); onset is EARLIER than any fork that locates |
+| r05 43.683 (DNF) | DNF cp0 | ticks 120/400/600/750/900: *"best candidate is not self-consistent enough … refusing to guess"* |
+| r06 43.749 (DNF) | DNF cp0 | tick 900: the tape DNFs before the checkpoint; 600/750 refuse |
+| r10 43.938 (replays) | 43.938 | tick 900: refuses |
+
+**A locate that will not qualify is not evidence about the recording.** The
+column for 134525's failures is UNMEASURED — not clean, not convicted. What the
+test needs is a locate that qualifies earlier on that map, or a third map with
+the same date split and a friendlier locate. It is worth an hour: if the
+signature reproduces off 134672, the finding is about the game and not about
+this map, and every pre-2023 reference in this project is affected.
+
+## Addendum: two more things the toolchain was getting wrong
+
+**`ghost declare` could not write splits.** `--time` rewrites the race time and
+the LAST checkpoint entry and leaves the intermediate ones alone, so every
+regenerated file on a borrowed container has been declaring its own finish
+beside the DONOR's splits — here, 13.906 / 33.106 / 45.437 / 63.812 / 67.200:
+four of another driver's numbers and one of ours in one list. The deleted `u02
+declare --splits` could write them; its replacement could not. Added, with a
+read-back control and a refusal when the last split is not the declared time
+(negative control: a list ending 99.999 against a declared 67.200 is refused).
+
+**A word in the same chunk is not what it is called.** `nb_respawns` reads **5**
+on all fifteen human records here while their tapes hold 0, 1 and 2 respawn
+events; on 279218 the files whose tapes DO respawn read **0**. It is not the
+checkpoint count either (5 with 5 entries here, 1 with 2 on 249521, 0 with 1 on
+279218, 3 with 4 on the format crate's own fixture). Renamed
+`word4_unidentified` and printed as unidentified. The respawn count that is
+trustworthy is the tape's own respawn bit.
+
+**And the published file got better after main advanced.** My first regeneration
+was refused at C5/C7 like its predecessor; re-running it on the pipeline that
+had landed in the meantime — which zeroes the per-run bytes it cannot write
+instead of inheriting them — gives **`tmtraj check` PUBLISHABLE, 0 fail 0 warn**.
+The "not filmable" note in the first version of this document is withdrawn.

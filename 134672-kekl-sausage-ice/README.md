@@ -8,11 +8,12 @@ Nothing here has been or will be submitted to a Nadeo leaderboard.
 > **On the world record — and on the author time.** Roevhaal's 63.546 was set on
 > the 2022 build `113150`, and it does not re-simulate today. That has been read
 > here as the map amplifying a recording quantum. It is measured now, and it is
-> not that: **all six of the old ghosts that can be measured leave their own
-> recorded line in the same 0.25 s window — race 3.99-4.24 — in the same corner,
-> and all six leave it on the same side.** Today's car runs wide there; the 2022
-> car turned more. A current-build recording through the identical instrument
-> tracks its own recording to **0.0002 m for the whole 68 s lap**.
+> not that. All fifteen records have now been measured against their own
+> recorded lines, and the split is perfect: **the ten that do not replay leave
+> their line in the same corner within a third of a second of each other — race
+> 4.04-4.39 for nine of the ten — and all ten leave it on the same side. The
+> five that do replay never leave it at all** (0.0002 m over a whole lap).
+> Today's car runs wide there; the old car turned more.
 >
 > The author time is `authorScore: 58687` inside a map file Nadeo stamped on
 > **2022-07-31**, so it belongs to that build too. **Beating it means beating a
@@ -380,28 +381,41 @@ That is the instrument's floor, and it is set by a current-build recording:
 68 s.** Two different fork points give bit-identical divergence curves, so the
 resume is not what is being measured.
 
-Against that floor:
+Against that floor — **all fifteen records on the board, measured**:
 
-| ghost | build | first departs its own recorded line |
-|---|---|---|
-| Robbalobb 68.442 | current | **never** (0.0002 m all lap) |
-| **Roevhaal 63.546** | 2022 | **3.990** |
-| rank 5 73.922 | 2022 | **4.040** |
-| rank 9 79.967 | 2022 | **4.140** |
-| rank 4 70.543 | 2022 | **4.240** |
-| rank 8 76.919 | 2022 | **4.240** |
-| rank 15 103.785 | 2022 | **4.240** |
+| ghost | replays today? | leaves its own recorded line at | lateral sign at 5.06 |
+|---|---|---|---|
+| **Roevhaal 63.546** | no | **4.040** | −0.866 |
+| rank 5 73.922 | no | **4.090** | −0.856 |
+| rank 12 87.676 | no | **4.090** | −1.087 |
+| rank 3 69.522 | no | **4.190** | −0.890 |
+| rank 6 74.859 | no | **4.190** | −0.832 |
+| rank 7 76.689 | no | **4.190** | −0.685 |
+| rank 9 79.967 | no | **4.240** | −0.570 |
+| rank 4 70.543 | no | **4.290** | −0.525 |
+| rank 15 103.785 | no | **4.390** | −0.505 |
+| rank 8 76.919 | no | **4.690** | −0.164 |
+| **Robbalobb 68.442** | **yes** | never | +0.000 |
+| rank 10 80.534 | **yes** | never | +0.000 |
+| rank 11 84.366 | **yes** | never | +0.000 |
+| rank 13 94.940 | **yes** | never | +0.000 |
+| rank 14 101.259 | **yes** | one sample at 85.890, 0.0002 m either side | +0.000 |
 
-Six of six, in a 0.25 s window, in one corner — cell (27, 14, 23),
+(5 cm bar. The onsets shift by a few hundredths with the fork tick — a resume is
+not the same run — so read the *clustering*, not the third decimal.)
+
+**Ten of ten and five of five: perfect separation, and nine of the ten land
+inside 0.35 s of each other.** They land in one corner — cell (27, 14, 23),
 `RoadBumpCurve1`, a **stock** block, at the onset of the lap's first big slide.
 Not on custom ice: there is no `FlinkIceBlock` within four cells of it.
 
-**It has a sign, and the sign is the same in all six.** About 90 % of each
+**It has a sign, and the sign is the same in all ten.** About 90 % of each
 divergence is lateral, and in every one of them today's car ends up on the
-**outside** of the corner — it rotates less than the 2022 car did on the same
+**outside** of the corner — it rotates less than the old car did on the same
 inputs, whether that recording was holding full lock (Roevhaal, rank 15: steer
-+127) or no steering at all (ranks 5 and 8: steer 0). Six of six agreeing on a
-side is 1 in 64 by chance, and they agree on the place as well.
++127) or no steering at all (ranks 5 and 8: steer 0). A chaotic map amplifying a
+rounding seed would take a random side; ten of ten agreeing is 1 in 512, and
+they agree on the place as well.
 
 **It is a step, not a drift.** Roevhaal's discrepancy crosses 5 cm within
 **0.05 s** of being born. A whole steering unit, at one tick, on this map at
@@ -450,3 +464,20 @@ physics are ours" (134682, 41.5 s reproduced exactly) has a mean side speed of
 **5.68 m/s**; this map's field slides at **18.13**. If the divergence reproduces
 off 134672, it is a build-level change in car rotation, and every pre-2023
 reference this project uses is affected.
+
+**It was attempted here and it is UNMEASURED, not negative — the instrument
+refused.** Map **134525** (same author, same week, 15 records) is the natural
+experiment: six of its records DNF and nine replay, and the split is nearly by
+date — every DNF is from 2023-05 to 2023-08 and every pass from 2023-08-29 on,
+with one pair **fifty-four seconds apart** on either side of the line. On that
+map the locate works on a passing ghost and says the right thing (**r01, a
+2023-08-29 pass: 0.0003 m, never diverges past 5 cm**), which is the positive
+control. On the failing ones it **refuses**: at fork ticks 120, 400, 600 and 750
+`fk trace` reports "best candidate is not self-consistent enough … refusing to
+guess", and at tick 900 the run has already left its line so the reading is
+meaningless (175 m). A locate that will not qualify is not evidence about the
+recording, and the honest column for 134525's failures is UNMEASURED.
+
+That leaves the sibling test open and worth someone's hour: it needs either a
+locate that qualifies earlier on that map, or a third map with the same
+date-split and a friendlier locate.
