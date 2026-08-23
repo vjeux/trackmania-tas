@@ -83,7 +83,7 @@ pub fn parse_events(txt: &str) -> Result<Vec<Event>, String> {
 /// after race time 0 to the state the script implies. Ticks before race 0 are
 /// left exactly as they are: the pre-start packets are the container's own and
 /// nothing in a script is about them.
-pub fn apply(base: &str, events: &[Event]) -> Result<String, String> {
+pub fn apply_from(base: &str, events: &[Event], keep_before: bool) -> Result<String, String> {
     let start_offset: i64 = base
         .lines()
         .find(|l| l.starts_with("@archive "))
@@ -94,6 +94,7 @@ pub fn apply(base: &str, events: &[Event]) -> Result<String, String> {
         })
         .ok_or("no @archive line with start_offset_ms")?;
 
+    let first_ms = if keep_before { events.first().map(|e| e.race_ms).unwrap_or(0) } else { 0 };
     let mut out = String::with_capacity(base.len());
     let mut keys = Keys::default();
     let mut ei = 0usize;
@@ -109,7 +110,7 @@ pub fn apply(base: &str, events: &[Event]) -> Result<String, String> {
             .and_then(|v| v.parse().ok())
             .ok_or_else(|| format!("bad tick line: {line}"))?;
         let race = tick * 10 + start_offset;
-        if race < 0 || !line.contains("mode=2") {
+        if race < first_ms || race < 0 || !line.contains("mode=2") {
             out.push_str(line);
             out.push('\n');
             continue;

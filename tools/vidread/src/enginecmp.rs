@@ -45,16 +45,24 @@ pub fn report(
     let mut n = 0usize;
     let mut sum = 0.0;
     let mut worst_ok = 0.0f64;
+    let mut last_ok = 0i64;
     writeln!(o, "race_ms\tvideo_kmh\tengine_kmh\tdiff").unwrap();
     for (t, v) in video {
-        let mut near: Option<(i64, f64)> = None;
-        for (u, e) in engine.range(t - tol_ms..=t + tol_ms) {
-            let d = (u - t).abs();
-            if near.map_or(true, |(bd, _)| d < bd) {
-                near = Some((d, *e));
+        // Take the CLOSEST VALUE in the window, not the closest instant. Off
+        // the start line this run gains 255 km/h per second, so a ten
+        // millisecond difference in timing is four km/h of "error" and the
+        // launch transient swamps everything the objective is trying to see.
+        // Two traces of the SAME tape scored 2.638 s and 11.005 s under a
+        // nearest-instant rule. The window is the sub-tick and frame-
+        // quantisation uncertainty; inside it, a ramp genuinely carries no
+        // information about the inputs.
+        let mut near: Option<f64> = None;
+        for (_, e) in engine.range(t - tol_ms..=t + tol_ms) {
+            if near.map_or(true, |b: f64| (e - v).abs() < (b - v).abs()) {
+                near = Some(*e);
             }
         }
-        let Some((_, e)) = near else { continue };
+        let Some(e) = near else { continue };
         let d = e - v;
         writeln!(o, "{t}\t{v}\t{:.1}\t{:+.1}", e, d).unwrap();
         if diverged.is_none() {
@@ -67,6 +75,7 @@ pub fn report(
                 }
             } else {
                 bad = 0;
+                last_ok = *t;
                 worst_ok = worst_ok.max(d.abs());
             }
         }
@@ -82,6 +91,7 @@ pub fn report(
         .unwrap(),
         None => writeln!(o, "# never diverges by more than {:.0} km/h", tol).unwrap(),
     }
+    writeln!(o, "# last sample still within tolerance: race {:.3} s", last_ok as f64 / 1000.0).unwrap();
     if n > 0 {
         writeln!(
             o,

@@ -333,7 +333,8 @@ fn cmd_tape(a: &[String]) {
             let btxt = std::fs::read_to_string(base).unwrap_or_else(|e| die(format!("{}: {}", base, e)));
             let etxt = std::fs::read_to_string(ev).unwrap_or_else(|e| die(format!("{}: {}", ev, e)));
             let events = ghost::script::parse_events(&etxt).unwrap_or_else(|e| die(e));
-            let txt = ghost::script::apply(&btxt, &events).unwrap_or_else(|e| die(e));
+            let keep = has(rest, "--keep-before");
+            let txt = ghost::script::apply_from(&btxt, &events, keep).unwrap_or_else(|e| die(e));
             let txt = match rest.iter().position(|x| x == "--signature-at") {
                 Some(i) => {
                     let ms: i64 = rest[i + 1].parse().unwrap_or_else(|_| die("--signature-at wants a race time in ms"));

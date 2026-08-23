@@ -351,7 +351,7 @@ fn main() {
             let vf = std::fs::File::open(need(&args, "--video")).unwrap_or_else(|e| die(&e.to_string()));
             let video = xcheck::load_reference(std::io::BufReader::new(vf));
             let engine = enginecmp::load_engine(&need(&args, "--engine")).unwrap_or_else(|e| die(&e));
-            enginecmp::report(&video, &engine, num(&args, "--tol", 8.0f64), num(&args, "--run", 6usize), num(&args, "--tol-ms", 10i64), &mut o);
+            enginecmp::report(&video, &engine, num(&args, "--tol", 8.0f64), num(&args, "--run", 6usize), num(&args, "--tol-ms", 50i64), &mut o);
         }
         _ => die("usage: vidread lamps|sections|ink|patches|train|read|trace ..."),
     }

@@ -74,6 +74,8 @@ pub struct Cfg {
     pub signature_ms: String,
     pub tol: f64,
     pub run: usize,
+    pub match_ms: i64,
+    pub keep_before: bool,
 }
 
 /// (race ms at which tracking stops, mean |diff| before it)
@@ -126,20 +128,23 @@ fn load_engine(path: &Path) -> Option<BTreeMap<i64, f64>> {
     Some(m)
 }
 
-fn score(video: &BTreeMap<i64, f64>, eng: &BTreeMap<i64, f64>, tol: f64, run: usize) -> Score {
+fn score(video: &BTreeMap<i64, f64>, eng: &BTreeMap<i64, f64>, tol: f64, run: usize, match_ms: i64) -> Score {
     let mut bad = 0usize;
     let mut n = 0usize;
     let mut sum = 0.0;
     let mut last_ok = 0i64;
     for (t, v) in video {
-        let mut near: Option<(i64, f64)> = None;
-        for (u, e) in eng.range(t - 10..=t + 10) {
-            let d = (u - t).abs();
-            if near.map_or(true, |(bd, _)| d < bd) {
-                near = Some((d, *e));
+        // Closest VALUE inside the timing window, not closest instant: see the
+        // note in vidread::enginecmp. On the launch ramp a ten millisecond
+        // difference is four km/h and a nearest-instant rule scores two runs
+        // of the same tape 8 seconds apart.
+        let mut near: Option<f64> = None;
+        for (_, e) in eng.range(t - match_ms..=t + match_ms) {
+            if near.map_or(true, |b: f64| (e - v).abs() < (b - v).abs()) {
+                near = Some(*e);
             }
         }
-        let Some((_, e)) = near else { continue };
+        let Some(e) = near else { continue };
         let d = (e - v).abs();
         n += 1;
         sum += d;
@@ -163,6 +168,12 @@ fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Opt
     let gt = d.join("t.gtape");
     let gb = d.join("c.Replay.Gbx");
     let tr = d.join("tr.csv");
+    // A candidate directory is reused every round. If this candidate's trace
+    // fails to be written, a STALE trace from an earlier round is still lying
+    // there, and reading it scores one tape against another tape's trajectory --
+    // silently, and in the direction that inflates the score. Remove it first
+    // so a missing file is a failed candidate and nothing else.
+    let _ = std::fs::remove_file(&tr);
     std::fs::write(&ev, render(evs)).ok()?;
     let ok = Command::new(&cfg.ghost)
         .args(["tape", "script", &cfg.base_gtape])
@@ -170,6 +181,7 @@ fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Opt
         .arg(&ev)
         .arg("--signature-at")
         .arg(&cfg.signature_ms)
+        .args(if cfg.keep_before { vec!["--keep-before"] } else { vec![] })
         .arg("--out")
         .arg(&gt)
         .output()
@@ -210,24 +222,24 @@ fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Opt
     if eng.len() < 100 {
         return None;
     }
-    Some(score(video, &eng, cfg.tol, cfg.run))
+    Some(score(video, &eng, cfg.tol, cfg.run, cfg.match_ms))
 }
 
-fn mutate(rng: &mut Rng, base: &[Ev], around: i64) -> Vec<Ev> {
+fn mutate(rng: &mut Rng, base: &[Ev], around: i64, back: i64, fwd: i64, floor: i64) -> Vec<Ev> {
     let mut e = base.to_vec();
     // Escape a local optimum by taking something back: a greedy search that
     // can only ADD events cements every mistake it has already made, and the
     // events that matter are the recent ones, near where it stopped tracking.
     if rng.next() % 4 == 0 && e.len() > 2 {
         let mut near: Vec<usize> =
-            (0..e.len()).filter(|&i| (e[i].ms - around).abs() < 2500 && e[i].ms > 0).collect();
+            (0..e.len()).filter(|&i| (e[i].ms - around).abs() < 2500 && e[i].ms > floor).collect();
         if !near.is_empty() {
             let victim = near.remove((rng.next() % near.len() as u64) as usize);
             e.remove(victim);
         }
     }
     let key = rng.pick(&["left", "right", "brake", "gas"]);
-    let start = rng.range(around - 800, around + 200) / 10 * 10;
+    let start = (rng.range(around - back, around + fwd) / 10 * 10).max(floor);
     let dur = rng.pick(&[30, 50, 80, 120, 180, 250, 350, 500, 800, 1200]);
     if key == "gas" {
         // gas is held by default; a mutation lifts it for a while
@@ -259,21 +271,51 @@ fn main() {
         signature_ms: get("--signature-at", "95000"),
         tol: get("--tol", "8").parse().unwrap(),
         run: get("--run", "6").parse().unwrap(),
+        match_ms: get("--match-ms", "50").parse().unwrap(),
+        keep_before: a.iter().any(|x| x == "--keep-before"),
     };
     let video = load_video(&get("--video", "video.tsv"));
     let rounds: usize = get("--rounds", "12").parse().unwrap();
     let batch: usize = get("--batch", "48").parse().unwrap();
     let seed: u64 = get("--seed", "20260822").parse().unwrap();
+    // How far back from the divergence a mutation may reach. The fix for a car
+    // that leaves the line at T is usually not at T: it is wherever the aim was
+    // set, which can be seconds earlier.
+    let back: i64 = get("--back", "800").parse().unwrap();
+    let fwd: i64 = get("--fwd", "200").parse().unwrap();
     std::fs::create_dir_all(&cfg.work).expect("work dir");
 
-    let mut best: Vec<Ev> = vec![Ev { ms: 0, press: true, key: "gas" }];
+    // Seeding at a race time other than 0, with --keep-before, makes the search
+    // an EDIT of the base tape from that instant on: the opening of this map is
+    // forced and every real run drives it identically, so there is nothing there
+    // for a search to find.
+    let seed_ms: i64 = get("--seed-ms", "0").parse().unwrap();
+    let mut best: Vec<Ev> = vec![Ev { ms: seed_ms, press: true, key: "gas" }];
+    // --events FILE scores one list and stops: the way to ask this binary what
+    // it thinks of a list some other tool produced, which is the only way two
+    // implementations of the same statistic can be held against each other.
+    if let Some(p) = a.iter().position(|x| x == "--events") {
+        let txt = std::fs::read_to_string(&a[p + 1]).expect("events");
+        let mut evs: Vec<Ev> = Vec::new();
+        for l in txt.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 3 { continue; }
+            let key = match f[2] { "gas" => "gas", "brake" => "brake", "left" => "left", "right" => "right", _ => continue };
+            evs.push(Ev { ms: f[0].parse().unwrap(), press: f[1] == "press", key });
+        }
+        let sc = evaluate(&cfg, 999, &evs, &video).expect("evaluate");
+        println!("{} events: tracks to {:.3} s, mean |diff| {:.2}", evs.len(), sc.until as f64 / 1000.0, sc.err);
+        return;
+    }
     let mut best_score = evaluate(&cfg, 0, &best, &video).expect("the seed tape must evaluate");
     println!("seed: tracks to {:.3} s, mean |diff| {:.2} km/h", best_score.until as f64 / 1000.0, best_score.err);
 
     let mut rng = Rng(seed);
     for round in 1..=rounds {
         let cands: Vec<Vec<Ev>> =
-            (0..batch).map(|_| mutate(&mut rng, &best, best_score.until)).collect();
+            (0..batch)
+            .map(|_| mutate(&mut rng, &best, best_score.until.max(seed_ms), back, fwd, seed_ms))
+            .collect();
         let next = Arc::new(AtomicUsize::new(0));
         let out: Arc<Mutex<Vec<(usize, Score)>>> = Arc::new(Mutex::new(Vec::new()));
         let jobs: usize = get("--jobs", "24").parse().unwrap();

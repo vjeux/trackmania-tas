@@ -25,7 +25,7 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | the run's inputs, recovered | **674 ticks — 6.7 s of 72.6** (race ≈55.4–58.1 and 58.2–64.4) |
 | the map in our oracle | exact: the dedicated server re-simulates Sapi's 88.898 to the millisecond |
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
-| reconstruction from race 0 | tracks the video's speed to race **3.755 s** and then leaves it |
+| reconstruction from race 0 | seeded from a human replay's opening, tracks the video's speed to race **12.488 s**; from an empty tape, only 4.055 s |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -53,9 +53,12 @@ it. That is a property of the recording, not of the reader.
 
 **A five-lamp key overlay** — BRAKE and the four arrows — composited by the
 video editor at a fixed screen position, in two flat greys. It is on screen for
-163.4 s across 14 clips. `brake` and `down` are the same channel: they are
-identical on every tick of every record, so the run has three real channels,
-gas / brake / steer, and steering is digital. This is a keyboard tape.
+163.4 s across 14 clips. Steering is two lamps and never anything in between,
+so this is a digital tape. BRAKE and the down arrow carry the same signal on
+**1582 of 1635** overlay frames; where they differ it is in sustained stretches
+of a third of a second and more, not at transitions, so they are two channels
+and not one signal drawn twice — what the second one is has not been
+established.
 
 **The game's own race clock**, bottom centre. Usable, but only on clips the
 editor did not reframe, and only where the background is not white.
@@ -155,41 +158,69 @@ The per-tick engine state — the readout a search has to score against — did
 
 With the video's speed trace as the objective and the engine as the simulator,
 the reconstruction is a search: grow a digital tape forward for as long as its
-simulated speed stays within 8 km/h of the video's. `tools/recon` does that —
-each round mutates the incumbent only around the race time where it currently
-stops tracking, because nothing earlier is in question and nothing later can be
-judged until this is fixed.
+simulated speed stays within 8 km/h of the video's, mutating only around the
+race time where it currently stops tracking. `tools/recon` does that.
 
-**Calibrate the floor first.** Two runs that are *not* Wirtual's still track his
-speed for the first couple of seconds, because everything leaves this start the
-same way:
+**The scorer had to be fixed before any of it meant anything.** Off the start
+line this car gains 255 km/h per second, so a ten-millisecond difference in
+timing is four km/h of apparent error. Under a nearest-instant comparison, two
+traces of the *same tape* scored 2.638 s and 11.005 s. Comparing against the
+closest VALUE inside a ±50 ms window — the sub-tick and frame-quantisation
+uncertainty — makes it deterministic: five traces of one tape now score
+identically, and the traces themselves are bit-identical.
 
-| tape | tracks the video to |
+**Calibrate the floor.** How long does a run that is emphatically *not*
+Wirtual's keep his speed? Every human replay on TMX, simulated from race 0:
+
+| run | tracks the video to |
 |---|---|
-| gas held from race 0, no steering | 2.638 s |
-| **Sapi's real human run**, simulated from race 0 | **2.638 s** |
+| Sapi 88.898 | 11.021 s |
+| Zai 105.385 | 10.888 s |
+| Elya 114.975 | 10.288 s |
+| Bren 105.569, RCinCHgamer01 116.065 | 10.005 s |
+| roaSone9 107.444 | 3.521 s |
+| *our gas-only tape, no steering* | *3.538 s* |
 
-So 2.638 s is what the start gives away for free, and a reconstruction only
-means something above it.
+So **the first ten seconds of Cobalt Cove are forced**: everyone drives the
+launch the same way, and speed alone cannot tell them apart. Anything at or
+below ~11 s is free.
 
-**The search.** From the gas-only seed, 60 rounds × 64 candidates:
+**From an empty tape the search cannot even reach the floor.** Sixty rounds of
+64 candidates take a gas-only seed from 3.538 s to **4.055 s** and stop — worse
+than five of the six humans. That is the honest measure of how little a speed
+trace guides a search that has to invent the driving: the launch ramp carries
+no information, so the search wanders on it.
 
-| | tracks to |
+**Seeded from a real run it goes past the floor.** Give it a public human
+replay's opening — Bren's inputs up to race 8.0 s, `--keep-before` — and let it
+search forward:
+
+| | last sample still within 8 km/h |
 |---|---|
-| seed (gas only) | 2.138 s |
-| after the search | **3.755 s** |
+| seed: Bren to 8.0 s, then throttle held | 10.988 s |
+| after the search | **12.488 s** (diverges at 12.588; mean \|diff\| 3.55 km/h over 403 samples) |
 
-It gains about 1.6 s and then stops improving. That is the honest result: the
-loop is closed and measured end to end, and it dies almost immediately.
+That is **1.5 s past the best human run** and 2.5 s past its own seed, and it
+is the number this arm ends on: 12.488 s of 72.589.
 
-**Why it dies, as far as the evidence goes.** The objective is a scalar per
-instant. Speed does not distinguish a car that is 3 m left of the line from one
-on it, so the search is free to buy a few tenths of tracking with a line that
-is going somewhere else, and it does. What the objective is missing is
-position, and position is exactly what the video does not contain. The way out
-is not a better search: it is a second observable — the camera pose against
-known map geometry, which would turn each frame into a constraint on *where*
-rather than only *how fast*.
+Both an independent scorer (`vidread enginecmp`) and `recon`'s own agree
+exactly on that trace, which is worth saying because they are two
+implementations of one statistic and this project has been bitten by that
+before.
+
+**Two things it is not.** It is not Wirtual's tape: it is a tape whose speed
+matches his for 12.5 s, seeded by somebody else's driving, and where the two
+agree in speed they may still be metres apart. And it is not a reconstruction
+that will extend by running longer — it stopped improving after nine rounds and
+another 110 changed nothing.
+
+**Why it stops.** The objective is a scalar per instant. Speed cannot tell a
+car that is on the line from one three metres left of it, so the search buys
+tenths of tracking with a line that is going somewhere else, and past the first
+corner that is fatal. The missing observable is position, and position is
+exactly what this video does not contain. The way out is not a better search:
+it is the camera pose against known map geometry, which would turn each frame
+into a constraint on *where* and not only on *how fast*.
 
 ## 6. What is banked
 
