@@ -25,11 +25,11 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | the run's inputs, recovered | **674 ticks — 6.7 s of 72.6** (race ≈55.4–58.1 and 58.2–64.4) |
 | the map in our oracle | exact: the dedicated server re-simulates Sapi's 88.898 to the millisecond |
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
-| reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
+| reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. With a positional gate: 12.380 s. **With the wetness objective as well: race 12.480 s** (§9.4), measured under three observables instead of two, against 12.330 for the previous best tape re-measured the same way |
 | where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
 | the next observable | **tyre wetness** — a positional integral, on screen, and now READ OUT OF THE ENGINE at `car+180` (95.4–96.0 % exact, negative control declines at 44 %) |
 | the wetness reader | **finished** (§9.1): 574 readings, **zero** violations of the dry-out law; the run is 100 % wet to race 9.9, resets at 9.95, and crosses water again at 22.4, 39.4 and 50.0 |
-| what the wetness objective bought (§9.2) | it **confirms** the 12.330 rather than lowering it, and dates the reroute at race ≈23.4 s. It cannot extend the reconstruction: the readout is illegible between race 10.038 and 22.355, which is exactly the window the search is working in |
+| what the wetness objective bought (§9.2, §9.4) | it **confirms** the old number rather than lowering it, dates the reroute, and — once the dry window the HUD does not draw is asserted (§9.3) — takes the reconstruction to **12.480 s** under three observables |
 | the readout after that | **`! Slip`**, 40 % of the run's frames and present in every five-second bin — located, not calibrated (§9.3) |
 
 The honest headline is the last line. Everything upstream of the search works,
@@ -798,7 +798,176 @@ at race 20 s a human tape and this run are at completely different points of
 the track. A seed has to be matched by **position**, not by clock, and no tape
 we have reaches race 20 s of *this* run.
 
-## 9.3 The third readout, located and not calibrated: `! Slip`
+## 9.3 What looking at the frames gave that measuring them did not
+
+Everything above was built by instruments: ink profiles, template correlation,
+clustering. That is how you get a *number* out of a frame. It is not how you
+answer "what is happening", and four things fell out in twenty minutes of
+actually looking at the pictures — labelled here as **INFERRED-from-looking**,
+because an eye on a frame is evidence about the world and is not a measurement.
+
+**The decoder, confirmed from outside itself.** Six frames the reader called
+`100`, `98`, `90`, `5`, `44` and `21`, cropped at full resolution and enlarged,
+read exactly that on screen — droplet, digits and `%`. Every control in §9.1 is
+internal to the reader; this one is not, and it took one command.
+
+**The 10 – 22 s hole is not an absence of information.** One frame per second
+across it shows the car on dry blue surfaces the whole way: the pipe at 11 – 13,
+airborne off it at 15, a yellow-striped block at 17, a fast descent at 18, a
+wall-ride at 19 – 20. Frames every 0.3 s put the **water entry between race 20.6
+and 20.9** — the car is on the blue wall above the pool at 20.6 and in the pool,
+throwing a wake, at 20.9.
+
+**The run is narrated, and nobody in this project had read it.** The video's own
+captions place the route against the clock (video time minus 522.662):
+
+| race | what he says |
+|---|---|
+| 1.9 | "we start out in the water pool inconspicuously, trying to keep a lot of speed" |
+| 6.8 | "and then we head to checkpoint one" |
+| 9.0 | "this pipe at real speed just looks ridiculous the way it's driven" |
+| 13.7 | "we jump" |
+| 14.7 | "get for the most part a clean wall hug" |
+| 17.8 | "do the wall touch into flat lining into" |
+| **20.3** | **"the water pool close to the corner"** |
+| 22.7 | "close to the jump here, carry a lot of speed" |
+| 25.9 | "and then towards the moving blocks" |
+| 33.7 | "the shortcut across two keeps decent speed" |
+| 36.6 | "jump through the checkpoint" |
+| 39.3 | "Shaft's kiss as we crash into the plastic double Beyblade" |
+| **48.8** | **"carry all that speed into the water"** |
+| 50.1 | "go past the green arrow" |
+| 54.4 | "plastic bounce down to the last checkpoint" |
+| 59.6 | "into nose bug through the second last checkpoint" |
+| 62.6 | "no slide up the hill" |
+| 64.3 | "aim for a pipe blindly that you can't really see" |
+| 70.9 | "touch the pipe into smooth landing for a final trick" |
+
+**Three of those water entries are in the decoded series, at the soak rate the
+law measures.** "Into the water pool" at 20.3 → the reader's 100 % at 22.355.
+"Carry all that speed into the water" at 48.8 → the reader's 100 % at 50.021,
+**1.2 s later, which is exactly 0 → 100 at the 80 pt/s wetting rate §9.1
+measured from the human replays.** The author's own commentary is an external
+control on the reader, and it agrees three times.
+
+He also states the mechanism the whole reroute is built on, in a different part
+of the video: *"with wet tyres, you have no air control, and so you are
+effectively spinning."* That is why the dry approach to the final pipe is worth
+the detour — not grip, **air control**.
+
+### The dry window, and the constraint it buys
+
+So the hole in the readings is a hole in the *display*, not in the run: between
+the reset and the pool the car is dry, and the HUD draws nothing because there
+is nothing to draw. `recon --wet-zero 10100:20600` asserts that, and the
+assertion has **four independent supports**:
+
+* the reset **measured** at race 10.038;
+* the frames, which show a dry car for the whole window;
+* the run's author, placing the entry at 20.3;
+* the **soak arithmetic** — 100 % at 22.355 at 80 pt/s puts the entry no
+  earlier than race 21.1, which brackets the eye's 20.6 – 20.9 from the other
+  side.
+
+It is still an assertion. `recon` prints `ASSERTING 0 % … -- not read, inferred`
+on every run that uses it, and the banked artefact stays the 574 measured
+readings.
+
+**And it bites where nothing else does.** The incumbent's own trace leaves the
+asserted band at race **13.313**: it is in the water from 13.3 and soaked to
+100 % by 15.2, while the video's car is dry until 20.6. So the wetness channel
+now catches this candidate's off-track excursion **independently of the
+corridor and of the map geometry**, a full second past the point where the
+speed objective gives up — and it is the only one of the three detectors that
+still works past CP2.
+
+It does not move the 12.330, because the speed objective already fails there.
+What it does is close the escape route: a candidate that buys tracking past
+12.330 by falling into the water, which is precisely what this one does, is now
+refused on a third and independent ground.
+
+## 9.4 The number, with the wetness objective on
+
+The joint objective does move the reconstruction, and it moves it while
+satisfying more constraints than the old number did. Three arms, one seed
+(11111), one budget (48 candidates a round), one base tape (Sapi's inputs to
+race 8.0 s):
+
+| arm | objective | rounds | best, re-measured on a quiet box |
+|---|---|---|---|
+| A | speed + corridor 3 m | 60 | **12.030 s** (plateaued at round 24) |
+| B | + wetness as read | 24 | 12.380 s (stopped early to free the box) |
+| E | + wetness + the asserted dry window | 70 | **12.480 s** (plateaued at round 30) |
+
+And the two tapes held against each other under identical gates:
+
+| tape | speed only | + corridor 3 m | + wetness | + dry window |
+|---|---|---|---|---|
+| the previous arm's `best_corridor.events` | 12.388 | 12.330 | 12.330 | 12.330 |
+| **this arm's `best_joint_dry.events`** | 12.588 | **12.480** | **12.480** | **12.480** |
+
+**Race 12.480 of 72.589** is the honest figure, and it is a stronger claim than
+the 12.330 it replaces because it is measured under three observables instead
+of two. The new tape is also better on every observable separately, not only on
+the score: against Sapi's line it is 4.13 m out at race 12.5 where the old one
+is 6.02, and 13.31 m at 13.0 where the old one is 25.02; its wetness leaves the
+asserted dry band at 13.636 rather than 13.313. It still leaves the track — this
+is not Wirtual's line past about 12.5 s — but it leaves it later and less.
+
+### The number the search reported was not the number
+
+**Arm E's log says 12.580. The tape re-measures at 12.480, five times out of
+five on a quiet box.** The difference is exactly the corridor: 12.588 is that
+tape's *speed-only* score, so in the round that scored it, the positional gate
+did not run.
+
+The cause is load. Three searches were running at once and the box sat at a
+load average of 460; a trace written under that can come back short, and
+`evaluate` was reading the corridor and wetness gates through `if let
+Some(...)` — so a gate whose data could not be loaded was silently skipped and
+the candidate kept its speed-only score. Worse, `score` itself skips video
+instants with no engine sample nearby, which means **a trace that runs out
+looks exactly like a trace that tracks perfectly.**
+
+Both are fixed: a configured gate that cannot be evaluated now REFUSES the
+candidate, and the score is capped at the last instant the engine actually
+reported. And the general rule this is another instance of —
+
+> **A search that keeps the best score keeps the luckiest measurement.** If the
+> evaluator is not reproducible, the search is a maximiser of its noise. Every
+> number in the table above is a re-measurement of a banked event list on an
+> idle box, not a line from a search log.
+
+
+
+Classifying the icon turned the Slip line from a trap into a census. It is on
+screen for **1753 of 4380 frames — 40.0 %** — and unlike wetness it appears in
+every five-second bin of the run, including race 10–20 s, which is exactly
+where wetness is silent and where the reconstruction's frontier sits.
+
+| race (5 s bins) | 0 | 5 | 10 | 15 | 20 | 25 | 30 | 35 | 40 | 45 | 50 | 55 | 60 | 65 | 70 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `! Slip` frames | 141 | 130 | 51 | 271 | 68 | 168 | 49 | 44 | 148 | 30 | 238 | 204 | 124 | 55 | 32 |
+| droplet frames | 118 | 108 | 8 | 4 | 138 | 112 | 5 | 10 | 149 | 136 | 53 | 88 | 18 | 10 | 16 |
+
+**UNKNOWN: which engine quantity it is.** `fk probe` cannot find it the way it
+found wetness, because that method needs the channel in the game's own
+recording as an answer key and no recorded ghost carries a slip flag. What
+would settle it: **render a human replay through this project's own clip
+pipeline and read its HUD with this same reader**, which gives a slip series
+for a run that can be simulated — the answer key `fk probe` needs. The render
+box is not reachable from this node, so it is a task and not a result.
+
+Two smaller notes for whoever picks it up. The contrast presence test flickers
+frame to frame over hard backgrounds (0/1/0/1 at 60 Hz around race 22), so
+"the box was not drawn" is a **refusal**, not an observation — do not read an
+absent box as a wetness of zero. And the presence test is not what limits the
+wetness reader's coverage: dropping `--span-min` from 45 to 0 changes the
+readings not at all, from 574 to 574. What limits coverage is the edge landing
+in a mode and the digits being legible.
+
+
+## 9.5 The third readout, located and not calibrated: `! Slip`
 
 Classifying the icon turned the Slip line from a trap into a census. It is on
 screen for **1753 of 4380 frames — 40.0 %** — and unlike wetness it appears in
@@ -839,6 +1008,8 @@ in a mode and the digits being legible.
 | `map/` | the map, all 12 TMX replays, and Sapi's decoded telemetry |
 | `engine/` | full-run engine traces of Sapi's run, forked at race 0.25 and 9.25 |
 | `recon/` | the baseline tape, its trace, and its comparison against the video |
+| `recon2/` | this arm's tape (`best_joint_dry.events`, its gtape and replay), both traces, and the five search logs |
+| `wetness/` | the reader: `icon.tmpl`, `digits.tmpl`, `wet_video.tsv` (the 574 readings), `alpha.txt`, `wetedge2.tsv`, `wetgeom.tsv`, `READER.md`, the run's captions, and `frames/` — the three contact sheets §9.3 is written from |
 
 Tools added for this, all in `tools/`: **`vidread`** (read a run off a screen
 recording), **`recon`** (grow a tape against a speed trace), `ghost tape

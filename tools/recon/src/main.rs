@@ -277,15 +277,28 @@ fn evaluate(
         return None;
     }
     let mut sc = score(video, &eng, cfg.tol, cfg.run, cfg.match_ms, cfg.from_ms);
+    // A TRACE THAT RUNS OUT LOOKS EXACTLY LIKE ONE THAT TRACKS PERFECTLY.
+    // `score` skips video instants with no engine sample near them, so a trace
+    // that stops early records no disagreement past its own end and the
+    // candidate keeps whatever it had earned. Cap the score at the last instant
+    // the engine actually reported.
+    let eng_end = *eng.keys().last()?;
+    sc.until = sc.until.min(eng_end);
     // A candidate that has LEFT THE TRACK keeps the video's speed for a while
     // as it falls -- 16 m away and 4 m below, and still scoring. Where the
     // human corridor makes a claim, it is the earlier of the two that is true.
+    //
+    // AND A GATE THAT CANNOT BE EVALUATED IS NOT A GATE THAT PASSED. If the
+    // caller asked for the corridor or the wetness and this trace cannot serve
+    // it, the candidate is REFUSED. Scoring it on the remaining objectives is
+    // how a search ends up keeping its luckiest measurement: on this map, under
+    // heavy load, one such candidate was reported at 12.580 and re-measures at
+    // 12.480 on a quiet box, because 12.580 is its SPEED-ONLY score.
     if let Some(c) = corr {
-        if let Some(pos) = load_positions(&tr) {
-            if let Some(left) = c.departs(&pos, cfg.corridor_m, cfg.corridor_run, 30, cfg.from_ms) {
-                if left < sc.until {
-                    sc.until = left;
-                }
+        let pos = load_positions(&tr)?;
+        if let Some(left) = c.departs(&pos, cfg.corridor_m, cfg.corridor_run, 30, cfg.from_ms) {
+            if left < sc.until {
+                sc.until = left;
             }
         }
     }
@@ -295,11 +308,11 @@ fn evaluate(
     // right until it is wrong and any one of them can be the thing that is
     // wrong first.
     if let Some(v) = &cfg.wet_video {
-        if let Some(e) = wet::load_series(tr.to_str()?) {
-            if let Some(left) = wet::departs(v, &e, cfg.wet_tol, cfg.wet_run, cfg.match_ms, cfg.from_ms) {
-                if left < sc.until {
-                    sc.until = left;
-                }
+        let e = wet::load_series(tr.to_str()?)?;
+        if let Some(left) = wet::departs(v, &e, cfg.wet_tol, cfg.wet_run, cfg.match_ms, cfg.from_ms)
+        {
+            if left < sc.until {
+                sc.until = left;
             }
         }
     }
