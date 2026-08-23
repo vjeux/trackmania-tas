@@ -68,6 +68,20 @@ pub fn cmd(a: &[String]) {
             }
         }
         Some("show") => show(&a[1..]),
+        Some("graft-scene") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record graft-scene IN OUT --from DONOR.Ghost.Gbx")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record graft-scene IN OUT --from DONOR.Ghost.Gbx")
+            });
+            let donor = flag(a, "--from")
+                .unwrap_or_else(|| die("--from DONOR.Ghost.Gbx: the container the car was rebuilt out of"));
+            match graft_scene(inp, out, donor, crate::cli::has(a, "--car-deltas")) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("entfields") => {
             let inp = a.get(1).unwrap_or_else(|| {
                 die("ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]")
@@ -88,6 +102,8 @@ pub fn cmd(a: &[String]) {
              ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]\n\
              \x20                            -- the vehicle entity's UNIDENTIFIED header\n\
              \x20                               fields, for the client-import bisect\n\
+             ghost record graft-scene IN OUT --from DONOR\n\
+             \x20                            -- put the container's non-vehicle entities back\n\
              ghost record show FILE",
         ),
     }
@@ -356,6 +372,116 @@ pub fn set_ent_fields(
         return Err("the car's samples changed -- refusing, this operation must not touch the \
                     trajectory"
             .into());
+    }
+    Ok(format!("{before} -> {after}; the car's {} samples are byte-identical", a.samples.len()))
+}
+
+/// Put the container's NON-VEHICLE entities back, from the file the car was
+/// rebuilt out of.
+///
+/// The inverse of what `rebuild_to` does, and it exists because of a measured
+/// fork. `ghost regen` lays a fresh grid for the car and, in doing so, keeps
+/// **one** entity and drops everything else the record had. Two regenerated
+/// files crash the game client on import; the container one of them was built
+/// in — the same version, the same 107-byte samples, the game's own bytes —
+/// **imports fine with its three entities intact** (measured on the render box,
+/// 2026-08-23, five variants each behind a same-session control). Three other
+/// candidate causes died in that batch: the entity's `u01`, the declared
+/// checkpoint count, and the container generation. What is left is what the
+/// rebuild removed.
+///
+/// So this grafts those entities back, from `donor`, at their own times, and:
+///
+/// * it copies **only** entities the vehicle picker does not choose — another
+///   car is not scenery, and 227654's container is one driver across 26
+///   restarts rather than 26 opponents, so "everything else" would be wrong
+///   there;
+/// * it clips their samples to the record's span, because a scene entity that
+///   outlives the run is the defect `shorten` exists to remove and this must not
+///   reintroduce it;
+/// * it requires the car's samples back **byte-identical**.
+///
+/// **These samples are the DONOR's**, and the file says so: they are 13 bytes
+/// per sample of somebody else's session state, not a trajectory. Run
+/// `ghost verify` afterwards and read V3 and the raw-bytes backstop before
+/// publishing anything built this way.
+pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Result<String, String> {
+    let dbody = gbx::record::load_body(donor)?;
+    let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
+    let drd = gbx::record::parse_record_data(&dblob, dver)?;
+    let dveh = pick_vehicle(&drd);
+    let scene: Vec<Ent> = drd
+        .ents
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != dveh)
+        .map(|(_, e)| e.clone())
+        .collect();
+    if scene.is_empty() {
+        return Err(format!("{donor} has no non-vehicle entity to graft"));
+    }
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity: nothing to graft onto")?;
+        if rd.ents.len() > 1 {
+            return Err(format!(
+                "this file already has {} entities -- graft-scene is for a record the rebuild \
+                 reduced to one",
+                rd.ents.len()
+            ));
+        }
+        let span = rd.end_ms;
+        before = format!("1 entity, scene to {}", secs(span as i64));
+        let mut car = rd.ents.remove(vi);
+        // The car's own delta2 blocks are dropped by the rebuild too — 31 of
+        // them on this donor, none on any rebuilt file. They are per-entity
+        // side-channel records, not samples, so restoring them cannot move the
+        // trajectory; whether the client needs them is exactly the open
+        // question this flag exists to ask.
+        let mut car_note = String::new();
+        if car_deltas {
+            if let Some(di) = dveh {
+                let mut d = drd.ents[di].deltas2.clone();
+                d.retain(|(_, t, _)| *t <= span);
+                car_note = format!(", car deltas2 0 -> {}", d.len());
+                car.deltas2 = d;
+            }
+        }
+        let mut added = Vec::new();
+        for e in &scene {
+            let mut e = e.clone();
+            // Clip to the span: a scene entity that outlives the run is the
+            // defect `shorten` removes, and this must not put one back.
+            let keep = e.times.iter().take_while(|t| **t <= span).count();
+            if keep < e.times.len() && e.sample_size > 0 {
+                e.times.truncate(keep);
+                e.raw.truncate(keep * e.sample_size);
+            }
+            e.u03 = e.u03.min(span);
+            e.deltas2.retain(|(_, t, _)| *t <= span);
+            let cls = drd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
+            added.push(format!(
+                "0x{:08X} x{}@{}B",
+                cls,
+                e.times.len(),
+                e.sample_size
+            ));
+            rd.ents.push(e);
+        }
+        rd.ents.push(car);
+        after = format!("{} entities (grafted {}){}", rd.ents.len(), added.join(", "), car_note);
+        Ok(())
+    })?;
+    let a = gbx::record::decode_ghost(inp)?;
+    let b = gbx::record::decode_ghost(out)?;
+    if a.samples.len() != b.samples.len() || a.raw != b.raw {
+        return Err(format!(
+            "the car's samples changed ({} -> {} samples) -- refusing, this operation must not \
+             touch the trajectory",
+            a.samples.len(),
+            b.samples.len()
+        ));
     }
     Ok(format!("{before} -> {after}; the car's {} samples are byte-identical", a.samples.len()))
 }
