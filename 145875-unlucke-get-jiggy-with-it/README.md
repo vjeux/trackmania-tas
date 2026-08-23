@@ -6,6 +6,22 @@ validates at 6.342 — one millisecond under the author time.**
 
 **unluckE - get jiggy with it** — TAS **6.342** (−0.001) | AT 6.343 | WR 6.346 by xeap-.-
 
+> ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
+>
+> The replay this page publishes carries a recording that is **not its own
+> tape's run**: tape and recording agree on only **kappa 0.518** of samples,
+> where a file whose recording is its own reads 1.000. The clip below was shot
+> from that file, so **the car you are watching is not driving this run**.
+>
+> **The result stands.** The plain dedicated server re-simulates this file's
+> input tape to **6.342**, the time on this page — the inputs really do produce
+> it. What is wrong is the trajectory stored beside them, which is a property
+> of how the file was assembled rather than of the run.
+>
+> The repair is `ghost regen`, which rebuilds the telemetry from the tape on
+> the live engine; it has fixed others in this corpus. This page will be
+> re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+
 https://github.com/user-attachments/assets/eb055e0b-f715-4bd9-b12e-ed2de3f26b65
 
 **Thirteen inputs. Nothing held for less than 80 ms. Three steering values, gas

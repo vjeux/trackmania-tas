@@ -7,6 +7,22 @@ glide.**
 
 **Tap water 01** — TAS **22.072** (−1.253) | AT 23.325 | WR 23.298 by Lukrecja666
 
+> ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
+>
+> The replay this page publishes carries a recording that is **not its own
+> tape's run**: tape and recording agree on only **kappa 0.151** of samples,
+> where a file whose recording is its own reads 1.000. The clip below was shot
+> from that file, so **the car you are watching is not driving this run**.
+>
+> **The result stands.** The plain dedicated server re-simulates this file's
+> input tape to **22.072**, the time on this page — the inputs really do produce
+> it. What is wrong is the trajectory stored beside them, which is a property
+> of how the file was assembled rather than of the run.
+>
+> The repair is `ghost regen`, which rebuilds the telemetry from the tape on
+> the live engine; it has fixed others in this corpus. This page will be
+> re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+
 https://github.com/user-attachments/assets/dbcfd0d7-352b-4a5c-9b87-9bcf67cf40c1
 
 **Our run and the world record in one camera, and the whole race is over by

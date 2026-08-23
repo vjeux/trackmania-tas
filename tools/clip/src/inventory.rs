@@ -395,6 +395,10 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let mut root = ".".to_string();
     let mut tsv = false;
     let mut probe = false;
+    let mut verify = false;
+    let mut markdown = false;
+    let mut store = std::env::var("TM_STORE")
+        .unwrap_or_else(|_| format!("{}/persistent/private-30d/tm-unbeaten", std::env::var("HOME").unwrap_or_default()));
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -410,10 +414,25 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 probe = true;
                 i += 1;
             }
+            "--verify" => {
+                verify = true;
+                i += 1;
+            }
+            "--store" => {
+                store = args.get(i + 1).ok_or("--store needs a directory")?.clone();
+                i += 2;
+            }
+            "--markdown" => {
+                markdown = true;
+                i += 1;
+            }
             other => return Err(format!("inventory: unknown flag {other:?}")),
         }
     }
 
+    if verify {
+        return crate::audit::main(Path::new(&root), Path::new(&store), markdown);
+    }
     let pages = read_root(Path::new(&root))?;
     // Only built when asked: the probe needs ffprobe and the open internet, and
     // the plain listing must keep working on a box with neither.
