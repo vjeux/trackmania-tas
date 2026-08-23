@@ -19,14 +19,33 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid:
 
-https://github.com/user-attachments/assets/808e0fe9-7013-4b84-9182-6b3bc4de30e6
+https://github.com/user-attachments/assets/e569cb32-9c05-41b7-8595-f4d8c18b94b5
 
-The clip is shot from a tape rebuilt on a clean carrier — login `TAS`, no account
-id, our own livery, and the trajectory **256 of 256 positions bit-identical** to
-the file it replaced. Two fields in it are still the carrier's and are not being
-faked: **ground contact and wheel rotation**, because zeroing them would assert
-that the car was airborne for the whole run and that its wheels never turned.
-**So the dirt and spark effects may be wrong; the car's path is ours.**
+**Re-shot 2026-08-23 from a ghost regenerated out of this page's own tape**
+(`replays/TAS_12759.Ghost.Gbx`). The tape was identified by simulation, not by
+what a file says: nine of the ghosts held for this map declare 29.286 in their
+headers and the plain oracle finishes exactly one of them at 12.759. That file's
+input tape reproduces `inputs/TAS_12759.inputs.csv` **byte for byte**
+(`ghost tape csv`), which is what ties the clip to the number in the caption —
+a second stored file also finishes at 12.759 and its tape differs in the last
+40 ticks, all of them after the finish.
+
+`ghost verify` is clean end to end on the file that was filmed: **kappa 1.000**
+(the recording in it is this tape's own run, 256 of 256 samples), the plain
+oracle re-simulates the WRITTEN file to **12.759**, and its trajectory is
+bit-identical — 0.000000 m over 256 samples, metres away one sample either side
+— to the file the previous clip was shot from. Nothing per-run in it is the
+container donor's: login `TAS`, no account id, our own livery. The channels the
+state readout does not reach — rpm, gear, per-wheel ice and dirt, and the
+ground-contact flag — are written as **zero and named** rather than inherited,
+so the dirt and spark effects are absent rather than somebody else's.
+
+One byte in the sample is not written as zero, and it is the reason this clip
+exists twice: **byte 32 is written as the constant 128.** The game's chase
+camera reads that byte; a regeneration that left it at zero filmed the sibling
+map with the camera **under the track** for the last second of the run. It was
+bisected byte by byte on renders — see `GHOSTS.md`, "The camera reads a byte the
+gate cannot see".
 
 ## What kind of result this is
 
@@ -161,8 +180,8 @@ completely different readout path agrees to **0.48 mm**.
 
 | file | what |
 |---|---|
-| *(no replay committed)* | The rebuilt tape the clip above is shot from is not in this directory yet. The time stands and the oracle validates it at 12.759. |
-| `inputs/TAS_12759.inputs.csv` | per-tick inputs — **the run itself**: this is what the oracle validates at 12.759 |
+| `replays/TAS_12759.Ghost.Gbx` | **the ghost the clip is shot from**, regenerated from the tape below on 2026-08-23. `ghost verify --map` V1–V11 clean, kappa 1.000, oracle 12.759 on the written file |
+| `inputs/TAS_12759.inputs.csv` | per-tick inputs — **the run itself**: this is what the oracle validates at 12.759, and `ghost tape csv replays/TAS_12759.Ghost.Gbx --from -1480` reproduces this file byte for byte |
 
 ## The route in the video does not convert, and that is now measured
 
