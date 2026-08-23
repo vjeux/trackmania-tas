@@ -35,7 +35,7 @@ clip split <left.mp4> <right.mp4> <left-label> <right-label> <out.mp4>
     Two runs side by side, for maps where a chase camera provably cannot hold
     both cars. The shorter run holds its final frame so the gap reads as time.
 
-clip inventory [--root D] [--tsv]
+clip inventory [--root D] [--tsv] [--probe]
     What is published, per map, read off the pages: the map's NAME, its headline
     caption, how many videos it carries, and WHICH TREATMENT its clip used --
     two-car, single-car or split. A map with no video plans two-car. Nothing is

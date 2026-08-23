@@ -166,6 +166,98 @@ fn treatment_of(note: &str) -> Treatment {
 
 const ASSET: &str = "https://github.com/user-attachments/assets/";
 
+/// What a clip's own properties say its scene contained.
+///
+/// This is the measurement behind `--probe`, and it exists because six
+/// published pages do not say what they filmed. vjeux's rule for those is to
+/// look at the video and reuse the decision it made -- so the video is read,
+/// not the prose.
+///
+/// The three signatures, in the order they are tested:
+///
+///   * **split** -- a side-by-side composition is about twice as wide as it is
+///     tall. Nothing else this project renders is; every single-camera clip is
+///     16:9. The bar is 2.0, comfortably clear of 1.78.
+///   * **single-car** -- the clip is as long as OUR run. The MediaTracker
+///     renders to the longest entity in the scene, so with only our car in it
+///     the clip is our time.
+///   * **two-car** -- the clip is as long as the SLOWER of the two runs. On a
+///     map where the record is slower than us, that is the record's time.
+///
+/// The tolerance is 1.5 s, which is a real measurement rather than a
+/// guess: the three clips whose scenes are known ran 239.100 s for a 239.133
+/// run, 220.5 s for a 218.812 run against a 441.002 opponent that had been
+/// trimmed, and 68.367 s for a 67.319 run against a 68.442 record. The largest
+/// honest gap between a clip and the time it should equal was 1.05 s.
+///
+/// WHEN THE TWO CANDIDATES ARE WITHIN TOLERANCE OF EACH OTHER THE PROBE
+/// REFUSES. Half these maps are decided by thousandths -- our 4.492 against a
+/// 4.495 record -- and no clip length can separate a scene containing one car
+/// from a scene containing two when both finish at the same instant. Returning
+/// "two-car" there would be a guess wearing a measurement's clothes.
+pub fn treatment_from_clip(
+    secs: f64,
+    width: u32,
+    height: u32,
+    tas: Option<f64>,
+    wr: Option<f64>,
+) -> (Treatment, String) {
+    let aspect = width as f64 / height.max(1) as f64;
+    if aspect >= 2.0 {
+        return (
+            Treatment::Split,
+            format!("{width}x{height} is {aspect:.2}:1 -- a side-by-side composition"),
+        );
+    }
+    const TOL: f64 = 1.5;
+    let (Some(tas), Some(wr)) = (tas, wr) else {
+        return (
+            Treatment::Unknown,
+            format!("{secs:.3}s at {width}x{height}, but the page has no TAS/WR pair to compare it to"),
+        );
+    };
+    let slower = tas.max(wr);
+    if (slower - tas).abs() < 2.0 * TOL {
+        return (
+            Treatment::Unknown,
+            format!(
+                "{secs:.3}s, but our {tas:.3} and the slower run {slower:.3} are {:.3}s apart -- \
+                 closer than the measurement can separate, so the length cannot say how many cars \
+                 were in the scene",
+                (slower - tas).abs()
+            ),
+        );
+    }
+    let d_tas = (secs - tas).abs();
+    let d_slower = (secs - slower).abs();
+    if d_slower <= TOL && d_slower < d_tas {
+        (
+            Treatment::TwoCar,
+            format!("{secs:.3}s matches the slower run {slower:.3} (ours is {tas:.3})"),
+        )
+    } else if d_tas <= TOL {
+        (
+            Treatment::SingleCar,
+            format!("{secs:.3}s matches our run {tas:.3} alone (the slower run is {slower:.3})"),
+        )
+    } else {
+        (
+            Treatment::Unknown,
+            format!("{secs:.3}s is neither our {tas:.3} nor the slower {slower:.3}"),
+        )
+    }
+}
+
+/// Seconds out of a caption field like `24.342 by zetos.` or `4.495 (six tied)`.
+fn secs_of(s: &str) -> Option<f64> {
+    let t: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    t.parse().ok()
+}
+
 /// Read one page.
 pub fn read_page(dir: &Path) -> Result<MapPage, String> {
     let path = dir.join("README.md");
@@ -253,10 +345,11 @@ pub fn read_root(root: &Path) -> Result<Vec<MapPage>, String> {
     dirs.iter().map(|d| read_page(d)).collect()
 }
 
-/// `clip inventory [--root D] [--tsv]`
+/// `clip inventory [--root D] [--tsv] [--probe]`
 pub fn main(args: &[String]) -> Result<(), String> {
     let mut root = ".".to_string();
     let mut tsv = false;
+    let mut probe = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -268,11 +361,21 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 tsv = true;
                 i += 1;
             }
+            "--probe" => {
+                probe = true;
+                i += 1;
+            }
             other => return Err(format!("inventory: unknown flag {other:?}")),
         }
     }
 
     let pages = read_root(Path::new(&root))?;
+    // Only built when asked: the probe needs ffprobe and the open internet, and
+    // the plain listing must keep working on a box with neither.
+    let ff = if probe { Some(crate::platform::from_env()?) } else { None };
+    let cfg = crate::ship::Cfg::from_env();
+    let scratch = if probe { Some(crate::proc::scratch_dir("clip-probe")?) } else { None };
+
     let mut out = String::new();
     let (mut with, mut without, mut unknown) = (0, 0, 0);
 
@@ -281,12 +384,42 @@ pub fn main(args: &[String]) -> Result<(), String> {
         // A PAGE WITH TWO CLIPS OFTEN ANNOTATES ONLY ONE OF THEM. Where the
         // headline clip carries no note, take the first video on the page that
         // does say -- one page's clips have always been the same treatment.
-        let treatment = p
+        let mut treatment = p
             .videos
             .iter()
             .map(|v| v.treatment)
             .find(|t| *t != Treatment::Unknown)
             .unwrap_or(Treatment::Unknown);
+        let mut why = String::new();
+
+        // THE PROBE ONLY RUNS WHERE THE PAGE IS SILENT. A page that says what
+        // it filmed is the better witness -- it was written by whoever filmed
+        // it -- and re-measuring it would only invite a disagreement nobody
+        // needs to adjudicate.
+        if let (true, Some(v), Treatment::Unknown, Some(ff), Some(dir)) =
+            (probe, v, treatment, ff.as_ref(), scratch.as_ref())
+        {
+            let file = dir.join("probe.mp4");
+            match crate::ship::gate(&cfg, &v.url, &file, |f| ff.probe_duration(f)) {
+                Ok(passed) => match ff.probe_dims(&file) {
+                    Ok((w, h)) => {
+                        let (t, note) = treatment_from_clip(
+                            passed.duration,
+                            w,
+                            h,
+                            p.headline.as_ref().and_then(|c| secs_of(&c.tas)),
+                            p.headline.as_ref().and_then(|c| secs_of(&c.wr)),
+                        );
+                        treatment = t;
+                        why = note;
+                    }
+                    Err(e) => why = format!("probed the length but not the picture: {e}"),
+                },
+                Err(e) => why = format!("could not fetch it anonymously: {e}"),
+            }
+            let _ = std::fs::remove_file(&file);
+        }
+
         match v {
             Some(_) => with += 1,
             None => without += 1,
@@ -302,7 +435,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
         if tsv {
             let _ = writeln!(
                 out,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 p.dir,
                 p.name,
                 tas,
@@ -310,7 +443,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 wr,
                 p.videos.len(),
                 treatment.label(),
-                plan
+                plan,
+                why
             );
         } else {
             let _ = writeln!(
@@ -324,14 +458,21 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 p.videos.len(),
                 plan
             );
+            if !why.is_empty() {
+                let _ = writeln!(out, "{:<40}   probe: {why}", "");
+            }
         }
+    }
+    if let Some(d) = scratch {
+        let _ = std::fs::remove_dir_all(d);
     }
     print!("{out}");
     if !tsv {
         println!(
             "\n{} maps: {with} with a video, {without} without. {unknown} published page(s) do not \
-             say what their scene contained -- read those before filming them.",
-            pages.len()
+             say what their scene contained{}.",
+            pages.len(),
+            if probe { " and could not be measured either" } else { " -- re-run with --probe" }
         );
     }
     Ok(())
