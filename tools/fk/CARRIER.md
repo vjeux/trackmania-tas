@@ -110,8 +110,29 @@ anchors, and neither of us had published which one. **State the anchor with the
 offset, always.**
 
 
-Every row **holds** on every key it can be tested on: `18 held, 0 failed` on six
-of the eight, and `14 held, 0 failed, 4 could not be tested` on the other two.
+**Every row holds on every key that can test it, and nothing fails anywhere.**
+The final acceptance, ten recordings across seven maps, the frozen table, no
+refit:
+
+```
+m134672_68442  23 held, 0 failed,  0 could not be tested
+m267460_23068  23 held, 0 failed,  0
+m285885_61229  19 held, 0 failed,  4
+m191465_13081  18 held, 0 failed,  5
+m252289_3867   18 held, 0 failed,  5
+m279209_6604   18 held, 0 failed,  5
+map2_22730     18 held, 0 failed,  5
+m270051_4834   14 held, 0 failed,  9
+m134672_63546  the locate refused (no verdict, not a failure)
+m134672_69522  the locate refused
+```
+
+"Could not be tested" is the third verdict: on that key the channel never moves,
+so the prediction scores exactly the constant and is neither confirmed nor
+contradicted. Every channel has power on at least three keys — the wheel
+rotations, `side_speed`, rpm, the suspension travel, `is_turbo` and `gear` on all
+eight; the ground materials on six; `turbo_time` and the four ice channels on
+three.
 
 § The four ice channels are named by the class reference (`FLIcing01` …) and
 are the **fourth** placed slot of the wheel record, at +28. They are exact on
@@ -131,8 +152,8 @@ them (191465, 267460, 285885, where the constant scores 97.71–99.84 %); on the
 other five the channel never moves. Three keys with power and eight exact is
 above the bar, and the bar is stated rather than the eight quoted alone.
 
-† The four ground-material bytes are the rows marked *could not be tested* on
-those two: on 270051 and 279209 the car never leaves one surface, so the byte is
+† The four ground-material bytes have power on six of the eight keys: on the
+other two the car never leaves one surface, so the byte is
 98.97 % and 99.25 % constant and our prediction scores **exactly** the constant —
 neither confirmed nor contradicted. That is a third verdict and the tool prints
 it as one, because calling it a pass and calling it a failure are equally
