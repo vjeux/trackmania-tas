@@ -11,6 +11,7 @@
 
 pub mod cut;
 pub mod fmt;
+pub mod inventory;
 pub mod overlay;
 pub mod platform;
 pub mod playtest;
