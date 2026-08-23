@@ -75,6 +75,50 @@ Three ways a null has been manufactured here, all real:
   at 5 m and reported the nearest source at 82.6 m; the source that exists is an
   airborne roll 142 m away, which the same page names two paragraphs earlier.
 
+## Calibrate on a positive control, not on a synthetic one
+
+**A synthetic control shows that a term does what you think it does. Only a
+positive control shows that the STATISTIC you compute from it ranks real cases
+correctly.**
+
+The first case in this file where **the mechanism is right and the statistic is
+wrong**, which is why it gets its own entry rather than a line above.
+
+The mechanism: a car whose wheels have left the ground is a free rigid body, so
+its body-frame angular rate is exactly constant. True, and it is the only
+readout of wheel load available inside a fork. The search's `domega` term
+measures it, and its synthetic control is sound — two fixtures turning equally
+hard, one free and one with a wheel biting, which a rate *threshold* cannot
+separate and the derivative can.
+
+Then 284238 ran it on a real known-good pair on their map: one human tape that
+rides the obstacle, two of their own that launch off it, each window 900 ms from
+that tape's own kicker engagement so neither side gets a longer one.
+
+| tape | ticks | mean \|domega\| | max | ticks under 0.5 |
+|---|---|---|---|---|
+| Yhomas_TM 46.112, **rides** | 81 | 13.30 | 108.6 | **0 (0 %)** |
+| cu1best, **launches** | 91 | 24.34 | 589.3 | **64 (71 %)** |
+| b2r3, **launches** | 91 | 19.83 | 337.3 | **46 (51 %)** |
+
+The **fraction of ticks below the bar** separates cleanly. **The mean does not,
+and it points the wrong way**: the launching tapes average nearly twice the
+rider's, because free flight is long exactly-constant stretches *punctuated by
+violent impacts*, and impacts dominate an average. Max does not separate either.
+
+So "the rate barely changes when the car is free" is the correct mechanism and
+*taking its mean* — the obvious way to write it down — **ranks every launch
+above every ride on that map.**
+
+**And the bar itself came from the positive.** The rider's minimum |domega| over
+those 900 ms is exactly **0.500**: he grazes the bar and never once goes under
+it. A bar at 0.5 is comfortable. A bar at 0.2, which *looks* stricter and safer,
+classifies the known-good rider as a launch. Same shape as the two constants
+below, both set on the wrong quantity.
+
+The tables are 284238's measurements on their map; the instrument and the
+synthetic control are the search's (`SEARCH.md` §5.16).
+
 ## A negative result also needs a negative control
 
 If the fix you are considering has a **sign**, the evidence for it must have one
@@ -113,7 +157,23 @@ Three distinct ways one has lied here:
 
 * **a decoy** — an objective that can be maximised without achieving the goal.
   Before trusting one, ask what the *laziest* way to maximise it is.
-* **a candidate-chosen window** — see above.
+* **a candidate-chosen window** — see above, and here is what it cost. 284238's
+  contact metric ran from the obstacle to *the candidate's own nearest approach
+  to a station downstream*: a candidate that missed the station got a SHORTER
+  window, never reached its freeze inside it, and scored **100 % in contact —
+  four launches read as rides and one nearly reached a write-up.** The same map
+  supplies the second instance: their do-nothing tape scores **J = −170.4,
+  collecting 57 % of the available reward**, because a 120-tick window after the
+  kicker reaches all the way to the wall impact at the far end. Narrowing to 40
+  ticks is what makes the objective discriminate at all. **On this kind of key
+  the window length is not a tuning knob — it is the difference between
+  measuring the event and measuring whatever the car eventually hits.**
+  The rule: if a candidate can influence the interval it is judged over, it will
+  be judged over the interval that flatters it. Fix the window in ticks from the
+  event. **A maximum over a superset of ticks is safe in one direction only** —
+  aborting can only remove ticks, so it can never inflate a score, which is why
+  a max-over-everything-after is sound where a fraction or a dwell measure is
+  not.
 * **a weighted sum used to test compatibility.** 284238 asked whether the car
   can reach the human's crossing angle *and* his roll; four searches minimising
   a weighted sum of position, velocity and attitude said no. A weighted sum lets

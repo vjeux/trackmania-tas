@@ -256,7 +256,7 @@ the fixtures checked in under `tools/testdata`.
 | **the state objective through the engine, on the map it was proven on** | the fork's measured gate state for the seed against the seed's own recorded telemetry: **0.0002 m, 0.067 m/s of speed, 0.965° of heading, 0.009° of attitude** — and the author's own contact, measured the same way, scores **86.81**, reproducing the published 86.8 m/s of body-lateral speed |
 | **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
 | **the search climbing a state key** | 228811, seeded with the human world record: key **0.97 → 57.4**, and the state it scores moves from z = 714.9 to **z = 709.1**, the launcher line |
-| **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
+| **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9); on the human world record the same clause never fires. **The after-key's "5 mm" is NOT part of this control** -- the point it measures to is the author's own last telemetry sample, so he scores it by definition (§5.9) |
 | **the whole ladder, on a map with known ground truth** | 228811 (already beaten -- incumbent 20.237, AT 20.555 -- which is why it is the right place to prove an instrument). From the human world record as its seed: state → launch → aim → **a validated finish on the launcher route no human drives**, in one hour against the hand-built private fork's 2 h 43 min. 216 improvements confirmed, **0 phantoms** |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
 | **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart |
@@ -622,9 +622,13 @@ fk watch replay --trajectory at_ghost.csv --fire dspeed --fire-at 10 ...
 ```
 
 `TECHNIQUE.md` puts his contact at 323 → 751 km/h, which is **118.9 m/s**; the
-detector reads **118.68**. The after-key then places him 5 mm from the finish.
-On the human world record the same clause never fires. One positive, one
-negative, on real recordings, before any search ran.
+detector reads **118.68**. On the human world record the same clause never
+fires. One positive, one negative, on real recordings, before any search ran.
+
+**The after-key's 0.0054 in that output is NOT part of that control**, and the
+next paragraph says why. It is stated second on purpose: quoted on its own it
+reads as a validation, and it was duly copied into §4's controls table that way
+until a sweep for exactly this caught it.
 
 **And a trap in the after-key that this control walks straight past.** The point
 above is the author's own LAST TELEMETRY SAMPLE, so "5 mm from it" is a

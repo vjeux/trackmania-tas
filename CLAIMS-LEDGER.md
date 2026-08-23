@@ -801,3 +801,41 @@ from correlations. Cobalt Cove is the strongest new page in the repo — it
 distinguishes *"the instrument works"* (99.6 % against a 43.7 % runner-up) from
 *"it declines when it should"* (no peak on earlier builds) and says outright
 that a second channel's meaning *"has not been established"*.
+
+---
+
+## Two entries added after the audit's node was released
+
+The audit specified the placement and the wording it wanted for these and then
+lost its box before it could make the edits. Written by the state-objective arm
+from its own work and 284238's measurements; the audit's own framing is kept
+where it said it better.
+
+**1. `CLAIMS.md` §"Calibrate on a positive control, not on a synthetic one"**
+(new, sits under *An absence needs a positive control*). The file's first case
+where **the mechanism is right and the statistic is wrong**: a free rigid body
+does hold its body-frame rate constant, and taking the MEAN of that rate's
+change inverts the ranking, because free flight is quiet stretches punctuated by
+impacts. 284238's table, three tapes, their map. Plus the calibration detail
+that generalises — the known-good rider's minimum is exactly **0.500**, so a bar
+at 0.2 looks stricter and misclassifies him.
+
+**2. `CLAIMS.md` §"An objective is a claim too"** — the candidate-chosen window
+was named there and is now quantified: four launches at **100 % in contact**
+because a missed station shortened the judging window, and a do-nothing tape at
+**J = −170.4, 57 % of available reward**, because a 120-tick window reaches the
+far-end wall impact. With the safe-direction note: a maximum over a superset is
+safe one way only, since aborting can only remove ticks.
+
+**And one open item the audit flagged as unchecked, now closed.** It could not
+run the grep for whether an after-key of `-dist(366.07, 95.11, 693.99)` — the
+228811 author's own last telemetry sample — is quoted anywhere as a validation.
+**It is: `SEARCH.md` §4's controls table said "the after-key puts him 5 mm from
+the finish" as a control**, while §5.9 two hundred lines later explains it is a
+tautology. The table row is corrected and §5.9's ordering is fixed so the
+disclaimer no longer trails the number it disclaims. No other occurrence in any
+`.md` in the repo or in the banked `_audit/stateobj/` notes.
+
+That is worth its own small rule, and it is the reason the audit exists: **a
+caveat that appears later than the number it qualifies will be copied without
+it.** State the disclaimer in the same breath, or do not state the number.
