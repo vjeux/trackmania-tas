@@ -132,20 +132,39 @@ file you made, and never carry another map's reading over: winning parameters do
 not port.
 
 > **Do not call this "the client-vs-server floor".** That name is a claim about
-> two engines differing, and nothing here establishes it. The corpus uses the
-> same ≈0.5 mm to name at least three different comparisons — ours against a
-> downloaded human recording (the rows above), ours against **our own** second
-> regeneration (173691, 0.000497 m), and ours against a different readout path
-> (276874, 0.48 mm) — and it cannot be one quantity in all three, because
-> 270051 measures **0.000000 m** against its own copy where 173691 measures
-> 0.000497 m against its own.
+> two engines differing, and **it has now been measured and it is false — for
+> the position.** The ≈0.5 mm is **the distance between two copies of the car in
+> the server's own memory, and the pipeline was reading the wrong one.**
 >
-> The competing explanation is that the three "corroborations" are three
-> readings of **one** thing — the fixed distance between two copies of the car
-> struct in memory — in which case it is our copy choice and not the engines.
-> That is a live, pre-registered test (`8ca8c2e7`), not a settled fact either.
-> **Until it lands, quote the number and not the cause.** The number is what the
-> threshold needs; the cause is UNKNOWN.
+> Measured 2026-08-22 on map 2, `human_22730`, against the game's own recording,
+> one flag apart (`ghost regen --transform-from-fields`):
+>
+> | | transform from the located copy | transform from the copy with a live wheel block |
+> |---|---|---|
+> | worst separation | 0.001 m | **0.000 m** |
+> | samples reproducing the recorded bytes | **0 of 455** | **227 of 455 (49.9 %)** |
+> | position byte 51 | 0 of 455 | 396 of 455 |
+>
+> Bit-identity goes from zero to half the run. A floor between two engines cannot
+> do that. The three maps that "agreed" at 0.489 / 0.511 / 0.501 were three
+> readings of one quantity, not three confirmations — and the corpus said so
+> independently, because it uses the same ≈0.5 mm for comparisons that cannot all
+> be one thing: **270051 reads 0.000000 m ours-vs-ours where 173691 reads
+> 0.000497 m on the same comparison.**
+>
+> This also **confirms a suspicion recorded on 2026-08-20 and not actionable
+> then** — *"~0.0005 m is the signature of the shadow, not a measure of accuracy;
+> a gather that found the car is bit-identical or ~0.000001 m"*. Cite it as a
+> suspicion confirmed two days later, not as something nobody had noticed.
+>
+> **The ORIENTATION half is open, and got worse under the same change** (byte 60:
+> 455 of 455 → 8 of 455). The quaternion is read at the anchor's offset relative
+> to the position, which should transfer between copies of one struct and on this
+> copy does not; the (x,y,z,w)/(w,x,y,z) order was tested and ruled out. So
+> `--transform-from-fields` is **default OFF** and the publish path is unchanged.
+> **Do not run the three-map round-trip as a verdict yet** — on the position it
+> passes, on the orientation it regresses, and recording a mixed result as either
+> would be wrong.
 
 ### `corpus dup` was silent for this whole lineage — 2026-08-22
 

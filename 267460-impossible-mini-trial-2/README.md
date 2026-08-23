@@ -126,7 +126,14 @@ end at x ≈ 784 and the next drivable surface east is
 `OpenTechRoadSlope2FCLeft` at x ≈ 816, so the return is a **32 m gap that has to
 be crossed while climbing 7 m — departing from a surface rolled 30° downward.**
 At 157.8 km/h the crossing takes 0.73 s and gravity alone costs 6.4 m; you
-arrive about 13 m low. **Zero of roughly 135,000 evaluations reach the far
+arrive about 13 m low.
+
+*(That 6.4 m uses this engine's gravity, **not Earth's** — `½·24.3·0.73² =
+6.5 m`, where `½·9.81·0.73²` would be 2.6 m and would make the gap look
+crossable. Free fall here is `a_y = −g − k·v_y` with g ≈ 24.3–24.6, measured
+independently on three maps: 153527 at −24.314 over 335 free-fall stretches,
+285885 at −24.308, and 134672 at 24.62 ± 0.54. Any energy or fall figure on
+these pages should name the g it used.)* **Zero of roughly 135,000 evaluations reach the far
 side.** (A marker 16 m further east, built the same way in the same batch, fires
 normally — so the test can succeed; this route just never gets there.)
 

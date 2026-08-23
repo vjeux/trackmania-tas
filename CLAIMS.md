@@ -149,6 +149,41 @@ engine reproduces that file's own record. This repo does not redistribute maps,
 so it cannot be done from a clean checkout — which is why they are an open task
 with a named test, and not a verdict in either direction.
 
+## Two constants this project keeps getting wrong
+
+Both are the same mistake — a number assumed instead of measured — pointing in
+opposite directions, and both have cost a published mechanism.
+
+**Gravity is ≈24.3–24.6 m/s², not 9.81 and not per-map.** Free fall in this
+engine is linear drag in vertical speed:
+
+    a_y = −g − k·v_y        g = 24.78 ± 0.10 m/s²,  k = 0.032 ± 0.002 /s
+
+* **Too low:** 153527's `ADDENDUM_v2` computed a slope's gravity as
+  `9.81·sin 26.6° = 4.39` and reported a car "decelerating at 2.4× the slope's
+  gravity". Measured on that map from **335 free-fall stretches of the driver's
+  own recording**, the median is **−24.314 m/s²** — against which the observed
+  figure is **0.97×, an ordinary coast**. A whole published mechanism rested on
+  a physics-textbook constant.
+* **Too specific:** 285885 reported *"free fall on this map is −24.308, not the
+  −25.20 measured elsewhere. Gravity here is per-map."* Both numbers are the one
+  law read at different `v_y` (−25.20 ⇒ v_y +13; −24.308 ⇒ v_y −16). Withdrawn.
+
+Three maps agree: **153527 −24.314** (335 stretches), **285885 −24.308**,
+**134672 24.62 ± 0.54** — the last with its own caveat printed, that its flights
+span only v_y ∈ [−18, +6] so k is unidentifiable there. **Never quote a scalar g
+without the `v_y` it was measured at**, and any energy, fall or deceleration
+figure should name the g it used.
+
+**≈0.5 mm was never "the client-vs-server floor".** It is the distance between
+two copies of the car in the server's own memory, and the pipeline was reading
+the wrong one — MEASURED on the position half 2026-08-22, where transforming
+from the right copy takes bit-identity from **0 of 455 samples to 227 of 455**.
+The three maps that "agreed" at 0.489 / 0.511 / 0.501 were three readings of one
+quantity. The orientation half is **open and got worse** under the same change,
+so the flag is default-off and the publish path is unchanged. Full table in
+`tools/README.md`.
+
 ## Not everything needs a tag
 
 Do not qualify what is solid. A true claim with its control cited is the best
