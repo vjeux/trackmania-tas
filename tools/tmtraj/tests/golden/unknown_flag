@@ -2,5 +2,6 @@ $ tmtraj show $TESTDATA/human_22730.Ghost.Gbx --nonsense 1
 [exit 2]
 --- stderr ---
 tmtraj show: unknown flag --nonsense
+  (if this command DOES implement --nonsense, the bug is here: `finish` compares what was SEEN against what has been ASKED FOR SO FAR, so it must be called AFTER every `one`/`num`/`many`/`has` in the command, not before them)
 
 usage: tmtraj show GHOST... [--head N]
