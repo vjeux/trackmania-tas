@@ -297,8 +297,17 @@ fn main() {
         }
     }
 
+    // Write PNG when the output name asks for one, PPM otherwise. The PNG
+    // encoder is mapgeom's -- the same one its top-down views use -- so a
+    // render is a file anything can open without a conversion step in
+    // between. (A conversion step is where an image gets silently stale.)
     let mut f = File::create(&out).expect("create out");
-    write!(f, "P6\n{} {}\n255\n", w, h).unwrap();
-    f.write_all(&img).unwrap();
+    if out.to_ascii_lowercase().ends_with(".png") {
+        let png = mapgeom::render::png(&mapgeom::render::Image { w, h, rgb: img });
+        f.write_all(&png).unwrap();
+    } else {
+        write!(f, "P6\n{} {}\n255\n", w, h).unwrap();
+        f.write_all(&img).unwrap();
+    }
     eprintln!("wrote {out}");
 }

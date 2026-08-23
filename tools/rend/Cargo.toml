@@ -3,6 +3,9 @@ name = "rend"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+mapgeom = { path = "../mapgeom" }
+
 [[bin]]
 name = "rend"
 path = "src/main.rs"
