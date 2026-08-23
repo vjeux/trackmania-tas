@@ -337,6 +337,13 @@ fn agreement_is_robust_to_a_respawn_sized_outlier() {
         qy: 0.0,
         qz: 0.0,
         qw: 1.0,
+        // Added to `Row` by the Cobalt Cove wetness arm; this test predates it
+        // and does not exercise it. The test is about agreement being robust to
+        // one respawn-sized outlier in x, so the value is irrelevant -- but the
+        // field is not optional and leaving it out stopped `fk`'s whole suite
+        // from COMPILING, which is worse than any failing test: a suite that
+        // does not build reports nothing at all.
+        wetness: 0.0,
     };
     let samples: Vec<fk::traj::Sample> = (0..100)
         .map(|i| fk::traj::Sample {
@@ -357,13 +364,16 @@ fn agreement_is_robust_to_a_respawn_sized_outlier() {
     assert!(a.within_5cm_pct > 98.0, "{}", a.within_5cm_pct);
 }
 
-/// The 29-column CSV is the format `tmtraj decode --csv` writes, and the
-/// analysis tools index it by name.
+/// The CSV `tmtraj decode --csv` writes, which the analysis tools index BY
+/// NAME. The count is asserted so a column cannot be dropped silently; it moved
+/// 29 -> 30 when the wetness arm added `wetness`, and the assertion is meant to
+/// make that a deliberate edit rather than a surprise.
 #[test]
 fn trajectory_csv_has_the_columns_the_rest_of_the_project_reads() {
-    assert_eq!(fk::traj::COLS.len(), 29);
+    assert_eq!(fk::traj::COLS.len(), 30);
     assert_eq!(fk::traj::COLS[0], "time_ms");
-    for c in ["x", "y", "z", "vx", "vy", "vz", "qx", "qy", "qz", "qw", "steer", "gas", "brake"] {
+    for c in ["x", "y", "z", "vx", "vy", "vz", "qx", "qy", "qz", "qw", "steer", "gas", "brake",
+              "wetness"] {
         assert!(fk::traj::COLS.contains(&c), "missing column {}", c);
     }
 }
