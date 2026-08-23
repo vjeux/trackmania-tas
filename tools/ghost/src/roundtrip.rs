@@ -72,7 +72,7 @@ fn compare(a: &str, b: &str) -> Result<(f64, f64, usize, usize), String> {
 
 pub fn cmd(a: &[String]) {
     let subject = a.first().unwrap_or_else(|| {
-        die("ghost roundtrip GHOST --map MAP [--bar MM] [--keep]")
+        die("ghost roundtrip GHOST --map MAP [--bar MM] [--keep] [--out FILE]")
     });
     let map = flag(a, "--map").unwrap_or_else(|| die("--map MAP.Map.Gbx"));
     // 5 mm: an order of magnitude above the 0.48-0.52 mm client-vs-server floor
@@ -81,7 +81,21 @@ pub fn cmd(a: &[String]) {
     let bar_mm: f64 = num(a, "--bar").unwrap_or(5) as f64;
     let keep = has(a, "--keep");
 
-    let out = format!("{}.roundtrip.Ghost.Gbx", subject.trim_end_matches(".Ghost.Gbx"));
+    // PER PROCESS, because the subject does not name the run.
+    //
+    // The output used to be `<subject>.roundtrip.Ghost.Gbx`, so two round trips
+    // on ONE subject -- which is exactly what comparing two locate settings
+    // means -- wrote to the same path and to the same intermediates. Measured:
+    // two runs at different anchor radii, both silently reading each other's
+    // half-written grid, neither finishing. A tool whose scratch names come
+    // from its input cannot be run twice on that input, and nothing said so.
+    let out = flag(a, "--out").map(|s| s.to_string()).unwrap_or_else(|| {
+        format!(
+            "{}.roundtrip-{}.Ghost.Gbx",
+            subject.trim_end_matches(".Ghost.Gbx"),
+            std::process::id()
+        )
+    });
     println!("== round trip: {subject}");
     println!("   regenerating it from its own inputs, then requiring its own trajectory back\n");
 
