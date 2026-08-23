@@ -41,6 +41,11 @@ INPUTS  (operation 1 and 2)
         every tick is writable.
   ghost tape diff A.gtape B.gtape
         Per-tick differences between two tapes.
+  ghost tape poke IN --out T.gtape --ticks A..B --set steer=..,accel=..,brake=..
+        Override the vehicle inputs over a half-open tick range and leave every
+        other tick identical: the one-variable probe -- a brake pulse, a lifted
+        throttle, a unit of steer -- without hand-editing `t=` lines, where an
+        off-by-one is invisible and lands in a measurement.
   ghost tape stats TAPE.gtape
         Tick count, input events, packet modes, respawns.
   ghost tape bits FILE...
@@ -361,9 +366,111 @@ fn cmd_inspect(a: &[String]) {
 mod sweep;
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|set|diff|stats|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|bits>"));
     let rest = &a[1..];
     match what {
+        "poke" => {
+            // Override the vehicle inputs over a tick range, leaving every
+            // other tick byte-identical. A brake pulse, a lifted throttle, a
+            // held steer -- the one-variable probes this project builds by the
+            // dozen to price a manoeuvre. Until now each one meant hand-editing
+            // `t=` lines, which is how an off-by-one gets into a measurement
+            // nobody can reproduce.
+            let inp = rest.first().unwrap_or_else(|| {
+                die("ghost tape poke IN[.gtape|.Ghost.Gbx] --out T.gtape --ticks A..B --set steer=..,accel=..,brake=..")
+            });
+            let out = need(rest, "--out");
+            let range = need(rest, "--ticks");
+            let (lo, hi) = range
+                .split_once("..")
+                .and_then(|(l, h)| Some((l.trim().parse::<usize>().ok()?, h.trim().parse::<usize>().ok()?)))
+                .unwrap_or_else(|| die("--ticks wants A..B, the half-open tick range to overwrite"));
+            if hi <= lo {
+                die(format!("--ticks {}..{} is empty; B is exclusive and must exceed A", lo, hi));
+            }
+            // The fields to set, parsed once so a typo fails before any file is
+            // written rather than silently poking nothing.
+            let mut sets: Vec<(String, i64)> = Vec::new();
+            for kv in need(rest, "--set").split(',') {
+                let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--set {}: wants field=value", kv)));
+                let k = k.trim();
+                if !matches!(k, "steer" | "accel" | "brake") {
+                    die(format!("--set {}: only steer, accel and brake are vehicle inputs", k));
+                }
+                let v: i64 = v.trim().parse().unwrap_or_else(|_| die(format!("--set {}: {} is not a number", k, v)));
+                sets.push((k.to_string(), v));
+            }
+            let raw = std::fs::read(inp).unwrap_or_else(|e| die(format!("{}: {}", inp, e)));
+            let t = if raw.first() == Some(&b'#') {
+                Tape::from_text(&String::from_utf8_lossy(&raw)).unwrap_or_else(|e| die(e))
+            } else {
+                Tape::from_file(inp).unwrap_or_else(|e| die(e))
+            };
+            let txt = t.to_text(inp);
+            let mut poked = 0usize;
+            let mut lines: Vec<String> = Vec::new();
+            for l in txt.lines() {
+                let Some(after) = l.strip_prefix("t=") else {
+                    lines.push(l.to_string());
+                    continue;
+                };
+                let idx: usize = after
+                    .split_whitespace()
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| die(format!("cannot read a tick index from {:?}", l)));
+                if idx < lo || idx >= hi {
+                    lines.push(l.to_string());
+                    continue;
+                }
+                let mut fields: Vec<String> = l.split_whitespace().map(|s| s.to_string()).collect();
+                for (k, v) in &sets {
+                    let pre = format!("{}=", k);
+                    let mut found = false;
+                    for f in fields.iter_mut() {
+                        if f.starts_with(&pre) {
+                            *f = format!("{}{}", pre, v);
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        die(format!("tick {} has no `{}` field to poke", idx, k));
+                    }
+                }
+                lines.push(fields.join(" "));
+                poked += 1;
+            }
+            if poked != hi - lo {
+                die(format!(
+                    "--ticks {}..{} names {} ticks but the tape has {} of them in that range",
+                    lo,
+                    hi,
+                    hi - lo,
+                    poked
+                ));
+            }
+            let text = lines.join("\n") + "\n";
+            // read it back rather than trusting the string we just built
+            let re = Tape::from_text(&text).unwrap_or_else(|e| die(format!("the poked tape does not parse: {}", e)));
+            if re.n() != t.n() {
+                die(format!("read-back control FAILED: {} ticks in, {} out", t.n(), re.n()));
+            }
+            std::fs::write(out, &text).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+            let off: i64 = t.archives.first().map(|a| a.start_offset_ms as i64).unwrap_or(0);
+            let sets_s: Vec<String> = sets.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+            println!(
+                "wrote {}  {} ticks, {} poked ({} .. {} = race {} .. {}) with {}",
+                out,
+                re.n(),
+                poked,
+                lo,
+                hi - 1,
+                secs(lo as i64 * 10 + off),
+                secs((hi - 1) as i64 * 10 + off),
+                sets_s.join(" ")
+            );
+            println!("  read-back control OK: the poked tape parses to {} ticks", re.n());
+        }
         "script" => {
             let base = rest.first().unwrap_or_else(|| die("ghost tape script BASE.gtape --events F --out T.gtape"));
             let ev = need(rest, "--events");
