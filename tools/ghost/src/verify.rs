@@ -350,6 +350,68 @@ pub fn run(path: &str, a: &[String]) -> Report {
         }
     }
 
+    // ---- V11 the container's LIVE non-vehicle records ----------------------
+    //
+    // THE ONE DEFECT IN THIS GATE THAT NO HEADLESS TEST CAN SEE — and a
+    // WARNING rather than a failure, because the rule is not established and
+    // this project's own corpus refutes the obvious form of it.
+    //
+    // MEASURED, on the render box 2026-08-23, every run behind a same-session
+    // control that read `scene ready`: 173691's film file, regenerated, crashed
+    // the game client on import three times across two revisions; **grafting
+    // the container's one live `0x2D001000` record back made it import**, twice,
+    // in two variants; the container itself imports untouched; and three other
+    // single-field repairs — the car entity's `u01`, the declared checkpoint
+    // count, and the ghost-result race time — each crashed with the graft
+    // absent. 227654's `TAS_57482` is a second file of the same shape that
+    // crashes.
+    //
+    // AND WHAT REFUTES THE OBVIOUS RULE: `TAS_67319` has no live non-vehicle
+    // record either, and imports cleanly. So "a ghost needs one" is FALSE. The
+    // honest statement is narrower: **restoring one repaired both files that
+    // crash, and nothing yet says what makes those two different from the
+    // sixty-odd published files in the same shape that are fine.** A gate that
+    // failed here would fail all of them.
+    //
+    // No oracle can help: the dedicated server re-simulates the input chunk and
+    // never reads the scene, so `TAS_57482` passes every other check here and
+    // re-simulates to 57.482. A client import is the only instrument there is.
+    match gbx::record::decode_ghost(path) {
+        Err(_) => {}
+        Ok(d) => {
+            let live: Vec<String> = d
+                .ents
+                .iter()
+                .filter(|e| {
+                    e.class_id != Some(gbx::record::CLASS_CSCENEVEHICLEVIS) && e.n_samples > 0
+                })
+                .map(|e| format!("0x{:08X} x{}", e.class_id.unwrap_or(0), e.n_samples))
+                .collect();
+            if live.is_empty() {
+                r.add(
+                    "V11",
+                    Verdict::Warn,
+                    "no live non-vehicle record in this file's telemetry. That is the shape of \
+                     the two ghosts known to CRASH the game client on import, and grafting one \
+                     back is what repaired both — but TAS_67319 is in the same shape and imports \
+                     cleanly, so this is NOT a rule and not a failure. If an import kills the \
+                     game, try it first: `ghost record graft-scene IN OUT --from CARRIER`. \
+                     Nothing headless can see this defect."
+                        .to_string(),
+                );
+            } else {
+                r.add(
+                    "V11",
+                    Verdict::Pass,
+                    format!(
+                        "the container's live non-vehicle record(s) are present ({})",
+                        live.join(", ")
+                    ),
+                );
+            }
+        }
+    }
+
     // ---- V5 telemetry span -------------------------------------------------
     match gbx::record::decode_ghost(path) {
         Err(e) => r.add("V5", Verdict::Na, format!("no telemetry record ({})", e)),

@@ -129,11 +129,17 @@ fn show(a: &[String]) {
         println!("  desc {i}: class 0x{:08X}", d.class_id);
     }
     let veh = pick_vehicle(&rd);
+    let mut live_scene = 0usize;
     for (i, e) in rd.ents.iter().enumerate() {
         let cls = rd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
+        let is_car = Some(i) == veh;
+        let live = !e.times.is_empty();
+        if !is_car && live {
+            live_scene += 1;
+        }
         println!(
             "  ent {i}: desc {} class 0x{cls:08X}  {} samples x {} B  t {} .. {}  u01 {} u02 {} \
-             u03 {} u04 {}  {} delta2 block(s){}",
+             u03 {} u04 {}  {} delta2 block(s)  {}{}",
             e.type_,
             e.times.len(),
             e.sample_size,
@@ -144,9 +150,24 @@ fn show(a: &[String]) {
             e.u03,
             e.u04,
             e.deltas2.len(),
-            if Some(i) == veh { "   <- the car this project reads" } else { "" }
+            if live { "LIVE" } else { "placeholder (0 samples)" },
+            if is_car { "   <- the car this project reads" } else { "" }
         );
     }
+    // THE COUNT THAT WAS NOT PRINTED WHILE TWO CRASHERS AND A CLEAN FILE READ
+    // AS "STRUCTURALLY INDISTINGUISHABLE". Restoring a live non-vehicle record
+    // is what repaired both ghosts that crash the game client on import
+    // (measured 2026-08-23) — and `TAS_67319` has none and imports cleanly, so
+    // this is a lead, not a rule. `ghost verify` V11 says the same in one line.
+    println!(
+        "live non-vehicle records: {}{}",
+        live_scene,
+        if live_scene == 0 {
+            "   <- the shape of the two files that crash the client on import: see ghost verify V11"
+        } else {
+            ""
+        }
+    );
 }
 
 
@@ -261,6 +282,7 @@ pub fn rebuild_to(
 
     let n = (span_ms / period) as usize + 1;
     let mut before = String::new();
+    let mut note = String::new();
     rewrite_ghost(inp, out, |rd| {
         let vi = pick_vehicle(rd);
         let (type_, u01, u04) = match vi {
@@ -291,11 +313,38 @@ pub fn rebuild_to(
             times.push((k as i64 * period) as i32);
             raw.extend_from_slice(&template);
         }
-        // ONE car, and only one. The other vehicle entities are other people's
-        // cars -- 26 of them in 227654's carrier -- and a render draws every
-        // one. The non-vehicle entities are what keep the scene alive after our
-        // car has finished.
-        rd.ents = vec![Ent {
+        // ONE CAR, AND EVERY NON-VEHICLE RECORD THE CONTAINER HAD.
+        //
+        // The vehicle entities go: on 227654 the carrier holds 29 of them and
+        // 28 are the SAME driver across 26 restarts (contiguous, non-overlapping
+        // time ranges), so a render that kept them would draw a phantom car per
+        // restart. That half was always right.
+        //
+        // What was wrong was dropping everything else. **Restoring a LIVE
+        // non-vehicle record is what repaired both ghosts that crash the game
+        // client on ghost import** — measured on the render box 2026-08-23 with
+        // a same-session control on every run: the container this project's
+        // 173691 film is built in imports fine with its live 0x2D001000 record
+        // intact (X0); the same file rebuilt without it crashes, three times
+        // across two revisions; grafting that one record back makes it import
+        // (X5, X7); and three other single-field repairs each crashed with the
+        // graft absent (X1, X3, X6).
+        //
+        // **It is not known to be a rule**: TAS_67319 has no live non-vehicle
+        // record either and imports cleanly, so what makes those two files
+        // different is still open (`ghost verify` V11 says so in one line).
+        // Keeping what the container had is the conservative choice either way
+        // — the game wrote those records and nothing here has a reason to
+        // remove them.
+        //
+        // No headless check can see this: the dedicated server re-simulates the
+        // input chunk and never reads the scene, so TAS_57482 passes
+        // `ghost verify` V1..V10, re-simulates to 57.482, and kills the client.
+        //
+        // The kept records are clipped to the run's span, so this cannot put
+        // back the scene-outlives-the-run defect that `shorten` exists to
+        // remove.
+        let car = Ent {
             type_,
             u01,
             u02: 0,
@@ -305,11 +354,46 @@ pub fn rebuild_to(
             raw,
             sample_size: ss,
             deltas2: Vec::new(),
-        }];
+        };
+        // Every entity that is not a car, clipped to the span, in its original
+        // order; then the car.
+        let veh: std::collections::HashSet<i32> = rd
+            .descs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.class_id == gbx::record::CLASS_CSCENEVEHICLEVIS)
+            .map(|(i, _)| i as i32)
+            .collect();
+        let mut kept: Vec<Ent> = Vec::new();
+        let mut live = 0usize;
+        for e in rd.ents.drain(..) {
+            if veh.contains(&e.type_) {
+                continue;
+            }
+            let mut e = e;
+            let keep = e.times.iter().take_while(|t| **t <= span_ms as i32).count();
+            if keep < e.times.len() && e.sample_size > 0 {
+                e.times.truncate(keep);
+                e.raw.truncate(keep * e.sample_size);
+            }
+            e.u03 = e.u03.min(span_ms as i32);
+            e.deltas2.retain(|(_, t, _)| *t <= span_ms as i32);
+            if !e.times.is_empty() {
+                live += 1;
+            }
+            kept.push(e);
+        }
+        let n_kept = kept.len();
+        kept.push(car);
+        rd.ents = kept;
         rd.bulk_notices.clear();
         rd.custom_modules.clear();
         rd.start_ms = 0;
         rd.end_ms = span_ms as i32;
+        note = format!(
+            ", kept {} non-vehicle record(s) of which {} live",
+            n_kept, live
+        );
         Ok(())
     })?;
 
@@ -320,7 +404,7 @@ pub fn rebuild_to(
         return Err(format!("wrote {n} samples and read back {}", d.samples.len()));
     }
     Ok(format!(
-        "{before} -> 1 entity, {n} samples every {period} ms spanning 0.000 .. {}",
+        "{before} -> the car regridded to {n} samples every {period} ms spanning 0.000 .. {}{note}",
         secs(span_ms)
     ))
 }
