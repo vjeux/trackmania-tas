@@ -71,8 +71,8 @@ impl Patch {
         let mut raw = vec![0f32; w * h];
         for y in 0..h {
             for x in 0..w {
-                let sx = (ox + x as i32).clamp(0, f.w as i32 - 1) as usize;
-                let sy = (oy + y as i32).clamp(0, f.h as i32 - 1) as usize;
+                let sx = f.clampx(ox + x as i32);
+                let sy = f.clampy(oy + y as i32);
                 raw[y * w + x] = f.minc(sx, sy);
             }
         }

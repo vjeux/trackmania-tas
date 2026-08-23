@@ -79,10 +79,11 @@ impl Corridor {
         max_m: f64,
         run: usize,
         tol_ms: i64,
+        from_ms: i64,
     ) -> Option<i64> {
         let mut bad = 0usize;
         let mut first_bad = 0i64;
-        for (ms, p) in traj {
+        for (ms, p) in traj.range(from_ms..) {
             if *ms > self.until_ms {
                 break;
             }

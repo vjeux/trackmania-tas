@@ -28,6 +28,9 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
 | where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
 | the next observable | **tyre wetness** — a positional integral, on screen, and now READ OUT OF THE ENGINE at `car+180` (95.4–96.0 % exact, negative control declines at 44 %) |
+| the wetness reader | **finished** (§9.1): 574 readings, **zero** violations of the dry-out law; the run is 100 % wet to race 9.9, resets at 9.95, and crosses water again at 22.4, 39.4 and 50.0 |
+| what the wetness objective bought (§9.2) | it **confirms** the 12.330 rather than lowering it, and dates the reroute at race ≈23.4 s. It cannot extend the reconstruction: the readout is illegible between race 10.038 and 22.355, which is exactly the window the search is working in |
+| the readout after that | **`! Slip`**, 40 % of the run's frames and present in every five-second bin — located, not calibrated (§9.3) |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -431,7 +434,13 @@ the video's HUD the way the speed was read, and score candidates on it. That is
 the same work as §1 and §5, on a channel that constrains the route rather than
 the speed.
 
-## 9. The wetness readout on screen: located, and not yet decoded
+## 9. The wetness readout on screen: located, then decoded
+
+**SUPERSEDED in part.** §9.1 below finishes this reader and corrects one of its
+findings: the largest of the three "digit count" modes is not a percentage at
+all. Everything in §9 up to §9.1 is what was known before that; the numbers in
+it are real measurements and the conclusion drawn from the largest one was
+wrong. Read §9.1 for the state of the reader.
 
 The simulator side is done (§8). The video side is where this arm stops, and
 precisely where matters.
@@ -554,6 +563,257 @@ ten is the answer, is the instrument reporting that its cells are wrong, which
 is what it is for. **Nine would have been the dangerous outcome**: two glyphs
 merged, unseparable afterwards, and a reader subtly wrong on one digit forever.
 A result that fails visibly beats one that fails invisibly.
+
+## 9.1 The reader, finished — and the mode that was not a number
+
+The reader is done. It reads **574 frames** of the final run and the dry-out
+law refuses **none of them**. Getting there meant correcting the previous
+section's central inference, and the correction is the interesting part.
+
+### The `! Slip` line has an icon too
+
+§9 detects the readout by **contrast** over the icon rectangle — p95 − p05 of
+`min(r,g,b)` — and that is the right way to find the box over backgrounds that
+run from a dark tunnel to a white wall. But contrast says the slot is *drawn*.
+It cannot say **what is in it**, and this box draws two things there: a droplet
+when the line is a percentage, and the **`!` of `! Slip`** when it is not.
+
+`vidread weticon` clusters the icon slot itself, and the two shapes fall out —
+an exclamation mark (a bar, a gap, a dot) and a droplet (narrow at the top,
+round at the bottom). Their cross-check is that the icon shape and the field's
+right edge are **two independent measurements** — one a template correlation on
+12×15 pixels, the other a template-free ink profile 20 px to the right — and
+they agree:
+
+| icon in the slot | right edge 2156 | 2159 | 2165 | 2174 | band end (failed) | other |
+|---|---|---|---|---|---|---|
+| `!` (1753 frames) | 0 | **1326** | 14 | 2 | 270 | 140 |
+| droplet (973) | 55 | 8 | **466** | 167 | 132 | 145 |
+
+So the 2159 mode — **1334 frames, the largest, the one §9 read as `0 %`** — is
+`! Slip`. Its "right edge" is the right edge of the **`p`**, and the 889-member
+cluster whose averaged bitmap looked "plainly a `0`" is that `p`'s bowl. The
+sentence *"1334 frames of `0 %` is what a run that spends most of its length dry
+looks like"* was a good story fitted to a real measurement of the wrong thing.
+
+> **A guard you removed to break a circle is still a guard.** §9 dropped the
+> `%` anchor — the stated defence against `! Slip` — because finding the `%`
+> needed a template and the template needed cells. The geometric right edge
+> broke that circle beautifully and *silently took the guard with it*. What
+> replaced it had to be an independent reading of the same question, not an
+> assumption that the question had gone away.
+
+### The cell grid, measured
+
+With the Slip frames out, `vidread wetgeom` takes the **median ink profile per
+edge bucket** over every clean droplet frame — backgrounds differ frame to
+frame and glyphs do not, so the median is the field's own geometry with the
+scenery removed. It says:
+
+* the field is **left-aligned at x 2136**, not right-aligned against the `%`;
+* the digit pitch is **exactly 9 px** — an integer, so every cell shares one
+  sub-pixel phase and the per-phase template banks the speed field needed are
+  not needed here;
+* the `%` is **11 px** wide and follows the last digit.
+
+Hence `edge = 2136 + 9n + 11`: **2156, 2165, 2174 for one, two and three
+digits.** The previous cells — pitch 9.6, cut leftwards from the edge — were
+sampling across glyph boundaries even on the frames that were percentages.
+
+### The alphabet, with no eye-labelling at all
+
+Three digits can only ever be **100**. So the 151 three-digit frames hand over
+a `1` (cell 0) and two `0`s (cells 1 and 2) for nothing, and the rest of the
+alphabet follows from the dry-out law: a gradual dry-out steps the units digit
+down by one about every six frames, so the **temporal succession** of the
+units-cell clusters spells `1, 0, 9, 8, …`. `vidread wetalpha` does both.
+
+* Seed: `0` from 302 samples (self-correlation median 0.967), `1` from 151
+  (0.974), and the two templates correlate at **0.039** — they are not the same
+  shape being split.
+* Clustering all 1313 cells at radius 0.82 gives 14 clusters; **ten of them
+  form a single 10-cycle** under "which cluster follows this one after a dwell
+  of at least four frames": `1 → 2 → 3 → 7 → 5 → 4 → 11 → 10 → 6 → 9 → 1`.
+* **The check.** The chain is anchored only on the seeded `0`. Walking it names
+  cluster 1 as `1` — and the seed, which never saw the chain, calls cluster 1 a
+  `1` at correlation 0.999. Two derivations, one from the value `100` and one
+  from the passage of time, agree.
+* The four leftover clusters (8, 7, 7 and 13 members) are background variants:
+  each joins the named shape it correlates best with, at 0.786 – 0.925. That is
+  the whole of "merge the background variants" — a radius question, as §9 said.
+
+The ten averaged bitmaps are in `wetness/alpha.txt` and read as the digits they
+are named.
+
+### The acceptance gate, and what it decided
+
+`vidread wetlaw` is §9's dry-out law as an instrument. Two things had to be
+right before it could be believed, and both were wrong first:
+
+* **The sample period, not the frame period.** The engine recomputes wetness
+  every 50 ms and the HUD holds the last value, so at 60 Hz a whole sample's
+  change lands on one frame boundary. Dividing by the frame period turns the
+  largest real rise in the human data — 4 points — into a nonsensical 240 pt/s
+  and rejects it. The bound is per **sample**.
+* **A reset is two steps, and the second one is where the zero is.** Asking
+  whether *this* step landed on nil misses the first half of a `202 + 53` fall.
+  The test looks ahead — and looks for the fall **completing**, not for the
+  zero itself, because the HUD box empties as the readout does and the last
+  frame of a real reset in this video reads 8. What separates a reset from a
+  mis-decoded tens digit is not the destination but the shape: a reset keeps
+  falling, a bad digit comes straight back up, and the return trip is caught as
+  a rise by the same gate.
+
+| series | pairs | violations |
+|---|---|---|
+| **positive control** — human replay 218053, from its own telemetry | 5337 | **0** |
+| 222683 | 6333 | **0** |
+| 235245 | 6321 | **0** |
+| **negative control** — the same three with 2 % of readings digit-flipped | — | **1.18 – 1.27 %** |
+| **the decoded video** | 551 | **0** |
+
+The negative control is the one that makes the row above it mean something: the
+gate is not vacuous, and injecting exactly the defect it claims to catch turns
+it on.
+
+**And the gate decided a parameter rather than being tuned to pass.** The right
+edge lands within a pixel or two of a mode on frames the strict test refuses;
+letting it in is free in principle, because the cells are anchored at x 2136
+and not at the edge, so a wrong edge moves no cell. The law says how free:
+
+| edge tolerance | readings | violations |
+|---|---|---|
+| **0 px** | **574** | **0** |
+| 1 px | 591 | 2 (0.35 %) |
+| 2 px | 600 | 3 (0.52 %) |
+| 3 px | 609 | 5 (0.85 %) |
+
+Seventeen more readings cost two violations, so the reader ships at zero. The
+same test settled the digit **margin**: a cell that correlates 0.95 with `9` and
+0.92 with `0` is not a reading of `9`, and every wrong digit the law caught sat
+under a margin of 0.05 while the bulk of the readings sit at 0.18. Refusing
+below 0.06 drops 7 readings and takes the violations from 5 to 1.
+
+### What it reads
+
+574 readings, race 3.605 – 55.571 s, in the four stretches the box is legible:
+
+| race | what the readout does |
+|---|---|
+| 3.605 – 9.921 | **100 %** throughout — the car is in water for the whole launch |
+| 9.921 – 10.038 | 96 → 73 → 8: **a reset.** The car leaves the water at ≈ 9.95 |
+| 22.355 – 27 | back to 100 %, then a gradual dry-out to 90 % over 23.4 – 24.3 |
+| 39.355 – 46.7 | 0 → 5 (entering water), 44 at 41.7, drying 43 → 20 by 45.9 |
+| 50.021 – 55.571 | **100 %** again |
+
+Coverage is 574 of 4380 frames — 13.1 %. That is the honest figure and it is
+much smaller than §9's 62.2 %, because 62.2 % was the frames on which the
+*slot* was drawn and most of those are the Slip line.
+
+## 9.2 What the wetness objective bought
+
+`recon --wet` scores a candidate on the decoded series exactly as `--corridor`
+scores it on the human lines: the run's score is the **earliest** of "stopped
+tracking the speed", "left the corridor" and "wrong wetness", because a
+candidate is right until it is wrong and any one of them can be what is wrong
+first.
+
+### It dates the reroute, and it corrects `--corridor-to`
+
+Held against the human replays (`recon wetcmp`), the video's wetness:
+
+* is **identical through the launch**, to race 9.9 — the reset instant matches
+  218053's to within 40 ms and 222683's to within 130 ms;
+* **agrees to within 10 points to race ≈ 27 s**;
+* **diverges decisively from race 41.8 s** — the video reads 44 % and 37 %
+  where Sapi reads 0, so this run crossed water about 1.5 s earlier than the
+  human route does — and at 50.2 s the video reads 100 % against Sapi's 25 %.
+
+Two independent instruments say the same thing, which is the control that
+matters here: Sapi's **recorded** telemetry and a full-run **`fk trace`** of
+Sapi's tape score the video at 41.6 % and 42.9 % within 5 points, mean |diff|
+15.04 and 14.93. The objective reads the same whether it comes from a recording
+or from the engine — and candidates only ever produce the latter.
+
+The first real difference is earlier than 41.8 s, though: at race 24.4 the
+video is at 90 % while Sapi is still at 100, so **this run left the water about
+a second before the human route does, at race ≈ 23.4 s.** `--corridor-to 30000`
+was set at "CP2" by assumption; the water history says the shared route ends
+nearer **23.4 s**. It changes no number here — no candidate reaches 23 s — but
+it is a measured value replacing a guessed one.
+
+### On the incumbent, it confirms rather than lowers
+
+| tape | speed + corridor (3 m) | + wetness |
+|---|---|---|
+| `best_corridor.events` (the arm's best) | **12.330 s** | **12.330 s** |
+| `best_corr.events` | 10.621 s | 10.621 s |
+| `seed_218053.events` | 11.170 s | 11.170 s |
+
+Unchanged — and unlike the corridor, which took 12.938 down to 12.380 by
+catching a car that had left the track, **the wetness gate has nothing to
+object to.** The incumbent is 100 % wet from 3.6 to 9.9 and resets at 10.0,
+exactly as the video does; its first wetness disagreement is at race **24.005**,
+twelve seconds past where its speed already failed.
+
+**The gate can fire.** Shifting the video's series in race time — the same
+tape, the same code, a series it cannot satisfy — takes the same 12.330 to
+**8.405** at +2 s. (At −2 s it does not fire: that shift lands the reset in a
+stretch with fewer than the six consecutive readings the gate requires before
+it will call a divergence. The asymmetry is the gate's `run` parameter, not an
+inconsistency.)
+
+### Why it cannot extend the reconstruction yet, precisely
+
+The reconstruction stops at race 12.380. The video's wetness readings stop at
+10.038 and do not resume until **22.355**. *There is no wetness reading in the
+window where the search is working.* This is not a property of the objective —
+it is that the HUD box in that window is showing the other line.
+
+So the honest statement of what wetness bought is three things, and none of
+them is a larger number:
+
+1. it **confirmed** that the 12.330 was not bought by a wrong water history,
+   which is the failure mode the corridor caught for position;
+2. it **dated the reroute** at race ≈23.4 s (first divergence) and 41.8 s
+   (decisive), replacing an assumption in `--corridor-to`;
+3. it is **ready** for the region past CP2, where nothing else this arm has
+   built makes any claim, and where 543 of its 574 readings live.
+
+Seeding a search at race 20 s to reach that region does **not** work, and the
+reason is worth writing down: the humans are 16 seconds slower over the run, so
+at race 20 s a human tape and this run are at completely different points of
+the track. A seed has to be matched by **position**, not by clock, and no tape
+we have reaches race 20 s of *this* run.
+
+## 9.3 The third readout, located and not calibrated: `! Slip`
+
+Classifying the icon turned the Slip line from a trap into a census. It is on
+screen for **1753 of 4380 frames — 40.0 %** — and unlike wetness it appears in
+every five-second bin of the run, including race 10–20 s, which is exactly
+where wetness is silent and where the reconstruction's frontier sits.
+
+| race (5 s bins) | 0 | 5 | 10 | 15 | 20 | 25 | 30 | 35 | 40 | 45 | 50 | 55 | 60 | 65 | 70 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `! Slip` frames | 141 | 130 | 51 | 271 | 68 | 168 | 49 | 44 | 148 | 30 | 238 | 204 | 124 | 55 | 32 |
+| droplet frames | 118 | 108 | 8 | 4 | 138 | 112 | 5 | 10 | 149 | 136 | 53 | 88 | 18 | 10 | 16 |
+
+**UNKNOWN: which engine quantity it is.** `fk probe` cannot find it the way it
+found wetness, because that method needs the channel in the game's own
+recording as an answer key and no recorded ghost carries a slip flag. What
+would settle it: **render a human replay through this project's own clip
+pipeline and read its HUD with this same reader**, which gives a slip series
+for a run that can be simulated — the answer key `fk probe` needs. The render
+box is not reachable from this node, so it is a task and not a result.
+
+Two smaller notes for whoever picks it up. The contrast presence test flickers
+frame to frame over hard backgrounds (0/1/0/1 at 60 Hz around race 22), so
+"the box was not drawn" is a **refusal**, not an observation — do not read an
+absent box as a wetness of zero. And the presence test is not what limits the
+wetness reader's coverage: dropping `--span-min` from 45 to 0 changes the
+readings not at all, from 574 to 574. What limits coverage is the edge landing
+in a mode and the digits being legible.
+
 
 ## 10. What is banked
 
