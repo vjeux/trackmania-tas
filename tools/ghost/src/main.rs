@@ -358,7 +358,7 @@ fn cmd_inspect(a: &[String]) {
 }
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|diff|stats|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|set|diff|stats|bits>"));
     let rest = &a[1..];
     match what {
         "script" => {
@@ -500,6 +500,101 @@ fn cmd_tape(a: &[String]) {
                 at,
                 secs(at as i64 * 10 + off),
                 head
+            );
+        }
+        "set" => {
+            // Overwrite the vehicle inputs over a tick RANGE. The sweep
+            // primitive: "hold this steer for these 200 ticks and see where
+            // the car ends up" is the shape of almost every experiment on this
+            // project, and doing it by editing `.gtape` text is how a window
+            // ends up one tick out.
+            //
+            // Ranges are TICKS, not race ms, because a tape's own indexing is
+            // ticks and `start_offset_ms` is a per-file trap. The command
+            // prints the race window it corresponds to so the two are never
+            // confused.
+            let src = rest.first().unwrap_or_else(|| die("ghost tape set IN --out T.gtape --from A --to B [--steer S] [--accel 0|1] [--brake 0|1]"));
+            let out = need(rest, "--out");
+            let from: usize = num(rest, "--from").unwrap_or(0) as usize;
+            let to: usize = num(rest, "--to").unwrap_or_else(|| die("--to TICK (exclusive)")) as usize;
+            let steer = num(rest, "--steer");
+            let accel = num(rest, "--accel");
+            let brake = num(rest, "--brake");
+            if steer.is_none() && accel.is_none() && brake.is_none() {
+                die("nothing to set: give at least one of --steer / --accel / --brake");
+            }
+            if let Some(s) = steer {
+                if !(-127..=127).contains(&s) {
+                    die(format!("--steer is an i8 over 127; {} is out of range", s));
+                }
+            }
+            let raw = std::fs::read(src).unwrap_or_else(|e| die(format!("{}: {}", src, e)));
+            let t = if raw.first() == Some(&b'#') {
+                Tape::from_text(&String::from_utf8_lossy(&raw)).unwrap_or_else(|e| die(e))
+            } else {
+                Tape::from_file(src).unwrap_or_else(|e| die(e))
+            };
+            if to > t.n() || from >= to {
+                die(format!("--from {} --to {} does not fit a {}-tick tape", from, to, t.n()));
+            }
+            let mut n = 0usize;
+            let text: String = t
+                .to_text(src)
+                .lines()
+                .map(|l| {
+                    let Some(rest2) = l.strip_prefix("t=") else { return l.to_string() };
+                    let idx: usize =
+                        rest2.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+                    if idx < from || idx >= to {
+                        return l.to_string();
+                    }
+                    n += 1;
+                    // Rewrite the named fields in place; `vsame=1` is forced to
+                    // 0 because a changed value cannot be coded as "same as the
+                    // previous tick", and the writer expands it anyway.
+                    l.split_whitespace()
+                        .map(|f| {
+                            if f.starts_with("steer=") {
+                                steer.map_or(f.to_string(), |s| format!("steer={}", s))
+                            } else if f.starts_with("accel=") {
+                                accel.map_or(f.to_string(), |s| format!("accel={}", s))
+                            } else if f.starts_with("brake=") {
+                                brake.map_or(f.to_string(), |s| format!("brake={}", s))
+                            } else if f.starts_with("vsame=") {
+                                "vsame=0".to_string()
+                            } else {
+                                f.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            if n != to - from {
+                die(format!("expected to rewrite {} ticks, rewrote {}", to - from, n));
+            }
+            let re = Tape::from_text(&text).unwrap_or_else(|e| die(format!("the edit does not parse: {}", e)));
+            if re.n() != t.n() {
+                die(format!("read-back control FAILED: {} ticks in, {} out", t.n(), re.n()));
+            }
+            if let Some(s) = steer {
+                let got = re.steer_i8s();
+                if (from..to).any(|i| got[i] as i64 != s) {
+                    die("read-back control FAILED: a tick in the window does not carry the steer asked for");
+                }
+            }
+            std::fs::write(out, &text).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+            let off: i64 = t.archives.first().map(|a| a.start_offset_ms as i64).unwrap_or(0);
+            println!(
+                "wrote {}  {} ticks rewritten, t={}..{} = race {} .. {}  (read-back control OK)",
+                out,
+                n,
+                from,
+                to,
+                secs(from as i64 * 10 + off),
+                secs(to as i64 * 10 + off)
             );
         }
         "extract" => {
