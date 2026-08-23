@@ -280,3 +280,28 @@ echoes are the same string.
 **INFERRED** — the physics come from the binary, not from anything in the file.
 There is no era switch to invoke, which is exactly why §1 is the route.
 
+
+## 8. What this does not explain: the author time
+
+The build explains why the record does not replay. It does not explain the
+author time.
+
+**MEASURED** — the best-sector sum over the ten build-113150 runs, whose splits
+the 2022 server now reproduces exactly, is **63.263** (13.209 from rank03, then
+17.651 + 11.309 + 17.130 + 3.964, all four Roevhaal's). That is **4.576 above
+the author time of 58.687 — on the very build the author time was set on**.
+*Control: it is the same number `ksi2` reported for the whole 15-run field, and
+the modern half contributes no sector best, so the bound is entirely 2022
+driving.*
+
+**MEASURED** — a local search under 2022 physics from Roevhaal's own tape (§3,
+64 workers) reaches **63.382 in 35 minutes / 130 050 evaluations**, a gain of
+0.164, every improvement re-validated by the plain oracle, 0 phantoms. The basin
+around the world record does not fall away toward the author time either.
+
+**INFERRED** — the author time is not "the 2022 car is simply faster". Whatever
+it is, it is still 4.6 s below the best combination of sectors anyone drove on
+that build. What the old server changes is that the question can now be asked
+*under the right physics*: `ksi2`'s 10 m envelope over this field says the route
+is worth 50.978, and that envelope is built from lines which, as of tonight, can
+be re-simulated and searched instead of only read.
