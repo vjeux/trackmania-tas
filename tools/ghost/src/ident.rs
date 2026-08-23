@@ -317,7 +317,7 @@ pub fn cmd(a: &[String]) {
                     Role::Nickname => name.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Trigram => trigram.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Login => login.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
-                    Role::Zone => zone.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
+                    Role::Zone => zone.map(|s| s.to_string()),
                     Role::ClubTag => clubtag.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
                     Role::Locator => if anon { Some(String::new()) } else { None },
                     Role::AccountId => if anon { Some(String::new()) } else { None },

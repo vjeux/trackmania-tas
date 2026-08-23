@@ -249,7 +249,15 @@ pub fn header_driver_identity(c: &Container) -> Vec<(String, String)> {
                 if let Some(p) = parse_3002(&ch.data) {
                     out.push(("0x03093002 login".into(), p.login.text));
                     out.push(("0x03093002 nickname".into(), p.nickname.text));
-                    out.push(("0x03093002 zone".into(), p.zone.text));
+                    // The zone is deliberately NOT in this list, and not
+                    // anonymised. It is a country, not an identifier, and this
+                    // toolchain has never stripped it (`identity set` touches
+                    // it only on an explicit `--zone`). It is also the ANCHOR
+                    // the body scan uses to find the trigram and the club tag
+                    // -- clearing it made `ghost identity set --trigram` pass
+                    // its write and fail its own read-back, which the suite
+                    // caught. A field that other checks navigate by is not a
+                    // field to blank on a hunch.
                 }
             }
             _ => {}
@@ -393,10 +401,6 @@ pub fn rewrite(
                 if anonymise {
                     if let Some(p) = parse_3002(&data) {
                         // back to front
-                        if !p.zone.text.is_empty() {
-                            log.push(format!("  header 0x03093002 zone     {:?} -> \"\"", p.zone.text));
-                            put_string(&mut data, &p.zone, "");
-                        }
                         if p.nickname.text != who {
                             log.push(format!("  header 0x03093002 nickname {:?} -> {:?}", p.nickname.text, who));
                             put_string(&mut data, &p.nickname, who);

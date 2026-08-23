@@ -7,8 +7,8 @@ y = 114.0, stationary, 0.6 km/h.**
 
 TMX map [173691](https://trackmania.exchange/maps/173691) by **Reddnox** ·
 3 checkpoints · author time **2672.290** · **0 online records**.
-**The map is not beaten and this does not beat it** — see "the platform is
-sealed" and "which map this is" below.
+**The map is not beaten and this does not beat it** — see "not a win" and
+"which map this is" below.
 
 **Spring 2023 - 15 (Underwater)** — TAS **36.049** (not a completion — a landing) | AT 2672.290 | WR — by nobody (0 online records)
 
@@ -98,15 +98,38 @@ What survives that, and what does not:
   97.0 km/h**, drives the same last road, and falls off at x ≈ 1269 instead of
   following the curve round to z = 386.
 
-## The platform is sealed — this is a landing, not a win
+## Not a win — the finish is 15.7 m above this deck
 
-The map's finish is on the **upper** deck at y ≈ 163–169. From the lower canopy
-there is no way up: an earlier pass fuzzed 2 400 tapes from two spawns on this
-deck and got **0 finishes**, against 515 of 2 400 from one storey up, and no
-tape that lands at 114.16 ever regains height. Structurally there is nothing
-between y = 122 and the stand fronts at y = 162.
+**Corrected 2026-08-22.** An earlier version of this page said the finish was on
+the upper deck at y ≈ 163–169 and that the lower canopy was sealed, on the
+strength of 0 finishes in 2 400 fuzzed tapes. That framing is retired: the
+finish is far lower than anyone had recorded, and the null was a search result,
+not a structure.
 
-Reaching this deck is the end of this route, not the start of a lap.
+What is measured now (see [`ENDGAME-MEASURED.md`](ENDGAME-MEASURED.md)): of the
+15 `GateFinish` blocks, five are the START wall and **ten are finish gates
+spanning y 130…194, and both rows fire**. Thirteen firings put the trigger on a
+plane at **z = 494.5 ± 0.6**, the lowest at **y = 133.97**. There is a drivable
+ledge at **130.2 → 134** inside the gate slot, and driving it finishes the map.
+
+So the deck this jump reaches at **114.16** is not the wrong storey by 50 m. It
+is **15.7 m** below a finish that fires. The map is still unfinished because
+neither of two independent routes closes that 15.7 m:
+
+* **From the deck.** A complete 456-block census of the volume between the
+  decks finds water, *vertical* pillars, the stands' slope (bottom edge 162)
+  and the gates — no ramp. 10 100 blind oracle runs, zero finishes; 204 scored
+  trajectories never exceed **y = 114.267**. The null is demonstrated rather
+  than assumed: twelve non-firing runs sat inside the trigger window at deck
+  height for 28–1131 consecutive samples.
+* **From the air.** The last road's exit is (1345.4, 154.9, 387.1) and the
+  plane is **107 m downrange**. Underwater drag is **linear** (fitted on four
+  independent glides), so reach has an **asymptote at 47–59 m** — 62 m
+  observed. Short by 46–57 m, and bounded by an asymptote rather than by search
+  effort. The nearest turbo is 559 m in a straight line, about 1.1 km by road,
+  against a 340 m half-life.
+
+Reaching this deck is still the end of this route, not the start of a lap.
 
 ## The file
 
@@ -121,7 +144,7 @@ loudly as the things it does:
 |---|---|
 | oracle | the dedicated server re-simulates **the written bytes** to 36.049, the time the file declares, `IsValid` true |
 | tape ↔ record | Cohen's kappa **1.000** over all 737 samples |
-| engine ↔ record | the engine's own run of this tape matches the recording to **0.0000 m** mean and worst |
+| engine ↔ record | the engine's own run of this tape matches the recording to **0.0005 m** mean, 0.0206 m worst — the client-vs-server floor |
 | an independent instrument | `fk trace`, which never reads the record, agrees to **0.0021 m** over 562 instants |
 | orientation | the stored quaternion is **0.072°** from the engine's own; a permuted reading of the same bytes gives 166.6° |
 | second generation | a second, independent regeneration agrees to **0.000497 m** — the client-vs-server floor, not a stale buffer |
@@ -136,6 +159,15 @@ loudly as the things it does:
 downloaded recording**, at 0.0028 m, put through exactly the same comparison —
 so −1 is this instrument's zero on this map, not a defect in this file. A
 negative result needs a positive control, and that is it.
+
+### The clip and the file
+
+The clip was rendered from a sibling build of this file, made before a fix to
+the anonymiser landed. Rather than assert that it does not matter: a render
+reads the **record**, and the two files' records are **identical at shift 0,
+mean 0.000000 m and worst 0.000000 m over all 737 samples** (`ghost trajdiff`,
+which also reports 0.93 m at ±1 sample, so that zero is identity and not a
+lag). The clip is a film of the record in the published file.
 
 ## Method notes worth keeping
 
