@@ -151,7 +151,11 @@ that map's author time. Nobody has beaten this one.
 
 ## What the obstacle actually is: the state at the kicker is matched, and it is not enough
 
-> **The "engagement point law" that used to stand here is RETRACTED.** It said
+*Claims below are tagged **MEASURED** (with the control named), **INFERRED**
+(with the inference stated), **UNKNOWN** (an open task, never "there is no X")
+and **SUPERSEDED** (pointing forward).*
+
+> **SUPERSEDED — the "engagement point law" that used to stand here.** It said
 > the frozen roll rate is a monotone function of `engage_x` — 912.5 → 145 °/s,
 > 914.6 → 126, 918.0 → 71 — measured over 27 tapes. The 27 rows are correct and
 > the law is not. Move the *kicker* instead of the car, one f32 on the map with
@@ -168,6 +172,9 @@ that map's author time. Nobody has beaten this one.
 > the crossing angle move together.
 
 ### The number that decides it, measured on the human's own tape
+
+**MEASURED.** The control is inside the experiment: these are perturbations of
+the run that WORKS, on its own map, so the positive case is not assumed.
 
 The discriminator is **`vz` at the kicker: the crossing angle.** It is not
 inferred from our failures — it is measured by perturbing the run that works.
@@ -196,6 +203,10 @@ in one number, on his map, with his car.
 
 ### What our lane can deliver: everything, and it is not enough
 
+**MEASURED.** Every restart was replayed through the readout and scored on the
+OUTCOME, not on the objective it minimised — the argmin of a proxy is not the
+population that does the thing.
+
 Six searches, 60 restarts, aimed at his kicker state shifted by the launcher
 assembly's own offset so it is the same place relative to the kicker. The last
 two put the crossing angle and the speed on **hard bars** instead of into a
@@ -217,6 +228,13 @@ all. Every restart was replayed and scored on the **outcome** rather than on the
 objective it minimised; none of them rides.
 
 ### Where the two runs actually part: 17 m after the kicker
+
+**MEASURED** (both traces from the live engine at 10 ms, aligned on canonical x).
+**INFERRED**: that the 4.3 m/s our car is down at that point is WHY contact ends
+there. That is one pair, not a control. The causal test is a tape at his speed
+AND his attitude 17 m up the curl, and it is **UNKNOWN** — a search for exactly
+that is running as this is written, and had reached his place and his attitude
+at 68.93 m/s against his 92.84.
 
 Aligned on canonical x, his tape against our best:
 
@@ -241,6 +259,13 @@ whether contact survives the last 17 m of the curl, and by then our car is
 
 ### The lane is a trough, and the trough is the block
 
+**MEASURED** (the profile, 25 tapes; the stored rotations, read off both maps).
+**INFERRED**: that the car's ROLL is the proximate cause rather than some other
+property of the water block. It is the residual by elimination and the direct
+trend is weak — across tapes holding vz in [−26,−22] at ≥ 93 m/s the frozen rate
+against arrival roll reads +2.2 → 217, +2.8 → 238, +3.5 → 242, +3.6 → 217,
++4.5 → 249, +4.8 → 245, which does not extrapolate to a ride at +1.2.
+
 The launcher deck on copies 1–3 is a shallow **valley** — the car's own height on
 it, at canonical x 902.5, over ten tapes at 99–100 m/s:
 
@@ -264,6 +289,9 @@ neither the position mover nor the new rotator can take them apart.
 
 ### The matched pair, on one map
 
+**MEASURED.** One map, one car, one kicker model, the crossing angle matched to
+0.30 m/s.
+
 | | deck | speed | crossing angle | roll | frozen ω | checkpoint |
 |---|---|---|---|---|---|---|
 | our copy 0 | `PlatformTechBase` | 91.06 | −17.94 | **+0.82** | **55.8** | 52.85 |
@@ -277,8 +305,10 @@ band, −5.90 … +1.62, so copy 1's +4.96 is the deck and not the driving.
 
 ### What this closes
 
+Each line is **MEASURED**, with its control named.
+
 * **The 1.00 m kicker.** A rigid offset on a **four-block assembly**
-  (`tmtraj blockdiff`), of which exactly one block is free-placed — so the two
+  (`tmtraj blockdiff`; found independently by the claims audit on the same day), of which exactly one block is free-placed — so the two
   earlier experiments that "raised the kicker by 1.00 m" raised a quarter of it
   and built a step: entry speed 99.81 → **50.84**. And the deck already pays for
   it: the car's height above its own kicker matches the human's to **8 mm**.
