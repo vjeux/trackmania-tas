@@ -358,7 +358,7 @@ fn cmd_inspect(a: &[String]) {
 }
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|diff|stats|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|diff|stats|bits>"));
     let rest = &a[1..];
     match what {
         "script" => {
@@ -383,6 +383,124 @@ fn cmd_tape(a: &[String]) {
             let t = Tape::from_text(&txt).unwrap_or_else(|e| die(format!("the scripted tape does not parse: {}", e)));
             std::fs::write(&out, &txt).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
             println!("wrote {} ({} events, {} ticks)", out, events.len(), t.n());
+        }
+        "graft" => {
+            // HEAD's first `--at` ticks, then TAIL's ticks from `--from`, as one
+            // tape. This project grafts tapes constantly -- a route from one run,
+            // a technique from another -- and until now every arm did it by hand
+            // in the text format, renumbering `t=` with an editor. A renumbering
+            // that slips by one is invisible and produces a run that simply goes
+            // somewhere else.
+            //
+            // The output keeps HEAD's archive framing (its format, its
+            // `start_offset_ms` and its tail bytes), because the container it
+            // will be injected into is HEAD's. TAIL contributes vehicle inputs
+            // only.
+            let head = need(rest, "--head");
+            let tail = need(rest, "--tail");
+            let out = need(rest, "--out");
+            let at: usize = num(rest, "--at").unwrap_or_else(|| die("--at TICK: where HEAD stops")) as usize;
+            let from: usize = num(rest, "--from").unwrap_or(0) as usize;
+            // HEAD and TAIL may each be a `.Ghost.Gbx` or an already-extracted
+            // `.gtape`. Guessing by extension is how a tool ends up asserting
+            // "not a GBX file" at the user; the first byte says which it is.
+            let load = |p: &str| -> Tape {
+                let raw = std::fs::read(p).unwrap_or_else(|e| die(format!("{}: {}", p, e)));
+                if raw.first() == Some(&b'#') {
+                    Tape::from_text(&String::from_utf8_lossy(&raw)).unwrap_or_else(|e| die(e))
+                } else {
+                    Tape::from_file(p).unwrap_or_else(|e| die(e))
+                }
+            };
+            let h = load(head);
+            let t = load(tail);
+            let ht = h.to_text(head);
+            let tt = t.to_text(tail);
+            let mut lines: Vec<String> = Vec::new();
+            let mut n_head = 0usize;
+            for l in ht.lines() {
+                if let Some(rest2) = l.strip_prefix("t=") {
+                    let idx: usize = rest2
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| die(format!("cannot read a tick index from {:?}", l)));
+                    if idx >= at {
+                        break;
+                    }
+                    lines.push(l.to_string());
+                    n_head += 1;
+                } else {
+                    lines.push(l.to_string());
+                }
+            }
+            if n_head != at {
+                die(format!(
+                    "--at {} but HEAD only has {} ticks before it",
+                    at, n_head
+                ));
+            }
+            let mut n_tail = 0usize;
+            for l in tt.lines() {
+                let Some(rest2) = l.strip_prefix("t=") else { continue };
+                let mut it = rest2.splitn(2, ' ');
+                let idx: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+                let body = it.next().unwrap_or("");
+                if idx < from {
+                    continue;
+                }
+                lines.push(format!("t={} {}", at + n_tail, body));
+                n_tail += 1;
+            }
+            if n_tail == 0 {
+                die(format!("--from {} leaves TAIL with no ticks", from));
+            }
+            // The `@archive` line's own packet count must match, or the reader
+            // trusts a number the body contradicts.
+            let total = at + n_tail;
+            for l in lines.iter_mut() {
+                if l.starts_with("@archive ") {
+                    *l = l
+                        .split_whitespace()
+                        .map(|f| {
+                            if let Some(v) = f.strip_prefix("packets=") {
+                                let _ = v;
+                                format!("packets={}", total)
+                            } else {
+                                f.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+            }
+            let text = lines.join("\n") + "\n";
+            // read it back rather than trusting the string we just built
+            let re = Tape::from_text(&text).unwrap_or_else(|e| die(format!("the graft does not parse: {}", e)));
+            if re.n() != total {
+                die(format!("read-back control FAILED: {} ticks written, {} read", total, re.n()));
+            }
+            std::fs::write(out, &text).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+            let off: i64 = h.archives.first().map(|a| a.start_offset_ms as i64).unwrap_or(0);
+            println!(
+                "wrote {}  {} ticks = {} from {} (race {} .. {}) + {} from {} (its tick {} on)",
+                out,
+                total,
+                at,
+                head,
+                secs(off),
+                secs(at as i64 * 10 + off),
+                n_tail,
+                tail,
+                from
+            );
+            println!("  read-back control OK: the graft parses to {} ticks", re.n());
+            println!(
+                "  the handover is at tick {} = race {} of {}",
+                at,
+                secs(at as i64 * 10 + off),
+                head
+            );
         }
         "extract" => {
             let src = rest.first().unwrap_or_else(|| die("ghost tape extract FILE --out T"));
