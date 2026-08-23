@@ -1,5 +1,22 @@
 # The Magnet Trial
 
+**The Magnet Trial** — TAS **793.893** (−1746.748) | AT 2540.641 | WR 2575.154 by keby
+
+https://github.com/user-attachments/assets/5d483f7b-f29c-41b7-ba94-72dd76b0d378
+
+Thirteen minutes and fourteen seconds, and the whole run is in it. The panel is
+this run's own inputs from the 10 ms input chunk.
+
+**One car, and that is a departure from this project's filming rule**, which is
+that both runs go in one scene with the human as the opponent. It is not a
+preference. The MediaTracker renders a clip as long as its longest entity block,
+and the block for keby's imported ghost reads 2575.15 s however the file is
+trimmed — record span, declared time, checkpoint list and every entity all say
+796.000 and the block still says 2575.15. The two-car scene therefore renders
+2575 s of video for a 793.893 s run: **5 h 43 m by the game's own estimate**.
+With one ghost the clip is 793.9 s, which is the run.
+
+
 **You do not need to drive this map faster than the record holder does — you
 need to fall off it less. Their gap to the author time is 34.513 s, and eight of
 their failed attempts each lasted longer than that.**
@@ -23,18 +40,6 @@ their failed attempts each lasted longer than that.**
 > rather than inherited from the container, and named as such. The line and the
 > speed are this run's; the tyre and contact effects are absent rather than
 > somebody else's.
->
-> **Update, 2026-08-22 — ICE is no longer one of them.** The carrier-bytes arm
-> has located it: `Icing01`, per wheel, at `car + 88 + 44k + 28`, encoded
-> `floor(v x 255)`, and it reads **100.00 % exact** on two independent
-> recordings on two different maps (462 samples on 267460, 1370 on 134672)
-> against constant-predictor baselines of 71.9 % and 79.0 %, with no refit
-> between them. So the honest count here is now **ten** channels, and ice is a
-> regeneration away rather than unavailable. **Dirt, by contrast, is refuted**
-> rather than merely unfound: pre-registered across all eight remaining slots
-> of the wheel record and beaten by a constant (best worst-key lift -7.35
-> points). Byte 89, ground contact, has been refused four times.
-
 >
 > **Still no video.** At 793.893 s this is the longest run in the project and
 > the render box became unavailable before it could be filmed.
