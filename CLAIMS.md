@@ -184,6 +184,37 @@ quantity. The orientation half is **open and got worse** under the same change,
 so the flag is default-off and the publish path is unchanged. Full table in
 `tools/README.md`.
 
+## An exemption must quote the page it exempts
+
+The integrity allowlist (`_integrity/intg_reference_files.tsv`) excuses files
+that legitimately carry another driver's identity, and its own preamble already
+says **"a name is not a contract: the page is the claim"** — it was written
+after a first encoding matched `HUMAN*`/`AUTHOR*` on the filename and missed a
+file. On 2026-08-22 an entry was found breaking that rule in the other
+direction:
+
+```
+270051  m270051_human_shaped_4831.Ghost.Gbx  human-shaped: built to the human's line
+```
+
+That row excused the file from the identity check, and the file was carrying a
+real player's account id and their personal-skin locator URL. But the page says:
+
+> `replays/m270051_human_shaped_4831.Ghost.Gbx` — **the author time, with ±10 ms
+> of slack on every input**
+
+**"Human-shaped" is a claim about the INPUTS. "His recording" is a claim about
+whose run the file is.** Reading the first as the second launders an identity
+onto a file the page presents as ours.
+
+The test, and it is cheap: **does the page say, in words, that the file IS
+somebody's recording?** Applied to all 11 files the skin census flags, ten pass
+by quotation — *"published as his recording, which is what it is"* (227654),
+*"the author's own author-time lap"* (228607), *"Ssnake01's 49.491"* (285268) —
+and 270051 is the only failure. Two independent instruments agree on that one
+file: `ghost identity show` keys on the account id, `tmtraj corpus qc` on the
+skin path and its storage-object URL.
+
 ## Not everything needs a tag
 
 Do not qualify what is solid. A true claim with its control cited is the best

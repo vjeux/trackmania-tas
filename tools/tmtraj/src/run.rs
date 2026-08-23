@@ -119,6 +119,9 @@ pub fn run() {
         "facing" => crate::facingcmd::cmd(rest),
         "route" => crate::routecmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
+        // Settle a corpus-dup UNRESOLVED pair against the engine.
+        "adjudicate" => crate::adjudicate::cmd(rest),
+        "adjudicate-batch" => crate::adjudicate_batch::cmd(rest),
         // How many ticks differ between two tapes in a race-time window.
         // UNTRUNCATED, which is the point: `ghost tape diff` prints at most 80
         // rows and then stops, so its output reads as "the differences end at
