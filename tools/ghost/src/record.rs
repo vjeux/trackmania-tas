@@ -82,6 +82,24 @@ pub fn cmd(a: &[String]) {
                 Err(e) => die(e),
             }
         }
+        Some("entorder") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record entorder IN OUT --car-first | --car-last")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record entorder IN OUT --car-first | --car-last")
+            });
+            let first = crate::cli::has(a, "--car-first");
+            let last = crate::cli::has(a, "--car-last");
+            if first == last {
+                die("exactly one of --car-first or --car-last -- the two directions of the same \
+                     experiment, and a run that does neither, or both, measures nothing");
+            }
+            match set_ent_order(inp, out, first) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("notices") => {
             let inp = a.get(1).unwrap_or_else(|| {
                 die("ghost record notices IN OUT --from DONOR.Ghost.Gbx | --strip")
@@ -126,6 +144,9 @@ pub fn cmd(a: &[String]) {
              ghost record notices IN OUT --from DONOR | --strip\n\
              \x20                            -- restore or remove the record's notice lists:\n\
              \x20                               the two directions of one experiment\n\
+             ghost record entorder IN OUT --car-first | --car-last\n\
+             \x20                            -- move the car to the front or the back: in every\n\
+             \x20                               ghost the game wrote it is entity 0\n\
              ghost record show FILE",
         ),
     }
@@ -412,7 +433,20 @@ pub fn rebuild_to(
             kept.push(e);
         }
         let n_kept = kept.len();
-        kept.push(car);
+        // THE CAR GOES FIRST. It was pushed LAST here, and in every ghost the
+        // game itself wrote the car is entity 0 while every file this rebuild
+        // produced had it at the end -- a four-row separation the render arm
+        // isolated across four maps, where the repo's own file imports and our
+        // rebuild of that same file does not (two of them raise a FrameMessage
+        // and never gain a ghost block, two kill the process outright), with
+        // V1..V11 including the oracle passing on all four.
+        //
+        // Order is not cosmetic to a consumer that resolves entities by index.
+        // `ghost record entorder IN OUT --car-first | --car-last` is the same
+        // change in both directions, because one direction proves nothing:
+        // tonight the scene-record lead, the notice lead and the u01 lead each
+        // looked decisive from one side and died from the other.
+        kept.insert(0, car);
         rd.ents = kept;
         // KEEP THE NOTICE LISTS -- but NOT because they fix the import crash.
         // They do not. THE HYPOTHESIS THAT PUT THIS LINE HERE IS DEAD, killed
@@ -474,6 +508,68 @@ pub fn rebuild_to(
 ///
 /// It touches no sample and no time: the car's trajectory is required to come
 /// back byte-identical, exactly as `shorten` requires.
+/// Move the car entity to the front or the back of the record — the two
+/// directions of the entity-order experiment.
+///
+/// In every ghost the game itself wrote, the car is **entity 0**. Every file
+/// `rebuild_to` produced before 2026-08-23 had it **last**, and four of four
+/// such rebuilds failed to import while the repo's own file for the same map
+/// imported in the same session. That is a suggestive separation and nothing
+/// more until it is run BOTH ways, which is what this is for:
+///
+/// * `--car-first` — a rebuilt file with the car put back at index 0.
+/// * `--car-last` — a file that imports, with its car moved to the end.
+///
+/// If the first imports and the second crashes, order is the mechanism. If both
+/// import, order was never it, and the rebuild's other differences — the
+/// dropped `delta2` blocks, the scene record one sample short — are next.
+///
+/// Nothing but a client import can see any of this: the dedicated server
+/// re-simulates the input chunk and never reads the entity list, so both
+/// outputs re-simulate to the same time as their input. The car itself is
+/// required to come through untouched.
+pub fn set_ent_order(inp: &str, out: &str, car_first: bool) -> Result<String, String> {
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity: nothing to reorder")?;
+        if rd.ents.len() < 2 {
+            return Err(format!(
+                "this record has {} entity: order is not a property of it",
+                rd.ents.len()
+            ));
+        }
+        before = format!("car at index {} of {}", vi, rd.ents.len());
+        let car = rd.ents.remove(vi);
+        if car_first {
+            rd.ents.insert(0, car);
+        } else {
+            rd.ents.push(car);
+        }
+        let vj = pick_vehicle(rd).unwrap_or(usize::MAX);
+        after = format!("car at index {} of {}", vj, rd.ents.len());
+        if vi == vj {
+            return Err(format!(
+                "the car is already {} ({}): writing this file would produce an import result \
+                 about nothing",
+                if car_first { "first" } else { "last" },
+                before
+            ));
+        }
+        Ok(())
+    })?;
+    let a = gbx::record::decode_ghost(inp)?;
+    let b = gbx::record::decode_ghost(out)?;
+    if a.samples.len() != b.samples.len() {
+        return Err(format!(
+            "the car changed: {} samples in, {} out",
+            a.samples.len(),
+            b.samples.len()
+        ));
+    }
+    Ok(format!("{before} -> {after}; car unchanged ({} samples)", a.samples.len()))
+}
+
 /// Restore or remove the record's NOTICE LISTS — the two directions of one
 /// experiment.
 ///
