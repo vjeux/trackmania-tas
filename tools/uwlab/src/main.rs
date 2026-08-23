@@ -7,6 +7,7 @@
 //! there. Those are trajectory questions, so this crate only ever reads a
 //! trajectory CSV. It writes no ghost and edits no map.
 
+mod hunt;
 mod traj;
 
 use traj::{Row, Traj};
@@ -21,6 +22,8 @@ uwlab — trajectory analysis for the underwater map. Times print as seconds.
   glide  CSV [--min-air S]      every airborne stretch, with its reach and sink
   reach  --from x,y,z --vel vx,vy,vz --law g,k1,k2,h1,h2 [--secs S]
                                 forward-integrate the fitted law from a launch
+  hunt   --template G --map M --base T.gtape --gate SPEC --gate-key EXPR
+                                a hill climber over `fk trace`, scored by BAND
   probemap --map M --tape G --tmmaps P --fk P [--cx A:B] [--cz A:B] [--cy N] [--jobs N]
                                 a plumb-probe LATTICE: one column per 32 m cell
   maxy   CSV [--after S]          the highest the car ever got, and where
@@ -52,6 +55,7 @@ fn main() {
         "plumb" => cmd_plumb(rest),
         "maxy" => cmd_maxy(rest),
         "probemap" => cmd_probemap(rest),
+        "hunt" => crate::hunt::cmd_hunt(rest),
         other => {
             eprintln!("uwlab: unknown command `{other}`");
             print!("{USAGE}");
