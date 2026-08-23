@@ -322,8 +322,16 @@ Each line is **MEASURED**, with its control named.
   100 m short of the kicker.
 
 **What is left**: the last 17 m of the curl — aim at his state at canonical
-x 933.3 rather than at the kicker plane -- and the water start (1.30 s, never
+x 933.3 rather than at the kicker plane — and the water start (1.30 s, never
 searched, independent of all of this).
+
+**And a seed, banked with its caveat.** Two SHOTS (both `DNF cps 1`, both on the
+record's container — **a shot is not a lap**) reach the wall at **80-82 m/s**
+against the human's 79.49 and put the car through the checkpoint region at
+**46.90**, against our own record's 45.8. One of them RECOVERS contact 45 m past
+the kicker — its frozen rate starts decaying again at canonical x 979, 229.6 to
+193.3 over 1.8 s — the first tape on this lane to do so at all. Converting a shot
+into a lap is the unsolved half of this map and has beaten three arms.
 
 Full account, tables and md5s: `tm-unbeaten/284238/RESULT.md`, which points at
 `wtr_CORRECTION_v2_roll_is_reachable_and_it_is_not_enough.tsv` and
