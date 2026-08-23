@@ -169,3 +169,20 @@ a brake tap into a landing.
 | `inputs/tas_min2_3848.tick.txt` | the two-action run as a readable input script |
 | `inputs/tas_kb_3844.tick.txt` | the keyboard run |
 | `inputs/tas_3836.tick.txt` | the fastest run |
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.

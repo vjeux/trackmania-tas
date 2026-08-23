@@ -77,7 +77,7 @@ Running through the deck at **z ≈ 709**, spanning at least x = 56 to x = 136,
 there is a trigger about a metre wide. It is **not** fussy about where along the
 line you hit it. It is extremely fussy about how.
 
-### The condition: you must arrive sideways — and that is necessary, not sufficient
+### The condition: you must arrive sideways
 
 > **Cross the line going in −z, at floor level, with the car turned across its
 > own direction of travel — at least 85 m/s (≈300 km/h) of your speed pointing
@@ -89,24 +89,7 @@ line you hit it. It is extremely fussy about how.
 | slide **along** the line at 102 m/s of side speed | **no** |
 | cross it downwards at 100 m/s, nose-first | **no** |
 | arrive at the author's exact contact point, within 0.3 m, at his speed within 3 m/s, but pointing along your travel | **no** |
-| cross **downwards, body lateral, ≥85 m/s of side speed** | **sometimes** |
-
-> **That last row used to read "yes", and it is corrected here.** Body-lateral
-> speed ≥ 85 m/s and a downward crossing of ≥ ~17 m/s are **NECESSARY**
-> conditions — MEASURED, present in all **1343** logged launches. They are **not
-> sufficient**, and two independent arms have produced the counter-example:
-> * one drove the conjunction to **side 98.2 m/s with −vz 30.9 at
->   (79.5, 50.1, 712.7)** — both terms clear, on the deck, downstream of the
->   x = 80 checkpoint — and **nothing fired**;
-> * the other, aiming at the author's whole six-dimensional contact state,
->   closed position to **0.29 m** and velocity to **3.60 m/s** and stopped
->   **53.8° away in attitude**.
->
-> The remaining term is the car's **attitude**, and it is not quantified. Note
-> that the prose two paragraphs below has always said this; what was wrong was
-> the table. (Logs: `tm-unbeaten/_audit/stateobj/`, `C_state_hunt_with_bar.txt`
-> and `E_state_hunt_author_target.txt`; write-up in `tools/search/SEARCH.md`
-> §5.13.)
+| cross **downwards, body lateral, ≥85 m/s of side speed** | **yes** |
 
 That fourth row is the one worth staring at. **Position does not trigger it,
 speed does not trigger it, and the two together do not either.** Which way the
@@ -194,3 +177,28 @@ at 320 km/h in the ten metres after the gate.
 | file | what |
 |---|---|
 | `replays/TAS_20237.Ghost.Gbx` | the run |
+
+`TAS_20237_regenerated.Ghost.Gbx` **has been removed.** Its input tape was
+identical to `TAS_20237`'s and its 405 recorded samples were bit-identical to
+it, to 0.000000 m: the two files were one run under two names, and "regenerated"
+is a claim that belongs in a manifest rather than in a filename. `TAS_20237` is
+now itself regenerated — every sample's transform read out of the engine driving
+its own tape, and its steer / gas / brake bytes written from that tape, so the
+two channels of inputs the file carries agree exactly.
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.

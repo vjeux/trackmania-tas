@@ -166,3 +166,20 @@ Both would place top-150 of 561.
 | `replays/KEYBOARD_10636.Ghost.Gbx` | pure keyboard, 66 events |
 | `replays/KEYBOARD_35ev_10646.Ghost.Gbx` | pure keyboard in **35 inputs** — the one to learn |
 | `inputs/real_10594.tick.txt`, `inputs/real_10595.tick.txt` | those two runs as readable input scripts |
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.

@@ -1,0 +1,73 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787456246",
+  "file": "tas_keyboard_3844.Ghost.Gbx",
+  "md5": "0ef4246473452ca7c60f4e6e2db8260a",
+  "bytes": 4516,
+  "map_id": "252289",
+  "declared_time_ms": 3844,
+  "oracle_time_ms": 3844,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "252289-surely-my-least-cooked-at/replays/tas_keyboard_3844.Ghost.Gbx",
+    "md5": "0ef4246473452ca7c60f4e6e2db8260a"
+  },
+  "source_inputs": {
+    "path": "252289-surely-my-least-cooked-at/replays/tas_keyboard_3844.Ghost.Gbx",
+    "md5": "0ef4246473452ca7c60f4e6e2db8260a"
+  },
+  "engine_run": {
+    "note": "REGENERATED FROM ENGINE MEMORY. Every sample's 22 transform bytes -- position, orientation, speed, velocity direction -- were read out of the dedicated server's own engine while it drove THIS FILE'S OWN INPUT TAPE (`ghost regen`), and bytes 14/15/18 were written from that tape. The regenerator's tick phase on this map was verified against a downloaded human recording: five runs, mode 0.0005 m, so it is on the game's own physics tick here. Then `ghost identity set --anonymise` and `ghost declare --from-oracle`. STILL THE DONOR CONTAINER'S: the other 91 bytes of each sample -- rpm, gear, wheel rotation, suspension, surface effects -- byte 89 (the ground-contact flag) among them.",
+    "host": "44518.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 77,
+    "samples_in_record": 77,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18",
+    "47-68"
+  ],
+  "fields_inherited": [
+    "89 (the ground-contact flag)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost",
+      "args": "regen --trim-outside"
+    },
+    {
+      "tool": "ghost",
+      "args": "identity set --anonymise"
+    },
+    {
+      "tool": "ghost",
+      "args": "declare --from-oracle"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/252289/ghosts/rank00001_3867.Ghost.Gbx",
+        "md5": "59c8036d77024964df2654edac94490c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/252289/ghosts/rank00002_3895.Ghost.Gbx",
+        "md5": "cf033048a0d9c17184dd15d1e65cecb3"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/252289/ghosts/rank00003_3902.Ghost.Gbx",
+        "md5": "9be872a849f160a080a445cd35d3cb0f"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/252289/human_WR_3867_KevinMagPizza.Ghost.Gbx",
+        "md5": "59c8036d77024964df2654edac94490c"
+      }
+    ],
+    "limits": []
+  }
+}

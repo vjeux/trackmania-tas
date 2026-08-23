@@ -8,7 +8,7 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
-**Fall 2025 - 22 reverse (CP1 end)** — keyboard **5.352** (+0.002) | AT 5.350 | WR 5.355
+**Fall 2025 - 22 Reverse (CP1 end)** — TAS **5.352** (+0.002) | AT 5.350 | WR 5.355 by Matik_K
 
 https://github.com/user-attachments/assets/94309fe3-6a88-430d-931c-abf09fba0a49
 
@@ -206,7 +206,7 @@ forgiving than the driving humans have actually done on this map.
 
 | file | what |
 |---|---|
-| ~~`replays/TAS_5345_starttrick.Ghost.Gbx`~~ | **withdrawn — the file is no longer in the tree.** Its 112 sample positions were bit-identical to Matik_K's own 5.355 download, so it was his recording rather than ours. The 5.345 time is real and re-simulates on the oracle; a regenerated tape will be published. |
+| ~~`replays/TAS_5345_starttrick.Ghost.Gbx`~~ | **still withdrawn, and now for a reason we can name exactly.** Its 112 sample positions were bit-identical to Matik_K's own 5.355 download, so the file was his recording rather than ours, and the fix is to rewrite the record from the engine driving our tape. That cannot be done correctly on this map yet: the regenerator does not sit on the game's own physics tick here. Regenerating a recording the game made itself moves it **0.365 m**, one 10 ms tick, and that is the mode of five runs against each of two different players' downloads. A rebuilt file would be ours and still be a tick out of step with the run it claims — invisible alone, fatal in a two-car comparison. The 5.345 time is real and re-simulates on the oracle. |
 | `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |
@@ -214,3 +214,17 @@ forgiving than the driving humans have actually done on this map.
 | `replays/best_pC_5348_32098.Ghost.Gbx` | an independently produced 5.348 |
 
 Every tape above re-simulates to the time in its filename.
+
+### What these recordings are
+
+Each file's steer / gas / brake bytes now come from its own input tape, so the
+two channels of inputs a ghost carries agree exactly. **Their positions were
+left alone, deliberately.** The regenerator does not sit on the game's own
+physics tick on this map: regenerating a recording the game made itself moves it
+0.365 m — one 10 ms tick — as the mode of five runs, on two different players'
+downloads, at every `--biastick` between 60 and 400. Three of these five files
+sit on the game's tick and are correct as they stand; **`best_pF_5347_32087` and
+`KEYBOARD_5352_11events` sit one tick from it** and cannot be put right until
+the regenerator is. That is invisible in a single ghost and fatal in a
+frame-synchronous two-car comparison, so do not film a side-by-side from those
+two.

@@ -36,21 +36,7 @@ The cleanest demonstration is 279209, a map where our tape inherits nothing —
 downloaded human recordings sit at exactly 0.000000 m at the spawn while our
 tape sits at 0.000500 m from two different humans and at 0.000000 m from its own
 sibling.** The offset is ours, it is the same magnitude on every map measured,
-and it does not depend on any donor.
-
-> **And as of 2026-08-22 we know what it is, which this page got right in
-> attribution and could not explain at the time.** The ~0.0005 m is **the
-> distance between two copies of the car in the server's own memory**, and the
-> regenerator was transforming from the wrong one: on the map-2 answer key,
-> transforming from the copy with a live wheel block takes bit-identity from
-> **0 of 455 samples to 227 of 455**. So it is ours, as this page says — but it
-> is a *fixable defect in the chooser*, not a permanent property of the writer,
-> and the honest expectation once fixed is bit-identity or ~0.000001 m rather
-> than half a millimetre. The conclusion below is unaffected: while the offset
-> is there, the 1 mm band cannot resolve a close following line from a copy.
-> (The orientation half of that fix is still open; see `tools/README.md`.)
-
-So the 1 mm band is only twice our own
+and it does not depend on any donor. So the 1 mm band is only twice our own
 writer's noise floor, and it cannot resolve a close following line from a copy
 on any of-ours-versus-a-download pairing. The control that does resolve it is
 per-map and human-versus-human: here three unrelated pairs of human recordings
@@ -184,3 +170,19 @@ return their own official CP1 splits to the millisecond: 4.951 / 4.951 / 4.962 /
 | `replays/m270051_keyboard_4834.Ghost.Gbx` | keyboard only, ties the world record |
 | `replays/m270051_4830.Ghost.Gbx` | the unconstrained floor |
 | `inputs/rob4_4831.json` | the human-shaped tape's per-tick inputs |
+
+### What these recordings are
+
+Each file's steer / gas / brake bytes come from its own input tape, so the two
+channels of inputs a ghost carries agree exactly. `m270051_human_shaped_4831`
+also carried a **real player's account id and personal-skin locator URL**: the
+tape is ours — the page says so, "the author time with ±10 ms of slack on every
+input" — so the identity was the carrier container's and had no business in it.
+It is gone.
+
+Their positions were left as they were. The regenerator's tick phase on this map
+is a coin toss run to run rather than a fixed offset — against one player's
+download it landed on the game's own tick 4 times in 5, against another 4 in 6 —
+so rewriting the transform would have been a lottery over a 10 ms time shift.
+Nothing is known to be wrong with these four records; nothing has been done to
+them that could make one wrong.

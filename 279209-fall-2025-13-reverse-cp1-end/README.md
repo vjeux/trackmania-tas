@@ -216,4 +216,22 @@ tape has one flick.
 | `replays/AK5_6595.Ghost.Gbx` | 5-value action keys, 6.595 |
 | `replays/BEST_6578_ratcheted.Ghost.Gbx` | the fastest run, unconstrained |
 | `replays/champ_6578.Ghost.Gbx` | the first tape to reach 6.578 |
-| `replays/kb2_best_6595.Ghost.Gbx`, `kb20.Ghost.Gbx`, `kb_gasfull.Ghost.Gbx`, `ms_r002_6608_best_6585.Ghost.Gbx` | the rest of the low-input family, and earlier stages |
+| `replays/kb2_best_6595.Ghost.Gbx`, `kb_gasfull.Ghost.Gbx`, `ms_r002_6608_best_6585.Ghost.Gbx` | the rest of the low-input family, and earlier stages |
+
+`kb20.Ghost.Gbx` **has been removed.** Its input tape was identical to
+`kb2_best_6595`'s at every tick of the race — they differed only in the
+countdown, where an input has no authority — and its 132 recorded samples were
+bit-identical to that file's, to 0.000000 m. It was one run published twice.
+
+### What these recordings are
+
+Each file's steer / gas / brake bytes now come from its own input tape, so the
+inputs a ghost carries twice agree with each other exactly. **Their positions
+were left alone, deliberately.** On this map the regenerator does not sit on the
+game's own physics tick: regenerating a recording the game made itself moves it
+0.360 m, reproducibly, on two different players' downloads and at every
+`--biastick` value between 60 and 300. Eight of the nine files here sit at that
+same offset — one 10 ms tick from the run they claim — and `kb_gasfull` is the
+one on the game's tick. That is invisible in a single ghost and fatal in a
+frame-synchronous two-car comparison, so **do not film a side-by-side from this
+map's files until the regenerator is fixed on it.**
