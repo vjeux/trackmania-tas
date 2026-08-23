@@ -1,0 +1,69 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787445476",
+  "file": "C_final.Ghost.Gbx",
+  "md5": "2048803c24e835513c44dfe92640d8e0",
+  "bytes": 523511,
+  "map_id": "173691",
+  "declared_time_ms": 36049,
+  "oracle_time_ms": 36049,
+  "oracle_checkpoints": 1,
+  "container_donor": {
+    "path": "goth_demo.Ghost.Gbx",
+    "md5": "0934b52db0fe25f249f6da99c3624522"
+  },
+  "source_inputs": {
+    "path": "/home/vjeux/persistent/private-30d/tm-unbeaten/173691/land_20260822/land_v1_tape.txt",
+    "md5": "81475d813bda124f5768aa4d2bab2876"
+  },
+  "engine_run": {
+    "note": "ghost regen, in-process locate; G1 kappa 1.000, G2 spawn 0.001 m, G3 path 685.1 m, G4 oracle 36.049; ghost verify --engine V9 0.0000 m mean/worst over 737 samples",
+    "host": "115944.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 737,
+    "samples_in_record": 737,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "position",
+    "orientation",
+    "velocity",
+    "speed",
+    "steer",
+    "gas",
+    "brake"
+  ],
+  "fields_inherited": [
+    "rpm",
+    "gear",
+    "wheel rotation",
+    "suspension",
+    "surface effects",
+    "ground-contact flag (byte 89)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost identity set",
+      "args": "--anonymise"
+    },
+    {
+      "tool": "ghost declare",
+      "args": "--from-oracle"
+    },
+    {
+      "tool": "ghost regen",
+      "args": "--map goth_map.Map.Gbx"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/data/users/vjeux/wk/goth_demo.Ghost.Gbx",
+        "md5": "0934b52db0fe25f249f6da99c3624522"
+      }
+    ],
+    "limits": []
+  }
+}

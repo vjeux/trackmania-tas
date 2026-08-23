@@ -5,17 +5,19 @@ lower canopy. It isn't. A search over his own flight inputs closes the gap: the
 car crosses the deck plane at z = 448.2 and comes to rest on the deck at
 y = 114.0, stationary, 0.6 km/h.**
 
-TMX map [173691](https://trackmania.exchange/maps/173691) · 3 checkpoints ·
-author time **2672.290**. **The map is not beaten and this does not beat it** —
-see "the platform is sealed" below.
+TMX map [173691](https://trackmania.exchange/maps/173691) by **Reddnox** ·
+3 checkpoints · author time **2672.290** · **0 online records**.
+**The map is not beaten and this does not beat it** — see "the platform is
+sealed" and "which map this is" below.
 
-**Underwater jump — the car lands on the second platform (36.049)**
+**Spring 2023 - 15 (Underwater)** — TAS **36.049** (not a completion — a landing) | AT 2672.290 | WR — by nobody (0 online records)
 
-https://github.com/user-attachments/assets/26276c41-85ba-4bc2-a6db-9b3836edbafa
+https://github.com/user-attachments/assets/301f3c33-ae38-4ffd-9c31-8f709bf257d0
 
 Two cars, one scene, camera on ours: the TAS car and GothMommyTM's own
 demonstration run, which leaves the same lip at the same speed and sinks past
-the deck into the water.
+the deck into the water. They are the same car until race 25.750, because every
+input up to that tick is his.
 
 ## What the jump is
 
@@ -34,28 +36,19 @@ So the whole jump is one number: **the z the car has reached at the moment it
 falls through deck height.** His demonstration reaches **444.41** and the
 landing threshold is **448.5 ± 0.4**.
 
-## What changed
-
 | | z at deck height | outcome |
 |---|---|---|
 | GothMommyTM's demonstration | 444.41 | sinks to the floor |
 | 126 one-move perturbations of it (earlier pass) | 442.9 best | all worse |
 | **this run** | **448.2** | **lands, and stops** |
 
-The earlier pass searched single moves around his keyboard line — one-tick
-boundary shifts, curve-exit steering biases, in-flight wiggles — and found his
-line to be a local optimum under every one of them. What closes the 4.1 m is
-not a cleverer move but **rewriting the whole input stream from the lip
-onward**: sixteen hill-climbers, ~40k evaluations, scored first on how far the
-crossing point misses the deck footprint and then on **contact time** — how long
-the car goes without descending. Contact time is what makes the last two metres
-a hill to climb: the first candidates to touch the deck landed on its very lip
-and slid back off after 0.6 s, which a yes/no landing test scores exactly like a
-clean miss.
-
-The exit is untouched. Every input up to the last ground contact at tick 2575 is
-GothMommyTM's own, so the car leaves the lip in **his** state, bit for bit; only
-the flight is ours.
+What closes the 4.1 m is not a cleverer move but **rewriting the whole input
+stream from the lip onward**: sixteen hill-climbers, ~40k evaluations, scored
+first on how far the crossing point misses the deck footprint and then on
+**contact time** — how long the car goes without descending. Contact time is
+what makes the last two metres a hill to climb: the first candidates to touch
+the deck landed on its very lip and slid back off after 0.6 s, which a yes/no
+landing test scores exactly like a clean miss.
 
 Touchdown, from the re-simulated file:
 
@@ -67,6 +60,44 @@ Touchdown, from the re-simulated file:
  t=36.60   y 114.06   vy -0.13     at rest, 0.6 km/h
 ```
 
+## WHICH MAP THIS IS — read this before quoting the result
+
+**The run is on GothMommyTM's own copy of the map, not on Reddnox's 173691.**
+A `.Replay.Gbx` carries a whole map inside it and the engine simulates *that*
+copy; the `--map` argument and the uid in the header are decoration. Measured
+directly, with `ghost map extract`:
+
+| | Reddnox's 173691 | the map inside the replay |
+|---|---|---|
+| uid | `D0KdisOjKSxSIAXawtwlBqLz9Kb` | `7FoTPm93enV5nhdsbD9u7D5Zqcm` |
+| author | `UNgaAHUXR-GoQnjEpzf2RA` (Reddnox) | `3Awx2_MzSdaCJZjZOht51A` (GothMommyTM) |
+| blocks | 68 166 | 68 155 |
+| spawn | (1136, 18, 736) | **(752, 98, 400)** — his own start block |
+| Goal blocks | 15 `GateFinish` | those **plus 4 `GateExpandableFinish`** |
+
+He added a start a few hundred metres before the launch so he could practise
+the jump, and a finish gate so the game would let him save a replay. **That
+gate is what stops the clock at 36.049 — 0.15 s before the car reaches the
+deck** — so the touchdown is the last 0.75 s of the recording, *after* the
+timer stops.
+
+What survives that, and what does not:
+
+* **The landing surface is real.** `CanopyCenterFlatBase` and
+  `StructurePillar`, all 1106 rows of them, are byte-identical between the two
+  maps. The car rests at **y = 113.98–114.06**; the deck's drivable surface was
+  measured at **114.16** on the untouched map by dropping a car down 35
+  separate columns, and the only other surfaces anywhere in that region are the
+  stadium floor at 9.16 and the upper canopy at 170.16. His gate's own pieces
+  sit at y = 105, 113 and 121.
+* **"The jump lands on the unbeaten map" is NOT supported.** His inputs on
+  Reddnox's map put the car on the stadium floor within six seconds, because
+  the start is 400 m away and 80 m lower. Reaching this lip from 173691's own
+  spawn is an open question, and there is a lead: a partial TAS of the
+  untouched map passes **1.73 m from his start block at race 223.920, doing
+  97.0 km/h**, drives the same last road, and falls off at x ≈ 1269 instead of
+  following the curve round to z = 386.
+
 ## The platform is sealed — this is a landing, not a win
 
 The map's finish is on the **upper** deck at y ≈ 163–169. From the lower canopy
@@ -77,25 +108,34 @@ between y = 122 and the stand fronts at y = 162.
 
 Reaching this deck is the end of this route, not the start of a lap.
 
-## Reading the clip honestly
+## The file
 
-* The replay is filmed on **GothMommyTM's own copy of the map** — the one his
-  recording embeds. He added a finish gate so the game would let him save a
-  replay, and that gate fires at **36.049**, which is why the on-screen timer
-  stops there, **0.15 s before the car reaches the deck**. The touchdown is the
-  last 0.75 s of the recording, after that gate.
-* The canopy and its pillars are **byte-identical** between his copy and the
-  untouched map, so the surface the car lands on is the real one. The car rests
-  at **y = 113.98–114.06**; the deck's drivable surface was measured at
-  **114.16** on the untouched map by dropping a car down 35 separate columns,
-  and the only other surfaces anywhere in that region are the stadium floor at
-  9.16 and the upper canopy at 170.16. His finish gate's own pieces sit at
-  y = 105, 113 and 121.
-* The clip was filmed on a named gate exception (`C4,C6,C10`). C4 is the
-  post-finish tail described above — cutting at the finish would cut the landing
-  out of the clip. C6 and C10 are the ground-contact byte, which reads as
-  "another run's" on every ghost from this map: the check assumes a car with the
-  contact flag off is in free fall, and underwater it is not.
+`replays/TAS_36049_landing.Ghost.Gbx`, with its provenance manifest beside it.
+It carries the map it runs on, so it needs nothing else.
+
+**It passes the publish gate, exit 0** (`tmtraj gate … --require-manifest
+--route … --source …`), and the two things it does *not* prove are printed as
+loudly as the things it does:
+
+| | |
+|---|---|
+| oracle | the dedicated server re-simulates **the written bytes** to 36.049, the time the file declares, `IsValid` true |
+| tape ↔ record | Cohen's kappa **1.000** over all 737 samples |
+| engine ↔ record | the engine's own run of this tape matches the recording to **0.0000 m** mean and worst |
+| an independent instrument | `fk trace`, which never reads the record, agrees to **0.0021 m** over 562 instants |
+| orientation | the stored quaternion is **0.072°** from the engine's own; a permuted reading of the same bytes gives 166.6° |
+| second generation | a second, independent regeneration agrees to **0.000497 m** — the client-vs-server floor, not a stale buffer |
+| contamination | **0 of 737** samples bit-identical to GothMommyTM's recording; they part by up to 4.3 m |
+| identity | login `TAS`, no account id, no locator URL — in the body **and in the replay header** |
+| **not proved** | **the ground-contact byte is still the carrier's.** `ghost regen` writes 22 of each sample's 116 bytes from engine memory and three from the tape; byte 89 is not among them, so the gate's C6 and C10 report UNMEASURED rather than a verdict. Reading it out of engine memory is an open task. |
+| **not proved** | the near-copy test (C12) could not run: the only human recording of this route is the carrier itself |
+
+### One tick, and its control
+
+`fk trace` reads the record as one tick early. So does **GothMommyTM's own
+downloaded recording**, at 0.0028 m, put through exactly the same comparison —
+so −1 is this instrument's zero on this map, not a defect in this file. A
+negative result needs a positive control, and that is it.
 
 ## Method notes worth keeping
 
@@ -109,14 +149,22 @@ sit at y = 114 one cell apart; one holds a car and one does not, and nothing in
 their names says which. The engine settles it in one run.
 
 **A fork-server score is not a result.** Every number above is read off a
-written `.Ghost.Gbx` re-simulated by the plain oracle. The search's own best
-score has been wrong by 12 m on this map before.
+written `.Ghost.Gbx` re-simulated by the plain oracle.
 
-**And a control can fail after you have already used the instrument.** To ask
+**A control can fail after you have already used the instrument.** To ask
 whether the car lands on the canopy or on the added gate, three maps were built
 — gate removed, deck removed, and a road block the car provably drives on
 removed as the control — and re-simulated. All three gave the same trajectory to
 the centimetre, including the one that should have dropped the car through the
-road. The replays load their map by uid and the surgery never reached the
-engine, so the two informative runs said nothing at all. The height is what
-identifies the surface.
+road. The replay carries its own map, so the surgery never reached the engine
+and the two informative runs said nothing at all. The height is what identifies
+the surface.
+
+**A container can be ours in every position it contains and still be somebody
+else's file — and the header is a second container.** The first version of this
+page was filmed from a file that still carried GothMommyTM's account id, his
+locator uuid, and his declared time 49.958 — inside the replay's GBX **header**,
+where no check in this toolchain looked. `ghost identity set --anonymise` and
+`ghost declare --from-oracle` both reported success on it; `ghost verify` V2
+said *"1 copies, all 36.049"* while two more copies of 49.958 sat in the header.
+A count of a set you cannot see all of is worse than no count.
