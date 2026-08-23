@@ -432,15 +432,23 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
     if let Some(p) = &o.out {
         // Write the repaired tape back as a ghost, so the plain oracle — the
         // only thing that produces a RESULT — can be asked about it.
+        //
+        // ALL THREE CHANNELS. The first version wrote back only `steer`, and
+        // the two moves that actually helped on 134672 were brake taps: the
+        // file it produced re-measured at the UNREPAIRED horizon, and a run
+        // chained from it started over. A writer that silently drops part of
+        // the state it just searched is a result that cannot be reproduced.
         let mut steer: Vec<u8> = s.tape.steer.clone();
+        let mut accel: Vec<u8> = s.tape.accel.clone();
+        let mut brake: Vec<u8> = s.tape.brake.clone();
         for (i, r) in cur.iter().enumerate() {
             let t = probe + i;
             if t < ntape {
                 steer[t] = (r.steer * 127.0).round().clamp(-127.0, 127.0) as i8 as u8;
+                accel[t] = u8::from(r.gas > 0.5);
+                brake[t] = u8::from(r.brake > 0.5);
             }
         }
-        let accel = s.tape.accel.clone();
-        let brake = s.tape.brake.clone();
         s.tape.write_candidate(&steer, &accel, &brake, std::path::Path::new(p))?;
         println!("wrote {}", p);
     }
