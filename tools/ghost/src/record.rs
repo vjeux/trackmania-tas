@@ -67,6 +67,48 @@ pub fn cmd(a: &[String]) {
                 Err(e) => die(e),
             }
         }
+        Some("channels") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record channels IN OUT [--from DONOR --bytes N,N] [--set N=V,N=V]")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record channels IN OUT [--from DONOR --bytes N,N] [--set N=V,N=V]")
+            });
+            if let Some(set) = flag(a, "--set") {
+                let pairs: Vec<(usize, u8)> = set
+                    .split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| {
+                        let (b, v) = s.split_once('=').unwrap_or_else(|| {
+                            die(format!("--set wants N=V pairs, got {s:?}"))
+                        });
+                        (
+                            b.trim().parse().unwrap_or_else(|_| die(format!("--set: {b} is not a byte index"))),
+                            v.trim().parse().unwrap_or_else(|_| die(format!("--set: {v} is not a 0..255 value"))),
+                        )
+                    })
+                    .collect();
+                match set_channels(inp, out, &pairs) {
+                    Ok(m) => println!("{out}: {m}"),
+                    Err(e) => die(e),
+                }
+            } else {
+                let donor = flag(a, "--from").unwrap_or_else(|| {
+                    die("--from DONOR.Ghost.Gbx: the file to take the named sample bytes from")
+                });
+                let list = flag(a, "--bytes")
+                    .unwrap_or_else(|| die("--bytes N,N,... : which of the 116 sample bytes to copy"));
+                let bytes: Vec<usize> = list
+                    .split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().parse::<usize>().unwrap_or_else(|_| die(format!("--bytes: {s} is not a number"))))
+                    .collect();
+                match copy_channels(inp, out, donor, &bytes) {
+                    Ok(m) => println!("{out}: {m}"),
+                    Err(e) => die(e),
+                }
+            }
+        }
         Some("show") => show(&a[1..]),
         Some("graft-scene") => {
             let inp = a.get(1).unwrap_or_else(|| {
@@ -313,6 +355,121 @@ pub fn shorten_scene(inp: &str, out: &str) -> Result<String, String> {
         ));
     }
     Ok(format!("{before} -> {after}; the car's {} samples are byte-identical", a.samples.len()))
+}
+
+/// Write a fixed value into named per-sample bytes of the vehicle entity.
+///
+/// The other half of the bisect, and the one that separates *"the game needs
+/// THIS driver's values"* from *"the game chokes on the value we write"*. A
+/// channel a regeneration fills with raw zero is not neutral when its encoding
+/// is offset-binary -- the dampen bytes decode 0 as **-2, fully extended
+/// wheels**, and byte 32/33 hold 128/42 at rest in every recording the game
+/// made itself.
+pub fn set_channels(inp: &str, out: &str, pairs: &[(usize, u8)]) -> Result<String, String> {
+    if pairs.is_empty() {
+        return Err("no bytes named: --set N=V,N=V is the experiment".into());
+    }
+    let mut n = 0usize;
+    let mut changed = 0usize;
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to write into")?;
+        let e = &mut rd.ents[vi];
+        let ss = e.sample_size;
+        for (b, _) in pairs {
+            if *b >= ss {
+                return Err(format!("byte {b} is past the {ss}-byte sample"));
+            }
+        }
+        n = e.times.len();
+        for i in 0..n {
+            for (b, v) in pairs {
+                if e.raw[i * ss + b] != *v {
+                    e.raw[i * ss + b] = *v;
+                    changed += 1;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(format!("{n} sample(s), set {pairs:?}: {changed} byte(s) changed"))
+}
+
+/// Copy named per-sample bytes of the vehicle entity from another file,
+/// matching samples by their own timestamps.
+///
+/// **A bisect instrument, in the family of `record entfields`.** `ghost regen`
+/// writes the transform and the tape echo and ZEROES eleven channels it cannot
+/// read out of the engine — and one of them is read by something outside this
+/// project. Measured 2026-08-23 on 276877: a regenerated 9.415 whose position,
+/// velocity and quaternion are bit-identical to the file the published clip was
+/// shot from renders with the chase camera BURIED IN THE RAMP for the last
+/// second of the run, and re-filming that older file on the same build in the
+/// same session reproduces the good camera. So the game reads a channel the
+/// gate cannot see, and finding WHICH one is a one-byte-at-a-time question that
+/// needs one file per hypothesis.
+///
+/// It refuses on a length change and reports the count it actually altered, so
+/// "the copy did nothing" cannot be mistaken for "the byte does not matter" --
+/// the null result of a bisect step has to be distinguishable from a no-op.
+pub fn copy_channels(inp: &str, out: &str, donor: &str, bytes: &[usize]) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("no bytes named: --bytes N,N,... is the experiment".into());
+    }
+    let d = gbx::record::decode_ghost(donor)?;
+    let dss = d.sample_size;
+    let src: std::collections::HashMap<i32, &[u8]> = d
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.time_ms, &d.raw[i * dss..(i + 1) * dss]))
+        .collect();
+    let mut changed = 0usize;
+    let mut missing = 0usize;
+    let mut same = 0usize;
+    let mut n = 0usize;
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to write into")?;
+        let e = &mut rd.ents[vi];
+        let ss = e.sample_size;
+        if ss != dss {
+            return Err(format!(
+                "sample size {ss} here and {dss} in the donor -- these are not the same shape of \
+                 record"
+            ));
+        }
+        for b in bytes {
+            if *b >= ss {
+                return Err(format!("byte {b} is past the {ss}-byte sample"));
+            }
+        }
+        n = e.times.len();
+        for (i, t) in e.times.clone().iter().enumerate() {
+            match src.get(t) {
+                None => missing += 1,
+                Some(s) => {
+                    for b in bytes {
+                        if e.raw[i * ss + b] == s[*b] {
+                            same += 1;
+                        } else {
+                            e.raw[i * ss + b] = s[*b];
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(format!(
+        "{} sample(s), bytes {:?} from {}: {} byte(s) changed, {} already equal, {} sample(s) had \
+         no counterpart in the donor and were left alone",
+        n,
+        bytes,
+        donor,
+        changed,
+        same,
+        missing
+    ))
 }
 
 /// Lay a fresh 50 ms grid out to `span_ms`, one vehicle entity, every sample a

@@ -43,6 +43,7 @@ WHAT DOES THE FILE SAY
   csvdiff A.csv B.csv [--tol-ms N]  two trajectory CSVs, on the instants they share
   export  --dir D... [--out-csv D] [--out-json D] [--jobs N]
   fields                             every decoded field, with its confidence tier
+  bytes   FILE... --bytes N,N        the RAW value of named sample bytes, per sample
 
 ARE THESE THE SAME RUN
   diff    A B  [--lag] [--bytes] [--near --control C1 --control C2] [--csv F]
@@ -109,6 +110,7 @@ pub fn run() {
             record::print_field_confidence();
             0
         }
+        "bytes" => cmd_bytes(rest),
         "diff" => crate::diffcmd::cmd(rest),
         "spawn" => crate::diffcmd::cmd_spawn(rest),
         "inputs" => crate::diffcmd::cmd_inputs(rest),
@@ -209,6 +211,64 @@ pub fn run() {
 // ---------------------------------------------------------------------------
 
 const SHOW_USAGE: &str = "usage: tmtraj show GHOST... [--head N]\n";
+
+fn cmd_bytes(argv: &[String]) -> i32 {
+    const U: &str = "tmtraj bytes FILE... --bytes N,N,...  [--head N]\n\
+                     \n\
+                     The RAW value of named sample bytes, per sample, for every file named --\n\
+                     the reader half of a per-byte bisect. `ghost record channels` moves a byte\n\
+                     from one file into another; this says what the byte held and whether it\n\
+                     varies at all. A channel a regeneration writes as ONE CONSTANT for a whole\n\
+                     run is the shape that found 276877's camera defect.\n";
+    let a = cli::parse("tmtraj bytes", argv, &[]);
+    let head: usize = a.num("head", 0);
+    let want: Vec<usize> = a.many("bytes").iter().filter_map(|s| s.parse().ok()).collect();
+    let a = a.finish(U);
+    if a.positional.is_empty() || want.is_empty() {
+        eprint!("{U}");
+        return 2;
+    }
+    for path in &a.positional {
+        let dec = match record::decode_ghost(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("FAIL {path}: {e}");
+                return 1;
+            }
+        };
+        let ss = dec.sample_size;
+        println!("{path}  {} samples x {ss} B", dec.samples.len());
+        print!("{:>9}", "time");
+        for b in &want {
+            print!("{:>7}", format!("b{b}"));
+        }
+        println!();
+        let n = dec.samples.len();
+        let show = if head == 0 { n } else { head.min(n) };
+        for (i, s) in dec.samples.iter().enumerate().take(show) {
+            print!("{:>9}", secs(s.time_ms as i64));
+            for b in &want {
+                match dec.raw.get(i * ss + *b) {
+                    Some(v) => print!("{v:>7}"),
+                    None => print!("{:>7}", "-"),
+                }
+            }
+            println!();
+        }
+        for b in &want {
+            let mut vals: Vec<u8> =
+                (0..n).filter_map(|i| dec.raw.get(i * ss + *b).copied()).collect();
+            vals.sort_unstable();
+            vals.dedup();
+            println!(
+                "  byte {b}: {} distinct value(s){}",
+                vals.len(),
+                if vals.len() == 1 { format!(" -- CONSTANT {}", vals[0]) } else { String::new() }
+            );
+        }
+    }
+    0
+}
 
 fn cmd_show(argv: &[String]) -> i32 {
     let a = cli::parse("tmtraj show", argv, &[]);

@@ -6,7 +6,7 @@
 //! Rust only. There is no interpreter anywhere in this pipeline and no shell
 //! script carries any logic.
 
-use ghost::cli::{die, has, need, num};
+use ghost::cli::{die, flag, has, need, num};
 use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
@@ -48,6 +48,11 @@ INPUTS  (operation 1 and 2)
         off-by-one is invisible and lands in a measurement.
   ghost tape stats TAPE.gtape
         Tick count, input events, packet modes, respawns.
+  ghost tape csv FILE|TAPE.gtape [--out F.csv] [--from MS] [--to MS]
+        The tape as `race_ms,steer,accel,brake`, one row a tick -- the format
+        every map page publishes under `inputs/`. Those files had no writer in
+        the repo, so a page's inputs could not be regenerated from the ghost
+        they came from, or checked against it.
   ghost tape bits FILE...
         Which bits of the state literal actually vary across a corpus: the
         census that says what is still unnamed in the packet.
@@ -366,7 +371,7 @@ fn cmd_inspect(a: &[String]) {
 mod sweep;
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits>"));
     let rest = &a[1..];
     match what {
         "poke" => {
@@ -1008,6 +1013,46 @@ fn cmd_tape(a: &[String]) {
             }
         }
         "sweep" => sweep::cmd(rest),
+        "csv" => {
+            // The `inputs/*.inputs.csv` a map page publishes as "the run
+            // itself". They were written by a tool that no longer exists, so
+            // until now nothing could regenerate one from its ghost -- or, the
+            // reason this exists, prove that a ghost about to be filmed carries
+            // the tape the page publishes. Two files on this project's store
+            // re-simulate to 12.759 on the same map and their tapes differ.
+            let src = rest
+                .first()
+                .unwrap_or_else(|| die("ghost tape csv FILE|TAPE.gtape [--out F.csv] [--from MS] [--to MS]"));
+            let t = if src.ends_with(".gtape") {
+                Tape::from_text(&std::fs::read_to_string(src).unwrap_or_else(|e| die(format!("{src}: {e}"))))
+                    .unwrap_or_else(|e| die(e))
+            } else {
+                Tape::from_file(src).unwrap_or_else(|e| die(e))
+            };
+            let from = num(rest, "--from");
+            let to = num(rest, "--to");
+            let steer = t.steer_i8s();
+            let accel = t.accels();
+            let brake = t.brakes();
+            let mut s = String::from("race_ms,steer,accel,brake\n");
+            let mut rows = 0usize;
+            for i in 0..steer.len() {
+                let ms = t.race_ms(i);
+                if from.is_some_and(|f| ms < f) || to.is_some_and(|x| ms > x) {
+                    continue;
+                }
+                s.push_str(&format!("{},{},{},{}\n", ms, steer[i], accel[i], brake[i]));
+                rows += 1;
+            }
+            match flag(rest, "--out") {
+                Some(o) => {
+                    std::fs::write(o, &s).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                    println!("wrote {o}  ({rows} ticks, race {} .. {})",
+                             secs(t.race_ms(0)), secs(t.race_ms(steer.len().saturating_sub(1))));
+                }
+                None => print!("{s}"),
+            }
+        }
         "bits" => cmd_bits(rest),
         o => die(format!("unknown `ghost tape` operation {:?}", o)),
     }

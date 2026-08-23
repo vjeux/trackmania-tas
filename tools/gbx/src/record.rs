@@ -951,27 +951,107 @@ pub const NEUTRALISE: &[usize] = &[
     31, 32, 33, 34, 39, 40, 42, 43, 69, 70, 71, 72, 76, 81, 82, 83, 84, 89, 91, 93, 95, 97, 99,
 ];
 
-/// Zero every byte in [`NEUTRALISE`] that the sample is long enough to have.
+/// The value a neutralised byte is written with, where that is not zero.
+///
+/// **ZERO IS NOT NEUTRAL IN EVERY ENCODING, AND ONE OF THESE BYTES IS READ BY
+/// THE GAME.** Measured 2026-08-23 on 276877, by rendering seven files that
+/// differ only in which sample bytes they carry, each behind a same-session
+/// control: a regenerated 9.415 whose position, velocity and quaternion are
+/// **bit-identical** (`ghost trajdiff`, 0.000000 m at shift 0, metres away at
+/// ±1) to the file the published clip was shot from loses the car for the last
+/// second of the run -- after the landing at 8.5 the chase camera ends up under
+/// the ramp. Re-filming that older file on the same build in the same session
+/// reproduces the good camera, so the variable is the FILE.
+///
+/// The bisect: bytes 19-34 restore it; the four dampen bytes alone do not; the
+/// per-wheel contact materials alone do not; **byte 32 alone does**, and it
+/// does so as the plain constant 128 rather than as the other run's stream, so
+/// nothing of a donor is needed. 128 is what the game's own recordings hold
+/// there (with byte 33 at 42) while the car is on the ground; a regeneration
+/// wrote 0, and 0 is the bottom of the range in every offset-binary channel in
+/// this sample -- the dampen bytes decode a zero as **-2, wheels fully
+/// extended**, which is what an airborne car reads as.
+///
+/// What this is NOT: a measurement of byte 32 per tick. The engine computes it
+/// and it is in memory (see the carrier table); nothing reads it yet. This is a
+/// constant that keeps the render honest about the one thing a constant can be
+/// honest about -- the car is on the ground for most of every run we publish --
+/// and it is named here rather than left as a stranger's per-sample stream.
+pub const NEUTRAL_VALUE: &[(usize, u8)] = &[(32, 128)];
+
+/// The value [`neutralise`] writes at offset `o`.
+pub fn neutral_value(o: usize) -> u8 {
+    NEUTRAL_VALUE.iter().find(|(b, _)| *b == o).map(|(_, v)| *v).unwrap_or(0)
+}
+
+/// Write the neutral value over every byte in [`NEUTRALISE`] that the sample is
+/// long enough to have.
 pub fn neutralise(sample: &mut [u8]) {
     for &o in NEUTRALISE {
         if o < sample.len() {
-            sample[o] = 0;
+            sample[o] = neutral_value(o);
         }
     }
 }
 
-/// Has this record been neutralised -- is every byte in [`NEUTRALISE`] zero on
-/// every sample?
+/// Has this record been neutralised -- does every byte in [`NEUTRALISE`] hold
+/// its neutral value on every sample?
 ///
 /// A file that merely happens to have a zero contact flag on some samples is
-/// not neutralised; a file where all forty-nine of these bytes are zero
+/// not neutralised; a file where all forty-nine of these bytes are neutral
 /// throughout is, because a real recording varies rpm, gear and wheel rotation
 /// on every sample of every run. Answers `false` on an empty record rather than
 /// vacuously true.
+///
+/// **A zero is accepted wherever [`NEUTRAL_VALUE`] is not zero.** Every file
+/// this project published before 2026-08-23 was neutralised with a plain zero
+/// at byte 32, and they are neutralised files -- a fix to the writer must not
+/// re-label sixty of them as contaminated.
 pub fn is_neutralised(raw: &[u8], sample_size: usize) -> bool {
     if sample_size == 0 || raw.len() < sample_size {
         return false;
     }
-    raw.chunks_exact(sample_size)
-        .all(|s| NEUTRALISE.iter().all(|&o| o >= sample_size || s[o] == 0))
+    raw.chunks_exact(sample_size).all(|s| {
+        NEUTRALISE
+            .iter()
+            .all(|&o| o >= sample_size || s[o] == neutral_value(o) || s[o] == 0)
+    })
+}
+
+#[cfg(test)]
+mod neutral_tests {
+    use super::*;
+
+    /// The camera byte is written with its neutral value, not with a zero.
+    ///
+    /// The control for the claim is a render and cannot live here; what lives
+    /// here is that the writer does the thing the render measured. See
+    /// [`NEUTRAL_VALUE`] for the bisect.
+    #[test]
+    fn neutralise_writes_the_neutral_value_at_byte_32() {
+        let mut s = vec![0xAAu8; 116];
+        neutralise(&mut s);
+        assert_eq!(s[32], 128, "byte 32 is the one the game's chase camera reads");
+        for &o in NEUTRALISE {
+            if o != 32 {
+                assert_eq!(s[o], 0, "byte {o} has no non-zero neutral value");
+            }
+        }
+    }
+
+    /// A file neutralised by the OLD writer is still a neutralised file.
+    #[test]
+    fn a_zero_at_byte_32_is_still_neutralised() {
+        let ss = 116;
+        let mut old = vec![0u8; ss * 3];
+        let mut new = vec![0u8; ss * 3];
+        for i in 0..3 {
+            neutralise(&mut new[i * ss..(i + 1) * ss]);
+        }
+        // The format constants the census excluded are not part of the question.
+        assert!(is_neutralised(&old, ss), "the pre-2026-08-23 shape");
+        assert!(is_neutralised(&new, ss), "the shape the writer makes now");
+        old[32] = 7;
+        assert!(!is_neutralised(&old, ss), "7 is neither 0 nor the neutral value");
+    }
 }
