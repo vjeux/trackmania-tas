@@ -62,10 +62,15 @@ impl R {
     pub fn ice_max(&self) -> u8 {
         [81usize, 82, 83, 84].iter().map(|o| self.b(*o)).max().unwrap_or(0)
     }
-    /// Are the 49 per-run bytes all zero in THIS sample? See
-    /// [`gbx::record::is_neutralised`] for the record-wide question.
+    /// Are the 49 per-run bytes at their neutral values in THIS sample? See
+    /// [`gbx::record::is_neutralised`] for the record-wide question, and for
+    /// why a plain zero counts wherever the neutral value is not zero.
     pub fn neutralised(&self) -> bool {
-        gbx::record::NEUTRALISE.iter().all(|&o| o >= self.raw.len() || self.raw[o] == 0)
+        gbx::record::NEUTRALISE.iter().all(|&o| {
+            o >= self.raw.len()
+                || self.raw[o] == gbx::record::neutral_value(o)
+                || self.raw[o] == 0
+        })
     }
     pub fn finite(&self) -> bool {
         self.pos.iter().all(|v| v.is_finite()) && self.vel.iter().all(|v| v.is_finite())

@@ -50,7 +50,8 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | | `ghost record rebuild IN OUT --span MS` | throw the other **vehicle** entities away and lay a fresh car on a 50 ms grid out to `--span`, every sample a copy of one template. **Keeps the container's non-vehicle records**, clipped to the span. Scaffolding for `regen` when the carrier's grid does not cover the run |
 | | `ghost record graft-scene IN OUT --from CARRIER [--car-deltas]` | put those records back into a file an older rebuild stripped — the repair for a ghost that crashes the game client on import |
 | | `ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]` | the vehicle entity's UNIDENTIFIED header fields, for a client-import bisect. Refuses unless the car's samples come back byte-identical |
-| **car state** | `ghost regen IN OUT --map M [--neutralise] [--inputs]` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate. `--neutralise` also zeros the 49 per-run bytes the transform encoder does not write, so no per-run byte of the donor survives |
+| | `ghost record channels IN OUT --from DONOR --bytes N,N` · `--set N=V,N=V` | one named sample byte at a time, taken from another file or set to a constant: the write half of a per-byte bisect against something outside this project — the game's own camera reads a byte no headless check can see (below) |
+| **car state** | `ghost regen IN OUT --map M` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate. Neutralisation is always on: the 49 per-run bytes the transform encoder does not write are overwritten with their neutral value, so no per-run byte of the donor survives. **Neutral is not always zero** — byte 32 is written 128, see below |
 | | `ghost regen-control FILE --map M` | the fixed point: regenerate a file that already knows its own answer and require it back |
 | | `ghost trajdiff A B` | two files' recorded trajectories, at every shift from −3 to +3 samples |
 | | `ghost engine classinfo/idsites/vtable` | what the server binary says about its own classes — the evidence behind the locate |
@@ -91,6 +92,49 @@ decoded, `IsValid`, and the account id and login it read out of the file.
   chunk and never reads the scene: `TAS_57482` passes V1–V10, re-simulates to
   57.482, and kills the client. A client import is the only instrument, which
   is why it belongs in the render pipeline rather than here.
+
+* **The camera reads a byte the gate cannot see** (2026-08-23, 276877). A
+  regenerated 9.415 that passes V1–V11 with **kappa 1.000** and whose position,
+  velocity and quaternion are **bit-identical** to the file the published clip
+  was shot from (`ghost trajdiff`: 0.000000 m at shift 0, 2.4 m one sample
+  either way) films *wrong*: after the landing at 8.5 s the chase camera ends up
+  under the ramp and the car is out of frame for the last second of the run.
+
+  **The control is what made it a defect rather than a mood.** Re-filming that
+  older file on the same build, in the same session, reproduces the good camera
+  — so the variable is the FILE, and it is in the bytes the two files do not
+  share. Then seven renders, each one file differing from the last only in which
+  sample bytes it carries (`ghost record channels`):
+
+  | carried from the file that films correctly | camera |
+  |---|---|
+  | nothing (the plain regeneration) | under the ramp |
+  | byte 89, the DERIVED "ground contact" | under the ramp |
+  | all eleven named zeroed channels (rpm, gear, ice, dirt, contact) | under the ramp |
+  | bytes 19–34 | **correct** |
+  | the four dampen bytes 23/25/27/29 | under the ramp |
+  | 19–34 without the dampens | **correct** |
+  | bytes 32,33 · byte 32 alone · **byte 32 set to the constant 128** | **correct** |
+
+  So it is **byte 32**, and it does not need the other run: the plain constant
+  128 is enough. `neutralise` wrote a zero there, and **zero is not neutral in
+  these encodings** — the dampen bytes decode a zero as `-2`, wheels fully
+  extended, which is what an airborne car reads as. 128 is what the game's own
+  recordings hold at byte 32 (with 42 at byte 33) while the car is on the
+  ground. `gbx::record::NEUTRAL_VALUE` carries it, `is_neutralised` still
+  accepts a plain zero there so the sixty-odd files written before this are not
+  re-labelled, and a unit test pins both halves.
+
+  **This is not a measurement of byte 32 per tick.** The engine computes it and
+  it is in memory; nothing reads it yet, and the carrier table has no entry for
+  it. It is a constant, chosen because the one thing a constant can be honest
+  about here is that the car is on the ground for most of every run we publish.
+
+  Two instruments came out of the bisect and both are in the tree:
+  `ghost record channels IN OUT --from DONOR --bytes N,N` / `--set N=V` to make
+  the one-variable file, and `tmtraj bytes FILE --bytes N,N` to read the raw
+  values back — which is what says a channel is **one constant for a whole run**,
+  the shape that started this.
 
 * **`ghost trim` lengthens.** `u02 extend` — append copies of the last packet —
   had 15 callsites, and when `u02` was deleted the capability went with it: the

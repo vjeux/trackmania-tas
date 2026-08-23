@@ -60,8 +60,8 @@ human recording, carry a pedal byte that is neither.
 
 | question | command |
 |---|---|
-| what does this file say the car did | `tmtraj show`, `tmtraj export`, `tmtraj fields` |
-| what inputs does the record carry | `tmtraj inputs` (the 50 ms echo) · `ghost tape extract` (the 10 ms tape — what the driver pressed) |
+| what does this file say the car did | `tmtraj show`, `tmtraj export`, `tmtraj fields`, `tmtraj bytes` (the RAW value of a named sample byte, and whether it is one constant for a whole run) |
+| what inputs does the record carry | `tmtraj inputs` (the 50 ms echo) · `ghost tape extract` (the 10 ms tape — what the driver pressed) · `ghost tape csv` (the same tape in the `race_ms,steer,accel,brake` form every map page publishes under `inputs/`) |
 | are these two recordings the same run | `tmtraj diff` (`--lag`, `--near`, `--bytes`), `tmtraj spawn` |
 | is this a physically coherent run of a car | `tmtraj check` |
 | is it publishable | `tmtraj gate` (physics, contamination, provenance) and `ghost verify` (container, tape, identity, the engine) |
