@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 89 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 92 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -69,7 +69,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
 | `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
-| `--fire --fire-at --fire-need --fire-where --after-key --after-ticks` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
+| `--fire --fire-at --fire-need --fire-where --after-key --after-ticks --after-from` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 
 **Added, because the behaviour existed but was not addressable:**
 
@@ -259,7 +259,8 @@ the fixtures checked in under `tools/testdata`.
 | **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
 | **the whole ladder, on a map with known ground truth** | 228811 (already beaten -- incumbent 20.237, AT 20.555 -- which is why it is the right place to prove an instrument). From the human world record as its seed: state → launch → aim → **a validated finish on the launcher route no human drives**, in one hour against the hand-built private fork's 2 h 43 min. 216 improvements confirmed, **0 phantoms** |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
-| **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart (284238's mechanism, their measurement) |
+| **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart |
+| **and it separates a REAL known-good pair** | 284238 ran it on a rider and two launchers: **0% of ticks under the bar against 51-71%** -- while the MEAN points the wrong way (13.30 for the rider against 19.8-24.3), because a free body is quiet stretches punctuated by impacts. §5.16 |
 
 ### One check that did not work, one that did, and a false negative I nearly published
 
@@ -696,8 +697,8 @@ search refuses rather than proceeding without the control.
 
 ### 5.12 What it cost, and what it bought
 
-89 checks, up from 41. New: `forkoracle/tests/gate.rs` (23: the key language,
-the event, the load detector) and `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
+92 checks, up from 41. New: `forkoracle/tests/gate.rs` (26: the key language,
+the event, the load detector, the run's end) and `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
 `score.rs`, `loop_invariants.rs` and `oracle_e2e.rs`. Everything but the
 engine-backed tests runs with no server, on the fixtures in `tools/testdata`,
 anchored on `CARGO_MANIFEST_DIR`.
@@ -841,6 +842,59 @@ measure needs a window that does not move at all, and that is one field.
 
 It is the same family as §5.11's decoy: an objective evaluated somewhere the
 candidate had a say in choosing.
+
+---
+
+### 5.16 An event has a duration, and 284238 needed its end
+
+The 284238 arm ran the load detector against a real known-good pair and sent
+back two things: a confirmation with a statistic in it, and a gap.
+
+**The confirmation — and the trap inside it.** Their pair, each window 900 ms
+from that tape's own kicker engagement so neither side gets a longer one:
+
+| tape | ticks | mean \|domega\| | max | ticks under 0.5 |
+|---|---|---|---|---|
+| Yhomas_TM 46.112, **rides** | 81 | 13.30 | 108.6 | 0 (0%) |
+| ours cu1best, **launches** | 91 | 24.34 | 589.3 | 64 (71%) |
+| ours b2r3, **launches** | 91 | 19.83 | 337.3 | 46 (51%) |
+
+The **fraction of ticks below the bar** separates cleanly, 0% against 51–71%.
+**The mean does not, and it points the wrong way** — the launching tapes average
+20–24 °/s of change against the rider's 13.30, because a free rigid body is long
+exactly-constant stretches *punctuated by violent impacts* (max 589 and 337
+against his 108.6), and the impacts dominate an average. Max does not separate
+either.
+
+So `--fire '-domega' --fire-at -0.5 --fire-need 3` is the right shape precisely
+because it asks for a RUN of quiet ticks rather than a small average. **Any
+variant that scores mean or peak |domega| ranks a launch above a ride on that
+map** — and "the rate barely changes" is the natural intuition, with the mean
+the natural way to write it. The mean is the trap.
+
+**Calibration, from the positive control:** the rider's minimum |domega| over
+those 900 ms is exactly **0.500**. He grazes the bar and never goes under it for
+a single tick. `--fire-need 3` is comfortable at 0.5; a bar tightened to 0.2
+would classify the rider as a launch. Calibrate on the positive, not on the
+synthetic.
+
+**The gap.** On that map the interesting quantity is not whether a tape ever
+goes rigid but **where it comes back**. Their best candidate goes rigid at the
+kicker like everything else and then *recovers contact 45 m later*. Under a
+first-tick-only rule that tape reads as a pure launch — the one tape doing the
+new thing is invisible to the objective.
+
+So an event now records its duration and its multiplicity:
+
+| field | meaning |
+|---|---|
+| `fire_end_tick` | the last tick of the run that fired, or −1 if it was still holding when the run ended — **which is what a pure launch looks like** |
+| `fire_runs` | how many separate qualifying runs there were |
+| `--after-from end` | open the after-window at the run's END rather than at the event |
+
+`a_run_that_ends_is_distinguishable_from_one_that_does_not` pins the case
+directly: two tapes that go rigid at the same tick, one recovering and one not,
+must not produce the same record.
 
 ---
 

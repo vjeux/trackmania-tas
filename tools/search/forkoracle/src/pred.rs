@@ -603,6 +603,7 @@ impl<'a> KeyParser<'a> {
 ///
 /// `where_spec` empty means anywhere; `after` empty means the event itself is
 /// the whole objective and everything that fires ties.
+#[allow(clippy::too_many_arguments)]
 pub fn parse_fire(
     cond: &str,
     at: f32,
@@ -610,6 +611,7 @@ pub fn parse_fire(
     where_spec: &str,
     after: &str,
     after_ticks: u32,
+    after_from_end: bool,
 ) -> Result<Fire, String> {
     let where_box = if where_spec.is_empty() {
         Gate::NONE
@@ -625,6 +627,7 @@ pub fn parse_fire(
         at,
         need: need.max(1),
         after_ticks,
+        after_from_end,
         where_box,
         after: if after.is_empty() { [KeyOp::END; MAXKOPS] } else { parse_key(after)? },
     })
@@ -766,6 +769,7 @@ impl Watch {
         v.extend_from_slice(&self.fire.at.to_le_bytes());
         v.extend_from_slice(&self.fire.need.to_le_bytes());
         v.extend_from_slice(&self.fire.after_ticks.to_le_bytes());
+        v.extend_from_slice(&(self.fire.after_from_end as u32).to_le_bytes());
         v.extend_from_slice(&(self.fire.where_box.armed as u32).to_le_bytes());
         for f in &self.fire.where_box.bounds {
             v.extend_from_slice(&f.to_le_bytes());

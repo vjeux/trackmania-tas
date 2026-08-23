@@ -200,9 +200,24 @@ pub struct Summary {
     /// to bite. `after_tick` is -1 when nothing was measured.
     pub after_key: f32,
     pub after_tick: i32,
+
+    /// WHERE THE EVENT STOPPED, and how many times it happened.
+    ///
+    /// An event has a duration, and on some maps that is the whole question.
+    /// 284238, measured: their best candidate goes rigid at the kicker like
+    /// everything else and then **recovers contact 45 m later** -- so under a
+    /// first-tick-only rule the one tape doing the new thing is
+    /// indistinguishable from a pure launch, and invisible to the objective.
+    ///
+    /// `fire_end_tick` is the last tick of the run that fired, or -1 if it was
+    /// still holding when the run ended (which is what a pure launch looks
+    /// like). `fire_runs` counts every separate qualifying run, so "it went
+    /// rigid twice" is a fact the search can see rather than one it discards.
+    pub fire_end_tick: i32,
+    pub fire_runs: u32,
 }
 
-pub const SUMMARY_BYTES: usize = 140;
+pub const SUMMARY_BYTES: usize = 148;
 pub const SUMMARY_MAGIC: u32 = 0x464B5057; // "FKPW"
 
 impl Summary {
@@ -232,6 +247,8 @@ impl Summary {
         fire_pos: [0.0; 3],
         after_key: 0.0,
         after_tick: -1,
+        fire_end_tick: -1,
+        fire_runs: 0,
     };
     pub fn encode(&self, o: &mut [u8]) {
         let w = |o: &mut [u8], i: usize, v: u32| o[i..i + 4].copy_from_slice(&v.to_le_bytes());
@@ -266,6 +283,8 @@ impl Summary {
         }
         w(o, 128, self.after_key.to_bits());
         w(o, 132, self.after_tick as u32);
+        w(o, 136, self.fire_end_tick as u32);
+        w(o, 140, self.fire_runs);
     }
     pub fn decode(b: &[u8]) -> Option<Summary> {
         if b.len() < SUMMARY_BYTES {
@@ -302,6 +321,8 @@ impl Summary {
             fire_pos: [f(116), f(120), f(124)],
             after_key: f(128),
             after_tick: g(132) as i32,
+            fire_end_tick: g(136) as i32,
+            fire_runs: g(140),
         })
     }
 }
@@ -714,6 +735,9 @@ pub struct Fire {
     /// aborting only removes ticks -- but a FIXED count is what a fraction or
     /// a dwell measure needs, and it is one field.
     pub after_ticks: u32,
+    /// Measure the after-window from the END of the firing run rather than its
+    /// start -- "where did it come back", not "what happened next".
+    pub after_from_end: bool,
     /// Where the event is allowed to happen. `armed` false on this box means
     /// anywhere.
     ///
@@ -741,6 +765,7 @@ impl Fire {
         at: 0.0,
         need: 1,
         after_ticks: 0,
+        after_from_end: false,
         where_box: Gate::NONE,
         after: [KeyOp::END; MAXKOPS],
     };
@@ -825,6 +850,8 @@ pub struct Eval {
     prev_omega_valid: bool,
     /// Consecutive ticks the event condition has held, for `Fire::need`.
     fire_cons: u32,
+    /// Is the run that fired still holding?
+    in_firing_run: bool,
     pub sum: Summary,
 }
 
@@ -852,6 +879,7 @@ impl Eval {
         prev_omega: [0.0; 3],
         prev_omega_valid: false,
         fire_cons: 0,
+        in_firing_run: false,
         sum: Summary::ZERO,
     };
 
@@ -868,6 +896,7 @@ impl Eval {
         self.prev_quat = [0.0; 4];
         self.prev_omega = [0.0; 3];
         self.fire_cons = 0;
+        self.in_firing_run = false;
         self.sum = Summary::ZERO;
         self.sum.magic = SUMMARY_MAGIC;
     }
@@ -952,32 +981,60 @@ impl Eval {
         self.prev_quat_valid = true;
         let st = St { pos, vel, quat, dspeed, omega, domega };
 
-        // ---- THE EVENT, and what happened after it.
+        // ---- THE EVENT: when it happened, how long it lasted, how often.
         //
-        // The event is the FIRST tick the condition holds, so it cannot be
-        // re-fired by a candidate that crosses the same threshold twice, and
-        // the after-key is a maximum over the ticks strictly after it. Both
-        // are monotone under aborting for the same reason the gate key is:
-        // aborting only removes ticks.
+        // The event is the FIRST tick the condition holds for `need` ticks
+        // running, so it cannot be re-fired by a candidate that crosses the
+        // same threshold twice. But an event has a DURATION, and on some maps
+        // that is the whole question -- so the run's end and the number of runs
+        // are recorded too, and a candidate that goes rigid and then recovers
+        // contact is distinguishable from one that never came back.
+        //
+        // The after-key is a maximum over ticks after the event (or after the
+        // run's END, with `after_from_end`). Monotone under aborting for the
+        // same reason the gate key is: aborting only removes ticks.
         if self.fire.armed {
-            if self.sum.fire_tick < 0 {
-                let v = key_eval(&self.fire.cond, st);
-                let here = !self.fire.where_box.armed || self.fire.where_box.over(pos) <= 0.0;
-                if v.is_finite() && v >= self.fire.at && here {
-                    self.fire_cons += 1;
-                    if self.fire_cons >= self.fire.need.max(1) {
+            let v = key_eval(&self.fire.cond, st);
+            let here = !self.fire.where_box.armed || self.fire.where_box.over(pos) <= 0.0;
+            let holds = v.is_finite() && v >= self.fire.at && here;
+
+            if holds {
+                self.fire_cons += 1;
+                if self.fire_cons == self.fire.need.max(1) {
+                    // a new qualifying run has just been established
+                    self.sum.fire_runs += 1;
+                    if self.sum.fire_tick < 0 {
                         // the event is the FIRST tick of the run that held it,
                         // not the tick the count completed on
                         self.sum.fire_tick = tick - (self.fire.need.max(1) as i32 - 1);
                         self.sum.fire_value = v;
                         self.sum.fire_pos = pos;
+                        self.in_firing_run = true;
                     }
-                } else {
-                    self.fire_cons = 0;
                 }
-            } else if self.fire.after[0].op != KOP_END {
+            } else {
+                if self.in_firing_run {
+                    // the run that fired has ended HERE: this is where contact
+                    // came back, and on 284238 it is the measurement.
+                    self.sum.fire_end_tick = tick - 1;
+                    self.in_firing_run = false;
+                }
+                self.fire_cons = 0;
+            }
+
+            // the window opens at the event, or at the end of its run
+            let from = if self.fire.after_from_end {
+                if self.sum.fire_end_tick >= 0 {
+                    self.sum.fire_end_tick
+                } else {
+                    i32::MAX
+                }
+            } else {
+                self.sum.fire_tick
+            };
+            if from >= 0 && from < i32::MAX && tick > from && self.fire.after[0].op != KOP_END {
                 let within = self.fire.after_ticks == 0
-                    || tick - self.sum.fire_tick <= self.fire.after_ticks as i32;
+                    || tick - from <= self.fire.after_ticks as i32;
                 let k = key_eval(&self.fire.after, st);
                 if within && k.is_finite() && (self.sum.after_tick < 0 || k > self.sum.after_key) {
                     self.sum.after_key = k;

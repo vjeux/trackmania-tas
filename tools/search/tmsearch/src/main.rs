@@ -123,9 +123,11 @@ THE EVENT (a gate is a place; some things are events)
                       pins every candidate at whatever the ordinary route
                       already passes within.
                       e.g. --after-key '-dist(366,50,736)'
-  --after-ticks N     bound that window to N ticks from the event. A window
-                      whose end the CANDIDATE chooses is a decoy the instrument
-                      builds.
+  --after-ticks N     bound that window to N ticks. A window whose end the
+                      CANDIDATE chooses is a decoy the instrument builds.
+  --after-from S      open that window at the event (`start`, default) or at
+                      the END of the run that fired (`end`) -- "where did it
+                      come back", not "what happened next".
 "#;
 
 fn die(m: impl AsRef<str>) -> ! {
@@ -180,6 +182,7 @@ struct Args {
     fire_where: String,
     after_key: String,
     after_ticks: u32,
+    after_from_end: bool,
 }
 
 fn parse() -> Args {
@@ -235,6 +238,7 @@ fn parse() -> Args {
         fire_where: String::new(),
         after_key: String::new(),
         after_ticks: 0,
+        after_from_end: false,
     };
     let mut i = 1;
     let num = |s: &str, k: &str| -> f64 { s.parse().unwrap_or_else(|_| die(format!("{} wants a number, got {:?}", k, s))) };
@@ -293,6 +297,14 @@ fn parse() -> Args {
             "--fire-need" => a.fire_need = num(&next(&mut i), k) as u32,
             "--fire-where" => a.fire_where = next(&mut i),
             "--after-ticks" => a.after_ticks = num(&next(&mut i), k) as u32,
+            "--after-from" => {
+                let v = next(&mut i);
+                a.after_from_end = match v.as_str() {
+                    "end" => true,
+                    "start" => false,
+                    _ => die("--after-from wants `start` or `end`"),
+                };
+            }
             "--after-key" => a.after_key = next(&mut i),
             "--gate-seed-state" => a.gate_seed_state = next(&mut i),
             "--seg" => {
@@ -701,6 +713,7 @@ fn run_fork(
         watch.fire =
             forkoracle::pred::parse_fire(
                 &a.fire, a.fire_at, a.fire_need, &a.fire_where, &a.after_key, a.after_ticks,
+                a.after_from_end,
             )
                 .unwrap_or_else(|e| die(e));
     }

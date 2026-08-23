@@ -321,6 +321,7 @@ fn a_launch_clause(after: &str) -> Fire {
         "xmin=56,xmax=80,ymin=48,ymax=54,zmin=704,zmax=713",
         after,
         0,
+        false,
     )
     .unwrap()
 }
@@ -408,7 +409,7 @@ fn peak_speed_is_not_a_launch_detector_but_the_rise_is() {
     // the same threshold on SPEED would fire on it, which is the point
     let by_speed = run_fire(
         g,
-        forkoracle::pred::parse_fire("speed", 140.0, 1, "", "", 0).unwrap(),
+        forkoracle::pred::parse_fire("speed", 140.0, 1, "", "", 0, false).unwrap(),
         &path,
     )
     .sum;
@@ -506,10 +507,10 @@ fn aborting_can_only_lose_the_event() {
 
 #[test]
 fn a_malformed_event_clause_is_refused() {
-    assert!(forkoracle::pred::parse_fire("dspeeed", 10.0, 1, "", "", 0).is_err());
-    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "xmin=1,xmax=2", "", 0).is_err());
-    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "dist(1,2)", 0).is_err());
-    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "", 0).is_ok());
+    assert!(forkoracle::pred::parse_fire("dspeeed", 10.0, 1, "", "", 0, false).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "xmin=1,xmax=2", "", 0, false).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "dist(1,2)", 0, false).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "", 0, false).is_ok());
 }
 
 /// THE SECOND DECOY FAMILY, and the symptom that catches it.
@@ -636,7 +637,7 @@ fn domega_separates_a_free_rigid_body_from_a_loaded_one() {
     let loaded = make(true);
 
     // sanity: both are turning hard, so a rate threshold cannot separate them
-    let by_rate = forkoracle::pred::parse_fire("omega", 200.0, 1, "", "", 0).unwrap();
+    let by_rate = forkoracle::pred::parse_fire("omega", 200.0, 1, "", "", 0, false).unwrap();
     assert!(run_fire(g, by_rate, &free).sum.fire_tick >= 0);
     assert!(
         run_fire(g, by_rate, &loaded).sum.fire_tick >= 0,
@@ -645,7 +646,7 @@ fn domega_separates_a_free_rigid_body_from_a_loaded_one() {
 
     // THE DISCRIMINATION: |domega| under half a degree per tick, held three
     // ticks, is a free body.
-    let by_load = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0).unwrap();
+    let by_load = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0, false).unwrap();
     assert!(run_fire(g, by_load, &free).sum.fire_tick >= 0, "a free rigid body did not read as one");
     assert_eq!(
         run_fire(g, by_load, &loaded).sum.fire_tick,
@@ -668,8 +669,8 @@ fn the_event_can_require_consecutive_ticks() {
         q = spin(q, [r, 0.0, 0.0]);
         path.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
     }
-    let one = forkoracle::pred::parse_fire("-domega", -0.5, 1, "", "", 0).unwrap();
-    let three = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0).unwrap();
+    let one = forkoracle::pred::parse_fire("-domega", -0.5, 1, "", "", 0, false).unwrap();
+    let three = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0, false).unwrap();
     assert!(run_fire(g, one, &path).sum.fire_tick >= 0, "need=1 found no steady tick");
     assert_eq!(
         run_fire(g, three, &path).sum.fire_tick, -1,
@@ -702,5 +703,107 @@ fn the_after_window_can_be_fixed_in_ticks() {
         (fixed.after_key - 55.0).abs() < 1.5,
         "five ticks of a 1 m/tick climb should be ~55 m, got {}",
         fixed.after_key
+    );
+}
+
+/// **AN EVENT HAS A DURATION, AND ON SOME MAPS THAT IS THE WHOLE QUESTION.**
+///
+/// 284238, measured: their best candidate goes rigid at the kicker like
+/// everything else and then RECOVERS CONTACT 45 m later. Under a
+/// first-tick-only rule the one tape doing the new thing is indistinguishable
+/// from a pure launch, and invisible to the objective.
+#[test]
+fn a_run_that_ends_is_distinguishable_from_one_that_does_not() {
+    let g = gate("abs(bodyright)");
+    let f = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0, false).unwrap();
+
+    // free for 20 ticks, then contact comes back and the rate wanders again
+    let recovers = {
+        let mut q = yaw(0.0);
+        let mut out = Vec::new();
+        for i in 0..60 {
+            let rate = if i < 25 { [260.0, 0.0, 0.0] } else { [260.0 + 9.0 * (i as f32).sin(), 0.0, 0.0] };
+            q = spin(q, rate);
+            out.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+        }
+        out
+    };
+    // free from the same tick and never coming back
+    let pure_launch = {
+        let mut q = yaw(0.0);
+        let mut out = Vec::new();
+        for _ in 0..60 {
+            q = spin(q, [260.0, 0.0, 0.0]);
+            out.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+        }
+        out
+    };
+
+    let a = run_fire(g, f, &recovers).sum;
+    let b = run_fire(g, f, &pure_launch).sum;
+    assert!(a.fire_tick >= 0 && b.fire_tick >= 0, "both should fire");
+    assert!(
+        a.fire_end_tick >= 0,
+        "the run that recovered contact did not record an end -- it is indistinguishable \
+         from a pure launch, which is exactly the defect this pins"
+    );
+    assert_eq!(b.fire_end_tick, -1, "a pure launch must have no end");
+    assert!(a.fire_end_tick > a.fire_tick);
+}
+
+/// And the runs are counted, so "it went rigid twice" is a fact the search can
+/// see rather than one it discards.
+#[test]
+fn separate_qualifying_runs_are_counted() {
+    let g = gate("abs(bodyright)");
+    let f = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0, false).unwrap();
+    let mut q = yaw(0.0);
+    let mut path = Vec::new();
+    for i in 0..90 {
+        // free, contact, free again
+        let quiet = (10..30).contains(&i) || (50..80).contains(&i);
+        let rate = if quiet { [260.0, 0.0, 0.0] } else { [260.0 + 9.0 * (i as f32).sin(), 0.0, 0.0] };
+        q = spin(q, rate);
+        path.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+    }
+    let s = run_fire(g, f, &path).sum;
+    assert_eq!(s.fire_runs, 2, "two separate rigid stretches were not counted as two");
+    assert!(s.fire_end_tick >= 0, "the first run's end was not recorded");
+    assert!(s.fire_end_tick < 50, "the end recorded belongs to the wrong run");
+}
+
+/// `--after-from end` scores what happened after the run ENDED -- "where did it
+/// come back", not "what happened next".
+#[test]
+fn the_after_window_can_open_at_the_end_of_the_run() {
+    let g = gate("abs(bodyright)");
+    let from_start = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "px", 0, false).unwrap();
+    let from_end = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "px", 0, true).unwrap();
+
+    // x climbs the whole time; the rigid run ends at tick ~30
+    let mut q = yaw(0.0);
+    let mut path = Vec::new();
+    for i in 0..60 {
+        let rate = if i < 30 { [260.0, 0.0, 0.0] } else { [260.0 + 9.0 * (i as f32).sin(), 0.0, 0.0] };
+        q = spin(q, rate);
+        path.push(([i as f32, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+    }
+    let a = run_fire(g, from_start, &path).sum;
+    let b = run_fire(g, from_end, &path).sum;
+    // both see the same maximum x, since x only climbs -- the difference is
+    // WHERE the window opened, which shows in a bounded window
+    assert_eq!(a.after_key, b.after_key);
+
+    let mut bounded_start = from_start;
+    bounded_start.after_ticks = 5;
+    let mut bounded_end = from_end;
+    bounded_end.after_ticks = 5;
+    let a = run_fire(g, bounded_start, &path).sum;
+    let b = run_fire(g, bounded_end, &path).sum;
+    assert!(
+        b.after_key > a.after_key + 10.0,
+        "the two windows opened at the same place: {} vs {}",
+        a.after_key,
+        b.after_key
     );
 }

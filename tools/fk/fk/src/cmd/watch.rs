@@ -75,6 +75,7 @@ pub struct Cfg {
     pub fire_where: String,
     pub after_key: String,
     pub after_ticks: u32,
+    pub after_from_end: bool,
 }
 
 fn parse(args: &[String]) -> Cfg {
@@ -120,6 +121,7 @@ fn parse(args: &[String]) -> Cfg {
         fire_where: String::new(),
         after_key: String::new(),
         after_ticks: 0,
+        after_from_end: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -163,6 +165,7 @@ fn parse(args: &[String]) -> Cfg {
             "--fire-need" => c.fire_need = next(&mut i).parse().unwrap(),
             "--fire-where" => c.fire_where = next(&mut i),
             "--after-ticks" => c.after_ticks = next(&mut i).parse().unwrap(),
+            "--after-from" => c.after_from_end = next(&mut i) == "end",
             "--after-key" => c.after_key = next(&mut i),
             x => crate::die(format!(
                 "fk watch: unknown flag {:?}. A flag this command does not use is \
@@ -511,6 +514,7 @@ fn offline(c: &Cfg) {
         watch.fire =
             forkoracle::pred::parse_fire(
                 &c.fire, c.fire_at, c.fire_need, &c.fire_where, &c.after_key, c.after_ticks,
+                c.after_from_end,
             )
                 .unwrap_or_else(|e| crate::die(e));
     }
@@ -541,10 +545,16 @@ fn offline(c: &Cfg) {
     if watch.fire.armed {
         if sum.fire_tick >= 0 {
             println!(
-                "  fire: at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}){}",
+                "  fire: at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}); {} run(s), {}{}",
                 sum.fire_tick,
                 sum.fire_value,
                 sum.fire_pos[0], sum.fire_pos[1], sum.fire_pos[2],
+                sum.fire_runs,
+                if sum.fire_end_tick >= 0 {
+                    format!("ended at tick {} ({} ticks)", sum.fire_end_tick, sum.fire_end_tick - sum.fire_tick + 1)
+                } else {
+                    "still holding when the run ended".to_string()
+                },
                 if sum.after_tick >= 0 {
                     format!("; after {:+.4} at tick {}", sum.after_key, sum.after_tick)
                 } else {

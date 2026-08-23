@@ -35,7 +35,7 @@
 //! passed.
 
 use forkoracle::pred::GateRecord;
-use forkoracle::pred_core::{key_eval, Gate};
+use forkoracle::pred_core::{key_eval, Gate, St};
 
 /// How the fork's measurement compares with the recording.
 pub struct Agreement {
@@ -138,7 +138,7 @@ pub fn from_ghost(path: &str, gate: &Gate, start_offset_ms: i32) -> Result<GateR
         if speed < gate.minspeed || gate.over(pos) > 0.0 {
             continue;
         }
-        let key = key_eval(&gate.prog, pos, vel, quat);
+        let key = key_eval(&gate.prog, St::at(pos, vel, quat));
         if !key.is_finite() {
             continue;
         }
@@ -298,7 +298,7 @@ fn interpolate(
     } else {
         [1.0, 0.0, 0.0, 0.0]
     };
-    GateRecord { tick: label, key: key_eval(&gate.prog, pos, vel, quat), pos, vel, quat }
+    GateRecord { tick: label, key: key_eval(&gate.prog, St::at(pos, vel, quat)), pos, vel, quat }
 }
 
 fn dot4(a: [f64; 4], b: [f64; 4]) -> f64 {
