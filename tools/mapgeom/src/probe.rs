@@ -170,41 +170,32 @@ impl Report {
         r
     }
 
-    /// The most samples that share a gap within `width` metres, and the middle
-    /// of that window.
+    /// How many samples are RESTING: sitting within `max_gap` of a surface,
+    /// and the median of those gaps.
     ///
     /// This is the fit criterion, and choosing it correctly matters more than
-    /// it looks. Scoring a candidate height by "how many samples have anything
-    /// under them" picks whichever offset drops the run onto the stadium
-    /// FLOOR, because grass is everywhere: on 134672 that scored 93 % of
-    /// samples over a surface at a wandering 3.2 m, and it was wrong. A car
-    /// resting on a road has ONE ride height for the whole run, so the right
-    /// question is not how many samples found something but how many found the
-    /// same thing.
-    pub fn band(&self, width: f32, max_gap: f32) -> (usize, f32) {
-        if self.gaps.is_empty() {
+    /// it looks. Two wrong criteria were tried first and both produce a
+    /// confident wrong answer:
+    ///
+    /// * *"how many samples have anything under them"* picks whichever height
+    ///   drops the run onto the stadium FLOOR, because grass is everywhere.
+    ///   On 134672 that scored 93 % of samples over a surface at a wandering
+    ///   3.2 m.
+    /// * *"the largest group of samples sharing a gap"* is degenerate under a
+    ///   vertical shift: lowering the whole model by a metre raises every gap
+    ///   by a metre and the same samples still share one. It also picked the
+    ///   wrong cell row on maps with a deck under the road -- 146612 fitted a
+    ///   consistent 2.048 m.
+    ///
+    /// A car rests CENTIMETRES above what it is on, so the window is anchored
+    /// at zero. Measured ride heights on maps this model reproduces run
+    /// 0.013 - 0.073 m.
+    pub fn resting(&self, max_gap: f32) -> (usize, f32) {
+        let n = self.gaps.partition_point(|g| *g <= max_gap);
+        if n == 0 {
             return (0, f32::NAN);
         }
-        let mut best = (0usize, f32::NAN);
-        let mut j = 0usize;
-        for i in 0..self.gaps.len() {
-            // A car rests CENTIMETRES above what it is on. A band a metre up
-            // is the probe finding something else -- water, grass, a slab
-            // under the road -- and on 270053 that is exactly what happened:
-            // 57 % of samples over Water at a consistent 5.4 m, which is a
-            // consistent wrong answer.
-            if self.gaps[i] > max_gap {
-                break;
-            }
-            while j < self.gaps.len() && self.gaps[j] - self.gaps[i] <= width {
-                j += 1;
-            }
-            let n = j - i;
-            if n > best.0 {
-                best = (n, (self.gaps[i] + self.gaps[j - 1]) / 2.0);
-            }
-        }
-        best
+        (n, self.gaps[n / 2])
     }
 
     pub fn pct(&self, q: f64) -> f32 {

@@ -1,16 +1,11 @@
 use mapgeom::node::{Node, Slot};
 use mapgeom::{names, store::DataStore, store::STADIUM_KEY};
 
-/// How tightly a run's ride height has to agree for a candidate map height to
-/// count as a fit. A car on a road varies by centimetres; 0.30 m is loose
-/// enough for a bumpy surface and far tighter than the metre between
-/// candidates.
-const BAND: f32 = 0.30;
-
-/// The most a car's reference point can sit above what it is resting on before
-/// the probe has found the wrong surface. Ride heights measured on maps this
-/// model reproduces are 0.02-0.06 m.
-const MAX_RIDE: f32 = 1.0;
+/// How close to a surface a sample has to be to count as RESTING on it.
+/// Measured ride heights on maps this model reproduces run 0.013 - 0.073 m, so
+/// 0.25 m is generous; what it must not be is metres, or the fit finds the
+/// stadium floor. See `probe::Report::resting`.
+const RESTING: f32 = 0.25;
 
 const USAGE: &str = "\
 mapgeom -- TM2020 map geometry
@@ -151,7 +146,7 @@ fn score_at(
     let mut centre = f32::NAN;
     for (_, pts, _) in ghosts {
         let r = mapgeom::probe::Report::of(&idx, pts, reach);
-        let (n, c) = r.band(BAND, MAX_RIDE);
+        let (n, c) = r.resting(RESTING);
         score += n;
         if centre.is_nan() {
             centre = c;
@@ -337,7 +332,7 @@ fn main() {
                             }
                             if score > 0 {
                                 println!(
-                                    "  yoff {:>7.1}  {} samples at a common ride height of {:.3} m",
+                                    "  yoff {:>7.1}  {} samples resting, median gap {:.3} m",
                                     y, score, centre
                                 );
                             }
