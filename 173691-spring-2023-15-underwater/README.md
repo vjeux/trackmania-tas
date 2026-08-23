@@ -21,8 +21,39 @@ demonstration run, which leaves the same lip at the same speed and sinks past
 the deck into the water. They are the same car until race 25.750, because every
 input up to that tick is his.
 
-## What the jump is
+**Spring 2023 - 15 (Underwater) — the endgame, 37.599** *(a segment, not a lap)*
 
+https://github.com/user-attachments/assets/df63facd-38bb-406c-b1db-51edd5e049b5
+
+From a spawn on the lower canopy — a rig with the map's four checkpoints
+neutralised, which is what moves the spawn there — the car wedges at the
+stadium's south-east corner, is driven about 80 m up the wall, comes down
+through the stands and stops the clock on the map's own finish gate at
+**37.599**. As far as anyone here knows this is the first time this map has been
+seen finished from the deck.
+
+**It is not a completed lap and this page does not claim the map is beaten.** A
+real run still has to start at the start block and take the four checkpoints;
+this segment starts where the jump above ends and goes on from there. The two
+halves have not been joined.
+
+What is checked, and on which map: the plain dedicated server re-simulates the
+written file to **37.599, cps = 1** on the rig
+(`map_FINISH_spawn_46_23_15.Map.Gbx`, md5 `88575cea…`). The **stock** download
+and the single-block splice both return **DNF at cps None** on the same file —
+correctly, because from the start block these inputs drive nowhere. So the map
+this is *filmed* on and the map it is *validated* on are different, and both
+statements are true at once: a ghost plays from its own samples, so the stock
+map shows the run; only the rig re-simulates it. The clip above is the stock
+map. `ghost verify` passes V1–V10, and tape and recording agree at kappa 1.000
+across all 752 samples.
+
+The control that says the clock is stopped by the map's own gate wall rather
+than by the relocated block carrying the spawn: the same tape on the same rig
+with the remaining fourteen `GateFinish` blocks moved 1.4 km away returns
+**DNF cps = 0**.
+
+## What the jump is
 The route is GothMommyTM's and the credit for it is his. The map is driven
 underwater; at race **25.80** the car leaves the end of a banked curve at
 (1311.8, 138.2, 386.4) doing 101 km/h and glides. Water drag takes the speed
