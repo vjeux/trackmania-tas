@@ -59,9 +59,19 @@ fn pick_vehicle(rd: &RecordData) -> Option<usize> {
 pub fn cmd(a: &[String]) {
     match a.first().map(String::as_str) {
         Some("rebuild") => rebuild(&a[1..]),
+        Some("shorten") => {
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record shorten IN OUT"));
+            let out = a.get(2).unwrap_or_else(|| die("ghost record shorten IN OUT"));
+            match shorten_scene(inp, out) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("show") => show(&a[1..]),
         _ => die(
             "ghost record rebuild IN OUT --span MS [--period MS] [--template N]\n\
+             ghost record shorten IN OUT   -- make the scene end when the car does,\n\
+             \x20                                without touching the car's samples\n\
              ghost record show FILE",
         ),
     }
@@ -99,6 +109,85 @@ fn show(a: &[String]) {
             if Some(i) == veh { "   <- the car this project reads" } else { "" }
         );
     }
+}
+
+
+/// Make the scene end when the car does, WITHOUT touching the car's samples.
+///
+/// The repair for the 31 published ghosts whose record outlives their run. Those
+/// files' telemetry is fine -- the car's samples are its own and stop where the
+/// run stops. What is wrong is the frame around them: the record node's declared
+/// `end_ms` is the CONTAINER DONOR's, and the donor's non-vehicle entities
+/// (0x2D001000, 13 bytes a sample) are still there at their own full length.
+///
+/// So this drops those and shortens the span, and does not regenerate anything.
+/// That matters for three reasons: it needs no engine and no map, so it can be
+/// run over a whole checkout in seconds; it cannot change a trajectory, so it
+/// cannot introduce the defects a regeneration can; and re-regenerating 31
+/// verified files to fix a number in their header would be the more dangerous
+/// operation by far.
+///
+/// It refuses rather than guessing when the vehicle entity is not obvious --
+/// a file with several live cars in it is a different problem, and 227654's
+/// 27-entity carrier is the reason to say so out loud.
+pub fn shorten_scene(inp: &str, out: &str) -> Result<String, String> {
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity: nothing to shorten to")?;
+        let last = rd.ents[vi].times.last().copied().unwrap_or(0);
+        let scene = rd
+            .ents
+            .iter()
+            .filter_map(|e| e.times.last().copied())
+            .max()
+            .unwrap_or(0)
+            .max(rd.end_ms);
+        before = format!(
+            "{} entities, scene to {}, car to {}",
+            rd.ents.len(),
+            secs(scene as i64),
+            secs(last as i64)
+        );
+        let dropped: Vec<String> = rd
+            .ents
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != vi)
+            .map(|(_, e)| {
+                format!(
+                    "0x{:08X} x{}@{}",
+                    rd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0),
+                    e.times.len(),
+                    secs(e.times.last().copied().unwrap_or(0) as i64)
+                )
+            })
+            .collect();
+        let car = rd.ents.swap_remove(vi);
+        rd.ents = vec![car];
+        rd.bulk_notices.clear();
+        rd.custom_modules.clear();
+        rd.end_ms = last;
+        after = format!("1 entity, scene to {} (dropped {})", secs(last as i64), dropped.join(", "));
+        Ok(())
+    })?;
+
+    // The car must come through untouched. This is the whole claim of the
+    // operation, so it is checked rather than asserted: same sample count, same
+    // times, same bytes.
+    let a = gbx::record::decode_ghost(inp)?;
+    let b = gbx::record::decode_ghost(out)?;
+    if a.samples.len() != b.samples.len() || a.raw != b.raw {
+        return Err(format!(
+            "the car's samples changed ({} -> {} samples, {} -> {} bytes) -- refusing, this \
+             operation must not touch the trajectory",
+            a.samples.len(),
+            b.samples.len(),
+            a.raw.len(),
+            b.raw.len()
+        ));
+    }
+    Ok(format!("{before} -> {after}; the car's {} samples are byte-identical", a.samples.len()))
 }
 
 /// Lay a fresh 50 ms grid out to `span_ms`, one vehicle entity, every sample a
