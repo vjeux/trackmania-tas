@@ -67,9 +67,28 @@ below the lowest firing height anyone had recorded**, and 28 m below the
 property of the *trajectories that had been tried*, not of the gate.
 
 One crossing of that plane did NOT fire: `(1356.5, 159.3, 494.4)` at 1.9 m/s.
-So the live band inside the low row is not the whole 130…162 — it is bounded
-somewhere between 134 and 159 — and I have not bracketed it. It does not change
-anything below: the deck is at 114.16 either way.
+So I traced the question properly — 128 runs from the start-wall spawns, every
+one of the 39 that finished plus a systematic sample of those that did not,
+each scored for where it was while inside `z 493…496, x 1344…1504`:
+
+```
+FIRED at y = 133.94, 133.97, 133.98   and   163.69 … 168.05   (24 more)
+NOT FIRED, having crossed that window at y = 114.13…114.19 (twelve runs,
+          28 to 1131 samples each), and also at 152.96, 155.64, 155.68,
+          156.96…158.23, 157.19, and 154.41…164.81
+```
+
+**So the live set is not a y-interval, and I have not resolved the trigger's
+shape** — it is presumably a proper per-gate box narrower in x and z than the
+window I scored against. Two things are nonetheless settled, and they are the
+two the route depends on:
+
+* **firing happens at y ≈ 134**, three times, in two different cells, with
+  trajectories — 29 m below anything previously recorded; and
+* **y = 114.16 never fires, and that is now demonstrated rather than assumed**:
+  twelve of the non-firing runs sat inside the trigger window at deck height for
+  28 to 1 131 consecutive samples. The lower canopy's null is not a coverage
+  failure.
 
 ### The control that mattered, and the null it killed
 
@@ -275,11 +294,12 @@ the fork server with a continuous objective (`uwlab maxy` / `uwlab box` against
 the ledge box give one) rather than the blind and straight-line tape families
 used here — but the prior after this arm is poor.
 
-**Two loose ends I did not close.** The low gate row's live band is bounded
-somewhere between y = 134 (fires) and y = 159 (does not), and I did not bracket
-it; and 62 of 158 straight-line traces failed in the car locator (`fk trace`
-refusing to guess at low speed) rather than returning a number, so the
-straight-line sweep is 96 scored, not 158.
+**Two loose ends I did not close.** The trigger's SHAPE: firing is observed at
+y ~ 134 and 163.7-168.1 and not at 114.16, but there are non-firing crossings of
+the same z-window at 153-165, so it is a per-gate box narrower than the window I
+scored against and I did not map it. And 62 of 158 straight-line traces failed
+in the car locator (`fk trace` refusing to guess at low speed) rather than
+returning a number, so that sweep is 96 scored, not 158.
 
 **Untouched by this arm:** CP c (#2180) at (976, 186, 1072), still never fired,
 and the final curve that subagent A's tape falls off at x ≈ 1269. Both are moot
