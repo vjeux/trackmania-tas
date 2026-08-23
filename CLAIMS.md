@@ -313,6 +313,49 @@ where nothing looked — *a count of a set you cannot see all of is worse than n
 count*; and an anchor wrote zeroed wheel channels straight through a passing
 gate.
 
+## A corpus can share the defect you are testing against
+
+Four hypotheses were raised for one symptom — regenerated ghosts killing the
+game client on import, with every headless check passing on the written file.
+Three were killed by their mirror control. The fourth survived it, and it was
+a one-line cause that **every test file in the corpus also carried**:
+`rebuild_to` ended with `kept.push(car)`, so the vehicle entity came out **last**
+where every ghost the game itself writes has it at **index 0**.
+
+Both directions, one map, one session, each behind a `scene ready` control:
+
+| file | car at | imports |
+|---|---|---|
+| the repo's own `tas_3836` | **0** | yes |
+| the same file, car moved to the end, 77 samples unchanged | 2 | **no** |
+| our rebuild of it | 2 | **no** |
+| that rebuild, car moved back to the front | **0** | yes |
+
+Moving the car breaks a file that works and moving it back fixes one that does
+not. Nothing else changes in either direction.
+
+* **The three dead leads were tested on a corpus where every candidate ALSO had
+  the car misplaced.** `u01`, the declared checkpoint list and the notice list
+  each looked decisive from one side and died from the other — and they had to,
+  because the real defect was present in every specimen, on both sides of every
+  swap. *A control matched on everything except your variable is not matched if
+  the true cause is in the background of both arms.*
+* **The one accidental success said so, and was read as evidence for the wrong
+  thing.** `graft-scene`'s outputs imported — because grafting appends the
+  scene *after* an already-first car, preserving the order by accident. That was
+  taken as support for the scene-record hypothesis. A repair that works for a
+  reason you have not identified is not a confirmation of the reason you
+  assumed.
+* **What to do about it:** when several plausible hypotheses all die against
+  their mirrors, stop generating hypotheses and **diff a file that works against
+  a file that does not, field by field**, including the ones no check reads.
+  The separating field here was the ORDER of a list — not a value in it, which
+  is why every value-wise comparison called the two files structurally
+  indistinguishable.
+* Nothing headless could see any of it: the dedicated server re-simulates the
+  input chunk and never reads the entity list, so all four files re-simulate to
+  their declared times and pass V1–V11.
+
 ## Agreement is not confirmation
 
 **Two numbers that agree may be two readings of one quantity.**
