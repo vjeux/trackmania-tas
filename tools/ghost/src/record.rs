@@ -414,24 +414,32 @@ pub fn rebuild_to(
         let n_kept = kept.len();
         kept.push(car);
         rd.ents = kept;
-        // KEEP THE NOTICE LISTS. These were cleared in the same lines that used
-        // to drop the scene records, on the reasoning that a notice describes
-        // entities that no longer exist. That reasoning has now cost two files:
-        // the container's notices are the field separating every importable
-        // file tested from `blev_regen`, the first with an empty list, which
-        // crashes with V1..V11 PASS and its scene record present. `graft_scene`
-        // preserved the donor's 79 as a side effect, which is why X5 and X7
-        // imported.
+        // KEEP THE NOTICE LISTS -- but NOT because they fix the import crash.
+        // They do not. THE HYPOTHESIS THAT PUT THIS LINE HERE IS DEAD, killed
+        // in both directions by the command written to test it (2026-08-23,
+        // render box, each behind a same-session `scene ready` control):
         //
-        // NOT A MECHANISM, AND ITS OWN COUNTER-EVIDENCE: notices alone are not
-        // sufficient -- TAS_67319 carries 82, has NO live scene record, and
-        // imports cleanly. The shape that fits all six specimens is "the
-        // container's notices AND, where the container had one, its live scene
-        // record", which rests on a single crasher and wants the mirror swap
-        // (strip the notices from a file that imports) before anyone writes it
-        // down as a rule. Keeping what the container had is the conservative
-        // choice regardless: the game wrote them, and nothing here has a reason
-        // to remove them.
+        //   forward  blev_regen + the container's 82 notices  -> STILL CRASHES
+        //   mirror   TAS_67319 with its 82 notices stripped   -> STILL IMPORTS
+        //
+        // Neither necessary nor sufficient. The six-specimen table that made
+        // notices look like the separating field was a majority-class
+        // coincidence, the same shape as the `u01` lead that survived until
+        // somebody ran its reverse swap. It would have been written down as a
+        // mechanism if the mirror had not been run.
+        //
+        // The lines stay because the CONSERVATIVE choice is to carry what the
+        // container had: the game wrote these, the rebuild has no reason to
+        // remove them, and clearing them was never justified by a measurement
+        // either. That is the whole claim -- do not let it grow back into a
+        // fix.
+        //
+        // The crash is still open. What survives every refutation so far is the
+        // car entity's own encoding: the donor's car carries 31 `delta2` blocks
+        // and every rebuilt car carries NONE (on 227654's untouched file the
+        // car segments carry 11, 13 and 4; ours carries 0). That is the only
+        // structural difference left between a file that imports and one that
+        // does not, and it is the same difference on both crashers.
         rd.start_ms = 0;
         rd.end_ms = span_ms as i32;
         note = format!(
@@ -469,17 +477,28 @@ pub fn rebuild_to(
 /// Restore or remove the record's NOTICE LISTS — the two directions of one
 /// experiment.
 ///
-/// `rebuild_to` used to clear `notices` / `bulk_notices` / `custom_modules`
-/// alongside the scene records, and the notice list is the single field that
-/// separates every ghost known to import from `blev_regen`, which crashes the
-/// game client with V1..V10 passing and its scene record present.
+/// **The hypothesis this was written to test is DEAD, and this command is what
+/// killed it.** The notice list looked like the single field separating every
+/// importable ghost from `blev_regen`, which crashes the game client with
+/// V1..V11 passing and its scene record present. Both directions, run on the
+/// render box 2026-08-23, each behind a same-session `scene ready` control:
 ///
-/// This command exists so that claim can be TESTED IN BOTH DIRECTIONS, because
-/// one specimen in one direction is how the `u01` lead survived a week before
-/// its reverse swap killed it:
+/// * forward — `blev_regen` **plus** the container's 82 notices: still crashes.
+/// * mirror — `TAS_67319` with its 82 notices **stripped**: still imports.
+///
+/// So notices are neither necessary nor sufficient, and the six-specimen table
+/// that made them look decisive was a majority-class coincidence — the same
+/// shape as the `u01` lead that survived until its reverse swap was run. It
+/// would have been written into `GHOSTS.md` as a mechanism if the mirror had
+/// not been run.
+///
+/// The command stays, because the next candidate wants the same treatment:
 ///
 /// * `--from DONOR` — put the container's notices back into a file that crashes.
 /// * `--strip` — take them out of a file that imports.
+///
+/// It refuses unless exactly one direction is named, and it requires the car to
+/// come through untouched: an import result means nothing if the tape moved.
 ///
 /// Nothing headless can see any of this: the dedicated server re-simulates the
 /// input chunk and never reads the record, so both outputs re-simulate to the
