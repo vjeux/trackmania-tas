@@ -38,7 +38,7 @@ human recordings** — the historic donor plus the board's current ranks 1, 2 an
 
 > Each of these nine follows the map's only historic human recording —
 > **wschseng's 8790.769**, the ghost every one of them was seeded on — to within
-> **0.000563 m**, the client-versus-server rounding floor, for the first
+> **0.000563 m**, the pipeline’s own agreement floor (**not** “client-versus-server” — that name is withdrawn, see `../CLAIMS.md`), for the first
 > **2.180 s**. At 2.180 s their inputs stop being his and their trajectories
 > depart, reaching **over 1100 m** of separation by the end of the run, and
 > **2608–2682 m** measured against the reference's full span. Against the three

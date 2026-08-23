@@ -144,10 +144,10 @@ loudly as the things it does:
 |---|---|
 | oracle | the dedicated server re-simulates **the written bytes** to 36.049, the time the file declares, `IsValid` true |
 | tape ↔ record | Cohen's kappa **1.000** over all 737 samples |
-| engine ↔ record | the engine's own run of this tape matches the recording to **0.0005 m** mean, 0.0206 m worst — the client-vs-server floor |
+| engine ↔ record | the engine's own run of this tape matches the recording to **0.0005 m** mean, 0.0206 m worst — the answer key’s own floor (the cause of that floor is UNKNOWN; see `CLAIMS.md`) |
 | an independent instrument | `fk trace`, which never reads the record, agrees to **0.0021 m** over 562 instants |
 | orientation | the stored quaternion is **0.072°** from the engine's own; a permuted reading of the same bytes gives 166.6° |
-| second generation | a second, independent regeneration agrees to **0.000497 m** — the client-vs-server floor, not a stale buffer |
+| second generation | a second, independent regeneration agrees to **0.000497 m** — the same floor, not a stale buffer. **Note this is ours-vs-ours**, and 270051 reads 0.000000 m on the same comparison, which is why the “client-vs-server” name for this number is withdrawn |
 | contamination | **0 of 737** samples bit-identical to GothMommyTM's recording; they part by up to 4.3 m |
 | identity | login `TAS`, no account id, no locator URL — in the body **and in the replay header** |
 | **not proved** | **the ground-contact byte is still the carrier's.** `ghost regen` writes 22 of each sample's 116 bytes from engine memory and three from the tape; byte 89 is not among them, so the gate's C6 and C10 report UNMEASURED rather than a verdict. Reading it out of engine memory is an open task. |

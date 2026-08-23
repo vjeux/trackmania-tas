@@ -34,7 +34,6 @@ name = "ghost"
 version = "1.0.0"
 dependencies = [
  "gbx",
- "tmtraj",
 ]
 
 [[package]]
@@ -51,4 +50,5 @@ name = "tmtraj"
 version = "1.0.0"
 dependencies = [
  "gbx",
+ "ghost",
 ]

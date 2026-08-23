@@ -9,6 +9,7 @@ mod run;
 pub use run::run;
 
 pub(crate) mod checkcmd;
+pub(crate) mod claimscmd;
 pub(crate) mod cli;
 pub(crate) mod corpuscmd;
 pub(crate) mod diffcmd;

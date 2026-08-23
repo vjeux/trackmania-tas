@@ -1740,6 +1740,8 @@ pub(crate) fn cmd_dup(args: &[String]) {
 
     println!("map\tfile_a\tfile_b\tn_common\tn_ident\tlongest_run\tmax_sep_m\tinputs\tverdict");
     let mut refused = 0usize;
+    // Warn once, loudly, if the input comparison cannot run at all.
+    let mut warned_unavailable = false;
     for (map, files) in &by_map {
         if files.len() < 2 {
             continue;
@@ -1842,47 +1844,66 @@ pub(crate) fn cmd_dup(args: &[String]) {
                     //
                     // Key on the first SUSTAINED divergence instead: the first
                     // tick after which the tapes keep differing.
-                    let fd = first_sustained_diff(
+                    match first_sustained_diff_checked(
                         &files[i].to_string_lossy(),
                         &files[j].to_string_lossy(),
-                    );
-                    match (fd, run_span) {
-                        (None, _) => (
+                    ) {
+                        // THE INSTRUMENT IS NOT AVAILABLE. Unchecked is a
+                        // refusal, not a pass -- see `TapeDiff`. Before this,
+                        // a missing `fk` made every pair in the corpus read
+                        // `identical-tapes / EXPECTED-SAME-INPUTS`.
+                        TapeDiff::Unavailable(why) => {
+                            refused += 1;
+                            if !warned_unavailable {
+                                warned_unavailable = true;
+                                eprintln!("tmtraj corpus dup: the input comparison is UNAVAILABLE -- {why}");
+                                eprintln!("  every pair is reported UNCHECKED-NO-TAPEDIFF, not clean.");
+                                eprintln!("  `fk` is excluded from this workspace: build it from tools/fk and");
+                                eprintln!("  put it beside this binary or on PATH, then re-run.");
+                            }
+                            (
+                                "unavailable".to_string(),
+                                "UNCHECKED-NO-TAPEDIFF".to_string(),
+                            )
+                        }
+                        TapeDiff::Identical => (
                             "identical-tapes".to_string(),
                             "EXPECTED-SAME-INPUTS".to_string(),
                         ),
-                        (Some(d), Some((_, t1))) if t1 > d + PROPAGATE_MS => {
-                            refused += 1;
-                            (
+                        TapeDiff::At(d) => match run_span {
+                            Some((_, t1)) if t1 > d + PROPAGATE_MS => {
+                                refused += 1;
+                                (
+                                    format!(
+                                        "diverge@{:.3}s,agree_to@{:.3}s,over={:.3}s",
+                                        d as f64 / 1000.0,
+                                        t1 as f64 / 1000.0,
+                                        (t1 - d) as f64 / 1000.0
+                                    ),
+                                    "REFUSE-ONE-RUN-TWICE".to_string(),
+                                )
+                            }
+                            Some((_, t1)) if t1 > d + REVIEW_MS => (
                                 format!(
                                     "diverge@{:.3}s,agree_to@{:.3}s,over={:.3}s",
                                     d as f64 / 1000.0,
                                     t1 as f64 / 1000.0,
                                     (t1 - d) as f64 / 1000.0
                                 ),
-                                "REFUSE-ONE-RUN-TWICE".to_string(),
-                            )
-                        }
-                        (Some(d), Some((_, t1))) if t1 > d + REVIEW_MS => (
-                            format!(
-                                "diverge@{:.3}s,agree_to@{:.3}s,over={:.3}s",
-                                d as f64 / 1000.0,
-                                t1 as f64 / 1000.0,
-                                (t1 - d) as f64 / 1000.0
+                                "REVIEW-SHORT-OVERSHOOT".to_string(),
                             ),
-                            "REVIEW-SHORT-OVERSHOOT".to_string(),
-                        ),
-                        (Some(d), Some(_)) => (
-                            format!("diverge@{:.3}s", d as f64 / 1000.0),
-                            "EXPECTED-SHARED-PREFIX".to_string(),
-                        ),
-                        (Some(_), None) => {
-                            refused += 1;
-                            (
-                                "unchecked".to_string(),
-                                "IDENTICAL-INPUTS-UNCHECKED".to_string(),
-                            )
-                        }
+                            Some(_) => (
+                                format!("diverge@{:.3}s", d as f64 / 1000.0),
+                                "EXPECTED-SHARED-PREFIX".to_string(),
+                            ),
+                            None => {
+                                refused += 1;
+                                (
+                                    "unchecked".to_string(),
+                                    "IDENTICAL-INPUTS-UNCHECKED".to_string(),
+                                )
+                            }
+                        },
                     }
                 };
                 if all_ident {
@@ -2052,17 +2073,146 @@ fn anchored_within(a: &[R], start: usize, end: usize, grid_ms: i64) -> bool {
 
 /// The first race instant at which two tapes' decoded inputs differ.
 /// `None` when the two tapes are identical, or the answer is unavailable.
+/// **THE INSTRUMENT MUST NOT FAIL TOWARD CLEAN.**
+///
+/// `fk tapediff` is a separate binary — `tools/fk` is excluded from this
+/// workspace and is built from its own directory — so on any box where the
+/// workspace has been built but `fk` has not, every one of these calls used to
+/// return `None`, and `None` means *the tapes are identical*. The whole corpus
+/// then reads `identical-tapes / EXPECTED-SAME-INPUTS`: the duplicate detector
+/// excuses every pair it exists to catch, and reports **0 refusals**.
+///
+/// Measured on 228607, 2026-08-22, with `fk` absent: `SPLICE_24854` and
+/// `TAS_19907` were reported `identical-tapes` while their trajectories are
+/// **357 m** apart and `ghost tape diff` puts their first input difference at
+/// tick 72. Nine pairs on that map, all excused.
+///
+/// This is the fourth instance in this project of *an instrument fell silent
+/// and the pipeline read the silence as a clean result*, and the second one
+/// caused specifically by `fk` not being on `PATH` (`tools/search/SEARCH.md`
+/// records the first, where 24 attempts "failed to find the car"). The port
+/// from shell to Rust carried the bug across, because `.ok()?` is `2>/dev/null`
+/// with a nicer spelling.
+///
+/// So: three outcomes, and the caller must handle all three.
+pub enum TapeDiff {
+    /// `fk` ran and found the first sustained divergence here.
+    At(i64),
+    /// `fk` ran and the tapes really are identical.
+    Identical,
+    /// `fk` could not be run, or said something we could not parse. **Not
+    /// clean.**
+    Unavailable(String),
+}
+
+fn run_tapediff(a: &str, b: &str, from_ms: Option<i64>) -> Result<Option<i64>, String> {
+    // IN PROCESS, ON PURPOSE. This used to shell out to `fk tapediff`, and
+    // `fk tapediff` DOES NOT EXIST — it is not a command this repo's `fk` has,
+    // at any build. So the call failed every time, `.ok()?` turned the failure
+    // into `None`, and `None` means "the tapes are identical". The comparison
+    // has therefore never run in this lineage, and every `corpus dup` over
+    // this corpus reported `identical-tapes / EXPECTED-SAME-INPUTS` for all
+    // 117 pairs and exited 0.
+    //
+    // `gbx::tape` is already a dependency of this crate and reads the same
+    // input chunk `ghost tape diff` reads, so there is no reason for a
+    // subprocess, a `PATH`, or a failure mode at all.
+    let ta = gbx::tape::Tape::from_file(a).map_err(|e| format!("{a}: {e}"))?;
+    let tb = gbx::tape::Tape::from_file(b).map_err(|e| format!("{b}: {e}"))?;
+    let (oa, _ob) = (
+        ta.archives.first().map(|x| x.start_offset_ms).unwrap_or(0) as i64,
+        tb.archives.first().map(|x| x.start_offset_ms).unwrap_or(0) as i64,
+    );
+    let (sa, sb) = (ta.steer_i8s(), tb.steer_i8s());
+    let (aa, ab) = (ta.accels(), tb.accels());
+    let (ba, bb) = (ta.brakes(), tb.brakes());
+    if sa.is_empty() || sb.is_empty() {
+        return Err(format!("no input archive in {}", if sa.is_empty() { a } else { b }));
+    }
+    // Compare by RACE TIME, not by tick index: two tapes with different
+    // start offsets are not aligned by index, and 203072's is -1560 ms.
+    //
+    // AND SKIP THE COUNTDOWN. `start_offset_ms` is negative on every tape
+    // here, so ticks before race 0 are input the car cannot act on — it is on
+    // the start line and held. Counting them made the first run of this
+    // comparison report **35 REFUSE-ONE-RUN-TWICE** across the corpus, nearly
+    // all of them `diverge@-1.52s` — that is not a divergence, it is two
+    // drivers holding different keys during the lights. The same mistake the
+    // comment above this function warns about, made one window earlier.
+    let n = sa.len().min(sb.len());
+    for i in 0..n {
+        let race = i as i64 * 10 + oa;
+        if race < 0 {
+            continue;
+        }
+        if let Some(f) = from_ms {
+            if race < f {
+                continue;
+            }
+        }
+        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) {
+            return Ok(Some(race));
+        }
+    }
+    // One tape longer than the other is a difference at the point it runs out.
+    if sa.len() != sb.len() {
+        let race = n as i64 * 10 + oa;
+        if from_ms.is_none_or(|f| race >= f) {
+            return Ok(Some(race));
+        }
+    }
+    // KNOWN LIMITATION, stated rather than left for someone to discover: this
+    // compares steer / accel / brake. It does NOT compare the respawn bit,
+    // which is bit 31 of the packet's state literal and IS an editable input
+    // on this project's trial maps. Two tapes differing only in a respawn will
+    // read as identical here. That is an open task, not a property of the
+    // tapes.
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tapediff_control {
+    use super::run_tapediff;
+
+    fn repo(p: &str) -> String {
+        format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), p)
+    }
+
+    /// THE POSITIVE CONTROL FOR THIS COMPARISON.
+    ///
+    /// A null from `run_tapediff` means "these tapes are identical", and the
+    /// whole duplicate detector reads that as clean — so a version of it that
+    /// cannot see any difference passes every corpus silently. That is exactly
+    /// what shipped: it called `fk tapediff`, which is not a command `fk` has,
+    /// and returned `None` every time.
+    ///
+    /// So the test is in two halves and BOTH have to hold: a file against
+    /// itself must come back identical (or the comparison is inventing
+    /// differences), and two files that are known to be different runs must
+    /// come back with a divergence (or it is blind).
+    #[test]
+    fn identical_to_itself_and_different_from_a_different_run() {
+        let a = repo("145875-unlucke-get-jiggy-with-it/replays/tas_6330.Ghost.Gbx");
+        let b = repo("145875-unlucke-get-jiggy-with-it/replays/tas_6333.Ghost.Gbx");
+        if !std::path::Path::new(&a).exists() {
+            return; // corpus not beside the tools; nothing to control against
+        }
+        assert_eq!(
+            run_tapediff(&a, &a, None),
+            Ok(None),
+            "a tape must be identical to itself"
+        );
+        let d = run_tapediff(&a, &b, None);
+        assert!(
+            matches!(d, Ok(Some(_))),
+            "two runs 3 ms apart must differ somewhere; got {d:?} -- \
+             a blind comparison reports every pair in the corpus as clean"
+        );
+    }
+}
+
 pub fn first_input_diff(a: &str, b: &str) -> Option<i64> {
-    let exe = std::env::current_exe().ok()?;
-    let fk = exe.parent()?.join("fk");
-    let out = std::process::Command::new(if fk.exists() { fk } else { "fk".into() })
-        .args(["tapediff", "--a", a, "--b", b])
-        .output()
-        .ok()?;
-    let t = String::from_utf8_lossy(&out.stdout).to_string();
-    let p = t.find("first_diff_ms=")?;
-    let v: String = t[p + 14..].chars().take_while(|c| !c.is_whitespace()).collect();
-    if v == "none" { None } else { v.parse().ok() }
+    run_tapediff(a, b, None).ok().flatten()
 }
 
 /// The file's own declared race time, in ms.
@@ -2604,30 +2754,39 @@ pub fn stale_verdict(v: &StaleVerdict) -> (i32, String) {
 /// tapes reconverge, walks forward — implemented as a windowed re-query so it
 /// costs one extra subprocess rather than a decoder of its own.
 pub fn first_sustained_diff(a: &str, b: &str) -> Option<i64> {
-    let mut from = first_input_diff(a, b)?;
+    match first_sustained_diff_checked(a, b) {
+        TapeDiff::At(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// The three-outcome form. Use this anywhere a silent `None` would be read as
+/// a clean result — see `TapeDiff`.
+pub fn first_sustained_diff_checked(a: &str, b: &str) -> TapeDiff {
+    let mut from = match run_tapediff(a, b, None) {
+        Err(e) => return TapeDiff::Unavailable(e),
+        Ok(None) => return TapeDiff::Identical,
+        Ok(Some(v)) => v,
+    };
     // A divergence is sustained if the tapes also differ shortly after it. Step
     // forward past isolated ticks until the next difference is close behind.
     for _ in 0..64 {
-        let next = first_input_diff_after(a, b, from + 10)?;
+        let next = match run_tapediff(a, b, Some(from + 10)) {
+            Err(e) => return TapeDiff::Unavailable(e),
+            // nothing after it: the divergence we already have is the last one
+            Ok(None) => return TapeDiff::At(from),
+            Ok(Some(v)) => v,
+        };
         if next - from <= 200 {
-            return Some(from);
+            return TapeDiff::At(from);
         }
         from = next;
     }
-    Some(from)
+    TapeDiff::At(from)
 }
 
 fn first_input_diff_after(a: &str, b: &str, from_ms: i64) -> Option<i64> {
-    let exe = std::env::current_exe().ok()?;
-    let fk = exe.parent()?.join("fk");
-    let out = std::process::Command::new(if fk.exists() { fk } else { "fk".into() })
-        .args(["tapediff", "--a", a, "--b", b, "--from", &from_ms.to_string()])
-        .output()
-        .ok()?;
-    let t = String::from_utf8_lossy(&out.stdout).to_string();
-    let p = t.find("first_diff_ms=")?;
-    let v: String = t[p + 14..].chars().take_while(|c| !c.is_whitespace()).collect();
-    if v == "none" { None } else { v.parse().ok() }
+    run_tapediff(a, b, Some(from_ms)).ok().flatten()
 }
 
 // ===========================================================================

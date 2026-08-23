@@ -39,6 +39,12 @@ provably fall out of the world). Across the stretch that looks like a glide, the
 car drops **18.4 m in 2.71 s** where free fall would drop 92.5 m — it is supported
 the whole way.
 
+*(On the constant: free fall in this engine is `a_y = −g − k·v_y` with
+g = 24.78 ± 0.10 and k = 0.032, so 25.20 is `a_y` at v_y ≈ +13 m/s rather than a
+map constant — quote it with its `v_y`. It does not touch this argument: the gap
+here is 18.4 m against 92.5 m, and no value of `g` in the engine's whole
+measured range of 22 – 29 m/s² closes a factor of five.)*
+
 Measured per sample:
 
 | | supported | airborne |

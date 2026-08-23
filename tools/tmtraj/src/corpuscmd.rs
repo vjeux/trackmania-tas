@@ -44,6 +44,9 @@ usage: tmtraj corpus <scan> --root DIR [flags]
            cannot show the finish, and one that runs past it shows a stranger
            --tol MS (60)
   qc       pre-render QC, the declared-time census, and the car skin
+  claims   does a map's page agree with the files in its own directory?
+           a name that disagrees with its own header, a linked file that is
+           not there, a file the page never names, a headline no file backs
   bytes    which of the 116 sample bytes ever vary, across the whole corpus
   dup      two published files of one map carrying the SAME recorded motion
   audit    the splice test with the references named in a refs.tsv
@@ -82,6 +85,10 @@ pub fn cmd(argv: &[String]) -> i32 {
         "splice" => splice(&maps, minsep, ident_pct, &extra),
         "span" => span(&maps, tol),
         "qc" => qc(&maps),
+        // Does a map's page agree with the files in its own directory? The
+        // failure mode this catches is a headline no file supports -- see
+        // claimscmd.rs.
+        "claims" => crate::claimscmd::claims(&maps, &root),
         "bytes" => bytes(&maps),
         // Cross-file: within each map, two published ghosts that carry the SAME
         // recorded motion although their tapes diverged long before. A class no
@@ -162,7 +169,7 @@ fn walk(root: &str) -> Vec<MapDir> {
     out
 }
 
-fn base(p: &str) -> &str {
+pub(crate) fn base(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
@@ -786,4 +793,11 @@ fn carry_test(maps: &[MapDir], named: &BTreeMap<usize, &'static str>) {
             );
         }
     }
+}
+
+/// `is_reference`, for the `claims` scan: a file whose name marks it as
+/// somebody else's recording is not one of ours and must not set the
+/// directory's "our best" figure.
+pub(crate) fn is_reference_pub(name: &str) -> bool {
+    is_reference(name)
 }

@@ -82,6 +82,9 @@ a pair known to be two different runs measures much further apart on this map:
 our own writer sits ~0.5 mm from the game's own recording of the same run
 (0.482 / 0.483 / 0.489 / 0.518 mm on four maps' answer keys), which is inside
 any 1 mm band. A verdict with no control cost four clips.
+*(This threshold is sound and does not depend on knowing what causes the
+0.5 mm — a bar does not need a mechanism. It used to be called "the
+client-vs-server floor" and that name is withdrawn; see `tools/README.md`.)*
 
 **`spawn` compares orientation as a rotation, never as bytes.** `q` and `−q` are
 the same rotation; five 199100 files read `(−0.7071, 0, 0.7071, 0)` against the

@@ -133,6 +133,16 @@ found upstream was paid straight back to the tail.
 | **blending** our tape toward the faster one, from 10 % to 95 % | 10 | 0 reach the next checkpoint — even a 10 % blend is fatal |
 | **an exhaustive structural sweep** — every steering bias, gain and phase shift over a grid of windows across the last 24 seconds | **1 368** | 203 finishers, best **−1 ms** |
 
+**The last row is the positive control for the first four**, and it is worth
+saying so out loud: the same machinery, on the same map, returns **203
+finishers** out of 1 368. So the four zeros above are results about those
+operators and not about a search that had stopped working. Two limits on how far
+to push them: the control is *not* budget-matched (77 / 64 / 84 candidates
+against 1 368), and this map has **16 checkpoints**, which is where the old
+`FINISH_BASE = 1e8` bug made a deep DNF outrank a finished lap — so any null
+here taken from a search log predating `tools/LINEAGE.md`'s single lineage
+should be re-run before it is leaned on.
+
 The first four say the same thing in four ways: **a fast arrival is not a fast
 lap, and no amount of sliding the tail around converts one into the other.**
 The fifth says the endgame is genuinely converged — combined with an earlier

@@ -7,6 +7,40 @@ late.**
 
 **Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
+> ### ⚠️ The times are real. The recordings in eight of these files are not theirs.
+>
+> **MEASURED 2026-08-22.** `ghost inspect` on every file in `replays/`: eight of
+> them carry a result chunk that **disagrees with their own header**, and all
+> eight disagree the same way —
+>
+> ```
+> TAS_19907.Ghost.Gbx   declared 19.907 in 1 copies
+>                       the result chunk declares race 20.034 and 4 respawns
+>                       <-- DISAGREE: the header declares 19.907 and the result chunk 20.034
+>                       telemetry 401 samples, 3 entities, record span 0.000 .. 24.900
+> ```
+>
+> `TAS_19907`, `TAS_19910`, `TAS_19927`, `TAS_19936`, `TAS_20070`, `TAS_20083`,
+> `FORGIVING_19948` and `LOWINPUT_20070_16values` all report **20.034 with four
+> respawns**; `TAS_20126` reports 20.426. Every one of them carries a record
+> spanning **0.000 … 24.900** for a run of about twenty seconds. **These are
+> nine different runs sharing one carrier's result chunk and one carrier's
+> record length.** None of our tapes contains a respawn.
+>
+> **What this does and does not touch.** The oracle reads the *tape*, so the
+> times are unaffected and stand. A render reads the *record*, so **the clips
+> linked below are drawing something that is not straightforwardly the tape
+> underneath them**, and until each file has been regenerated the right way to
+> read them is as illustrations of the route, not as footage of these runs.
+> This is the same defect family as 227654 and 186935, on a map where nobody
+> had looked. The two files that are *clean* on this test —
+> `AUTHOR_LAP_20258_watchable` (20.258, its own six-entity record, span 20.290)
+> and `SPLICE_24854` (24.854, span 24.900) — are the control: the check can
+> come out the other way, and on this map it does, twice.
+>
+> Regeneration is an open task. `tmtraj corpus span --root .` and
+> `ghost inspect` are what found it, and either will say when it is fixed.
+
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
 Single car: this map's human record is 24.512, over four and a half seconds
