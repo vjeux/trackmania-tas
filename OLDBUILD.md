@@ -157,8 +157,8 @@ Three things bite, all measured:
 3. **Cross-build files do not travel.** The 2022 server does not enumerate a
    ghost recorded by a 2024+ client at all (`0 ghosts (in 0 maps)`, no error,
    and `tmsearch validate` simply prints one row instead of two) — file format,
-   not physics. A tape has to travel in a container of its own era. Which
-   raises §6.
+   not physics. A tape has to travel in a container of its own era, which §6
+   shows how to do.
 
 ## 5. Route A — an Openplanet plugin: no
 
@@ -194,40 +194,89 @@ member offset. What is missing is the target.
 modern client. A 2022 tape does not re-simulate today, so it cannot be rendered
 faithfully by today's game — see `FILMING.md` before promising anyone a video.
 
-## 6. UNKNOWN: a tape does not survive transplant into another run's container
+## 6. Moving a tape between eras: chunk `0x0309202D` travels with it
 
-Moving our own inputs onto a 2022 container is the obvious next step, and it
-does not work — for a reason that has nothing to do with builds.
+A tape transplanted into another run's container **goes nowhere** — 0
+checkpoints, on either build — even with matched tick counts, matched archive
+start offsets and `ghost tape inject`'s read-back control passing. The tape
+inside the written file is bit-identical to the donor's (`ghost tape diff`: 0 of
+8203 ticks differ), and the donor's own file validates. So the container binds
+something.
 
-**MEASURED** (`raw/g14_cur.txt`, `raw/gt_old.txt`): with `ghost tape extract` /
-`trim` / `tape inject` — same build, same map, same tick count, same archive
-start offset, read-back control OK on every write —
+**MEASURED — it is chunk `0x0309202D`, and nothing else.** Bisect by
+`tools/chunkswap` (copy one body chunk from file B into file A), on the current
+server with modern files so every step has a live control:
 
-| file | server | result |
-|---|---|---|
-| rank14's own tape, trimmed to 80.530, in its own container | current | reaches **4 of 5** checkpoints |
-| rank10's tape (validates 80.534 in its own file) in rank14's container | current | **0 checkpoints** |
-| rank15's own tape re-injected into rank15 | 2022 | **103.785 exact** |
-| rank02's tape, and our 67.200 TAS tape, in rank15's container | 2022 and current | **0 checkpoints**, both |
+| what was moved into rank10's file from rank14's | result |
+|---|---|
+| the whole 95 787-byte recording chunk `0x03092000` (telemetry, samples) | **80.534 — inert** |
+| all 23 chunks except the input tape | **`wrong simu`, no time** |
+| the 11 low chunks (`0x0303F007` … `0x03092023`) | 80.534 — inert |
+| the 5 chunks `0x03092024` … `0x03092028` | 80.534 — inert |
+| `0x03092029`, `0x0309202A`, `0x0309202C`, `0x0309202E`, one at a time | 80.534 — inert |
+| `0x0309202B` (the splits) alone | 80.534 — inert (declared time differs, sim does not) |
+| **`0x0309202D` (211 bytes) alone** | **`wrong simu`, no time** |
 
-*The controls are in the table: the self-transplants pass on both servers, so
-the tooling writes a file the server can drive.* Four cross-transplants, two
-builds, both tool paths (`ghost tape inject`, and a from-scratch re-carry that
-copies only steer/accel/brake into the container's own packet stream) — all
-reach no checkpoint at all.
+*Controls: `chunkswap` from a file into itself reproduces 80.534; `ghost trim`,
+`ghost tape inject`, `ghost identity set` and `ghost declare --cps 4` are each
+verified inert on the same file in the same way.* Also eliminated: tape distance
+(the search's own 67.200 tape differs from its template in **71.7 %** of ticks
+and validates), the declared checkpoint count, the respawn bits, and the archive
+start offset.
 
-This is not the search's usual edit: a template patched in place by
-`Factory::apply` works with **71.7 % of its ticks changed** (our 67.200 tape
-against its rank02 template) — so it is not about how different the inputs are.
-Something the container holds is bound to the run that recorded it.
+`0x0309202D` is a provenance block: the recording build stamp, a wall-clock
+pair, the title name, a ~36-byte per-session token, and — in one leaderboard
+ghost — `Openplanet 1.28.0 (next, Public, 2025-08-16)`. **UNKNOWN**: which field
+the validator gates on. The wall-clock pair is the leading candidate, because
+the server prints `unexcepted walltime (103s)` when a container is trimmed
+without it. *What would settle it: patch one field of the chunk at a time and
+re-validate, the same way this bisect moved one chunk at a time.*
 
-**What would settle it**: bisect the container. Take rank10's own working file
-and move it one chunk at a time toward rank14's — declared time, splits,
-identity, telemetry record, archive `field0` — validating after each step; the
-step that reaches 0 checkpoints names the field. `ghost` already owns most of
-those edits as first-class commands.
+### The recipe, and it is verified
 
-**Why it matters**: until it is settled, a tape can only be run under 2022
-physics if it is *already* in a 2022 container — which means searching from a
-2022 ghost as template (that works, §3) rather than porting a modern tape back.
-And it means our 67.200 cannot yet be scored against 2022 physics.
+**Move `0x0309201D` and `0x0309202D` together.** Then a tape runs in any
+container:
+
+```bash
+chunkswap --into <era container>.Ghost.Gbx --from <the tape's own file> \
+          --id 0x0309201D --id 0x0309202D --out run.Ghost.Gbx
+```
+
+**MEASURED** — our 67.200 TAS tape and rank02's 68.442, both moved into
+Roevhaal-era container `rank15` (a 2022 file) and run through the five segment
+maps on the **current** server:
+
+| tape in a 2022 container | CP1 | CP2 | CP3 | CP4 | finish |
+|---|---|---|---|---|---|
+| rank02 68.442 | 13.906 | 33.106 | 45.437 | 63.812 | **68.442** |
+| our TAS 67.200 | 12.475 | 31.492 | 45.396 | 61.703 | **67.200** |
+
+Ten gates, ten exact reproductions of each run's own splits. *That is the
+control that makes the next line a measurement rather than an artefact:*
+
+**Neither tape reaches CP1 under the 2022 build.** Both die inside the first
+13.5 seconds — which is where `ksi2` measured the divergence, at 3.99 s in the
+lap's first big slide. The incompatibility is symmetric: the 2022 field does not
+run today, and today's runs do not run in 2022.
+
+## 7. The server does not honour the build stamp
+
+Worth testing directly, because the ghost carries the build that recorded it and
+the server prints it back: **it is decoration.**
+
+**MEASURED** — rewrite the stamp inside the compressed body
+(`tools/strpatch`), same length, nothing else touched:
+
+| file | stamp | current server | 2022 server |
+|---|---|---|---|
+| rank02 68.442, stamped **2022**-07-06/113150 | patched | **68.442, valid** | still not loadable |
+| Roevhaal 63.546, stamped **2026**-02-02/128149 | patched | still `wrong simu` | **63.546, valid** |
+
+*Control: the server reports the patched value in its `GameBuild` field, so it
+reads the byte we changed — and neither outcome moves.* Two occurrences of the
+string are patched per file, so the copy in `0x0309202D` and the copy the server
+echoes are the same string.
+
+**INFERRED** — the physics come from the binary, not from anything in the file.
+There is no era switch to invoke, which is exactly why §1 is the route.
+

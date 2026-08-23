@@ -9,11 +9,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "chunkswap"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+]
+
+[[package]]
 name = "clip"
 version = "0.1.0"
 dependencies = [
  "gbx",
 ]
+
+[[package]]
+name = "dsprobe"
+version = "0.1.0"
 
 [[package]]
 name = "gbx"
@@ -54,6 +65,13 @@ version = "0.1.0"
 [[package]]
 name = "shootctl"
 version = "0.1.0"
+
+[[package]]
+name = "strpatch"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+]
 
 [[package]]
 name = "tmmaps"
