@@ -92,6 +92,14 @@ impl Args {
         self.vals.get(name).and_then(|v| v.last()).map(|s| s.as_str())
     }
 
+    /// Every occurrence of a repeatable flag, verbatim — no comma splitting.
+    /// `many` flattens on commas, which is right for `--eps 1,2,3` and wrong
+    /// for a flag whose own value contains commas (`--near X,Y,Z`, twice).
+    pub fn repeated(&self, name: &str) -> Vec<String> {
+        self.asked.borrow_mut().push(name.to_string());
+        self.vals.get(name).cloned().unwrap_or_default()
+    }
+
     pub fn many(&self, name: &str) -> Vec<String> {
         self.asked.borrow_mut().push(name.to_string());
         self.vals

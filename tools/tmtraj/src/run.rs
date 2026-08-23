@@ -63,7 +63,9 @@ WHAT DOES THE TRAJECTORY SAY (not the flag)
                                      and whether a second engine reading agrees
   wheels  FILE [--race S]            wheel radius, and whether the wheel bytes are alive
   facing  FILE... [--ref R] [--route CSV] [--shift-ms N]
-  route   CSV [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
+  route   CSV|GHOST... [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
+          [--cross z=692] -- EVERY crossing of a plane, interpolated, not a row
+          [--margin x=922,y=110] -- over all the files: the frontier at that plane
 
 EVERY PUBLISHED FILE AT ONCE
   corpus  splice --root R [--refs F]   telemetry that is another driver's
