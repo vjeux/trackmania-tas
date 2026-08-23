@@ -1,32 +1,56 @@
 # [Turtle Trial] Angustus
 
+**[Turtle Trial] Angustus** — TAS **239.133** (−223.849) | AT 462.982 | WR 1964.933 by Quantiks
+
+https://github.com/user-attachments/assets/56e64ae5-3b31-4361-85d5-9e9dbd45e6b5
+
+Four minutes for a lap the only human on the board took thirty-two minutes to
+finish, with this run's own inputs drawn along the bottom from the 10 ms input
+chunk — what the driver pressed, not the 50 ms echo in the telemetry samples.
+Watch the respawns: almost every one of them is a double press, and every double
+press is the difference between the car landing upright and the car landing on
+its roof at 62 km/h.
+
+**One car, and that is a departure from this project's filming rule**, which is
+that both runs go in one scene with the human as the opponent. Quantiks' record
+is 1964.933 s long, and the MediaTracker renders a clip as long as its longest
+entity block: the two-car scene came back with an estimate of 4 h 22 m for a
+239.133 s run. With one ghost the clip is 239.100 s. It stops 33 ms — one frame
+at 30 fps — before the finish, because that is where the car's last recorded
+sample is; the crossing itself is not in shot.
+
 **On a trial map the clock runs through your failures: the unbeaten author time
 is not a display of driving, it is a competent lap plus nineteen crashes — so
 hard-respawn the instant you take a checkpoint, and learn the one obstacle that
 cost the author 197 seconds.**
 
-> ### ⚠️ Five replay files withdrawn; the three this page ships have been repaired
+> ### `TAS_239133` is back, regenerated; four withdrawn files are still withdrawn
 >
-> `TAS_239133`, `TAS_262907`, `TAS_267646_v7`, `TAS_268554_v6` and
-> `TAS_347003_noretry_v4` have been removed — each decodes to Quantiks' own
-> recorded trajectory, bit for bit, 9114 of 9114 samples on `TAS_239133` and the
-> same whole-file match on the other four. **The times stand and the method
-> stands**: every one re-simulates on the game's own oracle to the millisecond in
-> its name, and this map's entire result comes from *deleting failed attempts*,
-> which is a property of the input tape rather than of the recording.
-> Replacements will be regenerated.
+> `TAS_239133` was withdrawn along with `TAS_262907`, `TAS_267646_v7`,
+> `TAS_268554_v6` and `TAS_347003_noretry_v4`, because each decoded to Quantiks'
+> own recorded trajectory bit for bit — 9114 of 9114 samples. **The file on this
+> page now is a new one**: its car state was regenerated from this run's own
+> input tape on the live engine, so the trajectory in it is this run's. It
+> re-simulates on the game's own dedicated server to **239.133**, the millisecond
+> in its name, and its tape and its recording agree on 100.0 % of 4781 samples.
+> The video above is that file, played by the game.
 >
-> The three files that remain have been repaired in place. Each now declares its
-> own validated time at **all six sites, with no foreign value anywhere in the
-> file**, and `AUTHORCUT_246602_watchable`'s donor skins are gone — both skin
-> paths read `Skins\Models\CarSport\TAS.zip`. All three still re-simulate to the
-> exact millisecond in their names. One caveat: **a checkpoint split inside the
-> two `NORETRY` files still belongs to the donor**, and no tool we have reads
-> that field, so this page does not claim it is clean.
+> The other four have **not** been replaced. **The times stand and the method
+> stands**: every one re-simulates to the millisecond in its name, and this map's
+> entire result comes from *deleting failed attempts*, which is a property of the
+> input tape rather than of the recording.
+>
+> The three human-derived files that remain have been repaired in place. Each now
+> declares its own validated time at **all six sites, with no foreign value
+> anywhere in the file**, and `AUTHORCUT_246602_watchable`'s donor skins are gone
+> — both skin paths read `Skins\Models\CarSport\TAS.zip`. All three still
+> re-simulate to the exact millisecond in their names. One caveat: **a checkpoint
+> split inside the two `NORETRY` files still belongs to the donor**, and no tool
+> we have reads that field, so this page does not claim it is clean.
 
 | run | time | vs author time |
 |---|---|---|
-| **the author's lap, failures cut, then optimised** — `TAS_239133` *(no file)* | **239.133** | **−223.849 (−48.3 %)** |
+| **the author's lap, failures cut, then optimised** — `TAS_239133` | **239.133** | **−223.849 (−48.3 %)** |
 | the author's lap, failures cut only — **watchable** | 246.602 | −216.380 |
 | the earlier human-derived line | 262.907 | −200.075 |
 | Author time | 462.982 | — |
@@ -128,6 +152,7 @@ their own clean 246 s is entirely how many attempts they needed.
 
 | file | what |
 |---|---|
+| `replays/TAS_239133.Ghost.Gbx` | **the run in the video** — 239.133, this run's own regenerated car state, re-simulated on the dedicated server to the millisecond in its name |
 | `replays/AUTHORCUT_246602_watchable.Ghost.Gbx` | **the watchable one** — loads in the game and shows the author's own driving with their fourteen failures cut out, no TAS driving at all |
 | `replays/NORETRY_347003_watchable.Ghost.Gbx` | the no-retry cut at 347.003 |
 | `replays/NORETRY_407463_watchable.Ghost.Gbx` | the no-retry cut at 407.463 |
