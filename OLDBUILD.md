@@ -108,8 +108,8 @@ unmodified:
 * its **segment ladder verifies itself** against the template: *"--seg 4:
   59.582 — and the template's own recorded split agrees exactly (59.582)"*;
 * it improves the world record's own tape — **63.546 → 63.518 in 2m37s** on 16
-  workers, *confirmed by the plain oracle, 0 phantoms*, and further on a longer
-  run.
+  workers, *confirmed by the plain oracle, 0 phantoms*, and to **63.074** on a
+  200-minute run with 64 workers (§8).
 
 `ghost verify FILE --map M --server srv2022` also passes its oracle check
 (`V7 oracle re-simulated the written file: 63.546 == the declared time`), so the
@@ -295,9 +295,17 @@ the modern half contributes no sector best, so the bound is entirely 2022
 driving.*
 
 **MEASURED** — a local search under 2022 physics from Roevhaal's own tape (§3,
-64 workers) reaches **63.382 in 35 minutes / 130 050 evaluations**, a gain of
-0.164, every improvement re-validated by the plain oracle, 0 phantoms. The basin
-around the world record does not fall away toward the author time either.
+64 workers, `--seg 1..4`) reaches **63.074 in 200 minutes / 714 480
+evaluations**: 27 improvements, every one re-validated by the plain oracle,
+**0 phantoms**. Its splits, read back through the segment maps on a fresh
+process, are **13.492 / 31.143 / 42.452 / 59.424 / 63.074** — Roevhaal's own
+first three checkpoints to the millisecond, with all 0.472 of the gain in the
+last two sectors (17.130 → 16.972 and 3.964 → 3.650). The basin around the world
+record does not fall away toward the author time either: 63.074 is still
+**4.387** above it. *Control: the same file DNFs on the current server, as every
+2022-physics tape does; the tape is banked as
+`tm-oldbuild/tapes/oldbuild_2022physics_63074_SEARCHTAPE_declares_63546.Ghost.Gbx`,
+md5 `35d7644a582be904d1d5e9aab75703cb`. Nothing was submitted anywhere.*
 
 **INFERRED** — the author time is not "the 2022 car is simply faster". Whatever
 it is, it is still 4.6 s below the best combination of sectors anyone drove on
