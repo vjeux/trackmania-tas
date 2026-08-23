@@ -261,6 +261,7 @@ the fixtures checked in under `tools/testdata`.
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
 | **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart |
 | **and it separates a REAL known-good pair** | 284238 ran it on a rider and two launchers: **0% of ticks under the bar against 51-71%** -- while the MEAN points the wrong way (13.30 for the rider against 19.8-24.3), because a free body is quiet stretches punctuated by impacts. §5.16 |
+| **and again through this code, on downloaded recordings** | the same pair through `fk watch replay`: the rider never fires over 923 samples, the launcher fires 4 runs. Different data (50 ms recorded vs 10 ms engine), different implementation, same verdict. §5.17 |
 
 ### One check that did not work, one that did, and a false negative I nearly published
 
@@ -899,6 +900,54 @@ So an event now records its duration and its multiplicity:
 `a_run_that_ends_is_distinguishable_from_one_that_does_not` pins the case
 directly: two tapes that go rigid at the same tick, one recovering and one not,
 must not produce the same record.
+
+---
+
+### 5.17 The sample rate is part of the answer
+
+284238 fetched the content-addressed bundle, ran the load detector on their two
+downloaded recordings — the ones the game itself wrote — and it agreed with
+their hand measurement **across a change of implementation and of sample rate**:
+
+```
+fk watch replay --fire '-domega' --fire-at -0.5 --fire-need 3     (serverless)
+  Yhomas_TM 46.112 on 279008, RIDES     never fired, over all 923 samples
+  our 440.238 on 284238,      LAUNCHES  fired: 4 runs, first at 6659, ended after 7
+```
+
+Their hand computation was on 10 ms engine dumps and gave 0 % against 51–71 %;
+this is a compiled program on 50 ms recorded telemetry. Different data,
+different code, same verdict — and `fire_runs = 4` with a first run of 7 samples
+is exactly the shape a first-tick-only rule would have flattened.
+
+**And they found the trap in it, which is mine and not theirs.** Every
+per-sample term is a difference between consecutive SAMPLES, and this toolchain
+has two sample rates: the fork child evaluates every 10 ms tick, and a recorded
+ghost is on a 50 ms grid.
+
+* **`dspeed` and `domega` VALUES are not comparable between the two.** Only the
+  fired/not-fired verdict is.
+* **`--fire-need N` is a duration, and the duration depends on where it runs.**
+  `--fire-need 3` is 30 ms in a search and 150 ms against recorded telemetry.
+
+That is not a caveat, it is a way to calibrate a threshold offline and arm
+something five times weaker in the search. So `fk watch replay` now reads the
+median sample gap out of the trajectory it was handed and prints both numbers
+before the verdict:
+
+```
+NOTE: this trajectory samples every 50 ms; the fork evaluates every 10 ms.
+--fire-need 3 is 150 ms here and 30 ms in a search, and per-sample terms
+(dspeed, domega) are not comparable between the two -- only fired/not-fired is.
+```
+
+**The first thing that warning did was catch a live instance.** With
+`--fire-need 3` on 50 ms telemetry, 228811's author **does not fire the launch
+detector** — because a launch is one tick, not 150 ms of sustained rise. The
+same flag value that is right for a load detector (which asks *did it stay
+quiet*) is wrong for a launch detector (which asks *did something happen*), and
+the sample rate decides how wrong. A `(bar, need)` pair is a statement about a
+sample rate as much as about a car.
 
 ---
 

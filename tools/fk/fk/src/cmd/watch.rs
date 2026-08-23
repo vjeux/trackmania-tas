@@ -529,6 +529,26 @@ fn offline(c: &Cfg) {
     };
     watch.finish_s = finish_s(&watch.refline.clone(), if c.reftime > 0 { Some(c.reftime) } else { None }, f.start_offset_ms, c.finishmargin);
     let sum = eval_csv(&watch, &path, f.start_offset_ms, n);
+    // THE SAMPLE RATE IS PART OF EVERY ANSWER HERE, and it is not the fork's.
+    //
+    // This verb reads a trajectory CSV. Recorded telemetry is on a 50 ms grid;
+    // the fork child evaluates every 10 ms tick. So a `--fire-need 3` calibrated
+    // here is a 150 ms run, and the SAME FLAG in a search is a 30 ms run -- and
+    // `dspeed` and `domega` are per-sample differences, so their VALUES are not
+    // comparable between the two at all, only the fired/not-fired verdict is.
+    // Reported by 284238 after confirming the load detector across both.
+    if watch.fire.armed {
+        let step = sample_step_ms(&path);
+        println!(
+            "  NOTE: this trajectory samples every {} ms; the fork evaluates every 10 ms. \
+             --fire-need {} is {} ms here and {} ms in a search, and per-sample terms \
+             (dspeed, domega) are not comparable between the two -- only fired/not-fired is.",
+            step,
+            watch.fire.need,
+            step * watch.fire.need as i64,
+            10 * watch.fire.need as i64
+        );
+    }
     println!(
         "{}: {} ticks, trip {} at tick {} value {:.3}, progress {:.1} m, travelled {:.1} m, off_max {:.2} m",
         path,
@@ -1230,4 +1250,33 @@ fn opset(name: &str) -> OpSet {
         eprintln!("fk: {}", e);
         std::process::exit(2)
     })
+}
+
+/// The median gap between a trajectory CSV's sample times, in ms.
+///
+/// Read rather than assumed: a recorded ghost is on a 50 ms grid and `fk btraj`
+/// writes one row per 10 ms tick, and the same `--fire-need` means a different
+/// duration in each.
+fn sample_step_ms(path: &str) -> i64 {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let mut ts: Vec<i64> = Vec::new();
+    for line in text.lines().skip(1) {
+        if let Some(f) = line.split(',').next() {
+            if let Ok(v) = f.trim().parse::<i64>() {
+                ts.push(v);
+            }
+        }
+    }
+    if ts.len() < 3 {
+        return 0;
+    }
+    let mut d: Vec<i64> = ts.windows(2).map(|w| w[1] - w[0]).filter(|&x| x > 0).collect();
+    if d.is_empty() {
+        return 0;
+    }
+    d.sort_unstable();
+    d[d.len() / 2]
 }
