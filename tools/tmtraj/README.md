@@ -82,6 +82,9 @@ a pair known to be two different runs measures much further apart on this map:
 our own writer sits ~0.5 mm from the game's own recording of the same run
 (0.482 / 0.483 / 0.489 / 0.518 mm on four maps' answer keys), which is inside
 any 1 mm band. A verdict with no control cost four clips.
+*(This threshold is sound and does not depend on knowing what causes the
+0.5 mm — a bar does not need a mechanism. It used to be called "the
+client-vs-server floor" and that name is withdrawn; see `tools/README.md`.)*
 
 **`spawn` compares orientation as a rotation, never as bytes.** `q` and `−q` are
 the same rotation; five 199100 files read `(−0.7071, 0, 0.7071, 0)` against the
@@ -104,6 +107,20 @@ family it could not run says so on its own line.
 | | |
 |---|---|
 | `motion FILE [--fit-g] [--per-sample]` | BALLISTIC / SUPPORTED / UNKNOWN from the second difference of position, with the recorded contact, dirt and ice bytes beside it |
+
+> **`motion` classifies from the POSITION and prints the contact byte beside it,
+> rather than trusting it — and here is why, measured 2026-08-22.** On 153527's
+> driver recording the derived `is_ground_contact` bit reads **False on all
+> 85 811 samples**, including a car standing still on a floor. A selector built
+> on that bit would have picked every sample or none, silently. `is_ground_contact`
+> is a DERIVED field (a bit-mask guess, see `tmtraj fields`), and the honest use
+> is the one this tool makes: classify from something else, show the bit, and let
+> the two agreeing be evidence *for the bit*. Stated the other way round it is
+> circular.
+>
+> Free fall for that classification is **g ≈ 24.3–24.6, not 9.81** — see
+> `CLAIMS.md`. The one place a fixed `g` still appears is C5's `25.20 ± 2.0`,
+> which is `a_y` at v_y ≈ +13 under the engine's actual law `a_y = −g − k·v_y`.
 | `wheels FILE` | the wheel radius, and separately whether the wheel bytes are alive at all |
 | `facing FILE... [--ref R \| --route CSV]` | is the car pointing where it is going |
 

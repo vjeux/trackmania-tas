@@ -75,6 +75,27 @@ FORK MODE (a gradient, never a result)
   --pred SPEC         watchdog condition (repeatable)
   --finishmargin M    disarm predicates within M metres of the finish
   --corridor M        how far off the line still counts as progress
+
+THE STATE OBJECTIVE (--fork only: the plain oracle cannot see the car)
+  --gate SPEC         xmin=..,xmax=..,ymin=..,ymax=..,zmin=..,zmax=..[,minspeed=..]
+                      A box the car's whole state is recorded in. Score the
+                      STATE at a place when finish time cannot cross the valley.
+  --gate-key EXPR     what to maximise inside it, over the WHOLE state:
+                        speed vx vy vz px py pz
+                        bodyright bodyup bodyfwd      (velocity in the car's frame)
+                        along(x,y,z) nose(x,y,z) roof(x,y,z) flank(x,y,z)
+                        dist(x,y,z) vdist(vx,vy,vz)
+                        abs() min() max()  + - * /
+                      e.g. --gate-key 'min(abs(bodyright), 5*(-vz))'
+  --gate-min-key K    how good the state must be before FINISHING counts as
+                      having done the thing. Without it, a tape that clips the
+                      box and finishes tops the ranking whatever it did there --
+                      and on a gate that sits on a line everybody drives, that
+                      is the seed, and no state hunt can beat it.
+  --gate-seed-state G check the fork's measured gate state for the seed against
+                      G's own decoded telemetry -- position, velocity AND
+                      attitude. In gate mode this replaces the millisecond
+                      identity check, and it is stronger.
 "#;
 
 fn die(m: impl AsRef<str>) -> ! {
@@ -118,6 +139,10 @@ struct Args {
     preds: Vec<String>,
     finishmargin: f32,
     corridor: f32,
+    gate: String,
+    gate_key: String,
+    gate_min_key: f32,
+    gate_seed_state: String,
 }
 
 fn parse() -> Args {
@@ -162,6 +187,10 @@ fn parse() -> Args {
         preds: Vec::new(),
         finishmargin: 250.0,
         corridor: 40.0,
+        gate: String::new(),
+        gate_key: String::new(),
+        gate_min_key: f32::NEG_INFINITY,
+        gate_seed_state: String::new(),
     };
     let mut i = 1;
     let num = |s: &str, k: &str| -> f64 { s.parse().unwrap_or_else(|_| die(format!("{} wants a number, got {:?}", k, s))) };
@@ -205,6 +234,10 @@ fn parse() -> Args {
             "--pred" => a.preds.push(next(&mut i)),
             "--finishmargin" => a.finishmargin = num(&next(&mut i), k) as f32,
             "--corridor" => a.corridor = num(&next(&mut i), k) as f32,
+            "--gate" => a.gate = next(&mut i),
+            "--gate-key" => a.gate_key = next(&mut i),
+            "--gate-min-key" => a.gate_min_key = num(&next(&mut i), k) as f32,
+            "--gate-seed-state" => a.gate_seed_state = next(&mut i),
             "--seg" => {
                 let s = next(&mut i);
                 let (kk, p) = s.split_once(':').unwrap_or_else(|| die("--seg wants K:/path/map.Map.Gbx"));
@@ -296,6 +329,52 @@ fn build(a: &Args) -> (Arc<Patcher>, Inputs) {
     (Arc::new(p), start)
 }
 
+/// Build the gate-mode identity control, if one was asked for.
+///
+/// The offline half is done HERE, once, before any server starts: if the
+/// recording cannot say what the fork should measure -- because the box is not
+/// on that tape's line, or the file is not what it claims -- that is a fact
+/// about the setup and it should stop the run in the first second, not in the
+/// first minute.
+#[allow(clippy::type_complexity)]
+fn seed_state_check(
+    a: &Args,
+    p: &Patcher,
+) -> Option<std::sync::Arc<dyn Fn(&forkoracle::pred::GateRecord) -> Result<String, String> + Send + Sync>> {
+    if a.gate_seed_state.is_empty() {
+        return None;
+    }
+    if a.gate.is_empty() {
+        die("--gate-seed-state without --gate: there is no gate for the seed to be checked at.");
+    }
+    let gate = forkoracle::pred::parse_gate(&a.gate, &a.gate_key).unwrap_or_else(|e| die(e));
+    let expect = tmsearch::seedstate::from_ghost(&a.gate_seed_state, &gate, p.start_offset_ms)
+        .unwrap_or_else(|e| die(e));
+    eprintln!(
+        "gate: {}'s own telemetry reaches the box at {} and scores {:+.4} there\n  ghost   {}",
+        a.gate_seed_state,
+        secs(expect.tick as i64 * 10 + p.start_offset_ms as i64),
+        expect.key,
+        expect
+    );
+    let path = a.gate_seed_state.clone();
+    let off = p.start_offset_ms;
+    Some(std::sync::Arc::new(move |measured| {
+        let ag = tmsearch::seedstate::check(&path, &gate, measured, off)?;
+        if ag.passed() {
+            Ok(ag.report())
+        } else {
+            Err(format!(
+                "{}\nSTOPPING. The fork's own measurement of the SEED does not match the seed's \
+                 own recording. Nothing measured by these servers means anything until that is \
+                 explained: the record layout, the car locator, the clock labelling and the gate \
+                 arithmetic are all upstream of this number.",
+                ag.report()
+            ))
+        }
+    }))
+}
+
 fn main() {
     let a = parse();
     match a.cmd.as_str() {
@@ -320,9 +399,40 @@ fn cmd_search(a: &Args) {
     let hi = a.hi.min(p.n());
     p.check_window(a.lo, hi).unwrap_or_else(|e| die(e));
 
-    let start_outcome = measure(&server, &map, &p, &start, &root.path);
-    eprintln!("incumbent: {}", start_outcome);
+    // THE STATE OBJECTIVE NEEDS THE FORK. The plain oracle reports a time and
+    // a checkpoint count; it never sees where the car was or which way it was
+    // pointing, so a gate armed on it would score every candidate as a miss
+    // and the run would look like a search that simply found nothing.
+    if !a.gate.is_empty() && !a.fork {
+        die("--gate needs --fork: the plain oracle returns a time and a checkpoint count and \
+             cannot see the car's state at all, so there is nothing for a gate to record.");
+    }
+    if !a.gate.is_empty() && a.gate_key.is_empty() {
+        die("--gate needs --gate-key: a box with no key records a state and ranks nothing.");
+    }
+    if a.gate.is_empty() && !a.gate_key.is_empty() {
+        die("--gate-key without --gate: there is no box to score inside.");
+    }
+
+    let plain_outcome = measure(&server, &map, &p, &start, &root.path);
+    eprintln!("incumbent: {}", plain_outcome);
     check_segment_maps(a, &server, &p, &start, &root.path);
+
+    // IN GATE MODE THE INCUMBENT IS NOT A TIME. The plain measurement above
+    // stays: it is the run's first positive control, and if the seed does not
+    // reproduce nothing after it means anything. But the ladder the search
+    // ranks on is the gate's, so the incumbent enters at the bottom of it and
+    // worker 0 measures the seed's real band before the first candidate --
+    // which is the same evaluation the decoy test needs, so it is free.
+    let start_outcome = if a.gate.is_empty() {
+        plain_outcome
+    } else {
+        eprintln!(
+            "gate mode: the ranking above is the plain oracle's and is a control, not the \
+             objective. The state objective scores the seed itself in the decoy line below."
+        );
+        Outcome::Gate(tmsearch::score::GateState::Missed { miss_m: f64::INFINITY })
+    };
 
     let mut bank = Bank::new(
         Path::new(&a.bestdir),
@@ -347,10 +457,11 @@ fn cmd_search(a: &Args) {
         temp_s: a.temp_s,
         migrate: a.migrate,
         max_drift: a.max_drift,
+        check_seed_gate: seed_state_check(a, &p),
     };
 
     if a.fork {
-        run_fork(a, &cfg, p, start, start_outcome, &mut bank, &root, &server, &map);
+        run_fork(a, &cfg, p, start, start_outcome, plain_outcome, &mut bank, &root, &server, &map);
     } else {
         let (pp, rootp, serverp, mapp, segs, refr) =
             (Arc::clone(&p), root.path.clone(), server.clone(), map.clone(), a.segs.clone(), start.clone());
@@ -367,6 +478,10 @@ fn run_fork(
     p: Arc<Patcher>,
     start: Inputs,
     start_outcome: Outcome,
+    // What the PLAIN oracle said about the seed. In gate mode `start_outcome`
+    // is on the gate's ladder and carries no time, but the reference line's
+    // finish still has to be found somewhere.
+    plain_outcome: Outcome,
     bank: &mut Bank,
     root: &Root,
     server: &Path,
@@ -432,7 +547,7 @@ fn run_fork(
     let mut watch = forkoracle::pred::Watch::new();
     watch.corridor = a.corridor;
     watch.refline = refline;
-    watch.finish_s = match start_outcome.finish_ms() {
+    watch.finish_s = match plain_outcome.finish_ms() {
         Some(t) => {
             let tick = ((t - p.start_offset_ms as i64) / 10).max(0) as usize;
             (watch.refline.s_at_tick(tick) - a.finishmargin).max(1.0)
@@ -442,12 +557,22 @@ fn run_fork(
     for s in &a.preds {
         watch.preds.push(forkoracle::pred::parse_spec(s).unwrap_or_else(|e| die(e)));
     }
+    if !a.gate.is_empty() {
+        watch.gate = forkoracle::pred::parse_gate(&a.gate, &a.gate_key).unwrap_or_else(|e| die(e));
+    }
     eprintln!(
         "fork: reference line {:.0} m, predicates disarmed after {:.0} m",
         watch.refline.s_at_tick(usize::MAX),
         watch.finish_s
     );
     print!("{}", watch.describe());
+    if watch.gate.armed && a.gate_min_key.is_finite() {
+        eprintln!(
+            "  gate: a state scoring under {:+.4} does not count as having done the thing, \
+             so a tape that clips the box and finishes still ranks as a state",
+            a.gate_min_key
+        );
+    }
 
     let setup = Arc::new(ForkSetup {
         server: server.to_path_buf(),
@@ -457,6 +582,7 @@ fn run_fork(
         shim: PathBuf::from(&a.shim),
         checkpoint_clock: ckpt,
         calibrated: boundary,
+        gate_min_key: a.gate_min_key,
         start_offset_ms: p.start_offset_ms,
     });
     let watch = Arc::new(watch);
@@ -599,6 +725,8 @@ fn cmd_dump(a: &Args) {
                 Outcome::Finish { ms } => (format!("{}", ms), 0),
                 Outcome::Dnf(Progress::Checkpoints { cps, .. }) => ("null".into(), cps),
                 Outcome::Dnf(Progress::Metres { .. }) => ("null".into(), 0),
+                // `dump` is the plain evaluator only, which cannot produce one.
+                Outcome::Gate(_) => unreachable!("dump does not run a state objective"),
             };
             out.push_str(&format!(
                 "{{\"kind\":\"{}\",\"at\":{},\"span\":{},\"val\":{},\"ms\":{},\"cps\":{}}}\n",

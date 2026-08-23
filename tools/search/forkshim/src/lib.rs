@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 #[path = "../../forkoracle/src/pred_core.rs"]
 pub mod pred_core;
-use pred_core::{Eval, Pred, RefLine, MAXP, PRED_BYTES, SUMMARY_BYTES};
+use pred_core::{Eval, Gate, KeyOp, Pred, RefLine, KEYOP_BYTES, MAXKOPS, MAXP, PRED_BYTES, SUMMARY_BYTES};
 
 const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 
@@ -285,9 +285,13 @@ struct WatchCfg {
     fast: u32,
     plane_x: f32,
     off_clock: usize,
+    off_quat: usize,
     off_pos: usize,
     off_vel: usize,
     rec_len: usize,
+    /// THE STATE OBJECTIVE, armed once in the parent and inherited by every
+    /// fork child.
+    gate: Gate,
     nseg: usize,
     seg: [(usize, usize); MAXP],
     /// MAP_SHARED page: the child's report, readable by the parent afterwards.
@@ -303,9 +307,11 @@ static mut WCFG: WatchCfg = WatchCfg {
     fast: 1,
     plane_x: 0.0,
     off_clock: 0,
+    off_quat: 4,
     off_pos: 20,
     off_vel: 32,
     rec_len: 44,
+    gate: Gate::NONE,
     nseg: 0,
     seg: [(0, 0); MAXP],
     out: core::ptr::null_mut(),
@@ -348,7 +354,16 @@ unsafe fn watch_eval(rec: *const u8, clock: i64) {
         rec_f32(rec, cfg.off_vel + 4),
         rec_f32(rec, cfg.off_vel + 8),
     ];
-    let trip = ev.feed(tick, pos, vel);
+    // The quaternion is read unconditionally and costs four loads: the gate is
+    // the only thing that uses it, and a branch here would be a branch on the
+    // hot path inside the game server.
+    let quat = [
+        rec_f32(rec, cfg.off_quat),
+        rec_f32(rec, cfg.off_quat + 4),
+        rec_f32(rec, cfg.off_quat + 8),
+        rec_f32(rec, cfg.off_quat + 12),
+    ];
+    let trip = ev.feed(tick, pos, vel, quat);
     if !cfg.out.is_null() {
         let mut buf = [0u8; SUMMARY_BYTES];
         ev.sum.encode(&mut buf);
@@ -759,12 +774,19 @@ unsafe fn send_frame(fd: c_int, payload: &[u8]) {
 ///     | f32 corridor | i32 ahead | i32 back | f32 finish_s | u32 fast
 ///     | u32 nref | nref * 3 f32 xyz | nref * f32 arclength
 ///     | f32 plane_x        (trailing: an older shim ignores it)
+///     | u32 off_quat | u32 gate_armed | 6 f32 bounds | f32 minspeed
+///     | u32 nkops | nkops * KeyOp
 /// ```
 ///
 /// It is parsed ONCE, in the parent, so every later fork inherits it for free.
 /// That matters most for the reference line: it is 30 KB and must not cross the
 /// pipe per candidate.
-unsafe fn parse_arm(payload: &[u8]) -> (usize, usize) {
+///
+/// The gate block is trailing like `plane_x`, but unlike `plane_x` a shim that
+/// silently ignored it would score every candidate "never reached the gate" --
+/// a perfectly plausible answer that is a lie. So the count of key operations
+/// installed goes back in the ARM ack and the driver refuses a mismatch.
+unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
     let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
     let mut o = 1usize;
     let g4 = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
@@ -820,7 +842,31 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize) {
         cfg.rl = RefLine::NONE;
     }
     cfg.plane_x = if payload.len() >= o + 4 { f32::from_bits(g4(o)) } else { 0.0 };
-    (np, nref)
+    o += 4;
+    let mut nk = 0usize;
+    if payload.len() >= o + 8 {
+        cfg.off_quat = g4(o) as usize;
+        let armed = g4(o + 4) != 0;
+        o += 8;
+        let mut gate = Gate::NONE;
+        gate.armed = armed;
+        for i in 0..6 {
+            gate.bounds[i] = f32::from_bits(g4(o + 4 * i));
+        }
+        o += 24;
+        gate.minspeed = f32::from_bits(g4(o));
+        o += 4;
+        nk = (g4(o) as usize).min(MAXKOPS - 1);
+        o += 4;
+        for i in 0..nk {
+            gate.prog[i] = KeyOp::decode(&payload[o..o + KEYOP_BYTES]);
+            o += KEYOP_BYTES;
+        }
+        cfg.gate = gate;
+    } else {
+        cfg.gate = Gate::NONE;
+    }
+    (np, nref, nk)
 }
 
 unsafe fn forkserver() {
@@ -1235,7 +1281,7 @@ unsafe fn forkserver() {
             return;
         }
         if payload[0] == b'A' {
-            let (np, nref) = parse_arm(&payload);
+            let (np, nref, nk) = parse_arm(&payload);
             let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
             if cfg.out.is_null() {
                 let p = mmap(
@@ -1257,7 +1303,9 @@ unsafe fn forkserver() {
             utoa(np as u64, &mut ack);
             ack.extend_from_slice(b" preds, ");
             utoa(nref as u64, &mut ack);
-            ack.extend_from_slice(b" reference points");
+            ack.extend_from_slice(b" reference points, ");
+            utoa(nk as u64, &mut ack);
+            ack.extend_from_slice(b" key ops");
             send_frame(res, &ack);
             continue;
         }
@@ -1310,6 +1358,7 @@ unsafe fn forkserver() {
                 ev.rl = cfg.rl;
                 ev.finish_s = cfg.finish_s;
                 ev.plane_x = cfg.plane_x;
+                ev.gate = cfg.gate;
                 WPREV_VALID.store(0, Ordering::SeqCst);
                 WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
                 WATCH_ON.store(1, Ordering::SeqCst);
@@ -1517,7 +1566,7 @@ static FINI: extern "C" fn() = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forkoracle::pred::{parse_spec, RefLineData, Watch};
+    use forkoracle::pred::{parse_gate, parse_spec, RefLineData, Watch};
 
     fn a_watch() -> Watch {
         let mut w = Watch::new();
@@ -1536,6 +1585,11 @@ mod tests {
         ] {
             w.preds.push(parse_spec(s).unwrap());
         }
+        w.gate = parse_gate(
+            "xmin=56,xmax=136,ymin=48,ymax=54,zmin=704,zmax=713,minspeed=60",
+            "min(abs(bodyright), 5*(-vz)) * nose(0.888,0.451,-0.086)",
+        )
+        .unwrap();
         w
     }
 
@@ -1543,16 +1597,18 @@ mod tests {
     fn the_arm_payload_survives_the_crossing_into_the_child() {
         let w = a_watch();
         let segs = [(0x7f00_1000u64, 4u32), (0x7f00_2000, 40)];
-        let payload = w.arm_payload(-1580, 0, 20, 32, 44, &segs);
+        let payload = w.arm_payload(-1580, 0, 4, 20, 32, 44, &segs);
 
-        let (np, nref) = unsafe { parse_arm(&payload) };
+        let (np, nref, nk) = unsafe { parse_arm(&payload) };
         assert_eq!(np, 2);
         assert_eq!(nref, 64);
+        assert_eq!(nk, w.nkops(), "the key program did not survive the pipe");
 
         let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
         assert_eq!(cfg.np, 2);
         assert_eq!(cfg.clock0, -1580);
         assert_eq!(cfg.off_clock, 0);
+        assert_eq!(cfg.off_quat, 4);
         assert_eq!(cfg.off_pos, 20);
         assert_eq!(cfg.off_vel, 32);
         assert_eq!(cfg.rec_len, 44);
@@ -1577,6 +1633,23 @@ mod tests {
         let last = unsafe { *cfg.rl.s.add(63) };
         assert!((last - w.refline.s[63]).abs() < 1e-3, "arclength did not survive");
 
+        // THE GATE, box and program, byte for byte
+        assert!(cfg.gate.armed, "the gate did not survive the pipe");
+        assert_eq!(cfg.gate.bounds, w.gate.bounds);
+        assert_eq!(cfg.gate.minspeed, w.gate.minspeed);
+        for i in 0..w.nkops() {
+            let (mut a, mut b) = ([0u8; KEYOP_BYTES], [0u8; KEYOP_BYTES]);
+            w.gate.prog[i].encode(&mut a);
+            cfg.gate.prog[i].encode(&mut b);
+            assert_eq!(a, b, "key operation {} changed crossing the pipe", i);
+        }
+        // and it computes the same number on both sides of the wire
+        let (p, v, q) = ([70.2, 50.4, 708.9], [-60.0, -20.0, -80.0], [0.7, 0.1, 0.7, 0.05]);
+        assert_eq!(
+            pred_core::key_eval(&cfg.gate.prog, p, v, q),
+            forkoracle::pred_core::key_eval(&w.gate.prog, p, v, q)
+        );
+
         // and the predicates, by re-encoding what the child now holds
         for (i, np) in w.preds.iter().enumerate() {
             let mut a = [0u8; PRED_BYTES];
@@ -1587,17 +1660,21 @@ mod tests {
         }
     }
 
-    /// The timing plane is written last so that a shim built before it existed
-    /// simply ignores it. That is only true if a short payload is safe.
+    /// The timing plane and the gate are written last so that a shim built
+    /// before they existed simply ignores them. That is only true if a short
+    /// payload is safe.
     #[test]
-    fn an_older_payload_without_the_timing_plane_is_still_read() {
+    fn an_older_payload_without_the_timing_plane_or_the_gate_is_still_read() {
         let w = a_watch();
-        let full = w.arm_payload(0, 0, 20, 32, 44, &[(0x1000, 4)]);
-        let short = &full[..full.len() - 4];
-        let (np, nref) = unsafe { parse_arm(short) };
-        assert_eq!((np, nref), (2, 64));
+        let full = w.arm_payload(0, 0, 4, 20, 32, 44, &[(0x1000, 4)]);
+        // everything from `plane_x` onwards removed: what a pre-plane driver
+        // would have sent
+        let cut = full.len() - 4 - 8 - 24 - 4 - 4 - KEYOP_BYTES * w.nkops();
+        let (np, nref, nk) = unsafe { parse_arm(&full[..cut]) };
+        assert_eq!((np, nref, nk), (2, 64, 0));
         let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
         assert_eq!(cfg.plane_x, 0.0, "a missing timing plane must read as disabled");
+        assert!(!cfg.gate.armed, "a missing gate must read as disarmed");
         assert_eq!(cfg.rl.n, 64, "the reference line was damaged by the short read");
     }
 }

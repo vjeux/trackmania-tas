@@ -40,9 +40,9 @@ use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
 use std::path::{Path, PathBuf};
 use forkoracle::forksrv::{ForkServer, Rec};
-use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_VEL};
+use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
 use forkoracle::blind::{bounds_from, locate_blind as locate};
-use forkoracle::pred::{outcome, Watch};
+use forkoracle::pred::{outcome, GateRecord, Watch};
 
 /// The clock value the checkpoint should stop at, from the fitted relation
 /// `clock = 36141 + 25.483 * race_ms`.
@@ -130,6 +130,25 @@ pub struct ForkEval {
     from: usize,
     line_len: f32,
     reference: Inputs,
+    /// Armed with a state objective? Then a non-finisher is scored on the gate
+    /// and never on the metres ladder: one search, one objective.
+    gate: bool,
+    /// HOW GOOD THE STATE HAS TO BE before finishing counts as having done the
+    /// thing. `NEG_INFINITY` -- the default -- means any arrival counts.
+    ///
+    /// This exists because *entering a box* is not *doing the thing*. On the
+    /// map this feature was proven on, the gate sits on 96 m of boost deck that
+    /// every run on the leaderboard drives across: the human world record
+    /// clips it with a key of 0.06 and then finishes, which without a bar puts
+    /// the seed in the top band and makes it unbeatable by any state hunt --
+    /// the exact local optimum the mode exists to escape. The version that
+    /// worked had a separate hard-coded launch detector for this; here it is a
+    /// bar on the key the operator already wrote.
+    gate_min_key: f32,
+    /// The gate record of each candidate in the LAST batch, so the winner's
+    /// whole state travels with it into the bank. Indexed exactly as the batch
+    /// was.
+    last_gate: Vec<Option<GateRecord>>,
 }
 
 pub struct ForkSetup {
@@ -141,6 +160,9 @@ pub struct ForkSetup {
     pub checkpoint_clock: u64,
     /// The boundary the master calibrated against ground truth.
     pub calibrated: usize,
+    /// The key a state must reach before finishing counts as having done the
+    /// thing; `NEG_INFINITY` for no bar. See `ForkEval::gate_min_key`.
+    pub gate_min_key: f32,
     pub start_offset_ms: i32,
 }
 
@@ -214,6 +236,7 @@ impl ForkEval {
         let ack = srv.arm(&watch.arm_payload(
             layout.clock_bias + s.start_offset_ms as i64,
             R_CLOCK as u32,
+            R_QUAT as u32,
             R_POS as u32,
             R_VEL as u32,
             REC_LEN as u32,
@@ -222,14 +245,36 @@ impl ForkEval {
         if !ack.starts_with("ARMED") {
             return Err(format!("arming the watchdog failed: {}", ack));
         }
+        // A SHIM THAT IGNORED THE GATE WOULD SCORE EVERY CANDIDATE "never
+        // reached it" -- an answer with no tell. The ack says how many key
+        // operations it installed, and a mismatch is an abort: it means the
+        // .so on disk is older than the driver that is arming it.
+        let want = format!("{} key ops", watch.nkops());
+        if !ack.contains(&want) {
+            return Err(format!(
+                "this shim did not install the state objective ({:?}, wanted {:?}). \
+                 The libforkshim.so being loaded is older than this binary; rebuild it and \
+                 pass the new one with --shim.",
+                ack, want
+            ));
+        }
         let line_len = watch.refline.s_at_tick(usize::MAX);
-        Ok(ForkEval { srv, from, line_len, reference })
+        Ok(ForkEval {
+            srv,
+            from,
+            line_len,
+            reference,
+            gate: watch.gate.armed,
+            gate_min_key: s.gate_min_key,
+            last_gate: Vec::new(),
+        })
     }
 }
 
 impl Evaluator for ForkEval {
     fn evaluate(&mut self, cands: &[Inputs]) -> Vec<Outcome> {
         let mut out = Vec::with_capacity(cands.len());
+        self.last_gate.clear();
         for c in cands {
             let recs: Vec<Rec> = (self.from..c.len())
                 .map(|t| Rec {
@@ -240,9 +285,24 @@ impl Evaluator for ForkEval {
                 .collect();
             let (j, b) = self.srv.run_watched(self.from, &recs);
             let o = outcome(&j, &b);
-            out.push(match o.time {
-                Some(ms) => Outcome::Finish { ms },
-                None => Outcome::Dnf(Progress::Metres { m: o.progress(), of: self.line_len }),
+            self.last_gate.push(o.gate());
+            out.push(match (o.time, self.gate) {
+                (Some(ms), false) => Outcome::Finish { ms },
+                // THE STATE OBJECTIVE, three bands straight off the
+                // measurement. A record means the car was inside the box, no
+                // record means it was not, and there is no third case for a
+                // caller to invent. The banding rule itself is
+                // `score::gate_outcome`, in one place, testable without a
+                // server.
+                (t, true) => crate::score::gate_outcome(
+                    t,
+                    o.gate().map(|g| g.key as f64),
+                    o.gate_miss().map(|m| m as f64),
+                    self.gate_min_key as f64,
+                ),
+                (None, false) => {
+                    Outcome::Dnf(Progress::Metres { m: o.progress(), of: self.line_len })
+                }
             });
         }
         out
@@ -252,11 +312,12 @@ impl Evaluator for ForkEval {
         self.from
     }
 
-    fn provenance(&self, inputs: &Inputs) -> Provenance {
+    fn provenance(&self, idx: usize, inputs: &Inputs) -> Provenance {
         Provenance {
             from_fork: true,
             resume_tick: Some(self.from),
             distance: inputs.distance_from(&self.reference),
+            gate: self.last_gate.get(idx).copied().flatten(),
         }
     }
 

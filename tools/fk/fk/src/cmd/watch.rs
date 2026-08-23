@@ -30,7 +30,7 @@ use forkoracle::blind::{bounds_from, locate_blind};
 use forkoracle::forksrv::{parse_result, rec_of, write_key, ForkServer, Rec};
 use forkoracle::pred_core::Summary;
 use forkoracle::pred::{outcome, parse_spec, Outcome, RefLineData, Watch};
-use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_VEL, REC_LEN};
+use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use crate::tape::Tape as Factory;
@@ -64,6 +64,10 @@ pub struct Cfg {
     pub finishmargin: f32,
     pub fast: u32,
     pub reftime: i64,
+    /// The state objective: a box and a key, for trying one against a measured
+    /// trajectory before spending a search on it.
+    pub gate: String,
+    pub gate_key: String,
 }
 
 fn parse(args: &[String]) -> Cfg {
@@ -101,6 +105,8 @@ fn parse(args: &[String]) -> Cfg {
         finishmargin: 10.0,
         fast: 1,
         reftime: 0,
+        gate: String::new(),
+        gate_key: String::new(),
     };
     let mut i = 0;
     while i < args.len() {
@@ -137,6 +143,8 @@ fn parse(args: &[String]) -> Cfg {
             "--finishmargin" => c.finishmargin = next(&mut i).parse().unwrap(),
             "--fast" => c.fast = next(&mut i).parse().unwrap(),
             "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
+            "--gate" => c.gate = next(&mut i),
+            "--gate-key" => c.gate_key = next(&mut i),
             x => crate::die(format!(
                 "fk watch: unknown flag {:?}. A flag this command does not use is \
                  a measurement you did not ask for, so it is an error rather than \
@@ -390,6 +398,7 @@ fn setup(c: &Cfg) -> Setup {
     let ack = srv.arm(&watch.arm_payload(
         clock0,
         R_CLOCK as u32,
+        R_QUAT as u32,
         R_POS as u32,
         R_VEL as u32,
         REC_LEN as u32,
@@ -476,6 +485,10 @@ fn offline(c: &Cfg) {
     for s in &c.specs {
         watch.preds.push(parse_spec(s).unwrap());
     }
+    if !c.gate.is_empty() {
+        watch.gate = forkoracle::pred::parse_gate(&c.gate, &c.gate_key)
+            .unwrap_or_else(|e| crate::die(e));
+    }
     // `--trajectory`, not `--out`: this verb READS a trajectory. The flag was
     // called `--out` because the file it evaluates is usually one another
     // command wrote, which is a fact about a workflow and not about this
@@ -498,6 +511,25 @@ fn offline(c: &Cfg) {
         sum.travelled,
         sum.off_max
     );
+    // THE STATE OBJECTIVE, evaluated offline against this trajectory: what a
+    // gate search would have scored this tape, without a server.
+    if watch.gate.armed {
+        if sum.gate_tick >= 0 {
+            println!(
+                "  gate: key {:+.4} at tick {} -- pos ({:.2}, {:.2}, {:.2}) vel ({:.2}, {:.2}, {:.2}) \
+                 quat ({:.4}, {:.4}, {:.4}, {:.4})",
+                sum.gate_key,
+                sum.gate_tick,
+                sum.gate_pos[0], sum.gate_pos[1], sum.gate_pos[2],
+                sum.gate_vel[0], sum.gate_vel[1], sum.gate_vel[2],
+                sum.gate_quat[0], sum.gate_quat[1], sum.gate_quat[2], sum.gate_quat[3]
+            );
+        } else if sum.gate_miss.is_finite() {
+            println!("  gate: never entered; closest approach {:.3} m", sum.gate_miss);
+        } else {
+            println!("  gate: never entered, and never came within measuring distance");
+        }
+    }
 }
 
 /// Run the shared evaluator over a trajectory CSV.
@@ -510,6 +542,9 @@ pub fn eval_csv(watch: &Watch, path: &str, start_offset_ms: i32, nticks: usize) 
         ev.preds[i] = p.pred;
     }
     ev.finish_s = watch.finish_s;
+    // The state objective too, so a key can be tried against a measured
+    // trajectory with no server at all -- the same `Eval`, the same program.
+    ev.gate = watch.gate;
     ev.rl = forkoracle::pred_core::RefLine {
         n: watch.refline.n,
         xyz: watch.refline.xyz.as_ptr(),
@@ -532,7 +567,17 @@ pub fn eval_csv(watch: &Watch, path: &str, start_offset_ms: i32, nticks: usize) 
         if tick < 0 || tick as usize >= nticks {
             continue; // past the end of the tape: not part of this run
         }
-        if ev.feed(tick, [g(1), g(2), g(3)], [g(6), g(7), g(8)]) >= 0 {
+        // `time_ms,x,y,z,speed_kmh,speed_ms,vx,vy,vz,yaw,pitch,roll,qx,qy,qz,qw,...`
+        // -- the format `fk btraj` and `tmtraj decode --csv` both write. The
+        // quaternion is only present in the wider form; without it the gate's
+        // body-frame terms read as an unrotated car, which is why a key that
+        // uses them wants the wide CSV.
+        let quat = if f.len() >= 16 {
+            [g(15), g(12), g(13), g(14)]
+        } else {
+            [1.0, 0.0, 0.0, 0.0]
+        };
+        if ev.feed(tick, [g(1), g(2), g(3)], [g(6), g(7), g(8)], quat) >= 0 {
             break;
         }
     }
@@ -1026,6 +1071,7 @@ fn equiv(c: &Cfg) {
         let ack = s.srv.arm(&s.watch.arm_payload(
             s.clock0,
             R_CLOCK as u32,
+            R_QUAT as u32,
             R_POS as u32,
             R_VEL as u32,
             REC_LEN as u32,
@@ -1114,6 +1160,7 @@ fn rearm(s: &mut Setup) {
     let ack = s.srv.arm(&s.watch.arm_payload(
         s.clock0,
         R_CLOCK as u32,
+        R_QUAT as u32,
         R_POS as u32,
         R_VEL as u32,
         REC_LEN as u32,

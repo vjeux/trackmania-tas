@@ -65,6 +65,14 @@ fn fk_binary() -> String {
 /// exactly like twenty-four bad locates. That is the failure this crate's own
 /// README warns about, reproduced by this crate.
 ///
+///
+/// This was fixed twice on the same day, independently. The other fix deleted
+/// this lookup outright on the principle that `fk` should own resolving what
+/// `fk` loads -- which is right about the duplication and wrong about the
+/// failure mode: forwarding nothing means a missing shim is discovered by the
+/// fork server, twenty-four times, in the words of twenty-four failed locates.
+/// Refusing here, by name, is worth the second copy.
+///
 /// Returns `None` rather than a guess: a made-up default is what turns a
 /// wiring error into a physics story. The caller refuses and names the knob.
 fn shim() -> Option<String> {
@@ -101,6 +109,7 @@ fn shim() -> Option<String> {
     }
     None
 }
+
 
 pub struct RegenOut {
     pub ok: bool,
@@ -210,22 +219,151 @@ pub fn cmd(a: &[String]) {
     let map = flag(a, "--map").unwrap_or_else(|| die("--map MAP.Map.Gbx"));
     let extra: Vec<String> = {
         let mut v = Vec::new();
-        for k in ["--fieldmap", "--anchorticks", "--segs", "--biastick", "--inputshift"] {
+        // Value flags, forwarded verbatim. `--fieldmap` is NOT among them any
+        // more: `fk` deleted it along with the field-fitting machinery, and a
+        // wrapper that forwards a flag the callee does not know is a silent
+        // no-op wearing the shape of a feature.
+        for k in ["--anchorticks", "--segs", "--biastick", "--inputshift", "--anchor", "--race", "--quat-kind"] {
             if let Some(x) = flag(a, k) {
                 v.push(k.to_string());
                 v.push(x.to_string());
             }
         }
-        if has(a, "--verbose") {
-            v.push("--verbose".into());
+        // `--carrier TABLE` is the carrier-bytes arm's flag: it writes 25 more
+        // per-sample channels from engine memory in the SAME engine run, so
+        // there is no second pass and no ordering rule. The table is named
+        // explicitly rather than defaulted, because `must_be_live` has to agree
+        // with it and a default would let the two drift apart silently.
+        if let Some(t) = flag(a, "--carrier") {
+            v.push("--carrier".into());
+            v.push(t.to_string());
         }
-        if has(a, "--trim-outside") {
-            v.push("--trim-outside".into());
+        for k in ["--verbose", "--inherit-outside", "--allow-partial",
+                  "--keep-transform", "--noanchor"] {
+            if has(a, k) {
+                v.push(k.to_string());
+            }
         }
+        // ALWAYS ON, no flag, no way to turn them off.
+        //
+        // `--neutralise` zeros the 49 per-run bytes the transform encoder does
+        // not write; `--inputs` rewrites the record's steer/gas/brake echo from
+        // the tape; `--trim-outside` drops samples with no engine instant
+        // behind them. All three were opt-in, all three were forgotten, and
+        // each omission shipped: the tyres throwing a stranger's dirt is the
+        // first, a record describing the donor's driving is the second.
+        //
+        // Making them options was the mistake. There is no case for a file that
+        // is publishable-except-for-one-of-these -- that is just a defect with
+        // a flag in front of it.
+        v.push("--neutralise".into());
+        v.push("--inputs".into());
+        v.push("--trim-outside".into());
         v
     };
     let tries: i64 = num(a, "--tries").unwrap_or(24);
     let jobs: usize = num(a, "--jobs").unwrap_or(12).max(1) as usize;
+    let force = has(a, "--force");
+    // The container this file is built in, kept before `inp` becomes the
+    // rebuilt grid: the finishing pass measures per-byte provenance against it,
+    // and against the grid the answer would be meaningless.
+    let template_for_provenance = inp.clone();
+
+    // ---- STEP 0: THE GRID THIS RUN WILL BE WRITTEN INTO IS OURS -------------
+    //
+    // The regenerator writes engine state into the record the template already
+    // has, so a template carrying the donor's span produces a file carrying the
+    // donor's span -- 33 of 159 published ghosts do, and the symptom is a clip
+    // twice as long as the run with the camera stranded at the top of the map
+    // after our car's entity ends. This used to be `ghost record rebuild`, a
+    // separate command run afterwards by whoever knew to.
+    //
+    // It is also what makes 227654 regenerable at all: that carrier is ONE CAR
+    // SPLIT INTO 27 ENTITIES at its respawns, so every reader in this project
+    // sees "365 samples spanning 1.310 .. 19.480" for a 57.482 run and the
+    // regenerator hard-errors on the 38 seconds it cannot fill.
+    //
+    // The span is the file's own simulated time, asked of the plain oracle --
+    // never the filename and never the header, which on a synthesised tape is
+    // the seed's.
+    let inp = {
+        // SAY WHICH OF THE THREE THINGS HAPPENED.
+        //
+        // "no oracle available" covered all of: no server on this box, the
+        // server failing to run, and the server running fine and returning DNF.
+        // Those need different responses and the message named the first, so a
+        // DNF on a 32-minute tape read as a missing install and sent me to
+        // check TM_SERVER, which was correct all along. An absent signal read
+        // as a specific negative -- the project's characteristic bug, in my own
+        // code, on the same day I fixed two of them elsewhere.
+        let t = crate::oracle::server_dir(flag(a, "--server"));
+        let simulated = if !t.join("TrackmaniaServer").exists() {
+            println!(
+                "== step 0: no dedicated server at {} -- the record's span is left as it is. \
+                 Pass --server DIR or set TM_SERVER to have it rebuilt.",
+                t.display()
+            );
+            None
+        } else {
+            match crate::oracle::validate(
+                &t,
+                std::path::Path::new(inp),
+                crate::oracle::MapsMode::One(std::path::Path::new(&map)),
+                "regen-span",
+            ) {
+                Err(e) => {
+                    println!("== step 0: the oracle could not run ({e}) -- the span is left as it is");
+                    None
+                }
+                Ok(r) => match r.time_ms {
+                    None => {
+                        println!(
+                            "== step 0: the oracle returns DNF for this file, so there is no \
+                             finish to shorten the record to -- the span is left as it is. That \
+                             is expected on a deliberately partial tape and is a REAL FINDING on \
+                             one that should finish."
+                        );
+                        None
+                    }
+                    Some(ms) => Some(ms),
+                },
+            }
+        };
+        match simulated {
+            None => inp.clone(),
+            Some(ms) => {
+                // .Ghost.Gbx, not `{out}.grid`: the dedicated server IGNORES a
+                // file with any other extension and returns a bare DNF that
+                // cannot be told from a genuine one -- the oracle wrapper says
+                // so in as many words, and it caught this staging name on the
+                // first run.
+                let staged = format!("{}.grid.Ghost.Gbx", out.trim_end_matches(".Ghost.Gbx"));
+                match crate::record::rebuild_to(inp, &staged, ms, None, 50) {
+                    Ok(msg) => println!("== step 0: the record grid is ours\n   {msg}"),
+                    Err(e) => die(format!("could not rebuild the record grid: {e}")),
+                }
+                // AND THE DECLARED TIME, HERE, BEFORE THE ENGINE RUNS.
+                //
+                // It has to be before: G4 re-simulates the WRITTEN file and
+                // compares against what that file declares, so a grid still
+                // carrying the carrier's 147.031 makes every one of 24 correct
+                // regenerations fail a check about a number none of them wrote.
+                // Declaring it afterwards would mean the gate ran against a
+                // claim we already knew was wrong.
+                let dstage = format!("{}.decl.Ghost.Gbx", out.trim_end_matches(".Ghost.Gbx"));
+                let mut d: Vec<String> = vec![staged.clone(), dstage.clone(), "--from-oracle".into(),
+                                              "--map".into(), map.to_string()];
+                if let Some(sv) = flag(a, "--server") {
+                    d.push("--server".into());
+                    d.push(sv.to_string());
+                }
+                crate::declare::cmd(&d);
+                let _ = std::fs::remove_file(&staged);
+                dstage
+            }
+        }
+    };
+    let inp = &inp;
 
     // THE LOCATE IS A CHOOSER AND IT IS NONDETERMINISTIC. Measured on the
     // fixture map: 8 identical runs, one found the car and seven found a
@@ -380,22 +518,136 @@ pub fn cmd(a: &[String]) {
         }
         Some(c) => {
             std::fs::rename(&c, out).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
-            println!("wrote {}", out);
-            println!(
-                "  WHAT IS OURS in each 116-byte sample: the 22 transform bytes (position, \n\
-                 \x20 orientation, speed, velocity direction) from the engine, and bytes 14 / 15 / 18 \n\
-                 \x20 (steer, gas, brake) from the tape. The remaining 91 -- rpm, gear, wheel \n\
-                 \x20 rotation and suspension, surface effects -- are still the carrier's. They are \n\
-                 \x20 in engine memory too; nothing here has read them yet."
-            );
+            finish(out, &template_for_provenance, &map, a, force);
         }
     }
+}
+
+/// Everything between "the engine state is in the record" and "this file is
+/// publishable" -- run on every regeneration, not as a follow-up somebody has
+/// to remember.
+///
+/// The list used to live in people's heads and every item on it shipped at
+/// least once: a stranger's dirt-tyre bytes, a 441 s span on a 218 s run, a
+/// header declaring the donor's time, a foreign login in a field nothing read.
+/// Each was found days later by someone noticing something odd in a video.
+///
+/// Every step here refuses on its own terms, and this refuses on theirs.
+fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
+    println!("\n== the finishing pass");
+
+    // The declared time is written in step 0, BEFORE the engine runs -- G4
+    // re-simulates the written file and checks it against what the file
+    // claims, so a claim fixed afterwards would mean the gate ran against a
+    // number we already knew was wrong.
+
+    // 1. THE IDENTITY. Nine fields, two of them found the day this was written
+    //    -- the ranked badge and the zone -- by raw-stringing published files.
+    //    `--anonymise` is position-based, so a field nobody has named yet is
+    //    still found by the same scan.
+    let tmp = format!("{out}.fin");
+    let mut i: Vec<String> = vec!["set".into(), out.to_string(), tmp.clone(), "--anonymise".into(),
+                                  "--map".into(), map.to_string()];
+    if let Some(s) = flag(a, "--server") {
+        i.push("--server".into());
+        i.push(s.to_string());
+    }
+    crate::ident::cmd(&i);
+    let _ = std::fs::rename(&tmp, out);
+
+    // 2. THE ACCEPTANCE TEST: what, if anything, is still the donor's.
+    println!("\n== what this file is made of");
+    let mut refused: Vec<String> = Vec::new();
+    match crate::finish::inherited_bytes(out, carrier) {
+        Ok(v) if v.is_empty() => {
+            println!("   no sample byte is bit-identical to the container donor throughout.");
+        }
+        Ok(v) => refused.push(format!(
+            "{} sample byte(s) are still bit-identical to the donor on EVERY sample: {:?}. \
+             Those describe THEIR run -- every tyre effect and contact spark in a render fires \
+             at the instant they had it, not ours.",
+            v.len(),
+            v
+        )),
+        Err(e) => println!("   per-byte provenance could not be measured: {e}"),
+    }
+    match crate::finish::outlives_the_car(out) {
+        Ok(None) => println!("   nothing in the file outlives the car."),
+        Ok(Some(w)) => refused.push(format!("something outlives the car: {w}")),
+        Err(e) => println!("   the span could not be measured: {e}"),
+    }
+
+    // 3. IS WHAT WE DID WRITE ACTUALLY ALIVE?
+    //
+    // A bare position copy once wrote zeroed wheels into a file that passed the
+    // whole verify gate. Zero is legal for a channel on any one sample; what no
+    // driven run does is hold one at a single value for 3 km. The list is
+    // whatever the pipeline currently claims to write, so a channel promoted
+    // out of `unwritten_channels` comes under this on the same day.
+    // Two lists, because refusing is only right where a constant is impossible.
+    // A car that drives 3 km always turns its wheels; a car on a short run may
+    // never change gear or touch the turbo, and refusing those would refuse
+    // honest work -- which is how C3 and C8 had to be superseded.
+    let carrier_written = has(a, "--carrier");
+    let claim: Vec<(usize, &str)> = crate::finish::must_be_live()
+        .iter()
+        .copied()
+        .filter(|(o, _)| carrier_written || *o >= 14)
+        .collect();
+    match crate::finish::dead_channels(out, &crate::finish::may_rest()) {
+        Ok(v) if v.is_empty() || !carrier_written => {}
+        Ok(v) => {
+            for d in &v {
+                println!("   at rest (written, but a constant value is legitimate): {d}");
+            }
+        }
+        Err(_) => {}
+    }
+    match crate::finish::dead_channels(out, &claim) {
+        Ok(v) if v.is_empty() => println!("   every channel this pipeline writes varies over the run."),
+        Ok(v) => {
+            for d in &v {
+                refused.push(format!("a channel we claim to write is dead: {d}"));
+            }
+        }
+        Err(e) => println!("   channel liveness could not be measured: {e}"),
+    }
+
+    // 4. WHAT WE DID NOT WRITE, BY NUMBER. A harness limit, said as one.
+    let un = crate::finish::unwritten_channels();
+    println!(
+        "   UNWRITTEN, zeroed rather than inherited ({} channels): {}",
+        un.len(),
+        un.iter().map(|(o, n)| format!("{o} {n}")).collect::<Vec<_>>().join(", ")
+    );
+    println!(
+        "   Those quantities ARE in engine memory -- fitted against a real recording (gear,\n\
+         \x20  turbo and wetness exact on every sample, rpm on 92.6 %). What is missing is an\n\
+         \x20  anchor that survives a change of map, so they are written as ZERO and named here\n\
+         \x20  rather than passed through as the donor's."
+    );
+
+    if !refused.is_empty() {
+        for r in &refused {
+            eprintln!("REFUSED: {r}");
+        }
+        if !force {
+            let _ = std::fs::remove_file(out);
+            die(format!(
+                "{} check(s) failed and {out} has been DELETED. Pass --force to keep the file \
+                 anyway; it is not publishable.",
+                refused.len()
+            ));
+        }
+        eprintln!("--force: keeping {out} despite {} failed check(s).", refused.len());
+    }
+    println!("\n{out} is finished.");
 }
 
 /// The acceptance gate for one regenerated candidate.
 fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, String> {
     let mut s = String::new();
-    let (len, first, n, ok) = path_stats(cand).ok_or("   G3 the written file has no samples")?;
+    let (len, _first, n, ok) = path_stats(cand).ok_or("   G3 the written file has no samples")?;
     if !ok {
         return Err(format!(
             "   G5 the trajectory is not finite or never moves ({} samples, {:.1} m)",
@@ -415,22 +667,78 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
     // is what separates the car from the other moving objects the engine keeps:
     // measured on the fixture map, one candidate in six traces a perfectly
     // plausible 1.6 km path that is nowhere near the track.
-    match gbx::record::decode_ghost(template).ok().and_then(|d| d.samples.first().cloned()) {
-        None => s.push_str("   G2 no telemetry in the template to check the start against\n"),
+    //
+    // AND THE ANSWER KEY IS ONLY AN ANSWER KEY IF THE TEMPLATE STARTS AT RACE
+    // ZERO. Compare two samples taken at DIFFERENT race times and the check
+    // measures how far the car drove in between: 227654's carrier begins at
+    // race 1.310 s doing 66 km/h, so a candidate that is correctly at the spawn
+    // reads 11.2 m out and is refused, while a candidate that is 11.2 m down
+    // the road passes. That is the check inverted, on the exact class of file
+    // this pipeline exists to repair. So compare at a COMMON INSTANT: the
+    // candidate's own sample nearest the template's first, and refuse to judge
+    // at all when there is no overlap rather than judging against the wrong
+    // moment.
+    // The reference defaults to the template, which is right when the template
+    // is a real recording of this map. It is NOT right when the template is a
+    // grid `ghost record rebuild` laid down -- every sample there is a copy of
+    // one, so the record does not move and identifies nothing. Name a
+    // downloaded recording with `--spawn-ref` for those.
+    let spawn_ref = flag(a, "--spawn-ref").unwrap_or(template);
+    let ref_moves = gbx::record::decode_ghost(spawn_ref)
+        .ok()
+        .map(|d| {
+            d.samples
+                .windows(2)
+                .map(|w| {
+                    ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2)).sqrt()
+                })
+                .sum::<f64>()
+                > 5.0
+        })
+        .unwrap_or(false);
+    match gbx::record::decode_ghost(spawn_ref)
+        .ok()
+        .filter(|_| ref_moves)
+        .and_then(|d| d.samples.first().cloned())
+    {
+        None => s.push_str(
+            "   G2 UNMEASURED: the reference record has no motion in it (a rebuilt grid is a \
+             constant), so it identifies nothing. Name a downloaded recording of this map with \
+             --spawn-ref. The start position has NOT been checked.\n",
+        ),
         Some(t0) => {
-            let d = ((first[0] - t0.x).powi(2) + (first[1] - t0.y).powi(2) + (first[2] - t0.z).powi(2)).sqrt();
+            let here = gbx::record::decode_ghost(cand)
+                .ok()
+                .and_then(|d| {
+                    d.samples
+                        .iter()
+                        .min_by_key(|s| (s.time_ms - t0.time_ms).abs())
+                        .map(|s| (s.time_ms, [s.x, s.y, s.z]))
+                });
             let tol: f64 = flag(a, "--spawn-tol").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-            if d > tol {
-                return Err(format!(
-                    "   G2 the run starts at ({:.2}, {:.2}, {:.2}), {:.1} m from where this map's \
-                     runs start ({:.2}, {:.2}, {:.2}) -- this is not the car",
-                    first[0], first[1], first[2], d, t0.x, t0.y, t0.z
-                ));
+            match here {
+                Some((t, p)) if (t - t0.time_ms).abs() <= 60 => {
+                    let d = ((p[0] - t0.x).powi(2) + (p[1] - t0.y).powi(2) + (p[2] - t0.z).powi(2)).sqrt();
+                    if d > tol {
+                        return Err(format!(
+                            "   G2 at {} ms the run is at ({:.2}, {:.2}, {:.2}), {:.1} m from where \
+                             the template is at the same instant ({:.2}, {:.2}, {:.2}) -- this is \
+                             not the car",
+                            t, p[0], p[1], p[2], d, t0.x, t0.y, t0.z
+                        ));
+                    }
+                    s.push_str(&format!(
+                        "   G2 at {} ms, {:.3} m from the template at the same instant\n",
+                        t, d
+                    ));
+                }
+                _ => s.push_str(&format!(
+                    "   G2 UNMEASURED: the template's first sample is at {} ms and this record has \
+                     none within 60 ms of it, so there is no common instant to compare. The start \
+                     position has NOT been checked.\n",
+                    t0.time_ms
+                )),
             }
-            s.push_str(&format!(
-                "   G2 starts at ({:.2}, {:.2}, {:.2}), {:.3} m from the template's own start\n",
-                first[0], first[1], first[2], d
-            ));
         }
     }
     match verify::tape_record_agreement(cand) {

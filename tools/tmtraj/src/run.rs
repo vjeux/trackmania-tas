@@ -56,6 +56,11 @@ IS IT A COHERENT RUN, AND IS IT OURS
 
 WHAT DOES THE TRAJECTORY SAY (not the flag)
   motion  FILE [--race S] [--g G]    ballistic / supported / unknown, and the flag beside it
+  provenance FILE --carrier C        which of the 116 bytes are ours and which
+                                     are still the container donor's
+  impacts FILE... [--bar KMH] [--race S] [--against OTHER]
+                                     one-sample speed losses: what the car hit,
+                                     and whether a second engine reading agrees
   wheels  FILE [--race S]            wheel radius, and whether the wheel bytes are alive
   facing  FILE... [--ref R] [--route CSV] [--shift-ms N]
   route   CSV [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
@@ -116,11 +121,51 @@ pub fn run() {
             crate::manifest::cmd(rest);
             0
         }
+        "impacts" => crate::impactcmd::cmd(rest),
+        "provenance" => crate::provcmd::cmd(rest),
         "motion" => crate::whlcmd::cmd_motion(rest),
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),
         "route" => crate::routecmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
+        // How many ticks differ between two tapes in a race-time window.
+        // UNTRUNCATED, which is the point: `ghost tape diff` prints at most 80
+        // rows and then stops, so its output reads as "the differences end at
+        // tick 79". That cost this audit a wrong reading -- 203330's pair
+        // looked like it had zero differences after the countdown and actually
+        // has 1041, 227 of them inside the stretch where the two files'
+        // positions are bit-identical.
+        "tapediff" => {
+            if rest.len() < 2 {
+                eprintln!("usage: tmtraj tapediff A.Ghost.Gbx B.Ghost.Gbx [--from SECONDS] [--to SECONDS]");
+                2
+            } else {
+            let secs_arg = |flag: &str, dflt: f64| -> f64 {
+                rest.iter()
+                    .position(|s| s == flag)
+                    .and_then(|i| rest.get(i + 1))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(dflt)
+            };
+            let from = (secs_arg("--from", 0.0) * 1000.0) as i64;
+            let to = (secs_arg("--to", 1.0e9) * 1000.0) as i64;
+            match crate::intgcmd::tape_diffs_in_window(&rest[0], &rest[1], from, to) {
+                Err(e) => {
+                    eprintln!("tmtraj tapediff: {e}");
+                    2
+                }
+                Ok(n) => {
+                    println!(
+                        "{} ticks differ between race {:.3} and {:.3}",
+                        n,
+                        from as f64 / 1000.0,
+                        if to > 1_000_000 { -1.0 } else { to as f64 / 1000.0 }
+                    );
+                    0
+                }
+            }
+            }
+        }
         "lines" => cmd_lines(rest),
         "selftest" => {
             let r = selftest::selftest(true);
@@ -254,8 +299,7 @@ fn cmd_export(argv: &[String]) -> i32 {
         (a.one("csv").map(|s| s.to_string()), serial::csv_string as fn(&Decoded) -> String),
         (a.one("json").map(|s| s.to_string()), serial::path_json_string),
         (a.one("full-json").map(|s| s.to_string()), serial::full_json_string),
-    ];
-    let a = a.finish(EXPORT_USAGE);
+    ];    let a = a.finish(EXPORT_USAGE);
     let Some(path) = a.positional.first() else {
         eprint!("{}", EXPORT_USAGE);
         return 2;
@@ -270,8 +314,7 @@ fn cmd_export(argv: &[String]) -> i32 {
     let mut wrote = false;
     for (f, text) in &outs {
         if let Some(f) = f {
-            std::fs::write(f, text(&dec)).expect("write");
-            println!("wrote {}", f);
+            std::fs::write(f, text(&dec)).expect("write");            println!("wrote {}", f);
             wrote = true;
         }
     }

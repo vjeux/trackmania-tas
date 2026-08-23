@@ -46,7 +46,9 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | | `ghost tape expand IN OUT` | rewrite every "same as previous tick" packet explicitly; semantically a no-op and the oracle says so |
 | | `ghost tape diff A.gtape B.gtape` · `stats` · `bits` | compare two tapes; summarise one; census which bits of the state literal ever vary |
 | | `ghost tape sync-record IN OUT` | rewrite the telemetry's recorded steer / gas / brake from the tape — they are fully determined by it and need no engine |
-| **car state** | `ghost regen IN OUT --map M` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate |
+| **the record itself** | `ghost record show FILE` | every entity in the telemetry record, its class, sample count and time span — and which one this project reads as the car |
+| | `ghost record rebuild IN OUT --span MS` | throw the vehicle entities away and lay a fresh one on a 50 ms grid out to `--span`, every sample a copy of one template. Scaffolding for `regen` when the carrier's grid does not cover the run |
+| **car state** | `ghost regen IN OUT --map M [--neutralise] [--inputs]` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate. `--neutralise` also zeros the 49 per-run bytes the transform encoder does not write, so no per-run byte of the donor survives |
 | | `ghost regen-control FILE --map M` | the fixed point: regenerate a file that already knows its own answer and require it back |
 | | `ghost trajdiff A B` | two files' recorded trajectories, at every shift from −3 to +3 samples |
 | | `ghost engine classinfo/idsites/vtable` | what the server binary says about its own classes — the evidence behind the locate |
@@ -214,6 +216,26 @@ directory containing **zero files** (fixture: 7.241, with no map on disk).
 the uid there makes the file claim one map and run another. `ghost map set`
 replaces the carried map and the suite proves the swap changes the answer *on a
 box where the original map does not exist at all*.
+
+**THE RECORD IS ONE ENTITY PER LIFE, NOT ONE ENTITY PER CAR.**
+A run with respawns is stored as a chain of `CSceneVehicleVis` entities that
+tile the recording end to end with no overlap — 227654's carrier has 27 of them
+covering 0.000 → 147.000 s, one per respawn, the 22-sample ones being the
+respawn freezes. Every reader in this project takes *the entity with the most
+samples* and calls that the record, so that carrier reads as "365 samples
+spanning 1.310 → 19.480" — and a 57.482 s run looked unrenderable because its
+telemetry appeared to stop at 19 s. It does not; the reader stops there.
+→ `ghost record show` prints every entity with its span, so the shape of the
+record is visible before anything is concluded from one entity's length.
+The single-entity assumption is still baked into `decode_ghost` and everything
+downstream of it; `record show` is the thing that tells you when it is wrong.
+
+**A zeroed slot is not a missing entity, and the difference is one command.**
+186935's `BEST_793893` was published as carrying "no `CSceneVehicleVis` entity
+at all". It has one — 15533 samples over 0.000 → 793.850 — and every position
+in it is `(0,0,0)`. `tmtraj check` C2 says so in one line ("the car travels
+0.0000 m over 1 distinct points"); the wrong diagnosis stood for two days and
+made the file look unfixable rather than re-generable.
 
 **A synthesised tape carries its TEMPLATE's telemetry.**
 `tmtas splits` reads the header, so a grafted tape reports the donor's splits.
@@ -422,7 +444,10 @@ Three things were done about it, in order of how much they mattered.
 
 Two things measured along the way that are worth not repeating:
 *diversifying the anchor tick makes it worse* (8 runs on the default ladder
-found the car once; 24 runs over seven hand-picked ladders found it zero times);
+found the car once; 24 runs over seven hand-picked ladders **had the chooser
+land on the car zero times** — the car was in every one of those gathers, which
+`fk whl carscan` recovers from a junk run's own dump, so what the ladder changed
+was the pick and not what was there);
 and *the "1 in 8" failure rate was partly an illusion* — five of six runs were
 writing bit-identical trajectories and only looked different because the record
 offsets are reported relative to differently-sized gather windows. **Comparing

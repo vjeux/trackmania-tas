@@ -39,6 +39,12 @@ provably fall out of the world). Across the stretch that looks like a glide, the
 car drops **18.4 m in 2.71 s** where free fall would drop 92.5 m — it is supported
 the whole way.
 
+*(On the constant: free fall in this engine is `a_y = −g − k·v_y` with
+g = 24.78 ± 0.10 and k = 0.032, so 25.20 is `a_y` at v_y ≈ +13 m/s rather than a
+map constant — quote it with its `v_y`. It does not touch this argument: the gap
+here is 18.4 m against 92.5 m, and no value of `g` in the engine's whole
+measured range of 22 – 29 m/s² closes a factor of five.)*
+
 Measured per sample:
 
 | | supported | airborne |
@@ -140,6 +146,16 @@ The ghost carries its own regenerated telemetry — read out of engine memory
 while replaying the tape's inputs — so it plays back as itself. 26 of 33
 independent regenerations agree to within 1 mm, and a cross-check against a
 completely different readout path agrees to **0.48 mm**.
+
+> **That 0.48 mm is now a reason to re-check, not a certificate — corrected
+> 2026-08-22.** ≈0.5 mm has been measured to be **the distance between two
+> copies of the car in the server's memory**, so agreement at that figure is
+> what two readings of the *wrong* copy look like; a gather that has found the
+> car agrees bit-identically or at ~0.000001 m. Note also that "26 of 33 agree"
+> is a **reproduction count, and a majority must never outrank a test that can
+> identify the answer** — five regenerations of one 134672 tape produced the car
+> once and four wrong picks, two of which agreed with each other to the metre.
+> The time is unaffected: the oracle reads the tape. See `tools/README.md`.
 
 ## Files
 

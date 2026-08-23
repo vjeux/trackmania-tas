@@ -42,7 +42,11 @@
 //! thing for an aborted and a completed run -- which it does, because the child
 //! computes it identically in both cases.
 
-use crate::pred_core::{Pred, Summary, PRED_BYTES};
+use crate::pred_core::{
+    key_eval, Gate, KeyOp, Pred, Summary, KEYOP_BYTES, KOP_ABS, KOP_ADD, KOP_ALONG, KOP_AXISDOT,
+    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG, KOP_POS,
+    KOP_SPEED, KOP_SUB, KOP_VDIST, KOP_VEL, MAXKOPS, PRED_BYTES,
+};
 
 /// One armed, named condition.
 #[derive(Clone)]
@@ -124,6 +128,9 @@ pub struct Watch {
     pub fast: u32,
     /// World-x of the sub-tick timing plane; 0 disables it.
     pub plane_x: f32,
+    /// The state objective. Disarmed by default, and then the child does not
+    /// evaluate a single instruction of it.
+    pub gate: Gate,
 }
 
 fn getf(kv: &[(String, String)], k: &str, d: f32) -> f32 {
@@ -228,6 +235,356 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
     Ok(NamedPred { name, pred: p })
 }
 
+// -------------------------------------------------------------- the gate
+//
+// THE STATE OBJECTIVE'S TWO HALVES, and why they are parsed here.
+//
+// `--gate` is a box. `--gate-key` is an expression over the car's whole state
+// inside it. Both are compiled in this process, where a mistake is a message;
+// the child only ever executes a fixed-size program.
+
+/// Parse `xmin=..,xmax=..,ymin=..,ymax=..,zmin=..,zmax=..[,minspeed=..]`.
+///
+/// All six bounds are required. A gate with a defaulted-open side is a gate
+/// that fires somewhere else on the map, and the one thing this feature must
+/// not do is measure the wrong place convincingly.
+pub fn parse_gate(spec: &str, key: &str) -> Result<Gate, String> {
+    let mut kv: Vec<(String, String)> = Vec::new();
+    for item in spec.split(',').filter(|s| !s.trim().is_empty()) {
+        let (a, b) = item
+            .split_once('=')
+            .ok_or_else(|| format!("bad key=value {:?} in --gate {:?}", item, spec))?;
+        kv.push((a.trim().to_string(), b.trim().to_string()));
+    }
+    let allowed = ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "minspeed"];
+    for (k, _) in &kv {
+        if !allowed.contains(&k.as_str()) {
+            return Err(format!("--gate: unknown key {:?}; allowed: {:?}", k, allowed));
+        }
+    }
+    let need = |k: &str| -> Result<f32, String> {
+        kv.iter()
+            .find(|(a, _)| a == k)
+            .ok_or_else(|| {
+                format!(
+                    "--gate: {} is required. All six bounds must be given: a side left open is a \
+                     box that also contains somewhere else on the map.",
+                    k
+                )
+            })
+            .and_then(|(_, v)| {
+                v.parse::<f32>().map_err(|_| format!("--gate {}: {:?} is not a number", k, v))
+            })
+    };
+    let b = [need("xmin")?, need("xmax")?, need("ymin")?, need("ymax")?, need("zmin")?, need("zmax")?];
+    for (i, ax) in ["x", "y", "z"].iter().enumerate() {
+        if b[2 * i + 1] <= b[2 * i] {
+            return Err(format!(
+                "--gate: {}max ({}) must be greater than {}min ({})",
+                ax, b[2 * i + 1], ax, b[2 * i]
+            ));
+        }
+    }
+    let minspeed = match kv.iter().find(|(a, _)| a == "minspeed") {
+        Some((_, v)) => v.parse::<f32>().map_err(|_| format!("--gate minspeed: {:?}", v))?,
+        None => 0.0,
+    };
+    Ok(Gate { armed: true, bounds: b, minspeed, prog: parse_key(key)? })
+}
+
+/// Compile a key expression into the child's postfix program.
+///
+/// ```text
+///   expr    := term (('+'|'-') term)*
+///   term    := unary (('*'|'/') unary)*
+///   unary   := '-' unary | atom
+///   atom    := NUMBER | NAME | NAME '(' expr,... ')' | '(' expr ')'
+/// ```
+///
+/// | name | value |
+/// |---|---|
+/// | `speed` | the car's speed, m/s |
+/// | `vx` `vy` `vz` | world velocity components |
+/// | `px` `py` `pz` | world position components |
+/// | `bodyright` `bodyup` `bodyfwd` | velocity resolved in the CAR's own frame -- `bodyright` is the ghost format's `side_speed` |
+/// | `along(x,y,z)` | speed along a world direction |
+/// | `nose(x,y,z)` `roof(x,y,z)` `flank(x,y,z)` | how well the car's forward / up / right axis points along a world direction, -1..1 |
+/// | `dist(x,y,z)` | metres from a world point |
+/// | `vdist(x,y,z)` | m/s from a target velocity |
+/// | `abs(e)` `min(a,b)` `max(a,b)` | |
+///
+/// Bigger is always better, so a quantity to be MINIMISED is negated by the
+/// person writing the expression, in the open, where it can be read:
+/// `-(dist(70.2,50.4,708.9) + vdist(...)/5)`.
+pub fn parse_key(src: &str) -> Result<[KeyOp; MAXKOPS], String> {
+    let toks = lex(src)?;
+    let mut p = KeyParser { t: &toks, i: 0, out: Vec::new(), src };
+    p.expr()?;
+    if p.i != p.t.len() {
+        return Err(format!("--gate-key {:?}: trailing {:?}", src, p.t[p.i]));
+    }
+    if p.out.is_empty() {
+        return Err(format!("--gate-key {:?}: empty", src));
+    }
+    if p.out.len() > MAXKOPS - 1 {
+        return Err(format!(
+            "--gate-key {:?}: {} operations, the child holds {}",
+            src,
+            p.out.len(),
+            MAXKOPS - 1
+        ));
+    }
+    let mut prog = [KeyOp::END; MAXKOPS];
+    for (i, k) in p.out.iter().enumerate() {
+        prog[i] = *k;
+    }
+    // A compiled key that cannot produce a number on a plausible state is a
+    // parser bug, and it would show up in the child as every candidate scoring
+    // nothing. Cheaper to find it here.
+    let probe = key_eval(&prog, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]);
+    if !probe.is_finite() {
+        return Err(format!("--gate-key {:?}: compiled to a program that does not evaluate", src));
+    }
+    Ok(prog)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Tok {
+    Num(f32),
+    Name(String),
+    Punct(char),
+}
+
+fn lex(src: &str) -> Result<Vec<Tok>, String> {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c.is_ascii_digit() || (c == '.' && i + 1 < b.len() && b[i + 1].is_ascii_digit()) {
+            let s = i;
+            while i < b.len() && (b[i].is_ascii_digit() || b[i] == '.') {
+                i += 1;
+            }
+            // an exponent, so 1e-3 is a number and not `1e` minus `3`
+            if i < b.len() && (b[i] == 'e' || b[i] == 'E') {
+                let save = i;
+                i += 1;
+                if i < b.len() && (b[i] == '+' || b[i] == '-') {
+                    i += 1;
+                }
+                if i < b.len() && b[i].is_ascii_digit() {
+                    while i < b.len() && b[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                } else {
+                    i = save;
+                }
+            }
+            let t: String = b[s..i].iter().collect();
+            out.push(Tok::Num(t.parse().map_err(|_| format!("bad number {:?}", t))?));
+        } else if c.is_ascii_alphabetic() || c == '_' {
+            let s = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == '_') {
+                i += 1;
+            }
+            out.push(Tok::Name(b[s..i].iter().collect()));
+        } else if "+-*/(),".contains(c) {
+            out.push(Tok::Punct(c));
+            i += 1;
+        } else {
+            return Err(format!("--gate-key: unexpected {:?} in {:?}", c, src));
+        }
+    }
+    Ok(out)
+}
+
+struct KeyParser<'a> {
+    t: &'a [Tok],
+    i: usize,
+    out: Vec<KeyOp>,
+    src: &'a str,
+}
+
+impl<'a> KeyParser<'a> {
+    fn peek(&self) -> Option<&Tok> {
+        self.t.get(self.i)
+    }
+    fn eat(&mut self, c: char) -> bool {
+        if self.peek() == Some(&Tok::Punct(c)) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+    fn expect(&mut self, c: char) -> Result<(), String> {
+        if self.eat(c) {
+            Ok(())
+        } else {
+            Err(format!("--gate-key {:?}: expected {:?}, got {:?}", self.src, c, self.peek()))
+        }
+    }
+    fn emit(&mut self, op: u32, axis: u32, a: [f32; 3]) {
+        self.out.push(KeyOp { op, axis, a });
+    }
+
+    fn expr(&mut self) -> Result<(), String> {
+        self.term()?;
+        loop {
+            if self.eat('+') {
+                self.term()?;
+                self.emit(KOP_ADD, 0, [0.0; 3]);
+            } else if self.eat('-') {
+                self.term()?;
+                self.emit(KOP_SUB, 0, [0.0; 3]);
+            } else {
+                return Ok(());
+            }
+        }
+    }
+    fn term(&mut self) -> Result<(), String> {
+        self.unary()?;
+        loop {
+            if self.eat('*') {
+                self.unary()?;
+                self.emit(KOP_MUL, 0, [0.0; 3]);
+            } else if self.eat('/') {
+                self.unary()?;
+                self.emit(KOP_DIV, 0, [0.0; 3]);
+            } else {
+                return Ok(());
+            }
+        }
+    }
+    fn unary(&mut self) -> Result<(), String> {
+        if self.eat('-') {
+            self.unary()?;
+            self.emit(KOP_NEG, 0, [0.0; 3]);
+            return Ok(());
+        }
+        self.atom()
+    }
+    /// Three floats in parentheses, for the terms that take a direction, a
+    /// point or a target velocity.
+    fn vec3(&mut self, name: &str) -> Result<[f32; 3], String> {
+        self.expect('(')?;
+        let mut v = [0.0f32; 3];
+        for (i, slot) in v.iter_mut().enumerate() {
+            let mut sign = 1.0;
+            while self.eat('-') {
+                sign = -sign;
+            }
+            match self.peek() {
+                Some(Tok::Num(n)) => {
+                    *slot = sign * *n;
+                    self.i += 1;
+                }
+                other => {
+                    return Err(format!(
+                        "--gate-key: {}() wants three plain numbers, argument {} is {:?}",
+                        name,
+                        i + 1,
+                        other
+                    ))
+                }
+            }
+            if i < 2 {
+                self.expect(',')?;
+            }
+        }
+        self.expect(')')?;
+        Ok(v)
+    }
+    fn unit(&mut self, name: &str) -> Result<[f32; 3], String> {
+        let v = self.vec3(name)?;
+        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if !(n > 0.0) {
+            return Err(format!("--gate-key: {}() needs a direction, not (0,0,0)", name));
+        }
+        Ok([v[0] / n, v[1] / n, v[2] / n])
+    }
+    fn atom(&mut self) -> Result<(), String> {
+        match self.peek().cloned() {
+            Some(Tok::Num(n)) => {
+                self.i += 1;
+                self.emit(KOP_CONST, 0, [n, 0.0, 0.0]);
+                Ok(())
+            }
+            Some(Tok::Punct('(')) => {
+                self.i += 1;
+                self.expr()?;
+                self.expect(')')
+            }
+            Some(Tok::Name(n)) => {
+                self.i += 1;
+                match n.as_str() {
+                    "speed" => self.emit(KOP_SPEED, 0, [0.0; 3]),
+                    "vx" => self.emit(KOP_VEL, 0, [0.0; 3]),
+                    "vy" => self.emit(KOP_VEL, 1, [0.0; 3]),
+                    "vz" => self.emit(KOP_VEL, 2, [0.0; 3]),
+                    "px" => self.emit(KOP_POS, 0, [0.0; 3]),
+                    "py" => self.emit(KOP_POS, 1, [0.0; 3]),
+                    "pz" => self.emit(KOP_POS, 2, [0.0; 3]),
+                    "bodyright" => self.emit(KOP_BODYVEL, 0, [0.0; 3]),
+                    "bodyup" => self.emit(KOP_BODYVEL, 1, [0.0; 3]),
+                    "bodyfwd" => self.emit(KOP_BODYVEL, 2, [0.0; 3]),
+                    "along" => {
+                        let d = self.unit("along")?;
+                        self.emit(KOP_ALONG, 0, d);
+                    }
+                    "flank" => {
+                        let d = self.unit("flank")?;
+                        self.emit(KOP_AXISDOT, 0, d);
+                    }
+                    "roof" => {
+                        let d = self.unit("roof")?;
+                        self.emit(KOP_AXISDOT, 1, d);
+                    }
+                    "nose" => {
+                        let d = self.unit("nose")?;
+                        self.emit(KOP_AXISDOT, 2, d);
+                    }
+                    "dist" => {
+                        let p = self.vec3("dist")?;
+                        self.emit(KOP_DIST, 0, p);
+                    }
+                    "vdist" => {
+                        let p = self.vec3("vdist")?;
+                        self.emit(KOP_VDIST, 0, p);
+                    }
+                    "abs" => {
+                        self.expect('(')?;
+                        self.expr()?;
+                        self.expect(')')?;
+                        self.emit(KOP_ABS, 0, [0.0; 3]);
+                    }
+                    "min" | "max" => {
+                        self.expect('(')?;
+                        self.expr()?;
+                        self.expect(',')?;
+                        self.expr()?;
+                        self.expect(')')?;
+                        self.emit(if n == "min" { KOP_MIN } else { KOP_MAX }, 0, [0.0; 3]);
+                    }
+                    other => {
+                        return Err(format!(
+                            "--gate-key {:?}: unknown term {:?}. Known: speed, vx vy vz, px py pz, \
+                             bodyright bodyup bodyfwd, along(x,y,z), nose/roof/flank(x,y,z), \
+                             dist(x,y,z), vdist(vx,vy,vz), abs(), min(), max()",
+                            self.src, other
+                        ))
+                    }
+                }
+                Ok(())
+            }
+            other => Err(format!("--gate-key {:?}: expected a term, got {:?}", self.src, other)),
+        }
+    }
+}
+
 impl Watch {
     pub fn new() -> Watch {
         Watch {
@@ -239,11 +596,19 @@ impl Watch {
             finish_s: 0.0,
             fast: 1,
             plane_x: 0.0,
+            gate: Gate::NONE,
         }
     }
 
     pub fn describe(&self) -> String {
         let mut s = String::new();
+        if self.gate.armed {
+            let b = &self.gate.bounds;
+            s.push_str(&format!(
+                "  gate  x {}..{}  y {}..{}  z {}..{}  minspeed {} m/s, key in {} ops\n",
+                b[0], b[1], b[2], b[3], b[4], b[5], self.gate.minspeed, self.nkops()
+            ));
+        }
         for (i, np) in self.preds.iter().enumerate() {
             let p = &np.pred;
             s.push_str(&format!(
@@ -267,11 +632,14 @@ impl Watch {
         }
     }
 
-    /// The `A` frame: predicates, record layout, watched segments, reference.
+    /// The `A` frame: predicates, record layout, watched segments, reference,
+    /// and the state objective.
+    #[allow(clippy::too_many_arguments)]
     pub fn arm_payload(
         &self,
         clock0: i64,
         off_clock: u32,
+        off_quat: u32,
         off_pos: u32,
         off_vel: u32,
         rec_len: u32,
@@ -309,14 +677,90 @@ impl Watch {
         }
         // trailing, so an older shim simply ignores it
         v.extend_from_slice(&self.plane_x.to_le_bytes());
+        // THE STATE OBJECTIVE, also trailing -- but a shim that ignores it is
+        // a shim that scores every candidate as a miss, so the ARM ack reports
+        // how many key operations it took and `ForkEval` refuses a mismatch.
+        v.extend_from_slice(&off_quat.to_le_bytes());
+        v.extend_from_slice(&(self.gate.armed as u32).to_le_bytes());
+        for f in &self.gate.bounds {
+            v.extend_from_slice(&f.to_le_bytes());
+        }
+        v.extend_from_slice(&self.gate.minspeed.to_le_bytes());
+        v.extend_from_slice(&(self.nkops() as u32).to_le_bytes());
+        let mut kb = [0u8; KEYOP_BYTES];
+        for k in self.gate.prog.iter().take(self.nkops()) {
+            k.encode(&mut kb);
+            v.extend_from_slice(&kb);
+        }
         v
+    }
+
+    /// How many instructions the compiled key actually uses.
+    pub fn nkops(&self) -> usize {
+        self.gate.prog.iter().position(|k| k.op == crate::pred_core::KOP_END).unwrap_or(MAXKOPS)
+    }
+}
+
+/// The car's WHOLE state where the gate scored: position, velocity and
+/// attitude, plus the key and the tick.
+///
+/// It carries the quaternion because the map this feature was proven on
+/// ignored position and velocity and triggered on which way the car pointed,
+/// and because it is what makes the seed identity control decisive.
+#[derive(Clone, Copy, Debug)]
+pub struct GateRecord {
+    pub tick: i32,
+    pub key: f32,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    /// `(qw, qx, qy, qz)`
+    pub quat: [f32; 4],
+}
+
+impl GateRecord {
+    pub fn speed(&self) -> f32 {
+        (self.vel[0] * self.vel[0] + self.vel[1] * self.vel[1] + self.vel[2] * self.vel[2]).sqrt()
+    }
+    /// Velocity in the car's own frame: right, up, forward.
+    pub fn body_vel(&self) -> [f32; 3] {
+        let a = crate::pred_core::body_axes(self.quat);
+        [
+            a[0][0] * self.vel[0] + a[0][1] * self.vel[1] + a[0][2] * self.vel[2],
+            a[1][0] * self.vel[0] + a[1][1] * self.vel[1] + a[1][2] * self.vel[2],
+            a[2][0] * self.vel[0] + a[2][1] * self.vel[1] + a[2][2] * self.vel[2],
+        ]
+    }
+}
+
+impl std::fmt::Display for GateRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = self.body_vel();
+        write!(
+            f,
+            "tick {} at ({:.2}, {:.2}, {:.2}) v ({:.2}, {:.2}, {:.2}) |v| {:.2} \
+             body(right,up,fwd) ({:.2}, {:.2}, {:.2}) q ({:.4}, {:.4}, {:.4}, {:.4})",
+            self.tick,
+            self.pos[0],
+            self.pos[1],
+            self.pos[2],
+            self.vel[0],
+            self.vel[1],
+            self.vel[2],
+            self.speed(),
+            b[0],
+            b[1],
+            b[2],
+            self.quat[0],
+            self.quat[1],
+            self.quat[2],
+            self.quat[3]
+        )
     }
 }
 
 /// What one watched candidate did.
 #[derive(Clone, Debug)]
-pub struct Outcome {
-    /// Finish time in ms, if it finished.
+pub struct Outcome {    /// Finish time in ms, if it finished.
     pub time: Option<i64>,
     /// Checkpoints reached, when the validator reported them (i.e. when the
     /// candidate was NOT aborted).
@@ -336,6 +780,32 @@ impl Outcome {
     }
     pub fn travelled(&self) -> f32 {
         self.sum.map(|s| s.travelled).unwrap_or(0.0)
+    }
+    /// THE STATE OBJECTIVE's answer: the whole state at the tick that scored
+    /// best inside the gate, or `None` if the run never qualified.
+    ///
+    /// `None` and `Some` are the two bands, and the caller cannot collapse
+    /// them onto one number by accident because there is no number here to
+    /// collapse: see `tmsearch::score::GateState`.
+    pub fn gate(&self) -> Option<GateRecord> {
+        match &self.sum {
+            Some(s) if s.gate_tick >= 0 => Some(GateRecord {
+                tick: s.gate_tick,
+                key: s.gate_key,
+                pos: s.gate_pos,
+                vel: s.gate_vel,
+                quat: s.gate_quat,
+            }),
+            _ => None,
+        }
+    }
+    /// Closest approach to the gate box in metres, for a run that never got
+    /// inside. `None` when nothing was measured at all (no summary came back).
+    pub fn gate_miss(&self) -> Option<f32> {
+        match &self.sum {
+            Some(s) if s.gate_tick < 0 && s.gate_miss.is_finite() => Some(s.gate_miss),
+            _ => None,
+        }
     }
     pub fn last_tick(&self) -> i32 {
         self.sum.map(|s| s.last_tick).unwrap_or(-1)

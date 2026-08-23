@@ -15,6 +15,28 @@ human world record** and still **0.438** short of the author medal.
 > 38.968 is a result we hold, not a result we ship**, and it is not among the
 > tapes in `replays/`.
 
+> ### ⚠️ Two files in `replays/` do not declare the time in their names
+>
+> **MEASURED 2026-08-22**, `tmtraj corpus claims --root .`:
+>
+> | file | its name says | its header says | path |
+> |---|---|---|---|
+> | `TAS_39183.Ghost.Gbx` | 39.183 | **39.555** | 3715.3 m |
+> | `KEYBOARD_39706.Ghost.Gbx` | 39.706 | **39.555** | 3716.6 m |
+> | every other file here | — | matches its name | ~3555 m |
+>
+> Two different names, **one declared time**, and a route 160 m longer than the
+> rest of the family. So the rows below for 39.183 and 39.706 are **not backed
+> by the files that carry those names**, and neither figure should be quoted
+> until somebody re-validates them against the map. The fastest time anything in
+> this directory declares is **39.430** (`TAS_39430`), and that is the number
+> the top-level page now uses.
+>
+> This is not a claim that the times are wrong — the oracle reads the tape and
+> the map is not in this repo, so it cannot be settled here. It is a claim that
+> **the page and the directory disagree**, which is the failure mode
+> [`CLAIMS.md`](../CLAIMS.md) exists for.
+
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
 | **TAS** | **38.968** | +0.438 | **−1.255** | analog |

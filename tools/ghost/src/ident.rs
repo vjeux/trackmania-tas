@@ -27,6 +27,13 @@ pub enum Role {
     Login,
     AccountId,
     MapUid,
+    /// The carrier player's ranked-badge state, e.g.
+    /// `Prestige=Yes&Level=1&Year=2026&Mode=Ranked&Medal=Master&SubRank=3`.
+    /// A per-PLAYER field, sitting in the head of chunk 0x03092000 with the
+    /// skins and the display name. Found 2026-08-22 by raw-stringing five
+    /// published ghosts: 16 published files on 5 maps carry a stranger's
+    /// badge, and it survived every anonymiser because nobody had listed it.
+    Prestige,
     Other,
 }
 
@@ -42,6 +49,7 @@ impl Role {
             Role::Login => "login",
             Role::AccountId => "account id",
             Role::MapUid => "map uid",
+            Role::Prestige => "ranked badge",
             Role::Other => "",
         }
     }
@@ -104,6 +112,8 @@ pub fn scan(c: &Container) -> Vec<Field> {
                 Role::Skin
             } else if b.s.starts_with("http://") || b.s.starts_with("https://") {
                 Role::Locator
+            } else if b.s.starts_with("Prestige=") {
+                Role::Prestige
             } else if i + 1 == head.len() {
                 // the string immediately before the record is the ghost's
                 // displayed player name
@@ -317,10 +327,33 @@ pub fn cmd(a: &[String]) {
                     Role::Nickname => name.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Trigram => trigram.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Login => login.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
+                    // A ZONE IS A PERSON'S COUNTRY, and 21 published ghosts
+                    // carry a stranger's -- Austria on nine 165922 files,
+                    // Russia on the Leto author-cuts, the United Kingdom on the
+                    // Blev carrier -- against 137 that carry none. It is the
+                    // same shape as the account id and it was on nobody's
+                    // strip-list.
+                    //
+                    // IT IS STILL NOT BLANKED, AND THE SUITE IS WHY. The zone
+                    // is the ANCHOR this scanner finds the trigram and the club
+                    // tag by: `World|...` is the only self-identifying string
+                    // in that block, so the trigram is "the string before it"
+                    // and the club tag "the string after". Emptying it makes
+                    // both unfindable -- O7 caught it immediately, asking for
+                    // trigram VJX and reading back None. Blanking a field by
+                    // destroying the landmark that locates its neighbours would
+                    // trade a named leak for two silent ones.
+                    //
+                    // So it is set only when asked (`--zone ""` works), and
+                    // `ghost verify` V3 reports a carried zone. Doing it
+                    // properly needs the scanner to find the trigram and club
+                    // tag structurally rather than relative to the zone, which
+                    // is a change to make with the corpus in front of you.
                     Role::Zone => zone.map(|s| s.to_string()),
                     Role::ClubTag => clubtag.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
                     Role::Locator => if anon { Some(String::new()) } else { None },
                     Role::AccountId => if anon { Some(String::new()) } else { None },
+                    Role::Prestige => if anon { Some(String::new()) } else { None },
                     _ => None,
                 };
                 if let Some(v) = newv {
@@ -329,14 +362,28 @@ pub fn cmd(a: &[String]) {
                     // shorten: pad to the original byte length instead. `x`
                     // repeated is not a plausible account id or URL, which is
                     // the point.
+                    // PAD ONLY WHEN NOTHING CAN PROVE THE SHRINK.
+                    //
+                    // A body is parsed serially, so a top-level INLINE string
+                    // -- which is exactly where a ghost keeps its account id,
+                    // chunk 0x0309200F, no size word anywhere -- can shrink
+                    // safely. `chunks_ok` only knows skippable chunks, so it
+                    // said no and the anonymiser padded a stranger's account id
+                    // to twenty-two `x`s instead of removing it. That still
+                    // reads as AN ACCOUNT ID: `ghost verify` V3 and the
+                    // integrity gate's C-ident both refuse it, and the corpus
+                    // rule is 152 files with login TAS and NO id, none in
+                    // between. The oracle is what proves the shrink, and the
+                    // no-op control below already runs it.
                     if v.len() != f.len && !chunks_ok(f.at, f.len) && anon && v.len() < f.len && pad_ids
                     {
                         let pad = "x".repeat(f.len);
                         log.push(format!(
-                            "  {:<12} padded to {} bytes ({} cannot be resized in this container)",
+                            "  {:<12} padded to {} bytes -- it cannot be resized in this container \
+                             and no oracle was available to prove a shrink (pass --map and a \
+                             server to remove it outright)",
                             f.role.label(),
-                            f.len,
-                            f.role.label()
+                            f.len
                         ));
                         v = pad;
                     }
@@ -406,7 +453,7 @@ pub fn cmd(a: &[String]) {
                 let left: Vec<String> = after
                     .iter()
                     .filter(|f| {
-                        matches!(f.role, Role::AccountId | Role::Locator)
+                        matches!(f.role, Role::AccountId | Role::Locator | Role::Prestige)
                             && !f.s.is_empty()
                             && !f.s.chars().all(|c| c == 'x')
                     })
@@ -460,7 +507,30 @@ pub fn cmd(a: &[String]) {
                     let after = crate::oracle::validate(&server, std::path::Path::new(out), mode, "id-b");
                     match (before, after) {
                         (Ok(b), Ok(a2)) => {
-                            if b.time_ms == a2.time_ms {
+                            if b.time_ms.is_none() && a2.time_ms.is_none() {
+                                // A CONTROL THAT CANNOT FAIL IS NOT A CONTROL.
+                                // With no map staged the server DNFs both files
+                                // and the equal comparison prints OK -- which is
+                                // how an edit that broke a file would read as
+                                // proved. Say what happened instead.
+                                println!(
+                                    "  oracle no-op control VACUOUS: the file DNFs both before and \
+                                     after, so this proves nothing about the edit. Pass --map \
+                                     MAP.Map.Gbx (a pure ghost needs one) to make it a control."
+                                );
+                                if !unframed.is_empty() {
+                                    let _ = std::fs::remove_file(out);
+                                    die(format!(
+                                        "REFUSED and deleted {}: {} edit(s) changed a string's \
+                                         length with no enclosing chunk to correct ({}), and the \
+                                         oracle control was vacuous, so nothing has checked that \
+                                         the file still simulates.",
+                                        out,
+                                        unframed.len(),
+                                        unframed.join(", ")
+                                    ));
+                                }
+                            } else if b.time_ms == a2.time_ms {
                                 println!("  oracle no-op control OK: {} before and after", b.secs());
                             } else {
                                 let _ = std::fs::remove_file(out);

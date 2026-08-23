@@ -922,3 +922,56 @@ mod input_channel_tests {
         }
     }
 }
+
+// ===========================================================================
+// NEUTRALISED SAMPLES
+//
+// `fk regen --neutralise` zeros every per-run byte the transform encoder and
+// the tape echo do not write, so no per-run byte of the donor container
+// survives into a regenerated ghost. The list lives HERE, in the format crate,
+// because two crates need it and had one copy each would be the project's
+// oldest bug: `fk` writes it and `tmtraj` has to be able to RECOGNISE it.
+//
+// Recognising it matters because the checks that read those bytes cannot
+// otherwise tell "this flag is another driver's" from "this flag was
+// deliberately removed". Those are opposite verdicts -- one is a contaminated
+// file, the other is the honest repair for one -- and C6 and C10 called both
+// of them FAIL.
+// ===========================================================================
+
+/// The 49 per-run sample bytes that neither the transform encoder nor the tape
+/// echo writes. Derived from a byte-by-byte census of the corpus
+/// (`whl_bytemap_v1`), not from a guess about what each byte means.
+///
+/// The offsets NOT here are format constants (51, 80, 255, 240, 15, 0)
+/// identical in every ghost of every driver, so leaving them carries no
+/// provenance.
+pub const NEUTRALISE: &[usize] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 39, 40, 42, 43, 69, 70, 71, 72, 76, 81, 82, 83, 84, 89, 91, 93, 95, 97, 99,
+];
+
+/// Zero every byte in [`NEUTRALISE`] that the sample is long enough to have.
+pub fn neutralise(sample: &mut [u8]) {
+    for &o in NEUTRALISE {
+        if o < sample.len() {
+            sample[o] = 0;
+        }
+    }
+}
+
+/// Has this record been neutralised -- is every byte in [`NEUTRALISE`] zero on
+/// every sample?
+///
+/// A file that merely happens to have a zero contact flag on some samples is
+/// not neutralised; a file where all forty-nine of these bytes are zero
+/// throughout is, because a real recording varies rpm, gear and wheel rotation
+/// on every sample of every run. Answers `false` on an empty record rather than
+/// vacuously true.
+pub fn is_neutralised(raw: &[u8], sample_size: usize) -> bool {
+    if sample_size == 0 || raw.len() < sample_size {
+        return false;
+    }
+    raw.chunks_exact(sample_size)
+        .all(|s| NEUTRALISE.iter().all(|&o| o >= sample_size || s[o] == 0))
+}

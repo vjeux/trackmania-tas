@@ -139,6 +139,18 @@ while replaying the tape's inputs — so it plays back as itself rather than as
 the container it was built in. Two independent regenerations, on different
 machines by different code paths, agree on the trajectory to **0.487 mm**.
 
+> **Read that 0.487 mm as a WARNING, not as a certificate — corrected
+> 2026-08-22.** ≈0.5 mm is now measured to be **the distance between two copies
+> of the car in the server's own memory**, so two regenerations agreeing at that
+> figure are consistent with both having transformed from the wrong copy. A
+> gather that has actually found the car agrees **bit-identically, or at
+> ~0.000001 m** — transforming from the copy with a live wheel block took
+> bit-identity from 0 of 455 samples to 227 of 455 on the map-2 answer key.
+> This does not overturn anything else on this page: the **time** is the
+> oracle's, read off the tape, and the tape is not in question. It means the
+> trajectory in the rebuilt file should be re-checked against the right copy
+> before the clip is treated as frame-accurate. See `tools/README.md`.
+
 The run is also more physically self-consistent than the human recordings we
 hold: position and velocity disagree by 1.25% of speed across the run, against
 2.3% and 1.7% for two downloaded leaderboard ghosts. The only place they

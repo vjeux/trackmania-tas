@@ -195,19 +195,31 @@ pipeline on Robbalobb's own ghost, whose true telemetry we already have, and it
 reproduces that recording's own position to a **mean of 0.0002 m** and its speed
 to 0.07 km/h.
 
-**One thing is not fixed, and it is cosmetic.** The regeneration rewrites 25 of
-the 116 bytes per sample; the rest keep the carrier's values, and two of them are
-the per-wheel ground-contact and surface-material channels. They still describe
-*Robbalobb's* flights, and this run is airborne at different moments — so wheel
-contact effects and ice spray will fire at the wrong instants. The integrity gate
-refuses the file for exactly that (C5 and C7); the same gate passes Robbalobb's
-regenerated ghost 10/10, so this is two un-regenerated channels rather than a
-pipeline defect. Fixing it needs a per-map field map anchored on the wheel block,
-and **this map's engine gather contains no wheel block at any window size up to
-±64 KB**, so that map cannot currently be fitted here.
+**The tyre effects are now absent rather than wrong.** The old regeneration
+rewrote 25 of the 116 bytes per sample and left the rest as the carrier's,
+including the per-wheel contact and surface channels — which described
+*Robbalobb's* flights, so ice spray fired at his moments and not ours. The
+current file zeroes every per-run byte it does not write and **names the eleven
+channels it cannot yet produce**: rpm, per-wheel ice and dirt, ground contact,
+gear. Those quantities *are* in the engine's memory — fitted against a real
+recording, exactly on gear and turbo and 92.6 % on rpm — so this is a missing
+anchor that survives a change of map, not a limit of the data. Saying so
+precisely is the point: the previous wording called it cosmetic, and it was
+somebody else's run.
 
-**The line and the speed in the replay are this run's own. The tyre effects are
-not.**
+**The line and the speed in the replay are this run's. The tyre effects are
+absent.**
+
+### The impacts are real, and that is measurable
+
+The car visibly bangs off the platform edges, which looks like a rendering
+artefact or a debug collision left switched on. It is neither. Two independent
+regenerations of this tape — separate engine processes, separate located
+addresses, no shared state — produce the same four impacts at **10.400, 22.900,
+31.500 and 62.250**, agreeing to 0 ms and 0.0 km/h. Robbalobb's own recording
+has zero, as this page says, and rank 3 has one. The map is sha256
+`1cc10011a9882145333afcfc4acf2b85e20548e0ec035ccfcfd7e85e9010b703`, identical to
+the copy the validator uses. `tmtraj impacts --against` is the census.
 
 ## Files
 
@@ -216,5 +228,7 @@ not.**
 | `replays/TAS_67404.Ghost.Gbx` | the previous best TAS, 67.404 |
 | `replays/KEYBOARD_67625.Ghost.Gbx` | keyboard tape, 67.625 |
 
-**The regenerated 67.319 ghost is not in this directory.** Every time and split
-on this page comes from the validator, not from a file kept here.
+| `replays/TAS_67319.Ghost.Gbx` | **the 67.319 itself** — regenerated from engine state, no sample byte the donor's, span 0.000 → 67.319 |
+
+Every time and split on this page comes from the validator, not from a file
+kept here.

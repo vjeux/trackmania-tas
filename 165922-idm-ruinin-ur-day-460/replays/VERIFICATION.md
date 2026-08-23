@@ -1,9 +1,15 @@
 # 165922 — nine regenerated ghosts, verified by the integrity arm
 
-These replace nine published files that **decode to nothing at all**: the record
-node is present (v11, 7 descriptors) with **zero entities**, so there is no car
-in them. They validate to their exact times — the oracle reads the input archive
-— and cannot be filmed, and cannot be checked.
+These replace nine published files whose **vehicle entity was present and
+zeroed**: the record node is there (v11, 7 descriptors) and the car in it does
+not move. The original note here said *"zero entities, so there is no car in
+them"* — **that wording is corrected**. It mattered: "no car" reads as
+unrecoverable and "a zeroed slot" reads as regenerable, which is what these
+nine turned out to be, and the same wrong word cost 186935 two days. The one
+line that names it, on any file, is `tmtraj check FILE`, whose C2 prints *"the
+car travels 0.0000 m over N distinct points"* — with the sample count right
+beside it. The originals validated to their exact times — the oracle reads the
+input archive — and could not be filmed.
 
 Verified by `intg_accept.sh` (tools `intg_tools_v10.tgz`, F1994618338), which
 tests IDENTITY rather than agreement:

@@ -145,3 +145,53 @@ fn the_row_check_refuses_a_velocity_that_is_not_the_positions_derivative() {
 fn the_row_check_refuses_a_sample_too_short_to_mean_anything() {
     assert!(check_rows(&synthetic(3, false, false)).is_err());
 }
+
+/// THE NEVER-CROSSED SENTINEL, in the reply the state objective reads.
+///
+/// A huge u32 in a time field means "never crossed the line". Taken as a value
+/// it is a finish at 4 294 967.295 seconds -- and the gate's top band would
+/// read that as "it did the thing AND finished", promote a wreck to incumbent,
+/// and rank everything after it against a run that does not exist. The guard
+/// catches it at the bank; the ranking is wrong before that.
+#[test]
+fn a_never_crossed_sentinel_is_not_a_finish() {
+    let reply = r#"{
+  "ValidatedResult" : {
+    "NbCheckpoints" : 0,
+    "Time" : 4294967295,
+    "Score" : 0
+  },
+  "Desc" : "wrong simu\n",
+  "IsValid" : false
+}"#;
+    let (time, cps) = parse_result(reply);
+    assert_eq!(time, None, "the never-crossed sentinel was read as a finish");
+    assert_eq!(cps, Some(0));
+
+    // and a real time still is one, either side of the bar
+    for ms in [1i64, 22_730, forkoracle::forksrv::BAD_TIME_MS] {
+        let ok = format!(
+            "{{\n  \"ValidatedResult\" : {{\n    \"Time\" : {},\n    \"Score\" : 0\n  }},\n  \"Desc\" : \"ok\"\n}}",
+            ms
+        );
+        assert_eq!(parse_result(&ok).0, Some(ms), "{} was refused", ms);
+    }
+    // a negative time is not a time either
+    let neg = "{\n  \"ValidatedResult\" : {\n    \"Time\" : -1,\n    \"Score\" : 0\n  }\n}";
+    assert_eq!(parse_result(neg).0, None);
+}
+
+/// THE MERGE THAT CANNOT HAPPEN IN THE BUILD, HAPPENS HERE.
+///
+/// `forkoracle` has no dependencies on purpose, so it cannot share
+/// `ghost::oracle`'s constant. Two copies of one number is the defect
+/// underneath several of this project's defects, so the copies are pinned
+/// against each other: if either moves, this fails.
+#[test]
+fn the_two_copies_of_the_never_crossed_sentinel_agree() {
+    assert_eq!(
+        forkoracle::forksrv::BAD_TIME_MS,
+        ghost::oracle::BAD_TIME_MS,
+        "the fork parser and the full transcript parser disagree about what a time is"
+    );
+}

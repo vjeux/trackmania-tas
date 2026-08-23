@@ -10,15 +10,18 @@ mod run;
 pub use run::run;
 
 pub(crate) mod checkcmd;
+pub(crate) mod claimscmd;
 pub(crate) mod cli;
 pub(crate) mod corpuscmd;
 pub(crate) mod diffcmd;
 pub(crate) mod fmt;
 pub(crate) mod facingcmd;
+pub(crate) mod impactcmd;
 pub(crate) mod intgcmd;
 pub mod json;
 pub mod lines;
 pub(crate) mod manifest;
+pub(crate) mod provcmd;
 pub(crate) mod routecmd;
 pub(crate) mod selftest;
 pub(crate) mod serial;

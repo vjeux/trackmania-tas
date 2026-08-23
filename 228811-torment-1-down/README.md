@@ -77,7 +77,7 @@ Running through the deck at **z ≈ 709**, spanning at least x = 56 to x = 136,
 there is a trigger about a metre wide. It is **not** fussy about where along the
 line you hit it. It is extremely fussy about how.
 
-### The condition: you must arrive sideways
+### The condition: you must arrive sideways — and that is necessary, not sufficient
 
 > **Cross the line going in −z, at floor level, with the car turned across its
 > own direction of travel — at least 85 m/s (≈300 km/h) of your speed pointing
@@ -89,7 +89,24 @@ line you hit it. It is extremely fussy about how.
 | slide **along** the line at 102 m/s of side speed | **no** |
 | cross it downwards at 100 m/s, nose-first | **no** |
 | arrive at the author's exact contact point, within 0.3 m, at his speed within 3 m/s, but pointing along your travel | **no** |
-| cross **downwards, body lateral, ≥85 m/s of side speed** | **yes** |
+| cross **downwards, body lateral, ≥85 m/s of side speed** | **sometimes** |
+
+> **That last row used to read "yes", and it is corrected here.** Body-lateral
+> speed ≥ 85 m/s and a downward crossing of ≥ ~17 m/s are **NECESSARY**
+> conditions — MEASURED, present in all **1343** logged launches. They are **not
+> sufficient**, and two independent arms have produced the counter-example:
+> * one drove the conjunction to **side 98.2 m/s with −vz 30.9 at
+>   (79.5, 50.1, 712.7)** — both terms clear, on the deck, downstream of the
+>   x = 80 checkpoint — and **nothing fired**;
+> * the other, aiming at the author's whole six-dimensional contact state,
+>   closed position to **0.29 m** and velocity to **3.60 m/s** and stopped
+>   **53.8° away in attitude**.
+>
+> The remaining term is the car's **attitude**, and it is not quantified. Note
+> that the prose two paragraphs below has always said this; what was wrong was
+> the table. (Logs: `tm-unbeaten/_audit/stateobj/`, `C_state_hunt_with_bar.txt`
+> and `E_state_hunt_author_target.txt`; write-up in `tools/search/SEARCH.md`
+> §5.13.)
 
 That fourth row is the one worth staring at. **Position does not trigger it,
 speed does not trigger it, and the two together do not either.** Which way the

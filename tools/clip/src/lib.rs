@@ -9,7 +9,9 @@
 //!
 //! Nothing in here is a dependency: the render box builds offline.
 
+pub mod cut;
 pub mod fmt;
+pub mod overlay;
 pub mod platform;
 pub mod playtest;
 pub mod proc;

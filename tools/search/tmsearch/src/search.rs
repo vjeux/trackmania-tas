@@ -40,6 +40,7 @@
 
 use crate::guard::{Bank, Provenance};
 use forkoracle::inputs::{mutate, Inputs, Op, OpSet, Rng};
+use forkoracle::pred::GateRecord;
 use crate::report::{delta, elapsed};
 use crate::score::Outcome;
 use crate::tape::Patcher;
@@ -63,10 +64,83 @@ pub trait Evaluator: Send {
     }
 
     /// Where this evaluator's answer came from, for the record.
-    fn provenance(&self, inputs: &Inputs) -> Provenance;
+    ///
+    /// `idx` is the candidate's position in the batch just evaluated, because
+    /// some of what the record carries -- the state a gate measured -- belongs
+    /// to that evaluation and not to the tape.
+    fn provenance(&self, idx: usize, inputs: &Inputs) -> Provenance;
 
     /// Release the evaluator's resources (a fork server, in practice).
     fn finish(self: Box<Self>) {}
+}
+
+/// THE DECOY TEST, run before the first candidate.
+///
+/// > An objective that can be maximised without achieving the goal is not a
+/// > proxy, it is a decoy.
+///
+/// One map met three in a row. The cheapest question to ask of any objective is
+/// *what is the laziest tape that scores well on it*, and the laziest tape the
+/// search can write is the one with every editable tick set to no input at all.
+/// So that tape is evaluated first, through the same evaluator, and its score
+/// is printed beside the incumbent's before anything else happens.
+///
+/// **In fork mode this is not a parked car and that is the point.** A fork
+/// server has already consumed the seed's prefix, so the do-nothing tape is
+/// "the incumbent up to the resume boundary, then hands off the wheel" -- which
+/// is exactly the laziest tape inside the search's real action space. In plain
+/// mode it is the parked car.
+///
+/// If it OUTRANKS the incumbent the run stops here rather than spending four
+/// hours proving it: an objective the lazy tape wins is not measuring what its
+/// author thinks.
+pub struct Decoy {
+    pub nothing: Outcome,
+    pub incumbent: Outcome,
+    /// The seed's own measured gate state, for the identity control.
+    pub incumbent_gate: Option<GateRecord>,
+    /// What the identity control said, when one was armed.
+    pub identity: Option<Result<String, String>>,
+    /// Ticks that were blanked: the search's own action space.
+    pub editable: usize,
+}
+
+impl Decoy {
+    /// The tape with every tick in `[lo, hi)` set to no steering, no throttle
+    /// and no brake.
+    pub fn do_nothing(seed: &Inputs, lo: usize, hi: usize) -> Inputs {
+        let mut s = seed.clone();
+        for t in lo..hi.min(s.len()) {
+            s.steer[t] = 0;
+            s.gas[t] = false;
+            s.brake[t] = false;
+        }
+        s
+    }
+    pub fn is_decoy(&self) -> bool {
+        self.nothing > self.incumbent
+    }
+    /// Everything that must hold before a single candidate is worth paying
+    /// for: the objective is not a decoy, and the servers are measuring the
+    /// tape we think they are.
+    pub fn ok(&self) -> bool {
+        !self.is_decoy() && !matches!(self.identity, Some(Err(_)))
+    }
+    pub fn report(&self) -> String {
+        format!(
+            "decoy test: the do-nothing tape ({} editable ticks blanked) scores {}; \
+             the incumbent scores {}{}",
+            self.editable,
+            self.nothing,
+            self.incumbent,
+            if self.is_decoy() {
+                " -- THE DO-NOTHING TAPE WINS. This objective can be maximised without \
+                 driving the map: it is a decoy, not a proxy. Nothing was searched."
+            } else {
+                ""
+            }
+        )
+    }
 }
 
 pub struct Config {
@@ -100,6 +174,15 @@ pub struct Config {
     /// re-anchor: restart with `--start-from` the banked file, which gives the
     /// fork servers a reference the search is actually near.
     pub max_drift: usize,
+    /// THE SEED IDENTITY CONTROL, in gate mode. Given the state the fork
+    /// measured for the seed at the gate, say whether it is the state the
+    /// seed's own recording shows there. `Err` stops the run before the first
+    /// candidate.
+    ///
+    /// A closure rather than a comparison here, because what it compares
+    /// against is a ghost file and this module knows nothing about ghosts.
+    #[allow(clippy::type_complexity)]
+    pub check_seed_gate: Option<Arc<dyn Fn(&GateRecord) -> Result<String, String> + Send + Sync>>,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +244,10 @@ where
     let make = Arc::new(make);
 
     let (tx, rx) = mpsc::channel::<Report>();
+    // Worker 0 runs the decoy test before it enters its loop and before the
+    // barrier, so the answer is on screen ahead of the first candidate rather
+    // than four hours into the run.
+    let (dtx, drx) = mpsc::channel::<Decoy>();
     let t0 = Instant::now();
     let mut handles = Vec::new();
 
@@ -174,27 +261,83 @@ where
             Arc::clone(&make),
         );
         let tx = tx.clone();
+        let dtx = dtx.clone();
         let (batch, opc, opset) = (cfg.batch, cfg.ops_per_candidate, cfg.opset);
         let (window, stride, every) = (cfg.window, cfg.stride, cfg.full_window_every);
         let (seed, temp_s, migrate) = (cfg.seed, cfg.temp_s, cfg.migrate);
         let (cfg_lo, cfg_hi) = (cfg.lo, cfg.hi);
+        let start_for_decoy = start.clone();
+        let check_seed = cfg.check_seed_gate.clone();
 
         handles.push(std::thread::spawn(move || {
             let mut ev = match make(wi) {
                 Ok(e) => Box::new(e),
                 Err(e) => {
                     eprintln!("worker {}: ABORT, {}", wi, e);
-                    // Still meet the barrier, or the whole fleet hangs waiting
-                    // for a worker that will never arrive.
+                    // Still meet BOTH barriers, or the whole fleet hangs
+                    // waiting for a worker that will never arrive.
+                    ready.wait();
                     ready.wait();
                     return;
                 }
             };
-            // Publish this worker's own floor, then wait for everyone.
+            // Publish this worker's own floor, then wait for everyone: the
+            // fleet's mutation floor is the MAXIMUM and nobody may act on
+            // their own.
             floor.fetch_max(ev.floor(), Ordering::SeqCst);
             ready.wait();
             let flo = floor.load(Ordering::SeqCst).max(cfg_lo).min(n);
             let fhi = cfg_hi.min(n);
+
+            // THE DECOY TEST, on the laziest tape the search can write: every
+            // tick the fleet may edit blanked. One evaluation, before any
+            // candidate, and it runs BETWEEN the barriers because it has to use
+            // the same floor the search does -- a probe that edits below the
+            // fleet floor is measuring edits the engine silently drops.
+            if wi == 0 {
+                let nothing = Decoy::do_nothing(&start_for_decoy, flo, fhi);
+                let outs = ev.evaluate(&[nothing, start_for_decoy.clone()]);
+                if outs.len() == 2 {
+                    // THE INCUMBENT'S OWN BAND, measured rather than assumed.
+                    // Published before the second barrier, so no other worker
+                    // can start from the placeholder the run was seeded with.
+                    {
+                        let mut g = best.write().unwrap();
+                        if outs[1] > g.outcome {
+                            g.outcome = outs[1];
+                        }
+                    }
+                    let gate = ev.provenance(1, &start_for_decoy).gate;
+                    // THE SEED IDENTITY CONTROL, on the seed, on the state
+                    // this server actually measured for it.
+                    let identity = check_seed.as_ref().map(|f| match gate {
+                        Some(g) => f(&g),
+                        None => Err(
+                            "seed identity control: the fork never measured the seed inside \
+                             the gate, so there is nothing to check it against. Either the box \
+                             is not on the seed's line or this shim is not arming the gate."
+                                .to_string(),
+                        ),
+                    });
+                    let d = Decoy {
+                        nothing: outs[0],
+                        incumbent: outs[1],
+                        incumbent_gate: gate,
+                        identity,
+                        editable: fhi.saturating_sub(flo),
+                    };
+                    // The verdict is acted on HERE, before the barrier the
+                    // other workers are waiting on: a master that decided
+                    // afterwards would be racing a fleet that had already
+                    // started spending.
+                    if !d.ok() {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    let _ = dtx.send(d);
+                }
+            }
+            drop(dtx);
+            ready.wait();
             if fhi <= flo + 1 {
                 eprintln!("worker {}: nothing to search in [{}, {})", wi, flo, fhi);
                 return;
@@ -272,7 +415,7 @@ where
                     cur_out = bo;
                 }
 
-                let prov = ev.provenance(&best_inputs);
+                let prov = ev.provenance(bi, &best_inputs);
                 if tx
                     .send(Report { outcome: bo, inputs: best_inputs, op: best_op, prov, evals, finished })
                     .is_err()
@@ -284,7 +427,39 @@ where
         }));
     }
     drop(tx);
+    drop(dtx);
+    let mut incumbent = start_outcome;
     ready.wait();
+    ready.wait();
+    // THE DECOY TEST'S ANSWER, before anything is searched.
+    match drx.recv() {
+        Ok(d) => {
+            eprintln!("{}", d.report());
+            match &d.identity {
+                Some(Ok(r)) => eprintln!("{}", r),
+                Some(Err(e)) => eprintln!(
+                    "{}\nSTOPPING before the first candidate: nothing these servers measure \
+                     means anything until that is explained.",
+                    e
+                ),
+                None => {}
+            }
+            if !d.ok() {
+                for h in handles {
+                    let _ = h.join();
+                }
+                return start_outcome;
+            }
+            // The incumbent's real band, which worker 0 has already published.
+            if d.incumbent > incumbent {
+                incumbent = d.incumbent;
+            }
+        }
+        Err(_) => eprintln!(
+            "decoy test: worker 0 never reported -- it failed to start, so nothing below \
+             this line was measured against a lazy tape"
+        ),
+    }
     eprintln!(
         "all {} workers up; mutating ticks [{}, {})",
         cfg.workers,
@@ -295,7 +470,6 @@ where
     let mut total = 0u64;
     let mut fin = 0u64;
     let mut last_print = Instant::now();
-    let mut incumbent = start_outcome;
 
     for rep in rx {
         total += rep.evals;

@@ -17,7 +17,7 @@ use ghost::oracle::{server_dir, validate, MapsMode};
 use std::path::{Path, PathBuf};
 use tmsearch::guard::{Bank, Provenance};
 use forkoracle::inputs::{mutate, Distance, OpSet, Rng};
-use tmsearch::score::{Outcome, Progress};
+use tmsearch::score::{GateState, Outcome, Progress};
 use tmsearch::tape::Patcher;
 
 const GHOST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/human_22730.Ghost.Gbx");
@@ -62,6 +62,7 @@ fn nowhere() -> Provenance {
             ticks: 0,
             max_steer_delta: 0,
         },
+        gate: None,
     }
 }
 
@@ -168,5 +169,113 @@ fn a_mutated_candidate_is_banked_only_under_the_time_it_actually_does() {
 
     let banked = bank.offer(&p, &s, claim, &nowhere()).expect("the oracle's own answer was refused");
     assert_eq!(banked.confirmed, claim);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A gate record, for the two tests below. The numbers are a plausible state;
+/// what matters is that one travels with the claim into the bank.
+fn a_gate_state() -> forkoracle::pred::GateRecord {
+    forkoracle::pred::GateRecord {
+        tick: 2013,
+        key: 57.2294,
+        pos: [56.08, 50.08, 709.18],
+        vel: [-102.40, -1.89, -11.45],
+        quat: [0.4215, 0.0297, -0.9062, -0.0165],
+    }
+}
+
+fn with_gate() -> Provenance {
+    let mut p = nowhere();
+    p.gate = Some(a_gate_state());
+    p
+}
+
+/// BAND 2 IS A TIME AND IS HELD TO A TIME'S STANDARD. "It reached the gate AND
+/// finished" is the one gate band that carries a millisecond, so the guard must
+/// refuse it on exactly the terms it refuses any other false time -- otherwise
+/// a state objective would be a way to put an unchecked number in the bank.
+#[test]
+fn the_guard_refuses_a_gate_finish_the_tape_does_not_achieve() {
+    let Some(srv) = server() else { return };
+    let p = Patcher::build(GHOST).unwrap();
+    let d = scratch("guard-gate-phantom");
+    let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
+    let lie = Outcome::Gate(GateState::Finished { ms: TRUTH_MS - 500 });
+    let err = bank
+        .offer(&p, &p.template, lie, &with_gate())
+        .expect_err("the guard banked a gate finish the tape does not achieve");
+    assert_eq!(err.actual, Some(Outcome::Finish { ms: TRUTH_MS }));
+    assert_eq!(bank.phantoms, 1);
+    assert_eq!(bank.confirmed, 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AND A STATE IS BANKED AS A STATE. Bands 0 and 1 carry no millisecond, so
+/// there is nothing for the oracle to contradict -- what the bank must do
+/// instead is write the measurement down beside the tape, in the units it was
+/// measured in, so the claim can be checked by hand. The banked file must NOT
+/// be named as a time.
+#[test]
+fn a_state_is_banked_with_its_measurement_beside_it() {
+    let Some(srv) = server() else { return };
+    let p = Patcher::build(GHOST).unwrap();
+    let d = scratch("guard-gate-state");
+    let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
+    let claim = Outcome::Gate(GateState::Reached { key: 57.2294 });
+    let b = bank.offer(&p, &p.template, claim, &with_gate()).expect("a state claim was refused");
+    assert_eq!(b.confirmed, claim, "the bank changed a state into something else");
+    assert!(b.path.exists());
+    let name = b.path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.contains("gate"), "{} does not say it is a state", name);
+    assert!(
+        !name.contains("22_730"),
+        "{} is named as a time the search never claimed",
+        name
+    );
+    let side = b.path.with_extension("state.json");
+    let text = std::fs::read_to_string(&side).expect("the measurement was not written beside it");
+    for want in ["gate_tick", "\"key\"", "quat", "body_right", "709.18"] {
+        assert!(text.contains(want), "the sidecar is missing {}: {}", want, text);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A FAILURE COMES BACK ON THE LADDER THE SEARCH RANKS ON.
+///
+/// The plain oracle only ever reports checkpoints. A fork search ranks failures
+/// by METRES along the reference line, and a plain search with segment maps
+/// ranks them by checkpoints WITH a time. Handing either of those back as a
+/// bare `Checkpoints { cps, seg_ms: None }` -- which is what the bank used to
+/// do -- returns a value from a different ladder, so `confirmed > incumbent`
+/// compares two unrelated numbers and the improvement is confirmed, written to
+/// disk, and never adopted. The search then reports improvements all afternoon
+/// while its incumbent never moves.
+///
+/// Found by the state objective walking into the same wall: 49 confirmations,
+/// zero adopted.
+#[test]
+fn a_failure_is_banked_on_the_ladder_the_search_ranks_on() {
+    let Some(srv) = server() else { return };
+    let p = Patcher::build(GHOST).unwrap();
+    let d = scratch("guard-ladder");
+
+    // a tape that does not finish: full lock, held, from well before the end
+    let mut s = p.template.clone();
+    for t in 1200..1400 {
+        s.steer[t] = 127;
+    }
+    let f = d.join("probe.Ghost.Gbx");
+    std::fs::write(&f, p.file(&s)).unwrap();
+    let truth = validate(&srv, &f, MapsMode::One(Path::new(MAP)), "ladder").unwrap();
+    let _ = std::fs::remove_file(&f);
+    assert!(truth.time_ms.is_none(), "the probe tape finishes, so it cannot pin this");
+
+    let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
+    let claim = Outcome::Dnf(Progress::Metres { m: 1234.5, of: 1998.0 });
+    let b = bank.offer(&p, &s, claim, &nowhere()).expect("a failure claim was refused");
+    assert_eq!(
+        b.confirmed, claim,
+        "the bank returned a failure on a different ladder from the one the search ranks on"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
