@@ -33,6 +33,39 @@
 //! `CARRIER.md`'s `car` anchor is `state + 0x50` and every `car+N` in that
 //! document is `state + 0x50 + N`.
 
+/// `Loc.translation`'s offset inside `CSceneVehicleVisState`. The position
+/// triple every other module anchors on is `state + POS_IN_STATE`, so a
+/// pointer to the struct is `car - POS_IN_STATE`.
+pub const POS_IN_STATE: i64 = 0x50;
+
+/// `sizeof(CSceneVehicleVisState)`, from the class descriptor at 0x9d2ea0 —
+/// and the stride of the array of copies `CARRIER.md` measured, and the `u01`
+/// field of the ghost's EntRecordDesc. Three independent witnesses to 864.
+pub const STATE_SIZE: i64 = 0x360;
+
+/// The wheel records: four of them, `WHEEL_STRIDE` apart, starting at
+/// `WHEEL0` into the state, with the rotation float at `+WHEEL_ROT`.
+pub const WHEEL0: i64 = 0xa8;
+pub const WHEEL_STRIDE: i64 = 44;
+pub const WHEEL_ROT: i64 = 4;
+
+/// The four wheel-rotation slots, RELATIVE TO THE POSITION TRIPLE — `[92, 136,
+/// 180, 224]`. Four live floats is a car; four constants is a bare position
+/// copy, and a regeneration anchored on one writes zeroed wheels into a file
+/// that passes every acceptance test there is.
+///
+/// DERIVED, and that is the point. These four numbers were stated
+/// independently in five places — as a const array in `fk ptr`, as a second
+/// const array in `fk carrier`, as `92 + 44k` computed inline a few hundred
+/// lines further down the same file, as `0xac + 44k` here, and as
+/// `WHEEL0 + WHEEL_STRIDE*k + WHEEL_ROT` against a different anchor entirely in
+/// `fk liveness`. Deriving them from the class descriptor's `0x88` and
+/// subtracting `POS_IN_STATE` puts them 32 bytes low, which scores 3 of 4
+/// against neighbouring live floats: the near-miss that looks like a result.
+pub fn wheel_rot_rel() -> [i64; 4] {
+    std::array::from_fn(|k| WHEEL0 + WHEEL_STRIDE * k as i64 + WHEEL_ROT - POS_IN_STATE)
+}
+
 /// One byte of the sample, and where it comes from.
 pub struct ByteDoc {
     pub byte: usize,
@@ -50,6 +83,21 @@ pub trait State {
     fn u32(&self, off: usize) -> u32;
     /// The byte at `off`.
     fn u8(&self, off: usize) -> u8;
+    /// Are all `STATE_SIZE` bytes of the state actually readable?
+    ///
+    /// Every implementation over a gathered window answers 0 for a byte it does
+    /// not have, because panicking mid-transcription would be worse. But a
+    /// window that stops short does not produce a partial sample — it produces
+    /// a CONFIDENT ZERO in every byte past the edge, and a zero looks measured.
+    /// Measured 2026-08-23: a pointer window sized 124 bytes short transcribed
+    /// the tail of the struct as zeros, every acceptance test passed, and the
+    /// published clip had no wheel effects.
+    ///
+    /// Defaults to `true` so a test fixture that is the whole state need not
+    /// say so. Real gathers override it, and `pack_checked` is what asks.
+    fn covers_state(&self) -> bool {
+        true
+    }
 }
 
 /// `cvttss2si` after the game's clamp idiom: negative (or NaN) becomes 0, the
@@ -128,7 +176,27 @@ fn dirpack(x: f32, y: f32, z: f32) -> [u8; 4] {
 /// Which bytes this transcription predicts. The rest are the orientation words
 /// (59..64), which need the matrix-to-quaternion step, and the countdown at
 /// 108..111, which needs the archiver's caller-supplied timestamp.
-pub const UNPREDICTED: &[usize] = &[59, 60, 61, 62, 63, 64, 108, 109, 110, 111];
+///
+/// STATED IN `gbx::sample`, not here. `ghost` judges the files this writes and
+/// cannot depend on `fk`, so both crates once kept their own copy of this list
+/// and the copies drifted for months without failing anything. One statement,
+/// re-exported.
+pub use gbx::sample::UNPREDICTED;
+
+/// Build the 116 bytes the game would write for this state, REFUSING a state
+/// the reader cannot see all of. This is what production should call; `pack`
+/// is for a fixture that is the whole struct by construction.
+pub fn pack_checked(s: &dyn State) -> Result<[u8; 116], String> {
+    if !s.covers_state() {
+        return Err(format!(
+            "the gathered window does not hold all {} bytes of the vehicle state, so the \
+             transcription would write a confident zero into every byte past its edge -- \
+             which passes every acceptance test this project has",
+            STATE_SIZE
+        ));
+    }
+    Ok(pack(s))
+}
 
 /// Build the 116 bytes the game would write for this state.
 pub fn pack(s: &dyn State) -> [u8; 116] {
@@ -162,7 +230,7 @@ pub fn pack(s: &dyn State) -> [u8; 116] {
     put16(&mut o, 4, clamp_trunc(s.f32(0x198) / 30000.0 * 65535.0, 65535.0));
     // the four wheel rotations, over [0, 2*pi*256]
     for k in 0..4 {
-        let v = s.f32(0xac + 44 * k) / 1608.4955 * 65535.0;
+        let v = s.f32((WHEEL0 + WHEEL_ROT + WHEEL_STRIDE * k as i64) as usize) / 1608.4955 * 65535.0;
         put16(&mut o, 6 + 2 * k, no_cdcd(clamp_trunc(v, 65535.0)));
     }
     o[14] = clamp_trunc((s.f32(0x10) + 1.0) * 0.5 * 255.0, 255.0) as u8; // InputSteer
@@ -499,4 +567,34 @@ mod tests {
 ///
 /// To source them, run the CLIENT rather than the server. That is a task, not a
 /// conclusion.
-pub const DEAD_IN_SERVER: &[usize] = &[19, 20, 34, 93, 95, 97, 99];
+///
+/// STATED IN `gbx::sample` for the reason `UNPREDICTED` is; re-exported.
+pub use gbx::sample::DEAD_IN_SERVER;
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    /// THE DERIVED OFFSETS MUST BE THE ONES THAT WERE MEASURED.
+    ///
+    /// `[92, 136, 180, 224]` is what `CARRIER.md` confirmed on eight keys and
+    /// what `fk ptr check` grades 4-of-4 against on three maps. Deriving them
+    /// is only an improvement if the derivation reproduces them exactly; a
+    /// derivation that quietly disagrees is how the 32-byte-low version scored
+    /// 3 of 4 and looked like a result.
+    #[test]
+    fn the_wheel_slots_derive_to_the_offsets_that_were_measured() {
+        assert_eq!(wheel_rot_rel(), [92, 136, 180, 224]);
+    }
+
+    /// The wheel block is inside the struct. If it is not, the window sized
+    /// from `STATE_SIZE` does not reach the bytes the liveness rule reads, and
+    /// the rule answers "dead" for a reason that has nothing to do with the car.
+    #[test]
+    fn the_wheel_block_lies_inside_the_state() {
+        for r in wheel_rot_rel() {
+            let off = r + POS_IN_STATE;
+            assert!(off >= 0 && off + 4 <= STATE_SIZE, "wheel slot at state+{off} is outside");
+        }
+    }
+}

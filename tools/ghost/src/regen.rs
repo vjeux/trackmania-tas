@@ -693,18 +693,34 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
     }
 
     // 4. WHAT WE DID NOT WRITE, BY NUMBER. A harness limit, said as one.
-    let un = crate::finish::unwritten_channels();
+    //
+    // The set depends on whether the carrier ran: without it only the transform
+    // is ours, and saying "11 channels" there would be a report of a run that
+    // did not happen. It used to say exactly that.
+    let un = if carrier_written {
+        crate::finish::unwritten_channels()
+    } else {
+        crate::finish::unwritten_channels_without_carrier()
+    };
     println!(
-        "   UNWRITTEN, zeroed rather than inherited ({} channels): {}",
+        "   UNWRITTEN, left as the carrier's ({} channels): {}",
         un.len(),
         un.iter().map(|(o, n)| format!("{o} {n}")).collect::<Vec<_>>().join(", ")
     );
-    println!(
-        "   Those quantities ARE in engine memory -- fitted against a real recording (gear,\n\
-         \x20  turbo and wetness exact on every sample, rpm on 92.6 %). What is missing is an\n\
-         \x20  anchor that survives a change of map, so they are written as ZERO and named here\n\
-         \x20  rather than passed through as the donor's."
-    );
+    if carrier_written {
+        println!(
+            "   These are not a harness limit in the old sense: 19, 20, 34 and the four dirt\n\
+             \x20  slots read identically ZERO in the dedicated server, so writing them would\n\
+             \x20  put a confident zero where a real value belongs. Sourcing them means running\n\
+             \x20  the CLIENT. 108-111 is the countdown, which needs the race clock, not the car."
+        );
+    }
+    if !carrier_written {
+        println!(
+            "   Those quantities ARE in engine memory and `--carrier layout` reads them. This\n\
+             \x20  run did not ask for it, so they are the donor container's."
+        );
+    }
 
     if !refused.is_empty() {
         for r in &refused {

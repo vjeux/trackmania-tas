@@ -24,11 +24,29 @@ use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
 
-/// Wheel records, relative to `Layout::pos`: four of them, 44 bytes apart.
+/// Wheel records, relative to `Layout::pos`.
+///
+/// **496 IS A FIXTURE CONSTANT, NOT A PROPERTY OF THE ENGINE, AND THIS IS THE
+/// BUG IN THIS FILE.** The locator's anchor and the copy of the car that holds
+/// the fields are two different objects; 496 is `WHEEL0 + 408` because on the
+/// one fixture this was measured on, the field copy sat 408 bytes above the
+/// anchor. That distance is NOT fixed: on untitled 01 (2026-08-23) it is 124
+/// bytes, and `fk regen` no longer assumes any value for it — it resolves the
+/// engine's own pointer (`fk ptr`) or searches. Run against a fixture with a
+/// different shadow, this command reads four unrelated floats and reports 0 of
+/// 4 live for a car whose wheels are turning: the exact false negative that
+/// reads like "the window does not reach the car".
+///
+/// Left in place, named, rather than silently corrected: the constant is
+/// honest about the one fixture it was measured on, and the fix is to take the
+/// pointer rather than to guess a better number. `--shadow` overrides it.
 pub const WHEEL0: i64 = 496;
-pub const WHEEL_STRIDE: i64 = 44;
+/// The shadow this file's default offsets assume, so the arithmetic above can
+/// be undone by a caller who knows better.
+pub const ASSUMED_SHADOW: i64 = 408;
+pub const WHEEL_STRIDE: i64 = crate::vislayout::WHEEL_STRIDE;
 /// Rotation within a wheel record.
-pub const WHEEL_ROT: i64 = 4;
+pub const WHEEL_ROT: i64 = crate::vislayout::WHEEL_ROT;
 
 pub struct LivenessOpts {
     pub reference: Option<String>,

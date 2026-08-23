@@ -20,12 +20,17 @@ use std::collections::HashMap;
 /// at stride 44 is a car; four constants is a bare position copy, and a
 /// regeneration anchored on one writes zeroed wheels into a file that passes
 /// every acceptance test there is. See `CARRIER.md` §3.
-pub const WHEEL_REL: [i64; 4] = [92, 136, 180, 224];
+///
+/// DERIVED IN `vislayout`, which is the module that IS the structure. This was
+/// one of five independent statements of the same four numbers.
+pub fn wheel_rel() -> [i64; 4] {
+    crate::vislayout::wheel_rot_rel()
+}
 
 /// `Loc.translation` is 0x50 into `CSceneVehicleVisState` (VEHICLEVISSTATE.md),
 /// so the struct a pointer would name starts 0x50 before the position.
-pub const POS_IN_STATE: u64 = 0x50;
-pub const STATE_SIZE: u64 = 0x360;
+pub const POS_IN_STATE: u64 = crate::vislayout::POS_IN_STATE as u64;
+pub const STATE_SIZE: u64 = crate::vislayout::STATE_SIZE as u64;
 
 const USAGE: &str = "\
 fk ptr -- the pointer that owns the vehicle state.
@@ -142,7 +147,7 @@ fn car_offsets(
             e.push(d.sqrt());
         }
         e.sort_by(|a, b| a.total_cmp(b));
-        let live = WHEEL_REL
+        let live = wheel_rel()
             .iter()
             .filter(|rel| {
                 let q = o as i64 + **rel;
@@ -184,7 +189,7 @@ fn grade_at(
         }
     }
     e.sort_by(|a, b| a.total_cmp(b));
-    let live = WHEEL_REL
+    let live = wheel_rel()
         .iter()
         .filter(|rel| {
             let q = off as i64 + **rel;

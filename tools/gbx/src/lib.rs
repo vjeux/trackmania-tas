@@ -25,6 +25,7 @@ pub mod container;
 pub mod header;
 pub mod record;
 pub mod recwrite;
+pub mod sample;
 pub mod tape;
 
 pub use container::{all_skip_chunks, lzo_init, Container, Gbx, SKIP_MAGIC};

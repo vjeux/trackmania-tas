@@ -564,9 +564,23 @@ impl Gathered<'_> {
         let n = self.p.n();
         self.p.cols[self.w as usize][o as usize * n + self.i]
     }
+    /// Is the whole of `[off, off+len)` inside the gathered window?
+    ///
+    /// A PARTIAL READ IS WORSE THAN NO READ. `f32` composes four `byte()`
+    /// calls, and each one answers 0 outside the record — so a float straddling
+    /// the edge comes back with two real bytes and two zeros, which is a finite,
+    /// small, entirely plausible number. All-zero at least looks like nothing;
+    /// this looks like a measurement. Callers that care ask.
+    fn whole(&self, off: usize, len: usize) -> bool {
+        let o = self.base + off as i64;
+        o >= 0 && (o as usize).saturating_add(len) <= self.p.reclen
+    }
 }
 
 impl crate::vislayout::State for Gathered<'_> {
+    fn covers_state(&self) -> bool {
+        self.whole(0, crate::vislayout::STATE_SIZE as usize)
+    }
     fn f32(&self, off: usize) -> f32 {
         f32::from_le_bytes([
             self.byte(off),
@@ -607,7 +621,7 @@ fn layout(a: &[String]) -> Result<(), String> {
     // the window, so the width stays the scan's. `confirm` paid for that lesson.
     let p = gather_wide(&c, num(a, "--back", 1048576), num(a, "--fwd", 262144), &dump, verbose)?;
     let n = p.n();
-    let base = p.pos_off as i64 - 0x50;
+    let base = p.pos_off as i64 - crate::vislayout::POS_IN_STATE;
 
     println!("\n{} instants, state base at record offset {}", n, base);
     println!(
@@ -996,7 +1010,8 @@ fn find_car(
     // there. It needs no answer key beyond the positions already in hand, and
     // it is the reference-free signature of the vehicle struct that this
     // project has wanted since the wheel block was first found inside a shadow.
-    const WHEELS: [usize; 4] = [92, 136, 180, 224];
+    // DERIVED. See `vislayout::wheel_rot_rel` -- one statement of these four.
+    let wheels: [usize; 4] = crate::vislayout::wheel_rot_rel().map(|r| r as usize);
     let wheelness = |o: usize, w: Write| -> f64 {
         // DO THE FOUR WHEEL SLOTS HOLD ANYTHING AT ALL.
         //
@@ -1016,7 +1031,7 @@ fn find_car(
         // because none of these bytes affects the simulation — is that the bare
         // copy has FOUR CONSTANTS there and the real one has four live floats.
         // 4 against 0, with nothing in between to tune.
-        WHEELS
+        wheels
             .iter()
             .filter(|wo| {
                 let q = o + *wo;
@@ -1275,7 +1290,7 @@ fn write_layout(a: &[String]) -> Result<(), String> {
     let outp = flag(a, "--out").ok_or("--out FILE is required")?;
     let p = gather_wide(&c, num(a, "--back", 1048576), num(a, "--fwd", 262144), &dump, verbose)?;
     let n = p.n();
-    let base = p.pos_off as i64 - 0x50;
+    let base = p.pos_off as i64 - crate::vislayout::POS_IN_STATE;
 
     // Predict every instant once, on the write the car was identified on.
     let pred: Vec<[u8; 116]> = (0..n)
@@ -1789,7 +1804,8 @@ pub fn gather_fields(
     // file has. Refusing it here is what makes the window's size a measurable
     // property instead of an assumption.
     let covered = |o: usize| -> bool {
-        !layout_mode || (o >= 0x50 && o - 0x50 + 0x360 <= reclen)
+        let (p, sz) = (crate::vislayout::POS_IN_STATE as usize, crate::vislayout::STATE_SIZE as usize);
+        !layout_mode || (o >= p && o - p + sz <= reclen)
     };
     let mut cands: Vec<(f64, usize, Write)> = Vec::new();
     for wr in [Write::Car, Write::Other] {
@@ -1901,7 +1917,7 @@ pub fn gather_fields(
     // scores 3 of 4 on neighbouring live floats and is the kind of near-miss
     // that looks like a result.
     let wheel_rels: Vec<i64> = if layout_mode {
-        (0..4).map(|k| 92 + 44 * k).collect()
+        crate::vislayout::wheel_rot_rel().to_vec()
     } else {
         rows.iter()
             .filter(|r| matches!(r.ch, Channel::U16(b) if (6..=12).contains(&b) && b % 2 == 0))
@@ -2224,8 +2240,8 @@ pub fn gather_fields(
         // dedicated server, and writing them would put a confident zero where a
         // real value was.
         if layout_mode {
-            let g = GatheredRec { b, base: po as i64 - 0x50, reclen };
-            let packed = crate::vislayout::pack(&g);
+            let g = GatheredRec { b, base: po as i64 - crate::vislayout::POS_IN_STATE, reclen };
+            let packed = crate::vislayout::pack_checked(&g)?;
             for ch in 0..116usize {
                 if crate::vislayout::UNPREDICTED.contains(&ch)
                     || crate::vislayout::DEAD_IN_SERVER.contains(&ch)
@@ -2324,6 +2340,11 @@ impl GatheredRec<'_> {
 }
 
 impl crate::vislayout::State for GatheredRec<'_> {
+    fn covers_state(&self) -> bool {
+        self.base >= 0
+            && (self.base as usize).saturating_add(crate::vislayout::STATE_SIZE as usize)
+                <= self.reclen
+    }
     fn f32(&self, off: usize) -> f32 {
         match self.at(off) {
             usize::MAX => 0.0,

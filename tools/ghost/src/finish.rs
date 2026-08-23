@@ -266,6 +266,7 @@ pub fn may_rest() -> &'static [(usize, &'static str)] {
         (0, "unnamed u16"),
         (2, "side speed"),
         (4, "rpm"),
+        (5, "rpm, high half"),
         (22, "an angle"),
         (23, "front-left suspension travel"),
         (24, "front-left ground material"),
@@ -276,24 +277,60 @@ pub fn may_rest() -> &'static [(usize, &'static str)] {
         (29, "rear-left suspension travel"),
         (30, "rear-left ground material"),
         (31, "turbo"),
-        (91, "gear"),
-    ]
-}
-
-pub fn unwritten_channels() -> &'static [(usize, &'static str)] {
-    &[
-        (5, "rpm"),
         (81, "ice, front left"),
         (82, "ice, front right"),
         (83, "ice, rear right"),
         (84, "ice, rear left"),
-        (89, "ground contact"),
+        // THE REACTOR. All five members are bit-fields packed across bytes 89,
+        // 90, 91 and 76, which is why no per-byte affine fit could ever write
+        // them and why three arms failed on byte 89 before the archiver was
+        // disassembled. They are here rather than in `must_be_live` because a
+        // map with no reactor gate legitimately holds every one of them
+        // constant -- measured, untitled 02 holds byte 90 at one value for the
+        // whole 9.415.
+        (76, "is_top_contact"),
+        (89, "is_ground_contact"),
+        (90, "booster_air_control"),
         (91, "gear"),
-        (93, "dirt, front left"),
-        (95, "dirt, front right"),
-        (97, "dirt, rear right"),
-        (99, "dirt, rear left"),
     ]
+}
+
+pub fn unwritten_channels() -> Vec<(usize, &'static str)> {
+    // DERIVED FROM `gbx::sample`, NOT LISTED HERE.
+    //
+    // This was a hand-maintained list, and on 2026-08-23 it was wrong in three
+    // ways at once: it announced bytes 5, 81-84, 89 and 91 as "zeroed rather
+    // than inherited" months after `fk regen --carrier` began writing all seven
+    // from engine memory; it held byte 91 while `may_rest()` also held it,
+    // which says the same byte is both written and not written; and it omitted
+    // 19, 20, 34 and 108-111, which really are unwritten. Nothing failed --
+    // it is a REPORT, and a report cannot fail. It was simply untrue in the one
+    // place whose whole job is to say what the pipeline did.
+    //
+    // The names are here because they are for a human; the SET is not.
+    let name = |b: usize| -> &'static str {
+        match b {
+            19 => "unnamed, dead in the dedicated server",
+            20 => "unnamed, dead in the dedicated server",
+            34 => "unnamed, dead in the dedicated server",
+            93 => "dirt, front left",
+            95 => "dirt, front right",
+            97 => "dirt, rear right",
+            99 => "dirt, rear left",
+            108..=111 => "countdown",
+            _ => "unnamed",
+        }
+    };
+    gbx::sample::not_written_by_carrier().into_iter().map(|b| (b, name(b))).collect()
+}
+
+/// The same question for a run with NO `--carrier`: then the transcription does
+/// not run at all and only the transform is ours.
+pub fn unwritten_channels_without_carrier() -> Vec<(usize, &'static str)> {
+    (0..gbx::sample::SAMPLE_SIZE)
+        .filter(|b| !gbx::sample::TRANSFORM.contains(b))
+        .map(|b| (b, "not written without --carrier"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -325,5 +362,36 @@ mod tests {
             .collect();
         assert!(dead.contains(&9), "a constant channel must be detected");
         assert!(!dead.contains(&7), "a varying channel must not be");
+    }
+
+    /// THE THREE LISTS MUST NOT CONTRADICT EACH OTHER.
+    ///
+    /// `must_be_live` and `may_rest` name channels the pipeline WRITES;
+    /// `unwritten_channels` names ones it does not. A byte in both says the
+    /// pipeline both does and does not write it, and the acceptance report then
+    /// prints one of the two as fact. Byte 91 (gear) sat in `may_rest` and
+    /// `unwritten_channels` at once from the day the carrier began writing it
+    /// until 2026-08-23, and nothing noticed, because a report cannot fail.
+    #[test]
+    fn a_channel_is_never_both_written_and_unwritten() {
+        let un: std::collections::BTreeSet<usize> =
+            unwritten_channels().iter().map(|(o, _)| *o).collect();
+        for (o, n) in must_be_live().iter().chain(may_rest().iter()) {
+            assert!(
+                !un.contains(o),
+                "byte {o} ({n}) is claimed as written AND listed as unwritten"
+            );
+        }
+    }
+
+    /// And they must agree with the crate that actually does the writing.
+    /// `gbx::sample` is the one statement of which bytes a carrier run
+    /// produces; a channel this crate claims must be one of them.
+    #[test]
+    fn every_claimed_channel_is_one_the_writer_actually_writes() {
+        let w = gbx::sample::written_by_carrier();
+        for (o, n) in must_be_live().iter().chain(may_rest().iter()) {
+            assert!(w[*o], "byte {o} ({n}) is claimed, but the writer does not write it");
+        }
     }
 }
