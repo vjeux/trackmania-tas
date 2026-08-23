@@ -482,9 +482,40 @@ rungs:
 | the patch at (419, 146.0, 1704.6) | **0** |
 
 Together with §8's 892 tapes from the lower drop and the 1 386 from six other
-drop points, that is **2 968 evaluations against this wall from three different
-arrival speeds and eight different places, with a firing control in every
-batch, and not one crossing.**
+drop points and 936 more over the wall's one apparent gap, that is **3 904
+evaluations against this wall from four different arrival speeds and nine
+different places, with a firing control in every batch, and not one crossing.**
+
+### The wall's one apparent gap is the world edge, not a gap
+
+At x ≈ 496 the wall's behaviour changes with drop height, which looked like a
+way through:
+
+| spawn | result |
+|---|---|
+| (496, **202**) | rests at z = **1669.6** — the wall |
+| (496, **242**) | **passes z = 1669.6** and keeps going: (507.0, 148.9, 1681.9) at 107 km/h, down to the deck at y = 56.7 |
+| (464, 202) and (464, 242) | both rest at 1669.6 |
+| (528, 202) | rests at 1669.6 |
+
+The faster probe does clear the wall — and lands on nothing, because it also
+clears the roof: x ≈ 507 is the world edge, the same one the fast route falls
+off at race 44. It is over the wall and over the end of the world in the same
+arc.
+
+936 overrides from that spawn (8 starts × 3 lengths × 39 combinations; 24
+no-ops, 841 distinct tapes), scored on five rungs — including the patch at its
+**real** height — ask whether any of them lands in between:
+
+| rung | fires |
+|---|---|
+| (496, 160.0, 1660) — north of the wall, **the positive control** | **252 / 937** |
+| (470, 157.0, 1676) — just past it | **0** |
+| (450, 153.0, 1688) — further onto the face | **0** |
+| the patch at (419, 146.0, 1704.6) | **0** |
+| the patch at its real height, (419, 144.0, 1704.6) | **0** |
+
+**There is no landing between the wall and the void.**
 ## 12. What is left, and what a successor should not repeat
 
 **Do not re-run:**
@@ -506,8 +537,8 @@ batch, and not one crossing.**
 
 **The three things that are genuinely open**, in the order I would try them:
 
-0. **Nothing on the north side.** §11 closes the approach from above: 2 968
-   evaluations against the z = 1667.6 wall, from three arrival speeds and eight
+0. **Nothing on the north side.** §11 closes the approach from above: 3 904
+   evaluations against the z = 1667.6 wall, from four arrival speeds and nine
    drop points, with a firing control in every batch, and not one crossing.
    The wall ends at x ≈ 507 and past it is the world edge. So a successor
    should NOT spend a run trying to reach the finish face from the north.
