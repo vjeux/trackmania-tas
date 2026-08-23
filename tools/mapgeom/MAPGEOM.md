@@ -209,12 +209,19 @@ and 252289, which was already at 100 %, is unchanged by all three. That is what
 makes it a measurement rather than a preference: **the accuracy does not move,
 the coverage triples, and the map that had nothing to gain gains nothing.**
 
-**A FREE placement names the model's PIVOT, not its origin.**
-`CGameItemPlacementParam` chunk `0x2E020001` carries it. 197047's whole 100 s
-run is driven on 75 placements of one 8 × 8 platform whose mesh runs 0..8 in x
-and z with a pivot at its centre, `(4, 0, 4)`; placing it by the corner put
-every one of them 1.5 m from the car. A GRID placement is not shifted — the
-cell is the anchor.
+**A placed ITEM is positioned by its PIVOT, and the pivot belongs to the
+PLACEMENT.** The map's `CGameCtnAnchoredObject` record carries it, along with
+the item's pitch and roll and its scale, and it has to be the placement's
+rather than the model's because an item can declare **several** — the tube
+`InflatableTubeCurve4` declares two, 28 m apart, and Cobalt Cove uses a
+different one at each of the three placements around a single corner. The
+field is the vector from the pivot to the mesh origin, i.e. minus the model's
+own pivot, exactly: 197047's platform declares `(4, 0, 4)` and every placement
+of it records `(-4, 0, -4)`. Placing by the mesh origin instead put 197047's
+whole 100 s run 1.5 m from its road and cost that map 97 % of its samples.
+
+A GRID block is placed by its cell. A FREE block — one the author dragged off
+the grid — is placed by an absolute position and carries no pivot.
 
 `yoff` is per map. It is **fitted**, not supplied (§4.2). On map 2 it lands on
 **−120**, the value the earlier arm calibrated by hand.
@@ -304,7 +311,50 @@ The sweep is two passes, whole 8 m cell rows and then metre by metre, because
 nothing guarantees a map's height is a whole number of cells — 252289 fits −60
 with a 0.017 m gap over 100 % of its samples, so it is not.
 
-### 4.3 The independent cross-check — 173691's canopy deck
+### 4.3 Water, and the surfaces a plumb line cannot see
+
+A plumb line only looks down. A car **on water sits under the surface**, so
+every water sample used to read as a hole with the water triangle overhead.
+
+MEASURED: Cobalt Cove's water planes sit on exact 8 m cell boundaries —
+42.000, 130.000 — and the car reads **41.100** and **129.100**. That is
+**0.900 m under, four times out of four**. The probe index lowers every `Water`
+triangle by exactly that, so what it holds is the plane a car RESTS on rather
+than the plane the water is drawn at; the glTF and the render are untouched.
+
+The control is that **the accuracy improves at the same time**: on Cobalt Cove
+the median gap goes 0.144 → 0.101 m as the coverage goes 75.4 → 80.3 %. A
+coverage gain bought at accuracy's expense would be a fudge; this is not one.
+And the negative control beside it: 134672 and 252289, which have no water, are
+unchanged **to the last digit**.
+
+One more thing a strict plumb line loses: `Index::below` demanded the surface
+be at or below the sample to within a millimetre. A resting car can read a hair
+under its surface, and on water it reads *exactly on* it — the plane sits at a
+cell boundary minus the draft and the sample sits at the same number, so a
+strict test loses whichever side the last bit falls. `TOUCH` is two centimetres
+of slack, and it is worth 7.6 points of coverage on 134672 with the median
+*improving* 0.029 → 0.025 m.
+
+### 4.4 Moving blocks: a pose, not a swept hull
+
+`CPlugDynaObjectModel` (`0x09144000`) is the rotors, turnstiles, tubes and
+flags. Their surface is somewhere different at every instant, so there is no
+pose that is simply correct — and a swept hull is *worse* than useless for a
+ride-height probe, because a rotor sweeps a disc the car is inside for a few
+hundredths of a second and outside for the rest.
+
+The decision, stated here and in the code: **the block is drawn at its authored
+rest pose, and the moving hull's triangles are named `<material> (moving)`**,
+so `check` reports how many samples rest on one separately and the two never
+average into one number. Where a block gives the same node for both shapes —
+the tube does — it is drawn once, as static.
+
+On Cobalt Cove, the Platform map this mattered most for, that number is **1 of
+1457 samples**: reading these classes was worth doing and was not the cause of
+anything.
+
+### 4.5 The independent cross-check — 173691's canopy deck
 
 Banked separately, from 35 plumb probes driven in the engine: the car comes to
 rest on the canopy at **(1521.0, 114.16, 588.4)**.
@@ -322,7 +372,7 @@ spanning 115 m — and only once the decoration map is loaded; without it that
 column holds nothing below 180 m. The car rests 0.62 m above it, against the
 0.45 m that map's road gives, so the two agree to about 0.2 m.
 
-### 4.4 The physics material table was wrong from id 26 up
+### 4.6 The physics material table was wrong from id 26 up
 
 `EPlugSurfaceMaterialId` is enumerated in the game's own class reference
 (`next.openplanet.dev/MetaNotPersistent/GmSurfaceIds`). Transcribed from there,

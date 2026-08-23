@@ -374,6 +374,22 @@ fn main() {
             for run in &runs {
                 let v = mapgeom::coverage::Verdict::of(&idx, &run.motions, reach);
                 grade(&run.name, &v);
+                if let Some(c) = containment(scene.bounds(), &run.points) {
+                    if c.outside > 0 {
+                        println!(
+                            "    OUTSIDE THE MODEL   {} samples ({:.1} %) are past the model's \
+                             own extent -- not a hole, there is nothing there to find",
+                            c.outside,
+                            100.0 * c.outside as f32 / run.points.len().max(1) as f32
+                        );
+                        println!(
+                            "      model x {:.0}..{:.0}  y ..{:.0}  z {:.0}..{:.0}    \
+                             run x {:.0}..{:.0}  y ..{:.0}  z {:.0}..{:.0}",
+                            c.model.0[0], c.model.1[0], c.model.1[1], c.model.0[2], c.model.1[2],
+                            c.run.0[0], c.run.1[0], c.run.1[1], c.run.0[2], c.run.1[2],
+                        );
+                    }
+                }
                 let b = mapgeom::blame::of(&m, &used, &v, &run.points, yoff);
                 if b.total > 0 {
                     println!("    what the map has where the model does not:");
@@ -549,15 +565,19 @@ fn main() {
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
-            if at.len() < 2 {
-                die::<()>("where needs --at X,Z".into());
-            }
-            let (x, z) = (at[0], at[at.len() - 1]);
+            // No --at lists every record the map places, which is how a
+            // decoration's handful of enormous blocks gets looked at.
+            let all = at.len() < 2;
+            let (x, z) = if all { (0.0, 0.0) } else { (at[0], at[at.len() - 1]) };
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let mut asm = mapgeom::assemble::Assembler::new(&mut store);
             asm.with_embedded(&m).ok();
             let (cx, cz) = ((x / 32.0).floor() as i32, (z / 32.0).floor() as i32);
-            println!("records within one cell of x {} z {} (cell {},{}):", x, z, cx, cz);
+            if all {
+                println!("every record the map places:");
+            } else {
+                println!("records within one cell of x {} z {} (cell {},{}):", x, z, cx, cz);
+            }
             for b in &m.blocks {
                 let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
                 let c = b.coords();
@@ -569,7 +589,7 @@ fn main() {
                 } else {
                     (c.0, c.2)
                 };
-                if (bx - cx).abs() > 1 || (bz - cz).abs() > 1 {
+                if !all && ((bx - cx).abs() > 1 || (bz - cz).abs() > 1) {
                     continue;
                 }
                 let lm = asm.block_model(&b.name);
@@ -595,7 +615,7 @@ fn main() {
             }
             for it in &m.items {
                 let (ix, iz) = ((it.pos[0] / 32.0).floor() as i32, (it.pos[2] / 32.0).floor() as i32);
-                if (ix - cx).abs() > 1 || (iz - cz).abs() > 1 {
+                if !all && ((ix - cx).abs() > 1 || (iz - cz).abs() > 1) {
                     continue;
                 }
                 let tris = asm.item_model(&it.model).map(|l| l.scene.tri_count()).unwrap_or(0);
@@ -717,6 +737,44 @@ fn ghost_runs(args: &[String]) -> Vec<Run> {
 fn die<T>(e: String) -> T {
     eprintln!("{}", e);
     std::process::exit(1);
+}
+
+/// Where the run is relative to the model's own extent.
+///
+/// A hole in the model and a run that LEAVES the model are different
+/// diagnoses, they want different work, and a coverage number cannot tell them
+/// apart — both read as "no surface here". 285885 is the case that named this:
+/// its ghost spans z 656..1760 and the assembled model stops at z 1632, so the
+/// map's whole endgame, including a finish item at (419.0, 144.0, 1704.6), is
+/// **outside the model** rather than missing from it. Reported by
+/// `f9c585b3`, who then found the surface with a live-engine drop probe.
+pub struct Containment {
+    pub outside: usize,
+    pub model: ([f32; 3], [f32; 3]),
+    pub run: ([f32; 3], [f32; 3]),
+}
+
+pub fn containment(scene_bounds: Option<([f32; 3], [f32; 3])>, pts: &[[f32; 3]]) -> Option<Containment> {
+    let (lo, hi) = scene_bounds?;
+    if pts.is_empty() {
+        return None;
+    }
+    let mut rlo = [f32::INFINITY; 3];
+    let mut rhi = [f32::NEG_INFINITY; 3];
+    let mut outside = 0usize;
+    for p in pts {
+        for a in 0..3 {
+            rlo[a] = rlo[a].min(p[a]);
+            rhi[a] = rhi[a].max(p[a]);
+        }
+        // Only x and z, and only the TOP in y: a car above everything the
+        // model has is over nothing, a car below the model's floor is not a
+        // thing that happens, and the y floor is the stadium's foundations.
+        if p[0] < lo[0] || p[0] > hi[0] || p[2] < lo[2] || p[2] > hi[2] || p[1] > hi[1] {
+            outside += 1;
+        }
+    }
+    Some(Containment { outside, model: (lo, hi), run: (rlo, rhi) })
 }
 
 /// The grading of one run against the model.

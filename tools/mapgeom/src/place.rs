@@ -36,8 +36,21 @@ pub const CELL_Y: f32 = 8.0;
 ///
 /// Read off the model's own geometry rather than its unit list, with a 15 %
 /// overhang tolerance: a kerb or a sign that pokes past the last cell must not
-/// buy the block another one. Where the unit list is available this should be
-/// replaced by it — see MAPGEOM.md, "what is still missing".
+/// buy the block another one.
+///
+/// **It is WRONG on the decoration and the picture proves it.** A `Deco48x48`
+/// is four blocks -- two `Stade4096` whose mesh spans 4028 m in x and two
+/// `Stade1536` spanning 2048 -- and this heuristic reads those spans as
+/// footprints of 4032 x 768 and 2048 x 1536 cells. The two `dir = 0` copies do
+/// not care, because their shift is zero; the two `dir = 2` copies are shifted
+/// by the wrong amount and the stadium comes out smeared across four
+/// kilometres instead of closed around the map. That is why the assembled
+/// model of a 48 x 48 map stops at z 1632 while its playfield needs 1760, and
+/// it is a plausible single cause for several of the low-coverage maps.
+/// Setting the shift to zero instead is worse (the model then spans
+/// -4028..4028), so the answer is the block's real UNIT LIST and nothing
+/// else -- `CGameCtnBlockInfo`'s ground and air unit arrays, which need body
+/// readers this crate does not have. See MAPGEOM.md, "what is still missing".
 pub fn footprint(max_x: f32, max_z: f32) -> (f32, f32) {
     fn cells(m: f32) -> f32 {
         (((m / CELL_XZ) - 0.15).ceil()).max(1.0) * CELL_XZ
