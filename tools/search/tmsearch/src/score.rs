@@ -267,6 +267,9 @@ impl std::fmt::Display for Outcome {
         match self {
             Outcome::Finish { ms } => write!(f, "{}", secs(*ms)),
             Outcome::Gate(GateState::Reached { key }) => write!(f, "GATE key {:+.4}", key),
+            Outcome::Gate(GateState::Fired { after }) if !after.is_finite() => {
+                write!(f, "GATE FIRED, but the run ENDED on the firing tick (no after-window)")
+            }
             Outcome::Gate(GateState::Fired { after }) => write!(f, "GATE FIRED, after {:+.4}", after),
             Outcome::Gate(GateState::Finished { ms }) => write!(f, "GATE and finished, {}", secs(*ms)),
             Outcome::Gate(GateState::Missed { miss_m }) if miss_m.is_finite() => {
@@ -290,6 +293,7 @@ pub fn tag(o: &Outcome) -> String {
     match o {
         Outcome::Finish { ms } => secs(*ms).replace('.', "_"),
         Outcome::Gate(GateState::Reached { key }) => format!("gate_{:.4}", key).replace(['.', '-'], "_"),
+        Outcome::Gate(GateState::Fired { after }) if !after.is_finite() => "fired_noafter".into(),
         Outcome::Gate(GateState::Fired { after }) => format!("fired_{:.4}", after).replace(['.', '-'], "_"),
         Outcome::Gate(GateState::Finished { ms }) => format!("gate_{}", secs(*ms).replace('.', "_")),
         Outcome::Gate(GateState::Missed { miss_m }) => {
@@ -506,6 +510,41 @@ mod tests {
         // child measured and not a widened literal
         assert_eq!(gate_outcome(None, Some(86.8), None, 60.0, ev), firedb(-17.9f32 as f64));
         assert_eq!(gate_outcome(Some(20_237), Some(86.8), None, 60.0, ev), gatefin(20_237));
+    }
+
+    /// **AN EMPTY AFTER-WINDOW IS THE WORST MEASURED VALUE, NOT THE BEST.**
+    ///
+    /// Measured on 267460, 2026-08-23, and it cost a search. With a watchdog
+    /// that aborts every candidate at a fixed tick -- the honest way to write
+    /// "get there EARLY" when the key language cannot see a clock -- a run can
+    /// fire the event on the very tick it is aborted. The window after the
+    /// event is then EMPTY, and `GateReport::event` reported `after = 0` for it.
+    ///
+    /// Every after-key the feature documents is a **negated distance**, so it
+    /// is never positive and **0 is unbeatable**. The search duly climbed
+    /// `-27.93` -> `+0.0000` and stopped: the winner's firing tick was the abort
+    /// tick, it had done nothing whatever after the event, and no candidate that
+    /// really flew towards the target could ever outrank it. That is the
+    /// `-(500 + miss)` failure of the working version, one band up.
+    ///
+    /// An empty window now scores negative infinity, which is what "measured
+    /// nothing" has to mean when bigger is better.
+    #[test]
+    fn an_empty_after_window_loses_to_every_real_after_key() {
+        let empty = firedb(f64::NEG_INFINITY);
+        for after in [-1e9, -298.75, -27.93, -19.99, -0.005, 0.0, 1e9] {
+            assert!(
+                firedb(after) > empty,
+                "a fired run measuring {} lost to one that measured nothing at all",
+                after
+            );
+        }
+        // it is still a `fired`, so it outranks every state and loses to a finish
+        assert!(empty > reached(1e9), "an empty after-window fell out of its band");
+        assert!(gatefin(20_237) > empty, "an empty after-window outranked a finish");
+        // and it says so rather than printing a bare -inf
+        assert!(empty.to_string().contains("ENDED on the firing tick"), "{}", empty);
+        assert_eq!(tag(&empty), "fired_noafter");
     }
 
     /// **A FINISH THAT DID NOT FIRE IS NOT A FINISH, once an event is armed.**

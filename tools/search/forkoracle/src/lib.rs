@@ -40,7 +40,10 @@ pub enum EventSeen {
         /// size of the one-tick speed rise, in m/s.
         value: f32,
         pos: [f32; 3],
-        /// The after-key, or 0 when no after-key was given.
+        /// The after-key. 0 when no after-key was given (a flat band, which is
+    /// correct); NEGATIVE INFINITY when one WAS given and the after-window was
+    /// empty, so an empty window is the worst measured value rather than -- as
+    /// it was until 267460 measured it -- the best one.
         after: f32,
         /// -1 when the run ended on the firing tick, or no after-key was given.
         after_tick: i32,

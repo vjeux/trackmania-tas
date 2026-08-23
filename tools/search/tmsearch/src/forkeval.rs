@@ -148,6 +148,9 @@ pub struct ForkEval {
     /// Is an event clause armed? The band rule differs: with a clause, a run
     /// that finishes without firing has not done the thing.
     fire_armed: bool,
+    /// Whether `--after-key` was given. See `GateReport::event`: without this,
+    /// an empty after-window scores 0 and outranks every real measurement.
+    after_key_armed: bool,
     /// The box itself, so an improvement can say when it is pressed against a
     /// face of it.
     gate_box: forkoracle::pred_core::Gate,
@@ -278,6 +281,7 @@ impl ForkEval {
             gate: watch.gate.armed,
             gate_min_key: s.gate_min_key,
             fire_armed: watch.fire.armed,
+            after_key_armed: watch.fire.armed && watch.fire.after[0].op != forkoracle::pred_core::KOP_END,
             gate_box: watch.gate,
             gate_seed_pos: s.gate_seed_pos,
             last_gate: Vec::new(),
@@ -313,7 +317,7 @@ impl Evaluator for ForkEval {
                     o.gate().map(|g| g.key as f64),
                     o.gate_miss().map(|m| m as f64),
                     self.gate_min_key as f64,
-                    o.event(self.fire_armed),
+                    o.event(self.fire_armed, self.after_key_armed),
                 ),
                 (None, false) => {
                     Outcome::Dnf(Progress::Metres { m: o.progress(), of: self.line_len })
