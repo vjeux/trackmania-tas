@@ -21,11 +21,16 @@ late.**
 > ```
 >
 > `TAS_19907`, `TAS_19910`, `TAS_19927`, `TAS_19936`, `TAS_20070`, `TAS_20083`,
-> `FORGIVING_19948` and `LOWINPUT_20070_16values` all report **20.034 with four
-> respawns**; `TAS_20126` reports 20.426. Every one of them carries a record
-> spanning **0.000 … 24.900** for a run of about twenty seconds. **These are
-> nine different runs sharing one carrier's result chunk and one carrier's
-> record length.** None of our tapes contains a respawn.
+> `FORGIVING_19948` and `LOWINPUT_20070_16values` all report **20.034**;
+> `TAS_20126` reports 20.426. Every one of them carries a record spanning
+> **0.000 … 24.900** for a run of about twenty seconds. **These are nine
+> different runs sharing one carrier's result chunk and one carrier's record
+> length.**
+>
+> *(The "4 respawns" in that line is **not** part of the finding: all eleven
+> files here say 4, including the two clean ones, so it is inherited by every
+> file on the map and discriminates nothing. The finding is the header-vs-result
+> disagreement and the 24.900 span.)*
 >
 > **What this does and does not touch.** The oracle reads the *tape*, so the
 > times are unaffected and stand. A render reads the *record*, so **the clips
@@ -38,8 +43,10 @@ late.**
 > and `SPLICE_24854` (24.854, span 24.900) — are the control: the check can
 > come out the other way, and on this map it does, twice.
 >
-> Regeneration is an open task. `tmtraj corpus span --root .` and
-> `ghost inspect` are what found it, and either will say when it is fixed.
+> Regeneration is an open task, and there is a cheaper first move: **the span
+> half of this is what `ghost record shorten` repairs, without touching a
+> trajectory.** `tmtraj corpus span --root .` and `ghost inspect` are what found
+> it, and either will say when it is fixed.
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 

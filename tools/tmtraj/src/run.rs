@@ -119,6 +119,44 @@ pub fn run() {
         "facing" => crate::facingcmd::cmd(rest),
         "route" => crate::routecmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
+        // How many ticks differ between two tapes in a race-time window.
+        // UNTRUNCATED, which is the point: `ghost tape diff` prints at most 80
+        // rows and then stops, so its output reads as "the differences end at
+        // tick 79". That cost this audit a wrong reading -- 203330's pair
+        // looked like it had zero differences after the countdown and actually
+        // has 1041, 227 of them inside the stretch where the two files'
+        // positions are bit-identical.
+        "tapediff" => {
+            if rest.len() < 2 {
+                eprintln!("usage: tmtraj tapediff A.Ghost.Gbx B.Ghost.Gbx [--from SECONDS] [--to SECONDS]");
+                2
+            } else {
+            let secs_arg = |flag: &str, dflt: f64| -> f64 {
+                rest.iter()
+                    .position(|s| s == flag)
+                    .and_then(|i| rest.get(i + 1))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(dflt)
+            };
+            let from = (secs_arg("--from", 0.0) * 1000.0) as i64;
+            let to = (secs_arg("--to", 1.0e9) * 1000.0) as i64;
+            match crate::intgcmd::tape_diffs_in_window(&rest[0], &rest[1], from, to) {
+                Err(e) => {
+                    eprintln!("tmtraj tapediff: {e}");
+                    2
+                }
+                Ok(n) => {
+                    println!(
+                        "{} ticks differ between race {:.3} and {:.3}",
+                        n,
+                        from as f64 / 1000.0,
+                        if to > 1_000_000 { -1.0 } else { to as f64 / 1000.0 }
+                    );
+                    0
+                }
+            }
+            }
+        }
         "lines" => cmd_lines(rest),
         "selftest" => {
             let r = selftest::selftest(true);

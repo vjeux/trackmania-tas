@@ -1742,6 +1742,9 @@ pub(crate) fn cmd_dup(args: &[String]) {
     let mut refused = 0usize;
     // Warn once, loudly, if the input comparison cannot run at all.
     let mut warned_unavailable = false;
+    // Pairs whose "identical positions across differing inputs" could not be
+    // attributed to inert inputs or to a splice from the files alone.
+    let mut unresolved = 0usize;
     for (map, files) in &by_map {
         if files.len() < 2 {
             continue;
@@ -1871,11 +1874,100 @@ pub(crate) fn cmd_dup(args: &[String]) {
                             "EXPECTED-SAME-INPUTS".to_string(),
                         ),
                         TapeDiff::At(d) => match run_span {
+                            // ONE RUN TWICE IS A STATEMENT ABOUT THE RECORDED
+                            // MOTION, AND IT IS EXACT: the two files carry the
+                            // same trajectory. If the trajectories separate
+                            // ANYWHERE, they are two different recorded
+                            // motions and the pair cannot be one run published
+                            // twice, whatever the tapes did.
+                            //
+                            // Adjudicated over the whole corpus 2026-08-22, and
+                            // the split is not a threshold — it is a gap:
+                            // three pairs at max_sep EXACTLY 0.000000 m, and
+                            // the next one at 0.44 m.
+                            //
+                            //   0.000000  186935 CUT_795034 / ONE_ATTEMPT_DELETED
+                            //   0.000000  227654 TAS_57518  / TAS_57537
+                            //   0.000000  227654 TAS_57518  / TAS_57577
+                            //   0.440097  145875 BEST_KEYBOARD_6323 / KEYBOARD_23ev_6323
+                            //
+                            // POSITIVE CONTROL FOR THIS RULE: the 227654 page
+                            // already says, by hand, that TAS_57537 and
+                            // TAS_57577 are "one trajectory, not two runs".
+                            // The rule rediscovers a defect the corpus had
+                            // documented independently — and flags TAS_57518
+                            // as a third member of that set.
+                            //
+                            // The other 43 all separate, most of them by
+                            // metres. They are NOT duplicates; see below.
+                            // THE ADJUDICATION, 2026-08-22. This arm used to
+                            // refuse outright, and 46 pairs landed in it. The
+                            // question it could not answer is WHY two files
+                            // hold bit-identical positions across a stretch
+                            // where their tapes disagree, and there are two
+                            // answers with opposite meanings:
+                            //
+                            //   (a) the differing inputs had NO AUTHORITY
+                            //       there -- countdown, wedge, ballistic
+                            //       flight, SpecialNoSteering road. Innocent.
+                            //   (b) one file is CARRYING THE OTHER'S RECORDING
+                            //       for that stretch. A defect.
+                            //
+                            // Separation later does NOT decide it -- a partial
+                            // splice separates too, and an early version of
+                            // this rule excused 38 pairs on exactly that
+                            // mistake. What is reported instead is the count of
+                            // differing ticks INSIDE the identical stretch,
+                            // which is the quantity the two answers disagree
+                            // about, and the verdict names the open question
+                            // rather than picking a side.
+                            //
+                            // Worked example of why (a) alone will not do:
+                            // 203330 is the ONE map with a per-tick authority
+                            // map, measured by overwriting one tick at a time
+                            // (race -1.500..2.970 inert, 2.980..3.330 live).
+                            // Its `an330_13984` / `kb330_12ev_13986` pair has
+                            // 72 differing ticks in the inert window -- and
+                            // EIGHT in the live one, while the positions stay
+                            // bit-identical to 5.000 s. So even there the
+                            // innocent story does not cover the evidence.
+                            // 126859's `ALPHABET153_23545` / `TAS_23416` is
+                            // starker: 335 ticks of throttle difference across
+                            // the tapes and 378 consecutive bit-identical
+                            // samples, 18.9 s of them.
+                            //
+                            // SETTLING IT needs the map: re-simulate each
+                            // tape and ask whether the engine reproduces that
+                            // file's own record over the shared stretch
+                            // (`fk btraj2`, the C-route check). This repo does
+                            // not redistribute maps, so it cannot be done from
+                            // a clean checkout -- which is why this is an open
+                            // task with a named test and not a verdict.
+                            Some((_, t1)) if t1 > d + PROPAGATE_MS && p.max_d > 0.0 => {
+                                let inside = tape_diffs_in_window(
+                                    &files[i].to_string_lossy(),
+                                    &files[j].to_string_lossy(),
+                                    d,
+                                    t1,
+                                )
+                                .unwrap_or(0);
+                                unresolved += 1;
+                                (
+                                    format!(
+                                        "diverge@{:.3}s,identical_to@{:.3}s,{} differing ticks INSIDE,sep={:.3}m",
+                                        d as f64 / 1000.0,
+                                        t1 as f64 / 1000.0,
+                                        inside,
+                                        p.max_d
+                                    ),
+                                    "UNRESOLVED-INERT-OR-SPLICE".to_string(),
+                                )
+                            }
                             Some((_, t1)) if t1 > d + PROPAGATE_MS => {
                                 refused += 1;
                                 (
                                     format!(
-                                        "diverge@{:.3}s,agree_to@{:.3}s,over={:.3}s",
+                                        "diverge@{:.3}s,agree_to@{:.3}s,over={:.3}s,sep=0",
                                         d as f64 / 1000.0,
                                         t1 as f64 / 1000.0,
                                         (t1 - d) as f64 / 1000.0
@@ -1922,6 +2014,17 @@ pub(crate) fn cmd_dup(args: &[String]) {
                 }
             }
         }
+    }
+    if unresolved > 0 {
+        eprintln!();
+        eprintln!(
+            "{unresolved} pair(s) UNRESOLVED-INERT-OR-SPLICE: bit-identical positions across a"
+        );
+        eprintln!("  stretch where the tapes disagree. Innocent if those inputs had no authority");
+        eprintln!("  there; a splice if one file carries the other's recording. The count of");
+        eprintln!("  differing ticks INSIDE the identical stretch is on each row. Settle it by");
+        eprintln!("  re-simulating each tape and asking whether the engine reproduces that");
+        eprintln!("  file's own record over the shared stretch -- which needs the map.");
     }
     std::process::exit(if refused > 0 { 2 } else { 0 });
 }
@@ -2103,6 +2206,40 @@ pub enum TapeDiff {
     /// `fk` could not be run, or said something we could not parse. **Not
     /// clean.**
     Unavailable(String),
+}
+
+/// How many ticks differ between two tapes STRICTLY INSIDE a race-time window.
+///
+/// This is the number that adjudicates a `dup` refusal, and neither the first
+/// differing tick nor the eventual separation can stand in for it:
+///
+/// * **0 differences inside the identical stretch** — an ordinary shared
+///   prefix. The tapes part at the end of it and the trajectories follow.
+///   Nothing to explain.
+/// * **many differences inside it** — the two files hold bit-identical
+///   positions across a stretch where their inputs disagree. That is either
+///   inputs with no authority (a countdown, a wedge, a ballistic flight, a
+///   `SpecialNoSteering` road) **or one file carrying the other's recording for
+///   that stretch**. Those two look identical from here and the distinction
+///   matters, so this function reports the count and refuses to guess.
+pub fn tape_diffs_in_window(a: &str, b: &str, from_ms: i64, to_ms: i64) -> Result<usize, String> {
+    let ta = gbx::tape::Tape::from_file(a).map_err(|e| format!("{a}: {e}"))?;
+    let tb = gbx::tape::Tape::from_file(b).map_err(|e| format!("{b}: {e}"))?;
+    let oa = ta.archives.first().map(|x| x.start_offset_ms).unwrap_or(0) as i64;
+    let (sa, sb) = (ta.steer_i8s(), tb.steer_i8s());
+    let (aa, ab) = (ta.accels(), tb.accels());
+    let (ba, bb) = (ta.brakes(), tb.brakes());
+    let mut n = 0usize;
+    for i in 0..sa.len().min(sb.len()) {
+        let race = i as i64 * 10 + oa;
+        if race < from_ms.max(0) || race > to_ms {
+            continue;
+        }
+        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 fn run_tapediff(a: &str, b: &str, from_ms: Option<i64>) -> Result<Option<i64>, String> {

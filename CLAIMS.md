@@ -67,6 +67,88 @@ a headline in a directory contradicted by a newer file with an older-sounding
 name — 227654's `RESULT.md` and `RESULTS-entry.md` are the worked example.
 **Read a store directory by mtime, never by filename.**
 
+## The worked example: a check that was precise, confident, and blind
+
+Everything above is about documents. This one is about an instrument, and it is
+the purest instance of the failure this file exists for, so it is worth reading
+before you trust any tool in this repo — including the ones this file tells you
+to run.
+
+`tmtraj corpus dup` answers "do two published files of one map carry the same
+recorded motion?" — the defect that had two of our own tapes rendering as a
+single car. It decides whether identical positions are *expected* by first
+asking whether the two input tapes differ, and it asked by shelling out to
+**`fk tapediff`**.
+
+`fk tapediff` is not a command `fk` has. At any build.
+
+```
+$ fk tapediff --a A.gtape --b B.gtape
+fk: ABORT: unknown command "tapediff"
+```
+
+The call failed every time. `.ok()?` swallowed the failure. And `None` from that
+function means *the tapes are identical*, which makes identical positions
+expected. **So every pair in the corpus came back
+`identical-tapes / EXPECTED-SAME-INPUTS`, and the scan exited 0.** The check
+that exists to catch one run published twice excused every pair it exists to
+catch, and reported success while doing it.
+
+Three things worth taking from it:
+
+* **`.ok()?` is `2>/dev/null` with a nicer spelling.** The module's own header
+  says the shell scripts it replaced were fragile because "every one of them
+  piped a tool's stdout through awk and discarded its stderr". The Rust port
+  reproduced the bug it was written to remove. Porting a pipeline does not port
+  its discipline.
+* **It failed toward CLEAN, and that is worse than failing toward a null.** A
+  null looks like a result and gets argued with. A pass looks like nothing at
+  all. This is the second time `fk` being unreachable produced a silent wrong
+  answer (`tools/search/SEARCH.md` has the first, where 24 attempts "failed to
+  find the car"); that one at least produced a suspicious zero.
+* **A comparison needs a two-sided control.** The fix has one as a unit test: a
+  tape must read identical **to itself**, and two known-different runs must read
+  **different**. Either half alone passes for a broken comparison — a blind one
+  satisfies the first, a noisy one satisfies the second.
+
+**And when an instrument is repaired, its first output is not a result either.**
+This one produced three wrong readings on the way to a right one, all mine, all
+caught by a control:
+
+1. Its first repaired run returned **35 refusals keyed at `diverge@-1.52 s`** —
+   the countdown, before the car can act on anything. Pre-race ticks are now
+   excluded.
+2. Its second returned **777 refusals**, because the new "the trajectories
+   separate, so it is not one run twice" arm was placed ahead of the ordinary
+   shared-prefix case and swallowed 607 legitimate pairs.
+3. Reading `ghost tape diff` to check a pair by hand gave "zero differences
+   after the countdown" — because **`ghost tape diff` prints at most 80 rows**
+   and then stops. The pair has 1041. `tmtraj tapediff` exists because of that
+   and does not truncate.
+
+## What the repaired check found, and how it was adjudicated
+
+46 refusals, sorted — because 46 unadjudicated flags become next month's
+"everyone knows those are false positives":
+
+| n | class | how it was settled |
+|---|---|---|
+| **14** | **innocent, MEASURED** (203330) | every one of the 227 differing ticks falls inside that map's **measured per-tick inert window** (race 0.000–2.970, established by overwriting one tick at a time); **zero** in either live window. The one map that can prove it, proving it |
+| **3** | **same recorded motion**, separation exactly 0.000000 m | 227654 ×2 and 186935 ×1. **Positive control: the 227654 page already says by hand that those files are "one trajectory, not two runs"** — the repaired check rediscovers a defect the corpus had documented independently, and adds `TAS_57518` to the set |
+| **5** | documented provenance (286279) | all against the author's ghost extracted from the map, which that page says every run there was built from. `corpus splice` independently calls them CONTAMINATED. Not news, and not a new defect |
+| **24** | **UNRESOLVED — inert inputs or a splice** | reported with the count of differing ticks *inside* the identical stretch, and the test that would settle it named |
+
+The 24 are not a shrug: **one of them is a real defect and is now written up.**
+210218's two published files differ by **731 input ticks** spread across the
+whole run and hold **bit-identical positions for 89.95 s** — `tmtraj diff`
+returns `IS-THE-REFERENCE` on the pair. At least one of those two records is not
+its own tape's run.
+
+Settling the rest needs the map, to re-simulate each tape and ask whether the
+engine reproduces that file's own record. This repo does not redistribute maps,
+so it cannot be done from a clean checkout — which is why they are an open task
+with a named test, and not a verdict in either direction.
+
 ## Not everything needs a tag
 
 Do not qualify what is solid. A true claim with its control cited is the best
