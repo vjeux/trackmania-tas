@@ -20,7 +20,7 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, gbx, map, oracle, secs, segments, selftest};
+use tmmaps::{census, controls, gbx, map, oracle, rotate, secs, segments, selftest};
 
 use std::path::{Path, PathBuf};
 
@@ -195,7 +195,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "clear", "segments", "move", "ladder", "roundtrip",
+        "waypoints", "census", "region", "clear", "segments", "move", "rotate", "ladder", "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
@@ -455,6 +455,7 @@ fn main() {
             println!("(a cell equal to the run's UNTOUCHED time means the rung was SILENT for it)");
         }
         // ---- w612: write ONE map with several grid blocks moved.
+        "rotate" => rotate::cmd(&args),
         "move" => {
             let src = PathBuf::from(&args[2]);
             let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
@@ -1044,7 +1045,7 @@ READING A MAP
   tmmaps chunks MAP
         every skippable body chunk with its size
 
-CHANGING A MAP — position only; no model swap, so no trigger volume changes
+CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume changes
   tmmaps move MAP --out F --move SPEC [--move SPEC ...]
         SPEC is  N:cx,cy,cz[:dir]   a grid block, by world cell
                  N@x,y,z[/yaw]      a FREE block, in metres
@@ -1055,6 +1056,16 @@ CHANGING A MAP — position only; no model swap, so no trigger volume changes
         bytes (its position is six f32 in chunk 0x0304305F), so a regime-blind
         cell write produces a map that loads, an origin control that passes,
         and a ladder in which every rung is silent.
+  tmmaps rotate MAP --out F --rot BLK:yaw,pitch,roll [...]
+                          --drot BLK:dyaw,dpitch,droll [...]
+                          --tilt N,N,N --about X,Y,Z --dir DEG --angle RAD
+        Tilt FREE blocks. A block's stored rotation turns it about ITS OWN
+        ANCHOR, so giving every tile of a surface the same roll SHEARS it into a
+        staircase (32 m tiles at 3.4 deg = a 1.9 m step per join, measured). The
+        `--tilt` form is the honest one: one axis, position and rotation written
+        together. REFUSES when a free block within --group-radius (4 m) is not in
+        the rotation -- the ice kicker of 284238 is FOUR blocks sharing an anchor
+        and two arms rotated one of them, which reads exactly like a null result.
   tmmaps clear MAP --out F --box X0,Y0,Z0:X1,Y1,Z1 --to X,Y,Z [--filter PAT]
         move EVERYTHING in the box, then re-read the written map and REQUIRE
         the box to be empty. This is the enforced form of the lesson below.

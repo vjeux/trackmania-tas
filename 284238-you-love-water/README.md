@@ -149,7 +149,7 @@ dropping"**, which shares 167 of its 186 blocks with this map but replaces the
 water ramps with tech blocks that give every copy a flat run-up. A human beats
 that map's author time. Nobody has beaten this one.
 
-## What the obstacle actually is: the crossing angle, and a window half a metre wide
+## What the obstacle actually is: the state at the kicker is matched, and it is not enough
 
 > **The "engagement point law" that used to stand here is RETRACTED.** It said
 > the frozen roll rate is a monotone function of `engage_x` — 912.5 → 145 °/s,
@@ -194,29 +194,54 @@ shot at −18.2. The perturbation that puts *him* at −18.4 arrives at the
 checkpoint at 22.44 m/s against his own 69.40. That is this map's whole deficit,
 in one number, on his map, with his car.
 
-### What our lane can deliver, and the one thing it cannot
+### What our lane can deliver: everything, and it is not enough
 
-Four searches, 36 restarts, aimed at his kicker state shifted by the launcher
-assembly's own offset so it is the same place relative to the kicker:
+Six searches, 60 restarts, aimed at his kicker state shifted by the launcher
+assembly's own offset so it is the same place relative to the kicker. The last
+two put the crossing angle and the speed on **hard bars** instead of into a
+weighted sum, which is what a weighted sum could never do — let a candidate buy
+attitude with crossing angle is exactly the trade the surface is trying to force:
 
 | | target | best reached on our lane |
 |---|---|---|
 | position | 0.00 | **0.07 – 0.19 m** |
-| speed | 99.22 | 97.9 |
+| speed | 99.22 | **100.00** |
 | crossing angle | −25.20 | **−25.13** |
 | body angular velocity | (−54.0, +15.2, −57.3) | **(−55.4, +15.3, −58.7)** |
-| **roll** | **+1.23** | **+2.80**, and +4.5 in the rows that hold the rest |
+| roll | +1.23 | **+1.13** |
 
-Position, velocity and angular velocity are all solved. Roll is not, and not for
-want of trying: every restart holding vz ≤ −22 at ≥ 93 m/s comes back at roll
-+2.8 … +5.2, and every restart at roll ≤ +1.3 pays for it in the crossing angle
-(−14.5), in position (1.4–12 m) or in 37 m/s of speed. All 36 were then replayed
-and scored on the **outcome** rather than on the objective they minimised; none
-of them rides.
+**Every one of them is reachable, and the car still launches.** Across that whole
+frontier the frozen rotation only falls from 284 to **208 °/s** — against the
+~90–100 the wall contact needs, and against a human tape that never freezes at
+all. Every restart was replayed and scored on the **outcome** rather than on the
+objective it minimised; none of them rides.
 
-### Why: the water lane is a trough, and it ties roll to the line
+### Where the two runs actually part: 17 m after the kicker
 
-The launcher deck on copies 1–3 is a shallow **valley**. The car's own height on
+Aligned on canonical x, his tape against our best:
+
+| x | his height above the deck | his roll | his ω_z | his speed | our height | our roll | our ω_z | our speed |
+|---|---|---|---|---|---|---|---|---|
+| 913.0 | 2.735 | +2.8 | +96 | 98.17 | 1.63 | +3.2 | +37 | 94.09 |
+| 925.9 | 8.682 | +16.7 | +157 | 94.83 | 7.97 | +16.4 | +157 | 90.65 |
+| 933.3 | 14.450 | +40.6 | **+242** | 92.84 | 13.29 | +38.0 | **+240** | 88.54 |
+| 936.9 | 17.305 | +52.9 | +189 | 91.94 | 15.88 | +49.5 | **+240 frozen** | 87.69 |
+| 940.5 | 20.083 | +61.2 | +129 | 91.05 | — airborne — | | **+240 frozen** | |
+| 950.6 | 27.480 | +76.2 | **+87** | 88.65 | — airborne — | | **+240 frozen** | |
+
+The two cars cross the ice kicker within 2.6° of roll and 0.7 m of height of one
+another and **both reach about 240 °/s**. At x 933.7 ours goes rigid and holds
+240.3 to the last printed digit. His keeps a wheel loaded for another 17 m and
+the rate bleeds off — 242 → 189 → 129 → **87** — arriving at the wall at exactly
+the rate the contact needs.
+
+**So the obstacle is not decided by the state at the kicker.** It is decided by
+whether contact survives the last 17 m of the curl, and by then our car is
+4.3 m/s slower, having paid that on the water lane.
+
+### The lane is a trough, and the trough is the block
+
+The launcher deck on copies 1–3 is a shallow **valley** — the car's own height on
 it, at canonical x 902.5, over ten tapes at 99–100 m/s:
 
 ```
@@ -224,50 +249,55 @@ z 921.7  y 1873.258  roll +4.8      z 927.5  y 1873.088  roll -0.1   <- the floo
 z 924.9  y 1873.104  roll +2.4      z 933.2  y 1873.428  roll -4.2
 ```
 
-**−0.78 ° of roll per metre across the lane**, level only at z ≈ 927.4. The
-sibling's tech deck, and our own copy 0's start platform, are flat: +0.45 at
-z 920.9 and +0.54 at z 921.9, 0.09 °/m.
+**−0.78 ° of roll per metre across the lane**, level only at z ≈ 927.4, where the
+sibling's tech deck and our own copy 0's start platform are flat (0.09 °/m). It
+is a real coupling between roll and lateral position and it is why the naive
+searches could not hold both — but it is **not a bound**, because a barred search
+beats it.
 
-So on this lane:
+And it is not a placement. Every launcher deck block on both maps is stored with
+**pitch = roll = 0**; the trough is the shape of `PlatformWaterRampBase`, which is
+a channel, against `PlatformTechBase`, which is a flat platform. The author did
+not tilt anything — he changed the block. So "is it the roll or is it the water?"
+is not a question that can be asked here: they are one property of one block, and
+neither the position mover nor the new rotator can take them apart.
 
-* **keeping the wheels loaded needs roll ≈ 0**, which means z ≥ 926.4 — the floor
-  of the trough;
-* **rotation and the wall contact need vz ≤ −24**, which means z ≤ 924, where the
-  same surface rolls the car +3.4 to +6.3.
+### The matched pair, on one map
 
-They are the same variable. Walking a seed across that line one steer unit at a
-time: at z 926.63 (roll +1.23, vz −12.19) the wheels **never unload** — 99 % of
-ticks change the angular velocity, the human's own regime — and one notch off it
-(z 926.43, roll +1.66, vz −13.56) it unloads, and every row past that launches.
-The loaded tape reaches the wall at **32.30 m/s** against his 79.49, because at
-roll 0 the kicker has no lever to rotate the car.
+| | deck | speed | crossing angle | roll | frozen ω | checkpoint |
+|---|---|---|---|---|---|---|
+| our copy 0 | `PlatformTechBase` | 91.06 | −17.94 | **+0.82** | **55.8** | 52.85 |
+| our copy 1 | `PlatformWaterRampBase` | 99.81 | −18.24 | **+4.96** | **284.1** | 37.10 |
+| 279008 copy 1 | `PlatformTechBase` | 99.35 | −25.00 | +1.80 | never freezes | 69.40 |
 
-Speed is not the escape either: held on his lateral line, from 97.92 down to
-88.19 m/s, the wheels unload every time within a tick or two of the same instant.
-Our copy 0 rides at 91 m/s — on the flat start platform, at roll +0.45.
+Same map, same car, same kicker model, the same crossing angle to 0.30 m/s — and
+the flat deck rides while the trough does not. **And 4° of roll is not
+driveable**: eighteen steer deltas on copy 0's flat deck span the whole reachable
+band, −5.90 … +1.62, so copy 1's +4.96 is the deck and not the driving.
 
-### Three things this closes
+### What this closes
 
-* **The 1.00 m kicker.** It is a rigid offset on a **four-block assembly**
+* **The 1.00 m kicker.** A rigid offset on a **four-block assembly**
   (`tmtraj blockdiff`), of which exactly one block is free-placed — so the two
   earlier experiments that "raised the kicker by 1.00 m" raised a quarter of it
   and built a step: entry speed 99.81 → **50.84**. And the deck already pays for
-  it: the car's height above its own kicker at the kicker plane matches the
-  human's to **8 mm**.
+  it: the car's height above its own kicker matches the human's to **8 mm**.
 * **Copies 2 and 3.** The vector from a water ramp's anchor to the ice kicker is
-  (32.572, −1.000, −0.164) on copy 1, copy 2 and copy 3 — identical to 1 mm. The
-  three launchers differ only by where the whole assembly was dropped.
-* **An airborne approach**, which would break the coupling because a car in
-  flight carries the roll it left with. The only candidate crest is the floor of
-  the trough, and a floor is not a crest: `y` never rises above the local surface
-  on any of the ten tapes that cross it.
+  (32.572, −1.000, −0.164) on copy 1, copy 2 and copy 3 — identical to 1 mm.
+* **An airborne approach.** The only candidate crest is the floor of the trough,
+  and a floor is not a crest: `y` never rises above the local surface on any of
+  the ten tapes that cross it.
+* **Tilting a deck under a run that works.** Rotating a tiled road makes a step:
+  a 1.15° tilt of four tiles about a common axis stops the human's car dead
+  100 m short of the kicker.
 
-**What is left**: the water start (1.30 s, never searched, independent of all of
-this), and the one question nobody has asked — whether the car can be put on the
-kicker from somewhere that is *not* the trough's +4.8° wall.
+**What is left**: the last 17 m of the curl — aim at his state at canonical
+x 933.3 rather than at the kicker plane -- and the water start (1.30 s, never
+searched, independent of all of this).
 
-Full account, tables and md5s:
-`tm-unbeaten/284238/wtr_RESULT_v1_the_cross_slope_couples_roll_to_the_line.md`.
+Full account, tables and md5s: `tm-unbeaten/284238/RESULT.md`, which points at
+`wtr_CORRECTION_v2_roll_is_reachable_and_it_is_not_enough.tsv` and
+`wtr_RESULT_v1_the_cross_slope_couples_roll_to_the_line.md`.
 
 
 ## The record's time is mostly retries
