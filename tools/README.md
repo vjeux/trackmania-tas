@@ -270,6 +270,6 @@ them in the same frame.
 
 [`MAPGEOM.md`](mapgeom/MAPGEOM.md) is where the geometry lives, how the pack's
 hashed asset names resolve, and what is still missing. The one number to know:
-across thirty maps checked in one batch, **twenty put the car within a quarter
+across thirty-three maps checked in one batch, **twenty put the car within a quarter
 of a metre of the model and sixteen within 0.09 m** — and the maps where it
 does not are the model missing a surface, which the same command says out loud.

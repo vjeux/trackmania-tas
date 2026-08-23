@@ -164,15 +164,16 @@ Every map in `tm-unbeaten` with a map file and a ghost — 33 maps, one rank-1
 ghost each, no cherry-picking, run in one batch. Full output is banked at
 `~/persistent/private-30d/tm-mapgeom/corpus-check/`.
 
-**Twenty of the thirty that fit put the car within a quarter of a metre of the
-model, and sixteen of them within 0.09 m:**
+**Thirty-one of the thirty-three fitted a height at all. Twenty of those put
+the car within a quarter of a metre of the model, and sixteen within 0.09 m:**
 
-| gap median | maps |
-|---|---|
-| 0.009 – 0.086 m | 197047, 252289, 208024, 134672, 279197, 285268, 203330, 279209, 199100, 153527, 270051, 227969, 126859, 267460, 284238, 270053 |
-| 0.13 – 0.24 m | 146612, 227654, 286279, 203072 |
-| 0.43 – 3.36 m | 274191, 267859, 145875, 285885, 210218, 279218, 228811, 228607, 191465, 249521 |
-| no height fits at all | 173636, 186935, 238835 |
+| gap median | n | maps |
+|---|---|---|
+| 0.009 - 0.086 m | 16 | 197047, 252289, 208024, 134672, 279197, 285268, 203330, 279209, 199100, 153527, 270051, 227969, 126859, 267460, 284238, 270053 |
+| 0.13 - 0.24 m | 4 | 146612, 227654, 286279, 203072 |
+| 0.34 - 0.62 m | 4 | 238835, 274191, 267859, 145875 |
+| 1.0 - 3.4 m | 7 | 285885, 210218, 279218, 228811, 228607, 191465, 249521 |
+| no height fits at all | 2 | 173636, 186935 |
 
 A run over its own road reads like this — 153527, 85 811 samples:
 
@@ -302,8 +303,8 @@ own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
 
 ## 7. What is still missing
 
-1. **Ten maps out of thirty where the run does not sit on the model** (§4.1),
-   and three where no height fits at all. Their windows are loose and their
+1. **Eleven maps of thirty-three where the run does not sit on the model**
+   (§4.1), and two where no height fits at all. Their windows are loose and their
    "driven over" is Grass, so the model is missing the surface those runs are
    on. That list is the next thing to work through, in order.
 2. **Block variant selection** (§3). The union of all variants is drawn.
