@@ -6,7 +6,7 @@ every radian of roll away from the fast presentation costs about 1.8 s.**
 
 **bald turtle #35** — TAS **10.758** (−0.010) | AT 10.768 | WR 11.059 by Max_heyu
 
-https://github.com/user-attachments/assets/e1e0ad8d-9a70-4099-9f49-1c9a7f941d5b
+https://github.com/user-attachments/assets/749868b9-3c00-4946-972e-d551c6441add
 
 **Both cars, and the whole race is the last half-second.** Ours is magenta,
 Max_heyu's world record is the dark car. They run wheel to wheel through the
