@@ -900,7 +900,24 @@ impl Outcome {
     /// What the event clause saw. `armed` is the driver's own knowledge: a
     /// silent clause and no clause at all look identical in the summary and
     /// mean opposite things to the ranking.
-    pub fn event(&self, armed: bool) -> crate::EventSeen {
+    /// `after_key_armed` says whether `--after-key` was given, and it is
+    /// load-bearing rather than cosmetic.
+    ///
+    /// `after_tick < 0` conflates two situations the ranking must treat as
+    /// opposites: **no after-key was asked for** (every candidate is equal
+    /// there, and 0 is the right flat value), and **an after-key was asked for
+    /// and the window was EMPTY** because the run ended on the firing tick.
+    /// Reporting 0 for the second is a decoy the instrument builds: a
+    /// documented after-key like `-dist(x,y,z)` is never positive, so **0 is
+    /// the best score obtainable**, and firing on the very last tick of the run
+    /// beats every candidate that fired earlier and then actually did the
+    /// thing. Measured on 267460, with a watchdog that aborts every candidate
+    /// at a fixed tick: the search climbed to `GATE FIRED, after +0.0000`
+    /// whose firing tick WAS the abort tick, and stopped improving -- it had
+    /// found the empty window and there is nothing above it.
+    ///
+    /// An empty window is therefore the WORST measured value, not the best.
+    pub fn event(&self, armed: bool, after_key_armed: bool) -> crate::EventSeen {
         if !armed {
             return crate::EventSeen::Unarmed;
         }
@@ -909,7 +926,11 @@ impl Outcome {
                 tick: s.fire_tick,
                 value: s.fire_value,
                 pos: s.fire_pos,
-                after: if s.after_tick >= 0 { s.after_key } else { 0.0 },
+                after: match (s.after_tick >= 0, after_key_armed) {
+                    (true, _) => s.after_key,
+                    (false, true) => f32::NEG_INFINITY,
+                    (false, false) => 0.0,
+                },
                 after_tick: s.after_tick,
             },
             _ => crate::EventSeen::Silent,
