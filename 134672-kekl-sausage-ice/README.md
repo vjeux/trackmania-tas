@@ -2,11 +2,17 @@
 
 **KEKL- SAUSAGE ICE** — TAS **67.200** (+8.513) | AT 58.687 | WR 68.442 by Robbalobb
 
-https://github.com/user-attachments/assets/9d2b7015-7168-4ea4-8923-b426c3088789
+https://github.com/user-attachments/assets/68a1ee6d-9117-4c5a-a030-0c7c658e7b84
 
 The TAS in magenta, Robbalobb's 68.442 as the opponent, chase camera on our car.
 Both cars are in one scene; he is behind for most of it and out of frame for
 much of that, which is the divergence rather than a framing fault.
+
+The panel is this run's own inputs, drawn from the 10 ms input chunk — what the
+driver pressed, not the 50 ms echo in the telemetry samples. On a synthesised
+tape those are two different runs' worth of steering, and the fast one is ours.
+Its timing is measured rather than eyeballed: the two channels describe one run,
+so they agree at exactly one shift, and on this file that shift is 0 ms.
 
 TMX 134672 · uid `agH9XtjTZd8iZbuGp_KhC16jMO7` · author `Travis.TM` · 15 records
 Nothing here has been or will be submitted to a Nadeo leaderboard.
