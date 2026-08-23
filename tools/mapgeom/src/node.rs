@@ -387,6 +387,6 @@ impl Acc {
 pub fn is_visual(class_id: u32) -> bool {
     matches!(
         class_id,
-        C_VISUAL_INDEXED_TRIANGLES | 0x0901E000 | 0x0906A000 | 0x0902C000 | 0x09006000 | 0x0900F000
+        C_VISUAL_INDEXED_TRIANGLES | 0x0906A000 | 0x0902C000 | 0x09006000 | 0x0900F000
     )
 }

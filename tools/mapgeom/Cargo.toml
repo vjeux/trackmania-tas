@@ -19,5 +19,3 @@ tmmaps = { path = "../tmmaps" }
 miniz_oxide = "0.9.1"
 gbx = { path = "../gbx" }
 
-[profile.release]
-opt-level = 3

@@ -181,13 +181,21 @@ impl Report {
     /// resting on a road has ONE ride height for the whole run, so the right
     /// question is not how many samples found something but how many found the
     /// same thing.
-    pub fn band(&self, width: f32) -> (usize, f32) {
+    pub fn band(&self, width: f32, max_gap: f32) -> (usize, f32) {
         if self.gaps.is_empty() {
             return (0, f32::NAN);
         }
         let mut best = (0usize, f32::NAN);
         let mut j = 0usize;
         for i in 0..self.gaps.len() {
+            // A car rests CENTIMETRES above what it is on. A band a metre up
+            // is the probe finding something else -- water, grass, a slab
+            // under the road -- and on 270053 that is exactly what happened:
+            // 57 % of samples over Water at a consistent 5.4 m, which is a
+            // consistent wrong answer.
+            if self.gaps[i] > max_gap {
+                break;
+            }
             while j < self.gaps.len() && self.gaps[j] - self.gaps[i] <= width {
                 j += 1;
             }

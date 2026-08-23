@@ -85,17 +85,25 @@ pub fn free(pos: [f32; 3], rot: [f32; 3]) -> Xform {
 /// The map-wide vertical offset between cell rows and world metres.
 ///
 /// `world_y = 8*cy + yoff`. It is a property of the map's DECORATION, not of
-/// the block: two maps in this project measure −120 m and −40 m. Deriving it
-/// from the decoration id is unfinished, so it is a flag with a calibration
-/// path — `mapgeom yoff` fits it from a ghost that is known to have driven the
-/// map, by the height that puts the most ground-contact samples on a surface.
+/// the block, and it is **not a whole number of cells**: fitting it to
+/// multiples of 8 m leaves a residual that is a small whole number of metres,
+/// and that residual is exactly what made this project's early measurements
+/// look like a per-map mystery. Across 30 maps the fitted 8 m offset left the
+/// car sitting 0.03 m, 2.01 m, 2.05 m, 3.09 m, 4.02 m or 5.12 m above the
+/// model — the same ride height plus an integer.
+///
+/// So the fit is two passes: whole cells over the range TM2020 decorations
+/// use, then metre by metre around the winner.
 #[derive(Clone, Copy, Debug)]
 pub struct Yoff(pub f32);
 
 impl Yoff {
-    /// The candidate offsets a fit tries: whole 8 m cell rows over the range
-    /// TM2020 decorations use.
-    pub fn candidates() -> impl Iterator<Item = f32> {
+    /// Whole cell rows over the range TM2020 decorations use.
+    pub fn coarse() -> impl Iterator<Item = f32> {
         (-40..=0).map(|k| k as f32 * CELL_Y)
+    }
+    /// Metre by metre around a coarse winner.
+    pub fn refine(around: f32) -> impl Iterator<Item = f32> {
+        (-7..=7).map(move |k| around + k as f32)
     }
 }

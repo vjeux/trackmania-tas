@@ -246,7 +246,7 @@ impl Scene {
         let mut n_mesh = 0usize;
         let mut n_mat = 0usize;
 
-        let mut push_view = |bin: &mut Vec<u8>, views: &mut String, bytes: &[u8], n: &mut usize| {
+        let push_view = |bin: &mut Vec<u8>, views: &mut String, bytes: &[u8], n: &mut usize| {
             while bin.len() % 4 != 0 {
                 bin.push(0);
             }
@@ -264,7 +264,7 @@ impl Scene {
             *n - 1
         };
 
-        let mut emit = |verts: &[[f32; 3]],
+        let emit = |verts: &[[f32; 3]],
                         idx: &[u32],
                         mode: u32,
                         name: &str,
