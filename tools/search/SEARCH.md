@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 85 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 89 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -69,7 +69,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
 | `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
-| `--fire --fire-at --fire-where --after-key` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
+| `--fire --fire-at --fire-need --fire-where --after-key --after-ticks` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 
 **Added, because the behaviour existed but was not addressable:**
 
@@ -259,6 +259,7 @@ the fixtures checked in under `tools/testdata`.
 | **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
 | **the whole ladder, on a map with known ground truth** | 228811 (already beaten -- incumbent 20.237, AT 20.555 -- which is why it is the right place to prove an instrument). From the human world record as its seed: state → launch → aim → **a validated finish on the launcher route no human drives**, in one hour against the hand-built private fork's 2 h 43 min. 216 improvements confirmed, **0 phantoms** |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
+| **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart (284238's mechanism, their measurement) |
 
 ### One check that did not work, one that did, and a false negative I nearly published
 
@@ -695,8 +696,8 @@ search refuses rather than proceeding without the control.
 
 ### 5.12 What it cost, and what it bought
 
-85 checks, up from 41. New: `forkoracle/tests/gate.rs` (19, of which 8 are the
-event) and `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
+89 checks, up from 41. New: `forkoracle/tests/gate.rs` (23: the key language,
+the event, the load detector) and `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
 `score.rs`, `loop_invariants.rs` and `oracle_e2e.rs`. Everything but the
 engine-backed tests runs with no server, on the fixtures in `tools/testdata`,
 anchored on `CARGO_MANIFEST_DIR`.
@@ -779,6 +780,67 @@ optimising *did it fire*, found a state that does, and never had to know why.
 That is the correct behaviour for a search and a poor substitute for knowing the
 trigger — anyone quoting the conjunction as the answer should quote this
 alongside it.
+
+---
+
+### 5.14 Angular velocity, and the load detector
+
+Added on request from the 284238 arm, with a measurement behind the request.
+That map's obstacle is decided by whether any wheel stays loaded, and the only
+readout of that inside a fork is this: **a car whose wheels have left the ground
+is a free rigid body, so its body-frame angular rate is exactly constant** —
+bit-identical for 40+ ticks. Position, velocity and attitude cannot see it. That
+arm has tapes matched to their human reference at **0.13 m, vz −25.13 and omega
+within 1.4 °/s on all three axes** that still take the wrong branch.
+
+| term | value |
+|---|---|
+| `omega` `omegax` `omegay` `omegaz` | body-frame angular rate, °/s, from `conj(q[t-1]) * q[t]` |
+| `domega` | the change in that rate per tick — **the load detector** |
+
+Body frame and not Euler, because an Euler rate is a statement about the world's
+axes and is not comparable between two copies of a module a map has screwed
+through −120°; a body rate is the same number in both. Shortest arc, because `q`
+and `−q` are one rotation and a car turning 1° would otherwise read as turning
+359°. `atan2` rather than `acos`, because near zero rotation `w ≈ 1` and `acos`
+loses every digit — which is exactly the regime the load detector works in.
+
+`domega` is to `dspeed` what a load is to a launch: the second term in the
+language that is not a property of a single instant, and for the same reason.
+
+**The control that matters is not "does it read the rate".** It is that `domega`
+separates a free body from a loaded one where an omega *threshold* cannot: both
+fixtures turn hard, both fire a `omega >= 200` control, and only the derivative
+tells them apart.
+
+### 5.15 Two hardenings, paid for on another map
+
+Both came from the 284238 arm's own failures, written up rather than worked
+around.
+
+**`--fire-need N`.** A load detector is not a single-tick test: `domega` is near
+zero for one tick whenever the car happens not to be turning. The event now
+takes a consecutive-tick count, like a predicate's `need`, and the event tick is
+the FIRST tick of the run that held it rather than the tick the count completed
+on.
+
+**`--after-ticks N`, and the general rule behind it.**
+
+> **A window whose end the CANDIDATE chooses is a decoy the instrument builds.**
+
+Their first load metric measured the omega freeze from the obstacle up to *the
+candidate's own nearest approach to a station downstream*. A candidate that
+missed the station therefore got a SHORT window, never reached its freeze inside
+it, and **scored 100% in contact — four launches read as rides and one nearly
+reached a write-up.**
+
+This crate's after-key was already safe in the one direction that matters — it
+is a maximum over every tick after the event, and aborting only removes ticks,
+so a candidate can never *inflate* it by ending early. But a fraction or a dwell
+measure needs a window that does not move at all, and that is one field.
+
+It is the same family as §5.11's decoy: an objective evaluated somewhere the
+candidate had a say in choosing.
 
 ---
 
