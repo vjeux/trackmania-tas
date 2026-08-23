@@ -20,7 +20,7 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, gbx, map, oracle, rotate, secs, segments, selftest};
+use tmmaps::{census, controls, dropscan, gbx, map, oracle, rotate, secs, segments, selftest};
 
 use std::path::{Path, PathBuf};
 
@@ -918,8 +918,11 @@ fn main() {
             // calibrate a gate whose origin is not where its trigger is (a
             // gate anchored at the road surface under a car 14 m above it).
             let csv = std::fs::read_to_string(&args[2]).expect("read trajectory csv");
-            let bidx: usize = flag(&args, "--block").expect("--block N").parse().unwrap();
-            let also: Option<usize> = flag(&args, "--also").map(|s| s.parse().unwrap());
+            // A String, not a usize: a rung on THIS map is the Goal ITEM, spelled
+            // `i0`, and the movers already understand that spelling. Parsing it as a
+            // number made every item-gate ladder impossible to express.
+            let bidx: String = flag(&args, "--block").expect("--block N (or iN for an item)").to_string();
+            let also: Option<String> = flag(&args, "--also").map(|s| s.to_string());
             let off: [f32; 3] = match flag(&args, "--offset") {
                 Some(s) => {
                     let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect();
@@ -990,7 +993,7 @@ fn main() {
                     p[1] as f32 + off[1],
                     p[2] as f32 + off[2]
                 );
-                if let Some(b2) = also {
+                if let Some(b2) = &also {
                     line.push_str(&format!(
                         " {}@{:.3},{:.3},{:.3}",
                         b2,
@@ -1004,6 +1007,7 @@ fn main() {
         }
         "origin" => controls::cmd_origin(&args),
         "census" => census::cmd_census(&args),
+        "dropscan" => dropscan::cmd(&args),
         "chunks" => {
             // Every skippable chunk in the body, with its size. Needed to
             // reason about FREE blocks (0x0304305F) and to tell at a glance
@@ -1083,6 +1087,22 @@ CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume ch
         `i439` / `b2089` when block and item indices collide.
 
 MEASURING WITH A MAP
+  tmmaps dropscan MAP --out DIR --tape GHOST (--cells CX:CX:S,CY,CZ:CZ:S | --cell
+                  CX,CY,CZ[,DIR] | --tapes DIR) [--dirs D,..] [--target X,Y,Z]
+                  [--jobs N] [--at frac:F,..] [--fk PATH] [--server DIR] [--keep]
+        READ THE ENVIRONMENT'S GEOMETRY WITH THE CAR. Moves the spawn to a cell,
+        drives the car off it under a fixed straight-throttle tape, and reads
+        the landing out of the live engine (`fk trace`): one probe is one map
+        plus one trace, and the summary is apex, resting place, closest approach
+        to --target, and when. This is how you ask "what is over there" on a map
+        whose surfaces belong to the DECORATION and not to the map file.
+        --tapes DIR instead scores a POPULATION OF TAPES on the untouched map,
+        with the same readout — the poor man's state objective.
+        Controls, both refusals: the spawn moved to its OWN cell must reproduce
+        the untouched map byte-for-byte, and a probe at the real spawn cell must
+        start where the map's spawn is. A trace that is all zeroes is REFUSED:
+        it passes fk's self-check and means the cell produced no car at all
+        (every cell outside the map grid does).
   tmmaps ladder MAP --spec F --ghosts G... [-j N]
         arrival-time ladders. One rung per spec line, whitespace-separated
         moves, so a rung is a CURTAIN of gates across the corridor rather than

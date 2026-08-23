@@ -27,6 +27,7 @@
 pub mod census;
 pub mod cli;
 pub mod controls;
+pub mod dropscan;
 pub mod gbx;
 pub mod ghost;
 pub mod map;

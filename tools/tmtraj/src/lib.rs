@@ -21,6 +21,7 @@ pub(crate) mod fmt;
 pub(crate) mod facingcmd;
 pub(crate) mod impactcmd;
 pub(crate) mod intgcmd;
+pub mod aircmd;
 pub mod json;
 pub mod lines;
 pub(crate) mod manifest;

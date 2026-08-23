@@ -357,6 +357,8 @@ fn cmd_inspect(a: &[String]) {
     }
 }
 
+mod sweep;
+
 fn cmd_tape(a: &[String]) {
     let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|set|diff|stats|bits>"));
     let rest = &a[1..];
@@ -874,6 +876,7 @@ fn cmd_tape(a: &[String]) {
                 }
             }
         }
+        "sweep" => sweep::cmd(rest),
         "bits" => cmd_bits(rest),
         o => die(format!("unknown `ghost tape` operation {:?}", o)),
     }

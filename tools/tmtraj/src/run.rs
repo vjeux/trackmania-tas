@@ -123,6 +123,7 @@ pub fn run() {
         }
         "impacts" => crate::impactcmd::cmd(rest),
         "provenance" => crate::provcmd::cmd(rest),
+        "airborne" => crate::aircmd::cmd(rest),
         "motion" => crate::whlcmd::cmd_motion(rest),
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),
