@@ -300,6 +300,24 @@ impl Verdict {
         pct(&self.sorted_tilt(), 0.5)
     }
 
+    /// How many of the samples the model answers are standing on the hull of a
+    /// block that MOVES — geometry this model only has at one instant.
+    ///
+    /// It is reported separately rather than folded in because the two numbers
+    /// mean different things: a sample resting on static geometry is an
+    /// answer, and a sample resting on a rotor blade is this model having
+    /// caught that blade at t = 0.
+    pub fn on_moving(&self) -> usize {
+        self.classes
+            .iter()
+            .zip(&self.materials)
+            .filter(|(c, m)| {
+                matches!(c, Class::Resting | Class::Loose)
+                    && m.as_deref().map_or(false, |m| m.ends_with("(moving)"))
+            })
+            .count()
+    }
+
     /// What the car was standing on, by material.
     pub fn materials(&self) -> BTreeMap<String, usize> {
         let mut out = BTreeMap::new();

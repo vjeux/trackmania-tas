@@ -136,6 +136,43 @@ impl<'a> Graph<'a> {
                 self.r.take(8)?;
                 Ok(Node::Other(class_id))
             }
+            // `CPlugDynaObjectModel`: a block that MOVES. Eighty-three bytes
+            // at version 13, identical in every one in the pack (rotor, tube,
+            // turnstile, flag, light ray), read off `ObstacleTube6m` and
+            // confirmed against the other three — the rotor is the file that
+            // names its two shapes, `MoveShape` at the first reference and
+            // `HitShape` at the second, which is what fixes their order.
+            //
+            // The member list is in the game's own class reference
+            // (`next.openplanet.dev/Plug/CPlugDynaObjectModel`); the byte
+            // layout is not, and this is it:
+            //
+            // ```
+            //  0 version = 13      0x18 f32 BreakSpeedKmh     0x36 u32
+            //  4 u32 IsStatic      0x1c f32 Mass              0x3a u32
+            //  8 u32 DynamizeOnSpawn 0x20 f32 LightAlive_Min  0x3e u32
+            //  c ref Mesh          0x24 f32 LightAlive_Max    0x42 u8
+            // 10 ref DynaShape     0x28 u32                   0x43 ref LocAnim
+            // 14 ref StaticShape   0x2c u32                   0x47 u32
+            //                      0x30 u8, 0x31 u8           0x4b u32
+            //                      0x32 u32                   0x4f ref WaterModel
+            // ```
+            C_DYNA_OBJECT => {
+                let _version = self.r.u32()?;
+                let _is_static = self.r.u32()?;
+                let _dynamize_on_spawn = self.r.u32()?;
+                let mesh = self.noderef()?;
+                let dyna_shape = self.noderef()?;
+                let static_shape = self.noderef()?;
+                self.r.take(4 * 6)?; // break speed, mass, two light durations, two words
+                self.r.take(2)?;
+                self.r.take(4 * 4)?;
+                self.r.take(1)?;
+                self.noderef()?; // LocAnim
+                self.r.take(8)?;
+                self.noderef()?; // WaterModel
+                Ok(Node::Dyna(DynaObject { mesh, dyna_shape, static_shape }))
+            }
             // NPlugDyna_SConstraintModel: a spring, no geometry.
             0x2F074000 => {
                 self.r.take(4 * 5)?;

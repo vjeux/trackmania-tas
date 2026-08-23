@@ -639,7 +639,14 @@ fn main() {
             let idx = mapgeom::probe::Index::build(&scene, 32.0);
             for at in &ats {
                 let col = idx.column(at[0], at[2]);
-                println!("column at x {} z {} (yoff {}): {} surfaces", at[0], at[2], yoff, col.len());
+                println!(
+                    "column at x {} z {} (yoff {}): {} surfaces  (Water is at the plane a car\n  RESTS on, {} m below where it is drawn -- see probe::WATER_DRAFT)",
+                    at[0],
+                    at[2],
+                    yoff,
+                    col.len(),
+                    mapgeom::probe::WATER_DRAFT
+                );
                 for (y, mat) in col.iter().take(40) {
                     println!("  y {:>10.3}   {}", y, mat);
                 }
@@ -747,9 +754,11 @@ fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
     );
     if v.owed() > 0 {
         println!(
-            "    of the {} samples the model owes, {:.1} % have a surface",
+            "    of the {} samples the model owes, {:.1} % have a surface \
+             ({} of them on a block that MOVES, drawn at its rest pose)",
             v.owed(),
-            100.0 * v.covered_fraction()
+            100.0 * v.covered_fraction(),
+            v.on_moving(),
         );
     }
     println!(
@@ -862,6 +871,10 @@ fn write_scene(scene: &mapgeom::scene::Scene, out: &str) {
 fn describe(n: &Node) -> String {
     match n {
         Node::Prefab(p) => format!("CPlugPrefab, {} entities", p.ents.len()),
+        Node::Dyna(d) => format!(
+            "CPlugDynaObjectModel mesh={} moving shape={} static shape={}",
+            d.mesh, d.dyna_shape, d.static_shape
+        ),
         Node::StaticObject(s) => format!(
             "CPlugStaticObjectModel mesh={} collidable={} shape={}",
             s.mesh, s.mesh_collidable, s.shape

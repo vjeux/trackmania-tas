@@ -25,6 +25,23 @@ pub struct Hit {
     pub material: String,
 }
 
+/// How far below the modelled water plane a floating car's origin sits.
+///
+/// MEASURED, and it is a hard number: on Cobalt Cove the water planes sit on
+/// exact 8 m cell boundaries (42.000, 130.000) and the car reads 41.100 and
+/// 129.100 — **0.900 m under, four times out of four**. Before this, a car on
+/// water had *nothing under it at all*: the plumb line only looks down, the
+/// water triangle is above the car's origin, and the sample counted as a hole
+/// in the model. That was the single largest remaining cause of missing
+/// coverage — the whole of 227654's 112-sample hole and the two biggest
+/// stretches on Cobalt Cove, all reporting `nearest triangle 0.85-0.98 m
+/// (Water)`.
+///
+/// So the index lowers every `Water` triangle by this much: what it holds is
+/// the plane a car RESTS on, not the plane the water is drawn at. `map` and
+/// the glTF are untouched.
+pub const WATER_DRAFT: f32 = 0.90;
+
 /// A uniform grid over XZ holding triangle references, so a plumb line does
 /// not have to test a million triangles.
 pub struct Index {
@@ -59,7 +76,13 @@ impl Index {
             if !crate::scene::is_collidable(name) {
                 continue;
             }
-            idx.groups.push((name.clone(), g.verts.clone(), g.tris.clone()));
+            let mut verts = g.verts.clone();
+            if name.starts_with("Water") {
+                for v in &mut verts {
+                    v[1] -= WATER_DRAFT;
+                }
+            }
+            idx.groups.push((name.clone(), verts, g.tris.clone()));
         }
         for (gi, (_, verts, tris)) in idx.groups.iter().enumerate() {
             for (ti, t) in tris.iter().enumerate() {
