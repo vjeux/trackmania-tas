@@ -68,10 +68,26 @@ pub fn cmd(a: &[String]) {
             }
         }
         Some("show") => show(&a[1..]),
+        Some("entfields") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]")
+            });
+            let g = |k: &str| num(a, k).map(|v| v as i32);
+            match set_ent_fields(inp, out, g("--u01"), g("--u02"), g("--u04")) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         _ => die(
             "ghost record rebuild IN OUT --span MS [--period MS] [--template N]\n\
              ghost record shorten IN OUT   -- make the scene end when the car does,\n\
              \x20                                without touching the car's samples\n\
+             ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]\n\
+             \x20                            -- the vehicle entity's UNIDENTIFIED header\n\
+             \x20                               fields, for the client-import bisect\n\
              ghost record show FILE",
         ),
     }
@@ -291,6 +307,57 @@ pub fn rebuild_to(
         "{before} -> 1 entity, {n} samples every {period} ms spanning 0.000 .. {}",
         secs(span_ms)
     ))
+}
+
+/// Set the UNIDENTIFIED header fields of the record's vehicle entity.
+///
+/// This exists for one investigation and says so: two of this project's
+/// regenerated ghosts crash the game client on import while four others from
+/// the same path import cleanly, and the only field that separates them in any
+/// dump we have is the car entity's `u01` — `0x02000006` on all four that
+/// import, `0x0200000B` and `0x020000F1` on the two that crash. The value is
+/// inherited from the container donor and nothing in this project knows what it
+/// means, so the only way to find out is to move it, one field at a time, in
+/// both directions, and ask the client.
+///
+/// It touches no sample and no time: the car's trajectory is required to come
+/// back byte-identical, exactly as `shorten` requires.
+pub fn set_ent_fields(
+    inp: &str,
+    out: &str,
+    u01: Option<i32>,
+    u02: Option<i32>,
+    u04: Option<i32>,
+) -> Result<String, String> {
+    if u01.is_none() && u02.is_none() && u04.is_none() {
+        return Err("nothing to set: give --u01, --u02 or --u04".into());
+    }
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to set fields on")?;
+        let e = &mut rd.ents[vi];
+        before = format!("u01 {} u02 {} u04 {}", e.u01, e.u02, e.u04);
+        if let Some(v) = u01 {
+            e.u01 = v;
+        }
+        if let Some(v) = u02 {
+            e.u02 = v;
+        }
+        if let Some(v) = u04 {
+            e.u04 = v;
+        }
+        after = format!("u01 {} u02 {} u04 {}", e.u01, e.u02, e.u04);
+        Ok(())
+    })?;
+    let a = gbx::record::decode_ghost(inp)?;
+    let b = gbx::record::decode_ghost(out)?;
+    if a.samples.len() != b.samples.len() || a.raw != b.raw {
+        return Err("the car's samples changed -- refusing, this operation must not touch the \
+                    trajectory"
+            .into());
+    }
+    Ok(format!("{before} -> {after}; the car's {} samples are byte-identical", a.samples.len()))
 }
 
 fn rebuild(a: &[String]) {

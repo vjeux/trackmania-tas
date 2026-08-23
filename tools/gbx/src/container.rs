@@ -353,7 +353,14 @@ impl GhostResult {
             return None;
         }
         let n = raw[5] as i32;
-        if n <= 0 || n >= 200 || raw.len() < RESULT_HEADER_WORDS + 2 * n as usize {
+        // n == 0 is a WELL-FORMED EMPTY LIST, not a disagreement: the header,
+        // a count of zero and the terminator, seven words in all. It is what a
+        // search carrier declares when it never knew a checkpoint, and reading
+        // it as "cannot decode" is what made `ghost declare --cps` return the
+        // file unchanged on exactly the files that most need a list written —
+        // its read-back control caught that ("asked for 5 checkpoints, the file
+        // declares 0") but only after the write had silently done nothing.
+        if n < 0 || n >= 200 || raw.len() < RESULT_HEADER_WORDS + 2 * n as usize {
             return None;
         }
         Some(GhostResult {
