@@ -173,3 +173,81 @@ ghost census FILE --expect-ms MS --other MS,... # every millisecond stored as a 
 The reference table is every human recording this project holds for each of the
 thirteen maps: 434 downloads over 13 maps. Where a map's only reference is one
 file, the contamination test says so rather than passing.
+
+---
+
+# Addendum: the tick, chased to the end
+
+`ghost phase` now decomposes the residual **along** and **across** the direction
+of travel. That is the quantity that settles what the magnitude could not:
+along-track displacement with nothing across it is *the same curve at a
+different instant*, while a physics difference has both components.
+
+| map | along track | across track | = time |
+|---|---|---|---|
+| 267859 | +0.1357 m | 0.0067 m | **+9.83 ms** |
+| 279209 | +0.3603 m | 0.0066 m | **+9.72 ms** |
+| 279218 | +0.3652 m | 0.0077 m | **+9.67 ms** |
+| 285268 | +0.5876 m | 0.0115 m | **+9.96 ms** |
+| 228607 (clean) | −0.0000 m | 0.0004 m | −0.00 ms |
+
+So it is one physics tick, late, and the cause is the record↔engine **pairing**,
+not the clock-bias measurement — which is why `--biastick` from 60 to 500 never
+moved it. `fk regen --pair-shift-ms N` moves the pairing.
+
+## And then five runs refuted the three-run version of this
+
+Three runs on two maps plus a clean control said `--pair-shift-ms -10` was the
+answer. Five runs on all five affected maps says that is true on **two of them**
+and false on the other three. Both sets of numbers are below; the second is the
+one to believe.
+
+| map | shift 0, five runs | shift −10, five runs |
+|---|---|---|
+| **228607** (clean control) | 0.000492 ×5 | 0.824145 ×5 |
+| **267859** | 0.136277 ×5 | **0.000093 ×5** |
+| **279209** | 0.360420 ×5 | **0.000541 ×5** |
+| 270051 | 0.000496, 0.318990, 0.000496, 0.318990, 0.318990 | 0.319954, 0.000031, 0.319954, 0.000031, 0.319954 |
+| 279218 | 0.365277, 0.365277, 0.365325, 0.365325, 0.365325 | 0.000475, 0.000029, 0.366339, 0.000475, 0.366339 |
+| 285268 | 0.587727, 0.000492, 0.587727, 0.587727, 0.587849 | 0.587852, 0.000031, 0.587849, 0.000031, 0.587849 |
+
+**There are two populations of map, and only the first has a correction.**
+
+* **Deterministic offset — 267859 and 279209.** Five runs identical at shift 0,
+  five runs identical at −10, and the −10 value is sub-millimetre. The pairing
+  is reliably a tick late and the flag fixes it. 228607 is the same shape with
+  the offset at zero, and the same −10 makes it a tick *wrong* — which is the
+  negative control that stops this being a number that flatters everything.
+* **A per-run lottery — 270051, 279218, 285268.** The offset is not a property
+  of the map at all: individual runs land on either side, and the shift merely
+  **re-rolls** which ones land right. 270051 is 2-good-of-5 before and
+  2-good-of-5 after, with *different runs* good. Applying −10 there would be
+  choosing by coin toss and calling it a calibration.
+
+**Nothing was regenerated on the strength of this.** The five tick-offset maps
+still carry their original transforms with only the input echo rewritten, which
+is what the table above records.
+
+## What the lottery maps actually need
+
+Not a flag. The pairing has to become deterministic before any correction to it
+means anything, and that is a fix in the regenerator rather than a knob on it.
+Until then there is no way to choose from the file alone: a subject run has no
+reference for *its own* tick, and the obvious move — regenerate N times and take
+the majority — is the chooser this same session already built and disproved,
+because on two of these maps the majority is the wrong tick.
+
+## Two things this measurement is evidence for beyond itself
+
+**The "0.5 mm floor" is not a floor.** With the pairing corrected on 267859 the
+control returns **0.000093 m**, five times better. That is independent
+agreement, from a different direction, with the finding that ~0.5 mm is the
+distance between two *copies of the car struct* rather than an accuracy limit —
+and it is why every "on the game's tick" verdict in the table above is
+conditional on the live-wheel-copy fix, which is being held to land together
+with this one.
+
+**Flakiness that is "usually right" is worth one more look.** The run-to-run
+variation here was read as regenerator noise for a long time. It is the pairing
+quantising to one side or the other, and on the two deterministic maps it is not
+noise at all.
