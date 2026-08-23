@@ -9,6 +9,7 @@
 pub mod compact;
 pub mod json;
 pub mod pyfmt;
+pub mod records;
 pub mod serve;
 pub mod site;
 pub mod stats;

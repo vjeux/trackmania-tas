@@ -6,11 +6,13 @@
 //!   verify   round-trip a TICK script against the ghost it came from
 //!   stats    measure a built page (either variant) and report what is in it
 //!   serve    serve a directory over HTTP, for fetching a built page
+//!   refresh  fetch every map's live human leaderboard and bank the responses
+//!   records  join that bank with what the pages claim, and write the table
 //!
 //! Manual argument parsing; the only dependency is the workspace's `gbx` crate.
 
 use tmsite::tick::secs;
-use tmsite::{compact, serve, site, stats, tick};
+use tmsite::{compact, records, serve, site, stats, tick};
 
 const USAGE: &str = "\
 usage: tmsite <command> [flags]
@@ -26,6 +28,10 @@ usage: tmsite <command> [flags]
   stats    --html F [--html F2 ...]
            measure built pages and print their numbers
   serve    --root D [--port N] [--requests N]
+  refresh  --root D --bank DIR [--proxy URL] [--sleep MS] [--ua S]
+           GET every map's live board and bank the raw responses
+  records  --root D --bank DIR [--prev TSV] [--out F] [--tsv F] [--fetched S] [--detail ID]
+           the leaderboard table, from the bank and the pages; no network
 
 defaults: --dir /tmp/entrec/paths
 ";
@@ -51,6 +57,14 @@ fn main() {
     let mut root = ".".to_string();
     let mut port = 8731u16;
     let mut requests = 0usize;
+    let mut bank: Option<String> = None;
+    let mut prev: Option<String> = None;
+    let mut tsv: Option<String> = None;
+    let mut proxy = "http://fwdproxy:8080".to_string();
+    let mut sleep_ms = 1800u64;
+    let mut ua = records::DEFAULT_UA.to_string();
+    let mut fetched = String::new();
+    let mut detail: Option<i64> = None;
 
     while i < args.len() {
         let a = args[i].clone();
@@ -92,6 +106,14 @@ fn main() {
             "--root" => root = next!(),
             "--port" => port = next_num!("an integer"),
             "--requests" => requests = next_num!("an integer"),
+            "--bank" => bank = Some(next!()),
+            "--prev" => prev = Some(next!()),
+            "--tsv" => tsv = Some(next!()),
+            "--proxy" => proxy = next!(),
+            "--sleep" => sleep_ms = next_num!("milliseconds"),
+            "--ua" => ua = next!(),
+            "--fetched" => fetched = next!(),
+            "--detail" => detail = Some(next_num!("a map id")),
             "-h" | "--help" => {
                 print!("{}", USAGE);
                 return;
@@ -122,6 +144,16 @@ fn main() {
         "verify" => run_verify(ghost_path, script, archive, raw),
         "stats" => run_stats(&htmls),
         "serve" => serve::serve(&root, port, requests),
+        "refresh" => match bank {
+            Some(bank) => records::refresh(&records::Fetch { root, bank, proxy, sleep_ms, ua })
+                .map(|m| println!("{}", m)),
+            None => Err("refresh needs --bank".to_string()),
+        },
+        "records" => match bank {
+            Some(bank) => records::records(&records::Table { root, bank, prev, out, tsv, fetched, detail })
+                .map(|m| eprintln!("{}", m)),
+            None => Err("records needs --bank".to_string()),
+        },
         other => {
             eprintln!("unknown command {:?}\n{}", other, USAGE);
             std::process::exit(2);

@@ -15,7 +15,7 @@ inside `gbx`, so nothing has to be installed to build.
 
 ```
 cargo build --release
-cargo test  --release        # 42 tests, fixtures under testdata/
+cargo test  --release        # 52 tests, fixtures under testdata/
 
 tmsite site     [--dir D] [--out F] [--stride N]            # default stride 1
 tmsite compact  [--dir D] [--out F] [--stride N] [--pick K] # default stride 3
@@ -23,9 +23,46 @@ tmsite tick     --ghost G [--out F] [--archive N] [--raw] [--seed N]
 tmsite verify   --ghost G [--script F] [--archive N] [--raw]
 tmsite stats    --html F [--html F2 ...]
 tmsite serve    --root D [--port N] [--requests N]
+tmsite refresh  --root D --bank DIR [--proxy URL] [--sleep MS] [--ua S]
+tmsite records  --root D --bank DIR [--prev TSV] [--out F] [--tsv F]
+                [--fetched S] [--detail ID]
 ```
 
 `--dir` defaults to `/tmp/entrec/paths` (the decoded trajectories).
+
+## The leaderboard refresh — `refresh` and `records`
+
+`refresh` GETs every `<id>-<slug>/` map's live human leaderboard and **banks the
+raw response**, one file per request, plus `fetch_log.tsv` with the HTTP status
+and byte count of each. `records` reads that bank plus the pages and writes
+[`LEADERBOARDS.md`](../../LEADERBOARDS.md); it never touches the network, so the
+table can be rebuilt, re-argued and diffed without re-fetching. Both are
+GET-only — **nothing in this repo has ever been submitted to a leaderboard.**
+
+Two sources, kept apart rather than merged: trackmania.io
+(`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the live board, and
+trackmania.exchange (`/api/maps?id=…&fields=…`) for the TMX id → uid resolution
+and its own mirror of the same record. Where they disagree, the Controls
+section of the output says so. Requests go through `--proxy`
+(default `http://fwdproxy:8080`) because the environment is cleared before curl
+runs, are spaced `--sleep` ms apart (default 1800) and identify themselves with
+a descriptive User-Agent; a 429 backs off 30 s and retries once.
+
+**An empty board is not the same as a failed fetch**, and this is the whole
+difficulty of the job: several maps here genuinely have zero human records.
+A map is only reported as having none when other maps in the *same pass*
+returned populated boards — the count is printed with the verdict — and a map
+whose request did not return 200 is `UNKNOWN`, never "no records".
+
+`--prev` takes a previous capture (this tool's TSV, or the 2026-08-21 one: the
+columns read are `mapid`, `wr_ms`, `holder`, `records`) and separates two
+different questions — *has the board moved* and *is our page stale*. A live
+figure the previous capture already carried is a page/live divergence, not a new
+record, and the verdict says so instead of crying wolf; `134672` and `227654`
+quote a deliberately different figure and are the reason this exists.
+
+`--detail ID` prints one map's banked board row by row, with each row's stored
+replay URL — the way to interrogate a surprising verdict before believing it.
 
 ## Faithfulness
 

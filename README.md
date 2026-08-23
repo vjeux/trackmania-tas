@@ -90,6 +90,11 @@ record set on a build the game still runs — is used instead.
 
 ## Validation
 
+**Live leaderboards — [`LEADERBOARDS.md`](LEADERBOARDS.md).** Every map in this
+repo against the board as it stands today, refreshed 2026-08-23. Where a page
+here and that table disagree, the table is the newer measurement and names what
+it fetched.
+
 Every published replay was re-simulated by the dedicated server against a
 pristine copy of the map, in a fresh process, with a downloaded human ghost in
 the same batch as a known-answer control. A replay is only listed here if it
