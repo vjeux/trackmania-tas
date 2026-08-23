@@ -227,15 +227,16 @@ that happens to have someone's scratch directory, and is decoration everywhere
 else. The `0.00s` is the tell.
 
 Both halves are fixed here. The fixtures are the two human ghosts and the map
-**checked in beside `tools/ghost`**, addressed by relative path, so a missing
-one is a panic rather than a skip. The engine-dependent tests do skip, and say
+**checked in under `tools/testdata`**, addressed from `CARGO_MANIFEST_DIR` so
+they do not depend on where the test is run from, and so a missing one is a
+panic rather than a skip. The engine-dependent tests do skip, and say
 so — and `TM_REQUIRE_ENGINE=1` turns that skip into a failure, so a box with an
 engine cannot quietly stop running them.
 
 ### The controls
 
 Everything below was run on this box, against the real dedicated server, with
-the fixtures checked in beside `tools/ghost`.
+the fixtures checked in under `tools/testdata`.
 
 | control | result |
 |---|---|
@@ -577,13 +578,16 @@ it. Any fork search that has not yet found a finisher was affected.
 `score.rs` and `loop_invariants.rs` and two more in `oracle_e2e.rs` -- a false
 band-2 finish is refused like any other false time, and a state is banked as a
 state, named as one, with its measurement written out beside it. Everything but
-the engine-backed tests runs with no server, on fixtures checked in beside
-`tools/ghost` and addressed by relative path.
+the engine-backed tests runs with no server, on the fixtures in `tools/testdata`,
+anchored on `CARGO_MANIFEST_DIR` so they do not depend on where the test is run
+from.
 
 On 228811, seeded with the human world record, 24 fork workers, key
 `min(abs(bodyright), 5*(-vz))` — the measured firing conjunction — the search
-took the key from **0.97 to 57.4 in fifteen minutes**, and moved the state it is
-scoring from `z = 714.9` to `z = 709.1`: the launcher line is at z ≈ 709. The
+took the key from **0.97 to 57.4** and moved the state it is scoring from
+`z = 714.9` to `z = 709.1`: the launcher line is at z ≈ 709. 35 minutes,
+1 049 160 evaluations, **99 improvements confirmed by the plain oracle and zero
+phantoms**; it was at 57.2 by minute six and flat after fifteen. The
 author's own contact, measured through the same mechanism from his own recorded
 telemetry, is **86.81** at (71.4, 50.4, 710.3) — which reproduces the published
 figure of 86.8 m/s of body-lateral speed to four digits, and is the strongest
