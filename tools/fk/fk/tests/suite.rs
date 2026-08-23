@@ -609,3 +609,395 @@ fn engine_regen_writes_a_file_that_agrees_with_its_own_tape() {
         r.secs()
     );
 }
+
+// =========================================================================
+// PURE -- the carrier-byte fitter
+//
+// These are the checks on the instrument that named 25 of the 91 sample bytes
+// a regenerated ghost used to inherit. Every one of them pins a way the fitter
+// was observed to be wrong while it was being built, and every one of those
+// ways looked like a result at the time.
+// =========================================================================
+
+use fk::carrier::{fit, score, Channel, Fit, Kind, Write};
+
+/// The wheel-rotation encoding, synthesised and recovered.
+///
+/// The channel that matters most here is an ANGLE that wraps: a wheel turns
+/// twice between two 50 ms samples at racing speed, so the recorded `u16` runs
+/// through its whole range several times a second. A fitter that regresses on
+/// raw target increments fits noise on it. This builds exactly that signal from
+/// a known coefficient and requires the fit back, to the last sample.
+#[test]
+fn a_wrapping_channel_is_fitted_back_exactly() {
+    let k = 40.743_043_733_253;
+    let c = 0.0;
+    // 4 rad per sample: past a full turn, so the u16 wraps every other step.
+    let v: Vec<f64> = (0..400).map(|i| i as f64 * 4.0 + 0.137).collect();
+    let t: Vec<u32> = v.iter().map(|x| ((k * x + c).floor() as i64).rem_euclid(65536) as u32).collect();
+    let f = fit(&v, &t, 65536).expect("a fit");
+    assert_eq!(f.exact, t.len(), "every sample must come back exact");
+    // 1e-6, not 1e-9, and the looseness is the measurement: over a run this
+    // long several coefficients reproduce every sample, so `k` is determined to
+    // about a part in a million and no better. That is exactly the spread the
+    // eight answer keys showed for the real wheel constant (40.743028 to
+    // 40.743071), which is how we know the spread is the fitter's resolution
+    // and not eight different engines.
+    assert!(
+        (f.k - k).abs() / k < 1e-6,
+        "recovered k {} against {}",
+        f.k,
+        k
+    );
+}
+
+/// **The grid offset is a real number and forcing it onto an integer costs
+/// exactness.**
+///
+/// Measured while building this: rpm fitted 81.3 % with an integer `c` and
+/// 92.7 % with a real one, on the same slot with the same `k` — the difference
+/// between `floor` and `round` and every offset in between. The project has
+/// been bitten from the other side too, by an input echo written with a `round`
+/// where the game writes a `floor`, worth a Cohen's kappa of 0.467 against
+/// 1.000. So the offset is fitted, and this is the fixture that says so.
+#[test]
+fn the_grid_offset_is_fitted_as_a_real_number() {
+    let (k, c) = (0.5, 0.5);
+    let v: Vec<f64> = (0..200).map(|i| i as f64).collect();
+    let t: Vec<u32> = v.iter().map(|x| ((k * x + c).floor() as i64).rem_euclid(256) as u32).collect();
+    let f = fit(&v, &t, 256).expect("a fit");
+    assert_eq!(f.exact, t.len(), "the real offset reproduces every sample");
+    // and the two integer offsets either side do not
+    for ci in [0.0f64, 1.0] {
+        let g = score(&v, &t, 256, f.k, ci);
+        assert!(
+            g.exact < t.len(),
+            "an integer offset {} should not reproduce a half-step grid",
+            ci
+        );
+    }
+}
+
+/// **An integer read as a float is a lookup table, not a law.**
+///
+/// Gear is stored as a small integer and recorded as `4 * gear + 1`. Read as an
+/// `f32` that integer is a denormal of about 1e-45, and the affine fit returned
+/// `k = 2.85e45` — a flawless 100 % on all eight answer keys, with a
+/// coefficient that means nothing, transfers to nothing, and would have gone
+/// into the table as the encoding of gear. The guard is a plausibility bound on
+/// `k`; this is the input that motivated it.
+#[test]
+fn an_integer_read_as_a_float_is_refused_rather_than_fitted() {
+    let gears: Vec<u32> = (0..300).map(|i| 1 + (i / 40) as u32 % 5).collect();
+    let t: Vec<u32> = gears.iter().map(|g| 4 * g + 1).collect();
+    // as the engine stores it: an integer
+    let as_int: Vec<f64> = gears.iter().map(|g| *g as f64).collect();
+    let good = fit(&as_int, &t, 256).expect("a fit on the integer");
+    assert_eq!(good.exact, t.len(), "4*gear+1 is exactly fittable");
+    assert!(good.k.abs() < 1e3, "and with a coefficient a human can read: {}", good.k);
+    // as the sweep would see it if it read the same bytes as an f32
+    let as_f32: Vec<f64> = gears.iter().map(|g| f32::from_bits(*g).into()).collect();
+    match fit(&as_f32, &t, 256) {
+        None => {}
+        Some(f) => assert!(
+            f.k.abs() <= 1e9,
+            "a coefficient of {:e} is the fitter compensating for the wrong type, and must \
+             not be returned",
+            f.k
+        ),
+    }
+}
+
+/// **A permutation of the target destroys the fit, which is what makes the
+/// permutation floor a floor.**
+///
+/// The sweep scores every channel twice — once against the recording and once
+/// against a row-permuted copy of the same column — because at ~460 instants
+/// the best of tens of thousands of candidates sits about four standard
+/// deviations high for free. That number is only a floor if shuffling really
+/// does destroy the relationship, and this is the check that it does.
+#[test]
+fn shuffling_the_target_destroys_the_fit() {
+    let k = 40.743_043_733_253;
+    let v: Vec<f64> = (0..400).map(|i| i as f64 * 4.0).collect();
+    let t: Vec<u32> = v.iter().map(|x| ((k * x).floor() as i64).rem_euclid(65536) as u32).collect();
+    let mut sh = t.clone();
+    // a fixed, reproducible shuffle
+    let mut s: u64 = 0x5eed;
+    for i in (1..sh.len()).rev() {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        sh.swap(i, (s % (i as u64 + 1)) as usize);
+    }
+    let real = fit(&v, &t, 65536).expect("a fit").rate();
+    let null = fit(&v, &sh, 65536).map(|f| f.rate()).unwrap_or(0.0);
+    assert!(real > 0.99, "the real relationship: {:.3}", real);
+    assert!(
+        null < 0.05,
+        "a shuffled target must not fit: {:.3} -- if it does, the permutation floor is not a \
+         floor and every 'candidate' in a scan is unjudged",
+        null
+    );
+}
+
+/// The frozen table survives a round trip, including the write column.
+///
+/// The write column is the one that is easy to get wrong and expensive to get
+/// wrong: it names the instant WITHIN a tick relative to the car, not an
+/// absolute first-or-last, because which absolute write the recorder captured
+/// moves between runs on the same binary. A table written with one meaning and
+/// read with the other scores 100 % on five keys and 1 % on three.
+#[test]
+fn the_frozen_table_round_trips() {
+    for (s, ch) in [("b91", Channel::Byte(91)), ("u16@6", Channel::U16(6))] {
+        assert_eq!(Channel::parse(s), Some(ch));
+        assert_eq!(ch.name(), s);
+    }
+    for (s, w) in [("car", Write::Car), ("other", Write::Other)] {
+        assert_eq!(Write::parse(s), Some(w));
+        assert_eq!(w.name(), s);
+    }
+    for (s, k) in [("raw", Kind::Raw), ("affine", Kind::Affine), ("affineu8", Kind::AffineU8)] {
+        assert_eq!(Kind::parse(s), Some(k));
+        assert_eq!(k.name(), s);
+    }
+    assert_eq!(Channel::U16(6).modulus(), 65536);
+    assert_eq!(Channel::Byte(6).modulus(), 256);
+    let sample: Vec<u8> = (0..116u8).collect();
+    assert_eq!(Channel::Byte(6).value(&sample), Some(6));
+    assert_eq!(Channel::U16(6).value(&sample), Some(6 | 7 << 8));
+    let f = Fit { k: 1.0, c: 0.0, exact: 3, n: 4 };
+    assert!((f.rate() - 0.75).abs() < 1e-12);
+}
+
+/// **The checked-in table is the result, so it is checked.**
+///
+/// `tools/fk/carrier-bytes.tsv` is what `fk carrier write` reads and what
+/// `ghost regen` will stop inheriting 25 bytes because of. A typo in it is a
+/// silently wrong file, so its shape is pinned here: every row parses, every
+/// offset is inside the window the commands gather, and the four wheels really
+/// are a block at stride 44 rather than four numbers that happen to be near
+/// each other.
+#[test]
+fn the_checked_in_carrier_table_is_well_formed() {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../carrier-bytes.tsv");
+    let rows = fk::carrier::read_table(&p.to_string_lossy()).expect("the table parses");
+    assert!(rows.len() >= 19, "only {} rows", rows.len());
+    let mut by_channel = std::collections::BTreeMap::new();
+    for r in &rows {
+        assert!(
+            (-1_000_000..1_000_000).contains(&r.rel),
+            "{} sits at {} from the car, outside any window these commands gather",
+            r.ch.name(),
+            r.rel
+        );
+        assert!(r.k.is_finite() && r.k.abs() < 1e9, "{} has k {:e}", r.ch.name(), r.k);
+        assert!(
+            by_channel.insert(r.ch.name(), r.rel).is_none(),
+            "{} appears twice; a channel has one encoding or none",
+            r.ch.name()
+        );
+    }
+    // the wheel block: four rotations at stride 44, and each wheel's suspension
+    // travel four bytes ahead of its own rotation
+    let rot: Vec<i64> = [6, 8, 10, 12]
+        .iter()
+        .map(|b| by_channel[&format!("u16@{}", b)])
+        .collect();
+    for w in rot.windows(2) {
+        assert_eq!(w[1] - w[0], 44, "the wheel rotations are a block at stride 44: {:?}", rot);
+    }
+    for (b, r) in [23usize, 25, 27, 29].iter().zip(rot.iter()) {
+        assert_eq!(
+            by_channel[&format!("b{}", b)],
+            r - 4,
+            "byte {} is the suspension of the wheel whose rotation is at {}",
+            b,
+            r
+        );
+    }
+    // ... and the rest of the wheel's own 44-byte record, at the slots the
+    // class reference names: the ground material 12 bytes past the rotation and
+    // `Icing01` 12 past that. The point of asserting the STRUCTURE rather than
+    // the numbers is that a typo in one offset shows up as a broken stride
+    // rather than as a byte that quietly reads its neighbour.
+    for (b, r) in [24usize, 26, 28, 30].iter().zip(rot.iter()) {
+        assert_eq!(by_channel[&format!("b{}", b)], r + 12, "byte {} is a ground material", b);
+    }
+    for (b, r) in [81usize, 82, 83, 84].iter().zip(rot.iter()) {
+        assert_eq!(by_channel[&format!("b{}", b)], r + 24, "byte {} is an Icing01", b);
+    }
+}
+
+/// **Every offset in the table is relative to ONE anchor, and the table says
+/// which.**
+///
+/// Not a style rule. Another arm located the same `gear` slot on the same day
+/// and reported it 408 bytes away, because its anchor was the locator's own
+/// position address and this one is the copy with a live wheel block — two
+/// correct measurements that read as a contradiction, for a day, because
+/// neither table named its anchor. The `write` column is the same hazard at the
+/// scale of one tick, and it is checked the same way.
+#[test]
+fn the_table_names_its_anchor_and_its_write() {
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../CARRIER.md"),
+    )
+    .expect("CARRIER.md");
+    assert!(
+        doc.contains("WHEEL-ROTATION SLOTS HOLD LIVE FLOATS"),
+        "CARRIER.md must define what `car` is; an offset without its anchor is not a \
+         measurement"
+    );
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../carrier-bytes.tsv");
+    let rows = fk::carrier::read_table(&p.to_string_lossy()).expect("the table parses");
+    for r in &rows {
+        assert_eq!(
+            r.write,
+            fk::carrier::Write::Car,
+            "{} is read on the `{}` write; the table is written in the car's own frame",
+            r.ch.name(),
+            r.write.name()
+        );
+    }
+}
+
+/// **The carrier table, scored against the real engine on a checked-in
+/// recording.**
+///
+/// This is the whole claim of `tools/fk/CARRIER.md` reduced to one assertion:
+/// take the frozen table — offsets from the car, encodings, coefficients, all
+/// fixed before this test ran — read the slots out of a live engine, and
+/// require them to reproduce what the GAME wrote in `human_22730`'s own
+/// telemetry.
+///
+/// The wheel rotations are the row to watch. They are the channel a viewer
+/// sees, they are an angle that wraps twice between samples, and they were the
+/// channel a previous attempt at this could not anchor. The bar is 99 %; the
+/// eight keys measured 99.25–100 %.
+///
+/// It is not a tautology that this passes on the key it is run on. The bytes
+/// come from engine memory at a frozen offset with a frozen coefficient; the
+/// only thing the recording supplies is which copy of the car to read, and that
+/// is a position match to a micron.
+#[test]
+fn engine_carrier_table_reproduces_a_real_recording() {
+    let Some(server) = engine_tier() else { return };
+    let work = scratch("carrier");
+    let out = work.join("res.tsv");
+    let table = Path::new(env!("CARGO_MANIFEST_DIR")).join("../carrier-bytes.tsv");
+    let fk_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/release/fk")
+        .canonicalize()
+        .expect("build the workspace first: cargo build --release");
+    let st = std::process::Command::new(&fk_bin)
+        .args([
+            "carrier", "confirm",
+            "--template", &human_ghost(),
+            "--map", &map2().to_string_lossy(),
+            "--table", &table.to_string_lossy(),
+            "--out", &out.to_string_lossy(),
+            "--dump", &work.join("d.bin").to_string_lossy(),
+            "--shim", &shim().to_string_lossy(),
+            "--server", &server.to_string_lossy(),
+            "--work", &work.join("wk").to_string_lossy(),
+        ])
+        .output()
+        .expect("run fk carrier confirm");
+    let log = String::from_utf8_lossy(&st.stdout).to_string();
+    assert!(st.status.success(), "fk carrier confirm failed:\n{}", log);
+
+    let text = std::fs::read_to_string(&out).expect("a result table");
+    let mut rate: std::collections::BTreeMap<String, f64> = Default::default();
+    for l in text.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 11 {
+            rate.insert(f[0].into(), f[8].parse().unwrap_or(0.0));
+        }
+    }
+    assert!(rate.len() >= 14, "only {} channels scored:\n{}", rate.len(), log);
+    for w in ["u16@6", "u16@8", "u16@10", "u16@12"] {
+        assert!(
+            rate[w] > 0.99,
+            "{} reproduced {:.2}% of the game's own wheel rotations -- the eight keys \
+             measured 99.25-100%, so anything below 99% means the anchor moved\n{}",
+            w,
+            100.0 * rate[w],
+            log
+        );
+    }
+    for d in ["b23", "b25", "b27", "b29"] {
+        assert!(rate[d] > 0.99, "{} suspension travel: {:.2}%\n{}", d, 100.0 * rate[d], log);
+    }
+    assert!(rate["b91"] > 0.999, "gear is exact or it is wrong: {:.2}%", 100.0 * rate["b91"]);
+    for (ch, bar) in [("u16@0", 0.99), ("u16@2", 0.99), ("u16@4", 0.96), ("b22", 0.92), ("b31", 0.91)] {
+        assert!(rate[ch] > bar, "{} scored {:.2}%\n{}", ch, 100.0 * rate[ch], log);
+    }
+}
+
+/// **Is the transform encoder the inverse of the transform reader?**
+///
+/// This is the whole of what is left of the orientation half of §6 in
+/// CARRIER.md, reduced to a test that needs no engine. The quaternion written
+/// from the live-wheel copy is EXACT against the one the game recorded —
+/// 0.00000 rad, same instant, same sign — and the bytes it encodes to still
+/// disagree with the recorded bytes on 453 of 455 samples. A correct value and
+/// a wrong encoding of it leaves exactly one suspect.
+///
+/// So: take a real recording's own samples, read the transform out, write it
+/// straight back, and require the bytes. Any sample that does not round-trip is
+/// a defect in `gbx::recwrite`, and its size here is the size of the problem.
+#[test]
+fn the_transform_encoder_round_trips_a_real_recording() {
+    let d = gbx::record::decode_ghost(&human_ghost()).expect("decode");
+    let (mut exact, mut n) = (0usize, 0usize);
+    let mut worst: Option<(usize, Vec<u8>, Vec<u8>)> = None;
+    for s in d.raw_samples() {
+        let (pos, quat, _speed, vel) = gbx::record::read_transform_pub(s, 47);
+        let mut out = s.to_vec();
+        gbx::recwrite::write_transform(
+            &mut out,
+            47,
+            &gbx::recwrite::Xform {
+                pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32],
+                quat,
+                vel,
+            },
+        );
+        n += 1;
+        if out[47..69] == s[47..69] {
+            exact += 1;
+        } else if worst.is_none() {
+            worst = Some((n - 1, s[47..69].to_vec(), out[47..69].to_vec()));
+        }
+    }
+    assert!(n > 400, "only {} samples", n);
+    // MEASURED: 453 of 455. The encoder IS the inverse of the reader, and the
+    // two that are not are the degenerate case -- an identity rotation, where
+    // the reader hands back an angle of zero and the writer's `sin(ang)` guard
+    // takes the (0, 0) branch, so the heading and pitch words come back zeroed
+    // rather than as whatever the game left in them.
+    //
+    // The result matters more than the two: it CLEARS the encoder. The
+    // orientation half of CARRIER.md §6 -- a quaternion measured exact against
+    // the game's own and still writing different bytes -- cannot be blamed on
+    // the encoding step, which leaves the instant the value is read at. That is
+    // a much smaller haystack, and it is why this test exists as a measurement
+    // rather than as an aspiration.
+    assert!(
+        exact >= n - 2,
+        "the encoder stopped being the inverse of the reader: {} of {} round-trip \
+         (was 453 of 455). First disagreement at sample {:?}:\n  read  {:?}\n  wrote {:?}",
+        exact,
+        n,
+        worst.as_ref().map(|w| w.0),
+        worst.as_ref().map(|w| &w.1),
+        worst.as_ref().map(|w| &w.2),
+    );
+    assert!(
+        exact < n,
+        "the identity-rotation samples now round-trip too -- someone fixed the (0, 0) \
+         branch. Good: tighten this to equality and delete this assertion."
+    );
+}

@@ -103,6 +103,16 @@ pub struct CleanOut {
     /// 0 = (x,y,z,w), 1 = (w,x,y,z), 2 = orthonormal 3x3 row-major
     pub quat_kind: u8,
     pub vel_off: usize,
+    /// The mapped region the CHOSEN car sits in, as `(start, end)` in this
+    /// server's address space.
+    ///
+    /// A wide gather reads raw addresses out of the engine with
+    /// `copy_nonoverlapping`, so a window that runs off the end of the mapping
+    /// takes the whole server down. This is the bound: a second gather clamps
+    /// its window to the car's own distance from each edge of the region the
+    /// first one found it in, so the read is proved to be inside a mapping
+    /// rather than assumed to be.
+    pub pos_region: (u64, u64),
     /// arm `whl`: the segments actually gathered, pos-relative, in record
     /// order. A wheel-anchored field map needs them to turn a memory offset
     /// into a record offset.
@@ -122,6 +132,7 @@ pub struct CleanOut {
 /// runs on 208024 put the state at base-470768 and the clock at base-478580
 /// every time, and the clean run re-derives both from its OWN base and then
 /// checks them against the sampled data.
+#[derive(Clone, Copy)]
 pub struct Anchors {
     pub bias: i64,
     pub pos_delta: i64,
@@ -144,14 +155,15 @@ pub fn win_back() -> i64 {
 pub fn win_len() -> u32 {
     std::env::var("FK_WIN_LEN").ok().and_then(|v| v.parse().ok()).unwrap_or(448)
 }
-/// arm `whl`: extra gathered segments, RELATIVE TO THE POSITION ANCHOR, on top
-/// of the production window. `FK_EXTRA_SEGS="-8192:8000,256:8000"`.
-pub fn extra_segs() -> Vec<(i64, u32)> {
-    match std::env::var("FK_EXTRA_SEGS") {
-        Ok(s) if !s.trim().is_empty() => parse_segs(&s),
-        _ => Vec::new(),
-    }
-}
+/// Extra gathered segments, RELATIVE TO THE POSITION ANCHOR, on top of the
+/// production window — the ground a field search looks over.
+///
+/// This was an environment variable (`FK_EXTRA_SEGS`). It is a parameter now,
+/// because the one command that wants a wide gather also has to change the
+/// dedup key and turn the copy search off in the same breath (see
+/// [`GatherOpts`]), and a window widened without those two is not a wider
+/// measurement — it is 9.8 GB of disk and a locate that walks off the car.
+pub type ExtraSegs = Vec<(i64, u32)>;
 
 
 /// Convert a 3x3 rotation matrix (row-major, world = M * body) to (x, y, z, w).
@@ -482,16 +494,141 @@ pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i6
 /// The clean run itself.
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_clean_anch(
-    c: &Ctx,
-    segs_rel: &[(i64, u32)],
-    bias_override: Option<i64>,
-    anchors: Option<&Anchors>,
-    period: i64,
-    phase_ms: i64,
-    dump: &str,
-    verbose: bool,
-) -> Result<CleanOut, String> {
+/// How to gather, for the one function that gathers.
+///
+/// This used to be eight positional parameters, which was survivable while
+/// `regen` was the only caller. It is not survivable now that a second caller
+/// needs two of the decisions made differently, because those two decisions are
+/// exactly the ones that go wrong quietly:
+///
+/// * **`dedup`** bounds what reaches the disk. The shim emits a record on every
+///   `lroundf` call whose gathered key slice differs from the last, so a WIDE
+///   gather deduplicated on the whole record never suppresses anything —
+///   something in 320 KB of engine memory changes on every call. Measured: a
+///   320 KB window at a 50 ms grid wrote **9.8 GB in two minutes** and was still
+///   going. Keying the dedup on the production window alone restores the
+///   production semantics (one record per distinct vehicle state) and the extra
+///   ground rides along for free.
+/// * **`choose_copy`** decides whether the gathered record is searched for the
+///   live copy of the car. That search is right when the window is 452 bytes of
+///   vehicle state and catastrophic when it is 320 KB of anything: on the first
+///   wide run it walked off the car and the self-check reported
+///   `|q|-1 p99.5 = 1.34e-1`. A caller that has ALREADY chosen the car — by
+///   running a narrow gather first and taking [`CleanOut::pos`] — must be able
+///   to say so.
+pub struct GatherOpts<'a> {
+    /// Segments to gather, relative to the located position. Ignored when
+    /// `anchors` is given, which uses the production window plus
+    /// [`extra_segs`].
+    pub segs_rel: &'a [(i64, u32)],
+    pub bias_override: Option<i64>,
+    pub anchors: Option<&'a Anchors>,
+    /// Grid period in ms. 10 = every tick (production), 50 = the record's own
+    /// sample grid (what a wide gather can afford).
+    pub period: i64,
+    pub phase_ms: i64,
+    pub dump: &'a str,
+    pub verbose: bool,
+    /// Dedup key inside the gathered record, `(offset, len)`. `None` = the
+    /// whole record, which is only affordable for a narrow gather.
+    pub dedup: Option<(u32, u32)>,
+    /// Search the gathered record for the live copy of the car.
+    pub choose_copy: bool,
+    /// Ground to gather BESIDE the production window, relative to the position
+    /// anchor. Empty for production.
+    pub extra: ExtraSegs,
+    /// How far into the gathered record the LIVE-COPY SEARCH may look.
+    ///
+    /// `None` = the whole record, which is what a bare gather wants. A caller
+    /// that gathers extra ground **only to read fields out of it** must cap
+    /// this at the production window, because the copy search ranges over
+    /// whatever was gathered and every extra byte is another candidate — so
+    /// widening the window to reach a field would silently change which copy of
+    /// the car the transform is written from. Capping keeps the choice
+    /// bit-identical to a run with no extra ground at all.
+    pub copy_scan_hi: Option<usize>,
+    /// Offsets, relative to the position triple, that a candidate copy must
+    /// hold a LIVE f32 at — one that takes more than one value over the run.
+    ///
+    /// This is the reference-free signature of the vehicle struct, and it is
+    /// the only thing that separates it from a BARE POSITION COPY: a copy with
+    /// the right position and dead memory around it, which passes every
+    /// structural test there is (its position is the car's, so its velocity is
+    /// consistent and its quaternion is a unit quaternion) and reads zero for
+    /// every field. A regeneration anchored on one writes zeroed wheels and
+    /// gear into a file that then passes the whole acceptance gate, because
+    /// none of those bytes affects the simulation.
+    ///
+    /// Pass the wheel-rotation offsets. Four live floats at stride 44 is a car;
+    /// four constants is not.
+    pub require_live: Vec<i64>,
+    /// Abort when the gathered window is not a self-consistent vehicle state.
+    ///
+    /// ON for production, where there is nothing better: the structural tests
+    /// (unit quaternion, velocity equals the position's derivative) are all a
+    /// caller has when it does not already know where the car went. A caller
+    /// that holds the answer — a recording the GAME wrote, whose positions ARE
+    /// the run — has a stronger control and does not want this one, because a
+    /// wide window is centred on whatever the anchor pointed at and the car it
+    /// is looking for may be some thousands of bytes away inside it.
+    pub self_check: bool,
+}
+
+impl<'a> GatherOpts<'a> {
+    /// The production gather: narrow window, whole-record dedup, copy search on.
+    pub fn production(dump: &'a str) -> Self {
+        GatherOpts {
+            segs_rel: &[],
+            bias_override: None,
+            anchors: None,
+            period: 10,
+            phase_ms: 0,
+            dump,
+            verbose: false,
+            dedup: None,
+            choose_copy: true,
+            extra: Vec::new(),
+            copy_scan_hi: None,
+            require_live: Vec::new(),
+            self_check: true,
+        }
+    }
+}
+
+pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
+    let GatherOpts {
+        segs_rel,
+        bias_override,
+        anchors,
+        period,
+        phase_ms,
+        dump,
+        verbose,
+        dedup,
+        choose_copy,
+        extra,
+        copy_scan_hi,
+        require_live,
+        self_check,
+    } = o;
+    let (segs_rel, bias_override, anchors) = (*segs_rel, *bias_override, *anchors);
+    let (period, phase_ms, dump, verbose) = (*period, *phase_ms, *dump, *verbose);
+    let (dedup, choose_copy, self_check) = (*dedup, *choose_copy, *self_check);
+    let copy_scan_hi = *copy_scan_hi;
+    // Does the candidate at record offset `p` hold a live float at every
+    // offset the caller named? See `GatherOpts::require_live`.
+    let wheels_live = |recs: &[Rec], p: usize, reclen: usize| -> bool {
+        require_live.iter().all(|rel| {
+            let q = p as i64 + rel;
+            if q < 0 || q as usize + 4 > reclen {
+                return false;
+            }
+            let q = q as usize;
+            let g = |r: &Rec| f32::from_le_bytes(r.bytes[q..q + 4].try_into().unwrap());
+            let first = g(&recs[0]);
+            first.is_finite() && recs.iter().any(|r| g(r) != first && g(r).is_finite())
+        })
+    };
 
     use std::path::PathBuf;
     let work = PathBuf::from(&c.work);
@@ -598,7 +735,7 @@ pub fn run_clean_anch(
                     (layout.clock, 4),
                     ((layout.pos as i64 - win_back()) as u64, win_len()),
                 ];
-                for (o, l) in extra_segs() {
+                for (o, l) in extra.iter().copied() {
                     s.push(((layout.pos as i64 + o) as u64, l));
                 }
                 s
@@ -613,17 +750,55 @@ pub fn run_clean_anch(
             for (o, l) in segs_rel {
                 s.push(((layout.pos as i64 + *o) as u64, *l));
             }
-            (s, 20, 4, 1, 32)
+            // The position's offset in the record follows from where the first
+            // segment starts, and it was the constant 20 -- correct for the
+            // default `-16:40` and wrong for every other width. A caller that
+            // widens `--segs` to give the copy search room would otherwise get
+            // a quaternion read 8 KB from the car and a self-check failure that
+            // reads like a bad locate.
+            let po = 4 + segs_rel.first().map_or(16, |(o, _)| -*o) as usize;
+            (s, po, po - 16, 1, po + 12)
         }
     };
+    // THE BOUND ON A WIDE READ, taken while the server is still alive: `go`
+    // waits for the child, so /proc/<pid>/maps is gone by the time this
+    // function returns. See `CleanOut::pos_region`.
+    let pos_region = forkoracle::procmem::maps(srv.pid())
+        .into_iter()
+        .find(|r| layout.pos >= r.start && layout.pos < r.end)
+        .map(|r| (r.start, r.end))
+        .unwrap_or((layout.pos, layout.pos));
+    // ... and it is ENFORCED here, not merely reported. The shim gathers by
+    // `copy_nonoverlapping` from raw addresses inside the engine, so a segment
+    // that runs off the end of the mapping takes the whole server down with a
+    // segfault. Every segment is clipped to the mapping the anchor was found
+    // in, less a page at each edge.
+    let (blo, bhi) = (pos_region.0 + 4096, pos_region.1.saturating_sub(4096));
+    let mut segs: Vec<(u64, u32)> = segs
+        .into_iter()
+        .filter_map(|(a, l)| {
+            let (s, e) = (a.max(blo), (a + l as u64).min(bhi));
+            // The clock is not in the vehicle's mapping and is four bytes of a
+            // located address rather than a window; it is never clipped.
+            if a == layout.clock {
+                return Some((a, l));
+            }
+            (e > s).then_some((s, (e - s) as u32))
+        })
+        .collect();
+    segs.retain(|s| s.1 > 0);
     let reclen: usize = segs.iter().map(|s| s.1 as usize).sum();
     let _ = std::fs::remove_file(dump);
+    // The dedup key: see `GatherOpts::dedup`. Defaulting to the whole record is
+    // right for the 452-byte production window and writes gigabytes for a wide
+    // one, so a wide caller keys on the production window instead.
+    let key = dedup.unwrap_or((0, reclen as u32));
     let out = srv
         .go(
             &segs,
             1,
             2_000_000,
-            (0, reclen as u32),
+            key,
             (layout.clock, period as u32, gate_phase as u32),
             dump,
         )
@@ -641,7 +816,14 @@ pub fn run_clean_anch(
     // the direction of travel at the same clock value. Project the difference
     // onto the velocity and take the leader.
     let mut return_choice: Option<usize> = None;
-    let (pos_off, quat_off, vel_off) = if anchors.is_some() && recs.len() > 20 {
+    // The in-process locate hands back FIXED offsets and never searches, which
+    // is right when nothing depends on the fields around the position and wrong
+    // the moment something does: on this fixture it lands on a bare position
+    // copy every time, and with `require_live` set that is a silent write of
+    // zeroed wheels. When the caller has named a signature, that path searches
+    // too -- its quaternion and velocity offsets relative to the position are
+    // the same -16 / +12 the anchored path uses.
+    let (pos_off, quat_off, vel_off) = if choose_copy && anchors.is_some() && recs.len() > 20 {
         let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
         let step = 4usize;
         let mut cands: Vec<usize> = Vec::new();
@@ -664,7 +846,7 @@ pub fn run_clean_anch(
         // over whatever was gathered, and the qualifying tests below (velocity
         // self-consistency, unit quaternion, then leader along the direction of
         // travel) are unchanged.
-        let copy_hi = reclen.saturating_sub(12);
+        let copy_hi = copy_scan_hi.unwrap_or(reclen).min(reclen).saturating_sub(12);
         for p in (4..copy_hi).step_by(step) {
             let q = p as i64 + qrel;
             let v = p as i64 + vrel;
@@ -874,6 +1056,72 @@ pub fn run_clean_anch(
     } else {
         (pos_off, quat_off, vel_off)
     };
+    // THE COPY WITH A CAR IN IT.
+    //
+    // Everything above finds A COPY of the vehicle state: the tests are the
+    // position moving, the velocity equalling its derivative and the quaternion
+    // being a unit one, and a BARE POSITION COPY passes all three -- it holds
+    // the car's own position, so its velocity is consistent and the four floats
+    // 16 bytes below it are a valid rotation. What it does not hold is any of
+    // the FIELDS. Measured on this fixture: the in-process locate lands on one
+    // every time, and a regeneration from it writes zeroed wheel rotations,
+    // zeroed gear and zeroed suspension into a file that then passes the whole
+    // acceptance gate, because none of those bytes affects the simulation.
+    //
+    // So when a caller has named a signature (`require_live`), step sideways to
+    // the copy that has it. A COPY is defined by the thing that makes it one:
+    // its position triple equals the located one at every instant. That needs
+    // no answer key, no reference and no threshold anyone chose -- the copies
+    // are bit-identical on position and everything else in memory is not.
+    let (pos_off, quat_off, vel_off) = if !require_live.is_empty() && recs.len() > 20 {
+        let sample: Vec<&Rec> = recs.iter().step_by((recs.len() / 40).max(1)).collect();
+        let get = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap());
+        let same = |p: usize| -> bool {
+            sample.iter().all(|r| {
+                (0..3).all(|k| {
+                    let (a, b) = (get(r, pos_off + k * 4), get(r, p + k * 4));
+                    a == b || (a - b).abs() < 1e-3
+                })
+            })
+        };
+        let hi = reclen.saturating_sub(12);
+        let mut best: Option<usize> = None;
+        for p in (4..hi).step_by(4) {
+            if p as i64 - 16 < 4 || !same(p) || !wheels_live(&recs, p, reclen) {
+                continue;
+            }
+            // Nearest to where the locate already was, so a run does not skip
+            // over an equally good copy for a further one.
+            if best.map_or(true, |b| {
+                (p as i64 - pos_off as i64).abs() < (b as i64 - pos_off as i64).abs()
+            }) {
+                best = Some(p);
+            }
+        }
+        match best {
+            Some(p) if p != pos_off => {
+                println!(
+                    "the copy at record +{} has the named fields; the locate was on +{} \
+                     ({:+} bytes), which holds the same position and dead memory",
+                    p,
+                    pos_off,
+                    p as i64 - pos_off as i64
+                );
+                (p, (p as i64 + quat_off as i64 - pos_off as i64) as usize,
+                    (p as i64 + vel_off as i64 - pos_off as i64) as usize)
+            }
+            Some(_) => (pos_off, quat_off, vel_off),
+            None => {
+                return Err(format!(
+                    "no copy of the located car holds a live value at every named offset {:?} -- \
+                     the fields this run was asked to write are not in the gathered window",
+                    require_live
+                ))
+            }
+        }
+    } else {
+        (pos_off, quat_off, vel_off)
+    };
     // A run that produced almost no instants is a failed run, not a short one.
     if recs.len() < 8 {
         return Err(format!(
@@ -922,7 +1170,7 @@ pub fn run_clean_anch(
     // own derivative. Both fail loudly on a wrong address.
     let qerr: f64;
     let verr: f64;
-    if reclen >= 44 && recs.len() > 4 {
+    if self_check && reclen >= 44 && recs.len() > 4 {
         let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
         let mut qs: Vec<f64> = Vec::new();
         let mut vs: Vec<f64> = Vec::new();
@@ -1019,10 +1267,11 @@ pub fn run_clean_anch(
         quat_off,
         quat_kind,
         vel_off,
+        pos_region,
         segs_rel: match anchors {
             Some(_) => {
                 let mut v = vec![(-win_back(), win_len())];
-                v.extend(extra_segs());
+                v.extend(extra.iter().copied());
                 v
             }
             None => segs_rel.to_vec(),
@@ -1184,4 +1433,10 @@ pub fn car_path_len(dump: &str, reclen: usize, pos_off: usize) -> Result<f64, St
 /// pins it against a captured DNF from the real server.
 pub fn sim_time_of(out: &str) -> Option<i64> {
     ghost::oracle::parse_many(out).first().and_then(|r| r.time_ms)
+}
+
+/// A file's base name without its `.Ghost.Gbx` suffix — the label a key goes
+/// into a table under.
+pub fn name_of(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).replace(".Ghost.Gbx", "").replace(".Replay.Gbx", "")
 }

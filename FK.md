@@ -61,6 +61,7 @@ written to disk, is a **result**.
 | `fk watch replay` | the same evaluator with no server, against a trajectory CSV |
 | `fk watch paths` | do the two in-child sampling paths judge identically? |
 | `fk regen` | rewrite a ghost's telemetry from engine state (the engine half of `ghost regen`) |
+| `fk carrier` | name the sample bytes a regenerated ghost inherits, and write them — see [CARRIER.md](tools/fk/CARRIER.md) |
 
 Engine flags, accepted by every command: `--tape`, `--map`, `--server`
 (`$TM_SERVER`), `--shim` (`$FK_SHIM`), `--work`. Checkpoint: `--at tick:N`,
@@ -157,6 +158,15 @@ from the position anchor reproduced rpm on 0.2 % of samples on a second map.
 
 It worked. Sample byte 5 is `round(0.008489 * slot@pos-240812)`, exact on 439 of
 474 recorded samples and within one quantisation step on all 474.
+
+**Both halves of that sentence have since been reproduced and both were half
+right** (`fk carrier`, see CARRIER.md). The scale is real — the independent fit
+lands on 0.0085 for the same byte — but byte 5 is the HIGH HALF of a 16-bit rpm
+at bytes 4,5, and read as one `u16` it is exact on 96.9–100 % rather than 92.6 %.
+And `pos-240812` was an offset from an anchor, which is why it reproduced on
+0.2 % of samples on a second map: the same field is at **car+328**, and the
+difference between "the anchor" and "the car" is the whole reason the old
+offsets did not transfer.
 
 **And nothing used it.** Every production recipe in this project runs
 `fk regen --fieldmap none`, or with a "neutral map" that is nothing but a list
@@ -506,20 +516,30 @@ search, and a fleet has no way to ask what its floor should be.
 `fk server probe --servers N` would start N at once and print the distribution
 and the floor. Forty lines, and it turns a rule of thumb into a measurement.
 
-### G5. Twelve of the twenty-nine trajectory columns are empty, and two of them
-are what a landing is made of
+### G5. CLOSED — the readout was 40 bytes wide and is now 1.25 MB
 
-`gear`, `rpm_raw`, `side_speed`, `is_turbo`, **`is_ground_contact`**,
-`turbo_time` and the four **wheel-dampen** columns. The production readout is
-40 bytes of transform plus the race clock.
+*Was: twelve of the twenty-nine trajectory columns are empty, and two of them are
+what a landing is made of.* The claim in this section was that `gear`,
+`rpm_raw`, `side_speed`, `is_turbo`, `turbo_time` and the four wheel-dampen
+columns were **not unavailable, merely unread** — that the engine computes every
+one of them and nobody had widened the window.
 
-Ground contact and suspension dampen are exactly the signals that say whether a
-landing stuck or bounced, so landing quality is scored today from position and
-velocity alone. These are **not unavailable** — the engine computes every one of
-them and they are in its memory; `fk fit` measured encodings for several before
-it was deleted. What is true is that nobody has widened the readout window to
-include them. Saying otherwise would be a harness limit reported as a physics
-limit.
+That was right, and `fk carrier` widened it. **Thirty of the 91 inherited
+sample bytes are now written from engine memory**, each confirmed on eight
+recordings across six maps with frozen coefficients and no refit:
+`side_speed`, `rpm` (a 16-bit field the corpus census had refuted), all four
+wheel rotations, all four suspension-travel bytes, all four ground-material
+bytes, `gear`, `is_turbo`, and a 16-bit quantity at bytes 0,1 that nothing had
+named. Result, method and the
+enumerated remainder: **[tools/fk/CARRIER.md](tools/fk/CARRIER.md)**.
+
+**`is_ground_contact` (byte 89) is NOT among them and was not attacked.** Three
+arms have failed on it from three directions — an ±8 KB threshold search (+2.2
+points over a constant), a record-internal suspension rule (+24.5 on its own key
+and NEGATIVE on two of four others), and an engine-dump fit (17.8 points WORSE
+than a constant). It stays closed. Landing quality still has no contact signal;
+it now has four suspension channels at 100 %, which is the next best thing and
+is what a viewer sees.
 
 ### G6. `--inputs` is a flag and should not be
 

@@ -54,6 +54,7 @@
 //! oracle on the written file. A banked incumbent is not a result until the
 //! plain oracle re-simulates the tape on disk.
 
+pub mod carrier;
 pub mod cmd;
 /// The CLOCK-FIRST locator: find the engine's race clock, then key every
 /// sample on it. The reference-free locator the SEARCH uses is

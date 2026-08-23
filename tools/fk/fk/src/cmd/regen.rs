@@ -29,6 +29,53 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // `record::NEUTRALISE`. This replaces `--fieldmap`, which in every
     // production recipe was either `none` or a file that said exactly this.
     let neutral = args.iter().any(|a| a == "--neutralise");
+    // THE CARRIER BYTES, IN THE SAME ENGINE RUN.
+    //
+    // `--carrier TABLE` writes the sample bytes named in a frozen carrier table
+    // (see `tools/fk/CARRIER.md`) from the SAME gathered state the transform is
+    // written from. It is one flag on the one invocation rather than a second
+    // pass, and that is not tidiness: a second pass has to identify the car all
+    // over again, and on a file whose transform has just been regenerated the
+    // recorded positions it would identify it BY are the ones the first pass
+    // wrote, so the copy it finds is whichever copy the first pass read. Doing
+    // both from one gather removes that question instead of answering it.
+    // THE TRANSFORM FROM THE FIELD COPY: measured, half confirmed, OFF.
+    //
+    // The copy that holds the fields is also the copy the GAME records, and
+    // reading the transform from it instead of from the located copy is a
+    // correctness fix in two ways -- it removes half a millimetre of position
+    // error that this project had been calling a "client-vs-server floor", and
+    // it stops a sample pairing a position from one object with a wheel angle
+    // from another a tick away.
+    //
+    // MEASURED on map 2 against the game's own recording of the same run:
+    //
+    //     position  worst separation 0.001 m -> 0.000 m, and the count of
+    //               samples reproducing the recorded bytes EXACTLY goes from
+    //               0 of 455 to 227 of 455. Byte 47 goes 57 -> 335, byte 51
+    //               0 -> 396, byte 55 27 -> 350.
+    //     orientation  WORSE. Bytes 59-64 go from 237/222/453/209/452 of 455
+    //               identical to 2/8/1/3/5. Both quaternion orders were tried
+    //               and score the same, so it is not the (w,x,y,z) flip; the
+    //               quaternion is simply not at the anchor's relative offset on
+    //               this copy, and nothing here has found where it is.
+    //
+    // Half a confirmation is not a confirmation, and this is the publish path,
+    // so it is a flag rather than the default until the orientation is found.
+    // The fields do NOT depend on it: they come from the right copy either way.
+    let xform_from_fields = args.iter().any(|a| a == "--transform-from-fields");
+    let carrier = flag("--carrier")
+        .map(|t| crate::carrier::read_table(&t).unwrap_or_else(|e| crate::die(e)))
+        .unwrap_or_default();
+    // Extra ground for the carrier fields, and the cap that keeps it inert.
+    //
+    // The production window is `car-192 .. car+256` and the table reaches
+    // `car+344`, so one more segment is gathered right after it — contiguous in
+    // memory, so a record offset stays `car_off + rel` with no per-segment
+    // arithmetic. `copy_scan_hi` then holds the LIVE-COPY SEARCH to the
+    // production window, so the copy the transform comes from is chosen from
+    // exactly the candidates it is chosen from today. Extra ground must not
+    // move the transform, and this is what makes that true rather than hoped.
     let segs_rel = crate::record::parse_segs(&flag("--segs").unwrap_or_else(|| "-16:40".into()));
     let dump = flag("--dump").unwrap_or_else(|| format!("/tmp/fkregen-{}.bin", std::process::id()));
     let outp = flag("--out").expect("--out");
@@ -179,8 +226,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
     anchors.dedup_by_key(|a| a.pos_delta);
     println!("{} distinct anchor candidates to try", anchors.len());
     let mut o = None;
+    // Which anchor the clean run actually used, so a second gather can be
+    // centred the same way rather than searching again.
+    let mut used_anchor: Option<crate::record::Anchors> = None;
     for (i, a) in anchors.iter().enumerate() {
-        match run_clean_anch(&c, &segs_rel, Some(bias), Some(a), period, phase, &dump, verbose) {
+        let g = crate::record::GatherOpts {
+            segs_rel: &segs_rel,
+            bias_override: Some(bias),
+            anchors: Some(a),
+            period,
+            phase_ms: phase,
+            dump: &dump,
+            verbose,
+            ..crate::record::GatherOpts::production(&dump)
+        };
+        match run_clean_anch(&c, &g) {
             Ok(v) => {
                 // THE ACCEPTANCE TEST. A frozen slot is perfectly
                 // self-consistent, so the clean run's own structural check
@@ -202,6 +262,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "ACCEPTED ANCHOR {}:{}:{}:{}:{}:{}",
                     a.bias, a.pos_delta, a.clock_delta, a.quat_off, a.quat_kind, a.vel_off
                 );
+                used_anchor = Some(*a);
                 o = Some(v);
                 break;
             }
@@ -213,7 +274,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // needs no cross-process assumption at all.
     if o.is_none() {
         println!("falling back to an in-process locate");
-        match run_clean_anch(&c, &segs_rel, Some(bias), None, period, phase, &dump, verbose) {
+        let g = crate::record::GatherOpts {
+            segs_rel: &segs_rel,
+            bias_override: Some(bias),
+            anchors: None,
+            period,
+            phase_ms: phase,
+            dump: &dump,
+            verbose,
+            ..crate::record::GatherOpts::production(&dump)
+        };
+        match run_clean_anch(&c, &g) {
             Ok(v) => {
                 if let Err(e) = crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
                     println!("in-process locate: REJECTED -- {}", e);
@@ -396,6 +467,157 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let mut w = written_bytes(ss, !keepx, neutral);
     if tape { w[14] = true; w[15] = true; w[18] = true; }
+    for r in &carrier {
+        match r.ch {
+            crate::carrier::Channel::Byte(b) if b < ss => w[b] = true,
+            crate::carrier::Channel::U16(b) if b + 1 < ss => {
+                w[b] = true;
+                w[b + 1] = true;
+            }
+            _ => {}
+        }
+    }
+    // THE CARRIER FIELDS, from a second gather paired to this one by the race
+    // clock. See `carrier::gather_fields` for why it is a second gather and why
+    // that is what removes the "regenerate the transform first" ordering rule.
+    //
+    // Computed BEFORE anything is written, so a dead read is refused rather
+    // than deleted afterwards -- and it has to be refused, because a file full
+    // of zeroed wheels passes the entire acceptance gate. None of these bytes
+    // affects the simulation.
+    let mut carrier_vals: std::collections::HashMap<i64, crate::cmd::carrier::Instant> =
+        Default::default();
+    if !carrier.is_empty() {
+        // WHICH ANCHOR. The field gather only has to put the car somewhere in a
+        // 1.25 MB window and then finds it there, so it is far less fussy than
+        // the clean run -- an anchor the clean run REJECTED (its self-check is
+        // a structural test on a 452-byte window) still serves perfectly well.
+        // So: the anchor the clean run used if there was one, then every other
+        // candidate, and a fresh measurement if the run came in on --noanchor
+        // and there are none.
+        let mut field_anchors: Vec<crate::record::Anchors> = Vec::new();
+        if let Some(a) = used_anchor {
+            field_anchors.push(a);
+        }
+        for a in &anchors {
+            if !field_anchors.iter().any(|x| x.pos_delta == a.pos_delta) {
+                field_anchors.push(*a);
+            }
+        }
+        if field_anchors.is_empty() {
+            for t in &ticks {
+                if let Ok(mut b) = crate::record::measure_anchors(&c, &f, *t, verbose) {
+                    for x in b.iter_mut() {
+                        x.bias = bias;
+                    }
+                    field_anchors.append(&mut b);
+                }
+            }
+            field_anchors.dedup_by_key(|a| a.pos_delta);
+            println!("--carrier: {} anchors measured for the field gather", field_anchors.len());
+        }
+        if field_anchors.is_empty() {
+            println!("ABORT: no anchor at all for the field gather. No file written.");
+            std::process::exit(3);
+        }
+        // The trajectory the clean run just measured, per millisecond. This is
+        // the reference the field gather identifies the car against -- the
+        // engine's own answer, not the file's, which is what makes this work on
+        // a transplanted container.
+        let truth: std::collections::HashMap<i64, [f64; 3]> = recs
+            .iter()
+            .map(|(clk, fst, _)| {
+                let g = |k: usize| {
+                    f32::from_le_bytes(
+                        fst[o.pos_off + k * 4..o.pos_off + k * 4 + 4].try_into().unwrap(),
+                    ) as f64
+                };
+                (*clk as i64 - bias, [g(0), g(1), g(2)])
+            })
+            .collect();
+        // The recording's own orientation, when the container carries this
+        // run's. Reported against, never chosen by -- see `gather_fields`.
+        let truth_q: std::collections::HashMap<i64, [f64; 4]> = times
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (*t, gbx::record::read_transform_pub(&raws[i], 47).1))
+            .collect();
+        let (gp, gph) = grid_of(&times);
+        let fdump = format!("{}.fields", dump);
+        let mut last = String::new();
+        for a in &field_anchors {
+            match crate::cmd::carrier::gather_fields(
+                &c, a, &carrier, &truth, &truth_q, gp, gph, &fdump, 1_048_576, 262_144, verbose,
+            ) {
+                Ok(v) => {
+                    carrier_vals = v;
+                    break;
+                }
+                Err(e) => {
+                    println!("field gather, anchor base{:+}: {}", a.pos_delta, e);
+                    last = e;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&fdump);
+        if carrier_vals.is_empty() {
+            println!("ABORT: the carrier fields could not be read: {}. No file written.", last);
+            std::process::exit(3);
+        }
+        let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
+            Default::default();
+        for (t, v) in &carrier_vals {
+            if !in_race(*t) {
+                continue;
+            }
+            for (ch, x) in &v.fields {
+                seen.entry(ch.name()).or_default().insert(*x);
+            }
+        }
+        // VARIANCE, NOT VALUE -- AND ONLY WHERE STILLNESS IS IMPOSSIBLE.
+        //
+        // Zero is a legal wheel angle at one instant; what no driven run does is
+        // hold one for the length of a lap. But that argument is only available
+        // for the WHEEL ROTATIONS: turbo_time is legitimately constant on a map
+        // with no turbo (measured: it refused human_22730 on exactly that), gear
+        // can hold on a short run, and a surface byte holds whenever the car
+        // never leaves one surface. Refusing those would be a check that fires
+        // on correct files, which costs more than the defect it guards.
+        //
+        // So the guard is armed on the four channels whose deadness diagnoses a
+        // wrong copy, and the rest are reported.
+        let must_move = |n: &str| matches!(n, "u16@6" | "u16@8" | "u16@10" | "u16@12");
+        let dead: Vec<&String> = seen
+            .iter()
+            .filter(|(k, v)| v.len() <= 1 && must_move(k))
+            .map(|(k, _)| k)
+            .collect();
+        if !dead.is_empty() {
+            println!(
+                "ABORT: the wheel rotations {:?} came out CONSTANT over the run -- the gathered \
+                 slots are dead memory, and nothing downstream would catch it because these \
+                 bytes do not affect the simulation. No file written.",
+                dead
+            );
+            std::process::exit(3);
+        }
+        let resting: Vec<&String> =
+            seen.iter().filter(|(_, v)| v.len() <= 1).map(|(k, _)| k).collect();
+        if !resting.is_empty() {
+            println!(
+                "  {:?} never move on this run -- written, and legitimately constant (no turbo, \
+                 one surface, one gear)",
+                resting
+            );
+        }
+        println!(
+            "carrier: {} channels over {} instants, fewest distinct values {}",
+            seen.len(),
+            carrier_vals.len(),
+            seen.values().map(|v| v.len()).min().unwrap_or(0)
+        );
+    }
+
     let res = rewrite_ghost(&c.template, &outp, |rd| {
         let ent = rd
             .ents
@@ -462,18 +684,33 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     gq(fst, o.quat_off),
                 ],
             };
-            let x = gbx::recwrite::Xform {
-                pos: [
-                    f32::from_le_bytes(fst[o.pos_off..o.pos_off + 4].try_into().unwrap()),
-                    f32::from_le_bytes(fst[o.pos_off + 4..o.pos_off + 8].try_into().unwrap()),
-                    f32::from_le_bytes(fst[o.pos_off + 8..o.pos_off + 12].try_into().unwrap()),
-                ],
-                quat: q,
-                vel: [
-                    gq(fst, o.vel_off),
-                    gq(fst, o.vel_off + 4),
-                    gq(fst, o.vel_off + 8),
-                ],
+            // THE TRANSFORM COMES FROM THE SAME OBJECT AS THE FIELDS.
+            //
+            // With `--carrier`, from the copy the field gather identified: the
+            // one with a live wheel block, which is the copy the GAME ITSELF
+            // records. Without it, from the clean run's own window as before.
+            //
+            // This is not a refinement, it is a correctness fix in two ways.
+            // The copies sit half a millimetre apart -- one tick's travel --
+            // so writing a position from one and a wheel angle from the other
+            // is a pure time shift between two channels of one sample. And the
+            // half-millimetre itself was being read as physics: three maps
+            // regenerate to 0.489, 0.511 and 0.501 mm of their own recordings
+            // and that agreement was quoted as a "client-vs-server floor". It
+            // is the distance between these two structs, and it is the same on
+            // three maps because it is one quantity measured three times.
+            let ci = if xform_from_fields { carrier_vals.get(&ms) } else { None };
+            let x = match ci {
+                Some(v) => gbx::recwrite::Xform { pos: v.pos, quat: v.quat, vel: v.vel },
+                None => gbx::recwrite::Xform {
+                    pos: [
+                        f32::from_le_bytes(fst[o.pos_off..o.pos_off + 4].try_into().unwrap()),
+                        f32::from_le_bytes(fst[o.pos_off + 4..o.pos_off + 8].try_into().unwrap()),
+                        f32::from_le_bytes(fst[o.pos_off + 8..o.pos_off + 12].try_into().unwrap()),
+                    ],
+                    quat: q,
+                    vel: [gq(fst, o.vel_off), gq(fst, o.vel_off + 4), gq(fst, o.vel_off + 8)],
+                },
             };
             if !keepx {
                 gbx::recwrite::write_transform(s, 47, &x);
@@ -512,6 +749,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     s[14] = (((st + 127) * 255 / 254) as u8).min(255);
                     s[15] = if f.accel[t] != 0 { 255 } else { 0 };
                     s[18] = if f.brake[t] != 0 { 255 } else { 0 };
+                }
+            }
+            // THE CARRIER BYTES, from the same instant as the transform.
+            //
+            // `fst`, not `lst`, and not because first is generally right: it is
+            // right because the transform above is written from `fst`, and a
+            // sample is ONE INSTANT of one car. Reading a wheel angle from the
+            // other write of the tick would pair a position with a suspension
+            // state a fraction of a tick apart -- a defect that looks like
+            // nothing, since neither byte affects the simulation.
+            for (ch, v) in ci.map(|v| v.fields.as_slice()).unwrap_or(&[]) {
+                match ch {
+                    crate::carrier::Channel::Byte(b) if *b < ss => s[*b] = *v as u8,
+                    crate::carrier::Channel::U16(b) if *b + 1 < ss => {
+                        s[*b] = *v as u8;
+                        s[*b + 1] = (*v >> 8) as u8;
+                    }
+                    _ => {}
                 }
             }
             done += 1;
@@ -560,6 +815,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ss,
         w.iter().filter(|b| !**b).count()
     );
+    // NAME what is still not ours, by number. "42 left as the carrier's" is a
+    // count, and a count is what let a published clip run on dirt tyres because
+    // bytes 93/95/97/99 were the donor's -- nobody could see WHICH bytes those
+    // were without reading the source. With --neutralise the unwritten ones are
+    // zeros rather than a stranger's run, which is honest and is not the same
+    // as correct: a zero is an absence, not a measurement, and it should be
+    // possible to say so on a page.
+    let unwritten: Vec<usize> = (0..ss).filter(|b| !w[*b]).collect();
+    if !unwritten.is_empty() {
+        println!(
+            "  NOT WRITTEN (zeroed by --neutralise, or the carrier's without it): {:?}",
+            unwritten
+        );
+    }
     if !missing.is_empty() {
         println!(
             "  missing instants: {} .. {} ({} total)",
