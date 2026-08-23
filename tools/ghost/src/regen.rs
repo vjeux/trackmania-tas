@@ -287,19 +287,50 @@ pub fn cmd(a: &[String]) {
     // never the filename and never the header, which on a synthesised tape is
     // the seed's.
     let inp = {
+        // SAY WHICH OF THE THREE THINGS HAPPENED.
+        //
+        // "no oracle available" covered all of: no server on this box, the
+        // server failing to run, and the server running fine and returning DNF.
+        // Those need different responses and the message named the first, so a
+        // DNF on a 32-minute tape read as a missing install and sent me to
+        // check TM_SERVER, which was correct all along. An absent signal read
+        // as a specific negative -- the project's characteristic bug, in my own
+        // code, on the same day I fixed two of them elsewhere.
         let t = crate::oracle::server_dir(flag(a, "--server"));
-        let simulated = if t.join("TrackmaniaServer").exists() {
-            crate::oracle::validate(&t, std::path::Path::new(inp), crate::oracle::MapsMode::One(std::path::Path::new(&map)), "regen-span")
-                .ok()
-                .and_then(|r| r.time_ms)
-        } else {
+        let simulated = if !t.join("TrackmaniaServer").exists() {
+            println!(
+                "== step 0: no dedicated server at {} -- the record's span is left as it is. \
+                 Pass --server DIR or set TM_SERVER to have it rebuilt.",
+                t.display()
+            );
             None
+        } else {
+            match crate::oracle::validate(
+                &t,
+                std::path::Path::new(inp),
+                crate::oracle::MapsMode::One(std::path::Path::new(&map)),
+                "regen-span",
+            ) {
+                Err(e) => {
+                    println!("== step 0: the oracle could not run ({e}) -- the span is left as it is");
+                    None
+                }
+                Ok(r) => match r.time_ms {
+                    None => {
+                        println!(
+                            "== step 0: the oracle returns DNF for this file, so there is no \
+                             finish to shorten the record to -- the span is left as it is. That \
+                             is expected on a deliberately partial tape and is a REAL FINDING on \
+                             one that should finish."
+                        );
+                        None
+                    }
+                    Some(ms) => Some(ms),
+                },
+            }
         };
         match simulated {
-            None => {
-                println!("== step 0: no oracle available, so the record's span is left as it is");
-                inp.clone()
-            }
+            None => inp.clone(),
             Some(ms) => {
                 // .Ghost.Gbx, not `{out}.grid`: the dedicated server IGNORES a
                 // file with any other extension and returns a bare DNF that
