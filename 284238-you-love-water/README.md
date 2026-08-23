@@ -325,23 +325,23 @@ Each line is **MEASURED**, with its control named.
 x 933.3 rather than at the kicker plane — and the water start (1.30 s, never
 searched, independent of all of this).
 
-**The conversion has a new address.** Overwrite the INCUMBENT LAP's steering over
-tape ticks 1900:2320 with the shot's own spline — no splice, no phase search, the
-lap's own prefix and tail — and it grafts cleanly and gives a **strictly better
-copy-1 cycle**: kicker +3.9 m/s, wall 4.4 m closer and 3.9 m/s faster, checkpoint
-region **1.88 m against the incumbent's 6.53**. And the lap DNFs at `cps 1`. The
-published reason transplants fail here (115 tapes, handover state off by 10.6 m
-and 1.76 rad) **does not describe this failure** — there is no handover and the
-checkpoint state is better, so whatever kills it is downstream of copy 1's
-checkpoint, in a part of the lap nobody has looked at.
+**A WRITER DEFECT, found by tracing the one tape that looked like progress.**
+Every file this arm wrote with `fk pol grid --outdir` FAILS TO REPRODUCE THE
+EVALUATION THAT SELECTED IT: re-run the identical command on the written file and
+a wall miss of 4.81 m becomes 66.36 m, a checkpoint approach of 1.88 m becomes
+126.93 m. Traced tick by tick, those tapes never climb the wall curve at all —
+they are below it and descending, and they respawn 53 m under the deck. The plain
+oracle said `DNF cps 1` about all of them and was right; the in-memory numbers
+never had standing. So there are no shots to report from this arm, and the
+sentence I nearly published — that a graft improves the lap and dies downstream
+of the checkpoint — is withdrawn: it never reaches the checkpoint.
 
-**And a seed, banked with its caveat.** Two SHOTS (both `DNF cps 1`, both on the
-record's container — **a shot is not a lap**) reach the wall at **80-82 m/s**
-against the human's 79.49 and put the car through the checkpoint region at
-**46.90**, against our own record's 45.8. One of them RECOVERS contact 45 m past
-the kicker — its frozen rate starts decaying again at canonical x 979, 229.6 to
-193.3 over 1.8 s — the first tape on this lane to do so at all. Converting a shot
-into a lap is the unsolved half of this map and has beaten three arms.
+Either `--outdir` writes a different tape than it evaluated, or two fork servers
+stopped at different probe ticks and this obstacle is chaotic across one tick
+4 s upstream. Ten minutes settles it — print the probe tick on both paths, diff
+the written tape against the evaluated records — and until then nothing from a
+search on this map should be quoted. The measurements in this section are all on
+unmodified tapes or on in-process variants and are unaffected.
 
 Full account, tables and md5s: `tm-unbeaten/284238/RESULT.md`, which points at
 `wtr_CORRECTION_v2_roll_is_reachable_and_it_is_not_enough.tsv` and
