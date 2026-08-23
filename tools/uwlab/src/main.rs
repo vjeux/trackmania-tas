@@ -23,6 +23,7 @@ uwlab — trajectory analysis for the underwater map. Times print as seconds.
                                 forward-integrate the fitted law from a launch
   probemap --map M --tape G --tmmaps P --fk P [--cx A:B] [--cz A:B] [--cy N] [--jobs N]
                                 a plumb-probe LATTICE: one column per 32 m cell
+  maxy   CSV [--after S]          the highest the car ever got, and where
   plumb  CSV [--after S]         where a dropped car first stops falling
   launch CENSUS.tsv --box x0,y0,z0:x1,y1,z1 [--v M/S] [--filter PAT]
                                 every surface that could ballistically reach the box
@@ -49,6 +50,7 @@ fn main() {
         "tape" => cmd_tape(rest),
         "launch" => cmd_launch(rest),
         "plumb" => cmd_plumb(rest),
+        "maxy" => cmd_maxy(rest),
         "probemap" => cmd_probemap(rest),
         other => {
             eprintln!("uwlab: unknown command `{other}`");
@@ -988,5 +990,35 @@ fn contact_line(t: &Traj) -> String {
     match t.rows.last() {
         Some(r) => format!("never stops sinking; last y {:8.3} at ({:8.2},{:8.2}) t {:6.3}", r.y, r.x, r.z, r.t),
         None => "no rows".into(),
+    }
+}
+
+// ------------------------------------------------------------------ maxy
+//
+// The height a run ever reached, and where. On 173691 that is the whole
+// question from the lower canopy: the finish plane's live band starts about
+// 16 m above the deck and nothing in the census connects the two, so "did the
+// car ever leave 114.16" is the measurement that would reopen the map.
+fn cmd_maxy(a: &[String]) -> i32 {
+    let t = load_one(a);
+    let after: f64 = flag_val(a, "--after").and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let mut best: Option<Row> = None;
+    for r in &t.rows {
+        if r.t < after {
+            continue;
+        }
+        if best.as_ref().map(|b| r.y > b.y).unwrap_or(true) {
+            best = Some(r.clone());
+        }
+    }
+    match best {
+        Some(r) => {
+            println!("MAXY {:8.3} at ({:8.2},{:8.2}) t {:6.3}  |v| {:6.2}", r.y, r.x, r.z, r.t, r.speed_ms);
+            0
+        }
+        None => {
+            println!("no rows");
+            1
+        }
     }
 }
