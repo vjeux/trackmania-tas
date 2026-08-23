@@ -259,3 +259,20 @@ taking one away**: stop pinning the wheel into the lip.
 | `replays/KEYBOARD_7476.Ghost.Gbx` | fifteen presses in the climb, 7.476 |
 | `replays/KEYBOARD_7474.Ghost.Gbx` | 24 presses, 7.474 |
 | `replays/KEYBOARD_4input_7514.Ghost.Gbx` | the whole climb on four inputs, 7.514 — the fewest inputs, the least slack |
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.

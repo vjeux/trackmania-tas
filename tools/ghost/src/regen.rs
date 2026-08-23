@@ -39,10 +39,28 @@ fn fk_binary() -> String {
             if p.exists() {
                 return p.to_string_lossy().into();
             }
+            // `tools/fk` IS IN THIS REPOSITORY, and it is the first place to
+            // look. It is excluded from the workspace -- it pins -O3 + LTO for
+            // the engine paths -- so its artefact is never beside this binary,
+            // and the resolver that only knew "beside me, or on PATH" reported
+            // `cannot run fk: No such file or directory` on a checkout that
+            // had just built it. The shim lookup below then had no fk
+            // directory to anchor on either, so fixing that one alone left the
+            // pair still broken.
+            for rel in [
+                "../../fk/target/release/fk",       // tools/<crate>/target/release
+                "../../../fk/target/release/fk",    // tools/target/release (the workspace)
+                "../../../tools/fk/target/release/fk",
+            ] {
+                let p = d.join(rel);
+                if p.exists() {
+                    return p.to_string_lossy().into();
+                }
+            }
         }
     }
     // `fk` is part of the internal fork-server toolchain, not of this crate, so
-    // it is normally somewhere else on PATH. Resolve it there and remember the
+    // it may also be somewhere else on PATH. Resolve it there and remember the
     // directory: its shim lives beside it.
     if let Ok(paths) = std::env::var("PATH") {
         for d in paths.split(':') {
@@ -223,7 +241,7 @@ pub fn cmd(a: &[String]) {
         // more: `fk` deleted it along with the field-fitting machinery, and a
         // wrapper that forwards a flag the callee does not know is a silent
         // no-op wearing the shape of a feature.
-        for k in ["--anchorticks", "--segs", "--biastick", "--inputshift", "--anchor", "--race", "--quat-kind"] {
+        for k in ["--anchorticks", "--segs", "--biastick", "--inputshift", "--anchor", "--race", "--quat-kind", "--pair-shift-ms"] {
             if let Some(x) = flag(a, k) {
                 v.push(k.to_string());
                 v.push(x.to_string());
@@ -380,6 +398,19 @@ pub fn cmd(a: &[String]) {
     // thing that buys reliability here is running more of them at once.
     let ladders: Vec<Option<&str>> = vec![None];
     let mut accepted: Option<String> = None;
+    let mut passed: Vec<String> = Vec::new();
+    // `--census`: gate EVERY candidate in the batch instead of stopping at the
+    // first one home, and say how many distinct trajectories they were.
+    //
+    // IT DOES NOT CHOOSE, AND THE FIRST VERSION OF IT DID. I wrote this to
+    // take the modal trajectory, on the strength of downloaded controls where
+    // the good phase was the majority -- 270051 4 of 5 runs on the game's tick,
+    // 279218 4 of 5. Then I measured two more maps: 285268 is 1 of 5 and
+    // 279209 is 1 of 5, so on those the mode is the WRONG tick and a chooser
+    // built on it would have shipped the error with a majority behind it. The
+    // batch can tell you THAT it disagreed; only a downloaded control of the
+    // same map can tell you which side is the game's.
+    let census = has(a, "--census");
     let mut lastlog = String::new();
     let mut round = 0usize;
     // THE IN-PROCESS LOCATE GOES FIRST, ALONE.
@@ -487,7 +518,7 @@ pub fn cmd(a: &[String]) {
                 }
             }
             let _ = std::fs::remove_file(&raw);
-            if accepted.is_some() {
+            if accepted.is_some() && !census {
                 let _ = std::fs::remove_file(&cand);
                 continue;
             }
@@ -495,7 +526,10 @@ pub fn cmd(a: &[String]) {
                 Ok(msg) => {
                     println!("   [{}] accepted", k);
                     println!("{}", msg);
-                    accepted = Some(cand);
+                    if accepted.is_none() {
+                        accepted = Some(cand.clone());
+                    }
+                    passed.push(cand);
                 }
                 Err(msg) => {
                     println!("{}", msg);
@@ -505,6 +539,33 @@ pub fn cmd(a: &[String]) {
             }
         }
         round += jobs;
+        // THE BATCH ALREADY HOLDS THE ANSWER AND THE OLD CODE THREW IT AWAY.
+        //
+        // Twelve attempts run in parallel and the first one that passed the
+        // gate was kept. But the gate cannot see the one thing these attempts
+        // disagree about: WHICH PHYSICS TICK the samples are labelled with.
+        // The regenerator's clock bias is measured per run, and on some maps it
+        // lands a tick out one run in five -- so "the first that passed" is a
+        // lottery over a 10 ms time shift, which is invisible in one ghost and
+        // fatal in a frame-synchronous two-car comparison. Measured on the
+        // downloaded human recordings the game made itself: 270051 4 of 5 runs
+        // on the game's tick, 279218 4 of 5, 285268 3 of 5.
+        //
+        // The candidates are already there, already gate-passed, and free. So
+        // cluster them and take the MODE, which is the rule this project
+        // already learned for every other jittering instrument.
+        if census && passed.len() >= 3 {
+            match trajectory_census(&passed) {
+                Some(text) => println!("== {}", text),
+                None => println!("== could not compare the attempts' trajectories"),
+            }
+            for c in &passed {
+                if Some(c) != accepted.as_ref() {
+                    let _ = std::fs::remove_file(c);
+                }
+            }
+            break;
+        }
     }
     match accepted {
         None => {
@@ -1047,4 +1108,90 @@ pub fn regen_best(inp: &str, map: &str, jobs: usize, tries: usize) -> Option<Str
         round += jobs;
     }
     None
+}
+
+/// How many DISTINCT trajectories a batch of gate-passing candidates was, and
+/// how far apart they are.
+///
+/// IT REPORTS, IT DOES NOT CHOOSE. The regenerator measures its clock bias per
+/// run and lands a physics tick out some of the time, so a batch of twelve can
+/// hold two answers 10 ms apart -- and every one of them passes the gate,
+/// because no check in it can see which tick a sample is labelled with. The
+/// obvious move is to take the mode, and it is wrong: measured against
+/// downloaded recordings the game made itself, the good phase is 4 of 5 runs
+/// on 270051 and 279218 but 1 of 5 on 285268 and 279209, so on half the
+/// affected maps the majority IS the error. Only a downloaded control of the
+/// same map settles which side is the game's -- see `ghost phase`.
+///
+/// TWO CANDIDATES ARE THE SAME TRAJECTORY IF THEY ARE IN THE SAME PLACE, and
+/// that bar is 1 cm. It is not a tolerance on physics: two runs of the same
+/// tape through the same engine agree to 0.000031 m when they share a tick and
+/// sit 0.13-0.59 m apart when they do not, which is a factor of four thousand.
+/// Anything between those is a third thing and shows up as its own group.
+pub fn trajectory_census(files: &[String]) -> Option<String> {
+    let traj: Vec<Option<Vec<[f64; 3]>>> = files
+        .iter()
+        .map(|f| {
+            gbx::record::decode_ghost(f).ok().map(|d| {
+                d.samples.iter().map(|s| [s.x as f64, s.y as f64, s.z as f64]).collect()
+            })
+        })
+        .collect();
+    let sep = |a: &Vec<[f64; 3]>, b: &Vec<[f64; 3]>| -> f64 {
+        let n = a.len().min(b.len());
+        if n == 0 {
+            return f64::INFINITY;
+        }
+        (0..n)
+            .map(|i| (0..3).map(|k| (a[i][k] - b[i][k]).powi(2)).sum::<f64>().sqrt())
+            .sum::<f64>()
+            / n as f64
+    };
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (i, t) in traj.iter().enumerate() {
+        let Some(t) = t else { continue };
+        match groups.iter_mut().find(|g| {
+            traj[g[0]].as_ref().map_or(false, |h| sep(t, h) <= 0.01)
+        }) {
+            Some(g) => g.push(i),
+            None => groups.push(vec![i]),
+        }
+    }
+    if groups.is_empty() {
+        return None;
+    }
+    groups.sort_by_key(|g| std::cmp::Reverse(g.len()));
+    let census = groups
+        .iter()
+        .map(|g| {
+            let d = traj[groups[0][0]]
+                .as_ref()
+                .zip(traj[g[0]].as_ref())
+                .map(|(a, b)| sep(a, b))
+                .unwrap_or(f64::NAN);
+            format!("{} at {:+.4} m", g.len(), d)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let census = if groups.len() == 1 {
+        format!(
+            "trajectory census: all {} gate-passing attempts produced ONE trajectory",
+            files.len()
+        )
+    } else {
+        format!(
+            "trajectory census: {} gate-passing attempts produced {} DIFFERENT trajectories ({}), {} apart. \
+             The gate cannot see which tick a sample is labelled with, so it passed all of them. \
+             Settle it with `ghost phase --control <a human download of this map>`; do NOT take the mode, \
+             which is the wrong tick on half the maps where this happens.",
+            files.len(),
+            groups.len(),
+            census,
+            groups
+                .get(1)
+                .and_then(|g| traj[groups[0][0]].as_ref().zip(traj[g[0]].as_ref()).map(|(a, b)| format!("{:.4} m", sep(a, b))))
+                .unwrap_or_default()
+        )
+    };
+    Some(census)
 }

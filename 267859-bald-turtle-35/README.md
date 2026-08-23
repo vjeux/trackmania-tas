@@ -133,3 +133,22 @@ be memorised.
 | `replays/KEYBOARD_10788.Ghost.Gbx` | keyboard only, three steering values |
 | `replays/TAS_10859.Ghost.Gbx` | an earlier step in the chain |
 | `replays/KEYBOARD_10897.Ghost.Gbx` | an earlier keyboard tape |
+
+### What these recordings are
+
+Each file's steer / gas / brake bytes come from its own input tape, so the two
+channels of inputs a ghost carries agree exactly, and each one carried a
+**stranger's ranked badge** — `Prestige=Yes&Level=7&Year=2026&…&Medal=Bronze`,
+the carrier player's season standing, written twice per file and cleared by no
+anonymiser because nobody had listed it. It is gone from all seven.
+
+**Their positions were left alone, and this map is the one where that is not
+good enough.** The regenerator does not sit on the game's own physics tick here:
+regenerating a recording the game made itself moves it 0.136 m — one 10 ms tick
+— reproducibly, on two different players' downloads, at every `--biastick`
+between 60 and 400 and on five runs of each. All seven files sit at that same
+offset, so all seven are **one physics tick out of step with the run they
+claim**. Nothing here is a stranger's driving; the times are real and every file
+re-simulates to the millisecond in its name. But the recording is a moment late,
+and until the regenerator is fixed on this map that cannot be corrected — so do
+not film a frame-synchronous side-by-side from these files.

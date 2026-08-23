@@ -1,0 +1,65 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787456249",
+  "file": "TAS_21918_analog.Ghost.Gbx",
+  "md5": "675478ecdf88b40a91f0b509571e0f7a",
+  "bytes": 18593,
+  "map_id": "267460",
+  "declared_time_ms": 21918,
+  "oracle_time_ms": 21918,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "267460-impossible-mini-trial-2/replays/TAS_21918_analog.Ghost.Gbx",
+    "md5": "675478ecdf88b40a91f0b509571e0f7a"
+  },
+  "source_inputs": {
+    "path": "267460-impossible-mini-trial-2/replays/TAS_21918_analog.Ghost.Gbx",
+    "md5": "675478ecdf88b40a91f0b509571e0f7a"
+  },
+  "engine_run": {
+    "note": "REGENERATED FROM ENGINE MEMORY. Every sample's 22 transform bytes -- position, orientation, speed, velocity direction -- were read out of the dedicated server's own engine while it drove THIS FILE'S OWN INPUT TAPE (`ghost regen`), and bytes 14/15/18 were written from that tape. The regenerator's tick phase on this map was verified against a downloaded human recording: five runs, mode 0.0005 m, so it is on the game's own physics tick here. Then `ghost identity set --anonymise` and `ghost declare --from-oracle`. STILL THE DONOR CONTAINER'S: the other 91 bytes of each sample -- rpm, gear, wheel rotation, suspension, surface effects -- byte 89 (the ground-contact flag) among them.",
+    "host": "44518.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 439,
+    "samples_in_record": 439,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18",
+    "47-68"
+  ],
+  "fields_inherited": [
+    "89 (the ground-contact flag)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost",
+      "args": "regen --trim-outside"
+    },
+    {
+      "tool": "ghost",
+      "args": "identity set --anonymise"
+    },
+    {
+      "tool": "ghost",
+      "args": "declare --from-oracle"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/267460/human_WR_23068_Wirtual.Ghost.Gbx",
+        "md5": "1c6092db7a1c3f6cff61ff9f50c279a5"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/267460/ghosts/rank00001_23068.Ghost.Gbx",
+        "md5": "1c6092db7a1c3f6cff61ff9f50c279a5"
+      }
+    ],
+    "limits": []
+  }
+}

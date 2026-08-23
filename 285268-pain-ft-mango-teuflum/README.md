@@ -19,7 +19,6 @@ Filmed from `replays/TAS_49275_regenerated.Ghost.Gbx`, whose record was
 generated from our own input tape rather than patched, so the trajectory on
 screen is the one our inputs produce. The check that matters here, run against
 the file actually on screen:
-
 | pair | closest approach | longest run within 1 mm |
 |---|---|---|
 | **this file** vs Ssnake01 49.291 | 0.0035 m | **0** |
@@ -218,3 +217,20 @@ leaderboard.
 | `replays/TAS_49275.Ghost.Gbx` | the fastest run |
 | `replays/TAS_49275_independent.Ghost.Gbx` | the same time reached independently — a byte-different tape |
 | `replays/TAS_49278.Ghost.Gbx` | **the same run as the 49.275, not a second attack on the map** — same input tape, 903 consecutive samples within a millimetre |
+
+### What these recordings are
+
+Every file here now carries its own steer / gas / brake bytes, taken from its
+own input tape, so the two channels of inputs a ghost holds agree exactly. Their
+**positions were left as they were**, deliberately: on this map the regenerator
+does not reliably sit on the game's own physics tick — regenerating a recording
+the game made itself lands 0.588 m out, one 10 ms tick, on four runs in five and
+on two different players' downloads. Rewriting the transform here would have
+been a coin toss.
+
+Measured against that control, four of these five sit on the game's tick and are
+right as they stand. **`TAS_49278` sits one tick from it.** It is the same run as
+the 49.275 on the same tape, so the pair is a one-tick-apart copy of one
+another — which is exactly the defect that took a two-car clip down on another
+map, invisible in a single ghost and fatal in a frame-synchronous comparison.
+**Do not film `TAS_49278` beside `TAS_49275`.**

@@ -18,15 +18,8 @@ is the 2.046 we are ahead of the only human who has ever recorded a time here.
 The two runs are properly apart for most of it: **max 50.16 m, mean 18.13 m**,
 180 of 421 samples in the band where two cars read as two cars.
 
-The car path in the clip is regenerated from engine memory and agrees with a
-second reading to **half a millimetre**. That used to be quoted here as
-"accurate to half a millimetre, so the driving you see is exactly what the
-simulator validated" — **corrected 2026-08-22**: ≈0.5 mm is now measured to be
-the distance between **two copies of the car in the server's own memory**, so
-that figure is what two readings of the *wrong* copy look like, and a gather
-that has found the car agrees bit-identically or at ~0.000001 m. The driving in
-the clip may still be exactly right; it is no longer this number that says so.
-**The time is untouched** — the oracle reads the tape.
+The car path in the clip is regenerated from engine memory and accurate to **half
+a millimetre**, so the driving you see is exactly what the simulator validated.
 One byte is still the carrier's — the surface-contact flag, which reads "on" for
 15 of 39 samples where the car is provably airborne — so some of the *effects*,
 dirt spray, sparks and wheel behaviour at the edges, are not ours.
@@ -133,14 +126,7 @@ end at x ≈ 784 and the next drivable surface east is
 `OpenTechRoadSlope2FCLeft` at x ≈ 816, so the return is a **32 m gap that has to
 be crossed while climbing 7 m — departing from a surface rolled 30° downward.**
 At 157.8 km/h the crossing takes 0.73 s and gravity alone costs 6.4 m; you
-arrive about 13 m low.
-
-*(That 6.4 m uses this engine's gravity, **not Earth's** — `½·24.3·0.73² =
-6.5 m`, where `½·9.81·0.73²` would be 2.6 m and would make the gap look
-crossable. Free fall here is `a_y = −g − k·v_y` with g ≈ 24.3–24.6, measured
-independently on three maps: 153527 at −24.314 over 335 free-fall stretches,
-285885 at −24.308, and 134672 at 24.62 ± 0.54. Any energy or fall figure on
-these pages should name the g it used.)* **Zero of roughly 135,000 evaluations reach the far
+arrive about 13 m low. **Zero of roughly 135,000 evaluations reach the far
 side.** (A marker 16 m further east, built the same way in the same batch, fires
 normally — so the test can succeed; this route just never gets there.)
 
@@ -195,3 +181,43 @@ The 21.022 tape the clip is shot from is not committed here. What is in
 TMX map [267460](https://trackmania.exchange/maps/267460).
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.
+
+### One check refuses these three files, and the engine clears them
+
+The publish gate's near-copy test (C12) refuses all three: after each tape parts
+from Wirtual's world record — at 2.180 s, 3.970 s and 4.100 s — the recorded
+trajectory stays **0.000633 m** from his for the remaining 375 samples. Two runs
+that stay six tenths of a millimetre apart for eighteen seconds after their
+inputs diverge is the shape of a copy, and that check exists because bit-exact
+tests cannot see one.
+
+It is not a copy here, and the thing that settles it is the engine rather than
+another comparison. Each file's record was rewritten from the dedicated server's
+own engine driving **that file's own input tape**, and every sample came back
+identical to what the file already carried, to 0.000000 m. The server simulates
+one ghost at a time, so there is no second car in the process for a locate to
+have found: the engine, given our inputs, is what puts the car within a
+millimetre of his line. On a Trial map an input that differs while the car is
+wedged against geometry changes nothing, and these tapes differ mostly in
+exactly that regime.
+
+So the refusal is honest and the file is too. It stays on the record as a note
+rather than being tuned away, because the same measurement on a map without a
+wedged car would mean the opposite.

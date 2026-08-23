@@ -1105,6 +1105,23 @@ pub fn gate_one(
                     growth,
                     d.sep_before
                 ));
+            } else if growth <= C12_GROWTH_BAR {
+                // Low growth, but they ARE in different places. Reported, not
+                // refused: this is what a pair that was already apart before
+                // the tapes parted looks like, and the ratio alone convicted it.
+                lines.push(format!(
+                    "note   C12       {}: low growth ({:.1}x) after the tapes part at {}, but the \
+                     trajectories are {:.4} m apart -- past the {:.2} m at which \"they never \
+                     separated\" is a description rather than an opinion.",
+                    std::path::Path::new(&h.path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    growth,
+                    crate::fmt::secs(d.first_diff_ms),
+                    d.sep_after,
+                    C12_TOGETHER_M
+                ));
             }
         }
         if !ran {
@@ -1345,6 +1362,18 @@ pub fn gate_one(
     //
     // The bars are wide on purpose. This separates 0.004 deg from 90 deg; it is
     // not a precision instrument and must never be read as one.
+    // A COMMON INSTANT, NOT EACH FILE'S OWN FIRST SAMPLE. "Every run of this
+    // map starts in the same place facing the same way" is a statement about
+    // RACE ZERO, and a carrier record does not always begin there: 227654's
+    // rank-1 recording starts at race 1.310 s doing 66 km/h. Comparing each
+    // file's own first in-race sample then measures a car on the start block
+    // against a car already down the road -- 11.2 m and 48.9 deg -- and the
+    // check INVERTS, refusing exactly the repaired files it exists to admit
+    // while passing a file 11.2 m along. So: take the reference's first
+    // in-race sample, find the SUBJECT sample nearest that instant, and if
+    // there is none within 60 ms say the records do not overlap at the start
+    // rather than pronouncing on them. (Found by 6d743a47; the same fix is in
+    // `ghost regen`'s G2.)
     {
         let firstpos = |d: &record::Decoded| -> Option<record::Sample> {
             d.samples.iter().find(|s| s.time_ms >= 0).cloned()
@@ -1393,15 +1422,15 @@ pub fn gate_one(
                 done = true;
                 break;
             }
+            let nm = std::path::Path::new(&r.path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
             let dpos =
                 ((sa.x - sb.x).powi(2) + (sa.y - sb.y).powi(2) + (sa.z - sb.z).powi(2)).sqrt();
             // rotation angle between two unit quaternions: 2 acos |a.b|
             let dot = (sa.qx * sb.qx + sa.qy * sb.qy + sa.qz * sb.qz + sa.qw * sb.qw).abs();
             let dang = 2.0 * dot.min(1.0).acos() * 180.0 / std::f64::consts::PI;
-            let nm = std::path::Path::new(&r.path)
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
             if dpos > 0.5 || dang > 5.0 {
                 hard += 1;
                 lines.push(format!(
@@ -3065,10 +3094,39 @@ pub const C8B_MIN_SHARE: f64 = 0.15;
 /// whether it moved AT ALL once the inputs stopped being shared, and the two
 /// populations are six orders of magnitude apart.
 pub fn c12_is_near_copy(sep_before: f64, sep_after: f64) -> bool {
-    sep_after / sep_before.max(1e-9) <= C12_GROWTH_BAR
+    sep_after / sep_before.max(1e-9) <= C12_GROWTH_BAR && sep_after <= C12_TOGETHER_M
 }
 
 pub const C12_GROWTH_BAR: f64 = 10.0;
+
+/// AND THEY MUST STILL BE IN THE SAME PLACE. Growth alone convicts a pair that
+/// was already far apart before the tapes parted: 285268's TAS_49278 ends up
+/// **2.907 m** from the human world record, five times the 0.575 m they were
+/// apart beforehand, and a ratio of 5 is under the bar. Two runs three metres
+/// apart are not one run, whatever the ratio says.
+///
+/// The two populations, measured rather than chosen:
+///
+/// | | separation after the tapes part |
+/// |---|---|
+/// | copies -- 267460's three files against Wirtual's WR | **0.000633 m** over 375 samples |
+/// | 227654's regenerated TAS_57573 against ailiei.'s run | **0.0009 m** over 365 samples |
+/// | honest divergence -- 267859 TAS_10859 | 0.160 m |
+/// | honest divergence -- 279218 best_pF | 0.487 m |
+/// | honest divergence -- 279209 kb_gasfull | 0.721 m |
+/// | honest divergence -- 285268 TAS_49278 | 2.908 m |
+///
+/// The gap is a factor of 178 with nothing in it. This bar is eleven times the
+/// largest copy and sixteen times below the smallest honest divergence: a
+/// gulf, not a tuned edge.
+///
+/// WHAT SETTLES A DISPUTED CASE is not this function but the engine. 267460's
+/// three files reproduce their recorded trajectory from their own tapes to
+/// 0.000000 m, and the server has no second car in the process -- so the
+/// engine, driving our tape, is what puts the car 0.6 mm from Wirtual's line.
+/// On a Trial map an input that differs where the car is wedged is inert, and
+/// that is the case this comparison cannot resolve from two files alone.
+pub const C12_TOGETHER_M: f64 = 0.01;
 
 #[cfg(test)]
 mod tests {

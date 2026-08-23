@@ -1,0 +1,117 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787456286",
+  "file": "tas_4492_v1.Ghost.Gbx",
+  "md5": "1865b9f2acb669610a33e60dae959ce8",
+  "bytes": 4961,
+  "map_id": "270053",
+  "declared_time_ms": 4492,
+  "oracle_time_ms": 4492,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "270053-fall-2025-18-cp1-end/replays/tas_4492_v1.Ghost.Gbx",
+    "md5": "1865b9f2acb669610a33e60dae959ce8"
+  },
+  "source_inputs": {
+    "path": "270053-fall-2025-18-cp1-end/replays/tas_4492_v1.Ghost.Gbx",
+    "md5": "1865b9f2acb669610a33e60dae959ce8"
+  },
+  "engine_run": {
+    "note": "REGENERATED FROM ENGINE MEMORY. Every sample's 22 transform bytes -- position, orientation, speed, velocity direction -- were read out of the dedicated server's own engine while it drove THIS FILE'S OWN INPUT TAPE (`ghost regen`), and bytes 14/15/18 were written from that tape. The regenerator's tick phase on this map was verified against a downloaded human recording: five runs, mode 0.0005 m, so it is on the game's own physics tick here. Then `ghost identity set --anonymise` and `ghost declare --from-oracle`. STILL THE DONOR CONTAINER'S: the other 91 bytes of each sample -- rpm, gear, wheel rotation, suspension, surface effects -- byte 89 (the ground-contact flag) among them.",
+    "host": "44518.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 90,
+    "samples_in_record": 90,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18",
+    "47-68"
+  ],
+  "fields_inherited": [
+    "89 (the ground-contact flag)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost",
+      "args": "regen --trim-outside"
+    },
+    {
+      "tool": "ghost",
+      "args": "identity set --anonymise"
+    },
+    {
+      "tool": "ghost",
+      "args": "declare --from-oracle"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00001_4495.Ghost.Gbx",
+        "md5": "1d5a507f32123fb3904e3330ac1b8190"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00002_4495.Ghost.Gbx",
+        "md5": "3ef878dcfcc0140f6f6e4066be95f362"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00003_4495.Ghost.Gbx",
+        "md5": "b2991afc3a28977534663083f3f22836"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00004_4495.Ghost.Gbx",
+        "md5": "0917417a077880eff84325bd4d0633da"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00005_4495.Ghost.Gbx",
+        "md5": "6c59f5a50d79a87e2ae8c90f2108d38d"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00006_4496.Ghost.Gbx",
+        "md5": "eb6aa7718c6e695f2a3044d392bba7cb"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00007_4497.Ghost.Gbx",
+        "md5": "fb80cec20f2d42e636ca8068ecac672e"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00008_4497.Ghost.Gbx",
+        "md5": "1af93a2f53b4b6f9d84026b6d53bb078"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00009_4497.Ghost.Gbx",
+        "md5": "955896986e81d0d47270b18257ad143e"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00010_4497.Ghost.Gbx",
+        "md5": "9b80ea17d5aef720251e10d78f741411"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00011_4498.Ghost.Gbx",
+        "md5": "bd89c9414cc25fc67a93647133eafe56"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00012_4498.Ghost.Gbx",
+        "md5": "1af2e2256764888fc3cc7bca86bbf009"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00013_4498.Ghost.Gbx",
+        "md5": "58ece5d007db8e7570e64fa4597b4d54"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00014_4498.Ghost.Gbx",
+        "md5": "77f7b47132525f8ef605fe174c6457bc"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/270053/ghosts/p00015_4498.Ghost.Gbx",
+        "md5": "d55201a14cf417cb3cd91737885db69b"
+      }
+    ],
+    "limits": []
+  }
+}

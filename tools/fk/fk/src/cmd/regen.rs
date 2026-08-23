@@ -332,8 +332,39 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // REQUIRES A POSITIVE CONTROL -- including when the negative agrees with a
     // measurement you made yourself and liked. Run a known-good artefact
     // through the instrument before believing any verdict about your own work.
+    // `--pair-shift-ms N` MOVES THE PAIRING, AND IT IS NOT THE OLD `--recshift`.
+    //
+    // The old flag was removed for a good reason and this one exists for a
+    // better one. `--recshift` was driven by C11b, which reports a MAGNITUDE:
+    // it cannot see which side of the tick a file is on, a downloaded human
+    // ghost the game recorded itself reads the same, and nine files were
+    // rebuilt on that reading before the control caught it. The lesson stands.
+    //
+    // What is different now is the measurement. `ghost phase` regenerates a
+    // DOWNLOADED recording -- one the game made itself, so it is on the game's
+    // phase by definition -- and decomposes the residual along and across the
+    // direction of travel. On five maps it comes back as displacement along
+    // the track and nothing across it:
+    //
+    //     267859  +0.1357 m along, 0.0067 across  =  +9.83 ms
+    //     279209  +0.3603 m along, 0.0066 across  =  +9.72 ms
+    //     279218  +0.3652 m along, 0.0077 across  =  +9.67 ms
+    //     285268  +0.5876 m along, 0.0115 across  =  +9.96 ms
+    //     228607  -0.0000 m along, 0.0004 across  =  -0.00 ms   (a clean map)
+    //
+    // That is not a magnitude and it is not ambiguous: it is a SIGNED time,
+    // one physics tick, on the same curve, with the cross-track component at
+    // the position encoder's floor. The regenerated record is sampled a tick
+    // LATE, so each record instant must pair with an engine instant one tick
+    // EARLIER.
+    //
+    // It stays a flag rather than a constant because the offset is per map --
+    // eight of thirteen maps measure zero -- and because the only honest way
+    // to set it is to measure the control on THAT map and check the correction
+    // returns the control to zero. `ghost phase` prints the value to pass.
+    let pair_shift: i64 = flag("--pair-shift-ms").unwrap_or_else(|| "0".into()).parse().unwrap_or(0);
     let by_ms: std::collections::HashMap<i64, (&Vec<u8>, &Vec<u8>)> =
-        recs.iter().map(|(c, f, l)| (*c as i64 - bias, (f, l))).collect();
+        recs.iter().map(|(c, f, l)| (*c as i64 - bias + pair_shift, (f, l))).collect();
 
     // 3. rebuild every sample
     let mut done = 0usize;

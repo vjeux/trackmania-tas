@@ -1,0 +1,76 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787456523",
+  "file": "TAS_49275_independent.Ghost.Gbx",
+  "md5": "091612d23aa28706c3deb216a3190d3d",
+  "bytes": 33984,
+  "map_id": "285268",
+  "declared_time_ms": 49275,
+  "oracle_time_ms": 49275,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "285268-pain-ft-mango-teuflum/replays/TAS_49275_independent.Ghost.Gbx",
+    "md5": "091612d23aa28706c3deb216a3190d3d"
+  },
+  "source_inputs": {
+    "path": "285268-pain-ft-mango-teuflum/replays/TAS_49275_independent.Ghost.Gbx",
+    "md5": "091612d23aa28706c3deb216a3190d3d"
+  },
+  "engine_run": {
+    "note": "REPAIRED, NOT REGENERATED. The transform bytes of every sample are exactly the ones this file already carried: on this map the regenerator does not sit on the game's own physics tick -- regenerating a recording the game made itself moves it by one tick, measured as the mode of five runs against two different players' downloads -- so rewriting the transform here would have replaced a correct record with one 10 ms out. What WAS rewritten is bytes 14/15/18 of every sample, the steer/gas/brake echo, taken from this file's own input chunk by `ghost tape sync-record`, which needs no engine; then `ghost identity set --anonymise` and `ghost declare --from-oracle`. STILL THE DONOR CONTAINER'S: the other 91 bytes of each sample, byte 89 (the ground-contact flag) among them.",
+    "host": "44518.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 986,
+    "samples_in_record": 986,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18"
+  ],
+  "fields_inherited": [
+    "89 (the ground-contact flag)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost",
+      "args": "tape sync-record"
+    },
+    {
+      "tool": "ghost",
+      "args": "identity set --anonymise"
+    },
+    {
+      "tool": "ghost",
+      "args": "declare --from-oracle"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank001_49446.Ghost.Gbx",
+        "md5": "4d3f885619aca36d3ed91b7f54e3a5ac"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank002_49491.Ghost.Gbx",
+        "md5": "8face25394fa67de49266a786f566e4c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank003_49535.Ghost.Gbx",
+        "md5": "4a82630af86dc7ff862bbf4a0c85814c"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank005_49634.Ghost.Gbx",
+        "md5": "f19211d3df0d2047b335817efcbbf1a5"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/285268/ghosts/rank013_50140.Ghost.Gbx",
+        "md5": "c987065e6122475564016d588fc40b69"
+      }
+    ],
+    "limits": []
+  }
+}

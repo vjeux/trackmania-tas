@@ -153,6 +153,29 @@ already moving badly.
 | `replays/ROBUST_KEYBOARD_14479.Ghost.Gbx` | the robustness-optimised variant |
 | `replays/DRIVABLE_30ev_14608.Ghost.Gbx` | 30 events — slower *and* less forgiving, kept as the counter-example |
 
-These files are input tapes: the telemetry inside them is inherited from the
-template they were built on, so opening one as a ghost in game replays the
-human's motion rather than this run's.
+These four files carry **their own** telemetry. Every sample's position,
+orientation, speed and velocity direction was read out of the engine driving
+that file's own input tape, and its steer / gas / brake bytes come from the tape
+itself — so opening one as a ghost in game replays *this* run. Each was one
+physics tick out of step with the game's own clock before that pass and is not
+now; the correction is what the regeneration was for. Nine of the 116 bytes in
+each sample are ours and 91 are still the donor container's — rpm, gear, wheel
+rotation, suspension and the surface effects — so the *car's motion* is this
+run's and some of the dressing around it is not.
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.

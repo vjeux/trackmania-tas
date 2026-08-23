@@ -1,0 +1,73 @@
+{
+  "schema": "tm-ghost-provenance/2",
+  "written_unix": "1787456133",
+  "file": "LOWINPUT_20070_16values.Ghost.Gbx",
+  "md5": "6ae8aa6d94fb371ffda91b7d92e639f3",
+  "bytes": 15102,
+  "map_id": "228607",
+  "declared_time_ms": 20070,
+  "oracle_time_ms": 20070,
+  "oracle_checkpoints": null,
+  "container_donor": {
+    "path": "228607-torment-1-up/replays/LOWINPUT_20070_16values.Ghost.Gbx",
+    "md5": "6ae8aa6d94fb371ffda91b7d92e639f3"
+  },
+  "source_inputs": {
+    "path": "228607-torment-1-up/replays/LOWINPUT_20070_16values.Ghost.Gbx",
+    "md5": "6ae8aa6d94fb371ffda91b7d92e639f3"
+  },
+  "engine_run": {
+    "note": "REGENERATED FROM ENGINE MEMORY. Every sample's 22 transform bytes -- position, orientation, speed, velocity direction -- were read out of the dedicated server's own engine while it drove THIS FILE'S OWN INPUT TAPE (`ghost regen`), and bytes 14/15/18 were written from that tape. The regenerator's tick phase on this map was verified against a downloaded human recording: five runs, mode 0.0005 m, so it is on the game's own physics tick here. Then `ghost identity set --anonymise` and `ghost declare --from-oracle`. STILL THE DONOR CONTAINER'S: the other 91 bytes of each sample -- rpm, gear, wheel rotation, suspension, surface effects -- byte 89 (the ground-contact flag) among them.",
+    "host": "44518.od.fbinfra.net"
+  },
+  "telemetry_coverage": {
+    "samples_regenerated": 402,
+    "samples_in_record": 402,
+    "fraction": 1
+  },
+  "fields_regenerated": [
+    "14",
+    "15",
+    "18",
+    "47-68"
+  ],
+  "fields_inherited": [
+    "89 (the ground-contact flag)"
+  ],
+  "tools": [
+    {
+      "tool": "ghost",
+      "args": "regen --trim-outside"
+    },
+    {
+      "tool": "ghost",
+      "args": "identity set --anonymise"
+    },
+    {
+      "tool": "ghost",
+      "args": "declare --from-oracle"
+    }
+  ],
+  "certification": {
+    "contamination_verdict": "CLEAN",
+    "references_tested": [
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/228607/ghosts/rank00001_24512.Ghost.Gbx",
+        "md5": "dcf8aec9456cef1323333d502e55e13f"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/228607/ghosts/rank00002_24852.Ghost.Gbx",
+        "md5": "be5feb704fe6a5ff430a08715dce9647"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/228607/ghosts/rank00003_24902.Ghost.Gbx",
+        "md5": "2bafb2dc0cb20bd3e4253b1f685a9ff9"
+      },
+      {
+        "path": "/var/svcscm/persistent/private-30d/tm-unbeaten/228607/key_siblings/key_AUTHORREC_228607_20258.Ghost.Gbx",
+        "md5": "095165d6507e364d2509af4b8a5939c2"
+      }
+    ],
+    "limits": []
+  }
+}

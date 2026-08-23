@@ -182,6 +182,31 @@ pub fn scan(c: &Container) -> Vec<Field> {
             o += 4 + n;
         }
     }
+    // --- the SECOND ranked badge, skippable chunk `0x0309202E`.
+    //
+    // The badge is written twice: once as a bare string in the skin block of
+    // `0x03092000`, and once as a chunk of its own -- `str` then one byte --
+    // which the walk above never reaches because it stops at `0x03092000`'s
+    // end. Stripping only the first left the carrier player's season standing
+    // in the file and `ghost identity show` reporting a clean pass, which is
+    // the same shape as every other identity bug here: a site nobody listed.
+    // Found by counting the raw string in the bytes AFTER an anonymise pass
+    // said it had cleared it -- 2 occurrences before, 1 after.
+    if let Some(&(_, _, poff, sz)) = chunks.iter().find(|k| k.0 == 0x0309202E) {
+        if sz >= 4 {
+            let n = u32::from_le_bytes(body[poff..poff + 4].try_into().unwrap()) as usize;
+            if n > 0 && n <= sz.saturating_sub(4) {
+                if let Ok(s) = std::str::from_utf8(&body[poff + 4..poff + 4 + n]) {
+                    out.push(Field {
+                        role: Role::Prestige,
+                        at: poff,
+                        len: n,
+                        s: s.to_string(),
+                    });
+                }
+            }
+        }
+    }
     // --- the account id and the map uid.
     //
     // These are NOT skippable chunks: `0x0309200F` and `0x03092010` are written

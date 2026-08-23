@@ -162,3 +162,23 @@ frame-perfect trick.
 | `replays/ablation_exit_only_4495.Ghost.Gbx` | the human record with only the exit release — still 4.495 |
 | `inputs/tas_4492_v1.inputs.csv` | per-tick inputs |
 | `inputs/human_wr_4495.inputs.csv` | the human world record's inputs, for comparison |
+
+### What these recordings are
+
+Every file here carries its own telemetry: each sample's transform was read out
+of the engine driving that file's own input tape, and its steer / gas / brake
+bytes come from the tape. The regenerator's tick alignment on this map was
+checked against a recording the game made itself and reproduces it to 0.0005 m.
+
+**Three of these four were one physics tick out of step and are not now.** That
+is the defect that took this map's two-car clip down: a pure time shift, 0.336 m
+along the track and 0.004 m across it, which is the position encoder's own
+floor — invisible in a single ghost and fatal in a frame-synchronous
+comparison. `tas_4492_v1`, `tas_4493_singletick_v1` and `ablation_early_only_4493`
+each moved by 0.328 m when their records were rewritten from the engine;
+`ablation_exit_only_4495` was already on the game's tick. The clip can be shot
+again from these files.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them.

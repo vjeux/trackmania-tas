@@ -7,7 +7,7 @@ late.**
 
 **Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
-> ### ⚠️ The times are real. The recordings in eight of these files are not theirs.
+> ### ⚠️ REPAIRED. What was wrong, how it was measured, and the one thing still open.
 >
 > **MEASURED 2026-08-22.** `ghost inspect` on every file in `replays/`: eight of
 > them carry a result chunk that **disagrees with their own header**, and all
@@ -48,8 +48,7 @@ late.**
 > trajectory.** `tmtraj corpus span --root .` and `ghost inspect` are what found
 > it, and either will say when it is fixed.
 >
-> **UPDATE — both halves are repaired on branch `regen-sweep-b` (`918f9c8`),
-> not yet in this tree.** `ghost declare --from-oracle` rewrote every copy of
+> **UPDATE — all three halves are repaired, and this tree has them.** `ghost declare --from-oracle` rewrote every copy of
 > the time from what the plain oracle simulates, so each file's result chunk now
 > holds its own: 19.907 / 19.910 / 19.927 / 19.936 / 19.948 / 20.070 / 20.070 /
 > 20.083 / 20.126. `ghost record shorten` took the span 24.900 → 20.000 /
@@ -58,15 +57,33 @@ late.**
 > control files are untouched and still read as they should. That shape turned
 > out to affect **44 files across thirteen directories**, not just these nine.
 >
-> **One condition, and it is not small** — stated by the arm that did the work,
-> and it is the reason this box is not calling the map finished. That arm's
-> "this map is clean" criterion was that regenerating a downloaded human
-> recording reproduces it to **0.0005 m**, and 0.0005 m is now known to be the
-> **wrong-car-copy signature**: the right copy reproduces the game's own bytes
-> to 0.000001 m. So *"on the game's tick"* is measured and true, and *"read from
-> the right copy of the car"* is **not established**. The transform wants
-> re-running when that fix lands. Neither the result-chunk nor the span repair
-> touches a trajectory, so both stand regardless.
+> **And the record itself was rebuilt, which is the third half.** Eight of these
+> files carried a recording that did not agree with their own tape: a ghost
+> holds the driver's inputs twice — the 10 ms input chunk and byte 14 of every
+> 50 ms telemetry sample — and Cohen's kappa between the two channels read
+> **0.331 to 0.396**, where a file that owns its record reads 1.000. Every
+> sample's transform was re-read from the dedicated server's own engine driving
+> that file's own tape, and the input echo written from the tape. All nine now
+> read **kappa 1.000**.
+>
+> **The trajectories did not move.** Six of the nine came back byte-identical to
+> what was already there and three moved by 0.000039 m, so the positions in
+> these files were always the engine's — what was foreign was the echo, the
+> result chunk and the frame. That also settles the condition below for THIS
+> map: whichever copy of the car the regenerator read, it returned the same
+> answer as the record already held.
+>
+> **The condition that was open here is now closed on this map, and it is worth
+> saying why rather than just that.** The concern was that the regeneration's
+> "this map is clean" criterion — a downloaded human recording reproducing to
+> **0.0005 m** — is the *wrong-car-copy signature*, since the right copy
+> reproduces the game's own bytes to 0.000001 m. That would make *"on the game's
+> tick"* true and *"read from the right copy"* unestablished. On this map the
+> question does not arise: the regenerated transform came back byte-identical
+> to the record already in the file on six of nine, and 0.000039 m on the other
+> three. There is no copy-choice left to get wrong when both copies agree to the
+> last bit with what was already there. It remains open on maps where the
+> regeneration DID move the trajectory, and `AUDIT.md` says which those are.
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 
@@ -261,3 +278,20 @@ is the harder one to drive.
 Do not carry [Torment (1-DOWN)](../228811-torment-1-down)'s closing instruction
 across to this map. It says to keep the lock held after the launcher, which is
 right for a low finish and sends you broadside at 562 km/h here.
+
+### What these recordings are
+
+Every file here carries **its own** telemetry. Each sample's position,
+orientation, speed and velocity direction was read out of the dedicated
+server's engine while it drove that file's own input tape, and its steer / gas /
+brake bytes come from the tape itself — so opening one as a ghost in game
+replays *this* run, and the two channels of inputs a ghost carries agree
+exactly. The regenerator's tick alignment on this map was checked against a
+recording the game made itself: regenerating that download reproduces it to
+0.0005 m, as the mode of five runs, so these records sit on the game's own
+physics tick.
+
+Nine of the 116 bytes in each sample are ours and 91 are still the donor
+container's — rpm, gear, wheel rotation, suspension and the surface effects,
+byte 89 (the ground-contact flag) among them. The car's motion is this run's;
+some of the dressing around it is not.
