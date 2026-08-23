@@ -184,17 +184,20 @@ const ASSET: &str = "https://github.com/user-attachments/assets/";
 ///   * **two-car** -- the clip is as long as the SLOWER of the two runs. On a
 ///     map where the record is slower than us, that is the record's time.
 ///
-/// The tolerance is 1.5 s, which is a real measurement rather than a
-/// guess: the three clips whose scenes are known ran 239.100 s for a 239.133
-/// run, 220.5 s for a 218.812 run against a 441.002 opponent that had been
-/// trimmed, and 68.367 s for a 67.319 run against a 68.442 record. The largest
-/// honest gap between a clip and the time it should equal was 1.05 s.
+/// The tolerances are measured, not chosen. Where the answer is known, a clip
+/// lands within about a tenth of a second of the length it should be: 239.100
+/// for a 239.133 run, 68.367 against a 68.442 record, 96.300 against 96.281,
+/// 15.033 against 15.039, 24.433 against 24.342. The worst was 0.091 s. `NEAR`
+/// is 0.5 s -- five times the worst observed miss, so a clip that does not
+/// match either candidate is really not matching.
 ///
-/// WHEN THE TWO CANDIDATES ARE WITHIN TOLERANCE OF EACH OTHER THE PROBE
-/// REFUSES. Half these maps are decided by thousandths -- our 4.492 against a
-/// 4.495 record -- and no clip length can separate a scene containing one car
-/// from a scene containing two when both finish at the same instant. Returning
-/// "two-car" there would be a guess wearing a measurement's clothes.
+/// WHERE THE TWO CANDIDATES ARE THE SAME LENGTH THE PROBE REFUSES. Half these
+/// maps are decided by thousandths -- our 6.342 against a 6.346 record -- and
+/// no clip length can separate one car from two when both finish at the same
+/// instant. `SEP_MIN` is 0.3 s, three times the worst miss: below it, and for
+/// any clip that is not nearer to one candidate than to the midpoint between
+/// them, the answer is UNKNOWN with the numbers attached. A guess wearing a
+/// measurement's clothes is worse than no measurement.
 pub fn treatment_from_clip(
     secs: f64,
     width: u32,
@@ -209,7 +212,8 @@ pub fn treatment_from_clip(
             format!("{width}x{height} is {aspect:.2}:1 -- a side-by-side composition"),
         );
     }
-    const TOL: f64 = 1.5;
+    const NEAR: f64 = 0.50;
+    const SEP_MIN: f64 = 0.30;
     let (Some(tas), Some(wr)) = (tas, wr) else {
         return (
             Treatment::Unknown,
@@ -217,35 +221,43 @@ pub fn treatment_from_clip(
         );
     };
     let slower = tas.max(wr);
-    if (slower - tas).abs() < 2.0 * TOL {
+    let sep = slower - tas;
+    if sep < SEP_MIN {
         return (
             Treatment::Unknown,
             format!(
-                "{secs:.3}s, but our {tas:.3} and the slower run {slower:.3} are {:.3}s apart -- \
-                 closer than the measurement can separate, so the length cannot say how many cars \
-                 were in the scene",
-                (slower - tas).abs()
+                "{secs:.3}s, but a one-car scene would be {tas:.3} and a two-car scene {slower:.3} \
+                 -- {sep:.3}s apart, which this measurement cannot separate"
             ),
         );
     }
     let d_tas = (secs - tas).abs();
     let d_slower = (secs - slower).abs();
-    if d_slower <= TOL && d_slower < d_tas {
-        (
-            Treatment::TwoCar,
-            format!("{secs:.3}s matches the slower run {slower:.3} (ours is {tas:.3})"),
-        )
-    } else if d_tas <= TOL {
-        (
-            Treatment::SingleCar,
-            format!("{secs:.3}s matches our run {tas:.3} alone (the slower run is {slower:.3})"),
-        )
+    let (t, d, other) = if d_slower <= d_tas {
+        (Treatment::TwoCar, d_slower, slower)
     } else {
-        (
+        (Treatment::SingleCar, d_tas, tas)
+    };
+    if d > NEAR || d > sep / 2.0 {
+        return (
             Treatment::Unknown,
-            format!("{secs:.3}s is neither our {tas:.3} nor the slower {slower:.3}"),
-        )
+            format!(
+                "{secs:.3}s is {d_tas:.3}s from our {tas:.3} and {d_slower:.3}s from the slower \
+                 {slower:.3} -- not close enough to either to call it"
+            ),
+        );
     }
+    let note = match t {
+        Treatment::TwoCar => format!(
+            "{secs:.3}s is {d:.3}s from the slower run {other:.3} and {d_tas:.3}s from ours \
+             {tas:.3} -- the scene ran to the opponent"
+        ),
+        _ => format!(
+            "{secs:.3}s is {d:.3}s from our run {other:.3} and {d_slower:.3}s from the slower \
+             {slower:.3} -- the scene ran to our car alone"
+        ),
+    };
+    (t, note)
 }
 
 /// Seconds out of a caption field like `24.342 by zetos.` or `4.495 (six tied)`.
@@ -476,4 +488,71 @@ pub fn main(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every number here was measured off a published clip.
+    #[test]
+    fn a_split_composition_is_recognised_by_its_shape() {
+        let (t, _) = treatment_from_clip(60.0, 2560, 720, Some(10.0), Some(20.0));
+        assert_eq!(t, Treatment::Split);
+    }
+
+    #[test]
+    fn a_clip_that_ran_to_the_opponent_is_two_car() {
+        // Kacky Reloaded #290: clip 24.433, ours 23.416, record 24.342.
+        let (t, w) = treatment_from_clip(24.433, 1280, 720, Some(23.416), Some(24.342));
+        assert_eq!(t, Treatment::TwoCar, "{w}");
+        // impossible at for ssano: 15.033 against 14.289 / 15.039.
+        let (t, w) = treatment_from_clip(15.033, 1280, 720, Some(14.289), Some(15.039));
+        assert_eq!(t, Treatment::TwoCar, "{w}");
+    }
+
+    #[test]
+    fn a_clip_that_ran_to_our_car_alone_is_single_car() {
+        // U10S_32 shape: ours 7.463, record 7.893, filmed single.
+        let (t, w) = treatment_from_clip(7.480, 1280, 720, Some(7.463), Some(7.893));
+        assert_eq!(t, Treatment::SingleCar, "{w}");
+    }
+
+    #[test]
+    fn thousandths_apart_is_refused_rather_than_guessed() {
+        // unluckE: ours 6.342, record 6.346. No clip length can tell these
+        // scenes apart, and answering anyway would be a fabricated result.
+        let (t, w) = treatment_from_clip(6.400, 1280, 720, Some(6.342), Some(6.346));
+        assert_eq!(t, Treatment::Unknown, "{w}");
+    }
+
+    #[test]
+    fn a_length_matching_neither_candidate_is_refused() {
+        let (t, w) = treatment_from_clip(50.0, 1280, 720, Some(23.416), Some(24.342));
+        assert_eq!(t, Treatment::Unknown, "{w}");
+    }
+
+    #[test]
+    fn a_page_with_no_times_cannot_be_measured() {
+        let (t, _) = treatment_from_clip(12.733, 1280, 720, None, None);
+        assert_eq!(t, Treatment::Unknown);
+    }
+
+    #[test]
+    fn caption_parses_into_its_parts() {
+        let c = parse_caption(
+            "**Kacky Reloaded #290** — TAS **23.416** (−0.646) | AT 24.062 | WR 24.342 by zetos.",
+        )
+        .expect("should parse");
+        assert_eq!(c.map, "Kacky Reloaded #290");
+        assert_eq!(secs_of(&c.tas), Some(23.416));
+        assert_eq!(secs_of(&c.at), Some(24.062));
+        assert_eq!(secs_of(&c.wr), Some(24.342));
+    }
+
+    #[test]
+    fn the_overlay_panel_is_not_a_split_view() {
+        // "the panel is this run's own inputs" appears on nearly every page.
+        assert_eq!(treatment_of("The panel is this run's own inputs."), Treatment::Unknown);
+    }
 }
