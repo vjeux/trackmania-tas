@@ -526,15 +526,21 @@ batch, and not one crossing.**
    what §8 adds to it — landing on the rim's *south* face buys the inverted
    slide and then the wall, so the landing must be east of x ≈ 460 or north of
    z ≈ 1668.
-3. **The AT's provenance**, worth an hour and no more. The medals are Nadeo's
-   own derivation from 43.079 (×1.07 / ×1.2 / ×1.5, rounded to the second:
-   46 / 52 / 65), so the author time came from a validation and was not typed
-   in — but the map carries **no embedded author ghost** (no chunk
-   `0x0305B00F`), its header says `validated="1"` and it also names
-   `EPP_EditorPluginLoads`. Meanwhile the author's own alt account takes
-   **50.639** to reach the patch for the first time and our heavily-TASed
-   upright route takes **41.037**, so 43.079 sits 2.04 s off a TAS and 7.56 s
-   ahead of the only human line on the map. TMX has one version, uploaded
-   2025-12-29 and never updated, no replays and no comments, so the question
-   cannot be settled from outside — but it belongs next to the map's "unbeaten"
-   status, because it changes what "unbeaten" means here.
+3. **The AT's provenance — and I ran the control, which killed my own hint.**
+   The medals are Nadeo's own derivation from 43.079 (×1.07 / ×1.2 / ×1.5,
+   rounded to the second: 46 / 52 / 65), so the author time came from a
+   validation and was not typed in. I noticed the map's header names
+   `EPP_EditorPluginLoads` and flagged it as a possible plugin-set-AT tell.
+   **It is not one.** Control over the store's other maps: `EPP_EditorPluginLoads`
+   is also present on **249521** and **279218**, whose author times we have
+   beaten by ordinary driving, and it is **absent from 126859**, the one map on
+   this project whose AT is known to be `atSetByPlugin`. If anything it is
+   anti-correlated. Retracted.
+   The map carrying no embedded author ghost is likewise not a tell — 23 of the
+   31 maps surveyed for `ct mapghost` carry nothing.
+   What is left is only the arithmetic, and it is worth recording next to the
+   map's "unbeaten" status without a theory attached: the author's own alt
+   account takes **50.639** to reach the patch for the first time, our heavily
+   TASed upright route takes **41.037**, and **43.079 sits 2.04 s off a TAS and
+   7.56 s ahead of the only human line on the map**. TMX has one version,
+   uploaded 2025-12-29 and never updated, no replays and no comments.
