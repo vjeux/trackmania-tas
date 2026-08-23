@@ -145,6 +145,15 @@ pub struct ForkEval {
     /// worked had a separate hard-coded launch detector for this; here it is a
     /// bar on the key the operator already wrote.
     gate_min_key: f32,
+    /// Is an event clause armed? The band rule differs: with a clause, a run
+    /// that finishes without firing has not done the thing.
+    fire_armed: bool,
+    /// The box itself, so an improvement can say when it is pressed against a
+    /// face of it.
+    gate_box: forkoracle::pred_core::Gate,
+    /// Where the SEED's own state sat in that box, when a seed recording was
+    /// given. The migration warning needs somewhere to have migrated FROM.
+    gate_seed_pos: Option<[f32; 3]>,
     /// The gate record of each candidate in the LAST batch, so the winner's
     /// whole state travels with it into the bank. Indexed exactly as the batch
     /// was.
@@ -163,6 +172,8 @@ pub struct ForkSetup {
     /// The key a state must reach before finishing counts as having done the
     /// thing; `NEG_INFINITY` for no bar. See `ForkEval::gate_min_key`.
     pub gate_min_key: f32,
+    /// Where the seed's own state sat in the gate box, from its recording.
+    pub gate_seed_pos: Option<[f32; 3]>,
     pub start_offset_ms: i32,
 }
 
@@ -266,6 +277,9 @@ impl ForkEval {
             reference,
             gate: watch.gate.armed,
             gate_min_key: s.gate_min_key,
+            fire_armed: watch.fire.armed,
+            gate_box: watch.gate,
+            gate_seed_pos: s.gate_seed_pos,
             last_gate: Vec::new(),
         })
     }
@@ -299,6 +313,7 @@ impl Evaluator for ForkEval {
                     o.gate().map(|g| g.key as f64),
                     o.gate_miss().map(|m| m as f64),
                     self.gate_min_key as f64,
+                    o.event(self.fire_armed),
                 ),
                 (None, false) => {
                     Outcome::Dnf(Progress::Metres { m: o.progress(), of: self.line_len })
@@ -313,11 +328,16 @@ impl Evaluator for ForkEval {
     }
 
     fn provenance(&self, idx: usize, inputs: &Inputs) -> Provenance {
+        let g = self.last_gate.get(idx).copied().flatten();
         Provenance {
             from_fork: true,
             resume_tick: Some(self.from),
             distance: inputs.distance_from(&self.reference),
-            gate: self.last_gate.get(idx).copied().flatten(),
+            gate: g,
+            gate_edge: match (g, self.gate_seed_pos) {
+                (Some(r), Some(seed)) => self.gate_box.migration(seed, r.pos),
+                _ => None,
+            },
         }
     }
 

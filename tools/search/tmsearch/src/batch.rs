@@ -140,6 +140,7 @@ impl Evaluator for BatchEval {
             from_fork: false,
             resume_tick: None,
             distance: inputs.distance_from(&self.reference),
+            gate_edge: None,
             // The plain oracle reports a time and a checkpoint count and
             // nothing about the car, so a state objective is not available on
             // this evaluator at all -- `--gate` requires `--fork`, and

@@ -476,7 +476,8 @@ impl Default for Gate {
 }
 
 impl Gate {
-    pub const NONE: Gate = Gate {        armed: false,
+    pub const NONE: Gate = Gate {
+        armed: false,
         bounds: [0.0; 6],
         minspeed: 0.0,
         prog: [KeyOp::END; MAXKOPS],
@@ -490,6 +491,59 @@ impl Gate {
             .max(pos[1] - self.bounds[3])
             .max(self.bounds[4] - pos[2])
             .max(pos[2] - self.bounds[5])
+    }
+
+    /// THE SECOND DECOY FAMILY: an objective maximised at a place that cannot
+    /// pay.
+    ///
+    /// The startup decoy test catches "doing less scores more". It does not
+    /// catch the other shape, which is a fast, driven tape that maximises the
+    /// key SOMEWHERE USELESS -- and that one is not hypothetical either: armed
+    /// on 228811 with a box spanning the whole 80 m deck, the search took the
+    /// firing conjunction to **100.5, well above the author's own 86.8**, at
+    /// x = 122.7 -- forty metres upstream of the checkpoint the run still has to
+    /// collect, where no launch it produces can ever validate.
+    ///
+    /// There is no general test for "useless". There is a cheap and general
+    /// SYMPTOM, and it is not "against a face" -- the winner above sat 83% of
+    /// the way across its box, comfortably inside it. It is **how far the
+    /// optimum has MIGRATED from the state the search started at**. A box in
+    /// which the best state ends up 64 m from where the seed crossed is not
+    /// pinning a place; it is a region, and the search has quietly chosen which
+    /// part of the region to work in. That choice deserves to be visible,
+    /// because on this map it is the difference between a launch that validates
+    /// and one that cannot.
+    ///
+    /// **This is a REPORT, not a verdict, and the reason is measured.** On this
+    /// map the decoy migrated 80% of the box on x -- and the CORRECT answer,
+    /// the author's own contact, migrated 51% of the box on z, because that
+    /// axis is only 9 m thick and he legitimately crosses low. A threshold
+    /// fitted between 51% and 80% is a threshold fitted to two points, and this
+    /// project has paid for those before. So every improvement prints where its
+    /// state sits relative to the seed's, and a person decides.
+    ///
+    /// `None` only when the box has no span at all.
+    pub fn migration(&self, from: [f32; 3], to: [f32; 3]) -> Option<String> {
+        let names = ["x", "y", "z"];
+        let mut out: Vec<String> = Vec::new();
+        for i in 0..3 {
+            let span = self.bounds[2 * i + 1] - self.bounds[2 * i];
+            let d = to[i] - from[i];
+            if span > 0.0 {
+                out.push(format!(
+                    "{} {:+.1} m ({:.0}% of the box's {:.0} m)",
+                    names[i],
+                    d,
+                    100.0 * d.abs() / span,
+                    span
+                ));
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out.join(", "))
+        }
     }
 }
 

@@ -64,6 +64,11 @@ pub struct Provenance {
     /// millisecond for the oracle to contradict. This is what makes the claim
     /// checkable by hand instead: it is written out beside the tape.
     pub gate: Option<GateRecord>,
+    /// Set when the scored state has migrated a long way from where the SEED's
+    /// own state sat in the same box. See `Gate::migrated`: a box the optimum
+    /// wanders across is a region, not a place, and which part of the region
+    /// the search chose is a fact worth seeing.
+    pub gate_edge: Option<String>,
 }
 
 impl std::fmt::Display for Provenance {
@@ -80,6 +85,9 @@ impl std::fmt::Display for Provenance {
         }
         if let Some(g) = &self.gate {
             write!(f, "; gate {}", g)?;
+        }
+        if let Some(e) = &self.gate_edge {
+            write!(f, "; in the box, vs the seed: {}", e)?;
         }
         Ok(())
     }

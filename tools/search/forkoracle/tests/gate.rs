@@ -304,3 +304,38 @@ fn a_program_that_does_not_evaluate_is_not_a_score() {
     let bad = [KeyOp { op: forkoracle::pred_core::KOP_ADD, axis: 0, a: [0.0; 3] }, KeyOp::END];
     assert!(key_eval(&bad, [0.0; 3], [0.0; 3], [1.0, 0.0, 0.0, 0.0]).is_nan());
 }
+
+/// THE SECOND DECOY FAMILY, and the symptom that catches it.
+///
+/// The startup decoy test catches "doing less scores more". It does not catch a
+/// fast, driven tape that maximises the key SOMEWHERE USELESS -- and that is
+/// what happened here, on this map, measured: with the box spanning the whole
+/// 80 m deck the search took the firing conjunction to 100.5, above the
+/// author's own 86.8, at x = 122.7, forty metres upstream of the checkpoint the
+/// run still has to collect. A perfect state in a place where it cannot pay.
+///
+/// The symptom is NOT "against a face" -- that winner sat 83% of the way across
+/// its box, comfortably inside. It is how far the optimum has MIGRATED from
+/// where the seed itself crossed.
+#[test]
+fn a_state_that_migrates_across_its_own_box_is_reported() {
+    let g = gate("abs(bodyright)");
+    // the real numbers: the seed crossed at x = 58.95, the winner at 122.69,
+    // in a box spanning 56..136
+    let seed = [58.95, 50.04, 714.92];
+    let winner = [122.69, 53.51, 706.17];
+    let m = g.migration(seed, winner).expect("the 228811 migration was not reported");
+    assert!(m.contains("x +63.7"), "{}", m);
+    assert!(m.contains("80%"), "{}", m);
+
+    // AND WHY IT IS A REPORT AND NOT A VERDICT. The author's own contact --
+    // the CORRECT answer, in the same box -- migrates 51% of the z span,
+    // because that axis is only 9 m thick and he legitimately crosses low.
+    let right = g.migration(seed, [71.38, 50.36, 710.34]).unwrap();
+    assert!(right.contains("z"), "{}", right);
+    assert!(right.contains("51%"), "{}", right);
+    // 80% and 51%: any threshold that separates them is a threshold fitted to
+    // two points, so there is no threshold here. The numbers are printed and a
+    // person decides.
+    assert!(!right.contains("80%"));
+}

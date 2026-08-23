@@ -41,6 +41,7 @@ impl Evaluator for Spy {
             resume_tick: Some(self.floor),
             distance: inputs.distance_from(&self.reference),
             gate: None,
+            gate_edge: None,
         }
     }
 }
@@ -191,6 +192,7 @@ impl Evaluator for Lazy {
             resume_tick: Some(0),
             distance: inputs.distance_from(inputs),
             gate: None,
+            gate_edge: None,
         }
     }
 }

@@ -87,15 +87,33 @@ THE STATE OBJECTIVE (--fork only: the plain oracle cannot see the car)
                         dist(x,y,z) vdist(vx,vy,vz)
                         abs() min() max()  + - * /
                       e.g. --gate-key 'min(abs(bodyright), 5*(-vz))'
-  --gate-min-key K    how good the state must be before FINISHING counts as
-                      having done the thing. Without it, a tape that clips the
-                      box and finishes tops the ranking whatever it did there --
-                      and on a gate that sits on a line everybody drives, that
-                      is the seed, and no state hunt can beat it.
+  --gate-min-key K    how good the state must be before the bands above
+                      "reached" are available at all. Without it, a tape that
+                      clips the box and finishes tops the ranking whatever it
+                      did there — and on a gate that sits on a line everybody
+                      drives, that is the seed, and no state hunt can beat it.
+                      `auto` derives a floor from the seed's own measured key,
+                      which is a FLOOR and not a target: see below.
   --gate-seed-state G check the fork's measured gate state for the seed against
                       G's own decoded telemetry -- position, velocity AND
                       attitude. In gate mode this replaces the millisecond
                       identity check, and it is stronger.
+
+THE EVENT (a gate is a place; some things are events)
+  --fire EXPR         a condition over the same terms, plus `dspeed` -- the
+                      one-tick rise in speed, which is what a launch is. The
+                      FIRST tick it holds is the event.
+                      e.g. --fire dspeed --fire-at 10
+  --fire-at K         the value EXPR must reach
+  --fire-where SPEC   a box the event must happen inside, same six bounds as
+                      --gate. A launch upstream of a checkpoint you still have
+                      to collect is a launch that cannot validate.
+  --after-key EXPR    what to maximise AFTER the event, over the ticks strictly
+                      after it. Measured only after, which is the point:
+                      "closest approach to the finish" measured from tick 0
+                      pins every candidate at whatever the ordinary route
+                      already passes within.
+                      e.g. --after-key '-dist(366,50,736)'
 "#;
 
 fn die(m: impl AsRef<str>) -> ! {
@@ -142,7 +160,12 @@ struct Args {
     gate: String,
     gate_key: String,
     gate_min_key: f32,
+    gate_min_key_auto: bool,
     gate_seed_state: String,
+    fire: String,
+    fire_at: f32,
+    fire_where: String,
+    after_key: String,
 }
 
 fn parse() -> Args {
@@ -190,7 +213,12 @@ fn parse() -> Args {
         gate: String::new(),
         gate_key: String::new(),
         gate_min_key: f32::NEG_INFINITY,
+        gate_min_key_auto: false,
         gate_seed_state: String::new(),
+        fire: String::new(),
+        fire_at: 0.0,
+        fire_where: String::new(),
+        after_key: String::new(),
     };
     let mut i = 1;
     let num = |s: &str, k: &str| -> f64 { s.parse().unwrap_or_else(|_| die(format!("{} wants a number, got {:?}", k, s))) };
@@ -236,7 +264,18 @@ fn parse() -> Args {
             "--corridor" => a.corridor = num(&next(&mut i), k) as f32,
             "--gate" => a.gate = next(&mut i),
             "--gate-key" => a.gate_key = next(&mut i),
-            "--gate-min-key" => a.gate_min_key = num(&next(&mut i), k) as f32,
+            "--gate-min-key" => {
+                let v = next(&mut i);
+                if v == "auto" {
+                    a.gate_min_key_auto = true;
+                } else {
+                    a.gate_min_key = num(&v, k) as f32;
+                }
+            }
+            "--fire" => a.fire = next(&mut i),
+            "--fire-at" => a.fire_at = num(&next(&mut i), k) as f32,
+            "--fire-where" => a.fire_where = next(&mut i),
+            "--after-key" => a.after_key = next(&mut i),
             "--gate-seed-state" => a.gate_seed_state = next(&mut i),
             "--seg" => {
                 let s = next(&mut i);
@@ -337,12 +376,18 @@ fn build(a: &Args) -> (Arc<Patcher>, Inputs) {
 /// about the setup and it should stop the run in the first second, not in the
 /// first minute.
 #[allow(clippy::type_complexity)]
-fn seed_state_check(
-    a: &Args,
-    p: &Patcher,
-) -> Option<std::sync::Arc<dyn Fn(&forkoracle::pred::GateRecord) -> Result<String, String> + Send + Sync>> {
+type SeedCheck = std::sync::Arc<
+    dyn Fn(&forkoracle::pred::GateRecord) -> Result<String, String> + Send + Sync,
+>;
+
+fn seed_state_check(a: &Args, p: &Patcher) -> (Option<SeedCheck>, f32, Option<[f32; 3]>) {
     if a.gate_seed_state.is_empty() {
-        return None;
+        if a.gate_min_key_auto {
+            die("--gate-min-key auto needs --gate-seed-state: the floor is derived from the \
+                 seed's OWN key at the gate, and without the seed's recording there is nothing \
+                 to derive it from.");
+        }
+        return (None, a.gate_min_key, None);
     }
     if a.gate.is_empty() {
         die("--gate-seed-state without --gate: there is no gate for the seed to be checked at.");
@@ -359,7 +404,56 @@ fn seed_state_check(
     );
     let path = a.gate_seed_state.clone();
     let off = p.start_offset_ms;
-    Some(std::sync::Arc::new(move |measured| {
+
+    // --- THE BAR, and the control that says when it is wrong.
+    //
+    // `--gate-min-key` is the one knob in this feature that is a number
+    // somebody has to choose, and choosing it wrong turns gate mode quietly
+    // back into a finish-time search. It is not fully derivable -- the RIGHT
+    // bar is near the key of the thing you are hunting, and if you knew that
+    // you would be most of the way there -- but its FAILURE is derivable, and
+    // that is worth more than a number in a document.
+    //
+    // The rule: **the seed must not clear the bar.** If it does, the seed
+    // already occupies the top bands, nothing the search finds can outrank it
+    // except a faster ordinary lap, and the moat the mode exists to cross is
+    // still there. That is checkable here, before anything runs, against the
+    // seed's own recording.
+    let bar = if a.gate_min_key_auto {
+        // A FLOOR, not a target: the smallest bar that keeps the seed out.
+        let b = expect.key + f32::EPSILON * expect.key.abs().max(1.0);
+        eprintln!(
+            "gate: --gate-min-key auto -> {:+.6}, just above the seed's own {:+.4}. This is a \
+             FLOOR and not a target: it guarantees only that the seed cannot sit in the top \
+             bands. A bar near the key of the thing you are hunting is much stronger, and if \
+             you know that number, pass it.",
+            b, expect.key
+        );
+        b
+    } else {
+        a.gate_min_key
+    };
+    if bar.is_finite() && expect.key >= bar {
+        die(format!(
+            "--gate-min-key {:+.4} but the SEED's own state scores {:+.4} at this gate, which \
+             clears it. The seed then sits in the top bands and nothing the search finds can \
+             outrank it except a faster ordinary lap -- which is a finish-time search wearing a \
+             state objective's clothes, and it is the exact local optimum this mode exists to \
+             cross. Raise the bar above {:+.4}, or pass `--gate-min-key auto` for the smallest \
+             bar that excludes the seed.",
+            bar, expect.key, expect.key
+        ));
+    }
+    if !bar.is_finite() {
+        eprintln!(
+            "gate: NO BAR. The seed scores {:+.4} here, so a tape that merely clips this box and \
+             finishes takes the top band -- if that describes the seed's own route, the search \
+             cannot beat it. Pass --gate-min-key auto, or a number.",
+            expect.key
+        );
+    }
+
+    let check: SeedCheck = std::sync::Arc::new(move |measured| {
         let ag = tmsearch::seedstate::check(&path, &gate, measured, off)?;
         if ag.passed() {
             Ok(ag.report())
@@ -372,7 +466,8 @@ fn seed_state_check(
                 ag.report()
             ))
         }
-    }))
+    });
+    (Some(check), bar, Some(expect.pos))
 }
 
 fn main() {
@@ -413,6 +508,22 @@ fn cmd_search(a: &Args) {
     if a.gate.is_empty() && !a.gate_key.is_empty() {
         die("--gate-key without --gate: there is no box to score inside.");
     }
+    if !a.fire.is_empty() && a.gate.is_empty() {
+        die("--fire needs --gate. The bands are cumulative: an event that fires \
+             somewhere the search was not pointed at is not progress towards \
+             anything, and without a gate there is no band below it to climb from.");
+    }
+    if a.fire.is_empty() && !a.after_key.is_empty() {
+        die("--after-key without --fire: there is no event for it to be after.");
+    }
+    if a.fire.is_empty() && !a.fire_where.is_empty() {
+        die("--fire-where without --fire: there is no event to place.");
+    }
+    if !a.fire.is_empty() && a.fire_at == 0.0 {
+        die("--fire needs --fire-at K: the value the condition must reach. A \
+             threshold of zero is almost never what anyone means and is too easy \
+             to leave out by accident.");
+    }
 
     let plain_outcome = measure(&server, &map, &p, &start, &root.path);
     eprintln!("incumbent: {}", plain_outcome);
@@ -442,6 +553,7 @@ fn cmd_search(a: &Args) {
     )
     .unwrap_or_else(|e| die(e));
 
+    let (seed_check, gate_bar, seed_gate_pos) = seed_state_check(a, &p);
     let cfg = Config {
         workers: a.workers,
         batch: a.batch,
@@ -457,11 +569,14 @@ fn cmd_search(a: &Args) {
         temp_s: a.temp_s,
         migrate: a.migrate,
         max_drift: a.max_drift,
-        check_seed_gate: seed_state_check(a, &p),
+        check_seed_gate: seed_check,
     };
 
     if a.fork {
-        run_fork(a, &cfg, p, start, start_outcome, plain_outcome, &mut bank, &root, &server, &map);
+        run_fork(
+            a, &cfg, p, start, start_outcome, plain_outcome, gate_bar, seed_gate_pos, &mut bank,
+            &root, &server, &map,
+        );
     } else {
         let (pp, rootp, serverp, mapp, segs, refr) =
             (Arc::clone(&p), root.path.clone(), server.clone(), map.clone(), a.segs.clone(), start.clone());
@@ -482,6 +597,10 @@ fn run_fork(
     // is on the gate's ladder and carries no time, but the reference line's
     // finish still has to be found somewhere.
     plain_outcome: Outcome,
+    // The bar, after `auto` has been resolved against the seed.
+    gate_bar: f32,
+    // Where the seed's own state sat in the gate box, if a recording was given.
+    seed_gate_pos: Option<[f32; 3]>,
     bank: &mut Bank,
     root: &Root,
     server: &Path,
@@ -560,17 +679,22 @@ fn run_fork(
     if !a.gate.is_empty() {
         watch.gate = forkoracle::pred::parse_gate(&a.gate, &a.gate_key).unwrap_or_else(|e| die(e));
     }
+    if !a.fire.is_empty() {
+        watch.fire =
+            forkoracle::pred::parse_fire(&a.fire, a.fire_at, &a.fire_where, &a.after_key)
+                .unwrap_or_else(|e| die(e));
+    }
     eprintln!(
         "fork: reference line {:.0} m, predicates disarmed after {:.0} m",
         watch.refline.s_at_tick(usize::MAX),
         watch.finish_s
     );
     print!("{}", watch.describe());
-    if watch.gate.armed && a.gate_min_key.is_finite() {
+    if watch.gate.armed && gate_bar.is_finite() {
         eprintln!(
             "  gate: a state scoring under {:+.4} does not count as having done the thing, \
              so a tape that clips the box and finishes still ranks as a state",
-            a.gate_min_key
+            gate_bar
         );
     }
 
@@ -582,7 +706,8 @@ fn run_fork(
         shim: PathBuf::from(&a.shim),
         checkpoint_clock: ckpt,
         calibrated: boundary,
-        gate_min_key: a.gate_min_key,
+        gate_min_key: gate_bar,
+        gate_seed_pos: seed_gate_pos,
         start_offset_ms: p.start_offset_ms,
     });
     let watch = Arc::new(watch);
