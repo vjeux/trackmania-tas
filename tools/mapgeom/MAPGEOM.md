@@ -11,9 +11,20 @@ coordinates, and a run's trajectory can be laid over them.
 
 ```
 tools/mapgeom            the crate
-mapgeom map M.Map.Gbx --out m.glb --ghost G.Ghost.Gbx
-mapgeom check M.Map.Gbx --ghost G.Ghost.Gbx        # does the car sit ON it?
-mapgeom plumb M.Map.Gbx --at X,Z                   # every surface in a column
+
+# the whole map as glTF, with a run drawn through it, plus a picture
+mapgeom map M.Map.Gbx --out m.glb --png m.png --ghost G.Ghost.Gbx
+
+# fit the map height and GRADE the model: how far above the surface the
+# car sat, and what the surface was
+mapgeom check M.Map.Gbx --ghost G.Ghost.Gbx
+
+# every surface in one vertical column -- a plumb probe, without the engine
+mapgeom plumb M.Map.Gbx --at X,Z --yoff N
+
+# what a map carries inside itself, and what one of those models is
+mapgeom items M.Map.Gbx --out ./emb
+mapgeom dump  ./emb/3-1-1-5-Ice-Light.Block.Gbx
 ```
 
 ---
@@ -144,31 +155,75 @@ A model that looks plausible and puts the car three metres under the track is
 worse than no model, and a rendering cannot tell you which one you have. So
 `mapgeom check` drops a plumb line from every ghost sample, takes the highest
 triangle below it, and reports the distribution of `sample.y − surface.y` plus
-the physics material the car was over.
+the physics material the car was over. It also *fits the map's height* from the
+same measurement (§4.2).
 
-| map | samples over a surface | gap median | tightest half-window | driven over |
-|---|---|---|---|---|
-| map 2 (Summer 2026 - 02, dirt) | 34 % | **0.030 m** | ±0.012 m | Asphalt 61 %, Dirt 38 % |
-| 134672 (custom ice ribbon) | 56 % | **0.030 m** | ±0.014 m | **RoadIce 78 %**, Grass 15 % |
-| 173691 (Spring 2023 - 15) | 49 % | 0.446 m | ±0.018 m | Asphalt 85 %, Grass 15 % |
+### 4.1 Thirty maps
 
-A gap of a few centimetres, held to ±0.014 m over hundreds of samples, is the
-model and the run agreeing to the width of a tyre.
+Every map in `tm-unbeaten` with a map file and a ghost — 33 maps, one rank-1
+ghost each, no cherry-picking, run in one batch. Full output is banked at
+`~/persistent/private-30d/tm-mapgeom/corpus-check/`.
 
-**The one thing that does not line up yet** is that 173691's constant is
-0.446 m where the other two are 0.030 m. A car's ride height is a property of
-the car, so a constant that changes between maps is a fact about the model, not
-about the car, and it is unexplained. It is *tight* on all three (±0.018 m or
-better), so whatever it is, it is a constant vertical offset of that map's road
-blocks and not noise. Left open, deliberately, rather than fitted away.
+**Twenty of the thirty that fit put the car within a quarter of a metre of the
+model, and sixteen of them within 0.09 m:**
 
-Fitting `yoff` by "how many samples have anything under them" is wrong and was
-caught here: grass is everywhere, so that criterion drops 134672's run onto the
-stadium floor and scores 93 % of samples at a wandering 3.2 m. The criterion is
-now the largest number of samples sharing a gap within 0.30 m — how many found
-the *same* thing, not how many found *something*.
+| gap median | maps |
+|---|---|
+| 0.009 – 0.086 m | 197047, 252289, 208024, 134672, 279197, 285268, 203330, 279209, 199100, 153527, 270051, 227969, 126859, 267460, 284238, 270053 |
+| 0.13 – 0.24 m | 146612, 227654, 286279, 203072 |
+| 0.43 – 3.36 m | 274191, 267859, 145875, 285885, 210218, 279218, 228811, 228607, 191465, 249521 |
+| no height fits at all | 173636, 186935, 238835 |
 
-### The independent cross-check — 173691's canopy deck
+A run over its own road reads like this — 153527, 85 811 samples:
+
+```
+  yoff -64  (2 152 875 triangles indexed)
+  54 748/85 811 samples over a surface (63.8 %)
+  gap below the car   median 0.044 m   p10 0.013   p90 0.206   +/-0.020 m
+  driven over         Asphalt 72%, Grass 22%, ...
+```
+
+Four centimetres, held to ±0.020 m over fifty thousand samples, is the model
+and the run agreeing to the width of a tyre.
+
+**The large-gap maps are a COVERAGE result, not a placement error.** Their
+windows are loose (±0.3 to ±1.4 m, against ±0.02 for the tight ones) and their
+"driven over" is Grass — the stadium floor. That is the probe reporting that
+the model has nothing where the car was and it found the ground instead. The
+next thing to build is named by that list, not guessed at.
+
+Two independent confirmations that the frame itself is right:
+
+* **map 2 fits `yoff = −120`**, the value the earlier arm calibrated by hand.
+* **134672's custom ice ribbon**: `RoadIce 78 %` under the car at 0.030 m
+  (§5) — the model reproduces a surface that exists only inside that map file.
+
+### 4.2 Fitting the map height, and two criteria that were confidently wrong
+
+`world_y = 8*cy + yoff`, and `yoff` is per map. It is fitted here rather than
+supplied, and the *criterion* is the whole game — both wrong ones produce a
+tight, confident, wrong answer:
+
+1. **"How many samples have anything under them."** Grass is everywhere, so
+   this picks whichever height drops the run onto the stadium floor. On 134672
+   it scored 93 % of samples over a surface at a wandering 3.2 m.
+2. **"The largest group of samples sharing a gap."** Better — it demands a
+   consistent ride height — but it is *degenerate under a vertical shift*:
+   lower the model by a metre and every gap rises by a metre, so the same
+   samples still share one. 134672 then fitted −65 and reported 1.021 m
+   instead of −64 and 0.030 m. It also picked the wrong cell row where a deck
+   sits under the road: 146612 fitted −16 and reported a rock-steady
+   **2.048 m ± 0.022**, which is a consistent wrong answer and looked exactly
+   like a real finding for about an hour.
+
+The criterion that works is anchored at zero: **how many samples are RESTING —
+within 0.25 m of a surface.** A car rests centimetres above what it is on.
+
+The sweep is two passes, whole 8 m cell rows and then metre by metre, because
+nothing guarantees a map's height is a whole number of cells — and 252289 fits
+−60 with a 0.017 m gap over 100 % of its samples, so it is not.
+
+### 4.3 The independent cross-check — 173691's canopy deck
 
 Banked separately, from 35 plumb probes driven in the engine: the car comes to
 rest on the canopy at **(1521.0, 114.16, 588.4)**.
@@ -182,10 +237,10 @@ mapgeom plumb map173691.Map.Gbx --at 1521.0,588.4 --yoff -64
 ```
 
 The model puts a deck at **113.54 m** under that point, out of a column
-spanning 115 m, and only once the decoration map is loaded — without it that
-column is empty of anything below 180 m. The car rests 0.62 m above it, against
-the 0.446 m this map's road gives; the 0.17 m difference is the same
-unexplained offset as above, seen from the other side.
+spanning 115 m — and only once the decoration map is loaded; without it that
+column holds nothing below 180 m. The car rests 0.62 m above it, against the
+0.45 m that map's road gives, so the two agree to about 0.2 m.
+
 
 ---
 
@@ -247,10 +302,12 @@ own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
 
 ## 7. What is still missing
 
-1. **Block variant selection** (§3). The union of all variants is drawn.
-2. **The 0.446 m vs 0.030 m ride-height discrepancy** (§4). Tight on every map,
-   different between them, unexplained.
-3. **Terrain blocks** — `Water` above all.
+1. **Ten maps out of thirty where the run does not sit on the model** (§4.1),
+   and three where no height fits at all. Their windows are loose and their
+   "driven over" is Grass, so the model is missing the surface those runs are
+   on. That list is the next thing to work through, in order.
+2. **Block variant selection** (§3). The union of all variants is drawn.
+3. **Terrain blocks** — `Water` above all: on map 2 that is 2 568 placements.
 4. **The vertex stream's layout after the Position array.** On a 54-vertex
    stream the normals start 4 bytes later than the declarations predict. The
    reader takes the positions, then scans to the node terminator and *reports*
@@ -258,3 +315,7 @@ own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
    and materials are unaffected.
 5. **Stock visual meshes**, which need the game client's packs (§1).
 6. **The footprint heuristic** (§3) should be the block's unit list.
+7. **`yoff` from the decoration** rather than from a fit. The decoration names
+   a `CGameCtnDecorationSize` (`0x0303B000`) which almost certainly carries the
+   base height; its one chunk has no reader yet. That would remove the need for
+   a ghost to build a model at all.
