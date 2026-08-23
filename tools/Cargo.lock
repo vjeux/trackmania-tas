@@ -63,6 +63,10 @@ name = "recon"
 version = "0.1.0"
 
 [[package]]
+name = "rend"
+version = "0.1.0"
+
+[[package]]
 name = "shootctl"
 version = "0.1.0"
 

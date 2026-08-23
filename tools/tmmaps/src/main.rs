@@ -1006,9 +1006,12 @@ fn main() {
             // spans the y cells around the car and lets the ladder's own
             // fire-time check say which ones were real.
             let cells = args.iter().any(|a| a == "--cells");
-            let curtain: Vec<usize> = match flag(&args, "--curtain") {
-                Some(s) => s.split(',').map(|x| x.trim().parse().unwrap()).collect(),
-                None => vec![bidx],
+            // The curtain is a list of block indices, but --block is a String
+            // because it also accepts the `iN` item form. Default the curtain to
+            // the block itself, as a string, rather than to a usize it cannot be.
+            let curtain: Vec<String> = match flag(&args, "--curtain") {
+                Some(s) => s.split(',').map(|x| x.trim().to_string()).collect(),
+                None => vec![bidx.clone()],
             };
             let win: f64 = flag(&args, "--window").map(|s| s.parse().unwrap()).unwrap_or(400.0);
             if cells {
