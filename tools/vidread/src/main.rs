@@ -511,6 +511,14 @@ fn main() {
             let pctx: f32 = num(&args, "--pct-x", 0.0);
             let min_ink: f32 = num(&args, "--min-ink", 0.25);
             let max_gap: usize = num(&args, "--max-gap", 3);
+            // --edges 2159,2165 restricts to frames whose detected right edge is
+            // one of these. Two uses: drop the frames where the detector failed
+            // loudly (it pins to the band end), and BUCKET BY EDGE, which is
+            // the sub-pixel phase test -- each edge value is its own phase, and
+            // if the count collapses within a bucket the spread was phase.
+            let only: Vec<usize> = arg(&args, "--edges")
+                .map(|s| s.split(',').map(|x| x.parse().unwrap()).collect())
+                .unwrap_or_default();
             let mut cl = glyphs::Clusters::new(wetread::CELL_W, wetread::CELL_H);
             let mut i = 0u64;
             let mut frames = 0u64;
@@ -525,8 +533,22 @@ fn main() {
                         i += 1;
                         continue;
                     };
+                    if !only.is_empty() && !only.contains(&(base as usize)) {
+                        i += 1;
+                        continue;
+                    }
                     frames += 1;
-                    for k in 1..=3 {
+                    // --cell N clusters ONLY the Nth cell left of the edge. Pooling
+                    // all three is what produced 45 clusters: a 1-digit value
+                    // has one digit and two cells of BACKGROUND, and pooling
+                    // mixes glyphs with scenery. One cell at a time, in one
+                    // edge bucket, is the only combination in which every
+                    // sample is the same KIND of thing.
+                    let cells: Vec<usize> = match num::<i64>(&args, "--cell", 0) {
+                        0 => vec![1, 2, 3],
+                        n => vec![n as usize],
+                    };
+                    for k in cells {
                         let x = base - wetread::PITCH * k as f32;
                         if x < 1.0 {
                             break;

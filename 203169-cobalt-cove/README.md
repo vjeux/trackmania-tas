@@ -519,19 +519,41 @@ number should give — **three sharp modes**:
 So the edge is measurable on about 85 % of the frames the icon is up, and the
 15 % where it is not announce themselves by pinning to the band edge.
 
-**Re-clustering on those per-frame cuts takes 72 → 45** (at a tighter radius;
-77 at the original one, with the members roughly tripled because a real cut
-finds three digits where a fixed cut found background). The direction is right
-and the count is not yet 10, so the cut is better and not yet correct. What is
-left is bounded: exclude the 2193 frames, and resolve whether the residual
-spread is sub-pixel phase — which would be one template bank per phase, exactly
-as the speed field needed.
+**Re-clustering on those per-frame cuts took 72 → 45**, with membership roughly
+tripled — a real cut finds three digits where a fixed cut found background.
+Bucketing by edge (the sub-pixel phase test) took it further: **16, 13 and 11
+clusters** in the three modes. Still not ten, and the reason turned out not to
+be phase at all.
 
-**Do not read 72, or 45, as noise.** A cluster count far from ten, on data
-where ten is the answer, is the instrument reporting that its cells are wrong,
-which is what it is for. **Nine would have been the dangerous outcome**: two
-glyphs merged, unseparable afterwards, and a reader subtly wrong on one digit
-forever. A result that fails visibly beats one that fails invisibly.
+**Pooling the three cells is what was left.** A 1-digit value has one digit and
+*two cells of background*; clustering all three together mixes glyphs with
+scenery no matter how well the cells are cut. Clustering **one cell within one
+edge bucket** — the only combination in which every sample is the same kind of
+thing — gives:
+
+| edge (frames) | clusters in the units cell |
+|---|---|
+| 2159 (1334) | **9** |
+| 2165 (480) | **2** |
+| 2174 (169) | **6** |
+
+And at edge 2159 the units cell is dominated by **one shape with 889 of 1334
+members**, whose averaged bitmap is plainly a `0`; the smaller clusters are the
+same glyph over different backgrounds. That is a reader working, not a reader
+failing — 1334 frames of `0%` is what a run that spends most of its length dry
+should look like.
+
+**What is left, precisely.** Merge the background variants (a
+contrast-normalised template already ignores background, so this is a clustering
+radius question, not a new idea), name the merged shapes with the dry-out law,
+and run the law as the gate. The instrument is built and the cells are right;
+what remains is bookkeeping I did not have the session for.
+
+**Do not read 72, or 45, as noise.** A cluster count far from ten, on data where
+ten is the answer, is the instrument reporting that its cells are wrong, which
+is what it is for. **Nine would have been the dangerous outcome**: two glyphs
+merged, unseparable afterwards, and a reader subtly wrong on one digit forever.
+A result that fails visibly beats one that fails invisibly.
 
 ## 10. What is banked
 
