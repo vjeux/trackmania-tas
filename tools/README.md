@@ -270,6 +270,17 @@ them in the same frame.
 
 [`MAPGEOM.md`](mapgeom/MAPGEOM.md) is where the geometry lives, how the pack's
 hashed asset names resolve, and what is still missing. The one number to know:
-across thirty-three maps checked in one batch, **twenty put the car within a quarter
-of a metre of the model and sixteen within 0.09 m** — and the maps where it
-does not are the model missing a surface, which the same command says out loud.
+across thirty-three maps checked in one batch, **the median map went from 47.1 % of its
+run over a surface to 79.8 %** when six
+placement and reader defects were fixed on 2026-08-22 — the largest being that
+every block turned a quarter or three quarters of the way round was placed one
+whole footprint away, which the height fit could not see because the misplaced
+blocks were at the right HEIGHT. Twenty of the thirty-three now put the car within
+0.05 m of the model, against sixteen within 0.09 m before.
+
+Two habits from that day are worth copying. **`check` reports coverage and
+accuracy together and the pair is the test**: a coverage gain that costs
+accuracy is a fudge. And it grades only the samples the RECORDING says the car
+was standing on — with the control on that bit printed beside it, because on
+one map in the corpus the bit is not populated at all and says "airborne" for a
+car sitting on a road.

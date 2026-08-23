@@ -60,11 +60,21 @@ what the track is supposed to look like. It took roughly a third of every run
 off the model.
 
 Four more defects, each found by asking the same question — *what does the map
-say is here, and did that model produce any triangles?* — are in §3 and §5.
+say is here, and did that model produce any triangles?* — are in §3 and §5, and
+two more physical facts a plumb probe cannot see are in §4.3 and §4.4.
 
 **And the metric itself was measuring the wrong thing.** "Samples with a
 surface beneath them" counts a car twelve metres in the air as a hole in the
 model. §4 replaces it.
+
+**Across the corpus, the median map went from 47.1 % of its run over a surface
+to 79.8 %, and twenty of the thirty-three now sit within 0.05 m of the model
+against sixteen within 0.09 m before.** The full before/after table is banked
+beside the transcripts as `compare-20260822.md`.
+
+One sentence to keep, because it is the ethic the rest of this document is
+made of: **a measured effect of nothing is worth knowing, and it is not the
+same as not having checked.**
 
 ---
 
@@ -483,41 +493,51 @@ id of its own, and the link's own name is used (`Stadium\Media\Material\RoadIce`
 
 ## 7. What is still missing
 
-Each of these is named by a measurement, not guessed at. The per-map detail is
-in the run directory's transcripts.
+Each of these is named by a measurement, not guessed at. Per-map detail is in
+the run directory's transcripts.
 
-1. **Water roads put the drivable surface about a metre below the modelled
-   water plane.** On 227654 the whole 112-sample hole is `RoadWaterStraight`,
-   and `holes` reports the nearest triangle at **0.53–0.98 m, material Water** —
-   the surface is there, the car is under it. Same signature on Cobalt Cove
-   (TMX 203169) and 228607. This is a modelling question — which triangle of a
-   water road is the one the car rides on — not a missing-geometry one, and it
-   is the largest remaining single cause.
-2. **Block variant selection.** The union of every variant is drawn. Safe for a
+1. **The decoration's `dir = 2` halves are misplaced, because the footprint
+   heuristic cannot measure a stadium.** A `Deco48x48` is four blocks — two
+   `Stade4096` whose mesh spans 4028 m in x, two `Stade1536` spanning 2048 —
+   and reading those spans as footprints puts the two `dir = 2` copies at the
+   wrong shift, so the stadium comes out smeared across four kilometres instead
+   of closed around the map (`pics-20260822/decoration_48x48_MISPLACED.png`).
+   That is why a 48 × 48 map's assembled model stops at z ≈ 1700 while its
+   playfield runs past 1760. The answer is the block's real **unit list** —
+   `CGameCtnBlockInfo`'s ground and air unit arrays — which needs body readers
+   this crate does not have; a zero shift is worse (the model then spans
+   −4028..4028), so there is no cheap substitute. This is the single largest
+   remaining item and it plausibly explains several low-coverage maps at once.
+2. **285885 is outside the model, not missing from it**, and that is now
+   reported rather than silently counted as a hole: its run spans z 649..2025
+   against a model that ends at 1706, and **664 of its 1225 samples (54 %) are
+   past the model's own extent**. Found by `f9c585b3`, who located the real
+   surface with a live-engine drop probe — a deck at y ≈ 50, z ≈ 1585, and the
+   rim carrying the finish at y 145..158, z 1620..1670 — all of it beyond where
+   the assembled decoration stops. Same root cause as (1).
+3. **Water roads still give a little back.** Lowering `Water` by the measured
+   0.900 m draft is right in the mean and 227654's median gap moves the wrong
+   way by 0.010 m while its coverage gains 27 points. Either the draft varies
+   with the water block, or the car on a `RoadWater*` ramp is not floating.
+4. **Block variant selection.** The union of every variant is drawn. Safe for a
    height probe and wrong for a picture, and it may also be *adding* surface
    where a placement has none. Doing it properly means walking
    `0x0304E023 / 0x0304E027 / 0x0304E02C` → `CGameCtnBlockInfoVariant`
-   `0x0315B005` → `CGameCtnBlockInfoMobil` `0x03122003`.
-3. **`VegetTreeModel` (class `0x2F086000`) has no reader** — 1 800 placements of
+   `0x0315B005` → `CGameCtnBlockInfoMobil` `0x03122003` — the same body readers
+   item (1) needs.
+5. **`VegetTreeModel` (`0x2F086000`) has no reader** — 1 800 placements of
    `WinterFrozenTree` and 536 of `FirSnowTall` on 210218 alone. Trees are
    almost certainly not collidable, so this is probably worth nothing to
    coverage; it is listed because the count is large enough to look alarming in
-   a transcript and it should not be mistaken for track.
-4. **Two crystal layer types, 13 and 18**, and `Flag.DynaObject.Gbx`
-   (`0x09144000`), `ObstacleTube` / `ObstacleRotor` / `ObstacleTurnstile`
-   `.DynaObject.Gbx`, and `KinematicConstraint` (`0x2F0CA000`). The obstacles
-   matter on maps built out of them (208024's rotors); the lights and flags do
-   not.
-5. **The footprint heuristic** (§3) reads a block's cell size off its own
-   geometry with a 15 % overhang tolerance. It should be the block's unit list,
-   and it feeds the `dir` shift, so an error there moves a whole block.
-6. **Stock visual meshes**, which need the game client's packs (§1). Not wanted
-   for this project: collision is the surface the car is on.
-7. **`yoff` from the decoration** rather than from a fit. The decoration names
+   a transcript and should not be mistaken for track.
+6. **Two crystal layer types, 13 and 18**, `KinematicConstraint`
+   (`0x2F0CA000`), and `LightRay.DynaObject.Gbx`, which fails in the pack
+   reader rather than the chunk walk (`bad match offset 49599`) and is the one
+   remaining LZ4 case.
+7. **Stock visual meshes**, which need the game client's packs (§1). Not wanted
+   here: collision is the surface the car is on.
+8. **`yoff` from the decoration** rather than from a fit. The decoration names
    a `CGameCtnDecorationSize` (`0x0303B000`) which almost certainly carries the
    base height; its one chunk has no reader yet. That would remove the need for
-   a ghost to build a model at all.
-8. **285885 is the one map still unexplained.** It fits −113 with the car
-   1.02 m above the model and 14.5 % of samples over a surface, and the blame
-   for 788 of its holes is *"no block or item in that cell"* — the run is over
-   cells the map file does not fill. Everything it does place resolves.
+   a ghost to build a model at all — and 173636, which fits a height and still
+   sits 1.399 m above it, is the map that wants it.
