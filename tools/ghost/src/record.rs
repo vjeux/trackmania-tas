@@ -134,7 +134,13 @@ fn show(a: &[String]) {
         let cls = rd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
         let is_car = Some(i) == veh;
         let live = !e.times.is_empty();
-        if !is_car && live {
+        // NON-VEHICLE IS A CLASS, NOT "NOT THE ONE THE PICKER CHOSE". A
+        // multi-car container (227654 has 29 entities, five of them cars) has
+        // exactly one entity the picker returns, so an index test counts the
+        // OTHER FOUR CARS as scene records and reports "live non-vehicle
+        // records: 5" about a file with one. The count then reads clean in
+        // exactly the case it exists to catch.
+        if cls != gbx::record::CLASS_CSCENEVEHICLEVIS && live {
             live_scene += 1;
         }
         println!(
@@ -494,11 +500,20 @@ pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Resul
     let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
     let drd = gbx::record::parse_record_data(&dblob, dver)?;
     let dveh = pick_vehicle(&drd);
+    // GRAFT THE SCENE, NOT THE OTHER CARS. This filtered on "not the index the
+    // vehicle picker chose", which is right only for a container holding one
+    // car. 227654's holds 29 entities and FIVE cars, so the index test grafted
+    // four live CSceneVehicleVis records back — phantom cars in the render,
+    // the exact hazard `rebuild_to` documents. `rebuild_to` filters on the desc
+    // class; so does this now, and so does the `show` counter above.
     let scene: Vec<Ent> = drd
         .ents
         .iter()
         .enumerate()
-        .filter(|(i, _)| Some(*i) != dveh)
+        .filter(|(i, e)| {
+            let cls = drd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
+            cls != gbx::record::CLASS_CSCENEVEHICLEVIS && Some(*i) != dveh
+        })
         .map(|(_, e)| e.clone())
         .collect();
     if scene.is_empty() {
