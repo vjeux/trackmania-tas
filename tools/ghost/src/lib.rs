@@ -19,6 +19,7 @@
 //! # Ok::<(), String>(())
 //! ```
 
+pub mod census;
 pub mod cli;
 pub mod declare;
 pub mod engine;
@@ -26,6 +27,7 @@ pub mod finish;
 pub mod hdr;
 pub mod ident;
 pub mod oracle;
+pub mod phase;
 pub mod record;
 pub mod regen;
 pub mod roundtrip;
