@@ -1,8 +1,19 @@
 # How to read a claim in this repo
 
-Every load-bearing statement in these documents is in one of four states, and
-you should be able to tell which at a glance. Five maps lost days this month to
-statements that looked like facts and were readings.
+Five map investigations lost days this month to statements that looked like
+facts and were readings. This file is the convention that came out of that, and
+the evidence for why it is worth the trouble.
+
+**If you are about to write a claim**, you need §1 and §2. **If you are about to
+trust one**, §3 is the catalogue of ways this project's own instruments have
+been confidently wrong. §4 is what good looks like.
+
+---
+
+# 1. The four states
+
+Every load-bearing statement is in one of these, and a reader should be able to
+tell which at a glance.
 
 | tag | what it means | what has to be beside it |
 |---|---|---|
@@ -21,8 +32,6 @@ find X, the honest sentence is *"we have not found where X lives yet"* — which
 is UNKNOWN, and is a task. It is not *"there is no X"*, which is MEASURED about
 the world and is usually false.
 
-Five costs paid for this, all in the same month:
-
 | what was written | what was true | cost |
 |---|---|---|
 | 186935: *"no `CSceneVehicleVis` entity at all"* | one entity, 15 533 samples, every position (0,0,0) — a zeroed slot, which `tmtraj check` names in one line | 2 days, file looked unrecoverable |
@@ -31,17 +40,28 @@ Five costs paid for this, all in the same month:
 | 285885: *"no rotation source within 82.6 m"* | a 797-probe survey whose window could not see the airborne roll that exists | a closed lead reopened |
 | 134672: *"two cosmetic wheel channels"* | not cosmetic — another player's run, driving the tyre effects in a published video | shipped |
 
-## An absence is a special case, and it has its own bar
+**This audit made the same mistake and had to eat it.** §E of the ledger said
+the unresolved duplicate pairs "cannot be settled from a clean checkout". The
+maps were on the shared store and the oracle runs on any box; all 38 were
+settled the same evening. *A sentence about what is possible is a claim like any
+other.*
 
-**"N evaluations found nothing" is not a result without a positive control that
-fired in the same batch, on the same budget, through the same code path.**
-Without one it is UNKNOWN, however large N is.
+---
+
+# 2. What a claim needs before you write it
+
+## An absence needs a positive control
+
+**"N evaluations found nothing" is not a result without a control that fired in
+the same batch, on the same budget, through the same code path.** Without one it
+is UNKNOWN, however large N is.
 
 A control that is not in the same batch is weaker than it looks: `tmsearch`
 shipped with a broken `FINISH_BASE` for weeks while every driver-side control
-passed, because the driver and the search were different code (`tools/LINEAGE.md`).
+passed, because the driver and the search were different code
+(`tools/LINEAGE.md`).
 
-Three ways a null has been manufactured in this project, all real:
+Three ways a null has been manufactured here, all real:
 
 * **the instrument could only read the files that agree with you** — two readers
   broke *exclusively* on the control (`Factory::build` panics on human
@@ -53,205 +73,30 @@ Three ways a null has been manufactured in this project, all real:
   scored 100 %.
 * **the survey could not see the thing** — 285885's rotation fan covered ±40 m
   at 5 m and reported the nearest source at 82.6 m; the source that exists is an
-  airborne roll inside the window it did not sample.
+  airborne roll 142 m away, which the same page names two paragraphs earlier.
 
-## Two more shapes worth naming
+## A negative result also needs a negative control
 
-**A generalisation from n = 1.** `FK_STATE_OFF` was documented as "a fixed
-offset from the server base" on one map and is false on the second one tested.
-A constant measured once is MEASURED *on that map*; that it ports is INFERRED,
-and the inference is usually the weak part.
+If the fix you are considering has a **sign**, the evidence for it must have one
+too — and it must be paired with a case that does **not** need the fix, which the
+fix should make **worse**.
 
-**A number that survives its own retraction.** This repo's known failure mode is
-a headline in a directory contradicted by a newer file with an older-sounding
-name — 227654's `RESULT.md` and `RESULTS-entry.md` are the worked example.
-**Read a store directory by mtime, never by filename.**
-
-## The worked example: a check that was precise, confident, and blind
-
-Everything above is about documents. This one is about an instrument, and it is
-the purest instance of the failure this file exists for, so it is worth reading
-before you trust any tool in this repo — including the ones this file tells you
-to run.
-
-`tmtraj corpus dup` answers "do two published files of one map carry the same
-recorded motion?" — the defect that had two of our own tapes rendering as a
-single car. It decides whether identical positions are *expected* by first
-asking whether the two input tapes differ, and it asked by shelling out to
-**`fk tapediff`**.
-
-`fk tapediff` is not a command `fk` has. At any build.
-
-```
-$ fk tapediff --a A.gtape --b B.gtape
-fk: ABORT: unknown command "tapediff"
-```
-
-The call failed every time. `.ok()?` swallowed the failure. And `None` from that
-function means *the tapes are identical*, which makes identical positions
-expected. **So every pair in the corpus came back
-`identical-tapes / EXPECTED-SAME-INPUTS`, and the scan exited 0.** The check
-that exists to catch one run published twice excused every pair it exists to
-catch, and reported success while doing it.
-
-Three things worth taking from it:
-
-* **`.ok()?` is `2>/dev/null` with a nicer spelling.** The module's own header
-  says the shell scripts it replaced were fragile because "every one of them
-  piped a tool's stdout through awk and discarded its stderr". The Rust port
-  reproduced the bug it was written to remove. Porting a pipeline does not port
-  its discipline.
-* **It failed toward CLEAN, and that is worse than failing toward a null.** A
-  null looks like a result and gets argued with. A pass looks like nothing at
-  all. This is the second time `fk` being unreachable produced a silent wrong
-  answer (`tools/search/SEARCH.md` has the first, where 24 attempts "failed to
-  find the car"); that one at least produced a suspicious zero.
-* **A comparison needs a two-sided control.** The fix has one as a unit test: a
-  tape must read identical **to itself**, and two known-different runs must read
-  **different**. Either half alone passes for a broken comparison — a blind one
-  satisfies the first, a noisy one satisfies the second.
-
-**And when an instrument is repaired, its first output is not a result either.**
-This one produced three wrong readings on the way to a right one, all mine, all
-caught by a control:
-
-1. Its first repaired run returned **35 refusals keyed at `diverge@-1.52 s`** —
-   the countdown, before the car can act on anything. Pre-race ticks are now
-   excluded.
-2. Its second returned **777 refusals**, because the new "the trajectories
-   separate, so it is not one run twice" arm was placed ahead of the ordinary
-   shared-prefix case and swallowed 607 legitimate pairs.
-3. Reading `ghost tape diff` to check a pair by hand gave "zero differences
-   after the countdown" — because **`ghost tape diff` prints at most 80 rows**
-   and then stops. The pair has 1041. `tmtraj tapediff` exists because of that
-   and does not truncate.
-
-## What the repaired check found, and how it was adjudicated
-
-46 refusals, sorted — because 46 unadjudicated flags become next month's
-"everyone knows those are false positives":
-
-| n | class | how it was settled |
-|---|---|---|
-| **14** | **innocent, MEASURED** (203330) | every one of the 227 differing ticks falls inside that map's **measured per-tick inert window** (race 0.000–2.970, established by overwriting one tick at a time); **zero** in either live window. The one map that can prove it, proving it |
-| **3** | **same recorded motion**, separation exactly 0.000000 m | 227654 ×2 and 186935 ×1. **Positive control: the 227654 page already says by hand that those files are "one trajectory, not two runs"** — the repaired check rediscovers a defect the corpus had documented independently, and adds `TAS_57518` to the set |
-| **5** | documented provenance (286279) | all against the author's ghost extracted from the map, which that page says every run there was built from. `corpus splice` independently calls them CONTAMINATED. Not news, and not a new defect |
-| **24** | **UNRESOLVED — inert inputs or a splice** | reported with the count of differing ticks *inside* the identical stretch, and the test that would settle it named |
-
-The 24 are not a shrug: **one of them is a real defect and is now written up.**
-210218's two published files differ by **731 input ticks** spread across the
-whole run and hold **bit-identical positions for 89.95 s** — `tmtraj diff`
-returns `IS-THE-REFERENCE` on the pair. At least one of those two records is not
-its own tape's run.
-
-Settling the rest needs the map, to re-simulate each tape and ask whether the
-engine reproduces that file's own record. This repo does not redistribute maps,
-so it cannot be done from a clean checkout — which is why they are an open task
-with a named test, and not a verdict in either direction.
-
-## Two constants this project keeps getting wrong
-
-Both are the same mistake — a number assumed instead of measured — pointing in
-opposite directions, and both have cost a published mechanism.
-
-**Gravity is ≈24.3–24.6 m/s², not 9.81 and not per-map.** Free fall in this
-engine is linear drag in vertical speed:
-
-    a_y = −g − k·v_y        g = 24.78 ± 0.10 m/s²,  k = 0.032 ± 0.002 /s
-
-* **Too low:** 153527's `ADDENDUM_v2` computed a slope's gravity as
-  `9.81·sin 26.6° = 4.39` and reported a car "decelerating at 2.4× the slope's
-  gravity". Measured on that map from **335 free-fall stretches of the driver's
-  own recording**, the median is **−24.314 m/s²** — against which the observed
-  figure is **0.97×, an ordinary coast**. A whole published mechanism rested on
-  a physics-textbook constant.
-* **Too specific:** 285885 reported *"free fall on this map is −24.308, not the
-  −25.20 measured elsewhere. Gravity here is per-map."* Both numbers are the one
-  law read at different `v_y` (−25.20 ⇒ v_y +13; −24.308 ⇒ v_y −16). Withdrawn.
-
-Three maps agree: **153527 −24.314** (335 stretches), **285885 −24.308**,
-**134672 24.62 ± 0.54** — the last with its own caveat printed, that its flights
-span only v_y ∈ [−18, +6] so k is unidentifiable there. **Never quote a scalar g
-without the `v_y` it was measured at**, and any energy, fall or deceleration
-figure should name the g it used.
-
-**≈0.5 mm was never "the client-vs-server floor".** It is the distance between
-two copies of the car in the server's own memory, and the pipeline was reading
-the wrong one — MEASURED on the position half 2026-08-22, where transforming
-from the right copy takes bit-identity from **0 of 455 samples to 227 of 455**.
-The three maps that "agreed" at 0.489 / 0.511 / 0.501 were three readings of one
-quantity. The orientation half is **open and got worse** under the same change,
-so the flag is default-off and the publish path is unchanged. Full table in
-`tools/README.md`.
-
-## An exemption must quote the page it exempts
-
-The integrity allowlist (`_integrity/intg_reference_files.tsv`) excuses files
-that legitimately carry another driver's identity, and its own preamble already
-says **"a name is not a contract: the page is the claim"** — it was written
-after a first encoding matched `HUMAN*`/`AUTHOR*` on the filename and missed a
-file. On 2026-08-22 an entry was found breaking that rule in the other
-direction:
-
-```
-270051  m270051_human_shaped_4831.Ghost.Gbx  human-shaped: built to the human's line
-```
-
-That row excused the file from the identity check, and the file was carrying a
-real player's account id and their personal-skin locator URL. But the page says:
-
-> `replays/m270051_human_shaped_4831.Ghost.Gbx` — **the author time, with ±10 ms
-> of slack on every input**
-
-**"Human-shaped" is a claim about the INPUTS. "His recording" is a claim about
-whose run the file is.** Reading the first as the second launders an identity
-onto a file the page presents as ours.
-
-The test, and it is cheap: **does the page say, in words, that the file IS
-somebody's recording?** Applied to all 11 files the skin census flags, ten pass
-by quotation — *"published as his recording, which is what it is"* (227654),
-*"the author's own author-time lap"* (228607), *"Ssnake01's 49.491"* (285268) —
-and 270051 is the only failure. Two independent instruments agree on that one
-file: `ghost identity show` keys on the account id, `tmtraj corpus qc` on the
-skin path and its storage-object URL.
-
-## A magnitude cannot settle a question about direction
-
-The best worked example this project has, because it is the **same correction
-made twice** — withdrawn the first time, accepted the second — and the
-difference is entirely in the epistemics.
-
-`fk regen` pairs each recorded sample with an engine instant, and on five of
-thirteen maps that pairing is one physics tick out. Correcting it means shifting
-the pairing by a tick.
+The worked example is the same correction made twice. `fk regen`'s sample
+pairing is one physics tick out on five of thirteen maps.
 
 **Version one, withdrawn.** A `--recshift` flag driven by C11b, which measures
 the stale-buffer distance *within* a file. It reported every regenerated file at
 a clean `speed × 0.010 m` offset, and **nine files were rebuilt on that
-reading**. Then somebody put a **downloaded** human ghost — one the game
-recorded itself, which needs no correction — through the same instrument, and it
-read the same: 267460's human WR at 0.4538 m / 45.42 m/s = 10.004 ms, 98 %
-tick-shaped. **The measurement was right and the conclusion was wrong**, because
-C11b reports a *magnitude*, and a magnitude cannot see which **side** of a tick
-a file is on.
+reading**. Then somebody put a **downloaded** human ghost — one the game recorded
+itself, which needs no correction — through the same instrument, and it read the
+same: 267460's human WR at 0.4538 m / 45.42 m/s = 10.004 ms, 98 % tick-shaped.
+**The measurement was right and the conclusion was wrong**, because C11b reports
+a *magnitude*, and **a magnitude cannot see which side of a tick a file is on.**
 
-**Version two, accepted.** Same correction, different quantity: `ghost phase`
-decomposes the residual **along** and **across** the direction of travel.
-
-```
-267859  +0.1357 m along, 0.0067 across  =  +9.83 ms
-279209  +0.3603 m along, 0.0066 across  =  +9.72 ms
-285268  +0.5876 m along, 0.0115 across  =  +9.96 ms
-228607  -0.0000 m along, 0.0004 across  =  -0.00 ms   (a clean map)
-```
-
-Along-track displacement with nothing across it **is** a time shift; a physics
-difference has both. The quantity is *signed*, so it says **late** rather than
-merely **far**.
-
-**And what makes it a verdict rather than a better guess is the negative
-control** — applying the fix to a map that does not need it, and requiring it to
-make that map worse:
+**Version two, accepted.** `ghost phase` decomposes the residual **along** and
+**across** the direction of travel — along-track displacement with nothing
+across it *is* a time shift, so the quantity is signed. And the row that makes
+it a verdict:
 
 ```
 map      shift 0                      shift -10      shift +10
@@ -259,123 +104,309 @@ map      shift 0                      shift -10      shift +10
 274191   0.000482 x3  (already right) 0.920794 x3    0.917557 x3
 ```
 
-> **If the fix you are considering has a sign, the evidence for it must have one
-> too — and it must be paired with a case that does NOT need the fix, which the
-> fix should make worse. A correction that improves every number it touches has
-> not been tested against anything.**
+> **A correction that improves every number it touches has not been tested
+> against anything.**
 
-**Corollary, and it is the n = 1 rule again:** it stays a **flag**, never a
-constant. Eight of those thirteen maps measure zero. The only honest way to set
-it is to require the correction to return **that map's own** control to zero.
-Three instances of the same shape now: `FK_STATE_OFF` generalised from one map
-and false on the second, a winning `FK_ADDR_DELTA` that landed on a `1,1,1` slot
-elsewhere, and this. **A per-instance measurement promoted to a constant.**
+## An objective is a claim too
 
-**And it explains a "noise" nobody had explained**: 279209 lands correct one run
-in three at shift 0, and 0.000541 on all three at −10. The pairing was quantising
-to either side; the bias measurement was not wandering. **Anywhere a measurement
-in this project is "usually right", that is now the first hypothesis to test.**
+Three distinct ways one has lied here:
 
-## A weighted sum cannot express a requirement
+* **a decoy** — an objective that can be maximised without achieving the goal.
+  Before trusting one, ask what the *laziest* way to maximise it is.
+* **a candidate-chosen window** — see above.
+* **a weighted sum used to test compatibility.** 284238 asked whether the car
+  can reach the human's crossing angle *and* his roll; four searches minimising
+  a weighted sum of position, velocity and attitude said no. A weighted sum lets
+  a candidate **buy attitude with crossing angle**, which is exactly the trade
+  the surface forces, so the search settles on the surface's own trade curve and
+  reports it back as a frontier. Hard bars instead, and the roll comes down to
+  the human's own value on the lane just published as unable to produce it.
+  **A weighted sum expresses a preference, not a requirement.**
 
-From 284238, and it cost four searches. The question was whether two demands are
-compatible — can the car reach the human's crossing angle **and** his roll? All
-four searches minimised a **weighted sum** of position, velocity and attitude,
-and 36 restarts came back saying no, with a real measured coupling behind it
-(−0.78 °/m of roll per metre across the lane, against 0.09 on the flat deck the
-human uses).
+Related: **apply a bar in the frame the sampler produces.** A `vz` bar that
+re-canonicalised an already-canonicalised velocity on a −120° screw map gated on
+something that is not a crossing angle at all, and ten restarts chased `vz +55`
+as an improvement. One owner per frame conversion.
 
-**A weighted sum lets a candidate buy attitude with crossing angle — which is
-exactly the trade the surface forces.** So the search settles on the surface's
-own trade curve and reports it back as a frontier. Put the crossing angle and
-the speed on **hard bars** — satisfied, or the candidate ranks below everything
-that satisfies them — and the roll comes down to the human's own value on the
-lane just published as unable to produce it.
+## Measure the map; do not port the number
 
-> **A weighted sum expresses a preference, not a requirement. When the question
-> is whether X and Y can be had together, a preference measures the COUPLING
-> instead of the COMPATIBILITY. Make X a bar and Y the objective; never both in
-> one sum.**
+A constant measured once is MEASURED *on that map*. That it ports is INFERRED,
+and the inference is usually the weak part. Four instances:
 
-The tell is available before the search runs: **ask what the objective can buy
-with what.** That is the same question as *"what is the laziest way to maximise
-this?"*, which this project already asks of state objectives, and it is the
-third distinct way an objective has lied here — after the decoy that can be
-maximised without achieving the goal, and the window whose end the candidate
-chooses.
+* `FK_STATE_OFF` documented as "a fixed offset from the server base" — false on
+  the second map tested.
+* a winning `FK_ADDR_DELTA` that lands on a `1,1,1` slot on the next map.
+* the tick correction above: **eight of thirteen maps measure zero**, so it
+  stays a flag and is set by requiring *that map's own* control to return zero.
+* gravity, below.
 
-Same family, smaller: **apply a bar in the frame the sampler produces.** A `vz`
-bar that re-canonicalised an already-canonicalised velocity, on a −120° screw
-map, gated on a quantity that is not a crossing angle at all, and ten restarts
-chased `vz +55` and `+71` as improvements. **One owner per frame conversion.**
+## An exemption must quote the page it exempts
 
-And the shape of the retraction is worth as much as the rule: **it overturned a
-sufficiency claim, not a measurement.** Every number in the original stands. The
-finding is now that reaching the human's state at the kicker is *possible and
-not sufficient* — the two cars part 17 m later, where his wheels stay loaded and
-ours goes rigid. **The stronger negative was hiding behind the weaker one.**
+The integrity allowlist excuses files that legitimately carry another driver's
+identity, and its own preamble says **"a name is not a contract: the page is the
+claim"**. An entry was found breaking that rule:
 
-## What the repaired check found, and how it was adjudicated
+```
+270051  m270051_human_shaped_4831.Ghost.Gbx  human-shaped: built to the human's line
+```
 
-46 refusals, sorted — because 46 unadjudicated flags become next month's
-"everyone knows those are false positives":
+The page says that file is *"the author time, with ±10 ms of slack on every
+input"*. **"Human-shaped" is a claim about the INPUTS. "His recording" is a claim
+about whose run the file is.** Reading the first as the second laundered a real
+player's account id and skin locator onto a file the page presents as ours.
 
-| n | class | how it was settled |
+The test: **does the page say, in words, that the file IS somebody's
+recording?** Of the eleven files the skin census flags, ten pass by quotation —
+*"published as his recording, which is what it is"* (227654), *"the author's own
+author-time lap"* (228607) — and 270051 was the only failure. Two independent
+instruments agree on that one file.
+
+---
+
+# 3. How an instrument lies
+
+Every item here is something that passed, confidently, in this project.
+
+## It can fail toward *clean*
+
+`tmtraj corpus dup` — the check that catches one run published twice — decided
+whether identical positions were *expected* by asking whether the two input
+tapes differ, and it asked by shelling out to **`fk tapediff`**. That is not a
+command `fk` has, at any build:
+
+```
+$ fk tapediff --a A.gtape --b B.gtape
+fk: ABORT: unknown command "tapediff"
+```
+
+The call failed every time. `.ok()?` swallowed it. `None` from that function
+means *the tapes are identical*. **So every pair in the corpus came back
+`identical-tapes / EXPECTED-SAME-INPUTS`, and the scan exited 0** — the check
+excused every pair it exists to catch, and reported success doing it.
+
+* **`.ok()?` is `2>/dev/null` with a nicer spelling.** That module's own header
+  says the shell scripts it replaced were fragile because they "discarded
+  stderr". The Rust port reproduced the bug it was written to remove.
+* **Failing toward clean is worse than failing toward a null.** A null looks
+  like a result and gets argued with; a pass looks like nothing at all.
+* **A comparison needs a two-sided control**: a tape must read identical **to
+  itself**, and two known-different runs must read **different**. Either half
+  alone passes for a broken comparison.
+
+Two more of the same family: `ghost verify` V2 reported *"1 copies, all
+36.049"* while two copies of a stranger's 49.958 sat in the replay **header**,
+where nothing looked — *a count of a set you cannot see all of is worse than no
+count*; and an anchor wrote zeroed wheel channels straight through a passing
+gate.
+
+## Agreement is not confirmation
+
+**Two numbers that agree may be two readings of one quantity.**
+
+* **≈0.5 mm.** Quoted for two years as "the client-vs-server floor", a property
+  of two engines. It is **the distance between two copies of the car in the
+  server's own memory**, and the pipeline was reading the wrong one: transforming
+  from the copy with a live wheel block takes bit-identity from **0 of 455
+  samples to 227 of 455**. Three maps agreeing at 0.489 / 0.511 / 0.501 were
+  three readings of one thing. The corpus said so independently — 270051 reads
+  **0.000000 m** ours-vs-ours where 173691 reads 0.000497 m on the *same*
+  comparison. (The orientation half of that fix is open and regressed; the flag
+  is default-off.)
+* **This audit's own retraction.** It published a defect on 210218 — two files
+  differing by 731 input ticks while holding bit-identical positions for
+  89.95 s. The engine says both are sound: **0.0001 m over the 1735 samples
+  where the records agree.** What misled it was two whole-file *rates* that
+  agreed, 93.8 % and 94.1 %, **which say nothing about whether they are the same
+  samples.**
+* **A reproduction count is a majority.** Five regenerations of one 134672 tape
+  produced the car once and four wrong picks, two agreeing to the metre. *A
+  majority must never outrank a test that can identify the answer.*
+
+> **An identical number across several independent findings is one artefact.**
+> A pair test that failed to use each trace at its own accepted shift produced
+> **four "DEFECT" verdicts at 2.140111 m** — one tick at 222 m/s — on five files
+> each of which reproduces its own record to 0.007 m. This is a detection rule
+> anyone can apply, and it is how the ≈0.5 mm was eventually caught.
+
+## Test for a time shift, not a distance
+
+A one-tick offset is a **pure time shift**, so it appears as a distance that
+scales with speed and looks exactly like a wrong trajectory. Five sound files
+read MISMATCH at 0.56–1.54 m at shift 0 and **0.005 m** scanned over ±3 ticks.
+A third of this project's clean corpus sits one or two ticks off.
+
+## One reading is not enough
+
+173636 `TAS_22072` read "does NOT match" at fork ticks 400 and 700 (0.30 m) and
+**matched at tick 1000 (0.0008 m)**. Same file, same map, same binary. Sweep,
+and take the best — and among readings that have found the car, prefer the one
+with more **coverage**, not the one that agrees to another decimal.
+
+## Two constants this project keeps getting wrong
+
+**Gravity is ≈24.3–24.6 m/s², not 9.81 and not per-map.** Free fall is linear
+drag in vertical speed: `a_y = −g − k·v_y`, g = 24.78 ± 0.10, k = 0.032.
+
+* **Too low:** 153527 computed a slope's gravity as `9.81·sin 26.6° = 4.39` and
+  published a car "decelerating at 2.4× the slope's gravity". Measured on that
+  map from **335 free-fall stretches**, the median is **−24.314**, against which
+  the observation is **0.97× — an ordinary coast.** A whole published mechanism
+  rested on a textbook constant.
+* **Too specific:** 285885's *"gravity here is per-map"* — both quoted numbers
+  are the one law at different `v_y` (−25.20 ⇒ +13 m/s; −24.308 ⇒ −16 m/s).
+
+**Never quote a scalar `g` without the `v_y` it was measured at**, and any
+energy, fall or deceleration figure should name the `g` it used. Whether `g` is
+*genuinely* per-map is UNKNOWN — the intercept is fitted on one map.
+
+The second constant is the ≈0.5 mm above.
+
+---
+
+## An offset without its anchor is not a measurement
+
+Contributed by the carrier-bytes arm with its own numbers, and it is the fourth
+instance of *a check that is precise, confident and blind* (§3).
+
+**The definition.** *"car" = the address of the f32 position triple of the copy
+of the vehicle state whose slots at `car+92 / +136 / +180 / +224` hold **live
+floats**.* The qualifier is load-bearing because the engine keeps several copies
+of the car, they hold the same position, and **they all pass every structural
+test there is** — velocity 12 bytes on equals the position's own derivative, the
+four floats 16 bytes back are a unit quaternion. Only one has the *fields* around
+it. One 1.25 MB window, one server process, ten copies:
+
+```
++1045916   4 of 4 wheel slots live   0.000001 m from the game's own recorded path
++1045052   4 of 4 live               0.000001 m
++1048564   1 of 4 live               0.000486 m
++1043772   1 of 4 live               0.000486 m
+```
+
+**The cost.** Anchoring on `Layout::pos` — the address the locator returns, and
+the natural thing to anchor on — **wrote zeroed wheel rotations and zeroed gear
+into a file that passed the entire `ghost verify` gate**: V1 codec identity, V6
+tape agreement at kappa 1.000, V7 the plain oracle re-simulating the written file
+to its declared 22.730. Every check passed **because none of those bytes affects
+the simulation**, and a provenance check cannot catch it either — the bytes are
+not a donor's, they are zeros. The guard that does catch it needs no answer key:
+**are the four wheel slots holding floats that move?** Four against zero, nothing
+in between.
+
+### And the criterion does not transport — which is the entry
+
+Two arms measured this and their results disagree. **Both are internally
+consistent and exactly verified**, so the disagreement is the finding:
+
+| | carrier-bytes arm | video-reconstruction arm |
 |---|---|---|
-| **14** | **innocent, MEASURED** (203330) | every one of the 227 differing ticks falls inside that map's **measured per-tick inert window** (race 0.000–2.970, established by overwriting one tick at a time); **zero** in either live window. The one map that can prove it, proving it |
-| **3** | **same recorded motion**, separation exactly 0.000000 m | 227654 ×2 and 186935 ×1. **Positive control: the 227654 page already says by hand that those files are "one trajectory, not two runs"** — the repaired check rediscovers a defect the corpus had documented independently, and adds `TAS_57518` to the set |
-| **5** | documented provenance (286279) | all against the author's ghost extracted from the map, which that page says every run there was built from. `corpus splice` independently calls them CONTAMINATED. Not news, and not a new defect |
-| **24** | **then UNRESOLVED — now settled against the engine** | see below |
+| gear | `car+340`, **100.00 % exact** on 8 recordings | `car+748`, **99.43 % exact** |
+| wheels / wetness | 4 rotations at +92/136/180/224, 99.25–100 % | wetness at `car+180`, **95.4–96.0 %** on two ghosts |
+| the other's liveness test, ported | — | 4 dead slots, one value, exactly 0.0, over 814 ticks |
 
-**Those 24 (38 pairs at the finer verdict) are no longer open.** Re-simulating
-both tapes and asking how far apart the engine puts the two cars **on the
-samples where the two records agree bit for bit** returns **35
-INNOCENT-INERT-INPUTS, 1 inconclusive at 0.001 m, 2 untested, and zero
-defects** — `tmtraj adjudicate`. The records agree because the car really is in
-the same place: those inputs had no authority where they differed.
+The gear relation confirms from both sides (748 − 408 = 340). **The wheel
+relation does not**: probing wheel rotation directly from the second anchor
+implies **1196** where gear implies **408**, so the two anchors are not one
+constant apart and the wheel block may not sit at a fixed offset from the
+position at all. So the second arm's anchor reads as "a bare position copy" under
+the first arm's criterion while reproducing the recording at 95–99 % — **dead
+memory does not do that.**
 
-The two untested are 238835 and 267859, the two **turtle** maps, where no file
-locates at any of 14 fork points — the car is inverted at walking pace, the
-locate's velocity-consistency test has nothing to bite on, and an independent
-arm diagnosed the same thing from the other direction. **That is a statement
-about the instrument, not the files**, which is the whole point of this page.
+> **The liveness criterion is sound as a CHOOSER WITHIN THE FRAME IT WAS
+> VALIDATED IN, and is not a transportable test.** A rule with a stated domain of
+> validity is more useful than a rule that quietly fails elsewhere.
 
-**And the first version of that adjudication was wrong.** This audit published a
-defect on 210218 — two files differing by 731 input ticks while holding
-bit-identical positions for 89.95 s — and the engine says both are sound
-(0.0001 m over 1735 samples). The reading that misled me was two whole-file
-*rates* that agreed, 93.8 % and 94.1 %, which do not say whether they are the
-same samples. Four further instrument errors were caught by controls before the
-number above was trusted; they are in `CLAIMS-LEDGER.md` §I and each one is a
-rule already on this page being relearned the hard way.
+The test that *does* survive transport is the other arm's — *does a named channel
+reproduce the recording?* — which needs an answer key and so is not always
+available, which is why the liveness rule exists at all.
 
-## Not everything needs a tag
+> **AN OFFSET WITHOUT ITS ANCHOR IS NOT A MEASUREMENT.** Every offset this
+> project has published is relative to an anchor nobody was naming, and 408 bytes
+> is exactly the size of a mistake nobody catches by eye. Publish the anchor with
+> the offset, and publish the frame the anchor was validated in.
 
-Do not qualify what is solid. A true claim with its control cited is the best
-outcome on this page and the most common one: most of what is written here is
-right. Hedging a sound result is the same failure as asserting an unsound one —
-the reader cannot tell which is which either way.
+Same shape as *measure the map, do not port the number*, one level down: **do not
+port the offset either.**
 
-**Four passages already do this as well as it can be done.** They are the model,
-and they were all written before this convention existed:
+## Four encoding assumptions that each cost a channel
+
+Invisible until the assumption was removed, and any of them may be in other
+tools:
+
+* **range** — filtering f32 candidates to 0..1, so a wheel rotation running to
+  1607 is never seen;
+* **rounding** — round-to-nearest against truncation, worth **17 points** on one
+  channel (83 % → 96 %);
+* **quantisation** — testing exactness against a u8 quantisation for a channel
+  the record does not quantise;
+* **the small-integer-lookup trap** — an integer read as an f32 is a denormal, so
+  a fitter returns `k = 2.85e45` at a flawless 100 %. Byte 89 was offered that
+  way at `car+58` on five keys; scored as a raw byte on eight keys with no refit
+  it is **0.00 %**.
+
+And one that is not an encoding but belongs beside them: **a median of a bimodal
+population reports whichever mode it lands in.** A quaternion candidate was
+reported "exact, 0.00000 rad" from a median while about half the instants matched
+and half did not; the honest number is **75.0 % exact, p90 0.00042 rad**.
+
+## Absent is not zero
+
+Dirt (sample bytes 93/95/97/99) is **ABSENT** from regenerated files, not zero —
+pre-registered across all eight remaining slots of the wheel record and refuted,
+best worst-key lift **−7.35 points**, below a constant. *A page must say absent;
+a zero read as a measurement is how a published clip came to run on dirt tyres.*
+Ice, by contrast, ships: **100.00 % exact** on two independent recordings on two
+maps (462 and 1370 samples, against 71.9 % and 79.0 % constants) — and was
+deliberately **not** shipped during the hours it was a one-key result.
+
+# 4. What good looks like
+
+**Do not qualify what is solid.** A true claim with its control cited is the best
+outcome and the most common one: most of what is written here is right. Hedging
+a sound result is the same failure as asserting an unsound one — the reader
+cannot tell which is which either way.
+
+Four passages are the model, all written before this convention existed:
 
 * **`203330`'s authority map.** It separates two statements people conflate —
   *"the car does not respond"* (true from 2.270 to 3.650) and *"the input has no
   authority"* (true only to 2.970) — from 561 single-tick overwrites, then says
   outright that the *mechanism* behind the four bands is **"measured but not yet
   attributed"** and that the obvious explanation fails on the fourth band.
-  Measurement, inference and open question, all three labelled, in one section.
 * **`285268`'s check on its own check.** *"`nearident` returned `overlap=0` with
   a mean of 1.8e308 — it compared **nothing**… its `INDEPENDENT` verdict on this
-  pairing is vacuous."* A tool reporting a clean verdict having measured nothing,
-  caught and named rather than quoted.
-* **`270051`'s false positive.** It reads COPY on an honest pairing, and instead
-  of overriding the tool the page measures the tool's own floor, gives the
+  pairing is vacuous."*
+* **`270051`'s false positive.** It reads COPY on an honest pairing; rather than
+  overriding the tool, the page measures the tool's own floor, gives the
   human-versus-human control (3, 4 and 6 samples against our 41), and correctly
   attributes the offset to us — two days before anyone could say what caused it.
 * **`tools/LINEAGE.md`.** *"Check the constant, not the version."* It splits what
   a defect invalidates into three parts and puts the uncomfortable one in the
-  middle, with the measurement that bounds each.
+  middle.
 
-If a passage you are writing could be summarised as one of those, it does not
-need a tag. It already is one.
+## A settled question beats a standing suspicion
+
+The 46 `corpus dup` refusals were adjudicated rather than left as caveats:
+14 fall inside 203330's *measured* per-tick inert window, 3 are at separation
+exactly 0.000000 m (two of which the 227654 page already documents by hand as
+one trajectory), 5 are documented 286279 provenance, and the remaining 24 — 38
+pairs at the finer verdict — were settled by re-simulating both tapes and asking
+how far apart the engine puts the two cars **on the samples where the records
+agree**: **35 measured innocent, 1 inconclusive at 0.001 m, 2 untested, zero
+defects**, over 143 traces.
+
+**The 2 untested are a finding, not a gap.** No file locates on 238835 or
+267859 at any of 14 fork points — both turtle maps, where the car is inverted at
+walking pace. An independent arm reached the same conclusion from the opposite
+direction with a mechanism: the locate demands `d(pos)/dt` agree with stored
+velocity to 15 % of speed, and the real car scores **1.41 m/s against a bar of
+1.14**. Two instruments agreeing on which maps are unreadable, for a stated
+reason, is a result.
+
+## Run these before editing a page
+
+```
+tmtraj corpus claims --root .   # does a page agree with the files in its own directory?
+tmtraj corpus dup    --root .   # two published files of one map carrying one recording
+tmtraj adjudicate ...           # settle a dup verdict against the engine
+```
