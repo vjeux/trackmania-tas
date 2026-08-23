@@ -257,6 +257,7 @@ the fixtures checked in under `tools/testdata`.
 | **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
 | **the search climbing a state key** | 228811, seeded with the human world record: key **0.97 → 57.4**, and the state it scores moves from z = 714.9 to **z = 709.1**, the launcher line |
 | **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
+| **the whole ladder, on the map it was built for** | 228811, seeded with the human world record: state → launch → aim → **21.255**, a route no human on the leaderboard drives. 208 improvements confirmed, **0 phantoms**, and every banked finisher re-simulates to the millisecond in its name from a fresh process |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
 
 ### One check that did not work, one that did, and a false negative I nearly published
@@ -623,6 +624,17 @@ detector reads **118.68**. The after-key then places him 5 mm from the finish.
 On the human world record the same clause never fires. One positive, one
 negative, on real recordings, before any search ran.
 
+**And a trap in the after-key that this control walks straight past.** The point
+above is the author's own LAST TELEMETRY SAMPLE, so "5 mm from it" is a
+statement about arithmetic, not about finishing: he is at that point by
+definition. An after-key of `-dist(reference's own endpoint)` is a decoy of the
+same family as any other -- the reference maximises it trivially, and it can
+look like a validated objective when it is a tautology. It is still a usable
+GRADIENT for a search that is nowhere near, which is what it was used for here,
+but the number a reference scores on it is not evidence that the key means what
+you want. What settles that is the band above: a candidate that actually crosses
+the line becomes a `Finished` and meets the plain oracle.
+
 ### 5.10 `--gate-min-key`, and what is derivable about it
 
 The bar was the one number in this feature that somebody had to choose, and
@@ -695,7 +707,7 @@ On 228811, seeded with the human world record:
 |---|---|---|
 | C | `min(abs(bodyright), 5*(-vz))`, wide box | key **0.97 → 57.4**; state walks onto the launcher line, z 714.9 → 709.1. 1 049 160 evals, 99 confirmed, 0 phantoms |
 | D | the author's whole contact state | **−43.7 → −5.11**: 0.29 m from his contact, 3.60 m/s from his velocity, **53.8° away in attitude**. 870 570 evals, 159 confirmed, 0 phantoms |
-| K | the same key, box narrowed to where a launch pays, launch clause armed | key **→ 98.2 at (79.5, 50.1, 712.7)** — 13% above the author's own 86.8, downstream of the checkpoint — **and the launcher does not fire** |
+| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **`and finished, 21.255`**. 208 confirmed, **0 phantoms** |
 
 Arm D reproduced the map's central finding from a cold start, and
 `TECHNIQUE.md`, written six weeks earlier from the private fork, says the same
@@ -706,12 +718,35 @@ two numbers:
 > doesn't trigger it. Speed doesn't trigger it. Which way the car is pointing
 > does.
 
-Arm K is the new measurement, and it sharpens that. The published firing
-condition is body-lateral speed ≥ 85 m/s and a downward crossing of ≥ ~17 m/s.
-Arm K's state has **side 98.2 and −vz 30.9 — both above those thresholds, in the
-right place — and nothing fires.** So the published conjunction is *necessary and
-not sufficient*, and what is missing is the third thing arm D ran into: the
-attitude. Two arms, two objectives, one wall.
+**Arm K is the feature working end to end**, on the map it was designed for,
+from a cold start, with the whole objective written on the command line. The
+band transitions are one line each in the log, and each one is the search
+changing what it is optimising:
+
+```
+*** GATE key +1.1058                         <- the seed
+*** GATE key +92.9766                        <- the state
+*** GATE FIRED, after -298.7544              <- the launcher fires
+*** GATE FIRED, after -19.9934                <- aimed at the finish
+*** GATE and finished, 21.510                <- and across it
+*** GATE and finished, 21.255
+```
+
+**21.255**, from a 22.637 seed, through the route no human on the leaderboard
+drives. 1 642 500 evaluations, 208 improvements confirmed by the plain oracle,
+**zero phantoms**; every banked finisher re-simulates to exactly the millisecond
+in its name in a fresh process, with the human world record carried in the same
+batch and returning 22.637 exactly. It is not the private fork's 20.237 -- that
+took a further finish-time search from seeds like these -- and it was found in
+under an hour by a mechanism that knows nothing about this map.
+
+And arm K measured something new on the way. Before it fired, its state reached
+**side 98.2 with −vz 30.9 at (79.5, 50.1, 712.7)** -- both components above the
+published firing thresholds (85 m/s of body-lateral speed, ~17 m/s of downward
+crossing), in the right place, and nothing happened. So the published
+conjunction is *necessary and not sufficient*, and what is missing is the third
+thing arm D ran into: the attitude. Two arms, two objectives, one wall -- and
+then a third arm went round it.
 
 ---
 
