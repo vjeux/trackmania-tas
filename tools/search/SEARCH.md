@@ -257,7 +257,7 @@ the fixtures checked in under `tools/testdata`.
 | **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
 | **the search climbing a state key** | 228811, seeded with the human world record: key **0.97 → 57.4**, and the state it scores moves from z = 714.9 to **z = 709.1**, the launcher line |
 | **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
-| **the whole ladder, on the map it was built for** | 228811, seeded with the human world record: state → launch → aim → **21.255**, a route no human on the leaderboard drives. 208 improvements confirmed, **0 phantoms**, and every banked finisher re-simulates to the millisecond in its name from a fresh process |
+| **the whole ladder, on the map it was built for** | 228811, seeded with the human world record: state → launch → aim → **21.223**, a route no human on the leaderboard drives. 216 improvements confirmed, **0 phantoms**, and every banked finisher re-simulates to the millisecond in its name from a fresh process |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
 
 ### One check that did not work, one that did, and a false negative I nearly published
@@ -707,7 +707,7 @@ On 228811, seeded with the human world record:
 |---|---|---|
 | C | `min(abs(bodyright), 5*(-vz))`, wide box | key **0.97 → 57.4**; state walks onto the launcher line, z 714.9 → 709.1. 1 049 160 evals, 99 confirmed, 0 phantoms |
 | D | the author's whole contact state | **−43.7 → −5.11**: 0.29 m from his contact, 3.60 m/s from his velocity, **53.8° away in attitude**. 870 570 evals, 159 confirmed, 0 phantoms |
-| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **`and finished, 21.255`**. 208 confirmed, **0 phantoms** |
+| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **`and finished, 21.223`**. 2 732 610 evals, 216 confirmed, **0 phantoms** |
 
 Arm D reproduced the map's central finding from a cold start, and
 `TECHNIQUE.md`, written six weeks earlier from the private fork, says the same
@@ -729,16 +729,18 @@ changing what it is optimising:
 *** GATE FIRED, after -298.7544              <- the launcher fires
 *** GATE FIRED, after -19.9934                <- aimed at the finish
 *** GATE and finished, 21.510                <- and across it
-*** GATE and finished, 21.255
+*** GATE and finished, 21.223
 ```
 
-**21.255**, from a 22.637 seed, through the route no human on the leaderboard
-drives. 1 642 500 evaluations, 208 improvements confirmed by the plain oracle,
+**21.223**, from a 22.637 seed, through the route no human on the leaderboard
+drives. 2 732 610 evaluations, 216 improvements confirmed by the plain oracle,
 **zero phantoms**; every banked finisher re-simulates to exactly the millisecond
 in its name in a fresh process, with the human world record carried in the same
 batch and returning 22.637 exactly. It is not the private fork's 20.237 -- that
-took a further finish-time search from seeds like these -- and it was found in
-under an hour by a mechanism that knows nothing about this map.
+took a further finish-time search from seeds like these, and the private fork's
+own log has it reaching its first validated finisher after 2 h 43 min -- and it
+was found in ONE HOUR by a mechanism that knows nothing about this map, with the
+whole objective on the command line.
 
 And arm K measured something new on the way. Before it fired, its state reached
 **side 98.2 with −vz 30.9 at (79.5, 50.1, 712.7)** -- both components above the
