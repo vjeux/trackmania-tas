@@ -19,6 +19,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
   fk regen           rewrite a ghost's telemetry from engine state
+  fk carrier         name the sample bytes a regenerated ghost inherits, and write them
 
 Engine flags, accepted by every command:
   --tape FILE        the .Ghost.Gbx / .Replay.Gbx whose inputs the engine runs
@@ -105,6 +106,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
         // trajectory at a checkpoint you name.
         "watch" => cmd::watch::run(&a[1..]),
         "regen" => cmd::regen::run(&a[1..]),
+        "carrier" => cmd::carrier::run(&a[1..]),
         x => Err(format!("unknown command {:?}\n\n{}", x, USAGE)),
     }
 }

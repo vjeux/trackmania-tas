@@ -1,0 +1,38 @@
+# `rel` is relative to CAR = the f32 position triple of the copy of the vehicle
+# state whose slots at car+92/+136/+180/+224 hold LIVE floats. NOT the locator's
+# Layout::pos, which on this engine is reliably a bare position copy: anchoring
+# there writes zeroed wheels into a file that passes the whole verify gate.
+#
+# That definition is closed on THIS TABLE'S OWN offsets and is not a law about
+# the struct. Another arm's anchor is 408 bytes from this one by the gear slot
+# and 1196 by the wheel block, so the two are not related by one constant and
+# the wheel block may not sit at a fixed offset from the position at all. Do not
+# transport these offsets to another anchor by adding a constant; re-locate.
+#
+# `write` is the tick's write the car was identified on, never an absolute one:
+# the recorder took the first write on five of eight keys and the last on three,
+# on one binary.
+channel	write	rel	kind	k	c	exact	n	rate	null	baseline	key
+u16@0	car	36	affine	5.957727272727e+00	5957.727272727	0	0	0.0000	0.0000	0.0000	derived
+u16@2	car	40	affine	3.276750000000e+01	32767.500000000	0	0	0.0000	0.0000	0.0000	derived
+u16@6	car	92	affine	4.074304373253e+01	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+u16@8	car	136	affine	4.074304373253e+01	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+u16@10	car	180	affine	4.074304373253e+01	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+u16@12	car	224	affine	4.074304373253e+01	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+u16@4	car	328	affine	2.184488600000e+00	0.100000000	0	0	0.0000	0.0000	0.0000	derived
+b23	car	88	affine	6.375000000000e+01	127.500000000	0	0	0.0000	0.0000	0.0000	derived
+b22	car	100	affine	4.074304373253e+01	127.500000000	0	0	0.0000	0.0000	0.0000	derived
+b24	car	104	raw	1.000000000000e+00	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b81	car	116	affine	2.550000000000e+02	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b25	car	132	affine	6.375000000000e+01	127.500000000	0	0	0.0000	0.0000	0.0000	derived
+b26	car	148	raw	1.000000000000e+00	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b82	car	160	affine	2.550000000000e+02	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b27	car	176	affine	6.375000000000e+01	127.500000000	0	0	0.0000	0.0000	0.0000	derived
+b28	car	192	raw	1.000000000000e+00	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b83	car	204	affine	2.550000000000e+02	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b29	car	220	affine	6.375000000000e+01	127.500000000	0	0	0.0000	0.0000	0.0000	derived
+b30	car	236	raw	1.000000000000e+00	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b84	car	248	affine	2.550000000000e+02	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b31	car	332	raw	1.000000000000e+00	0.000000000	0	0	0.0000	0.0000	0.0000	derived
+b91	car	340	affineu8	4.000000000000e+00	1.000000000	0	0	0.0000	0.0000	0.0000	derived
+b21	car	348	affine	2.550000000000e+02	0.000000000	0	0	0.0000	0.0000	0.0000	derived
