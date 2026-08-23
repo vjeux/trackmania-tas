@@ -114,6 +114,28 @@ impl<'a> Graph<'a> {
                 }
                 Ok(Node::ItemModel(first))
             }
+            // NPlugTrigger_SWaypoint: the volume a checkpoint or finish gate
+            // FIRES on. It carries a trigger shape and nothing the car can
+            // rest on, so no geometry comes out of it — but it has to be
+            // walked, because it sits in the middle of the gate prefabs and
+            // everything after it in the file is unreachable until it is.
+            // Read off the bytes of `Items\Gate\CheckpointRight32m.Prefab.Gbx`:
+            // sixteen bytes, of which the second word is a reference to a
+            // shape that already exists.
+            0x09178000 => {
+                let _version = self.r.u32()?;
+                self.noderef()?; // TriggerShape
+                self.r.take(8)?;
+                Ok(Node::Other(class_id))
+            }
+            // Two more trigger-side classes in the gate prefabs, both eight
+            // and sixteen bytes of metadata with no geometry. Same file, same
+            // method: the entity after them has an identity quaternion and a
+            // -1 parameter chunk, which pins where they end.
+            0x0917B000 => {
+                self.r.take(8)?;
+                Ok(Node::Other(class_id))
+            }
             // NPlugDyna_SConstraintModel: a spring, no geometry.
             0x2F074000 => {
                 self.r.take(4 * 5)?;
@@ -458,12 +480,32 @@ impl<'a> Graph<'a> {
             // whole run is on 75 placements of one 8 x 8 platform whose mesh
             // runs 0..8 in x and z, it put the road a metre and a half off the
             // car and cost the map 62 % of its samples.
+            // NPlugTrigger_SSpecialProperty, next to the waypoint in every
+            // gate prefab: a transform and six more floats, seventy-six bytes,
+            // and no geometry. Read off the same file.
+            0x0917A000 => {
+                let _version = self.r.u32()?;
+                self.r.take(48)?; // Iso4
+                self.r.take(24)?;
+                Ok(())
+            }
             0x2E020001 => {
                 acc.touched = true;
                 let pivots = self.r.array(|r| r.vec3())?;
                 if let Some(p) = pivots.first() {
                     acc.pivot = *p;
                 }
+                Ok(())
+            }
+            // CGameCommonItemEntityModelEdition: the EDITED form of a custom
+            // item — the shape as the editor holds it, a CPlugCrystal, rather
+            // than baked into a static object. 134672 carries three items like
+            // this (a loop piece and two light fittings) and 197047 none.
+            0x2E026000 => {
+                acc.touched = true;
+                let _version = self.r.u32()?;
+                let _item_type = self.r.u32()?;
+                acc.entity_model = self.noderef()?; // MeshCrystal
                 Ok(())
             }
             0x2E002020 => {
@@ -1287,38 +1329,47 @@ impl<'a> Graph<'a> {
         Ok(())
     }
 
+    /// `CPlugVisual3D`'s inline vertex array.
+    ///
+    /// **Inline vertices only exist when the visual has no vertex STREAM.** The
+    /// two are alternatives, and reading the inline form anyway consumes forty
+    /// bytes per vertex of somebody else's data: on 210218's embedded ice
+    /// blocks that walked 604 bytes past the chunk and then read a 4-billion
+    /// element tangent array, and the file failed to open at all.
     fn visual_inline_vertices(&mut self, acc: &mut Acc) -> R<()> {
         let f = acc.visual_flags;
         let n = acc.visual.count as usize;
-        if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
-            for _ in 0..n {
-                let p = self.r.vec3()?;
-                let nl = self.r.vec3()?;
-                self.r.take(16)?;
-                acc.visual.inline_positions.push(p);
-                acc.visual.inline_normals.push(nl);
-            }
-        } else if acc.visual.vertex_streams.is_empty() {
-            for _ in 0..n {
-                let p = self.r.vec3()?;
-                let nl = if !f.bit22 || f.use_vertex_normal {
-                    if f.compress_float3_local3d {
-                        dec3n(self.r.u32()?)
-                    } else {
-                        self.r.vec3()?
-                    }
-                } else {
-                    [0.0, 0.0, 0.0]
-                };
-                if !f.bit22 || f.use_vertex_color {
-                    if f.compress_float4_color {
-                        self.r.u32()?;
-                    } else {
-                        self.r.take(16)?;
-                    }
+        if acc.visual.vertex_streams.is_empty() {
+            if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
+                for _ in 0..n {
+                    let p = self.r.vec3()?;
+                    let nl = self.r.vec3()?;
+                    self.r.take(16)?;
+                    acc.visual.inline_positions.push(p);
+                    acc.visual.inline_normals.push(nl);
                 }
-                acc.visual.inline_positions.push(p);
-                acc.visual.inline_normals.push(nl);
+            } else {
+                for _ in 0..n {
+                    let p = self.r.vec3()?;
+                    let nl = if !f.bit22 || f.use_vertex_normal {
+                        if f.compress_float3_local3d {
+                            dec3n(self.r.u32()?)
+                        } else {
+                            self.r.vec3()?
+                        }
+                    } else {
+                        [0.0, 0.0, 0.0]
+                    };
+                    if !f.bit22 || f.use_vertex_color {
+                        if f.compress_float4_color {
+                            self.r.u32()?;
+                        } else {
+                            self.r.take(16)?;
+                        }
+                    }
+                    acc.visual.inline_positions.push(p);
+                    acc.visual.inline_normals.push(nl);
+                }
             }
         }
         let per = if f.compress_float3_local3d { 4 } else { 12 };
@@ -1497,6 +1548,8 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x2E002021
             | 0x2E002023
             | 0x2E020001
+            | 0x0917A000
+            | 0x2E026000
             | 0x090FD000
             | 0x090FD001
             | 0x090FD002

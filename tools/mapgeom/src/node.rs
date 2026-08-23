@@ -42,8 +42,9 @@ fn no_body_chunks(class_id: u32) -> bool {
         class_id,
         0x0912F000
             | 0x09144000
-            | C_STATIC_OBJECT
             | 0x09178000
+            | C_STATIC_OBJECT
+
             | 0x0917B000
             | 0x09187000
             | C_PREFAB
