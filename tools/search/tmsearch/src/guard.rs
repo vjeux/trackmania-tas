@@ -217,7 +217,7 @@ impl Bank {
                 // An oracle that cannot answer is not permission to bank. The
                 // guard fails CLOSED.
                 let path = self.dir.join(format!("PHANTOM_unvalidated_{}.Ghost.Gbx", stamp));
-                let _ = std::fs::rename(&tmp, &path);
+                install(&tmp, &path);
                 self.phantoms += 1;
                 self.note(&format!(
                     "{{\"phantom\":true,\"reason\":\"the oracle did not answer: {}\",\
@@ -254,7 +254,7 @@ impl Bank {
             let path = self
                 .dir
                 .join(format!("PHANTOM_{}_{}.Ghost.Gbx", tag(&claimed), stamp));
-            let _ = std::fs::rename(&tmp, &path);
+            install(&tmp, &path);
             self.phantoms += 1;
             let ph = Phantom { path: path.clone(), claimed, actual: Some(actual) };
             self.note(&format!(
@@ -311,7 +311,8 @@ impl Bank {
                 );
             }
         }
-        let path = self.dir.join(format!("best_{}.Ghost.Gbx", tag(&banked)));        let _ = std::fs::rename(&tmp, &path);
+        let path = self.dir.join(format!("best_{}.Ghost.Gbx", tag(&banked)));
+        install(&tmp, &path);
         self.confirmed += 1;
         // THE STATE BESIDE THE TAPE. A gate result never acquires a
         // millisecond it did not earn: what it earned is a state, so that is
@@ -371,4 +372,39 @@ pub fn disagreement(claimed_ms: i64, actual_ms: i64) -> String {
         secs(actual_ms),
         crate::report::delta(actual_ms - claimed_ms)
     )
+}
+
+/// Move a banked tape from the scratch root into the bank, and REFUSE to
+/// continue if it does not arrive.
+///
+/// This was `let _ = std::fs::rename(&tmp, &path);` — three times, once for
+/// each thing the guard writes. The scratch root is per-pid and defaults to
+/// `/dev/shm`; a bank directory on ordinary disk is a different filesystem, so
+/// the rename fails with `EXDEV` and the error was thrown away. The log then
+/// records `{"confirmed":"45.140", ..., "file":"…/best_45_140.Ghost.Gbx"}` for
+/// a file that does not exist, and the bank directory is empty at the end of a
+/// two-and-a-half-hour run with 234 confirmed improvements in its log.
+///
+/// The whole point of the guard is that a result is a FILE the plain oracle
+/// has agreed with. Discarding the error on the one call that produces that
+/// file makes the guard's own record unfalsifiable — and it is the sort of
+/// failure that only shows up when someone goes looking for the artefact,
+/// which on this project is often days later and on another machine.
+fn install(tmp: &Path, path: &Path) {
+    if std::fs::rename(tmp, path).is_ok() {
+        return;
+    }
+    // Cross-device: copy, then drop the original.
+    match std::fs::copy(tmp, path) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(tmp);
+        }
+        Err(e) => panic!(
+            "the guard validated a tape and then could not put it in the bank: {} -> {}: {}. \
+             A confirmed result that is not on disk is not a result.",
+            tmp.display(),
+            path.display(),
+            e
+        ),
+    }
 }

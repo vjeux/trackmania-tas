@@ -68,10 +68,17 @@ pub struct Opts {
     /// explicit sweep window, overriding the one derived from the onset
     pub lo: Option<usize>,
     pub hi: Option<usize>,
+    /// also sweep the pedal channels
+    pub pedals: bool,
 }
 
 /// xorshift, so a run is reproducible from its seed and nothing depends on the
 /// host's rng.
+/// Sentinel "deltas" that mean a PEDAL edit rather than a steering one.
+/// Outside any real steering range, so they can share the sweep list.
+pub const PEDAL_BRAKE: i32 = 1000;
+pub const PEDAL_LIFT: i32 = 1001;
+
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -343,6 +350,18 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
                     order.push((t, span, d));
                     order.push((t, span, -d));
                 }
+                if o.pedals {
+                    // THE PEDALS ARE PART OF THE INPUT SPACE, and on this
+                    // subject they are the only part that is not already
+                    // saturated: the tape being repaired holds FULL LOCK for
+                    // every tick of the window, so one of the two steering
+                    // directions is a clamped no-op by construction. A sweep
+                    // of steering alone would report "no repair exists" when
+                    // what it had measured is "no repair exists in the half of
+                    // the input space this sweep could reach".
+                    order.push((t, span, PEDAL_BRAKE));
+                    order.push((t, span, PEDAL_LIFT));
+                }
             }
         }
         // shuffle so an interrupted sweep is still an unbiased sample of it
@@ -356,17 +375,12 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
             }
             evals += 1;
             let i = t - probe;
-            let d = dd as f32 / 127.0;
             let end = (i + span).min(cur.len());
-            let saved: Vec<f32> = (i..end).map(|j| cur[j].steer).collect();
-            for j in i..end {
-                cur[j].steer = (cur[j].steer + d).clamp(-1.0, 1.0);
-            }
+            let saved: Vec<Rec> = cur[i..end].to_vec();
+            apply(&mut cur, i, end, dd);
             let rows = trajectory(&mut s.srv, probe, &cur, &layout, gather(best_h));
             let (h, _, b) = horizon(&rows, &reference, lag, o.tol, o.onset);
-            for (n, j) in (i..end).enumerate() {
-                cur[j].steer = saved[n];
-            }
+            cur[i..end].copy_from_slice(&saved);
             if h > round_best.0 {
                 round_best = (h, b, Some((t, span, dd)));
             }
@@ -384,10 +398,8 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
         match round_best.2 {
             Some((t, span, dd)) if round_best.0 > best_h + o.minstep => {
                 let i = t - probe;
-                let d = dd as f32 / 127.0;
-                for j in i..(i + span).min(cur.len()) {
-                    cur[j].steer = (cur[j].steer + d).clamp(-1.0, 1.0);
-                }
+                let end = (i + span).min(cur.len());
+                apply(&mut cur, i, end, dd);
                 best_h = round_best.0;
                 best_born = round_best.1;
                 accepted += 1;
@@ -434,4 +446,26 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
     }
     s.srv.quit();
     Ok(())
+}
+
+/// Apply one sweep move to `cur[i..end]`: a steering offset, or a pedal edit.
+fn apply(cur: &mut [Rec], i: usize, end: usize, dd: i32) {
+    match dd {
+        PEDAL_BRAKE => {
+            for r in cur[i..end].iter_mut() {
+                r.brake = 1.0;
+            }
+        }
+        PEDAL_LIFT => {
+            for r in cur[i..end].iter_mut() {
+                r.gas = 0.0;
+            }
+        }
+        d => {
+            let f = d as f32 / 127.0;
+            for r in cur[i..end].iter_mut() {
+                r.steer = (r.steer + f).clamp(-1.0, 1.0);
+            }
+        }
+    }
 }

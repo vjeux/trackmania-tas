@@ -128,6 +128,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     onset: flag(rest, "--onset").map(|s| s.parse().unwrap()).unwrap_or(0.02f64),
                     minstep: num(rest, "--minstep").unwrap_or(0),
                     ctlticks: num(rest, "--ctlticks").unwrap_or(80) as usize,
+                    pedals: rest.iter().any(|x| x == "--pedals"),
                     lo: num(rest, "--lo").map(|v| v as usize),
                     hi: num(rest, "--hi").map(|v| v as usize),
                 },

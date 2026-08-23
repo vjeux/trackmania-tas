@@ -709,10 +709,11 @@ fn cmd_track(args: &[String]) -> i32 {
         best_lag * 10,
         best_med
     );
-    println!("{:>9} {:>12} {:>10}", "race", "drift_m", "engine_kmh");
+    println!("{:>9} {:>12} {:>10} {:>10}", "race", "drift_m", "lateral_m", "engine_kmh");
     let mut first_over: Option<f64> = None;
     let mut next_print = 0.0;
-    for s in d.samples.iter().filter(|s| s.time_ms >= 0) {
+    let samples: Vec<_> = d.samples.iter().filter(|s| s.time_ms >= 0).collect();
+    for (si, s) in samples.iter().enumerate() {
         let t = s.time_ms as f64 / 1000.0 + best_lag as f64 * 0.01;
         // nearest engine tick in time
         let Some((tt, p)) = tr
@@ -726,11 +727,34 @@ fn cmd_track(args: &[String]) -> i32 {
             continue;
         }
         let dr = dist(&[s.x, s.y, s.z], &p);
+        // SIGNED LATERAL OFFSET, left/right of where the recording was going.
+        //
+        // The magnitude says how far apart the two runs are; the sign says
+        // whether the engine turned LESS than the recording (the car runs wide)
+        // or MORE. That distinction decides whether a repair is even
+        // expressible: a tape already at full lock has no "more" available, so
+        // a divergence that needs more lock cannot be corrected by steering at
+        // all.
+        let lat = {
+            let j = (si + 1).min(samples.len() - 1);
+            let (hx, hz) = (samples[j].x - s.x, samples[j].z - s.z);
+            let n = (hx * hx + hz * hz).sqrt().max(1e-9);
+            let (ux, uz) = (hx / n, hz / n);
+            // left-normal of the heading in (x, z)
+            let (nx, nz) = (-uz, ux);
+            (p[0] - s.x) * nx + (p[2] - s.z) * nz
+        };
         if dr > thresh && first_over.is_none() {
             first_over = Some(t);
         }
         if t >= next_print {
-            println!("{:>9.3} {:>12.4} {:>10.1}", t - best_lag as f64 * 0.01, dr, s.speed_kmh);
+            println!(
+                "{:>9.3} {:>12.4} {:>+10.4} {:>10.1}",
+                t - best_lag as f64 * 0.01,
+                dr,
+                lat,
+                s.speed_kmh
+            );
             next_print += every;
         }
     }
