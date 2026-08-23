@@ -69,6 +69,7 @@ fn main() {
         "blitz" => blitz::cmd_blitz(rest),
         "platladder" => platladder::cmd_platladder(rest),
         "climb" => climb::cmd_climb(rest),
+        "shift" => climb::cmd_shift(rest),
         other => {
             eprintln!("uwlab: unknown command `{other}`");
             print!("{USAGE}");
