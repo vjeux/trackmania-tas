@@ -48,7 +48,7 @@ second half is now demonstrated on a real DNF tape.
 | **`ghost tape poke` that changes nothing** (`--set brake=0` where brake is already 0, over 20 ticks) | **21.022** — the new tool is a no-op when it should be |
 | a 4-tick throttle lift at ticks 2300 and 2400 (**past the 21.022 finish**) | **21.022** twice — a poke after the flag is inert, so a DNF upstream is physics and not my editor |
 | a 1-unit steer change at ticks 1300 / 1500 / 1700 / 1800 | **21.022** four times — the intolerance is LOCALISED, not universal |
-| the repaired lap of §5, re-simulated by the plain oracle on the written file | **21.617** |
+| the repaired lap of §5, `ghost verify` on the written file | **V7 PASS: the oracle re-simulated the written file at 21.617.** (V6 and V10 fail: the container still carries the donor's telemetry record and Wirtual's identity — a `ghost regen` + `--anonymise` away, and irrelevant to a tape that is not a publishable lap) |
 | every trace quoted here | `fk trace`'s own self-check ok |
 
 Rows 4 and 5 are the ones that matter. Without them, "everything I poke DNFs"
@@ -180,60 +180,82 @@ next experiment.
 > and costs the entire lap if it is not.** That is the exchange rate the next
 > arm needs, and it is the number `CREST.md` was missing.
 
-## 6. The real graft, and the next thing that breaks
+## 6. The real graft, and why matching the pad state is not enough either
 
 Grafting the §4 pit (pad at race **11.44** at 40.71, **3.31 s** ahead) onto the
-incumbent's tail at tick 1630 gives `cv_GRAFT.Ghost.Gbx`: DNF, as expected.
-Traced, it fails for a **new** reason, and not for speed:
+incumbent's tail at tick 1630 gives `cv_GRAFT.Ghost.Gbx`: DNF, and traced it
+fails for a **new** reason that is not speed:
 
 | race | x | y | z | speed |
 |---|---|---|---|---|
-| 11.81 | 863.6 | 114.01 | 705.20 | **60.67** — pad boost worked |
-| 11.89 | 868.4 | 113.87 | 705.39 | 59.07, above the 58 the flight wants |
+| 11.81 | 863.6 | 114.01 | 705.20 | **60.67** — the pad boost worked |
+| 11.89 | 868.4 | 113.87 | 705.39 | 59.07 — above the 58 the flight wants |
 | 14.14 | 992.3 | 57.31 | **710.95** | 69.2 — where the incumbent TOUCHES the grass |
-| 15.14 | 1049.5 | **8.20** | 714.0 | — it went straight past and fell |
+| 15.14 | 1049.5 | **8.20** | 714.0 | it went straight past and fell |
 
-At the launch the incumbent has `vz` **+0.12**; the graft has **+2.4**, and over
-the 130 m flight that is **6.1 m of lateral drift**. It arrives at the grass
+At the launch the incumbent has `vz` **+0.12**; this graft has **+2.4**, and
+over the 130 m flight that is **6.1 m of lateral drift**. It reaches the grass
 slope's height at the grass slope's x and misses it **sideways**.
 
-**So the pad gate key needs two more terms and they are cheap**, because the
-z *position* term already converged in 270 evaluations:
+**So I put the launch velocity into the pad gate and it made things worse**,
+which is the finding:
 
 ```
---gate-key 'vx + 4*min(0, 0.6 - abs(pz-705.1)) - abs(bodyright)
-            - abs(vy) - abs(vz + 1.53)'
+--gate-key 'vx + 4*min(0, 0.6-abs(pz-705.1)) - abs(bodyright)
+            - abs(vy) - abs(vz + 1.53)'     # the incumbent's own pad velocity
 ```
 
-(the incumbent's own pad-entry velocity is `(43.734, +0.059, −1.531)` — measure
-it, do not target zero; that is `CREST.md` §8's lesson and it applies here too).
+646 530 evaluations. Pad entry (842.80, 114.01, **705.18**) v (**40.59**,
+**−0.14**, **−1.53**) — z, `vy` and `vz` all on the incumbent's own numbers,
+slip 0.02. Grafted (`cv_GRAFT2`), its launch `vz` is **+3.7**, worse than the
++2.4 of the graft that did *not* match.
 
-An ending search on `cv_GRAFT` as it stands ran the arclength metric all the way
-to **471 m of 471 (100%)** in 103 000 evaluations and **still DNF**. Two things
-follow. It is trying to repair a six-metre lateral miss with hairpin inputs,
-which is the wrong repair — fix `vz` at the pad first. And **the arclength
-gradient saturates before the flag**: on `p2` the finish arrived at 97% of the
-line, but a candidate can exhaust 100% of it and never cross. Once a run
-saturates, the ladder needs a second rung — a gate on the finish plane, or a
-tightened `--corridor` — or the search is climbing a hill it has already
-reached the top of.
+The reason is in the tail. The incumbent's inputs at ticks **1633–1637** are
+**five ticks of full lock** (`steer` 123, 127, 127, 127, 127) — a flick applied
+while the pad is accelerating it through 46 m/s. That flick nets the incumbent
+`vz` −1.53 → +0.12. The same five ticks applied to a car doing **40.6 instead
+of 43.7** turn it much harder, and net **+3.7**.
+
+> **The incumbent's tail is not a set of inputs, it is a set of inputs
+> calibrated to the incumbent's own speed.** A graft that matches position,
+> velocity, attitude and slip at the handover STILL diverges, because the
+> steering that follows was tuned against a speed it no longer has. That is the
+> mechanism under §5's one-tick result, and it is why the handover plane cannot
+> be pushed earlier or later out of trouble.
+
+An ending search over the frozen first graft ran the arclength metric to
+**471 of 471 m (100%)** in 103 000 evaluations and still DNF. Repeating it on
+`cv_GRAFT2` with everything after the handover editable (ticks 1311–2100) and
+`--corridor 10` — which does bite: it drops the seed from 448 m to **311 m of
+470 (66%)**, so there is a real gradient to climb — went 311 → **470 m (100%)**
+in 400 000 evaluations, and still DNF.
+
+> On `p2` the finish arrived at **97%** of the reference line. Here a candidate
+> exhausts **100%** of it and never crosses. **The arclength gradient saturates
+> before the flag, and once it does the ladder needs a second rung** — a gate
+> on the finish plane, an `--after-key` measured from the hairpin — or the
+> search is climbing a hill whose top it is already standing on.
 
 ## 7. What the next arm should do
 
-1. **Re-run the §4 pad search with the two velocity terms of §6.** Everything
-   else about that search is right: 1030 eval/s, the z corridor free, the gate
-   box ending at x = 843.
-2. **Then graft and re-drive the ending**, not graft and hope. §5 is the
-   working recipe: freeze everything to the top of the drop, edit ~400 ticks,
-   rank by arclength on `cr_inc_trace.csv`, check the printed decoy line, take
-   the plain oracle's word for the result.
-3. **Price the pit against that.** A pad arrival at race 11.44 is 3.31 s ahead;
-   if re-driving costs what §5 measured for a much smaller error, a lap in the
-   **18s** is what this line is worth. If the ending will not re-drive from a
-   40.7 m/s pad entry at all, then buy the 9 m of §3 — one more turn of the
-   spiral, ~1.8 s on the human's timings — and the same line is worth a **19.x**.
-4. **Do not re-run the crest arc objective.** There is nothing there: the
-   overshoot costs 1.2 m of runway, not 17.
+1. **Give the ending search a second rung.** The arclength gradient takes the
+   graft from 66% to 100% of the reference line and then has nothing left, and
+   100% is not the flag. Add a finish-plane gate or an `--after-key` opened at
+   the hairpin, run the decoy test the tool prints, and only then spend hours.
+   Everything before that rung already works: `p2` proves a DNF lap re-drives
+   to a plain-oracle finish in four minutes.
+2. **Re-drive from the PAD, not from the top of the drop.** §6 is the reason:
+   the incumbent's five-tick flick at ticks 1633–1637 is calibrated to 43.7 m/s,
+   so those ticks have to be re-driven for any car that arrives slower. Editing
+   only the hairpin (which is what worked for `p2`, whose speed was almost
+   right) cannot fix a launch that is already 6 m off line.
+3. **Or make the pit fast enough that the incumbent's tail is still valid** —
+   buy the 9 m of §3, one more turn of the spiral, ~1.8 s on the human's own
+   timings. That still leaves this pit ~1.5 s ahead of the incumbent's, so a
+   **19.x** lap, against the **18.x** the re-driven ending would be worth.
+4. **Do not re-run the crest arc objective, and do not quote 2.35 m/s.** The
+   overshoot costs 1.2 m of runway, not 17, and the ending's tolerance is under
+   0.45 m/s, not 2.35.
 
 ## 8. Tooling
 
@@ -251,12 +273,13 @@ Banked to `~/persistent/private-30d/tm-unbeaten/267460/en_20260823/`, with
 
 | file | what |
 |---|---|
-| `en_REPAIRED_21617.Ghost.Gbx` | **the repaired lap: a DNF tape re-driven to 21.617, plain-oracle validated** |
-| `en_p2_DNF_pad4332.Ghost.Gbx` | the 2-tick lift: 0.45 m/s short at the pad, DNF |
-| `en_p2_trace.csv` | its trace, against the incumbent's, through the hairpin |
-| `en_PAD_4071.Ghost.Gbx` + `.state.json` | the §4 pad search: `vx` 40.71 at x = 843, z 705.18, race 11.48 |
-| `en_GRAFT_1299_1630.Ghost.Gbx`, `en_GRAFT_trace.csv` | the real graft and the 6.1 m lateral miss |
-| `en_inc_*`, `en_bestpit_trace.csv` | the traces §2 and §3 are read off (the incumbent's own is the previous arm's `cr_inc_trace.csv`) |
-| `en_padsearch.log`, `en_endingsearch.log`, `en_graftsearch.log` | the three searches, decoy lines included |
+| `en_REPAIRED_21617.Ghost.Gbx` | **the repaired lap: a DNF tape re-driven to 21.617, `ghost verify` V7 PASS on the written file** |
+| `en_p2_DNF_pad4332.Ghost.Gbx`, `en_p2_trace.csv` | the 2-tick lift: 0.45 m/s short at the pad, DNF, and its trace through the hairpin |
+| `en_PAD_4071.Ghost.Gbx` + `.state.json` | §4's pad search: `vx` 40.71 at x = 843, z 705.18, race 11.48 |
+| `en_PAD2_vmatched.Ghost.Gbx` + `.state.json` | §6's: (40.59, −0.14, −1.53) at z 705.18 — the incumbent's own pad velocity |
+| `en_GRAFT_1299_1630.*`, `en_GRAFT2_1297_1630.*` + traces | the two grafts, and the 6.1 m / worse lateral miss |
+| `en_GRAFT2_endsearch_best.Ghost.Gbx` | 100% of the reference line, still DNF |
+| `en_bestpit_trace.csv` | the trace §2 and §3 read the pit off (the incumbent's own is the previous arm's `cr_inc_trace.csv`) |
+| `en_padsearch*.log`, `en_endingsearch.log`, `en_graftsearch*.log` | all four searches, decoy lines included |
 
 **None of these is a lap under 21.022. The incumbent is still 21.022.**
