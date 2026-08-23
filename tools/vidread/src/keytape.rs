@@ -349,3 +349,12 @@ pub fn events(m: &std::collections::BTreeMap<i64, Tick>, o: &mut impl Write) {
         writeln!(o, "{pms} record ends").unwrap();
     }
 }
+
+/// The record as an event list that can be SPLICED into another script: the
+/// events, plus an explicit statement of the window they are authoritative
+/// over. Everything outside that window is somebody else's business, and a
+/// consumer that silently extends the record past its last observed tick is
+/// making a claim the video does not support.
+pub fn window(m: &std::collections::BTreeMap<i64, Tick>) -> Option<(i64, i64)> {
+    Some((*m.keys().next()?, *m.keys().next_back()?))
+}

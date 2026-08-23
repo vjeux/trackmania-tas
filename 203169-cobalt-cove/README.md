@@ -25,7 +25,8 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | the run's inputs, recovered | **674 ticks — 6.7 s of 72.6** (race ≈55.4–58.1 and 58.2–64.4) |
 | the map in our oracle | exact: the dedicated server re-simulates Sapi's 88.898 to the millisecond |
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
-| reconstruction from race 0 | seeded from a human replay's opening, tracks the video's speed to race **12.488 s**; from an empty tape, only 4.055 s |
+| reconstruction from race 0 | seeded from a human replay's opening, tracks the video's speed to race **12.938 s**; five different seeds all land in a 0.45 s band; from an empty tape, only 4.055 s |
+| geometry for a positional objective | `mapgeom` covers only **60–65 %** of this map's driven samples — the coverage work has to land first |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -145,11 +146,18 @@ The per-tick engine state — the readout a search has to score against — did
    ghost's own recorded telemetry: 1595 shared instants, position median
    **0.000 m**, p95 0.000 m, **max 0.010 m**; speed median 0.06 km/h. The slot
    is the car. (`tmtraj csvdiff`, added for this.)
-5. The slot sits at a **fixed offset from the server's base — `base − 8183260`**
-   — on every fork of every probe tick. `FK_STATE_OFF` takes it directly, which
-   removes both the 50-second sweep and the need for an anchor on a tape whose
-   positions you do not yet know. A full-run per-tick trajectory then costs
-   **3.3 s**.
+5. The slot sits at a **fixed offset from the server's base — `base − 8183260`
+   — on this map**: the same address on every fork of every probe tick, and for
+   two different ghosts. `FK_STATE_OFF` takes it directly, which removes both
+   the 50-second sweep and the need for an anchor on a tape whose positions you
+   do not yet know. A full-run per-tick trajectory then costs **3.3 s**.
+   **It is not a property of the binary.** On a different map under the same
+   server the honest locate returns `base − 602416 / −602640 / −603104 /
+   −602912` at different probe ticks — not constant even within that map — and
+   Cobalt Cove's offset puts the car 3.5e9 m away there. What does transfer is
+   the safety: a wrong offset is caught loudly by `fk`'s own self-check
+   (`|q|−1 = 3.5e9`, "not a unit quaternion") and no trajectory is handed back,
+   so trying one costs nothing and can never silently lie.
 6. Forking early is less exact than forking late: from race 0.25 the same
    comparison gives a median **0.361 m** (p95 0.850 m) rather than 0.000 m. The
    reconstruction below runs on early forks and inherits that.
@@ -191,38 +199,86 @@ than five of the six humans. That is the honest measure of how little a speed
 trace guides a search that has to invent the driving: the launch ramp carries
 no information, so the search wanders on it.
 
-**Seeded from a real run it goes past the floor.** Give it a public human
-replay's opening — Bren's inputs up to race 8.0 s, `--keep-before` — and let it
-search forward:
+**Seeded from a real run it goes past the floor — and every seed hits the same
+wall.** Give the search a public human replay's opening (`--keep-before`, that
+driver's inputs to race 8.0 s) and let it search forward. Five drivers, five
+RNG seeds, independent runs:
 
-| | last sample still within 8 km/h |
-|---|---|
-| seed: Bren to 8.0 s, then throttle held | 10.988 s |
-| after the search | **12.488 s** (diverges at 12.588; mean \|diff\| 3.55 km/h over 403 samples) |
+| seed | that human alone | after the search |
+|---|---|---|
+| Bren 105.569 | 10.005 s | **12.488 s** |
+| Sapi 88.898 | 11.021 s | 12.671 s |
+| Zai 105.385 | 10.888 s | **12.938 s** |
+| Elya 114.975 | 10.288 s | 12.738 s |
+| RCinCHgamer01 116.065 | 10.005 s | 12.588 s |
 
-That is **1.5 s past the best human run** and 2.5 s past its own seed, and it
-is the number this arm ends on: 12.488 s of 72.589.
+The seeds span a full second and finish inside a **0.45 s band**. The search
+adds 1.5–2.5 s to whatever it is given and then stops — for 110 rounds in the
+first run and 60 in each of the others. **The wall is a property of the
+objective, not of the seed or the RNG**, which is a much stronger statement
+than any one run's number.
+
+Best overall: **race 12.938 s of 72.589**, mean |diff| 3.97 km/h.
 
 Both an independent scorer (`vidread enginecmp`) and `recon`'s own agree
-exactly on that trace, which is worth saying because they are two
+exactly on the same trace, which is worth saying because they are two
 implementations of one statistic and this project has been bitten by that
 before.
 
+**Where the wall is, on the track.** Just past checkpoint 1 (9.401 s on the
+human reference), in the pipe turn Wirtual describes as "at real speed this
+just looks ridiculous the way it's driven". The video's car holds 172–176 km/h
+through it and then *accelerates* to 188; every candidate we can build bleeds
+away — 174 → 154 → 130 → 99 → 67 over the next two seconds. The TAS carries
+speed through a corner that nothing we can find carries speed through.
+
 **Two things it is not.** It is not Wirtual's tape: it is a tape whose speed
-matches his for 12.5 s, seeded by somebody else's driving, and where the two
-agree in speed they may still be metres apart. And it is not a reconstruction
-that will extend by running longer — it stopped improving after nine rounds and
-another 110 changed nothing.
+matches his for 12.9 s, seeded by somebody else's driving, and where the two
+agree in speed they may still be metres apart. And it is not something more
+compute fixes — five independent searches say so.
 
 **Why it stops.** The objective is a scalar per instant. Speed cannot tell a
 car that is on the line from one three metres left of it, so the search buys
-tenths of tracking with a line that is going somewhere else, and past the first
-corner that is fatal. The missing observable is position, and position is
-exactly what this video does not contain. The way out is not a better search:
-it is the camera pose against known map geometry, which would turn each frame
-into a constraint on *where* and not only on *how fast*.
+tenths of tracking with a line that is going somewhere else, and in a pipe turn
+that is immediately fatal. The missing observable is position.
 
-## 6. What is banked
+## 6. Position — the missing observable, and whether the geometry is ready
+
+The fix for a scalar objective is a positional one, and `tools/mapgeom` (new on
+`main`) exists to supply it: stock block **collision** geometry out of
+`dedicated_TMStadium.pak`, plus decoration and the map's embedded items. Before
+building a camera-pose solve on it I graded it here, which is the check its own
+author asks for.
+
+**Cobalt Cove is in the weak half.** `mapgeom check`, four human replays:
+
+| replay | samples over a surface | median gap below the car |
+|---|---|---|
+| Bren 105.569 | 1318/2112 (**62.4 %**) | 0.246 m |
+| Zai 105.385 | 1310/2108 (62.1 %) | — |
+| Elya 114.975 | 1498/2300 (65.1 %) | — |
+| Sapi 88.898 | 1073/1780 (60.3 %) | 0.525 m |
+
+So **roughly a third of every real run on this map has no triangle beneath it**,
+and the vertical fit is 0.25–0.53 m rather than the 0.09 m the tool reaches on
+its good maps. Twelve stock files fail to open, and the ones this map depends
+on are conspicuous: `ObstacleRotor`, `ObstacleTurnstile`, `ObstacleTube`,
+`Flag`, `FinishCenter8mv2` — the **moving blocks**, which are exactly what
+Wirtual spends the checkpoint-4 section of the video complaining about. A
+camera-pose solve against a model missing them would fail in a way that looks
+like the solver being wrong.
+
+Two things follow, and the second is the more interesting:
+
+* **This map needs the coverage work before a pose solve is worth attempting.**
+  That is a dependency, not a verdict on the approach.
+* **The moving blocks explain the state-locate failure too.** A map full of
+  rotors, turnstiles and flags is a map full of independently moving,
+  self-consistent float triples — which is precisely why the locate here needed
+  a 1.2 m anchor to avoid adopting a spinning decoy, and why it converged in
+  one window on a map without them.
+
+## 7. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
 
@@ -240,7 +296,7 @@ recording), **`recon`** (grow a tape against a speed trace), `ghost tape
 script` (an event list to a tape) and `tmtraj csvdiff` (two trajectories on the
 instants they share).
 
-## 7. Attribution
+## 8. Attribution
 
 The run is **Wirtual's**, on **Nadeo's** map, made with **Acepter's**
 Trackmania Input Control Kit. Video:

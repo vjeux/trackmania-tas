@@ -13,6 +13,7 @@ mod digits;
 mod enginecmp;
 mod frame;
 mod ink;
+mod keylag;
 mod keyphys;
 mod keytape;
 mod lamps;
@@ -331,6 +332,9 @@ fn main() {
         }
         "ktevents" => {
             let m = keytape::load_record(&need(&args, "--record"));
+            if let Some((a, b)) = keytape::window(&m) {
+                writeln!(o, "# authoritative over race {a}..{b} ms only", ).unwrap();
+            }
             keytape::events(&m, &mut o);
         }
         "ktcompare" => {
@@ -340,6 +344,12 @@ fn main() {
             if let Some(m) = arg(&args, "--shifts") {
                 keytape::compare_shifts(&a, &b, m.parse().unwrap(), &mut o);
             }
+        }
+        "keylag" => {
+            let rec = keytape::load_record(&need(&args, "--record"));
+            let sf = std::fs::File::open(need(&args, "--trace")).unwrap_or_else(|e| die(&e.to_string()));
+            let sp = xcheck::load_reference(std::io::BufReader::new(sf));
+            keylag::report(&rec, &sp, num(&args, "--lag-max", 1000i64), num(&args, "--lag-step", 20i64), num(&args, "--window-ms", 100i64), num(&args, "--tol-ms", 25i64), &mut o);
         }
         "keyphys" => {
             let rec = keytape::load_record(&need(&args, "--record"));

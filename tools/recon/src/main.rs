@@ -225,14 +225,31 @@ fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Opt
     Some(score(video, &eng, cfg.tol, cfg.run, cfg.match_ms))
 }
 
-fn mutate(rng: &mut Rng, base: &[Ev], around: i64, back: i64, fwd: i64, floor: i64) -> Vec<Ev> {
+/// Race windows the video OBSERVED directly, in which the search may not
+/// invent anything. A recovered key record is not a hint to be traded against
+/// a better score -- it is the only direct evidence about the tape that exists,
+/// and a search allowed to overwrite it will, because a wrong input that buys
+/// a tenth of tracking always outscores a right one that does not.
+fn locked(windows: &[(i64, i64)], ms: i64) -> bool {
+    windows.iter().any(|(a, b)| ms >= *a && ms <= *b)
+}
+
+fn mutate(
+    rng: &mut Rng,
+    base: &[Ev],
+    around: i64,
+    back: i64,
+    fwd: i64,
+    floor: i64,
+    windows: &[(i64, i64)],
+) -> Vec<Ev> {
     let mut e = base.to_vec();
     // Escape a local optimum by taking something back: a greedy search that
     // can only ADD events cements every mistake it has already made, and the
     // events that matter are the recent ones, near where it stopped tracking.
     if rng.next() % 4 == 0 && e.len() > 2 {
         let mut near: Vec<usize> =
-            (0..e.len()).filter(|&i| (e[i].ms - around).abs() < 2500 && e[i].ms > floor).collect();
+            (0..e.len()).filter(|&i| (e[i].ms - around).abs() < 2500 && e[i].ms > floor && !locked(windows, e[i].ms)).collect();
         if !near.is_empty() {
             let victim = near.remove((rng.next() % near.len() as u64) as usize);
             e.remove(victim);
@@ -240,6 +257,9 @@ fn mutate(rng: &mut Rng, base: &[Ev], around: i64, back: i64, fwd: i64, floor: i
     }
     let key = rng.pick(&["left", "right", "brake", "gas"]);
     let start = (rng.range(around - back, around + fwd) / 10 * 10).max(floor);
+    if locked(windows, start) {
+        return e;
+    }
     let dur = rng.pick(&[30, 50, 80, 120, 180, 250, 350, 500, 800, 1200]);
     if key == "gas" {
         // gas is held by default; a mutation lifts it for a while
@@ -307,14 +327,61 @@ fn main() {
         println!("{} events: tracks to {:.3} s, mean |diff| {:.2}", evs.len(), sc.until as f64 / 1000.0, sc.err);
         return;
     }
-    let mut best_score = evaluate(&cfg, 0, &best, &video).expect("the seed tape must evaluate");
+    let mut best_score: Score = evaluate(&cfg, 0, &best, &video).expect("the seed tape must evaluate");
     println!("seed: tracks to {:.3} s, mean |diff| {:.2} km/h", best_score.until as f64 / 1000.0, best_score.err);
+
+    // --anchor FILE.events, repeatable: an observed record, spliced in and then
+    // locked. Its window comes from the record itself.
+    let mut windows: Vec<(i64, i64)> = Vec::new();
+    for (i, k) in a.iter().enumerate() {
+        if k != "--anchor" {
+            continue;
+        }
+        let txt = std::fs::read_to_string(&a[i + 1]).expect("anchor events");
+        let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+        for l in txt.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 3 {
+                continue;
+            }
+            let key = match f[2] {
+                "gas" => "gas",
+                "brake" | "brake2" => "brake",
+                "left" => "left",
+                "right" => "right",
+                _ => continue,
+            };
+            let ms: i64 = match f[0].parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            lo = lo.min(ms);
+            hi = hi.max(ms);
+            best.push(Ev { ms, press: f[1] == "press", key });
+        }
+        if lo <= hi {
+            windows.push((lo, hi));
+            eprintln!("anchored: race {lo}..{hi} ms is locked");
+        }
+    }
+    best.sort();
+    best.dedup();
+    if !windows.is_empty() {
+        best_score = evaluate(&cfg, 0, &best, &video).expect("the anchored seed must evaluate");
+        println!(
+            "with anchors: tracks to {:.3} s, mean |diff| {:.2} km/h",
+            best_score.until as f64 / 1000.0,
+            best_score.err
+        );
+    }
 
     let mut rng = Rng(seed);
     for round in 1..=rounds {
         let cands: Vec<Vec<Ev>> =
             (0..batch)
-            .map(|_| mutate(&mut rng, &best, best_score.until.max(seed_ms), back, fwd, seed_ms))
+            .map(|_| {
+                mutate(&mut rng, &best, best_score.until.max(seed_ms), back, fwd, seed_ms, &windows)
+            })
             .collect();
         let next = Arc::new(AtomicUsize::new(0));
         let out: Arc<Mutex<Vec<(usize, Score)>>> = Arc::new(Mutex::new(Vec::new()));
