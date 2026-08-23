@@ -30,11 +30,27 @@ pub const R_CLOCK: usize = 0;
 pub const R_QUAT: usize = 4; // qw qx qy qz
 pub const R_POS: usize = 20; // x y z
 pub const R_VEL: usize = 32; // vx vy vz
-pub const REC_LEN: usize = 44;
+pub const R_WET: usize = 44; // f32 tyre wetness, 0..1
+pub const REC_LEN: usize = 48;
 
-/// The two segments the production sampler gathers.
+/// Where the wetness f32 sits relative to the position anchor. MEASURED, not
+/// assumed: `fk probe` searched a 2 KB window around the car against the
+/// game's own recording and found car+180 reproducing it on 95.4-96.0 % of
+/// steady ticks with a correlation of 0.9997, against a next-best offset at
+/// 31-47 %. Confirmed at two probe ticks and on two different ghosts, and the
+/// negative control -- the same tape against ANOTHER run's answer key -- finds
+/// nothing (44 %).
+///
+/// Wetness matters because it is a POSITIONAL INTEGRAL: a function of where
+/// the car has been rather than of its state, so it separates two runs that
+/// speed cannot tell apart (measured: >10 points apart at 49 % of the shared
+/// instants of two human replays of one map).
+pub const WET_OFF: i64 = 180;
+
+/// The segments the production sampler gathers: the clock, the car block, and
+/// the wetness word (see `WET_OFF`).
 pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
-    vec![(l.clock, 4), (l.pos - 16, 40)]
+    vec![(l.clock, 4), (l.pos - 16, 40), (l.pos.wrapping_add(WET_OFF as u64), 4)]
 }
 
 fn getf32(b: &[u8], o: usize) -> f64 {
@@ -55,6 +71,8 @@ pub struct Row {
     pub qy: f64,
     pub qz: f64,
     pub qw: f64,
+    /// Tyre wetness, 0..1.
+    pub wetness: f64,
 }
 
 /// Find the engine's race clock near an already-qualified position address.
@@ -136,6 +154,7 @@ pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<
             qx: getf32(b, R_QUAT + 4),
             qy: getf32(b, R_QUAT + 8),
             qz: getf32(b, R_QUAT + 12),
+            wetness: getf32(b, R_WET),
         };
         match rows.last_mut() {
             Some(last) if last.time_ms == t => *last = row,
