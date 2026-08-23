@@ -175,6 +175,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
         "watch" => cmd::watch::run(&a[1..]),
         "regen" => cmd::regen::run(&a[1..]),
         "carrier" => cmd::carrier::run(&a[1..]),
+        "events" => cmd::events::run(&a[1..]),
         x => Err(format!("unknown command {:?}\n\n{}", x, USAGE)),
     }
 }

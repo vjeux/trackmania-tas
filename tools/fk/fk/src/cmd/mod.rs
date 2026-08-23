@@ -2,6 +2,7 @@
 //! calls them the way the CLI does instead of re-implementing them.
 
 pub mod carrier;
+pub mod events;
 pub mod liveness;
 pub mod probe;
 pub mod regen;
