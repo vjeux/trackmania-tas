@@ -422,7 +422,10 @@ Three things were done about it, in order of how much they mattered.
 
 Two things measured along the way that are worth not repeating:
 *diversifying the anchor tick makes it worse* (8 runs on the default ladder
-found the car once; 24 runs over seven hand-picked ladders found it zero times);
+found the car once; 24 runs over seven hand-picked ladders **had the chooser
+land on the car zero times** — the car was in every one of those gathers, which
+`fk whl carscan` recovers from a junk run's own dump, so what the ladder changed
+was the pick and not what was there);
 and *the "1 in 8" failure rate was partly an illusion* — five of six runs were
 writing bit-identical trajectories and only looked different because the record
 offsets are reported relative to differently-sized gather windows. **Comparing

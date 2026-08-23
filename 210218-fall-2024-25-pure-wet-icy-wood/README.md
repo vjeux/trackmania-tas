@@ -12,6 +12,39 @@ https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 *The clip is an earlier 96.068 tape — the same line, 0.493 slower than the
 95.575 this page describes; it has not been re-filmed yet.*
 
+> ### ⚠️ The two files in `replays/` carry one recording between them
+>
+> **MEASURED 2026-08-22**, and the project's own `tmtraj diff` says it in one
+> line:
+>
+> ```
+> $ tmtraj diff TAS_96068.Ghost.Gbx TAS_96078_1minimal.Ghost.Gbx
+> A 1922 samples, declared 96.068   B 1922 samples, declared 96.078
+> compared 1922 shared instants: 1803 bit-identical (93.8 %), worst separation 2.414 m
+> VERDICT IS-THE-REFERENCE: this file's telemetry is that recording
+> ```
+>
+> The two **input tapes are genuinely different** — **731 ticks differ**, spread
+> right across the run (110 in race 0–10 s, 98 in 10–20, 88 in 20–30, 190 in
+> 50–60, 140 in 70–80) — and yet the two **records are bit-identical for the
+> first 89.95 s**. On a map whose own page says the last 24 seconds absorbed
+> half a million deliberate edits, 110 differing inputs in the opening ten
+> seconds cannot leave the car in bit-identical positions.
+>
+> So **at least one of these two files carries a recording that is not its own
+> tape's run** — almost certainly `TAS_96078_1minimal`, which is a minimisation
+> *of* 96.068 and will have been written into the same carrier. That is the
+> known "a searched tape carries its template's telemetry" class; it is not a
+> defect in the tape, and **both declared times stand** because the oracle reads
+> the tape. What it means is that **the clip and any frame-synchronous
+> comparison drawn from these files are suspect**, and that the two files are
+> not independent evidence of anything.
+>
+> Settling which one is sound needs the map: re-simulate each tape and ask
+> whether the engine reproduces that file's own record (`fk btraj2`). Not done —
+> this repo does not redistribute maps. Found by `tmtraj corpus dup`, which had
+> never run before today (`tools/README.md`).
+
 TMX [210218](https://trackmania.exchange/maps/210218) · author time **94.477** ·
 world record **96.281** (iambeeen) · **36 recorded runs**
 
@@ -132,6 +165,16 @@ found upstream was paid straight back to the tail.
 | the same at the exact tick the run dies | 84 | **0 finishers** |
 | **blending** our tape toward the faster one, from 10 % to 95 % | 10 | 0 reach the next checkpoint — even a 10 % blend is fatal |
 | **an exhaustive structural sweep** — every steering bias, gain and phase shift over a grid of windows across the last 24 seconds | **1 368** | 203 finishers, best **−1 ms** |
+
+**The last row is the positive control for the first four**, and it is worth
+saying so out loud: the same machinery, on the same map, returns **203
+finishers** out of 1 368. So the four zeros above are results about those
+operators and not about a search that had stopped working. Two limits on how far
+to push them: the control is *not* budget-matched (77 / 64 / 84 candidates
+against 1 368), and this map has **16 checkpoints**, which is where the old
+`FINISH_BASE = 1e8` bug made a deep DNF outrank a finished lap — so any null
+here taken from a search log predating `tools/LINEAGE.md`'s single lineage
+should be re-run before it is leaned on.
 
 The first four say the same thing in four ways: **a fast arrival is not a fast
 lap, and no amount of sliding the tail around converts one into the other.**

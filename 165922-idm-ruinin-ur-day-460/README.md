@@ -38,7 +38,11 @@ human recordings** — the historic donor plus the board's current ranks 1, 2 an
 
 > Each of these nine follows the map's only historic human recording —
 > **wschseng's 8790.769**, the ghost every one of them was seeded on — to within
-> **0.000563 m**, the client-versus-server rounding floor, for the first
+> **0.000563 m**, which is **the wrong-copy signature, not an accuracy figure**
+> (corrected 2026-08-22 — these nine replay *his own inputs* for that stretch, so
+> a correctly located car would reproduce his recording **bit-identically**;
+> ≈0.5 mm is the measured distance between two copies of the car in the server's
+> memory. See `../CLAIMS.md`.) It holds for the first
 > **2.180 s**. At 2.180 s their inputs stop being his and their trajectories
 > depart, reaching **over 1100 m** of separation by the end of the run, and
 > **2608–2682 m** measured against the reference's full span. Against the three

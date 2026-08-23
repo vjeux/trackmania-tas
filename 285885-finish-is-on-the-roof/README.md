@@ -96,7 +96,13 @@ touching the finish at all.
 
 Rank 2 is worth studying here: it never touches the hairpin at all, reaches the
 roof within 0.4 s of the world record by a completely different approach, and is
-27 s slower overall for other reasons. Nobody has looked at that approach.
+27 s slower overall for other reasons. **UNKNOWN — do not read this as an
+unsearched lead.** This page has already had to withdraw one claim of exactly
+this shape (*"rank 1's 11.2 s approach has never been searched, ~6 s
+unclaimed"*, which was wrong on both halves — that approach is what our own
+50.229 does). Nobody has checked whether rank 2's approach is likewise something
+we already drive. What would settle it: score rank 2's line at the same stations
+as the incumbent and see whether it is a distinct route or the same one.
 
 There is also a faster way up: full throttle over the roofs at **150–190 km/h**
 where the field lifts off to 30–100 km/h. That line reaches the finish patch
@@ -110,6 +116,15 @@ car's body about **0.84 m above its centre** — roughly the roof of the car.
 Turning the car over moves that tested point **1.7 m down**, which is why all
 three humans finish **upside down**, and on this map that is a necessity rather
 than a fumble.
+
+> **The 0.84 m model is a description, not a predictor, and it must not be used
+> to rank candidates.** Scored as `y + 0.84·u_y`, **six probes it rates 0.10 –
+> 0.17 m better than the incumbent fire nothing on the oracle ladder, while the
+> incumbent fires at 144.070.** A model that mis-orders the candidates it is
+> used to order is a correlate. It is kept here because it explains why the
+> humans are upside down, which it does; the *conclusions* below rest on the
+> 424-station sweep and on the gate-at-the-crossing-point validation, both of
+> which are oracle results and neither of which uses this model.
 
 Everything else is negligible: suspension compression is 3–8 mm and does not
 change with speed (there is no downforce lever here), full lock leaves the car
@@ -146,16 +161,30 @@ time upstream would not be enough.
 
 ### What is closed
 
-The banked-surface lead above has now been tested and it is dead. At race
-35.0–35.4 both the fast line and rank 1 do ride something that puts them 74° on
-their side at 165 km/h — but that is 142 m from the finish patch, and the tilt
-cannot be carried there. A 797-probe fan across the whole approach, read as live
-trajectories, found **580 airborne episodes and the nearest one comes within
-82.6 m of the patch**; coverage was complete at 5 m out to ±40 m and 10 m out to
-±80 m. The lowest body-up component achieved anywhere on the roof within 20 m is
-0.970 — essentially flat. The single rotation source, a wall 36.4 m away,
-self-corrects its tilt in 0.30 s and at best leaves the car wedged at 4 km/h at
-full throttle for the remainder of the race.
+The banked-surface lead has now been tested and it is dead — but read the
+evidence carefully, because the first version of this section rested on a survey
+that could not have seen the thing it reported absent.
+
+At race 35.0–35.4 both the fast line and rank 1 ride something that puts them
+74° on their side at 165 km/h, 142 m from the finish patch. The old reading was:
+*"a 797-probe fan across the whole approach found 580 airborne episodes and the
+nearest one comes within 82.6 m of the patch"* — with **coverage complete at 5 m
+out to ±40 m and 10 m out to ±80 m**. Those two sentences do not sit together. A
+fan reaching ±80 m around the patch **structurally could not see a rotation
+source 142 m away**, and the source at 142 m is the one this very page names in
+the paragraph above. *"No rotation source within 82.6 m"* was a statement about
+where the fan looked.
+
+**What actually closes it** is the window itself, searched directly: the fast
+line is airborne at race 34.86–35.43 rolled 74° at 167 km/h, and **828 overrides
+inside that window give 0 tilted arrivals, 0 earlier arrivals at the patch and 0
+finishes**. A further 968 launch overrides give an apex ceiling of **86.1 m**
+against a rim at 98.9. The lead is closed on the evidence that can carry it.
+
+The rest of the old paragraph survives and is worth keeping: the lowest body-up
+component anywhere on the roof within 20 m is 0.970 — essentially flat — and the
+one tilt source that exists, a wall 36.4 m away, self-corrects in 0.30 s and
+leaves the car wedged at 4 km/h at full throttle for the rest of the race.
 
 **And the near miss is real, not a car falling past the plane.** A finish gate
 is a plane you cross rather than a region you occupy, so a candidate can be
@@ -169,7 +198,11 @@ that one by 70 mm and it fires (41.074). The deficit is height, and it is
 genuine.
 
 Both search windows are frozen: 3483 candidates, 0 improvements, and all 78
-splice handovers after the divergence are dead.
+splice handovers after the divergence are dead. **Neither of those two nulls has
+a positive control**, so read them as "this search stopped finding things", not
+as "there is nothing there" — the map's *other* nulls do have controls (the
+424-station sweep fires ~40 on the human record; the gate at the incumbent's own
+crossing point fires at 40.964) and those are the ones to lean on.
 
 So the statement of this map is that **"improve our own record" and "beat the
 author time" are different projects here.** The one lever with a measured
@@ -178,8 +211,36 @@ the fast lineage rather than ported, since a 0.201 s edit that works on the
 older lineage DNFs on this one despite both tapes sharing those exact inputs.
 That lever can improve 50.229. It cannot reach 43.079.
 
-One more measured local fact: **free fall on this map is −24.308 m/s²**, not the
-−25.20 measured elsewhere. Gravity here is per-map.
+One more local measurement, and a correction to how it used to be stated here.
+This page used to say: *"free fall on this map is −24.308 m/s², not the −25.20
+measured elsewhere. Gravity here is per-map."* **The measurement is fine and the
+conclusion was not.** Free fall in this engine is not a constant — it is linear
+drag in vertical speed,
+
+    a_y = −g − k·v_y        g = 24.78 ± 0.10 m/s²,  k = 0.032 ± 0.002 /s
+
+fitted per-arc on four tapes across three maps (fleet notice F1994616772). A
+scalar "gravity" is just `a_y` sampled at whatever `v_y` the probe happened to
+span, and the two numbers this page contrasted are the *same law* read at two
+speeds:
+
+| quoted | v_y it implies | `−24.78 − 0.032·v_y` |
+|---|---|---|
+| −25.20, "measured elsewhere" | +13 m/s | **−25.20** |
+| **−24.308, here** | **−16 m/s** | **−24.27** |
+
+So: **MEASURED** — `a_y = −24.308 m/s²` at this map's probe speeds, and that is
+the number to use for a probe at those speeds. **NOT SUPPORTED** — "gravity here
+is per-map", which needs two *intercepts* to differ and compares two `a_y`
+values instead. **UNKNOWN** — whether `g` really is per-map: the fleet's
+intercept is fitted on one map (208024), and this map's own published tape
+cannot settle it, because `tmtraj motion TAS_50229.Ghost.Gbx --fit-g` finds a
+longest free-fall stretch of **2 samples, 14.770 … 14.820 s**. A 0.05 s lever
+arm identifies nothing, which `tmtraj`'s own documentation already says. What
+would settle it is re-fitting a second map against `v_y` on arcs long enough to
+have an intercept.
+
+Never quote a scalar `g` here without the `v_y` it was measured at.
 
 ## Files
 

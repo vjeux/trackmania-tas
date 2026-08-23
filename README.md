@@ -31,7 +31,7 @@ it, and find out whether a person can drive a run no human has driven.
 | [Kacky Reloaded #290](126859-kacky-reloaded-290) | 22 | 24.062 | 24.342 | **23.416** | **−0.646** | 315 → 23.545 |
 | [idm ruinin ur day #460](165922-idm-ruinin-ur-day-460) | 7 | 15.643 | 16.870 | **15.217** | **−0.426** | **70 → 15.285** |
 | [impossible at for ssano](249521-impossible-at-for-ssano) | 147 | 14.648 | 15.039 | **14.289** | **−0.359** | **30 → 14.608** |
-| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 64.871 | **57.493** | **−0.360** | — |
+| [The Blev Special](227654-the-blev-special) | 2 | 57.853 | 64.871 | **57.482** | **−0.371** | — |
 | [Torment (1-UP)](228607-torment-1-up) | 27 | 20.258 | 24.512 | **19.907** | **−0.351** | — |
 | [Torment (1-DOWN)](228811-torment-1-down) | 48 | 20.555 | 22.637 | **20.237** | **−0.318** | — |
 | [U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up) | 3 | 7.704 | 7.893 | **7.463** | **−0.241** | **4 in the climb → 7.514** |
@@ -75,14 +75,14 @@ Where it beats the human world record, that is said too.
 
 | map | records | author time | best human | **this TAS** | short of AT by | vs human WR | what stands in the way |
 |---|---|---|---|---|---|---|---|
-| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **38.975** | 0.445 | **−1.248** | a second and a quarter under the world record, from a line found on a 98.1 %-identical sibling map. Sector 3 is already driven for CP4 exit speed rather than its own split — that trade is cashed, conceding 299 ms in s3 to win 784 ms in s4. What is unexecuted is the turn-in: the human record is at full lock 50 ms **before** CP3, where this line is at 4 units and does not commit for another 285 ms |
-| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 36 | 94.477 | 96.281 | **95.575** | 1.098 | **−0.706** | **the field's own per-sector bests sum to 91.826 — 2.651 under the author time** (93.847 if you discard every sector that could have inherited speed). Every sector of a winning lap has been driven; nobody has assembled one |
-| [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.022** | 4.134 | **−2.046** | bounded away three ways: an energy floor of 17.102 taken at the most generous measured gravity and using no constant, an absurd limit of 16.893 with the car pinned at its top observed speed through solid geometry, and the geometry closed by removal — the map has one Goal |
-| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the obvious finish is geometrically closed, and the deficit is height: swept over 424 stations across 12 m × 8 m of car displacement **along the roof plane**, the fast line fires none of them while the human record fires ~40. Rank 1's flip finish is **not** an unsearched lead — it is what this 50.229 already does, and its floor is about 48.5 s. The open question is a banked surface: both tapes reach 74° of tilt at 165 km/h, 142 m from the finish, and nobody has mapped what is beside the ramp |
+| [Spaghetti Nights 2](146612-spaghetti-nights-2) | 181 | 38.530 | 40.223 | **38.968** | 0.438 | **−1.255** | the 38.968 is a lap this project **holds and does not ship** — regenerated and gate-passing, but not filmed and **not among the files in `replays/`**; the fastest time anything published there declares is **39.430**. Two files in that directory, `TAS_39183` and `KEYBOARD_39706`, declare **39.555** in their own headers and carry a route 160 m longer than the rest of the family, so neither of those two figures is currently backed by the file that bears its name. The lap is from a line found on a 98.1 %-identical sibling map; sector 3 is already driven for CP4 exit speed rather than its own split. What is unexecuted is the turn-in: the human record is at full lock 50 ms **before** CP3, where this line is at 4 units and does not commit for another 285 ms |
+| [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 36 | 94.477 | 96.281 | **95.507** | 1.030 | **−0.774** | 95.507 is a **search tape** — validated, not renderable, and **it is not in this directory**; the fastest file published here declares **96.068**. The field's own per-sector bests sum well under the author time and every sector of a winning lap has been driven, but the map's own lesson is that those sectors do not add: a 947 ms gain at CP12 is worth 90 ms at CP15 and **10 ms at the finish**, and sector 11's headline 990 ms turned out to be an artefact of where the clock stops. Chain **backward from the finish** |
+| [Impossible Mini Trial 2](267460-impossible-mini-trial-2) | 1 | 16.888 | 23.068 | **21.022** | 4.134 | **−2.046** | the two shortcuts off the route are measured shut — a 32 m gap that has to be crossed while climbing 7 m (**0 of ~135 000 evaluations reach the far side, with a marker 16 m further east firing normally in the same batch**), and reaching the flag from below, which needs about 416 km/h against a map record of 294.7. The **route** is closed by removal: the map has one Goal. What is *not* a bound is the old "energy floor of 17.102" — **that figure is withdrawn**, because its premise "the best ramp exit ever is 15.014" was a search record, not a limit, and the dirt-ice flick broke it within the hour. The honest remaining estimate is about **17.9**, and the page says so |
+| [finish is on the roof to your right](285885-finish-is-on-the-roof) | 3 | 43.079 | 61.229 | **50.229** | 7.150 | **−11.000** | the obvious finish is geometrically closed, and the deficit is height: swept over 424 stations across 12 m × 8 m of car displacement **along the roof plane**, the fast line fires none of them while the human record fires ~40. Rank 1's flip finish is **not** an unsearched lead — it is what this 50.229 already does, and its floor is about 48.5 s. **The banked-surface lead is now closed too**: the tilt both tapes reach at race 34.86–35.43 is a real rotation source the old 797-probe survey could not see, and 828 overrides inside that window give **0 tilted arrivals, 0 earlier arrivals at the patch, 0 finishes**. The restated arithmetic is that the author time needs arrival at the foot of the final climb by **34.13** against an all-time earliest of **37.978**. What is left open is 13 m of apex from a coupled move, and the author time's own provenance |
 | [KEKL- SAUSAGE ICE](134672-kekl-sausage-ice) | 15 | 58.687 | 68.442 | **67.319** | 8.632 | **−1.123** | a 1/127 steering error grows out of control in 0.7 s, and the author time is 4.8 s below the field's best-sector splice as well as our own per-sector optima |
 | [YOU LOVE WATER](284238-you-love-water) | 1 | 50.459 | 440.238 | **97.325** | 46.866 | — | a human's line on a byte-identical sibling map, priced onto this one, comes to **47.4 — 3.0 s inside the author time**. It needs a long flat run-up into each launch, and only the first copy of the obstacle has one |
 | [P-Found - Pokeuuu](153527-p-found-pokeuuu) | 1 | 939.283 | 5661.335 | — | — | — | nobody has driven this map here, and no time is claimed. The one recorded run clears CP8 inside the author time and then spends 65 minutes on the next two segments; cutting its retries leaves 1214.465. A published de-looping figure of 892.148 is **withdrawn** — with a minimum junction size enforced, seven real loops give **941.588, 2.305 OVER the AT**, and 48.8 % of the old number was splice fee rather than driving. The honest statement: the author time is about this human's own route, de-looped, at this human's pace — reachable, but the route spends 165.868 s under 20 km/h and the barrier is driving the map at all |
-| [Spring 2023 - 15 (Underwater)](173691-spring-2023-15-underwater) | — | 2672.290 | — | — | — | — | the map is driven underwater and the car only sinks. GothMommyTM's jump off the last road was measured 4.1 m short of the stadium's lower canopy; **rewriting the flight inputs from his own lip closes it and the car lands on the deck at y = 114.0 and stops** ([clip](173691-spring-2023-15-underwater)). That deck is a dead end: 0 finishes in 2 400 fuzzed tapes from it against 515 from one storey up, and nothing lands between y = 122 and the stand fronts at y = 162. The finish is reachable only from the course's own high road at y = 234 |
+| [Spring 2023 - 15 (Underwater)](173691-spring-2023-15-underwater) | — | 2672.290 | — | — | — | — | the map is driven underwater and the car only sinks. GothMommyTM's jump off the last road was measured 4.1 m short of the stadium's lower canopy; **rewriting the flight inputs from his own lip closes it and the car lands on the deck at y = 114.0 and stops** ([clip](173691-spring-2023-15-underwater)). **The finish is not on the upper deck and the lower canopy is not sealed** — of the 15 `GateFinish` blocks five are the start wall and **ten are finish gates spanning y 130…194, and both rows fire**, on a plane at z = 494.5 ± 0.6, the lowest firing measured at **y = 133.97**. So the target is **15.7 m** above the deck this jump already reaches, not 48. It is still closed twice over, and now for stated reasons: a complete 456-block census between the decks finds **no ramp**, and from the last road's exit the plane is 107 m downrange against a glide whose reach has an **asymptote at 47–59 m** ([`ENDGAME-MEASURED.md`](173691-spring-2023-15-underwater/ENDGAME-MEASURED.md)) |
 
 63.546 is the all-time human record on [134672](134672-kekl-sausage-ice), set on
 a 2022 build; it does not re-simulate on a current one, so 68.442 — the best
@@ -94,6 +94,25 @@ Every published replay was re-simulated by the dedicated server against a
 pristine copy of the map, in a fresh process, with a downloaded human ghost in
 the same batch as a known-answer control. A replay is only listed here if it
 returns the millisecond in its filename.
+
+**How to read a claim on these pages — [`CLAIMS.md`](CLAIMS.md).** Every
+load-bearing statement is MEASURED (with its control named), INFERRED (with the
+inference stated), UNKNOWN (an open task, not a silence) or SUPERSEDED (pointing
+forward at what replaced it). That file also records what this project has
+already paid for getting it wrong, which is why it exists.
+
+Two checks run over all 35 directories at once and should be run before any page
+is edited:
+
+```
+tmtraj corpus claims --root .   # does a page agree with the files in its own directory?
+tmtraj corpus dup    --root .   # two published files of one map carrying one recording
+```
+
+`corpus dup` needs `fk` beside it or on `PATH` — it is excluded from the tools
+workspace and is built from `tools/fk`. **Without it the scan now reports every
+pair `UNCHECKED-NO-TAPEDIFF` and refuses;** before 2026-08-22 it reported them
+`identical-tapes / EXPECTED-SAME-INPUTS`, which is to say clean.
 
 ## Maps
 

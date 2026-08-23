@@ -126,12 +126,95 @@ own recorded bytes**, can:
 | 197047 | 0.489 mm | 0.0068° | +0.000025 m |
 | 228811 | 0.483 mm | 0.0070° | +0.000011 m |
 
-~0.5 mm is the client-vs-server floor. Run one before believing any verdict
-about a file you made, and never carry another map's reading over: winning
-parameters do not port.
+**≈0.5 mm is the answer key's own floor** — the number the pipeline returns when
+it *is* pointed at the right car. Run one before believing any verdict about a
+file you made, and never carry another map's reading over: winning parameters do
+not port.
+
+> **Do not call this "the client-vs-server floor".** That name is a claim about
+> two engines differing, and **it has now been measured and it is false — for
+> the position.** The ≈0.5 mm is **the distance between two copies of the car in
+> the server's own memory, and the pipeline was reading the wrong one.**
+>
+> Measured 2026-08-22 on map 2, `human_22730`, against the game's own recording,
+> one flag apart (`ghost regen --transform-from-fields`):
+>
+> | | transform from the located copy | transform from the copy with a live wheel block |
+> |---|---|---|
+> | worst separation | 0.001 m | **0.000 m** |
+> | samples reproducing the recorded bytes | **0 of 455** | **227 of 455 (49.9 %)** |
+> | position byte 51 | 0 of 455 | 396 of 455 |
+>
+> Bit-identity goes from zero to half the run. A floor between two engines cannot
+> do that. The three maps that "agreed" at 0.489 / 0.511 / 0.501 were three
+> readings of one quantity, not three confirmations — and the corpus said so
+> independently, because it uses the same ≈0.5 mm for comparisons that cannot all
+> be one thing: **270051 reads 0.000000 m ours-vs-ours where 173691 reads
+> 0.000497 m on the same comparison.**
+>
+> This also **confirms a suspicion recorded on 2026-08-20 and not actionable
+> then** — *"~0.0005 m is the signature of the shadow, not a measure of accuracy;
+> a gather that found the car is bit-identical or ~0.000001 m"*. Cite it as a
+> suspicion confirmed two days later, not as something nobody had noticed.
+>
+> **The ORIENTATION half is open, and got worse under the same change** (byte 60:
+> 455 of 455 → 8 of 455). The quaternion is read at the anchor's offset relative
+> to the position, which should transfer between copies of one struct and on this
+> copy does not; the (x,y,z,w)/(w,x,y,z) order was tested and ruled out. So
+> `--transform-from-fields` is **default OFF** and the publish path is unchanged.
+> **Do not run the three-map round-trip as a verdict yet** — on the position it
+> passes, on the orientation it regresses, and recording a mixed result as either
+> would be wrong.
+
+### `corpus dup` was silent for this whole lineage — 2026-08-22
+
+Worth reading as a worked example of the failure this file is full of warnings
+about. `tmtraj corpus dup` asks "do two published files of one map carry the
+same recorded motion?", and it decides by first asking whether their **input
+tapes** differ — if the tapes are identical, identical positions are expected
+and the pair is excused.
+
+It asked that question by shelling out to **`fk tapediff`**, which is not a
+command this repo's `fk` has. The call failed every time; the failure was
+swallowed by `.ok()?`; and `None` from that function means *the tapes are
+identical*. So **every pair in the corpus was excused as
+`identical-tapes / EXPECTED-SAME-INPUTS`, and the scan exited 0.** The check
+that exists to catch one run published twice could not see anything at all.
+
+Caught on 228607, where the scan called `SPLICE_24854` and `TAS_19907`
+identical-taped while their trajectories are **357 m** apart and `ghost tape
+diff` puts their first input difference at tick 72.
+
+Three things to take from it:
+
+* The `corpuscmd` header in this toolchain says the shell scripts were fragile
+  because *"every one of them piped a tool's stdout through awk and discarded
+  its stderr"*. **The Rust port reproduced the bug**: `.ok()?` is `2>/dev/null`
+  with a nicer spelling.
+* It is the **second** time `fk` not being reachable produced a wrong answer
+  silently (`tools/search/SEARCH.md` has the first, where 24 attempts "failed to
+  find the car"). The first failed toward a null. This one failed toward
+  **clean**, which is worse, because a null looks like a result and a pass looks
+  like nothing at all.
+* Fixed by removing the subprocess: the comparison now runs **in process** on
+  `gbx::tape`, which this crate already depends on. It has a positive control as
+  a unit test — a tape must be identical to itself **and** two known-different
+  runs must come back different — because a comparison that cannot fail is what
+  shipped.
+
+**What the repaired scan says, and what it does not.** Over the corpus it now
+returns 607 `EXPECTED-SHARED-PREFIX`, 135 `REVIEW-SHORT-OVERSHOOT`, 46
+`REFUSE-ONE-RUN-TWICE` and 8 `EXPECTED-SAME-INPUTS`, where before it returned
+nothing but the last category. **Those 46 are not yet adjudicated and this is
+not a claim that 46 files are duplicates** — several sit on maps with long
+no-authority windows, where inputs can legitimately differ for seconds without
+moving the car. The established fact is only that the check runs. Two known
+limits: it compares steer/accel/brake and **not** the respawn bit, and its
+countdown exclusion (ticks before race 0, which the car cannot act on) is a
+modelling choice — including them produced 35 refusals keyed at `diverge@-1.52s`,
+which is two drivers holding different keys during the lights.
 
 ### `C-route` — the record against the engine, read by a different instrument
-
 `fk btraj2` re-simulates a ghost's tape and dumps the car's position per tick
 without going near the record, so it answers "is this record this run?" from
 outside the writer's own instrument.
