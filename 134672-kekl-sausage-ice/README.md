@@ -34,8 +34,22 @@ Nothing here has been or will be submitted to a Nadeo leaderboard.
 > the car, not in the map. Section *Why the 2022 half of the field does not
 > replay* has the measurement and its controls.
 >
-> The reference used throughout for anything that must re-simulate is still
-> **68.442 (Robbalobb, rank 2)**.
+> **Confirmed against the old engine itself, 2026-08-23.** Nadeo still serves
+> dated dedicated-server archives, and on the **2022-06-21** server Roevhaal's
+> tape validates at **63.546** with all five of its splits to the millisecond —
+> as do all ten of this map's build-113150 records, and none of the five modern
+> ones. Run the same 2022 tape on the 2022-01-01 or 2022-03-19 server and it
+> fails, so the instrument distinguishes builds rather than passing everything.
+> His run is real driving, not a recording artefact. `../OLDBUILD.md`.
+>
+> **And it still does not explain the author time.** Under that build's own
+> physics the field's best-sector sum is **63.263**, and a 200-minute search
+> from Roevhaal's own tape reached **63.074** — both more than 4 s above
+> **58.687**. The build explains why the record does not replay; it does not
+> explain the medal.
+>
+> The reference used throughout for anything that must re-simulate on a current
+> build is still **68.442 (Robbalobb, rank 2)**.
 
 ---
 

@@ -1,0 +1,8 @@
+[package]
+name = "dsprobe"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dsprobe"
+path = "src/main.rs"

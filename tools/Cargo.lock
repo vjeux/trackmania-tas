@@ -13,11 +13,22 @@ name = "asmshape"
 version = "0.1.0"
 
 [[package]]
+name = "chunkswap"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+]
+
+[[package]]
 name = "clip"
 version = "0.1.0"
 dependencies = [
  "gbx",
 ]
+
+[[package]]
+name = "dsprobe"
+version = "0.1.0"
 
 [[package]]
 name = "gbx"
@@ -72,6 +83,13 @@ dependencies = [
 [[package]]
 name = "shootctl"
 version = "0.1.0"
+
+[[package]]
+name = "strpatch"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+]
 
 [[package]]
 name = "tmmaps"
