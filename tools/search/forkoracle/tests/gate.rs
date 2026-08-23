@@ -6,7 +6,7 @@
 //! server -- without a game server.
 
 use forkoracle::pred::{parse_gate, parse_key};
-use forkoracle::pred_core::{body_axes, key_eval, Eval, Gate, KeyOp, KEYOP_BYTES};
+use forkoracle::pred_core::{body_axes, key_eval, Eval, Fire, Gate, KeyOp, St, KEYOP_BYTES};
 
 /// The gate that found the launcher on map 228811: the boost deck at the base
 /// of the end wall, and the state that fires it.
@@ -33,7 +33,7 @@ fn the_key_language_reads_every_part_of_the_state() {
     let p = [70.0, 50.0, 709.0];
     let v = [30.0, -4.0, -40.0];
     let q = yaw(90.0); // nose along +X
-    let k = |s: &str| key_eval(&parse_key(s).unwrap(), p, v, q);
+    let k = |s: &str| key_eval(&parse_key(s).unwrap(), St::at(p, v, q));
 
     assert!((k("speed") - 50.1597f32).abs() < 1e-3);
     assert_eq!(k("vx"), 30.0);
@@ -75,8 +75,8 @@ fn the_key_can_tell_two_identical_velocities_apart_by_attitude() {
     let p = [70.0, 50.0, 709.0];
     let v = [30.0, -4.0, -40.0];
     let prog = parse_key("bodyright").unwrap();
-    let flat = key_eval(&prog, p, v, yaw(90.0));
-    let rolled = key_eval(&prog, p, v, roll(90.0));
+    let flat = key_eval(&prog, St::at(p, v, yaw(90.0)));
+    let rolled = key_eval(&prog, St::at(p, v, roll(90.0)));
     assert!(
         (flat - rolled).abs() > 10.0,
         "the key scored {} and {} for the same position and velocity in two attitudes",
@@ -148,14 +148,14 @@ fn the_key_language_reproduces_the_objectives_it_replaces() {
                 want
             );
         };
-        close(key_eval(&m3, p, v, q), bx, "mode 3, body-lateral speed");
-        close(key_eval(&m4, p, v, q), bx.abs(), "mode 4");
-        close(key_eval(&m5, p, v, q), speed * dot, "mode 5, speed x nose");
-        close(key_eval(&m6, p, v, q), bx.abs().min(-v[2]), "mode 6, the conjunction");
-        close(key_eval(&m7, p, v, q), dot, "mode 7, pure nose alignment");
-        close(key_eval(&m8, p, v, q), bx.abs().min(-v[2]) * dot.max(0.0), "mode 8");
-        close(key_eval(&m9, p, v, q), bx.abs().min(5.0 * -v[2]), "mode 9, the firing condition");
-        close(key_eval(&m10, p, v, q), want10, "mode 10, the whole 6-D target state");
+        close(key_eval(&m3, St::at(p, v, q)), bx, "mode 3, body-lateral speed");
+        close(key_eval(&m4, St::at(p, v, q)), bx.abs(), "mode 4");
+        close(key_eval(&m5, St::at(p, v, q)), speed * dot, "mode 5, speed x nose");
+        close(key_eval(&m6, St::at(p, v, q)), bx.abs().min(-v[2]), "mode 6, the conjunction");
+        close(key_eval(&m7, St::at(p, v, q)), dot, "mode 7, pure nose alignment");
+        close(key_eval(&m8, St::at(p, v, q)), bx.abs().min(-v[2]) * dot.max(0.0), "mode 8");
+        close(key_eval(&m9, St::at(p, v, q)), bx.abs().min(5.0 * -v[2]), "mode 9, the firing condition");
+        close(key_eval(&m10, St::at(p, v, q)), want10, "mode 10, the whole 6-D target state");
     }
 }
 
@@ -302,7 +302,214 @@ fn aborting_can_only_lower_the_key() {
 #[test]
 fn a_program_that_does_not_evaluate_is_not_a_score() {
     let bad = [KeyOp { op: forkoracle::pred_core::KOP_ADD, axis: 0, a: [0.0; 3] }, KeyOp::END];
-    assert!(key_eval(&bad, [0.0; 3], [0.0; 3], [1.0, 0.0, 0.0, 0.0]).is_nan());
+    assert!(key_eval(&bad, St::at([0.0; 3], [0.0; 3], [1.0, 0.0, 0.0, 0.0])).is_nan());
+}
+
+// ---------------------------------------------------------------- the event
+//
+// A gate is a PLACE. A launch is a THING THAT HAPPENS, and on 228811 it is the
+// entire point of the place: the state the gate scores is worth having only
+// because the map then fires the car from 323 to 751 km/h in one contact.
+
+/// The 228811 launch detector, and the box the launch has to happen in: the
+/// deck downstream of the last checkpoint at x = 80.
+fn a_launch_clause(after: &str) -> Fire {
+    forkoracle::pred::parse_fire(
+        "dspeed",
+        10.0,
+        1,
+        "xmin=56,xmax=80,ymin=48,ymax=54,zmin=704,zmax=713",
+        after,
+        0,
+    )
+    .unwrap()
+}
+
+fn run_fire(g: Gate, f: Fire, path: &[([f32; 3], [f32; 3], [f32; 4])]) -> Eval {
+    let mut ev = Eval::ZERO;
+    ev.reset();
+    ev.gate = g;
+    ev.fire = f;
+    for (i, (p, v, q)) in path.iter().enumerate() {
+        ev.feed(i as i32, *p, *v, *q);
+    }
+    ev
+}
+
+/// A car crossing the deck westward at 90 m/s from x = 130, which at tick
+/// `boost` gains `jump` m/s in one tick and is thrown back east down the track.
+///
+/// 0.9 m a tick, so it reaches the checkpoint at x = 80 around tick 56 and the
+/// far end of the deck at x = 56 around tick 82.
+fn deck_run(boost: Option<(usize, f32)>) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+    let mut out = Vec::new();
+    let mut x = 130.0f32;
+    let mut v = 90.0f32;
+    for i in 0..90 {
+        if let Some((t, jump)) = boost {
+            if i == t {
+                v += jump;
+            }
+        }
+        // west along the deck until the boost throws it back east
+        let fired = boost.map(|(t, _)| i >= t).unwrap_or(false);
+        let dir = if fired { 1.0 } else { -1.0 };
+        x += dir * v * 0.01;
+        out.push(([x, 50.0, 708.0], [dir * v, 0.0, -60.0], yaw(90.0)));
+    }
+    out
+}
+
+/// THE LAUNCH DETECTOR. A one-tick rise of tens of m/s has exactly one cause on
+/// this map; ordinary driving gains about 2 m/s in a tick and a flight gains
+/// 0.1.
+#[test]
+fn a_one_tick_speed_rise_is_a_launch_and_ordinary_driving_is_not() {
+    let g = gate("abs(bodyright)");
+    // the author's: 323 -> 751 km/h, about 119 m/s in one tick
+    let fired = run_fire(g, a_launch_clause(""), &deck_run(Some((62, 119.0)))).sum;
+    assert!(fired.fire_tick >= 0, "a 119 m/s one-tick rise was not detected");
+    assert_eq!(fired.fire_tick, 62);
+    // 109.3, not the 119 added along x: `dspeed` is the rise in the SPEED, and
+    // the car also carries 60 m/s across the deck, so the magnitude grows by
+    // less than the component does. The detector measures what the car did,
+    // not what one axis did.
+    assert!((fired.fire_value - 109.28).abs() < 0.1, "value was {}", fired.fire_value);
+
+    // ordinary driving across the same deck: nothing
+    let quiet = run_fire(g, a_launch_clause(""), &deck_run(None)).sum;
+    assert_eq!(quiet.fire_tick, -1, "ordinary driving fired the launch detector");
+}
+
+/// **PEAK SPEED CANNOT DO THIS JOB, and that is measured rather than asserted.**
+/// The human world record on this map reaches 151 m/s at the finish under its
+/// own power. A detector thresholded on speed catches it; one thresholded on
+/// the one-tick RISE does not.
+#[test]
+fn peak_speed_is_not_a_launch_detector_but_the_rise_is() {
+    let g = gate("abs(bodyright)");
+    // a run that accelerates hard and smoothly to 151 m/s -- no discontinuity
+    let mut path = Vec::new();
+    let mut v = 90.0f32;
+    let mut x = 130.0f32;
+    for i in 0..90 {
+        v = (v + 0.7).min(151.0); // 70 m/s^2, harder than the car can do
+        x -= v * 0.01;
+        path.push(([x, 50.0, 708.0], [-v, 0.0, -60.0], yaw(90.0)));
+        let _ = i;
+    }
+    assert!(
+        path.iter().map(|(_, v, _)| v[0].abs()).fold(0.0f32, f32::max) > 150.0,
+        "the fixture never reaches the speed the world record does"
+    );
+    let by_rise = run_fire(g, a_launch_clause(""), &path).sum;
+    assert_eq!(by_rise.fire_tick, -1, "a smooth run to 151 m/s tripped the launch detector");
+
+    // the same threshold on SPEED would fire on it, which is the point
+    let by_speed = run_fire(
+        g,
+        forkoracle::pred::parse_fire("speed", 140.0, 1, "", "", 0).unwrap(),
+        &path,
+    )
+    .sum;
+    assert!(by_speed.fire_tick >= 0, "the speed-thresholded control did not fire");
+}
+
+/// THE BOX AROUND THE EVENT. A launch fired upstream of a checkpoint the run
+/// still has to collect flies beautifully and can pass within a metre of the
+/// finish, and the run can never validate -- measured on 228811 as 5 of 6
+/// checkpoints, DNF. Without the box the band is a trap.
+#[test]
+fn a_launch_outside_its_box_does_not_count() {
+    let g = gate("abs(bodyright)");
+    // boost at tick 5, while the car is still at x > 120: upstream of the
+    // checkpoint at x = 80, so outside the fire box
+    let early = run_fire(g, a_launch_clause(""), &deck_run(Some((5, 119.0)))).sum;
+    assert_eq!(early.fire_tick, -1, "a launch upstream of the checkpoint counted");
+
+    // the same launch, later, inside the box
+    let late = run_fire(g, a_launch_clause(""), &deck_run(Some((62, 119.0)))).sum;
+    assert!(late.fire_tick >= 0, "the in-box control did not fire");
+    assert!(late.fire_pos[0] <= 80.0, "fired at x = {}", late.fire_pos[0]);
+}
+
+/// THE AFTER-KEY IS MEASURED ONLY AFTER THE EVENT, and that is not a detail.
+///
+/// The ordinary route on 228811 passes within 99 m of the finish on its way
+/// down the track, so "closest approach to the finish" measured from tick 0
+/// pins every candidate at 99 m and flattens the objective exactly where it has
+/// to bite.
+#[test]
+fn the_after_key_ignores_everything_before_the_event() {
+    let g = gate("abs(bodyright)");
+    let f = a_launch_clause("-dist(130,50,708)");
+    // the car starts at x = 130, which is 70 m from the point; it drives AWAY
+    // to x = 80, launches, and comes back past it
+    let ev = run_fire(g, f, &deck_run(Some((62, 119.0)))).sum;
+    assert!(ev.fire_tick >= 0);
+    assert!(ev.after_tick > ev.fire_tick, "the after-key was taken before the event");
+    // it gets much closer after the launch than the 70 m it started at
+    assert!(
+        ev.after_key > -5.0,
+        "the launch carried the car to within {:.1} m and the after-key says {:.1}",
+        -ev.after_key,
+        ev.after_key
+    );
+
+    // and with no launch there is no after-key at all, however close the car
+    // came on the way past
+    let quiet = run_fire(g, a_launch_clause("-dist(130,50,708)"), &deck_run(None)).sum;
+    assert_eq!(quiet.after_tick, -1, "an after-key was measured with no event");
+}
+
+/// The event is the FIRST tick the condition holds: a candidate that crosses
+/// the threshold twice does not get to choose.
+#[test]
+fn the_event_is_the_first_tick_and_cannot_be_re_fired() {
+    let g = gate("abs(bodyright)");
+    let mut path = deck_run(Some((62, 119.0)));
+    // a second, bigger jump later
+    for (i, p) in path.iter_mut().enumerate() {
+        if i > 70 {
+            p.1[0] += 300.0;
+        }
+    }
+    let ev = run_fire(g, a_launch_clause(""), &path).sum;
+    assert_eq!(ev.fire_tick, 62, "a later, larger jump displaced the first one");
+}
+
+/// Aborting can only remove ticks, so it can only LOSE the event and only lower
+/// the after-key -- the same property the gate key has, and the reason a search
+/// may arm the watchdog and the event clause together.
+#[test]
+fn aborting_can_only_lose_the_event() {
+    let g = gate("abs(bodyright)");
+    let f = a_launch_clause("-dist(130,50,708)");
+    let full = deck_run(Some((62, 119.0)));
+    let whole = run_fire(g, f, &full).sum;
+    for cut in 1..full.len() {
+        let part = run_fire(g, f, &full[..cut]).sum;
+        if part.fire_tick >= 0 {
+            assert_eq!(part.fire_tick, whole.fire_tick, "a prefix fired at a different tick");
+        }
+        if part.after_tick >= 0 {
+            assert!(
+                part.after_key <= whole.after_key + 1e-4,
+                "a run aborted at {} scored {} after the event against the full run's {}",
+                cut,
+                part.after_key,
+                whole.after_key
+            );
+        }
+    }
+}
+
+#[test]
+fn a_malformed_event_clause_is_refused() {
+    assert!(forkoracle::pred::parse_fire("dspeeed", 10.0, 1, "", "", 0).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "xmin=1,xmax=2", "", 0).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "dist(1,2)", 0).is_err());
+    assert!(forkoracle::pred::parse_fire("dspeed", 10.0, 1, "", "", 0).is_ok());
 }
 
 /// THE SECOND DECOY FAMILY, and the symptom that catches it.
@@ -338,4 +545,162 @@ fn a_state_that_migrates_across_its_own_box_is_reported() {
     // two points, so there is no threshold here. The numbers are printed and a
     // person decides.
     assert!(!right.contains("80%"));
+}
+
+// --------------------------------------------- the load detector (284238)
+//
+// A car whose wheels have left the ground is a FREE RIGID BODY: its body-frame
+// angular rate is then EXACTLY constant, bit-identical for tens of ticks. That
+// is measurable and position, velocity and attitude cannot see it -- tapes
+// matched to a human reference at 0.13 m, vz -25.13 and omega within 1.4 deg/s
+// on all three axes still take the wrong branch.
+
+/// Advance a quaternion by a body-frame rate for one 10 ms tick.
+fn spin(q: [f32; 4], rate_deg_s: [f32; 3]) -> [f32; 4] {
+    let dt = 0.01f32;
+    let w = [
+        rate_deg_s[0].to_radians() * dt,
+        rate_deg_s[1].to_radians() * dt,
+        rate_deg_s[2].to_radians() * dt,
+    ];
+    let ang = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+    let dq = if ang < 1e-12 {
+        [1.0, 0.0, 0.0, 0.0]
+    } else {
+        let (s, c) = ((ang / 2.0).sin() / ang, (ang / 2.0).cos());
+        [c, w[0] * s, w[1] * s, w[2] * s]
+    };
+    // q * dq: the increment is in the BODY frame, so it multiplies on the right
+    let (aw, ax, ay, az) = (q[0], q[1], q[2], q[3]);
+    let (bw, bx, by, bz) = (dq[0], dq[1], dq[2], dq[3]);
+    let r = [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ];
+    let n = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt();
+    [r[0] / n, r[1] / n, r[2] / n, r[3] / n]
+}
+
+/// `body_omega` must read back the rate that generated the rotation.
+#[test]
+fn the_body_rate_reads_back_what_produced_it() {
+    for rate in [[0.0, 0.0, 0.0], [250.0, 0.0, 0.0], [0.0, -90.0, 0.0], [40.0, -33.0, 121.0]] {
+        let q0 = yaw(37.0);
+        let q1 = spin(q0, rate);
+        let got = forkoracle::pred_core::body_omega(q0, q1, 0.01);
+        for i in 0..3 {
+            assert!(
+                (got[i] - rate[i]).abs() < 0.5,
+                "axis {}: read {:?} for a rate of {:?}",
+                i,
+                got,
+                rate
+            );
+        }
+    }
+    // q and -q are the same rotation: the shortest arc, not 359 degrees
+    let q0 = yaw(0.0);
+    let q1 = spin(q0, [100.0, 0.0, 0.0]);
+    let flipped = [-q1[0], -q1[1], -q1[2], -q1[3]];
+    let a = forkoracle::pred_core::body_omega(q0, q1, 0.01);
+    let b = forkoracle::pred_core::body_omega(q0, flipped, 0.01);
+    assert!((a[0] - b[0]).abs() < 0.01, "{:?} vs {:?}", a, b);
+}
+
+/// **THE LOAD DETECTOR.** A free rigid body holds its body-frame rate exactly;
+/// a loaded wheel changes it every tick. `domega` separates them and nothing
+/// else in the language does.
+#[test]
+fn domega_separates_a_free_rigid_body_from_a_loaded_one() {
+    let g = gate("abs(bodyright)");
+    // both runs are at the SAME place, the SAME velocity, and are ROTATING at
+    // the same rate -- the only difference is whether that rate is constant.
+    let make = |loaded: bool| {
+        let mut q = yaw(20.0);
+        let mut out = Vec::new();
+        for i in 0..60 {
+            let rate = if loaded {
+                // a wheel bites: the rate wanders
+                [260.0 + 14.0 * (i as f32 * 0.7).sin(), 3.0, -2.0]
+            } else {
+                [260.0, 3.0, -2.0]
+            };
+            q = spin(q, rate);
+            out.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+        }
+        out
+    };
+    let free = make(false);
+    let loaded = make(true);
+
+    // sanity: both are turning hard, so a rate threshold cannot separate them
+    let by_rate = forkoracle::pred::parse_fire("omega", 200.0, 1, "", "", 0).unwrap();
+    assert!(run_fire(g, by_rate, &free).sum.fire_tick >= 0);
+    assert!(
+        run_fire(g, by_rate, &loaded).sum.fire_tick >= 0,
+        "the control does not fire, so this fixture cannot show what domega adds"
+    );
+
+    // THE DISCRIMINATION: |domega| under half a degree per tick, held three
+    // ticks, is a free body.
+    let by_load = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0).unwrap();
+    assert!(run_fire(g, by_load, &free).sum.fire_tick >= 0, "a free rigid body did not read as one");
+    assert_eq!(
+        run_fire(g, by_load, &loaded).sum.fire_tick,
+        -1,
+        "a loaded car read as a free rigid body"
+    );
+}
+
+/// `--fire-need` is what makes a load detector a detector: `domega` is near
+/// zero for a single tick whenever the car happens not to be turning, and what
+/// distinguishes a free body is that it STAYS there.
+#[test]
+fn the_event_can_require_consecutive_ticks() {
+    let g = gate("abs(bodyright)");
+    // a rate that is momentarily steady every few ticks and never for long
+    let mut q = yaw(0.0);
+    let mut path = Vec::new();
+    for i in 0..60 {
+        let r = if i % 4 == 0 { 100.0 } else { 100.0 + 20.0 * ((i % 4) as f32) };
+        q = spin(q, [r, 0.0, 0.0]);
+        path.push(([70.0, 50.0, 708.0], [0.0, 0.0, -80.0], q));
+    }
+    let one = forkoracle::pred::parse_fire("-domega", -0.5, 1, "", "", 0).unwrap();
+    let three = forkoracle::pred::parse_fire("-domega", -0.5, 3, "", "", 0).unwrap();
+    assert!(run_fire(g, one, &path).sum.fire_tick >= 0, "need=1 found no steady tick");
+    assert_eq!(
+        run_fire(g, three, &path).sum.fire_tick, -1,
+        "need=3 fired on a rate that is never steady for three ticks"
+    );
+}
+
+/// **A WINDOW WHOSE END THE CANDIDATE CHOOSES IS A DECOY THE INSTRUMENT
+/// BUILDS.** `--after-ticks` fixes the window in ticks from the event, so a
+/// candidate cannot shorten the interval it is judged over by dying early or by
+/// missing whatever the window was keyed on.
+#[test]
+fn the_after_window_can_be_fixed_in_ticks() {
+    let g = gate("abs(bodyright)");
+    let f_open = a_launch_clause("py");
+    let mut f_fixed = a_launch_clause("py");
+    f_fixed.after_ticks = 5;
+
+    // a run that keeps climbing long after the launch
+    let mut path = deck_run(Some((62, 119.0)));
+    for (i, p) in path.iter_mut().enumerate() {
+        if i > 62 {
+            p.0[1] = 50.0 + (i - 62) as f32; // 1 m a tick
+        }
+    }
+    let open = run_fire(g, f_open, &path).sum;
+    let fixed = run_fire(g, f_fixed, &path).sum;
+    assert!(open.after_key > fixed.after_key, "the fixed window did not bound anything");
+    assert!(
+        (fixed.after_key - 55.0).abs() < 1.5,
+        "five ticks of a 1 m/tick climb should be ~55 m, got {}",
+        fixed.after_key
+    );
 }

@@ -83,6 +83,11 @@ THE STATE OBJECTIVE (--fork only: the plain oracle cannot see the car)
   --gate-key EXPR     what to maximise inside it, over the WHOLE state:
                         speed vx vy vz px py pz
                         bodyright bodyup bodyfwd      (velocity in the car's frame)
+                        omega omegax omegay omegaz    (BODY-frame rate, deg/s)
+                        domega                        (its change per tick --
+                                                       a free rigid body holds
+                                                       omega exactly constant,
+                                                       so this is a LOAD detector)
                         along(x,y,z) nose(x,y,z) roof(x,y,z) flank(x,y,z)
                         dist(x,y,z) vdist(vx,vy,vz)
                         abs() min() max()  + - * /
@@ -108,12 +113,19 @@ THE EVENT (a gate is a place; some things are events)
   --fire-where SPEC   a box the event must happen inside, same six bounds as
                       --gate. A launch upstream of a checkpoint you still have
                       to collect is a launch that cannot validate.
+  --fire-need N       consecutive ticks the condition must hold. A load
+                      detector needs this: `domega` is near zero for one tick
+                      whenever the car happens not to be turning, and what
+                      makes a free rigid body is that it STAYS there.
   --after-key EXPR    what to maximise AFTER the event, over the ticks strictly
                       after it. Measured only after, which is the point:
                       "closest approach to the finish" measured from tick 0
                       pins every candidate at whatever the ordinary route
                       already passes within.
                       e.g. --after-key '-dist(366,50,736)'
+  --after-ticks N     bound that window to N ticks from the event. A window
+                      whose end the CANDIDATE chooses is a decoy the instrument
+                      builds.
 "#;
 
 fn die(m: impl AsRef<str>) -> ! {
@@ -164,8 +176,10 @@ struct Args {
     gate_seed_state: String,
     fire: String,
     fire_at: f32,
+    fire_need: u32,
     fire_where: String,
     after_key: String,
+    after_ticks: u32,
 }
 
 fn parse() -> Args {
@@ -217,8 +231,10 @@ fn parse() -> Args {
         gate_seed_state: String::new(),
         fire: String::new(),
         fire_at: 0.0,
+        fire_need: 1,
         fire_where: String::new(),
         after_key: String::new(),
+        after_ticks: 0,
     };
     let mut i = 1;
     let num = |s: &str, k: &str| -> f64 { s.parse().unwrap_or_else(|_| die(format!("{} wants a number, got {:?}", k, s))) };
@@ -274,7 +290,9 @@ fn parse() -> Args {
             }
             "--fire" => a.fire = next(&mut i),
             "--fire-at" => a.fire_at = num(&next(&mut i), k) as f32,
+            "--fire-need" => a.fire_need = num(&next(&mut i), k) as u32,
             "--fire-where" => a.fire_where = next(&mut i),
+            "--after-ticks" => a.after_ticks = num(&next(&mut i), k) as u32,
             "--after-key" => a.after_key = next(&mut i),
             "--gate-seed-state" => a.gate_seed_state = next(&mut i),
             "--seg" => {
@@ -681,7 +699,9 @@ fn run_fork(
     }
     if !a.fire.is_empty() {
         watch.fire =
-            forkoracle::pred::parse_fire(&a.fire, a.fire_at, &a.fire_where, &a.after_key)
+            forkoracle::pred::parse_fire(
+                &a.fire, a.fire_at, a.fire_need, &a.fire_where, &a.after_key, a.after_ticks,
+            )
                 .unwrap_or_else(|e| die(e));
     }
     eprintln!(

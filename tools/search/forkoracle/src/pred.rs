@@ -43,9 +43,10 @@
 //! computes it identically in both cases.
 
 use crate::pred_core::{
-    key_eval, Gate, KeyOp, Pred, Summary, KEYOP_BYTES, KOP_ABS, KOP_ADD, KOP_ALONG, KOP_AXISDOT,
-    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG, KOP_POS,
-    KOP_SPEED, KOP_SUB, KOP_VDIST, KOP_VEL, MAXKOPS, PRED_BYTES,
+    key_eval, Fire, Gate, KeyOp, Pred, Summary, KEYOP_BYTES, KOP_ABS, KOP_ADD, KOP_ALONG, KOP_AXISDOT,
+    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_DSPEED, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG,
+    KOP_DOMEGA, KOP_OMEGA, KOP_OMEGAMAG, KOP_POS, KOP_SPEED, KOP_SUB, KOP_VDIST, KOP_VEL,
+    MAXKOPS, PRED_BYTES,
 };
 
 /// One armed, named condition.
@@ -131,6 +132,8 @@ pub struct Watch {
     /// The state objective. Disarmed by default, and then the child does not
     /// evaluate a single instruction of it.
     pub gate: Gate,
+    /// The event clause: a thing that happens, and what to score after it.
+    pub fire: Fire,
 }
 
 fn getf(kv: &[(String, String)], k: &str, d: f32) -> f32 {
@@ -304,6 +307,9 @@ pub fn parse_gate(spec: &str, key: &str) -> Result<Gate, String> {
 /// | name | value |
 /// |---|---|
 /// | `speed` | the car's speed, m/s |
+/// | `dspeed` | the ONE-TICK rise in speed, m/s per 10 ms -- the launch detector |
+/// | `omega` `omegax` `omegay` `omegaz` | BODY-FRAME angular rate, deg/s |
+/// | `domega` | the change in that rate per tick -- the LOAD detector: a free rigid body holds omega exactly constant |
 /// | `vx` `vy` `vz` | world velocity components |
 /// | `px` `py` `pz` | world position components |
 /// | `bodyright` `bodyup` `bodyfwd` | velocity resolved in the CAR's own frame -- `bodyright` is the ghost format's `side_speed` |
@@ -341,7 +347,7 @@ pub fn parse_key(src: &str) -> Result<[KeyOp; MAXKOPS], String> {
     // A compiled key that cannot produce a number on a plausible state is a
     // parser bug, and it would show up in the child as every candidate scoring
     // nothing. Cheaper to find it here.
-    let probe = key_eval(&prog, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]);
+    let probe = key_eval(&prog, crate::pred_core::St::at([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]));
     if !probe.is_finite() {
         return Err(format!("--gate-key {:?}: compiled to a program that does not evaluate", src));
     }
@@ -522,6 +528,12 @@ impl<'a> KeyParser<'a> {
                 self.i += 1;
                 match n.as_str() {
                     "speed" => self.emit(KOP_SPEED, 0, [0.0; 3]),
+                    "dspeed" => self.emit(KOP_DSPEED, 0, [0.0; 3]),
+                    "omegax" => self.emit(KOP_OMEGA, 0, [0.0; 3]),
+                    "omegay" => self.emit(KOP_OMEGA, 1, [0.0; 3]),
+                    "omegaz" => self.emit(KOP_OMEGA, 2, [0.0; 3]),
+                    "omega" => self.emit(KOP_OMEGAMAG, 0, [0.0; 3]),
+                    "domega" => self.emit(KOP_DOMEGA, 0, [0.0; 3]),
                     "vx" => self.emit(KOP_VEL, 0, [0.0; 3]),
                     "vy" => self.emit(KOP_VEL, 1, [0.0; 3]),
                     "vz" => self.emit(KOP_VEL, 2, [0.0; 3]),
@@ -573,7 +585,8 @@ impl<'a> KeyParser<'a> {
                         return Err(format!(
                             "--gate-key {:?}: unknown term {:?}. Known: speed, vx vy vz, px py pz, \
                              bodyright bodyup bodyfwd, along(x,y,z), nose/roof/flank(x,y,z), \
-                             dist(x,y,z), vdist(vx,vy,vz), abs(), min(), max()",
+                             dspeed, omega, omegax/y/z, domega, dist(x,y,z), \
+                             vdist(vx,vy,vz), abs(), min(), max()",
                             self.src, other
                         ))
                     }
@@ -583,6 +596,38 @@ impl<'a> KeyParser<'a> {
             other => Err(format!("--gate-key {:?}: expected a term, got {:?}", self.src, other)),
         }
     }
+}
+
+/// Parse the event clause: a condition, the value it must reach, an optional
+/// box it must happen inside, and what to score afterwards.
+///
+/// `where_spec` empty means anywhere; `after` empty means the event itself is
+/// the whole objective and everything that fires ties.
+pub fn parse_fire(
+    cond: &str,
+    at: f32,
+    need: u32,
+    where_spec: &str,
+    after: &str,
+    after_ticks: u32,
+) -> Result<Fire, String> {
+    let where_box = if where_spec.is_empty() {
+        Gate::NONE
+    } else {
+        // the same six-bound box as `--gate`, and the same refusal of a side
+        // left open: a half-open region for a launch to happen in is a region
+        // that also contains somewhere else on the map.
+        parse_gate(where_spec, "speed")?
+    };
+    Ok(Fire {
+        armed: true,
+        cond: parse_key(cond)?,
+        at,
+        need: need.max(1),
+        after_ticks,
+        where_box,
+        after: if after.is_empty() { [KeyOp::END; MAXKOPS] } else { parse_key(after)? },
+    })
 }
 
 impl Watch {
@@ -597,6 +642,7 @@ impl Watch {
             fast: 1,
             plane_x: 0.0,
             gate: Gate::NONE,
+            fire: Fire::NONE,
         }
     }
 
@@ -606,7 +652,28 @@ impl Watch {
             let b = &self.gate.bounds;
             s.push_str(&format!(
                 "  gate  x {}..{}  y {}..{}  z {}..{}  minspeed {} m/s, key in {} ops\n",
-                b[0], b[1], b[2], b[3], b[4], b[5], self.gate.minspeed, self.nkops()
+                b[0], b[1], b[2], b[3], b[4], b[5], self.gate.minspeed, self.gate_kops()
+            ));
+        }
+        if self.fire.armed {
+            s.push_str(&format!(
+                "  fire  when a {}-op condition reaches {}{}, then {}\n",
+                prog_len(&self.fire.cond),
+                self.fire.at,
+                if self.fire.where_box.armed {
+                    let w = &self.fire.where_box.bounds;
+                    format!(
+                        " inside x {}..{} y {}..{} z {}..{}",
+                        w[0], w[1], w[2], w[3], w[4], w[5]
+                    )
+                } else {
+                    " anywhere".into()
+                },
+                if prog_len(&self.fire.after) > 0 {
+                    format!("maximise a {}-op key after it", prog_len(&self.fire.after))
+                } else {
+                    "everything that fires ties".into()
+                }
             ));
         }
         for (i, np) in self.preds.iter().enumerate() {
@@ -686,19 +753,46 @@ impl Watch {
             v.extend_from_slice(&f.to_le_bytes());
         }
         v.extend_from_slice(&self.gate.minspeed.to_le_bytes());
-        v.extend_from_slice(&(self.nkops() as u32).to_le_bytes());
+        v.extend_from_slice(&(self.gate_kops() as u32).to_le_bytes());
         let mut kb = [0u8; KEYOP_BYTES];
-        for k in self.gate.prog.iter().take(self.nkops()) {
+        for k in self.gate.prog.iter().take(self.gate_kops()) {
             k.encode(&mut kb);
             v.extend_from_slice(&kb);
+        }
+        // THE EVENT CLAUSE, trailing behind the gate for the same reason and
+        // covered by the same ack: the ARM reply reports the total number of
+        // key operations installed across all three programs.
+        v.extend_from_slice(&(self.fire.armed as u32).to_le_bytes());
+        v.extend_from_slice(&self.fire.at.to_le_bytes());
+        v.extend_from_slice(&self.fire.need.to_le_bytes());
+        v.extend_from_slice(&self.fire.after_ticks.to_le_bytes());
+        v.extend_from_slice(&(self.fire.where_box.armed as u32).to_le_bytes());
+        for f in &self.fire.where_box.bounds {
+            v.extend_from_slice(&f.to_le_bytes());
+        }
+        for prog in [&self.fire.cond, &self.fire.after] {
+            let n = prog_len(prog);
+            v.extend_from_slice(&(n as u32).to_le_bytes());
+            for k in prog.iter().take(n) {
+                k.encode(&mut kb);
+                v.extend_from_slice(&kb);
+            }
         }
         v
     }
 
-    /// How many instructions the compiled key actually uses.
+    /// Every key operation this watch will install, across all three programs.
+    /// The ARM ack reports it back and `ForkEval` refuses a mismatch, so a shim
+    /// older than the driver arming it is an abort and not a silent zero.
     pub fn nkops(&self) -> usize {
-        self.gate.prog.iter().position(|k| k.op == crate::pred_core::KOP_END).unwrap_or(MAXKOPS)
+        prog_len(&self.gate.prog) + prog_len(&self.fire.cond) + prog_len(&self.fire.after)
     }
+
+    /// How many instructions the gate's own key uses.
+    pub fn gate_kops(&self) -> usize {
+        prog_len(&self.gate.prog)
+    }
+
 }
 
 /// The car's WHOLE state where the gate scored: position, velocity and
@@ -797,6 +891,24 @@ impl Outcome {
                 quat: s.gate_quat,
             }),
             _ => None,
+        }
+    }
+    /// What the event clause saw. `armed` is the driver's own knowledge: a
+    /// silent clause and no clause at all look identical in the summary and
+    /// mean opposite things to the ranking.
+    pub fn event(&self, armed: bool) -> crate::EventSeen {
+        if !armed {
+            return crate::EventSeen::Unarmed;
+        }
+        match &self.sum {
+            Some(s) if s.fire_tick >= 0 => crate::EventSeen::Fired {
+                tick: s.fire_tick,
+                value: s.fire_value,
+                pos: s.fire_pos,
+                after: if s.after_tick >= 0 { s.after_key } else { 0.0 },
+                after_tick: s.after_tick,
+            },
+            _ => crate::EventSeen::Silent,
         }
     }
     /// Closest approach to the gate box in metres, for a run that never got
@@ -917,4 +1029,9 @@ impl RefLineData {
         let flat: Vec<[f64; 3]> = pts.into_iter().map(|p| p.unwrap()).collect();
         Ok(RefLineData::from_points(&flat))
     }
+}
+
+/// How many instructions a compiled program actually uses.
+pub fn prog_len(prog: &[KeyOp; MAXKOPS]) -> usize {
+    prog.iter().position(|k| k.op == crate::pred_core::KOP_END).unwrap_or(MAXKOPS)
 }

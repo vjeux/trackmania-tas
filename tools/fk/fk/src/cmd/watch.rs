@@ -68,6 +68,13 @@ pub struct Cfg {
     /// trajectory before spending a search on it.
     pub gate: String,
     pub gate_key: String,
+    /// The event clause: a thing that happens, and what to score after it.
+    pub fire: String,
+    pub fire_at: f32,
+    pub fire_need: u32,
+    pub fire_where: String,
+    pub after_key: String,
+    pub after_ticks: u32,
 }
 
 fn parse(args: &[String]) -> Cfg {
@@ -107,6 +114,12 @@ fn parse(args: &[String]) -> Cfg {
         reftime: 0,
         gate: String::new(),
         gate_key: String::new(),
+        fire: String::new(),
+        fire_at: 0.0,
+        fire_need: 1,
+        fire_where: String::new(),
+        after_key: String::new(),
+        after_ticks: 0,
     };
     let mut i = 0;
     while i < args.len() {
@@ -145,6 +158,12 @@ fn parse(args: &[String]) -> Cfg {
             "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
             "--gate" => c.gate = next(&mut i),
             "--gate-key" => c.gate_key = next(&mut i),
+            "--fire" => c.fire = next(&mut i),
+            "--fire-at" => c.fire_at = next(&mut i).parse().unwrap(),
+            "--fire-need" => c.fire_need = next(&mut i).parse().unwrap(),
+            "--fire-where" => c.fire_where = next(&mut i),
+            "--after-ticks" => c.after_ticks = next(&mut i).parse().unwrap(),
+            "--after-key" => c.after_key = next(&mut i),
             x => crate::die(format!(
                 "fk watch: unknown flag {:?}. A flag this command does not use is \
                  a measurement you did not ask for, so it is an error rather than \
@@ -488,6 +507,13 @@ fn offline(c: &Cfg) {
         watch.gate = forkoracle::pred::parse_gate(&c.gate, &c.gate_key)
             .unwrap_or_else(|e| crate::die(e));
     }
+    if !c.fire.is_empty() {
+        watch.fire =
+            forkoracle::pred::parse_fire(
+                &c.fire, c.fire_at, c.fire_need, &c.fire_where, &c.after_key, c.after_ticks,
+            )
+                .unwrap_or_else(|e| crate::die(e));
+    }
     // `--trajectory`, not `--out`: this verb READS a trajectory. The flag was
     // called `--out` because the file it evaluates is usually one another
     // command wrote, which is a fact about a workflow and not about this
@@ -512,6 +538,23 @@ fn offline(c: &Cfg) {
     );
     // THE STATE OBJECTIVE, evaluated offline against this trajectory: what a
     // gate search would have scored this tape, without a server.
+    if watch.fire.armed {
+        if sum.fire_tick >= 0 {
+            println!(
+                "  fire: at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}){}",
+                sum.fire_tick,
+                sum.fire_value,
+                sum.fire_pos[0], sum.fire_pos[1], sum.fire_pos[2],
+                if sum.after_tick >= 0 {
+                    format!("; after {:+.4} at tick {}", sum.after_key, sum.after_tick)
+                } else {
+                    String::new()
+                }
+            );
+        } else {
+            println!("  fire: the event never fired");
+        }
+    }
     if watch.gate.armed {
         if sum.gate_tick >= 0 {
             println!(
@@ -544,6 +587,7 @@ pub fn eval_csv(watch: &Watch, path: &str, start_offset_ms: i32, nticks: usize) 
     // The state objective too, so a key can be tried against a measured
     // trajectory with no server at all -- the same `Eval`, the same program.
     ev.gate = watch.gate;
+    ev.fire = watch.fire;
     ev.rl = forkoracle::pred_core::RefLine {
         n: watch.refline.n,
         xyz: watch.refline.xyz.as_ptr(),

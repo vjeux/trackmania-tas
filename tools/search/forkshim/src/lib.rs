@@ -869,11 +869,13 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
         }
         cfg.gate = gate;
         // THE EVENT CLAUSE, trailing behind the gate.
-        if payload.len() >= o + 8 {
+        if payload.len() >= o + 16 {
             let mut fire = Fire::NONE;
             fire.armed = g4(o) != 0;
             fire.at = f32::from_bits(g4(o + 4));
-            o += 8;
+            fire.need = g4(o + 8).max(1);
+            fire.after_ticks = g4(o + 12);
+            o += 16;
             fire.where_box.armed = g4(o) != 0;
             o += 4;
             for i in 0..6 {
@@ -1634,8 +1636,15 @@ mod tests {
             "min(abs(bodyright), 5*(-vz)) * nose(0.888,0.451,-0.086)",
         )
         .unwrap();
-        w.fire = parse_fire("dspeed", 10.0, "xmin=56,xmax=80,ymin=48,ymax=54,zmin=704,zmax=713", "-dist(366,50,736)")
-            .unwrap();
+        w.fire = parse_fire(
+            "dspeed",
+            10.0,
+            3,
+            "xmin=56,xmax=80,ymin=48,ymax=54,zmin=704,zmax=713",
+            "-dist(366,50,736)",
+            7,
+        )
+        .unwrap();
         w
     }
 
@@ -1693,6 +1702,8 @@ mod tests {
         // THE EVENT, box and both programs
         assert!(cfg.fire.armed, "the event clause did not survive the pipe");
         assert_eq!(cfg.fire.at, w.fire.at);
+        assert_eq!(cfg.fire.need, w.fire.need, "the event's need count did not cross the pipe");
+        assert_eq!(cfg.fire.after_ticks, w.fire.after_ticks, "the after window did not cross");
         assert!(cfg.fire.where_box.armed);
         assert_eq!(cfg.fire.where_box.bounds, w.fire.where_box.bounds);
         for (a, b) in [(&cfg.fire.cond, &w.fire.cond), (&cfg.fire.after, &w.fire.after)] {
@@ -1731,7 +1742,7 @@ mod tests {
         let full = w.arm_payload(0, 0, 4, 20, 32, 44, &[(0x1000, 4)]);
 
         // 1. cut before the EVENT block: gate armed, event not.
-        let fire_bytes = 4 + 4 + 4 + 24
+        let fire_bytes = 4 + 4 + 4 + 4 + 4 + 24
             + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.cond)
             + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.after);
         let cut = full.len() - fire_bytes;
