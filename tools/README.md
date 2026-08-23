@@ -205,14 +205,25 @@ Three things to take from it:
 **What the repaired scan says, and what it does not.** Over the corpus it now
 returns 607 `EXPECTED-SHARED-PREFIX`, 135 `REVIEW-SHORT-OVERSHOOT`, 46
 `REFUSE-ONE-RUN-TWICE` and 8 `EXPECTED-SAME-INPUTS`, where before it returned
-nothing but the last category. **Those 46 are not yet adjudicated and this is
-not a claim that 46 files are duplicates** — several sit on maps with long
-no-authority windows, where inputs can legitimately differ for seconds without
-moving the car. The established fact is only that the check runs. Two known
-limits: it compares steer/accel/brake and **not** the respawn bit, and its
-countdown exclusion (ticks before race 0, which the car cannot act on) is a
-modelling choice — including them produced 35 refusals keyed at `diverge@-1.52s`,
-which is two drivers holding different keys during the lights.
+nothing but the last category.
+
+**Those 46 have since been adjudicated against the engine, and the answer is
+zero defects.** 14 fall inside 203330's *measured* per-tick inert window, 3 are
+at separation exactly 0.000000 m (two of which the 227654 page already documents
+by hand as one trajectory), 5 are the documented 286279 author-ghost provenance,
+and the remaining 24 — 38 pairs at the finer verdict — were settled by
+re-simulating both tapes: **35 INNOCENT-INERT-INPUTS, 1 inconclusive at
+0.001 m, 2 untested, 0 defects** (`tmtraj adjudicate`, `tmtraj
+adjudicate-batch`). The hypothesis offered here first — long no-authority
+windows — was right, and is now measured rather than assumed. The 2 untested are
+the turtle maps 238835 and 267859, where no file locates at any of 14 fork
+points; that is a fact about the locate, not the files.
+
+Two known limits of the scan itself: its countdown exclusion (ticks before
+race 0, which the car cannot act on) is a modelling choice — including them
+produced 35 refusals keyed at `diverge@-1.52s`, which is two drivers holding
+different keys during the lights — and the respawn bit **is** compared, which
+changed the corpus census by nothing (a checked negative).
 
 ### `C-route` — the record against the engine, read by a different instrument
 `fk btraj2` re-simulates a ghost's tape and dumps the car's position per tick

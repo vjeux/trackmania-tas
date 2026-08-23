@@ -47,6 +47,26 @@ late.**
 > half of this is what `ghost record shorten` repairs, without touching a
 > trajectory.** `tmtraj corpus span --root .` and `ghost inspect` are what found
 > it, and either will say when it is fixed.
+>
+> **UPDATE — both halves are repaired on branch `regen-sweep-b` (`918f9c8`),
+> not yet in this tree.** `ghost declare --from-oracle` rewrote every copy of
+> the time from what the plain oracle simulates, so each file's result chunk now
+> holds its own: 19.907 / 19.910 / 19.927 / 19.936 / 19.948 / 20.070 / 20.070 /
+> 20.083 / 20.126. `ghost record shorten` took the span 24.900 → 20.000 /
+> 20.050 / 20.400 with **the car's samples byte-identical**, trajdiff 0.000000 m
+> at zero shift, and the oracle re-simulating each file to its own time. The two
+> control files are untouched and still read as they should. That shape turned
+> out to affect **44 files across thirteen directories**, not just these nine.
+>
+> **One condition, and it is not small** — stated by the arm that did the work,
+> and it is the reason this box is not calling the map finished. That arm's
+> "this map is clean" criterion was that regenerating a downloaded human
+> recording reproduces it to **0.0005 m**, and 0.0005 m is now known to be the
+> **wrong-car-copy signature**: the right copy reproduces the game's own bytes
+> to 0.000001 m. So *"on the game's tick"* is measured and true, and *"read from
+> the right copy of the car"* is **not established**. The transform wants
+> re-running when that fix lands. Neither the result-chunk nor the span repair
+> touches a trajectory, so both stand regardless.
 
 https://github.com/user-attachments/assets/8c17c104-ce3d-4dfe-bfb4-c1e6b3cc8d8b
 

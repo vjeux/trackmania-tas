@@ -9,6 +9,8 @@ mod csvdiff;
 mod run;
 pub use run::run;
 
+pub(crate) mod adjudicate;
+pub(crate) mod adjudicate_batch;
 pub(crate) mod checkcmd;
 pub(crate) mod claimscmd;
 pub(crate) mod cli;

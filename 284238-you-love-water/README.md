@@ -172,13 +172,30 @@ that map's author time. Nobody has beaten this one.
 > 69.40 → 55.47 → 43.83 → **22.44 m/s** as vz weakens to −18.4. **Our record
 > engages at vz −2.3**, and the best shot at −18.2. That is the whole 47 s.
 >
-> And the reason it cannot simply be steered to: **the water launcher is a
-> shallow trough** (−0.78 °/m, floor at Z 927.4) where his tech deck is flat
-> (0.09 °/m). Loading the wheels needs roll ≈ 0, which is *the floor*; the
-> rotation needs vz ≤ −24, which is *3 m up the wall*. They are the same
-> variable, which is why every intervention below trades one for the other.
-> One tape of 36 kept its wheels loaded — at the floor, at vz −12, reaching the
-> wall at 32.3 m/s against his 79.5.
+> And the reason it cannot simply be steered to — **superseded, see below.**
+> The measured coupling is real: **the water launcher is a shallow trough**
+> (−0.78 °/m, floor at Z 927.4) where his tech deck is flat (0.09 °/m).
+>
+> **SUPERSEDED THE SAME DAY: the roll IS reachable, and it is not enough.**
+> The four searches behind "loading and rotating are the same variable" all
+> minimised a **weighted sum** of position, velocity and attitude — and a
+> weighted sum lets a candidate *buy attitude with crossing angle*, which is
+> exactly the trade the surface forces. So the search settled on the surface's
+> own trade curve and reported it back as a frontier. Put the crossing angle and
+> the speed on **hard bars** instead and roll comes down to **+1.13 at
+> vz −22.8**, and **+1.29 at vz −23.6 at 95.9 m/s** — the human's own attitude,
+> on the lane that had just been published as unable to produce it.
+>
+> **What the retraction did NOT overturn is any measurement.** The coupling, the
+> threshold and the matched pair all stand. What changed is a **sufficiency**
+> claim: both cars now cross the kicker within 2.6° of roll and both reach
+> ~240 °/s, and the difference appears **17 m later** — his wheels stay loaded
+> and the rate bleeds 242 → 189 → 129 → 87, while ours goes rigid and holds
+> **240.3 to the last digit**. The stronger negative was hiding behind the
+> weaker one, and the scoring shape is what kept it hidden.
+>
+> Details: `tm-unbeaten/284238/RESULT.md` and branch
+> `wtr-284238-crossing-angle`.
 >
 > **Two experiments on this page are additionally void**, and for a reason worth
 > keeping: **the 1.00 m kicker is a four-block assembly with one free block**, so
