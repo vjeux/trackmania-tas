@@ -124,6 +124,29 @@ family it could not run says so on its own line.
 | `wheels FILE` | the wheel radius, and separately whether the wheel bytes are alive at all |
 | `facing FILE... [--ref R \| --route CSV]` | is the car pointing where it is going |
 
+### What does the MAP say — is this copy really a copy?
+
+| | |
+|---|---|
+| `blockdiff --a A.tsv --b B.tsv [--ka K --kb K] [--screw CX,CZ,DEG,DY] [--box …] [--model SUBSTR]` | two block censuses in one frame, per-block three-axis residuals, `NO-IMAGE` where a block has no counterpart |
+
+A map that repeats one module under a symmetry, or a pair of maps that share a
+module, is a source of **answer keys**: a human line on one copy is a line on
+every copy, provided the copies really are copies. The aggregate the symmetry
+check prints — *"129 images land on a same-model block, worst 0.846 m"* — is
+enough to say the map IS a repetition and not enough to say what one copy's
+launcher does differently from another's. On 284238 every geometric claim about
+the obstacle had been one number quoted out of that aggregate ("the kicker is
+1.00 m lower"), and the experiment built on it moved **one block**. Printing the
+neighbourhood showed the kicker is a four-block assembly carrying that offset
+rigidly, which is why raising "the kicker" raised a quarter of it and built a
+1 m step — and why the decisive experiment of two arms could not have worked.
+
+It has to be able to say no, so a block with no same-model counterpart prints
+`NO-IMAGE` rather than being matched to something far away, and the count is the
+last line. The screw is a flag, not a constant: `--screw` defaults to the
+284238/279008 module's, and `--ka/--kb` apply it that many times per side.
+
 `motion` has **three** classes, not two: a car held up by a reactor, a boost or
 a wall it is scraping is neither in free fall nor ground-borne, and a two-class
 rule has to call it one of them. `--fit-g` fits gravity from the file's own
