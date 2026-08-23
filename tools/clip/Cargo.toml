@@ -3,8 +3,14 @@ name = "clip"
 version = "0.1.0"
 edition = "2021"
 
-# std only, no dependencies: this has to build on the render box's WSL side with
-# no network and no vendoring, exactly like the rest of this workspace.
+# No third-party dependencies: this has to build on the render box's WSL side
+# with no network and no vendoring, exactly like the rest of this workspace.
+# `gbx` is a workspace member, not a dependency in that sense -- `clip overlay`
+# draws a run's INPUT CHUNK, and the codec for that lives in `gbx` and must not
+# be copied here. A second reader of the input packets is the bug this project
+# has paid for most often.
+[dependencies]
+gbx = { path = "../gbx" }
 
 [lib]
 name = "clip"

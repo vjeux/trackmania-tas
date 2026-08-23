@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clip::{cut, platform, ship, split};
+use clip::{cut, overlay, platform, ship, split};
 
 const USAGE: &str = "\
 clip ship  <file.mp4> <map-dir> [release-asset-name]
@@ -18,6 +18,18 @@ clip cut   <in.webm> <out.mp4> [--to SECONDS]
     218.812 run filmed against a 441.002 human record comes out 441 s long.
     Trimming the opponent ghost before staging is the cheaper fix; this is for
     the ones already rendered. The output is probed, not assumed.
+
+clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F]
+    Draw a run's own inputs -- steering, throttle, brake, respawn, and a history
+    strip -- onto a finished clip. Reads the 10 ms input chunk (what the driver
+    pressed), never the 50 ms telemetry echo (what the car had, and on a
+    synthesised tape whoever drove the carrier). Draws its own glyphs, so it
+    needs no drawtext and no font.
+
+clip alignment <ghost.Gbx> [--span-ms N]
+    Fit the constant lag between a ghost's two steering channels. They describe
+    one run, so they agree at exactly one shift -- which makes overlay timing a
+    measurement rather than something to eyeball against a frame.
 
 clip split <left.mp4> <right.mp4> <left-label> <right-label> <out.mp4>
     Two runs side by side, for maps where a chase camera provably cannot hold
@@ -72,6 +84,52 @@ fn go(args: &[String]) -> Result<(), String> {
                 .transpose()?;
             let ff = platform::from_env()?;
             cut::run(&ff, Path::new(&args[1]), Path::new(&args[2]), to)
+        }
+        "overlay" => {
+            if args.len() < 4 {
+                return Err(format!("usage:\n{USAGE}"));
+            }
+            let num = |k: &str| -> Option<String> {
+                args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
+            };
+            let mut o = overlay::Opts::default();
+            if let Some(v) = num("--to") {
+                o.to = Some(v.parse::<f64>().map_err(|e| format!("--to: {e}"))?);
+            }
+            if let Some(v) = num("--offset-ms") {
+                o.offset_ms = v.parse().map_err(|e| format!("--offset-ms: {e}"))?;
+            }
+            if let Some(v) = num("--fps") {
+                o.fps = v.parse().map_err(|e| format!("--fps: {e}"))?;
+            }
+            if let Some(v) = num("--history-ms") {
+                o.history_ms = v.parse().map_err(|e| format!("--history-ms: {e}"))?;
+            }
+            let ff = platform::from_env()?;
+            overlay::run(&ff, Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]), &o)
+        }
+        "alignment" => {
+            if args.len() < 2 {
+                return Err(format!("usage:\n{USAGE}"));
+            }
+            let span: i64 = args
+                .iter()
+                .position(|a| a == "--span-ms")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200);
+            let (lag, at_best, at_zero) = overlay::alignment(&args[1], span)?;
+            println!("alignment: best lag {lag:+} ms (disagreement {at_best:.2}), lag 0 {at_zero:.2}");
+            if lag == 0 {
+                println!("  the two channels agree at lag 0 -- an overlay drawn at race time is in time.");
+            } else {
+                println!(
+                    "  the input chunk leads the telemetry echo by {lag} ms on this file. That is a \
+                     property of the RUN, not of the overlay; pass --offset-ms {lag} if a frame \
+                     check disagrees."
+                );
+            }
+            Ok(())
         }
         "split" => {
             if args.len() != 6 {

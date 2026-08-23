@@ -26,6 +26,18 @@
 //!
 //! The frames go to ffmpeg on a pipe as raw RGBA and are composited in one
 //! pass, so nothing lands on disk and a 219-second clip costs one re-encode.
+//!
+//! # The control, and it was free
+//!
+//! 227969's published clip already has an overlay burned into it, drawn in
+//! August 2026 by a since-deleted tool that read the file by its own reader.
+//! Compositing this one onto that clip puts two independently written overlays
+//! of the same run in one frame, and they agree: at race 3.000 both read full
+//! right lock with the throttle down, and at 5.500 both read neutral steering
+//! with the throttle AND the brake down together. Two readers, two codebases,
+//! one file, same answer -- which is a stronger statement about the timing than
+//! any number of frames judged by eye, and it cost nothing but choosing that
+//! clip to test on.
 
 use std::io::Write;
 use std::path::Path;
@@ -433,29 +445,53 @@ mod tests {
         assert!(a.iter().any(|x| x.starts_with("[0:v][1:v]overlay=")));
     }
 
-    #[test]
-    fn full_lock_reaches_the_end_of_the_bar_and_the_sides_are_not_swapped() {
-        let ins = vec![Input { steer: -127, gas: true, brake: false, respawn: false }];
+    /// How far the steering bar reaches from centre, signed: negative left.
+    /// Counted rather than sampled at one pixel, because the L/R labels sit at
+    /// the ends of the bar and overwrite it -- a single-pixel assertion there
+    /// tests the label, which is how the first version of this test failed on
+    /// correct output.
+    fn bar_extent(steer: i8) -> i64 {
+        let ins = vec![Input { steer, gas: true, brake: false, respawn: false }];
         let mut cv = Canvas::new(PANEL_W, PANEL_H);
         draw(&mut cv, &ins, 0, 3000);
-        let cx = PANEL_W / 2;
+        let cx = (PANEL_W / 2) as i64;
         let row = 44 * PANEL_W * 4;
-        let lit = |x: usize| cv.px[row + x * 4 + 3] > 200;
-        // full left fills to the left edge of the bar and nothing to the right
-        assert!(lit(cx - (PANEL_W / 2 - 20) + 1), "full left must reach the left end");
-        assert!(!lit(cx + 40), "full left must not draw on the right");
+        let is_bar = |x: i64| {
+            let i = row + x as usize * 4;
+            cv.px[i..i + 4] == BLUE
+        };
+        let mut left = 0i64;
+        while cx - left - 1 > 0 && is_bar(cx - left - 1) {
+            left += 1;
+        }
+        let mut right = 0i64;
+        while cx + right + 1 < PANEL_W as i64 && is_bar(cx + right + 1) {
+            right += 1;
+        }
+        if left > right { -left } else { right }
+    }
+
+    #[test]
+    fn full_lock_reaches_the_end_of_the_bar_and_the_sides_are_not_swapped() {
+        let half = (PANEL_W / 2 - 20) as i64;
+        // Full left reaches the left end -- allowing for the label glyph, which
+        // paints over the last few pixels of the bar.
+        let l = bar_extent(-127);
+        assert!(l < -(half - 12), "full left reached only {l}, expected about {}", -half);
+        let r = bar_extent(127);
+        assert!(r > half - 12, "full right reached only {r}, expected about {half}");
+        // A NEGATIVE STEER MUST NOT DRAW RIGHT. Steer is an i8 in a u8 field,
+        // and a naive unsigned read makes every left input full right -- the
+        // exact defect this test exists for.
+        assert!(bar_extent(-64) < 0, "left steering drew to the right");
+        assert_eq!(bar_extent(0).abs() <= 1, true, "neutral must draw nothing");
     }
 
     #[test]
     fn the_countdown_is_dropped_so_index_zero_is_race_zero() {
-        // A tape that starts at -1500 ms must not shift the overlay by 150
-        // ticks; `inputs_by_race_ms` indexes by race time, and the check that
-        // matters is that a value written at race 0 lands at index 0.
-        let ins = vec![Input { steer: 100, ..Default::default() }];
-        let mut cv = Canvas::new(PANEL_W, PANEL_H);
-        draw(&mut cv, &ins, 0, 3000);
-        let cx = PANEL_W / 2;
-        let row = 44 * PANEL_W * 4;
-        assert!(cv.px[row + (cx + 40) * 4 + 3] > 200, "race 0 must read the first input");
+        // A tape starting at -1500 ms must not shift the overlay by 150 ticks:
+        // `inputs_by_race_ms` indexes by RACE time, so a value at race 0 lands
+        // at index 0 and the bar reads it at ms 0.
+        assert!(bar_extent(100) > 100, "race 0 must read the first input");
     }
 }
