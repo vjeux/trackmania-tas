@@ -6,23 +6,25 @@ validates at 6.342 — one millisecond under the author time.**
 
 **unluckE - get jiggy with it** — TAS **6.342** (−0.001) | AT 6.343 | WR 6.346 by xeap-.-
 
-> ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
+> ### The clip was re-shot from a repaired file
 >
-> The replay this page publishes carries a recording that is **not its own
-> tape's run**: tape and recording agree on only **kappa 0.518** of samples,
-> where a file whose recording is its own reads 1.000. The clip below was shot
-> from that file, so **the car you are watching is not driving this run**.
+> An earlier clip on this page was shot from a replay whose recording was not
+> its own tape's run — tape and recording agreed on only **kappa 0.518** of
+> samples. The **time was never in doubt**: the plain dedicated server
+> re-simulates that tape to **6.342** either way. What was wrong was the
+> trajectory stored beside it, so the old video showed a different car.
 >
-> **The result stands.** The plain dedicated server re-simulates this file's
-> input tape to **6.342**, the time on this page — the inputs really do produce
-> it. What is wrong is the trajectory stored beside them, which is a property
-> of how the file was assembled rather than of the run.
+> The video below is a regenerated file: its car state was rebuilt from this
+> run's own inputs on the live engine, and tape and recording now agree on
+> **100.0 % of all 127 samples**, with the oracle still reading 6.342.
 >
-> The repair is `ghost regen`, which rebuilds the telemetry from the tape on
-> the live engine; it has fixed others in this corpus. This page will be
-> re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+> One thing that had to be fixed to get here, because it is a nice illustration
+> of this run: the rebuild kept refusing to write, on the grounds that the gas
+> channel never changed. It never changes because **this run never lifts** —
+> `accel=1` on all 789 ticks of the tape. The check was calling a correct
+> constant a dead readout. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/eb055e0b-f715-4bd9-b12e-ed2de3f26b65
+https://github.com/user-attachments/assets/e6832a47-e830-45a9-8e99-743ef00d7559
 
 **Thirteen inputs. Nothing held for less than 80 ms. Three steering values, gas
 never released, brake never touched — and it beats the author time by a

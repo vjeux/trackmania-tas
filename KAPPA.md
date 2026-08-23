@@ -25,7 +25,7 @@ from the tape on the live engine. Three were repaired that way today
 |---|---|---|---|---|
 | Kacky Reloaded #290 | 23.416 | 1.000 | 23.416 | OK |
 | KEKL- SAUSAGE ICE | 67.200 | 1.000 | 67.200 | OK |
-| unluckE - get jiggy with it | 6.342 | 0.518 | 6.342 | REFUSED: 2 check(s) failed **CARRIES ANOTHER RUN** |
+| unluckE - get jiggy with it | 6.342 | 1.000 | 6.342 | OK |
 | Spaghetti Nights 2 | ? | - | - | the page states no headline time |
 | P-Found - Pokeuuu | ? | - | - | the page states no headline time |
 | idm ruinin ur day #460 | 15.217 | 0.500 | 15.217 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
