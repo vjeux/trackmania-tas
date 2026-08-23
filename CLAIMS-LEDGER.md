@@ -23,6 +23,65 @@ ledger is complete even though I do not edit those files.
 
 ---
 
+# 0. FINAL STATE — read this, then the sections for the working
+
+Everything below is the audit as it happened, including two claims of mine that
+turned out to be wrong. That is deliberate: the wrong turns are the part worth
+reading, and rule 4 of this project is that a retraction is published next to
+the thing it retracts rather than instead of it. **This section is the settled
+tally.**
+
+## Claims touched, by category
+
+| category | found | wrong and corrected | verified sound, left alone | still open |
+|---|---|---|---|---|
+| **1 — instrument reported as world** | 12 | 10 | — | 2 |
+| **2 — null with no positive control** | 3 flagged | 2 restated | **8 verified, control cited** | 1 |
+| **3 — n = 1 / scope beyond evidence** | 8 | 7 | 1 (already right) | — |
+| **4 — superseded numbers standing** | 8 | 7 | — | 1 (146612, needs the map) |
+| **found by running checks, not on the brief** | 4 | 3 | 1 (a checked negative) | — |
+
+**17 documents edited**, **31 of 56 read in full**. The rest were swept by four
+pattern searches plus four machine checks that read every published file. §G is
+explicit about which is which — the unread pages are **not** claimed clean.
+
+## The two claims of mine that were wrong
+
+1. **210218 "the two files carry one recording" — RETRACTED.** Published as a
+   warning box, then settled against the engine: over the **1735 samples where
+   the records agree bit for bit, the two cars are 0.0001 m apart**, 1734 of
+   them bit-identical. Both files sound. What misled me: two whole-file *rates*
+   that agreed, 93.8 % and 94.1 %, which say nothing about whether they are the
+   same samples. §I.
+2. **267859 "the directory holds only `TAS_10859`" — WITHDRAWN.** All seven
+   files are present and each declares its own name. I read it off a truncated
+   capture and did not open the directory. §H7.
+
+Plus **six instrument errors caught by controls before they reached a page** —
+four in §I, two in §F1.
+
+## The duplicate question, settled
+
+46 `corpus dup` refusals → **14** inside 203330's measured inert window, **3** at
+separation exactly 0.000000 m (two already documented by hand on the 227654
+page), **5** documented 286279 provenance, **24** settled against the engine as
+38 pairs: **35 measured innocent, 1 inconclusive at 0.001 m, 2 untested, ZERO
+defects**, over 143 traces. §I.
+
+## What is genuinely still open
+
+| item | why, and what would settle it |
+|---|---|
+| the ≈0.5 mm **orientation** half | regressed under the same fix; owned by the carrier-bytes arm, flag default-off |
+| 238835 + 267859 regeneration | no file locates on either turtle map at any of 14 fork points — **diagnosed, not skipped** (§I) |
+| 228607 transform | repaired on `regen-sweep-b`, correctly held for the wrong-copy fix |
+| is `g` genuinely per-map | the intercept is fitted on one map; needs a second with a long enough arc |
+| 146612's 38.968 / 39.183 | the map is not redistributed and this box has no copy |
+| 173691's ground-contact byte | `ghost regen` does not write byte 89; reading it out of memory is an open task |
+| the wheel-block offset (§J) | 540 in one arm's frame against 248 in another's, unexplained |
+
+---
+
 # A. CATEGORY 1 — a claim about the world that is really a claim about our instrument
 
 The one that costs days.
@@ -622,3 +681,57 @@ a turtle trial the **real car scores 1.41 m/s against a bar of 1.14** and every
 anchor is refused. My failures land on exactly the maps their independent
 analysis predicts. **The honest statement is "this instrument cannot see these
 two maps", not anything about the files.**
+
+---
+
+# J. THE ANCHOR, AND A DISAGREEMENT BETWEEN TWO ARMS
+
+Contributed first-hand by the carrier-bytes arm (`8ca8c2e7`, node 27628, files
+`tools/fk/CARRIER.md` + `carrier-bytes.tsv`, banked at
+`tm-unbeaten/_audit/carrierbytes/`) after the coordinator attributed it to
+`CLAIMS.md` from a one-line summary and I declined to paraphrase it.
+
+**That refusal was the right call and is itself a ledger entry.** An anchor
+definition is exactly the kind of claim that needs its own measurement and
+control beside it; writing one from a fragment is the failure this audit exists
+to catch. Two of the three items in the summary turned out to be **contested
+between two arms**, which a paraphrase would have flattened into a fact.
+
+### J1. The definition, and the cost — CATEGORY 1, fourth instance of "precise, confident and blind"
+*"car" = the position triple of the copy whose slots at car+92/136/180/224 hold
+**live floats**.* Several copies hold the same position and **all pass every
+structural test** (unit quaternion, velocity = d(pos)/dt); only one has the
+fields around it. Anchoring on `Layout::pos` **wrote zeroed wheel rotations and
+gear into a file that passed the whole `ghost verify` gate** — V1, V6 at kappa
+1.000, V7 the oracle re-simulating to 22.730 — because none of those bytes
+affects the simulation, and a provenance check sees zeros rather than a donor's
+bytes. Now in `CLAIMS.md` §3.
+
+### J2. The criterion does not transport — **entered as contested, both measurements**
+| | carrier-bytes | video-reconstruction |
+|---|---|---|
+| gear | `car+340`, 100.00 % on 8 recordings | `car+748`, 99.43 % |
+| wheels / wetness | +92/136/180/224, 99.25–100 % | wetness `car+180`, 95.4–96.0 % |
+| the other's liveness test, ported | — | **4 dead slots, 0.0, over 814 ticks** |
+
+Gear reconciles (748 − 408 = 340); **the wheel offset does not** — 1196 implied
+from one side against 408 from the other, so the wheel block may not sit at a
+fixed offset from the position at all. The second anchor reads as "a bare copy"
+under the first's criterion while reproducing the recording at 95–99 %, and dead
+memory does not do that. **Written as: sound as a chooser within the frame it was
+validated in, not a transportable test.** Open, and in §0.
+
+### J3. Four encoding assumptions, each of which cost a channel
+Range (an f32 filter to 0..1 hiding a rotation running to 1607), rounding
+(round-to-nearest vs truncation, **17 points**), quantisation (u8 exactness for a
+channel that is not quantised), and the **small-integer-lookup trap** (an integer
+read as f32 is a denormal, so a fitter returns k = 2.85e45 at a flawless 100 %;
+byte 89 scored as a raw byte on eight keys is **0.00 %**).
+
+### J4. That arm's own retractions, recorded as it made them
+Dirt is **ABSENT, not zero** (pre-registered and refuted, −7.35 points); byte 89
+refused a fourth time; ice held back while it was a one-key result and shipped
+only at two independent recordings on two maps; and a quaternion reported "exact,
+0.00000 rad" **from a median of a bimodal population** — honest figure 75.0 %
+exact, p90 0.00042 rad. *The project has "split before you quote a spread"
+written down, and the arm walked into it anyway and said so.*
