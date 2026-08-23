@@ -29,7 +29,6 @@
 //! sharing an output directory and only caught it because the incumbent scored
 //! 113.71 instead of 126.84.
 
-use crate::gen::Zig;
 use crate::mkcand::Spec;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,17 +62,13 @@ fn trace_one(cfg: &Cfg, ghost: &str, out: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run(cfg: &Cfg, zigs: &[Zig], fixed: &[crate::edit::Edit]) {
+pub fn run(cfg: &Cfg, specs: Vec<Spec>) {
     std::fs::create_dir_all(&cfg.outdir).unwrap();
-    let mut specs: Vec<Spec> = vec![Spec { name: "IDENTITY".into(), edits: Vec::new() }];
-    for z in zigs {
-        specs.push(crate::gen::zigzag(z, fixed));
-    }
     // The identity carries no edit, so it is written by hand rather than
     // through the no-op guard that would (correctly) refuse it.
     let ident = format!("{}/IDENTITY.Ghost.Gbx", cfg.outdir);
     std::fs::copy(&cfg.base, &ident).unwrap();
-    let real: Vec<Spec> = specs.into_iter().skip(1).collect();
+    let real: Vec<Spec> = specs;
     match crate::mkcand::run(&cfg.base, &cfg.outdir, &real) {
         Ok(n) => eprintln!("wrote {} of {} candidates", n, real.len()),
         Err(e) => { eprintln!("{}", e); return }

@@ -87,12 +87,21 @@ constant shows the engine **making** energy all the way up, including past the
 gate. The run ends in a 22–34 m/s² deceleration over 1.51 m, which is a wall,
 not a stall.
 
-**The driver climbs this ramp in switchbacks.** His recording crosses it back
-and forth five times between z ≈ 450 and z ≈ 478, at 25–49 km/h, taking 45 s and
-two complete failures to gain 32 m of height — each traverse at 8–12° where the
-fall line is 20–27°. Driving the same manoeuvre in the simulator, with the
-return legs in reverse gear, takes the best height on this hill from **127.73**
-to **134.09** and puts the car 11.79 m from the point where he leaves the ramp.
+**The driver climbs this ramp in switchbacks**, and resolved sample by sample
+each traverse is a **full-lock turn of about 1.2 seconds followed by 2.5 seconds
+of straight running with the steering back at zero** — holding full lock across
+a traverse scrubs the speed the traverse exists to carry. He crosses the ramp
+five times between z ≈ 450 and z ≈ 478, at 25–49 km/h, taking 45 s and two
+complete failures to gain 32 m of height, each traverse at 8–12° where the fall
+line is 20–27°.
 
-The map is still not driven and the author time is not beaten. Details, controls
-and what is still open: `tools/pkz2`, and the arm's write-up in the store.
+Driving that manoeuvre in the simulator gets a car up the hill and onto the
+deck. **It collects the map's third checkpoint** — `cps=3` on the unmodified
+map through the plain oracle, where the driver's own tape and every previous
+attempt return `cps=2`, deterministic over three runs and reproduced on a fresh
+copy of the map. The car reaches the deck at 164 s and runs on to x = 1 067,
+160 m past the point where every earlier attempt slid back and wedged.
+
+Three checkpoints of eleven. The map is still not driven and the author time is
+not beaten. Details, controls and what is still open: `tools/pkz2`, and the
+arm's write-up in the store.

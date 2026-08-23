@@ -104,20 +104,31 @@ fn main() {
             for (i, s) in a.iter().enumerate() {
                 if s == "--edit" { fixed.push(edit::parse_edit(&a[i + 1]).unwrap()); }
             }
-            let mut zigs = Vec::new();
-            for bf in nums("brakefrom", "147600") { for bm in nums("brakems", "0") {
-              for lg in nums("legms", "450") { for l2 in nums("legms2", "0") {
-                for n in nums("legs", "20") { for f in nums("first", "127") {
-                  for rv in nums("rev", "0") {
-                  zigs.push(gen::Zig { brake_from: bf, brake_ms: bm, start_ms: bf + bm,
-                                       leg_ms: lg, leg2_ms: if l2 == 0 { lg } else { l2 },
-                                       legs: n, first: f, gas: true, rev: rv != 0 }); }
-            } } } } } }
+            let mut specs = Vec::new();
+            if a.iter().any(|s| s == "--pulse") {
+                for st in nums("start", "155500") { for tn in nums("turnms", "1200") {
+                  for lg in nums("legms", "3800") { for n in nums("legs", "8") {
+                    for f in nums("first", "127") { for at in nums("alt", "1") {
+                      for dm in nums("descendms", "0") { for ds in nums("descendsteer", "127") {
+                        specs.push(gen::pulse(&gen::Pulse { start_ms: st, turn_ms: tn, leg_ms: lg,
+                            legs: n, first: f, alt_throttle: at != 0,
+                            descend_ms: dm, descend_steer: ds }, &fixed));
+                } } } } } } } }
+            } else {
+                for bf in nums("brakefrom", "147600") { for bm in nums("brakems", "0") {
+                  for lg in nums("legms", "450") { for l2 in nums("legms2", "0") {
+                    for n in nums("legs", "20") { for f in nums("first", "127") {
+                      for rv in nums("rev", "0") {
+                        specs.push(gen::zigzag(&gen::Zig { brake_from: bf, brake_ms: bm, start_ms: bf + bm,
+                            leg_ms: lg, leg2_ms: if l2 == 0 { lg } else { l2 },
+                            legs: n, first: f, gas: true, rev: rv != 0 }, &fixed));
+                } } } } } } }
+            }
             climb::run(&climb::Cfg { base, map: flag(&a, "map").expect("--map"), outdir,
                                      at: flag(&a, "at").unwrap_or_else(|| "tick:14400".into()),
                                      par: fnum(&a, "par", 20.0) as usize,
                                      from: fnum(&a, "from", 146.0), to: fnum(&a, "to", 300.0),
-                                     target: flag(&a, "target").map(|s| { let p: Vec<f64> = s.split(',').map(|x| x.parse().unwrap()).collect(); (p[0], p[1], p[2]) }) }, &zigs, &fixed);
+                                     target: flag(&a, "target").map(|s| { let p: Vec<f64> = s.split(',').map(|x| x.parse().unwrap()).collect(); (p[0], p[1], p[2]) }) }, specs);
         }
         "sweep" => {
             let base = flag(&a, "base").expect("--base");
