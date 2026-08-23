@@ -573,6 +573,13 @@ not a measurement failure — the run produces nothing rather than something wro
 
 ### The costs
 
+**`fk regen --carrier` no longer sweeps for the car**: the engine's own pointer
+to the vehicle array is resolved in the live process and the field gather is
+864 bytes per member instead of a 1.25 MB window — byte-identical output, 74×
+less disk. See [POINTER.md](POINTER.md). The numbers below are `fk carrier
+scan`, which still sweeps because its whole job is to propose offsets nobody
+knows yet.
+
 A scan is one engine run plus a sweep: **1–3 minutes** per key on 20 threads
 (a 1.25 MB window is 328 000–1 300 000 offsets against 95 channels on both
 writes, twice, for the permutation floor). A confirm is the same engine run and

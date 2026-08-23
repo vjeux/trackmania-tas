@@ -1011,3 +1011,105 @@ fn the_transform_encoder_round_trips_a_real_recording() {
          branch. Good: tighten this to equality and delete this assertion."
     );
 }
+
+// ===========================================================================
+// THE POINTER (see `tools/fk/POINTER.md`)
+
+/// The scanner must find a pointer that is there — in a process, not in a
+/// mock. This snapshots THIS process, whose memory the test itself planted a
+/// pointer into, and asks the scan to find the slot holding it.
+///
+/// It is the same control `fk ptr find` prints before it reports an absence
+/// (`recall_control`), run against a needle whose address the test knows, so a
+/// scan that silently skipped a mapping fails here rather than in a
+/// measurement.
+#[test]
+fn the_scanner_finds_a_pointer_this_test_planted() {
+    // A heap object to point AT, and a heap object to point at it FROM. Both
+    // on the heap on purpose: a stack slot can live its whole life in a
+    // register and never be written to memory at all.
+    let target: Box<[u8; 864]> = Box::new([7u8; 864]);
+    let taddr = &*target as *const _ as u64;
+    let holder: Box<u64> = Box::new(taddr);
+    let haddr = &*holder as *const u64 as u64;
+    // RETRIED, and the reason is the point of the tool. `Snapshot::take` reads
+    // /proc/<pid>/maps and then /proc/<pid>/mem, which is only atomic if the
+    // process is STOPPED -- which is how `fk ptr` uses it, at the shim's
+    // handover. A test that snapshots ITSELF is racing its own allocator and
+    // the test harness's other threads: a mapping that shrinks between the two
+    // reads is skipped, and once in a while that is the mapping the needle is
+    // in. Observed once, under 24 parallel engine runs. Three attempts, and a
+    // failure means the scan is broken rather than unlucky.
+    let mut found = None;
+    for _ in 0..3 {
+        let snap = fk::ptr::Snapshot::take(std::process::id() as i32)
+            .expect("a process can snapshot itself");
+        assert!(snap.bytes > 0, "the snapshot is empty");
+        if snap
+            .find_pointers(&[(taddr, taddr + 1)])
+            .iter()
+            .any(|(slot, v)| *slot == haddr && *v == taddr)
+        {
+            found = Some(snap);
+            break;
+        }
+    }
+    let snap = found.unwrap_or_else(|| {
+        panic!("three scans all missed the slot at {:#x} holding {:#x}", haddr, taddr)
+    });
+    // And the range form, which is how a caller asks "what points INTO this
+    // struct": a pointer to the first byte is inside the range.
+    let range = snap.find_pointers(&[(taddr, taddr + 864)]);
+    assert!(range.iter().any(|(slot, _)| *slot == haddr));
+    // The control the command runs before reporting an absence.
+    let (ok, n) = snap.recall_control(200);
+    assert!(n > 0 && ok == n, "recall {} of {}", ok, n);
+    // A value that is in no mapping is found nowhere. Without this the test
+    // above would pass for a scan that returned every slot it saw.
+    assert!(snap.find_pointers(&[(0x1234_5678_9abc, 0x1234_5678_9abd)]).is_empty());
+    drop(holder);
+    drop(target);
+}
+
+/// A pool spec names an ARRAY, and every part of it has to survive the
+/// round trip through the parser — a mis-parsed stride reads a neighbouring
+/// object and a mis-parsed member offset reads the wrong 864 bytes of the
+/// right one.
+#[test]
+fn a_pool_spec_parses_into_its_four_parts() {
+    let (chain, n, stride, members) =
+        fk::ptr::parse_pool(fk::ptr::DEFAULT_CHAIN).expect("the default chain is a pool spec");
+    assert_eq!(chain, "mod+0x1e45148:0:+0x148");
+    assert_eq!(n, 4);
+    assert_eq!(stride, 8);
+    // The SIMULATION's vis state. The object's other one, at +0x848, follows
+    // the record the file carries -- 978 m from the run on a transplanted
+    // container -- and naming both makes the choice between them
+    // nondeterministic, so the default names one.
+    assert_eq!(members, vec![0x46c]);
+    // ... and the comma form still parses, because comparing the two members on
+    // a new build is how the right one gets chosen.
+    let (_, _, _, both) = fk::ptr::parse_pool("mod+0x1:0:+0x2#4x8+0x46c,+0x848").unwrap();
+    assert_eq!(both, vec![0x46c, 0x848]);
+    // A plain chain is not a pool, and must not silently read as one.
+    assert!(fk::ptr::parse_pool("mod+0x1e45148:0:+0x148:+0x8:+0x848").is_none());
+}
+
+/// The document and the constant must name the same chain. A write-up that
+/// quotes a spec the code no longer uses is how a calibration outlives the
+/// binary it was measured on.
+#[test]
+fn the_pointer_document_quotes_the_chain_the_code_uses() {
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../POINTER.md"),
+    )
+    .expect("tools/fk/POINTER.md");
+    assert!(
+        doc.contains(fk::ptr::DEFAULT_CHAIN),
+        "POINTER.md does not mention {}",
+        fk::ptr::DEFAULT_CHAIN
+    );
+    // and the binary it was measured on, so a new build cannot inherit the
+    // number silently
+    assert!(doc.contains("0f0f4b25f31f80c60c81404366c95e68"));
+}

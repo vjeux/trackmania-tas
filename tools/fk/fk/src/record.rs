@@ -117,6 +117,43 @@ pub struct CleanOut {
     /// order. A wheel-anchored field map needs them to turn a memory offset
     /// into a record offset.
     pub segs_rel: Vec<(i64, u32)>,
+    /// The segments actually gathered, as ADDRESSES, in record order.
+    ///
+    /// `pos` above is computed as if the record were one contiguous window,
+    /// which is true of the production gather and false of any gather with
+    /// extra segments — those are separate windows and a record offset inside
+    /// one of them is not `pos + something`. Anything that has to turn a record
+    /// offset into an address (finding what a pointer would have to point at,
+    /// for one) must use [`CleanOut::addr_of`] and this list.
+    pub segs_abs: Vec<(u64, u32)>,
+}
+
+impl CleanOut {
+    /// Where an engine address landed in the gathered record, if it was
+    /// gathered at all. The inverse of [`CleanOut::addr_of`], and the only
+    /// honest way to find a segment's offset once the clipper has had its way
+    /// with the list.
+    pub fn off_of(&self, addr: u64) -> Option<usize> {
+        let mut off = 0usize;
+        for (a, l) in &self.segs_abs {
+            if addr >= *a && addr < a + *l as u64 {
+                return Some(off + (addr - a) as usize);
+            }
+            off += *l as usize;
+        }
+        None
+    }
+
+    /// The engine address a byte of a gathered record came from.
+    pub fn addr_of(&self, mut off: usize) -> Option<u64> {
+        for (a, l) in &self.segs_abs {
+            if off < *l as usize {
+                return Some(a + off as u64);
+            }
+            off -= *l as usize;
+        }
+        None
+    }
 }
 
 /// The engine clock's offset against race time, and where the vehicle state
@@ -562,6 +599,34 @@ pub struct GatherOpts<'a> {
     /// Pass the wheel-rotation offsets. Four live floats at stride 44 is a car;
     /// four constants is not.
     pub require_live: Vec<i64>,
+    /// WHERE THE CAR IS, from something that already knows.
+    ///
+    /// Called with `(pid, base)` of the started server while it is halted at
+    /// the handover, and its answer REPLACES the located position anchor. This
+    /// is how a pointer chain (`fk::ptr`) removes the search: the engine's own
+    /// pointer to the vehicle state is dereferenced in the live process and the
+    /// gather is centred on the answer.
+    ///
+    /// It changes where the window is and NOTHING about what happens to it —
+    /// every guard downstream (the wheel-liveness rule, the path-length test,
+    /// the self-check, the caller's comparison against a recording) runs
+    /// exactly as it does on a located anchor, so a stale pointer FAILS rather
+    /// than producing a file.
+    /// Returns `(the position anchor, extra segments relative to it)`. The
+    /// second half is what makes a POOL usable: the engine owns four vehicle
+    /// objects and which of them is live varies by process, so the resolver
+    /// hands back the anchor plus a window on each sibling and the copy rule
+    /// downstream chooses between them — the same rule, on four candidates
+    /// instead of 300,000.
+    pub pos_from: Option<&'a dyn Fn(i32, u64) -> Result<(u64, Vec<(i64, u32)>), String>>,
+    /// Look at the live server, halted, just before the run starts.
+    ///
+    /// Called with `(pid, the position anchor, the segments about to be
+    /// gathered)`. `fk ptr find` uses it to snapshot the engine's memory at an
+    /// instant when nothing is moving — the pointer and the object it points at
+    /// are then read from the same state of the world, so a missing pointer
+    /// cannot be a torn read.
+    pub before_go: Option<&'a dyn Fn(i32, u64, &[(u64, u32)])>,
     /// Abort when the gathered window is not a self-consistent vehicle state.
     ///
     /// ON for production, where there is nothing better: the structural tests
@@ -590,6 +655,8 @@ impl<'a> GatherOpts<'a> {
             extra: Vec::new(),
             copy_scan_hi: None,
             require_live: Vec::new(),
+            pos_from: None,
+            before_go: None,
             self_check: true,
         }
     }
@@ -609,6 +676,8 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         extra,
         copy_scan_hi,
         require_live,
+        pos_from,
+        before_go,
         self_check,
     } = o;
     let (segs_rel, bias_override, anchors) = (*segs_rel, *bias_override, *anchors);
@@ -711,6 +780,23 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     if let Some(b) = bias_override {
         layout.clock_bias = b;
     }
+    // THE POINTER, IF THE CALLER HAS ONE. See `GatherOpts::pos_from`. It
+    // replaces the anchor and nothing else: every test below is unchanged, so
+    // a chain that has gone stale fails the same way a bad anchor does.
+    let mut pool_segs: Vec<(i64, u32)> = Vec::new();
+    if let Some(f) = pos_from {
+        let (p, ex) = f(srv.pid(), srv.base)?;
+        pool_segs = ex;
+        if verbose {
+            println!(
+                "pointer: the car is at {:#x} (the anchor would have said {:#x}, {:+} bytes)",
+                p,
+                layout.pos,
+                p as i64 - layout.pos as i64
+            );
+        }
+        layout.pos = p;
+    }
     let gate_phase = if period == 10 {
         // every tick: let the shim take the phase from its own clock
         u32::MAX as i64
@@ -735,7 +821,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                     (layout.clock, 4),
                     ((layout.pos as i64 - win_back()) as u64, win_len()),
                 ];
-                for (o, l) in extra.iter().copied() {
+                for (o, l) in extra.iter().copied().chain(pool_segs.iter().copied()) {
                     s.push(((layout.pos as i64 + o) as u64, l));
                 }
                 s
@@ -793,6 +879,12 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // right for the 452-byte production window and writes gigabytes for a wide
     // one, so a wide caller keys on the production window instead.
     let key = dedup.unwrap_or((0, reclen as u32));
+    // The last moment the engine is halted and observable. See
+    // `GatherOpts::before_go`.
+    if let Some(f) = before_go {
+        f(srv.pid(), layout.pos, &segs);
+    }
+    let segs_abs = segs.clone();
     let out = srv
         .go(
             &segs,
@@ -1276,7 +1368,39 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             }
             None => segs_rel.to_vec(),
         },
+        segs_abs,
     })
+}
+
+/// The anchor checkpoints to try, in order, for a tape of `n` ticks.
+///
+/// One fixed tick is not enough: a trial map is barely moving at tick 200, a
+/// short map has no tick 200 at all, and the locate needs a MOVING car (its
+/// whole discriminator is d(pos)/dt against the stored velocity).
+///
+/// HALVE DOWNWARD, do not sample the tape uniformly. The anchor tick has to
+/// land inside the RUN, and the run is usually SHORTER than the tape it is
+/// carried in: a transplanted ghost inherits the carrier's input array, so a
+/// 9.4 s run can sit in a 50 s tape and n/2, n/4 and 3n/4 are then all past the
+/// finish — "server never reached the checkpoint", three times, and the ladder
+/// is exhausted (measured 2026-08-20 on TMX 276877: n = 5000, finish at tick
+/// 1092). Halving reaches any run length in log2 steps.
+///
+/// It also puts the probe where the CAR IS DRIVING. The locator qualifies a
+/// candidate over the 150 ticks after the probe against a threshold of 2 % of
+/// the speed in that window, so an early probe is judged where the car is
+/// slowest and where the first collision usually is.
+pub fn ladder_ticks(n: i64, biastick: i64) -> Vec<i64> {
+    let bt = biastick.min(n / 3).max(60);
+    let mut ticks: Vec<i64> = vec![bt];
+    let mut k = n / 2;
+    while k >= 60 {
+        ticks.push(k);
+        k /= 2;
+    }
+    ticks.retain(|t| *t >= 60 && *t < n - 20);
+    ticks.dedup();
+    ticks
 }
 
 /// The record's sample grid: period and phase, read off the ghost.

@@ -62,6 +62,7 @@ pub mod cmd;
 /// does not move (a respawn) or the engine writes the state twice in a tick.
 pub mod locate;
 pub mod oracle;
+pub mod ptr;
 pub mod session;
 pub mod record;
 pub mod tape;

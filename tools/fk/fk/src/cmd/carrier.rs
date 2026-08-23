@@ -1565,6 +1565,18 @@ pub fn gather_fields(
     dump: &str,
     back: i64,
     fwd: i64,
+    // THE POINTER, WHEN THERE IS ONE. `Some(f)` resolves the address of the
+    // vehicle state in the live halted engine (see `fk::ptr`), and the gather
+    // is then 864 bytes AT THE CAR instead of 1.25 MB around an anchor with the
+    // car somewhere inside it. Measured on 191465: 6 MB and 2.3 s against
+    // 1.36 GB and eleven minutes, for the same bytes.
+    //
+    // It changes the WINDOW and nothing else. Every test below runs unchanged
+    // -- the copy is still identified by matching the clean run's own measured
+    // path, the four wheel slots must still be live, and the distance bar is
+    // still 1e-3 m -- so a chain that has gone stale (a new binary, a changed
+    // build) FAILS here and the caller falls back to the blind window.
+    car: Option<&dyn Fn(i32, u64) -> Result<(u64, Vec<(i64, u32)>), String>>,
     verbose: bool,
 ) -> Result<std::collections::HashMap<i64, Instant>, String> {
     // The layout sentinel is `rel == i64::MIN`, so `-r.rel` OVERFLOWS and the
@@ -1611,15 +1623,37 @@ pub fn gather_fields(
     // exactly what too few shared instants cannot be distinguished from.
     const PHASE_A_TARGET: usize = 48;
     let mut extra: record::ExtraSegs = Vec::new();
-    let span = back + fwd;
-    let each = (span as u32).div_ceil(6);
-    let mut o = -back;
-    while o < fwd {
-        let l = (each as i64).min(fwd - o) as u32;
-        if l > 0 {
-            extra.push((o, l));
+    if car.is_some() {
+        // The production window already covers car-192..car+256; the rest of
+        // the struct is gathered immediately after it, so `po` stays inside a
+        // contiguous run of bytes and every row's `car + rel` is in the record.
+        //
+        // SIZED FOR A COPY THAT IS NOT THE ONE THE POINTER NAMED. Measured on
+        // untitled 01: the chain resolved a state whose translation the copy
+        // rule then found 124 bytes further on, 0.000493 m from the run's own
+        // path -- the half-millimetre shadow of CARRIER.md §6, a second object
+        // rather than a second reading of one. The window has to hold the whole
+        // 864-byte state of whichever of them wins, so its far edge is
+        // `car + (win_fwd) + reach`, not `car + reach`. Getting this wrong does
+        // not fail loudly: `GatheredRec` answers 0 outside the record, so the
+        // transcription writes a confident zero into every byte past the edge,
+        // and 116 bytes of a 116-byte sample came out constant.
+        let win_fwd = record::win_len() as i64 - record::win_back();
+        let hi = win_fwd + reach.max(0x310 + 8);
+        if hi > win_fwd {
+            extra.push((win_fwd, (hi - win_fwd) as u32));
         }
-        o += each as i64;
+    } else {
+        let span = back + fwd;
+        let each = (span as u32).div_ceil(6);
+        let mut o = -back;
+        while o < fwd {
+            let l = (each as i64).min(fwd - o) as u32;
+            if l > 0 {
+                extra.push((o, l));
+            }
+            o += each as i64;
+        }
     }
     // Where a record offset came from, as a rel -- so phase B can ask for the
     // copy phase A found. The record is [0..4] clock, then the production
@@ -1644,27 +1678,32 @@ pub fn gather_fields(
         choose_copy: false,
         self_check: false,
         extra: extra.clone(),
+        pos_from: car,
         ..GatherOpts::production(dump)
     };
-    // PHASE A -- WIDE, BUT ONLY WHERE IT PAYS.
+    // PHASE A -- WIDE, AND ONLY WHEN THERE IS NO POINTER.
     //
-    // A calibrated field offset skips this entirely. The copy of the car that
-    // holds the fields sits at a fixed offset from the anchor for a given
-    // binary and map, exactly as the anchor itself sits at a fixed offset from
-    // the module base -- and `Anchors` already caches `pos_delta`, `quat_off`
-    // and `vel_off` for that reason. It did not cache this one, so a search
-    // that has one right answer was re-run on every fork, at 1.36 GB a time.
-    // `FK_FIELD_REL` supplies it; the wheel-liveness guard and the 1e-3 m
-    // position check still run, so a stale calibration can only FAIL and fall
-    // back to searching -- it cannot produce a wrong file.
-    let cached_rel: Option<i64> =
-        std::env::var("FK_FIELD_REL").ok().and_then(|v| v.parse().ok());
-    // How coarse phase A can be. The gather is on the RECORDING's grid, so the
-    // instant count is the ghost's sample count -- not the clean run's, which
-    // is five times denser at 10 ms and made this over-stride by 5x (48 asked
-    // for, 10 delivered, and the guard correctly refused to call that the same
-    // run). Conservative: never coarser than 4, which is a 4x saving with 60+
-    // instants left on a typical run and cannot approach the guard's floor.
+    // There WAS a calibration knob here, `FK_FIELD_REL`, on the reasoning that
+    // the copy holding the fields sits at a fixed offset from the anchor for a
+    // given binary and map, so a search with one right answer need not be re-run
+    // on every fork. THE REASONING IS WRONG, and the run that proved it is worth
+    // keeping: the offset is relative to the ANCHOR, and the anchor is chosen
+    // per fork -- the same file on the same binary picked base-1574780 on one
+    // attempt and base-872608 on the next. A rel measured against one is
+    // meaningless against the other, and re-running with the printed value
+    // gathered a 1332-byte record with 0 of 4 wheel slots live.
+    //
+    // The guards caught it, as designed. But a knob whose value is only ever
+    // valid inside the process that printed it is a footgun, not a cache -- and
+    // the POINTER is the real form of what it was reaching for: an address the
+    // engine itself holds, resolved fresh in every fork. So with a pointer
+    // there is no phase A at all, and without one there is no shortcut.
+    //
+    // How coarse phase A may be, when it runs. The gather is on the RECORDING's
+    // grid, so the instant count is the ghost's sample count -- not the clean
+    // run's, which is five times denser at 10 ms and made this over-stride by
+    // 5x (48 asked for, 10 delivered, and the guard correctly refused to call
+    // that the same run).
     let n_samples = (truth.len() as i64 * 10 / period.max(1)).max(1);
     // PHASE A'S STRIDE IS AN OPTIMISATION AND MUST NOT CHANGE THE ANSWER.
     //
@@ -1674,29 +1713,30 @@ pub fn gather_fields(
     // sparse. The copy search is cheap once the record is in hand; it is the
     // GATHER that costs. So phase A stays dense by default and the stride is
     // opt-in via FK_PHASE_A_STRIDE for anyone who has measured that it is safe
-    // on their run. The real saving is the calibration below: once
-    // FK_FIELD_REL is known, phase A does not happen at all.
+    // on their run.
     let stride = std::env::var("FK_PHASE_A_STRIDE")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1)
         .min((n_samples / PHASE_A_TARGET as i64).max(1));
-    let wide_period = if cached_rel.is_some() { period } else { period * stride };
-    let g = GatherOpts {
-        period: wide_period,
-        extra: if cached_rel.is_some() {
-            // Nothing wide is needed: ask only for the state, at the offset we
-            // already know. 864 bytes, from the class descriptor.
-            vec![(cached_rel.unwrap() - 0x50 - 8, 0x360 + 16)]
-        } else {
-            extra.clone()
-        },
-        ..g
-    };
+    let wide_period = if car.is_some() { period } else { period * stride };
+    let g = GatherOpts { period: wide_period, ..g };
     let two = record::run_clean_anch(c, &g)?;
     let recs = record::read_samples_pair(dump, two.reclen);
-    if verbose || cached_rel.is_none() {
+    // WHERE THE RECORD'S BYTES CAME FROM, when a pointer placed them.
+    //
+    // A record offset is not `anchor + something`: the segments are separate
+    // windows and the gatherer may sort, merge or clip them, so the only honest
+    // map from an address to a record offset is `segs_abs`. Printing it is what
+    // turns "the copy is at +320 and the anchor should be at +196" from a
+    // mystery into a subtraction.
+    if car.is_some() {
+        let segs: Vec<String> =
+            two.segs_abs.iter().map(|(a, l)| format!("{:#x}+{}", a, l)).collect();
+        println!("  pointer window: record {} B from {}", two.reclen, segs.join(" "));
+    }
+    if verbose || car.is_none() {
         println!(
             "field gather phase A: {} instants at {} ms, record {} B ({:.1} MB gathered)",
             recs.len(),
@@ -1741,6 +1781,16 @@ pub fn gather_fields(
     let reclen = two.reclen;
     let probe = n / 2;
     let hi = reclen.saturating_sub(12);
+    // IN LAYOUT MODE A COPY IS ONLY A CANDIDATE IF ITS WHOLE STATE IS IN THE
+    // RECORD. `vislayout::pack` reads all 864 bytes of the struct and
+    // `GatheredRec` answers 0 outside the window, so a copy whose tail runs off
+    // the edge does not produce a partial sample -- it produces a confident
+    // zero in every byte past the edge, which passes every acceptance test the
+    // file has. Refusing it here is what makes the window's size a measurable
+    // property instead of an assumption.
+    let covered = |o: usize| -> bool {
+        !layout_mode || (o >= 0x50 && o - 0x50 + 0x360 <= reclen)
+    };
     let mut cands: Vec<(f64, usize, Write)> = Vec::new();
     for wr in [Write::Car, Write::Other] {
         let b = match wr {
@@ -1748,6 +1798,9 @@ pub fn gather_fields(
             Write::Other => &recs[idx[probe]].2,
         };
         for o in (4..hi).step_by(4) {
+            if !covered(o) {
+                continue;
+            }
             let mut d = 0.0;
             for k in 0..3 {
                 let e = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap()) as f64;
@@ -1779,7 +1832,53 @@ pub fn gather_fields(
         }
     }
     if cands.is_empty() {
-        return Err("no copy in the field window holds the trajectory the clean run measured".into());
+        // SAY HOW FAR OFF IT WAS. With a blind window "nothing here holds the
+        // trajectory" is the whole story; with a POINTER the window is the
+        // struct the chain named, and the distance from the run's own path is
+        // the difference between "the chain is stale" (metres) and "the chain
+        // is right and something else is wrong" (sub-millimetre). A fallback
+        // that does not print it leaves the next person guessing.
+        let mut worst = String::new();
+        if car.is_some() {
+            let mut e: Vec<f64> = Vec::new();
+            for (j, i) in idx.iter().enumerate() {
+                let b = &recs[*i].1;
+                let po = 4 + record::win_back() as usize;
+                if po + 12 > reclen {
+                    break;
+                }
+                let d: f64 = (0..3)
+                    .map(|k| {
+                        (f32::from_le_bytes(b[po + k * 4..po + k * 4 + 4].try_into().unwrap())
+                            as f64
+                            - want[j][k])
+                            .powi(2)
+                    })
+                    .sum();
+                e.push(d.sqrt());
+            }
+            e.sort_by(|a, b| a.total_cmp(b));
+            if !e.is_empty() {
+                worst = format!(
+                    " -- the state the chain named is {:.6} m from it (median over {} instants)",
+                    e[e.len() / 2],
+                    e.len()
+                );
+            }
+        }
+        return Err(format!(
+            "no copy in the field window holds the trajectory the clean run measured{}{}",
+            worst,
+            if layout_mode {
+                format!(
+                    " (layout mode also requires the copy's whole 864-byte state inside the \
+                     {}-byte record, so a copy near either edge is not a candidate)",
+                    reclen
+                )
+            } else {
+                String::new()
+            }
+        ));
     }
     cands.sort_by(|a, b| a.0.total_cmp(&b.0));
     // ARE THE FOUR WHEEL-ROTATION SLOTS LIVE? That is what separates the copy
@@ -1839,14 +1938,14 @@ pub fn gather_fields(
          own measured path over {} instants, {} of 4 wheel slots live ({} copies)",
         po, wr.name(), err, n, nlive, cands.len()
     );
-    // PRINT THE CALIBRATION. This is the one right answer the search just
-    // spent 1.36 GB finding; naming it is what lets the next run be a lookup.
-    if let Some(rel) = rel_of(po, &extra) {
-        println!(
-            "  calibration: FK_FIELD_REL={}   (re-run with this and phase A is skipped \
-             entirely -- the guards still run, so a stale value can only fail)",
-            rel
-        );
+    // WHERE THE COPY WAS FOUND, as an offset from the anchor. Printed as a
+    // diagnostic and nothing more: the anchor is chosen per fork, so this
+    // number is only meaningful inside the process that printed it. It used to
+    // be offered as a calibration to re-run with, and it is not one.
+    if car.is_none() {
+        if let Some(rel) = rel_of(po, &extra) {
+            println!("  (the copy is anchor{:+}, for this fork only)", rel);
+        }
     }
     // A MEASUREMENT WORTH READING, not a diagnostic.
     //
@@ -1902,7 +2001,20 @@ pub fn gather_fields(
     // locator already uses, for the reason it already has: a constant
     // quaternion satisfies a norm test and an identity rotation is
     // indistinguishable from a zeroed slot.
-    let (qoff, qk, qsign) = {
+    // WITH A POINTER THERE IS NO ORIENTATION HUNT, AND THAT IS DELIBERATE.
+    //
+    // The hunt below searches +-4 KB around the car for four consecutive floats
+    // that form a varying unit quaternion, because on a blind gather the copy
+    // holding the fields is a different object from the one the anchor's
+    // offsets were measured on. A pointer window is 864 bytes -- the struct
+    // itself -- and the struct holds `Loc`'s 3x3 rotation, not a quaternion, so
+    // the hunt has nothing to find and would fail the whole gather. The fields
+    // do not depend on it (they are read at `car + rel`), and
+    // `--transform-from-fields`, which does, is REFUSED with a pointer window
+    // by `fk regen` rather than served with a guess.
+    let (qoff, qk, qsign) = if car.is_some() {
+        (0usize, anchors.quat_kind, 1.0f64)
+    } else {
         let vo = (po as i64 + anchors.vel_off) as usize;
         if vo + 12 > reclen {
             return Err("the field window does not cover this copy's velocity".into());
@@ -2087,6 +2199,7 @@ pub fn gather_fields(
         };
         (qo, kind, sign)
     };
+    let _ = (qoff, qsign);
     for i in 0..n {
         let b = match wr {
             Write::Car => &recs[idx[i]].1,
@@ -2113,31 +2226,6 @@ pub fn gather_fields(
         if layout_mode {
             let g = GatheredRec { b, base: po as i64 - 0x50, reclen };
             let packed = crate::vislayout::pack(&g);
-            // WHERE DOES A CONSTANT CHANNEL BECOME CONSTANT? At the source (the
-            // state window is dead or misplaced), in the transcription, or
-            // downstream in the write mask. Naming the three and printing the
-            // first two is what tells them apart; guessing between them cost a
-            // day.
-            if std::env::var_os("FK_LAYOUT_DEBUG").is_some() && i < 6 {
-                let base = po as i64 - 0x50;
-                let raw = |s: usize| -> u8 {
-                    let o = base + s as i64;
-                    if o < 0 || o as usize >= reclen { 0 } else { b[o as usize] }
-                };
-                let mut h: u64 = 0xcbf29ce484222325;
-                for s in 0..0x360usize {
-                    h ^= raw(s) as u64;
-                    h = h.wrapping_mul(0x100000001b3);
-                }
-                println!(
-                    "  layout[{}] t={} state-fnv={:016x} packed 6={} 31={} 89={} 90={} 91={} \
-                     76={} | raw 0x28c={} 0x290={} 0x294={} covered={}",
-                    i, ms[i], h,
-                    packed[6], packed[31], packed[89], packed[90], packed[91], packed[76],
-                    raw(0x28c), raw(0x290), raw(0x294),
-                    base >= 0 && (base as usize + 0x360) <= reclen
-                );
-            }
             for ch in 0..116usize {
                 if crate::vislayout::UNPREDICTED.contains(&ch)
                     || crate::vislayout::DEAD_IN_SERVER.contains(&ch)

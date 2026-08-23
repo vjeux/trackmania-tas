@@ -23,6 +23,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk resync          put an old recording's tape back on its own recorded line
   fk regen           rewrite a ghost's telemetry from engine state
   fk carrier         name the sample bytes a regenerated ghost inherits, and write them
+  fk ptr             the engine's own pointer to the car: find it, check it
 
 Engine flags, accepted by every command:
   --tape FILE        the .Ghost.Gbx / .Replay.Gbx whose inputs the engine runs
@@ -175,6 +176,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
         "watch" => cmd::watch::run(&a[1..]),
         "regen" => cmd::regen::run(&a[1..]),
         "carrier" => cmd::carrier::run(&a[1..]),
+        "ptr" => cmd::ptr::run(&a[1..]),
         "events" => cmd::events::run(&a[1..]),
         x => Err(format!("unknown command {:?}\n\n{}", x, USAGE)),
     }

@@ -94,30 +94,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // all, and the locate needs a MOVING car (its whole discriminator is
     // d(pos)/dt against the stored velocity).
     let n = f.steer.len() as i64;
-    // HALVE DOWNWARD, do not sample the tape uniformly. The anchor tick has to
-    // land inside the RUN, and the run is usually SHORTER than the tape it is
-    // carried in: a transplanted ghost inherits the carrier's input array, so a
-    // 9.4 s run can sit in a 50 s tape and n/2, n/4 and 3n/4 are then all past
-    // the finish -- "server never reached the checkpoint", three times, and the
-    // ladder is exhausted (measured 2026-08-20 on TMX 276877: n = 5000, finish
-    // at tick 1092). Halving reaches any run length in log2 steps.
-    // It also puts the probe where the CAR IS DRIVING. The locator qualifies a
-    // candidate over the 150 ticks after the probe, against a threshold of 2 %
-    // of the speed in that window -- so an early probe is judged where the car
-    // is slowest (tightest threshold) and where the first collision usually is
-    // (largest real residual). On 276877 the real car scores 1.21 m/s against a
-    // 0.58 m/s bar over 0.26-2.6 s, and 0.51 against 1.05 over 2.1-9.5 s.
-    let mut ticks: Vec<i64> = vec![bt];
-    let mut k = n / 2;
-    while k >= 60 {
-        ticks.push(k);
-        k /= 2;
-    }
+    // The ladder is shared with `fk ptr`, which needs the same checkpoints for
+    // the same reasons; the reasoning lives on `record::ladder_ticks`.
+    let mut ticks: Vec<i64> = crate::record::ladder_ticks(n, bt);
     if let Some(s) = flag("--anchorticks") {
         ticks = s.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        ticks.retain(|t| *t >= 60 && *t < n - 20);
+        ticks.dedup();
     }
-    ticks.retain(|t| *t >= 60 && *t < n - 20);
-    ticks.dedup();
     let mut anchors: Vec<crate::record::Anchors> = Vec::new();
     // The BIAS first, on its own: the clock scan is far more robust than the
     // position locate (its signature is "+10 every tick, no exceptions"), and
@@ -528,6 +512,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // affects the simulation.
     let mut carrier_vals: std::collections::HashMap<i64, crate::cmd::carrier::Instant> =
         Default::default();
+    // What the gather read, per SAMPLE BYTE, so the file can be checked
+    // against it once it exists. See the read-back at the end of this command.
+    let mut gathered: std::collections::BTreeMap<usize, std::collections::BTreeSet<u8>> =
+        Default::default();
     if !carrier.is_empty() {
         // WHICH ANCHOR. The field gather only has to put the car somewhere in a
         // 1.25 MB window and then finds it there, so it is far less fussy than
@@ -631,9 +619,68 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let (gp, gph) = grid_of(&times);
         let fdump = format!("{}.fields", dump);
         let mut last = String::new();
-        for a in &field_anchors {
+        // THE POINTER, FIRST. `fk ptr find` established that the engine keeps a
+        // pointer to the vehicle state in the game binary's own static data, so
+        // the field gather does not have to hunt for the car in 1.25 MB of
+        // engine memory at 260 instants: it reads a pointer, dereferences it,
+        // and gathers the 864 bytes of the struct. Measured on 191465, for the
+        // same bytes out: 1.36 GB and 11-12 minutes -> a few MB and seconds.
+        //
+        // Nothing about this is trusted. `gather_fields` applies exactly the
+        // same acceptance to a pointer window as to a blind one -- the copy
+        // must reproduce the clean run's own measured path and all four wheel
+        // slots must be live -- and when it does not, this falls through to the
+        // blind window below and says so. A wrong pointer cannot produce a
+        // file; it can only cost the time the search would have cost anyway.
+        let chain = flag("--car-chain").unwrap_or_else(|| crate::ptr::DEFAULT_CHAIN.to_string());
+        let no_chain = args.iter().any(|a| a == "--no-car-chain") || chain.is_empty();
+        if !no_chain && xform_from_fields {
+            println!(
+                "ABORT: --transform-from-fields needs the orientation hunt, which a pointer \
+                 window cannot run -- it is the struct itself, and the struct holds a 3x3 \
+                 rotation rather than a quaternion. Re-run with --no-car-chain. No file written."
+            );
+            std::process::exit(3);
+        }
+        if !no_chain {
+            // The spec names the engine's vehicle ARRAY, so every member is
+            // gathered and the copy rule below chooses between them -- which
+            // element is the live car varies by process, and an index nobody
+            // measured is a coin flip that the acceptance test would catch but
+            // that would cost the run.
+            let resolve = |pid: i32, _base: u64| -> Result<(u64, Vec<(i64, u32)>), String> {
+                let (m, _) =
+                    crate::ptr::module_base(pid).ok_or("no module base for the live server")?;
+                let states = crate::ptr::resolve_pool(pid, m, &chain)?;
+                let anchor = states[0] + 0x50;
+                let ex = states[1..]
+                    .iter()
+                    .map(|s| (*s as i64 - anchor as i64, 0x368u32))
+                    .collect();
+                Ok((anchor, ex))
+            };
+            let a = field_anchors[0];
             match crate::cmd::carrier::gather_fields(
-                &c, a, &carrier, &truth, &truth_q, gp, gph, &fdump, 1_048_576, 262_144, verbose,
+                &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0, Some(&resolve), verbose,
+            ) {
+                Ok(v) => {
+                    println!("--carrier: the fields came from the pointer {}", chain);
+                    carrier_vals = v;
+                }
+                Err(e) => println!(
+                    "--carrier: the pointer {} did not produce the car ({}); falling back to the \
+                     blind window",
+                    chain, e
+                ),
+            }
+        }
+        for a in &field_anchors {
+            if !carrier_vals.is_empty() {
+                break;
+            }
+            match crate::cmd::carrier::gather_fields(
+                &c, a, &carrier, &truth, &truth_q, gp, gph, &fdump, 1_048_576, 262_144, None,
+                verbose,
             ) {
                 Ok(v) => {
                     carrier_vals = v;
@@ -677,6 +724,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             for (ch, x) in &v.fields {
                 seen.entry(ch.name()).or_default().insert(*x);
+                // AND THE SAME THING PER BYTE, for the read-back after the
+                // write. `seen` is keyed by channel name and lives on what was
+                // GATHERED; the read-back has to name bytes of the file.
+                match ch {
+                    crate::carrier::Channel::Byte(b) => {
+                        gathered.entry(*b).or_default().insert(*x as u8);
+                    }
+                    crate::carrier::Channel::U16(b) => {
+                        gathered.entry(*b).or_default().insert(*x as u8);
+                        gathered.entry(*b + 1).or_default().insert((*x >> 8) as u8);
+                    }
+                }
             }
         }
         // VARIANCE, NOT VALUE -- AND ONLY WHERE STILLNESS IS IMPOSSIBLE.
@@ -789,6 +848,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     gq(fst, o.quat_off),
                 ],
             };
+            // WHICH INSTANT'S FIELDS, and — separately — where the TRANSFORM
+            // comes from. These were one binding, and that was the bug.
+            //
+            // `carrier_vals` carries two things: the transform read from the
+            // copy that has the fields, and the fields themselves. Only the
+            // FIRST is what `--transform-from-fields` chooses. Gating both on
+            // the flag meant that without it the carrier bytes below were
+            // written from `&[]` — so a run could gather 99 channels, report
+            // them, name which of them vary, and write a file in which every
+            // one of those bytes is the carrier's untouched constant. It is
+            // silent by construction: the gather's own report is made from
+            // `carrier_vals`, which is correct, and nothing downstream looks at
+            // the file. `--carrier layout` on untitled 01 read live wheel
+            // rotation (byte 6 stepping 0, 8, 26 as the car pulls away) and
+            // wrote 0x00 on all 256 samples.
+            let fields = carrier_vals.get(&ms);
             // THE TRANSFORM COMES FROM THE SAME OBJECT AS THE FIELDS.
             //
             // With `--carrier`, from the copy the field gather identified: the
@@ -804,7 +879,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // and that agreement was quoted as a "client-vs-server floor". It
             // is the distance between these two structs, and it is the same on
             // three maps because it is one quantity measured three times.
-            let ci = if xform_from_fields { carrier_vals.get(&ms) } else { None };
+            let ci = if xform_from_fields { fields } else { None };
             let x = match ci {
                 Some(v) => gbx::recwrite::Xform { pos: v.pos, quat: v.quat, vel: v.vel },
                 None => gbx::recwrite::Xform {
@@ -864,7 +939,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // other write of the tick would pair a position with a suspension
             // state a fraction of a tick apart -- a defect that looks like
             // nothing, since neither byte affects the simulation.
-            for (ch, v) in ci.map(|v| v.fields.as_slice()).unwrap_or(&[]) {
+            for (ch, v) in fields.map(|v| v.fields.as_slice()).unwrap_or(&[]) {
                 match ch {
                     crate::carrier::Channel::Byte(b) if *b < ss => s[*b] = *v as u8,
                     crate::carrier::Channel::U16(b) if *b + 1 < ss => {
@@ -903,6 +978,61 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let n_final = done + missing.len();
     let cov = if n_final == 0 { 0.0 } else { 100.0 * done as f64 / n_final as f64 };
     println!("COVERAGE: {} of {} samples in the written record are ours ({:.2} %)", done, n_final, cov);
+    // THE READ-BACK. Does the FILE hold what the gather read?
+    //
+    // Every carrier report above is made from `carrier_vals` -- what came out
+    // of engine memory -- and none of it is evidence about the bytes on disk.
+    // That gap is not theoretical: `ci` was bound to `carrier_vals` only under
+    // `--transform-from-fields`, so without that flag the carrier bytes were
+    // written from an empty slice, and the command printed "99 channels over
+    // 260 instants", named which of them vary, and wrote a file in which all 99
+    // were the carrier's constants. Nothing in the tool looked, because
+    // everything in the tool was looking at the gather.
+    //
+    // So: a channel the gather says VARIES must vary in the written record. The
+    // converse is not checked -- a byte can legitimately be constant, and the
+    // report above already says which and why.
+    if !gathered.is_empty() {
+        match gbx::record::decode_ghost(&outp) {
+            Err(e) => {
+                println!("ABORT: cannot read back {} to check it: {}", outp, e);
+                std::process::exit(3);
+            }
+            Ok(d) => {
+                let mut lost: Vec<String> = Vec::new();
+                for (b, vals) in &gathered {
+                    if vals.len() <= 1 || *b >= d.sample_size {
+                        continue;
+                    }
+                    let mut got: std::collections::BTreeSet<u8> = Default::default();
+                    for i in 0..d.samples.len() {
+                        let s = &d.raw[i * d.sample_size..][..d.sample_size];
+                        got.insert(s[*b]);
+                    }
+                    if got.len() <= 1 {
+                        lost.push(format!(
+                            "byte {} (gather saw {} values, file holds one)",
+                            b,
+                            vals.len()
+                        ));
+                    }
+                }
+                if !lost.is_empty() {
+                    println!(
+                        "ABORT: {} channel(s) the gather read as VARYING are constant in the \
+                         written file -- the values were read and then not written: {}. The \
+                         file is NOT publishable.",
+                        lost.len(),
+                        lost.join(", ")
+                    );
+                    std::process::exit(3);
+                }
+                println!(
+                    "  read-back OK: every channel the gather saw vary also varies in the file"
+                );
+            }
+        }
+    }
     if !missing.is_empty() && !allow_partial && !inherit {
         println!(
             "ABORT: {} samples in the WRITTEN file still carry the donor's telemetry \

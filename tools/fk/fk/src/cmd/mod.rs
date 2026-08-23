@@ -5,6 +5,7 @@ pub mod carrier;
 pub mod events;
 pub mod liveness;
 pub mod probe;
+pub mod ptr;
 pub mod regen;
 pub mod resync;
 pub mod server;

@@ -62,6 +62,7 @@ written to disk, is a **result**.
 | `fk watch paths` | do the two in-child sampling paths judge identically? |
 | `fk regen` | rewrite a ghost's telemetry from engine state (the engine half of `ghost regen`) |
 | `fk carrier` | name the sample bytes a regenerated ghost inherits, and write them — see [CARRIER.md](tools/fk/CARRIER.md) |
+| `fk ptr` | the engine's own pointer to the car — find it, check it; see [POINTER.md](tools/fk/POINTER.md) |
 
 Engine flags, accepted by every command: `--tape`, `--map`, `--server`
 (`$TM_SERVER`), `--shim` (`$FK_SHIM`), `--work`. Checkpoint: `--at tick:N`,
@@ -548,6 +549,19 @@ bytes are the run's own inputs and need no engine reading at all. Leaving it
 optional means a regenerated file can silently disagree with the tape it
 carries, which is the cheapest contamination check there is. Make it
 unconditional; add `--no-inputs` only when someone can name the case.
+
+### G7-adjacent, CLOSED: the field gather no longer searches for the car
+
+*Was: the carrier fields come from a 1.25 MB window swept at every 4-byte
+offset, 1.36 GB of disk per regeneration.* The engine keeps its vehicles in an
+array of four objects reachable from a single global, with
+`CSceneVehicleVisState` a member of each at +0x848, so the gather reads a
+pointer and takes 864 bytes. **Measured: byte-identical output, and the disk
+traffic of 24 parallel regenerations goes from 8.86 GB to 0.12 GB.** Result,
+method, controls and how to recalibrate on a new build:
+**[tools/fk/POINTER.md](tools/fk/POINTER.md)**.
+
+The locate the CLEAN run does is untouched, so G7 below stands as written.
 
 ### G7. Nothing measures how often the locate picks a decoy on a given map
 
