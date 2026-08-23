@@ -16,6 +16,8 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk server probe    where a fork server actually stopped, and the safe resume tick
   fk server check    fork resume vs full validation on the same candidates  [THE CONTROL]
   fk server bench    throughput against the batched plain oracle
+  fk liveness        is this anchor the copy of the car that has the fields?
+  fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
   fk resync          put an old recording's tape back on its own recorded line
@@ -84,6 +86,42 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                 ),
                 _ => Err("fk server <probe|check|bench>".into()),
             }
+        }
+        "liveness" => {
+            let rest = &a[1..];
+            let (engine, tape, at) = common(rest)?;
+            cmd::liveness::run(
+                &engine,
+                tape,
+                at,
+                cmd::liveness::LivenessOpts {
+                    reference: flag(rest, "--reference").map(|s| s.to_string()),
+                    also: flag(rest, "--also")
+                        .map(|s| s.split(',').map(|x| x.parse().expect("--also a,b,c")).collect())
+                        .unwrap_or_default(),
+                },
+            )
+        }
+        "probe" => {
+            let rest = &a[1..];
+            let (engine, tape, at) = common(rest)?;
+            cmd::probe::run(
+                &engine,
+                tape,
+                at,
+                cmd::probe::ProbeOpts {
+                    reference: flag(rest, "--reference")
+                        .ok_or("fk probe needs --reference CSV (the answer key)")?
+                        .to_string(),
+                    channel: flag(rest, "--channel").unwrap_or("wetness").to_string(),
+                    span: num(rest, "--span").unwrap_or(512) as u32,
+                    top: num(rest, "--top").unwrap_or(12) as usize,
+                    affine: flag(rest, "--affine").map(|s| {
+                        let v: Vec<f64> = s.split(',').map(|x| x.parse().expect("--affine a,b")).collect();
+                        (v[0], v[1])
+                    }),
+                },
+            )
         }
         "trace" => {
             let rest = &a[1..];

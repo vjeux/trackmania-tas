@@ -854,6 +854,7 @@ pub fn trajectory(
             qx: getf32(&t.rec, R_QUAT + 4),
             qy: getf32(&t.rec, R_QUAT + 8),
             qz: getf32(&t.rec, R_QUAT + 12),
+            wetness: getf32(&t.rec, forkoracle::layout::R_WET),
         })
         .collect()
 }

@@ -25,6 +25,7 @@
 
 mod corridor;
 mod onsurface;
+mod wet;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -81,6 +82,15 @@ pub struct Cfg {
     pub keep_before: bool,
     pub corridor_m: f64,
     pub corridor_run: usize,
+    /// The video's decoded wetness, and how far a candidate may stray from it.
+    pub wet_video: Option<wet::Wet>,
+    pub wet_tol: f64,
+    pub wet_run: usize,
+    /// Race time the score starts at. Zero for a reconstruction from the line;
+    /// non-zero states a DIFFERENT claim — "given this driving up to T, how far
+    /// past T can the run be recovered" — and the two must never be quoted as
+    /// the same number.
+    pub from_ms: i64,
 }
 
 /// (race ms at which tracking stops, mean |diff| before it)
@@ -154,12 +164,19 @@ fn load_engine(path: &Path) -> Option<BTreeMap<i64, f64>> {
     Some(m)
 }
 
-fn score(video: &BTreeMap<i64, f64>, eng: &BTreeMap<i64, f64>, tol: f64, run: usize, match_ms: i64) -> Score {
+fn score(
+    video: &BTreeMap<i64, f64>,
+    eng: &BTreeMap<i64, f64>,
+    tol: f64,
+    run: usize,
+    match_ms: i64,
+    from_ms: i64,
+) -> Score {
     let mut bad = 0usize;
     let mut n = 0usize;
     let mut sum = 0.0;
-    let mut last_ok = 0i64;
-    for (t, v) in video {
+    let mut last_ok = from_ms;
+    for (t, v) in video.range(from_ms..) {
         // Closest VALUE inside the timing window, not closest instant: see the
         // note in vidread::enginecmp. On the launch ramp a ten millisecond
         // difference is four km/h and a nearest-instant rule scores two runs
@@ -219,6 +236,11 @@ fn evaluate(
         .output()
         .ok()?;
     if !ok.status.success() {
+        // A candidate that cannot be BUILT is a configuration error, not a bad
+        // tape, and swallowing it silently costs an hour: the search prints
+        // "0 evaluated" and every explanation for that is wrong except this
+        // one. The child's own words, once, are what tell them apart.
+        eprintln!("recon: ghost tape script failed: {}", String::from_utf8_lossy(&ok.stderr).trim());
         return None;
     }
     let ok = Command::new(&cfg.ghost)
@@ -254,16 +276,43 @@ fn evaluate(
     if eng.len() < 100 {
         return None;
     }
-    let mut sc = score(video, &eng, cfg.tol, cfg.run, cfg.match_ms);
+    let mut sc = score(video, &eng, cfg.tol, cfg.run, cfg.match_ms, cfg.from_ms);
+    // A TRACE THAT RUNS OUT LOOKS EXACTLY LIKE ONE THAT TRACKS PERFECTLY.
+    // `score` skips video instants with no engine sample near them, so a trace
+    // that stops early records no disagreement past its own end and the
+    // candidate keeps whatever it had earned. Cap the score at the last instant
+    // the engine actually reported.
+    let eng_end = *eng.keys().last()?;
+    sc.until = sc.until.min(eng_end);
     // A candidate that has LEFT THE TRACK keeps the video's speed for a while
     // as it falls -- 16 m away and 4 m below, and still scoring. Where the
     // human corridor makes a claim, it is the earlier of the two that is true.
+    //
+    // AND A GATE THAT CANNOT BE EVALUATED IS NOT A GATE THAT PASSED. If the
+    // caller asked for the corridor or the wetness and this trace cannot serve
+    // it, the candidate is REFUSED. Scoring it on the remaining objectives is
+    // how a search ends up keeping its luckiest measurement: on this map, under
+    // heavy load, one such candidate was reported at 12.580 and re-measures at
+    // 12.480 on a quiet box, because 12.580 is its SPEED-ONLY score.
     if let Some(c) = corr {
-        if let Some(pos) = load_positions(&tr) {
-            if let Some(left) = c.departs(&pos, cfg.corridor_m, cfg.corridor_run, 30) {
-                if left < sc.until {
-                    sc.until = left;
-                }
+        let pos = load_positions(&tr)?;
+        if let Some(left) = c.departs(&pos, cfg.corridor_m, cfg.corridor_run, 30, cfg.from_ms) {
+            if left < sc.until {
+                sc.until = left;
+            }
+        }
+    }
+    // And where the corridor is silent -- past the reroute, which is most of
+    // this run -- the wetness readout is not. Same rule: the score is the
+    // EARLIEST of the observables that make a claim, because a candidate is
+    // right until it is wrong and any one of them can be the thing that is
+    // wrong first.
+    if let Some(v) = &cfg.wet_video {
+        let e = wet::load_series(tr.to_str()?)?;
+        if let Some(left) = wet::departs(v, &e, cfg.wet_tol, cfg.wet_run, cfg.match_ms, cfg.from_ms)
+        {
+            if left < sc.until {
+                sc.until = left;
             }
         }
     }
@@ -346,10 +395,98 @@ fn cmd_onsurface(a: &[String]) {
     onsurface::report(&get("--label", "candidate"), &cand, &cp, &href, &mut o);
 }
 
+/// `recon wetcmp` -- hold the video's decoded wetness against any number of
+/// simulated or recorded series, and say where each one stops reproducing it.
+///
+/// This is the objective run as a REPORT rather than as a gate, and its first
+/// job is not scoring candidates at all: held against the human replays it
+/// dates the point where this run stops driving the human route, which is the
+/// number `--corridor-to` needs and which was previously a guess.
+fn cmd_wetcmp(a: &[String]) {
+    let get = |k: &str, d: &str| -> String {
+        a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned().unwrap_or(d.into())
+    };
+    let vpath = get("--video", "wet_video.tsv");
+    let video = load_ref(a, &vpath, get("--wet-shift-ms", "0").parse().unwrap());
+    let tol: f64 = get("--wet-tol", "5").parse().unwrap();
+    let run: usize = get("--wet-run", "6").parse().unwrap();
+    let match_ms: i64 = get("--match-ms", "50").parse().unwrap();
+    println!("video: {} readings, race {:.3}..{:.3} s", video.len(), *video.keys().next().unwrap() as f64 / 1000.0, *video.keys().last().unwrap() as f64 / 1000.0);
+    for (i, k) in a.iter().enumerate() {
+        if k != "--series" {
+            continue;
+        }
+        let path = &a[i + 1];
+        let Some(e) = wet::load_series(path) else {
+            println!("{path}: NO WETNESS COLUMN");
+            continue;
+        };
+        let r = wet::agreement(&video, &e, tol, run, match_ms);
+        println!(
+            "{path}\tshared {}\twithin {} pt: {} ({:.1} %)\tmean |diff| {:.2} pt\tlast agreed {}\tfirst break {}",
+            r.shared,
+            tol,
+            r.within,
+            100.0 * r.within as f64 / r.shared.max(1) as f64,
+            r.mean_abs,
+            r.last_agreed.map(|t| format!("{:.3} s", t as f64 / 1000.0)).unwrap_or_else(|| "-".into()),
+            r.first_break.map(|t| format!("{:.3} s", t as f64 / 1000.0)).unwrap_or_else(|| "never".into())
+        );
+        if a.iter().any(|x| x == "--dump") {
+            let every: usize = get("--dump-every", "10").parse().unwrap();
+            for (i, (t, v, e)) in r.rows.iter().enumerate() {
+                if i % every == 0 {
+                    println!("  {:.3}\tvideo {:5.1}\tseries {:6.2}\td {:6.2}", *t as f64 / 1000.0, v, e, e - v);
+                }
+            }
+        }
+    }
+}
+
+/// Load the reference wetness series the way both the gate and the report see
+/// it: the decoded file, plus any control shift, plus any asserted band.
+/// One function so a report can never be shown a different series from the one
+/// the search scored against.
+fn load_ref(a: &[String], path: &str, shift_ms: i64) -> wet::Wet {
+    let mut w = wet::load_video(path)
+        .or_else(|| wet::load_series(path))
+        .expect("reference wetness series");
+    if shift_ms != 0 {
+        eprintln!("wetness: series shifted {shift_ms} ms -- this is the CONTROL, not a measurement");
+        w = wet::shift(&w, shift_ms);
+    }
+    // --wet-zero FROM:TO asserts a DRY window the reader could not read,
+    // because the HUD draws nothing when there is nothing to draw. On this run
+    // the supports for race 10100..20600 are four and independent: the reset
+    // MEASURED at 10.038; the frames, which show the car on dry blue surfaces
+    // throughout; the run's author saying "flat lining into the water pool" at
+    // race 20.3; and the soak rate, which puts the entry behind the 100 % at
+    // 22.355 no earlier than race 21.1. It is still an ASSERTION and the log
+    // says so on every run.
+    for (i, k) in a.iter().enumerate() {
+        if k != "--wet-zero" {
+            continue;
+        }
+        let (f, t) = a[i + 1].split_once(':').expect("--wet-zero FROM_MS:TO_MS");
+        let (f, t) = (f.parse().unwrap(), t.parse().unwrap());
+        eprintln!(
+            "wetness: ASSERTING 0 % over race {:.3}..{:.3} s -- not read, inferred",
+            f as f64 / 1000.0,
+            t as f64 / 1000.0
+        );
+        w = wet::assert_band(&w, f, t, 0.0, 60.0);
+    }
+    w
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.first().map(|x| x.as_str()) == Some("onsurface") {
         cmd_onsurface(&a[1..]);
+        return;
+    }
+    if a.first().map(|x| x.as_str()) == Some("wetcmp") {
+        cmd_wetcmp(&a[1..]);
         return;
     }
     let get = |k: &str, d: &str| -> String {
@@ -371,6 +508,19 @@ fn main() {
         keep_before: a.iter().any(|x| x == "--keep-before"),
         corridor_m: get("--corridor-m", "12").parse().unwrap(),
         corridor_run: get("--corridor-run", "5").parse().unwrap(),
+        // --wet FILE turns the decoded wetness on as an objective. Off by
+        // default: a gate that is on when nobody asked for it is a gate whose
+        // effect on a number cannot be measured.
+        // --wet FILE turns the decoded wetness on as an objective. Off by
+        // default: a gate that is on when nobody asked for it is a gate whose
+        // effect on a number cannot be measured.
+        wet_video: a
+            .iter()
+            .position(|x| x == "--wet")
+            .map(|i| load_ref(&a, &a[i + 1], get("--wet-shift-ms", "0").parse().unwrap())),
+        wet_tol: get("--wet-tol", "5").parse().unwrap(),
+        wet_run: get("--wet-run", "6").parse().unwrap(),
+        from_ms: get("--from-ms", "0").parse().unwrap(),
     };
     let video = load_video(&get("--video", "video.tsv"));
     // --corridor FILE.csv (repeatable): human trajectories that bound where a

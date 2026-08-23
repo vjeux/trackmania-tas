@@ -4,15 +4,35 @@
 use std::io::{Read, Result};
 
 /// One decoded frame: packed rgb24, `w * h * 3` bytes.
+///
+/// `ox`/`oy` are the frame coordinates of the stream's own pixel (0, 0). They
+/// are zero for a full frame and non-zero when ffmpeg was told to `crop`, which
+/// is how a reader that touches one 220x50 HUD box avoids paying for 11 MB a
+/// frame. Every coordinate in this crate stays in **full-frame** pixels either
+/// way, so a cropped run and an uncropped run of the same reader are the same
+/// measurement rather than two measurements that have to be reconciled.
 pub struct Frame {
     pub w: usize,
     pub h: usize,
+    pub ox: usize,
+    pub oy: usize,
     pub px: Vec<u8>,
 }
 
 impl Frame {
-    pub fn new(w: usize, h: usize) -> Self {
-        Frame { w, h, px: vec![0u8; w * h * 3] }
+    pub fn with_origin(w: usize, h: usize, ox: usize, oy: usize) -> Self {
+        Frame { w, h, ox, oy, px: vec![0u8; w * h * 3] }
+    }
+
+    /// Clamp a full-frame x into the window this frame actually holds.
+    #[inline]
+    pub fn clampx(&self, x: i32) -> usize {
+        x.clamp(self.ox as i32, (self.ox + self.w - 1) as i32) as usize
+    }
+
+    #[inline]
+    pub fn clampy(&self, y: i32) -> usize {
+        y.clamp(self.oy as i32, (self.oy + self.h - 1) as i32) as usize
     }
 
     /// Read the next frame in place. `Ok(false)` at a clean end of stream.
@@ -37,7 +57,7 @@ impl Frame {
 
     #[inline]
     pub fn rgb(&self, x: usize, y: usize) -> (u8, u8, u8) {
-        let i = (y * self.w + x) * 3;
+        let i = ((y - self.oy) * self.w + (x - self.ox)) * 3;
         (self.px[i], self.px[i + 1], self.px[i + 2])
     }
 

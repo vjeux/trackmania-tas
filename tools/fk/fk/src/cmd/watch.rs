@@ -371,6 +371,7 @@ fn setup(c: &Cfg) -> Setup {
                 qy: 0.0,
                 qz: 0.0,
                 qw: 0.0,
+                wetness: 0.0,
             })
             .collect();
         bounds_from(&rows, 200.0)
