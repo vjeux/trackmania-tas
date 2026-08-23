@@ -754,12 +754,17 @@ fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
     }
     println!(
         "    controls            contact bit: in contact {:.1} m/s^2 (n {}), airborne {:.1} \
-         m/s^2 (n {}), agrees with free-fall on {:.1} %; median car tilt {:.1} deg",
+         m/s^2 (n {}), agrees with free-fall on {:.1} % -- {}; median car tilt {:.1} deg",
         v.accel_contact.0,
         v.accel_contact.1,
         v.accel_air.0,
         v.accel_air.1,
         100.0 * v.bit_vs_freefall.0 as f32 / v.bit_vs_freefall.1.max(1) as f32,
+        if v.trusted_bit {
+            "BIT USED"
+        } else {
+            "BIT REJECTED, free-fall used instead"
+        },
         v.median_tilt(),
     );
     if v.gaps.iter().any(|g| g.is_finite()) {

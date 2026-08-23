@@ -57,6 +57,38 @@ impl Motion {
     pub fn falling(&self) -> bool {
         self.accel_y < FREEFALL
     }
+    /// Was the car standing on something? The recording's bit where the bit
+    /// has earned it, the free-fall measurement where it has not.
+    pub fn supported(&self, trust_bit: bool) -> bool {
+        if trust_bit {
+            self.contact
+        } else {
+            !self.falling()
+        }
+    }
+}
+
+/// Does this recording's contact bit mean what its name says?
+///
+/// **Run this before believing the bit, on every map.** It is a DERIVED field
+/// and on some recordings it is simply not populated: 153527 reads `false` on
+/// all 85 809 samples, and the mean vertical acceleration of that supposedly
+/// airborne population is **0.0 m/s²** — a car sitting on a road. Trusting the
+/// bit there leaves the height fit with nothing to score, and it died with
+/// "no map height puts this run on a surface" on a map it had been fitting to
+/// four centimetres.
+///
+/// The test is the one physical thing available: a population that is really
+/// in the air falls at the map's gravity, about −24.6 m/s². Fewer than twenty
+/// samples is nothing to judge, so the bit is taken at its word.
+pub fn contact_bit_is_trustworthy(ms: &[Motion]) -> bool {
+    let mut n = 0usize;
+    let mut sum = 0.0f64;
+    for m in ms.iter().filter(|m| !m.contact && m.accel_y.is_finite()) {
+        n += 1;
+        sum += m.accel_y as f64;
+    }
+    n < 20 || sum / n as f64 <= -10.0
 }
 
 /// Read a recording's samples into the form the coverage classifier needs.
@@ -117,6 +149,9 @@ pub struct Verdict {
     pub accel_air: (f32, usize),
     /// how often the contact bit and the free-fall test agree
     pub bit_vs_freefall: (usize, usize),
+    /// whether the bit passed its control and was used; when it did not, the
+    /// free-fall measurement stood in for it
+    pub trusted_bit: bool,
     /// the angle between the car's own up axis and world up, per sample, in
     /// degrees: the control on the quaternion the down-axis probe is aimed by,
     /// which on a flat map has to be a couple of degrees
@@ -125,6 +160,7 @@ pub struct Verdict {
 
 impl Verdict {
     pub fn of(index: &Index, ms: &[Motion], reach: f32) -> Verdict {
+        let trust = contact_bit_is_trustworthy(ms);
         let mut v = Verdict {
             classes: Vec::with_capacity(ms.len()),
             gaps: Vec::with_capacity(ms.len()),
@@ -133,6 +169,7 @@ impl Verdict {
             accel_contact: (0.0, 0),
             accel_air: (0.0, 0),
             bit_vs_freefall: (0, 0),
+            trusted_bit: trust,
             tilt: Vec::with_capacity(ms.len()),
         };
         let (mut sc, mut sa) = (0.0f64, 0.0f64);
@@ -158,15 +195,16 @@ impl Verdict {
             let gap = hit.as_ref().map_or(f32::NAN, |h| h.gap);
             v.materials.push(hit.map(|h| h.material));
             v.body.push(gap);
+            let supported = m.supported(trust);
             v.classes.push(if gap.is_finite() && gap <= RESTING {
                 Class::Resting
             } else if gap.is_finite() {
-                if m.contact {
+                if supported {
                     Class::Loose
                 } else {
                     Class::Airborne
                 }
-            } else if m.contact {
+            } else if supported {
                 Class::Missing
             } else {
                 Class::Airborne
@@ -301,10 +339,15 @@ impl Verdict {
 /// says which samples were resting on anything at all, which is information
 /// the model cannot fake.
 pub fn resting(index: &Index, ms: &[Motion], reach: f32, max_gap: f32) -> (usize, f32) {
+    let trust = contact_bit_is_trustworthy(ms);
     let mut gaps: Vec<f32> = ms
         .iter()
-        .filter(|m| m.contact)
-        .filter_map(|m| index.along(m.p, [-m.up[0], -m.up[1], -m.up[2]], reach).or_else(|| index.below(m.p, reach)))
+        .filter(|m| m.supported(trust))
+        .filter_map(|m| {
+            index
+                .along(m.p, [-m.up[0], -m.up[1], -m.up[2]], reach)
+                .or_else(|| index.below(m.p, reach))
+        })
         .map(|h| h.gap)
         .collect();
     gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
