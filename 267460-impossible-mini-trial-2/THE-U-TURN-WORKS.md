@@ -405,3 +405,33 @@ Banked to `~/persistent/private-30d/tm-unbeaten/267460/if_20260823/`.
 
 **None of these is publishable and none is a lap.** `U855` and `L1600` are
 DNF; they are states, not results.
+
+---
+
+## 9. Addendum — the two arms that ran after §5 was written
+
+**Search totals, all completed, all clean:** `u855` 9 257 325 evaluations /
+268 confirmed improvements, `u955` 8 329 275 / 101, `w1600` 7 720 500 / 127,
+`v1400` 6 660 675 / 408 — **zero phantoms in any of them.** Every banked
+improvement was re-validated by the plain oracle.
+
+**The "turn the U north and up" objective is not searchable as posed, and the
+tool said so before spending anything.** Both arms — a box on the second
+platform's top, `y 127..140, z 756..775`, seeded from the U tape, deadlines
+race 8.45 and 9.95 — **refused to start**: the do-nothing tape gets closer to
+that box than the U tape does.
+
+> That refusal is a measurement. **From the U's exit state, DRIVING takes you
+> away from the second platform** — the flick points the car east and the second
+> platform is north, so a tape that stops driving coasts nearer to it than one
+> that keeps going. It is the same wall §4b prices, arriving from the other side.
+
+What would make it searchable: seed from something that is already turning north
+(not the U's east-pointing exit), or arm a `--fire` clause on the climb with the
+after-key measuring the descent, so the objective is *"climb it, then go down
+it"* rather than *"be near the top"*.
+
+**The endgame search finished its null: 1 099 980 evaluations, 55 minutes,
+0 finishers**, over `[1400, 2460]` from `L1600` on the real map. Flat `DNF cp0`
+throughout, as §5 predicted. **This is a statement about the gradient, not about
+the route.**
