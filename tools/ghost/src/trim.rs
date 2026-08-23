@@ -154,6 +154,7 @@ pub fn cmd(a: &[String]) {
     // there would move `end_ms` from what the game wrote (19.530 on the map-1
     // WR) to the last sample's own time (19.500) -- a change to a recording
     // nobody asked to edit, in a command that only added ticks after it.
+    let mut pruned = 0usize;
     let cutting = cut_head > 0 || cut_tail > 0;
     let had_record =
         cutting && gbx::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
@@ -188,6 +189,29 @@ pub fn cmd(a: &[String]) {
             let first = rd.ents.iter().filter_map(|e| e.times.first().copied()).min();
             rd.start_ms = first.unwrap_or(0).max(if lo_ms == i32::MIN { 0 } else { lo_ms });
             rd.end_ms = last.unwrap_or(declared as i32).min(if hi_ms == i32::MAX { i32::MAX } else { hi_ms });
+            // AN EMPTIED ENTITY IS NOT AN ENTITY, AND THE GAME CLIENT DIES ON
+            // ONE.
+            //
+            // Trimming a multi-entity record can cut every sample of an entity
+            // whose whole life is outside the window -- which on 227654's
+            // carrier is 28 of 29, because that record is ONE CAR SPLIT AT ITS
+            // RESPAWNS and a 59 s window keeps only the first of them. This
+            // left them in place with 0 samples and sample_size 0, and the file
+            // read back perfectly: the oracle re-simulated it, the span was
+            // right, the declared time was right, `ghost verify` passed.
+            //
+            // The game client CRASHED on importing it -- twice, reproducibly,
+            // taking the whole render with it: `read: Connection reset by peer`
+            // immediately after "staged 2 ghost(s)". That is the signature of
+            // 165922's nine files, whose record node holds zero entities and
+            // which were blacklisted for a year as "kills the game on import"
+            // before anyone knew why.
+            //
+            // So an entity left with no samples is REMOVED here, and the count
+            // is printed: a file that quietly loses 28 entities should say so.
+            let before_ents = rd.ents.len();
+            rd.ents.retain(|e| !e.times.is_empty() && e.sample_size > 0);
+            pruned = before_ents - rd.ents.len();
             Ok(())
         });
         if let Err(e) = r {
@@ -279,6 +303,14 @@ pub fn cmd(a: &[String]) {
     );
     if had_record {
         println!("  telemetry       {} samples kept, {} dropped", kept, dropped);
+        if pruned > 0 {
+            println!(
+                "  entities        {} emptied by the trim and REMOVED -- an entity with no \n\
+                 \x20                 samples crashes the game client on import, and the file \n\
+                 \x20                 reads back perfectly either way",
+                pruned
+            );
+        }
     } else if !cutting {
         println!("  telemetry       untouched (nothing was cut)");
     } else {
