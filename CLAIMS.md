@@ -190,3 +190,27 @@ Do not qualify what is solid. A true claim with its control cited is the best
 outcome on this page and the most common one: most of what is written here is
 right. Hedging a sound result is the same failure as asserting an unsound one —
 the reader cannot tell which is which either way.
+
+**Four passages already do this as well as it can be done.** They are the model,
+and they were all written before this convention existed:
+
+* **`203330`'s authority map.** It separates two statements people conflate —
+  *"the car does not respond"* (true from 2.270 to 3.650) and *"the input has no
+  authority"* (true only to 2.970) — from 561 single-tick overwrites, then says
+  outright that the *mechanism* behind the four bands is **"measured but not yet
+  attributed"** and that the obvious explanation fails on the fourth band.
+  Measurement, inference and open question, all three labelled, in one section.
+* **`285268`'s check on its own check.** *"`nearident` returned `overlap=0` with
+  a mean of 1.8e308 — it compared **nothing**… its `INDEPENDENT` verdict on this
+  pairing is vacuous."* A tool reporting a clean verdict having measured nothing,
+  caught and named rather than quoted.
+* **`270051`'s false positive.** It reads COPY on an honest pairing, and instead
+  of overriding the tool the page measures the tool's own floor, gives the
+  human-versus-human control (3, 4 and 6 samples against our 41), and correctly
+  attributes the offset to us — two days before anyone could say what caused it.
+* **`tools/LINEAGE.md`.** *"Check the constant, not the version."* It splits what
+  a defect invalidates into three parts and puts the uncomfortable one in the
+  middle, with the measurement that bounds each.
+
+If a passage you are writing could be summarised as one of those, it does not
+need a tag. It already is one.

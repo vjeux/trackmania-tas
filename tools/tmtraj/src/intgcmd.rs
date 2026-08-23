@@ -2229,13 +2229,18 @@ pub fn tape_diffs_in_window(a: &str, b: &str, from_ms: i64, to_ms: i64) -> Resul
     let (sa, sb) = (ta.steer_i8s(), tb.steer_i8s());
     let (aa, ab) = (ta.accels(), tb.accels());
     let (ba, bb) = (ta.brakes(), tb.brakes());
+    // A RESPAWN IS AN INPUT -- bit 31 of the packet state literal, and this
+    // project edits it deliberately (it can pin a finish time). Leaving it out
+    // makes two tapes differing only in a respawn read as identical, which on
+    // the trial maps here is the difference that matters most.
+    let (ra, rb) = (ta.respawns(), tb.respawns());
     let mut n = 0usize;
     for i in 0..sa.len().min(sb.len()) {
         let race = i as i64 * 10 + oa;
         if race < from_ms.max(0) || race > to_ms {
             continue;
         }
-        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) {
+        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) || ra.get(i) != rb.get(i) {
             n += 1;
         }
     }
@@ -2263,6 +2268,11 @@ fn run_tapediff(a: &str, b: &str, from_ms: Option<i64>) -> Result<Option<i64>, S
     let (sa, sb) = (ta.steer_i8s(), tb.steer_i8s());
     let (aa, ab) = (ta.accels(), tb.accels());
     let (ba, bb) = (ta.brakes(), tb.brakes());
+    // A RESPAWN IS AN INPUT -- bit 31 of the packet state literal, and this
+    // project edits it deliberately (it can pin a finish time). Leaving it out
+    // makes two tapes differing only in a respawn read as identical, which on
+    // the trial maps here is the difference that matters most.
+    let (ra, rb) = (ta.respawns(), tb.respawns());
     if sa.is_empty() || sb.is_empty() {
         return Err(format!("no input archive in {}", if sa.is_empty() { a } else { b }));
     }
@@ -2287,7 +2297,7 @@ fn run_tapediff(a: &str, b: &str, from_ms: Option<i64>) -> Result<Option<i64>, S
                 continue;
             }
         }
-        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) {
+        if sa[i] != sb[i] || aa.get(i) != ab.get(i) || ba.get(i) != bb.get(i) || ra.get(i) != rb.get(i) {
             return Ok(Some(race));
         }
     }
@@ -2298,12 +2308,6 @@ fn run_tapediff(a: &str, b: &str, from_ms: Option<i64>) -> Result<Option<i64>, S
             return Ok(Some(race));
         }
     }
-    // KNOWN LIMITATION, stated rather than left for someone to discover: this
-    // compares steer / accel / brake. It does NOT compare the respawn bit,
-    // which is bit 31 of the packet's state literal and IS an editable input
-    // on this project's trial maps. Two tapes differing only in a respawn will
-    // read as identical here. That is an open task, not a property of the
-    // tapes.
     Ok(None)
 }
 

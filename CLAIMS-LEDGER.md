@@ -311,11 +311,11 @@ the AT's provenance). DONE.**
 | 210218 | 95.575 | **95.507** |
 | 146612 | 38.975 | see D1 |
 | 126859 | 23.416 | 23.416 has a file; index's 23.462 also has a file — **not a defect**, both are real, the page picks the faster |
-| 267859 | 10.759 | directory holds only `TAS_10859` — **10.759 has no file here** |
+| 267859 | 10.759 | **NO DEFECT — this row was MY error.** All seven files are present and each declares its own name (`TAS_10758/10759/10768/10769/10859`, `KEYBOARD_10788/10897`). I read it off a truncated `corpus qc` capture and did not check the directory. The page is also already right about 10.758 vs 10.759: it cites 10.759 because that one was rebuilt on three separately compiled binaries and 10.758 on one |
 | 191465 | 13.071 | index 13.073 |
 | 203072 | 10.640 | index 10.642 |
 **Action: the ones with a file win; the ones without are marked. DONE where
-settled; 267859 raised as an open item.**
+settled. The 267859 row was my own mistake and is corrected above.**
 
 ### D5. `134672` — the published best has no file in the directory [owned elsewhere]
 Directory holds `TAS_67404` and `KEYBOARD_67625`; the published result is
@@ -338,7 +338,7 @@ Render arm; `ghost record shorten` repaired 27, 4 correctly refused.
 | whether ≈0.5 mm is a client/server difference or two copies of the car struct | needs the render arm's `8ca8c2e7` discriminator to land; both readings are in the corpus (A5) and the test is pre-registered |
 | whether `g` is genuinely per-map | the fleet law's intercept is fitted on **one** map (208024). The named test — re-fit another map against `v_y` and compare intercepts — needs arcs long enough to have a lever arm, and 285885's own tape has a 2-sample longest arc |
 | 146612's 38.968 / 39.183 | the map file is not redistributed in the repo and this box has no copy; the oracle cannot adjudicate without it |
-| 267859's 10.758/10.759 | no such file in the directory; may be unpushed on another arm's branch |
+| ~~267859~~ | **withdrawn — this was my own error, see D4.** All seven files are present and correct |
 | 238835's regeneration | render arm states the blocker precisely and **refuses to ship a raised threshold without a positive control on the same map**. Correct call; left as UNKNOWN, not upgraded |
 
 ---
@@ -451,3 +451,109 @@ files — absence-as-fact language (303 hits triaged), nulls and the word
 phrasings it knows. The two machine checks are the durable part — they will find
 this class again on files nobody thought to look at, which is how 228607 turned
 up.
+
+---
+
+# H. SECOND PASS — the pages §G said were only swept
+
+Priority order as instructed: player-facing pages, then documents an arm reads
+first. Read in full this pass: `173636`, `197047`, `191465`, `203330`,
+`267859`, `252289`, `238835`, `276877`, `227969`, `153527`, `284238`, `270051`,
+`270053`, `285268`, `249521`, `FILMING.md`, `RENDER-BOX.md`, `tools/LINEAGE.md`,
+`trainer/README.md`, `GHOSTS.md` §0–1.
+
+## H1. `284238` — a retracted law still taught as the mechanism. **The biggest find of the second pass.**
+The page's section is headed *"What the obstacle actually is: the engagement
+point"* and gives `engage_x` as **"one number"** governing the obstacle, with a
+27-tape monotone curve and a bracketed target. A later arm **retracted the law**:
+the discriminator is the **crossing angle `vz` at the ice kicker**, and
+`engage_x` was standing in for it.
+
+Category 3 and 4 at once, on a page an arm reads before spending a day on the
+map. The correction was earned the right way round — **by perturbing the run
+that WORKS**: Yhomas's own 46.112 on the sibling, one flag at a time, **rides at
+vz −23.72, unloads at −22.91**, with his checkpoint arrival falling
+69.40 → **22.44 m/s** as vz weakens. Ours engages at **−2.3**.
+
+The mechanism underneath, which is the reusable part: **the water launcher is a
+shallow trough (−0.78 °/m) where his tech deck is flat (0.09 °/m)** — loading the
+wheels needs roll ≈ 0, *the floor*; the rotation needs vz ≤ −24, *3 m up the
+wall*. Same variable, opposite directions.
+
+**Two experiments on that page are additionally VOID**: the 1.00 m kicker is a
+**four-block assembly with one free block**, so both "raise/lower the kicker"
+matched A/Bs moved a quarter of it and built a step. Worth keeping as a rule —
+**a matched A/B is only matched if it moved the whole object**, and the car
+arriving bit-identically is exactly what hides the failure.
+**Action: measurements kept, law marked retracted above them, open question
+restated as the one actually open (the 1.30 s water start, never searched). DONE.**
+
+## H2. `FILMING.md` rule 3 — a live defect cited that has since been repaired
+*"On 285268 all eight of our tapes decode to a human's trajectory."* Checked:
+`tmtraj corpus splice --root .` now reports all five of ours **CLEAN** against
+`HUMAN_rank2_keyboard_49491` — **0 of 986–990 samples identical**, worst
+separation 3.55–15.60 m. **Action: rule kept, example marked as a
+before-and-after, and the two corpus-wide commands named — with the warning that
+any `corpus dup` clearance predating today means nothing. DONE.**
+
+## H3. The 0.5 mm result INVERTS four pages
+Not a rename. Each page cited ≈0.5 mm agreement between two of *our own*
+readings as evidence the trajectory is right; it is now the signature of two
+readings of the **wrong copy**.
+
+| page | what it said |
+|---|---|
+| `276877` | "two independent regenerations… agree to **0.487 mm**" |
+| `276874` | "a completely different readout path agrees to **0.48 mm**" — and its "26 of 33 regenerations agree" is a **reproduction count**, which must never outrank a test that can identify the answer |
+| `267460` | "regenerated from engine memory and **accurate to half a millimetre**, so the driving you see is exactly what the simulator validated" |
+| `165922` | nine files following wschseng's recording to **0.000563 m** — they replay **his** inputs there, so a correct locate reproduces him *bit-identically* |
+
+**No time is affected** — the oracle reads the tape. What is affected is whether
+the **clips** are frame-accurate. **Action: marked on each, with what would
+settle it. DONE.**
+
+`270051` is the exception and deserves the credit: it already said *"the offset
+is ours"*, two days before anyone could say what caused it. **Action: mechanism
+added, its conclusion left standing. DONE.**
+
+## H4. Gravity — a checked negative, and one page fixed
+Swept for `9.81`, `9.8`, `sin(26.6`, `4.39`, "gravity alone", J/kg and energy
+tables, apex arithmetic. **The repo pages are CLEAN**: the only Earth reference
+is already a correction note in `tools/tmtraj/README.md`, and `228607`
+correctly uses −24.7. Recording that as **checked, not assumed**.
+One real gap: `267460`'s "gravity alone costs 6.4 m" did not name its `g`, and
+**with Earth's the gap it rules out would look crossable** (2.6 m against
+6.5 m). **Action: named there, with the three-map agreement. DONE.**
+
+## H5. `tmtraj` — the contact bit cannot select samples
+On 153527's driver recording the derived `is_ground_contact` bit reads **False
+on all 85 811 samples**, including a car standing still on a floor. **Action:
+documented why `motion` classifies from the position and only *prints* the byte.
+DONE.**
+
+## H6. Pages read and found SOUND — with the passages worth copying
+`173636` ("steering through the glide is **provably inert** — zeroing it over the
+entire glide returns the identical millisecond": a claim with its test inline),
+`197047` (a positive control on the exact defect that caused a withdrawal),
+`191465`, `252289`, `227969`, `249521`, `270053`, `153527`, `238835`, `276877`,
+`267859` (already right to cite 10.759 over the faster 10.758, because 10.759
+was rebuilt on three separately compiled binaries), `trainer`, `RENDER-BOX`,
+`GHOSTS` §0–1.
+
+**Four are now cited in `CLAIMS.md` as the model**, all written before the
+convention existed: `203330`'s authority map (which separates *"the car does not
+respond"* from *"the input has no authority"* and then says the mechanism is
+**"measured but not yet attributed"**), `285268`'s catch of its own tool
+(*"`nearident` returned `overlap=0` with a mean of 1.8e308 — it compared
+**nothing**"*), `270051`'s false positive, and `tools/LINEAGE.md`.
+
+## H7. An error of my own, corrected
+Ledger entry D4 claimed 267859's directory held only `TAS_10859`. **All seven
+files are present and each declares its own name.** I read it off a truncated
+`corpus qc` capture and did not open the directory. Corrected in place.
+
+## H8. `tape_diffs_in_window` now compares the respawn bit
+A respawn is an editable input (bit 31 of the state literal) and this project
+edits it deliberately. **Checked negative: including it changes the corpus
+census by nothing** — 607 / 135 / 38 / 8 / 8 before and after — so no pair was
+hiding a respawn-only difference. Stated as checked rather than assumed.

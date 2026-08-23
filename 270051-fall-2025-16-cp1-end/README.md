@@ -36,7 +36,21 @@ The cleanest demonstration is 279209, a map where our tape inherits nothing —
 downloaded human recordings sit at exactly 0.000000 m at the spawn while our
 tape sits at 0.000500 m from two different humans and at 0.000000 m from its own
 sibling.** The offset is ours, it is the same magnitude on every map measured,
-and it does not depend on any donor. So the 1 mm band is only twice our own
+and it does not depend on any donor.
+
+> **And as of 2026-08-22 we know what it is, which this page got right in
+> attribution and could not explain at the time.** The ~0.0005 m is **the
+> distance between two copies of the car in the server's own memory**, and the
+> regenerator was transforming from the wrong one: on the map-2 answer key,
+> transforming from the copy with a live wheel block takes bit-identity from
+> **0 of 455 samples to 227 of 455**. So it is ours, as this page says — but it
+> is a *fixable defect in the chooser*, not a permanent property of the writer,
+> and the honest expectation once fixed is bit-identity or ~0.000001 m rather
+> than half a millimetre. The conclusion below is unaffected: while the offset
+> is there, the 1 mm band cannot resolve a close following line from a copy.
+> (The orientation half of that fix is still open; see `tools/README.md`.)
+
+So the 1 mm band is only twice our own
 writer's noise floor, and it cannot resolve a close following line from a copy
 on any of-ours-versus-a-download pairing. The control that does resolve it is
 per-map and human-versus-human: here three unrelated pairs of human recordings
