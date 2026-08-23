@@ -100,14 +100,21 @@ fn parse_caption(line: &str) -> Option<Caption> {
     let (tas, rest) = rest.strip_prefix("**")?.split_once("**")?;
     let mut bars = rest.split('|');
     let delta = bars.next()?.trim();
-    let at = bars.next()?.trim().strip_prefix("AT")?.trim();
-    let wr = bars.next()?.trim().strip_prefix("WR")?.trim();
+    let rest = bars.next()?.trim();
+    let at = rest.strip_prefix("AT")?.trim();
+    // WR IS OPTIONAL. `untitled 01` ends "| AT 23.839 | no human has ever
+    // recorded a time here", because nobody has, and requiring the token threw
+    // the whole caption away -- along with the TAS time, which was there.
+    let wr = bars
+        .next()
+        .and_then(|b| b.trim().strip_prefix("WR").map(|w| w.trim().to_string()))
+        .unwrap_or_default();
     Some(Caption {
         map: map.to_string(),
         tas: tas.to_string(),
         delta: delta.trim_matches(|c| c == '(' || c == ')').to_string(),
         at: at.to_string(),
-        wr: wr.to_string(),
+        wr,
     })
 }
 
@@ -184,19 +191,19 @@ const ASSET: &str = "https://github.com/user-attachments/assets/";
 ///   * **two-car** -- the clip is as long as the SLOWER of the two runs. On a
 ///     map where the record is slower than us, that is the record's time.
 ///
-/// The tolerances are measured, not chosen. Where the answer is known, a clip
-/// lands within about a tenth of a second of the length it should be: 239.100
-/// for a 239.133 run, 68.367 against a 68.442 record, 96.300 against 96.281,
-/// 15.033 against 15.039, 24.433 against 24.342. The worst was 0.091 s. `NEAR`
-/// is 0.5 s -- five times the worst observed miss, so a clip that does not
-/// match either candidate is really not matching.
+/// The tolerances are measured and ASYMMETRIC, because the artefact is. A clip
+/// can run PAST the last car's finish -- the MediaTracker holds the scene for a
+/// moment after -- but it does not stop before it: of the clips whose scenes
+/// are known, the largest undershoot is 0.033 s (239.100 for a 239.133 run) and
+/// overshoots of 0.6-1.7 s are ordinary. So `EARLY` is 0.15 s and `LATE` is
+/// 2.0 s, and a symmetric window would have thrown away three of the six
+/// answers.
 ///
 /// WHERE THE TWO CANDIDATES ARE THE SAME LENGTH THE PROBE REFUSES. Half these
 /// maps are decided by thousandths -- our 6.342 against a 6.346 record -- and
 /// no clip length can separate one car from two when both finish at the same
-/// instant. `SEP_MIN` is 0.3 s, three times the worst miss: below it, and for
-/// any clip that is not nearer to one candidate than to the midpoint between
-/// them, the answer is UNKNOWN with the numbers attached. A guess wearing a
+/// instant. The winner must fit better than the loser by `MARGIN`, 0.3 s;
+/// otherwise the answer is UNKNOWN with the numbers attached. A guess wearing a
 /// measurement's clothes is worse than no measurement.
 pub fn treatment_from_clip(
     secs: f64,
@@ -212,49 +219,63 @@ pub fn treatment_from_clip(
             format!("{width}x{height} is {aspect:.2}:1 -- a side-by-side composition"),
         );
     }
-    const NEAR: f64 = 0.50;
-    const SEP_MIN: f64 = 0.30;
-    let (Some(tas), Some(wr)) = (tas, wr) else {
+    const EARLY: f64 = 0.15;
+    const LATE: f64 = 2.0;
+    const MARGIN: f64 = 0.30;
+    let Some(tas) = tas else {
         return (
             Treatment::Unknown,
-            format!("{secs:.3}s at {width}x{height}, but the page has no TAS/WR pair to compare it to"),
+            format!("{secs:.3}s at {width}x{height}, but the page states no TAS time to compare it to"),
+        );
+    };
+    // NO RECORD MEANS NO OPPONENT. Two pages here are maps nobody has ever set
+    // a time on; there is no ghost to put in the scene, so the treatment is
+    // settled by the map's history rather than by the clip.
+    let Some(wr) = wr else {
+        return (
+            Treatment::SingleCar,
+            format!("no human has ever recorded a time here, so there was no opponent ghost to film"),
         );
     };
     let slower = tas.max(wr);
-    let sep = slower - tas;
-    if sep < SEP_MIN {
-        return (
-            Treatment::Unknown,
-            format!(
-                "{secs:.3}s, but a one-car scene would be {tas:.3} and a two-car scene {slower:.3} \
-                 -- {sep:.3}s apart, which this measurement cannot separate"
-            ),
-        );
-    }
-    let d_tas = (secs - tas).abs();
-    let d_slower = (secs - slower).abs();
-    let (t, d, other) = if d_slower <= d_tas {
-        (Treatment::TwoCar, d_slower, slower)
-    } else {
-        (Treatment::SingleCar, d_tas, tas)
+    let fit = |target: f64| {
+        let d = secs - target;
+        if d < -EARLY || d > LATE { None } else { Some(d.abs()) }
     };
-    if d > NEAR || d > sep / 2.0 {
+    let (f_tas, f_slow) = (fit(tas), fit(slower));
+    let (t, d, loser) = match (f_tas, f_slow) {
+        (Some(a), Some(b)) if b <= a => (Treatment::TwoCar, b, a),
+        (Some(a), Some(b)) => (Treatment::SingleCar, a, b),
+        (Some(a), None) => (Treatment::SingleCar, a, f64::INFINITY),
+        (None, Some(b)) => (Treatment::TwoCar, b, f64::INFINITY),
+        (None, None) => {
+            return (
+                Treatment::Unknown,
+                format!(
+                    "{secs:.3}s fits neither a one-car scene ({tas:.3}) nor a two-car one \
+                     ({slower:.3})"
+                ),
+            )
+        }
+    };
+    if loser - d < MARGIN {
         return (
             Treatment::Unknown,
             format!(
-                "{secs:.3}s is {d_tas:.3}s from our {tas:.3} and {d_slower:.3}s from the slower \
-                 {slower:.3} -- not close enough to either to call it"
+                "{secs:.3}s fits a one-car scene ({tas:.3}) and a two-car one ({slower:.3}) \
+                 equally well -- they are {:.3}s apart, which this cannot separate",
+                (slower - tas).abs()
             ),
         );
     }
     let note = match t {
         Treatment::TwoCar => format!(
-            "{secs:.3}s is {d:.3}s from the slower run {other:.3} and {d_tas:.3}s from ours \
-             {tas:.3} -- the scene ran to the opponent"
+            "{secs:.3}s runs to the slower car {slower:.3} (ours finishes at {tas:.3}) -- \
+             two cars in the scene"
         ),
         _ => format!(
-            "{secs:.3}s is {d:.3}s from our run {other:.3} and {d_slower:.3}s from the slower \
-             {slower:.3} -- the scene ran to our car alone"
+            "{secs:.3}s stops with our car at {tas:.3}, well before the record {slower:.3} -- \
+             one car in the scene"
         ),
     };
     (t, note)
@@ -289,12 +310,24 @@ pub fn read_page(dir: &Path) -> Result<MapPage, String> {
         if !t.starts_with(ASSET) {
             continue;
         }
-        // The caption is the nearest non-empty line above.
+        // THE CAPTION IS THE NEAREST LINE ABOVE THAT PARSES AS ONE, not simply
+        // the nearest non-empty line. Pages often put a sentence about the clip
+        // between its caption and the URL -- "The clip is the keyboard flight,
+        // 10.743" on YEET Fall 2024 - 04 -- and taking the adjacent line threw
+        // away a caption that was two lines further up, times and all.
         let caption = lines[..i]
             .iter()
             .rev()
-            .find(|p| !p.trim().is_empty())
-            .map(|p| p.trim().to_string());
+            .take_while(|p| !p.trim_start().starts_with("## ") && !p.trim_start().starts_with("# "))
+            .find(|p| parse_caption(p).is_some())
+            .map(|p| p.trim().to_string())
+            .or_else(|| {
+                lines[..i]
+                    .iter()
+                    .rev()
+                    .find(|p| !p.trim().is_empty())
+                    .map(|p| p.trim().to_string())
+            });
         // The note is the page's prose about THIS video: everything from the
         // URL up to the next video or the next `##` section. A single paragraph
         // was too little -- The Magnet Trial states "One car, and that is a
@@ -536,6 +569,24 @@ mod tests {
     fn a_page_with_no_times_cannot_be_measured() {
         let (t, _) = treatment_from_clip(12.733, 1280, 720, None, None);
         assert_eq!(t, Treatment::Unknown);
+    }
+
+    #[test]
+    fn a_map_nobody_has_a_time_on_had_no_opponent_to_film() {
+        // untitled 01: author time 23.839, zero recorded runs.
+        let (t, w) = treatment_from_clip(12.800, 1280, 720, Some(12.759), None);
+        assert_eq!(t, Treatment::SingleCar, "{w}");
+    }
+
+    #[test]
+    fn a_clip_may_overrun_the_finish_but_not_undershoot_it() {
+        // YEET Fall 2024 - 04: 12.733 against ours 10.640 and ayti__ 12.083.
+        // 0.650 s past the record is ordinary; 2.093 s past ours is not.
+        let (t, w) = treatment_from_clip(12.733, 1280, 720, Some(10.640), Some(12.083));
+        assert_eq!(t, Treatment::TwoCar, "{w}");
+        // Angustus undershot by 0.033 s and is still its own length.
+        let (t, w) = treatment_from_clip(239.100, 1280, 720, Some(239.133), Some(1964.933));
+        assert_eq!(t, Treatment::SingleCar, "{w}");
     }
 
     #[test]
