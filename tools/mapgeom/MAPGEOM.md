@@ -321,6 +321,17 @@ The sweep is two passes, whole 8 m cell rows and then metre by metre, because
 nothing guarantees a map's height is a whole number of cells — 252289 fits −60
 with a 0.017 m gap over 100 % of its samples, so it is not.
 
+**Two caveats on the fit, both measured.** Three maps — 126859, 186935, 284238
+— settle at −327, which is the very floor of the sweep, and that normally means
+the range is too small. On 126859 it does not: forced to −327, −64 and −46 the
+map returns **99.0 % of its owed samples covered at all three**, with the
+median gap 0.042 / 0.043 / 0.048 m. Its track is built entirely from items and
+free blocks, which do not use `yoff` at all, so the fit is genuinely degenerate
+there — and it does not matter, because every answer is the same answer. The
+second caveat is the real one: **when a fit lands on the sweep's boundary, the
+sweep has not been shown to contain the optimum**, and `Yoff::coarse()` stops
+at −320.
+
 ### 4.3 Water, and the surfaces a plumb line cannot see
 
 A plumb line only looks down. A car **on water sits under the surface**, so
@@ -515,6 +526,12 @@ the run directory's transcripts.
    surface with a live-engine drop probe — a deck at y ≈ 50, z ≈ 1585, and the
    rim carrying the finish at y 145..158, z 1620..1670 — all of it beyond where
    the assembled decoration stops. Same root cause as (1).
+
+   Swept across all thirty-three maps at their fitted heights, **exactly two
+   have any sample outside the model**: 285885 at 54.2 %, and 203330 at 8.9 %,
+   whose run reaches z = −63 against a model starting at z = −1. So this is one
+   map's problem plus one edge case, not a general one — which is worth knowing
+   and is what the sweep was for.
 3. **Water roads still give a little back.** Lowering `Water` by the measured
    0.900 m draft is right in the mean and 227654's median gap moves the wrong
    way by 0.010 m while its coverage gains 27 points. Either the draft varies
