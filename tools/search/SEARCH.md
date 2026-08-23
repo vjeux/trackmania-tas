@@ -1039,7 +1039,55 @@ that is the suite working as designed, not the suite failing.
 
 ---
 
-## 6. What the search still cannot express
+### 5.N THE EDIT WINDOW MUST START ABOVE THE FORK'S PROBE
+
+*(numbered `5.N` on branch `wtr-284238-crossing-angle`, which was cut before
+§5.15/§5.16/§5.20 landed — renumber on merge. Same defect family as §5.15's
+window rule, at the other end of the window.)*
+
+**A search that edits ticks below its fork server's resume point scores
+candidates on inputs their own files do not contain.** The fork resumes from a
+probe tick; ticks before it are already burnt into the snapshot. Write those
+edited ticks to a `.Ghost.Gbx` anyway and the plain oracle *does* simulate them,
+so the file and the evaluation are two different runs. On 284238 the gap was
+46 m of wall miss and 125 m of checkpoint approach — enough to look like a
+result, and it was published as one for an hour.
+
+It presents as a *writer* bug or as chaos, and it is neither. Three tests
+separate them, in this order, and they are cheap:
+
+1. **Is the writer honest?** Drive the template through the whole pipeline with
+   an identity edit and md5 the output against the template. On 284238 they
+   matched bit for bit — so no writer theory survives.
+2. **Is it the file or the evaluation?** Measure the same candidate in process
+   and again with the written file as the instrument's own input. Differing is
+   *not* proof of chaos.
+3. **Move the window's lower bound across the probe and hold everything else
+   fixed.** Above the probe, in-process and from-disk agree to the last printed
+   digit; below it, they do not. That is a boundary, and chaos does not have
+   boundaries at a tick you can name in advance.
+
+The fix is a refusal, not a clamp — a clamp silently changes what you searched:
+
+```
+--win starts at 1900 but the fork's probe is 1941: the 41 edited ticks
+below the probe would be written to the output file and NEVER SIMULATED.
+```
+
+**Two things make this worth a section rather than a footnote.** First, in
+finish-time mode the phantom guard eventually catches it, but **in
+state-objective mode nothing does** — the objective is read out of live memory
+and never touches the written file, so the defect is *worse* in the mode this
+document is about. Second, the incumbent it produces looks like progress
+against a template, which is exactly when nobody re-reads the file.
+
+And when you do re-read it, **replay every restart on the OUTCOME, and print the
+do-nothing tape's outcome first.** On 284238 that one line did the work: the
+pre-fix winner scored the same as the identity tape (`DNF cps 1`), so its entire
+apparent gain was the disagreement, while the post-fix winners scored `cps 2`.
+A table whose first row is "change nothing" cannot flatter you.
+
+---
 
 Concrete, in the order I would close them.
 

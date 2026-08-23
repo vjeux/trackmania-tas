@@ -322,26 +322,79 @@ Each line is **MEASURED**, with its control named.
   100 m short of the kicker.
 
 **What is left**: the last 17 m of the curl — aim at his state at canonical
-x 933.3 rather than at the kicker plane — and the water start (1.30 s, never
-searched, independent of all of this).
+x 933.3 rather than at the kicker plane; the post-fix re-run reaches one
+checkpoint further than its template but is still 10.75 m short at ~50 m/s —
+and the water start (1.30 s, never searched, independent of all of this).
 
-**A WRITER DEFECT, found by tracing the one tape that looked like progress.**
-Every file this arm wrote with `fk pol grid --outdir` FAILS TO REPRODUCE THE
+**A WRITER DEFECT, found by tracing the one tape that looked like progress —
+then isolated, and it was not the writer.**
+Every file this arm wrote with `fk pol grid --outdir` FAILED TO REPRODUCE THE
 EVALUATION THAT SELECTED IT: re-run the identical command on the written file and
 a wall miss of 4.81 m becomes 66.36 m, a checkpoint approach of 1.88 m becomes
 126.93 m. Traced tick by tick, those tapes never climb the wall curve at all —
 they are below it and descending, and they respawn 53 m under the deck. The plain
 oracle said `DNF cps 1` about all of them and was right; the in-memory numbers
-never had standing. So there are no shots to report from this arm, and the
-sentence I nearly published — that a graft improves the lap and dies downstream
-of the checkpoint — is withdrawn: it never reaches the checkpoint.
+never had standing. The sentence I nearly published — that a graft improves the
+lap and dies downstream of the checkpoint — is withdrawn: it never reaches the
+checkpoint.
 
-Either `--outdir` writes a different tape than it evaluated, or two fork servers
-stopped at different probe ticks and this obstacle is chaotic across one tick
-4 s upstream. Ten minutes settles it — print the probe tick on both paths, diff
-the written tape against the evaluated records — and until then nothing from a
-search on this map should be quoted. The measurements in this section are all on
-unmodified tapes or on in-process variants and are unaffected.
+**The cause was the edit window, not the writer and not chaos.** Two candidate
+explanations were on the table: `--outdir` emits a different tape than it
+evaluated, or two fork servers stop at different probe ticks and this obstacle is
+chaotic across one tick 4 s upstream. Three tests killed both.
+
+1. **The writer is byte-honest.** Drive the template through the whole factory
+   with zero edits (`--v id=id`) and the output has the *same md5* as the
+   template: `b01129775d1a5708b5fb525ff8acf9ff`. Not one bit differs.
+2. **It is not the file.** The same spline measured in process and read back
+   off disk: 4.81 m vs 66.36 m — but that is not chaos either, because
+3. **It is the window's lower bound.** The fork resumes at probe tick 1941. A
+   window of `1900:2320` writes 41 edited ticks *below the resume point* into
+   the file, where they are simulated on replay and were never simulated during
+   the search. Move the bound above the probe — `2000:2320` — and the same tape
+   reproduces from disk **to the last printed digit** (20.06 m, 81.52 both
+   ways). `1900:2320` is wrong by 46 m. One flag, one boundary, deterministic
+   on either side.
+
+`fk pol shoot2` now **refuses** the illegal window rather than producing a
+plausible number, naming the two ticks. **This generalises to every search in
+the fleet**: any run whose window starts below its fork's probe has banked tapes
+that were scored on inputs they do not contain. In finish-time mode the phantom
+guard catches it; in state-objective mode nothing does. (`24322ed6` checked
+`tmsearch` on this warning and found it safe by construction — a fleet-max
+resume floor — but the read-back check that warning prompted then caught a
+*different* live defect in it, `retime` reaching past the window.)
+
+**The re-run above the probe moves.** MEASURED, plain oracle, one invocation,
+files on disk:
+
+| tape | plain oracle |
+|---|---|
+| the human's own downloaded recording (positive control) | **440.238, full lap** |
+| the template every search here edits | DNF, **cps 1** |
+| the template through the writer, zero edits — the do-nothing tape | DNF, **cps 1** |
+| the pre-fix winner, window starting 41 ticks below the probe | DNF, **cps 1** |
+| `fx1`, post-fix, legal window 1950:2320, aim = the state 17 m up the curl | DNF, **cps 2** |
+| `fx2`, post-fix, legal window 1950:2320, aim = wall + checkpoint | DNF, **cps 2** |
+
+The do-nothing tape is printed first and on purpose: **the laziest way to
+maximise this objective scores worse than both winners**, so it is a proxy and
+not a decoy. The illegal-window winner scores exactly what doing nothing scores
+— its whole apparent gain *was* the 46 m of disagreement. And the human's file
+validating in the same invocation is the positive control that says the DNFs are
+the tapes rather than the oracle.
+
+`fx1` and `fx2` are the first tapes on this map whose in-process numbers and
+their own read-back agree exactly. **They are not laps**: DNF at checkpoint 2 of
+4, arriving 10.75 m and 15.33 m out at ~50 m/s. Nothing here is a time and
+nothing is claimed.
+
+One trap re-confirmed live while measuring them: `tmtas splits` prints
+`race_time=440238` for all three of `fx1`, `fx2` and the do-nothing tape,
+because a synthesised tape carries its **template's** telemetry and `splits`
+reads the header. On this map that header is a real record *for this exact map*,
+which makes it maximally seductive. Only `tmtas validate`'s `sim_time` and `cps`
+columns are the simulator speaking.
 
 Full account, tables and md5s: `tm-unbeaten/284238/RESULT.md`, which points at
 `wtr_CORRECTION_v2_roll_is_reachable_and_it_is_not_enough.tsv` and
@@ -360,3 +413,10 @@ driving with the retries cut.
 | file | what |
 |---|---|
 | `replays/TAS_97325.Ghost.Gbx` | the best validated run — one life, no respawns |
+
+Not in the repo (too large, and none of them is a lap): the two post-fix tapes
+`wtr_fx1_…_DNF_cps2_state17m.Ghost.Gbx` and `wtr_fx2_…_DNF_cps2_wall_plus_cp.Ghost.Gbx`,
+the byte-identical do-nothing tape, and the full tables live in
+`tm-unbeaten/284238/` on the shared store — `RESULT.md` first, then
+`wtr_legal_window_v4_the_first_tapes_that_survive_their_own_readback.tsv`.
+32 artefacts, md5s in `wtr_MANIFEST.md5`, all verifying.
