@@ -79,21 +79,32 @@ pub fn grid_block(cell: (i32, i32, i32), dir: u8, size: (f32, f32), yoff: f32) -
 }
 
 /// The transform for a free-placed block or an item: an absolute position in
-/// metres and a yaw in radians. Pitch and roll are carried through when the
-/// record has them.
-pub fn free(pos: [f32; 3], rot: [f32; 3]) -> Xform {
+/// metres, a yaw in radians, and the model's own pivot.
+///
+/// The position names the **pivot**, not the origin of the mesh, so the mesh
+/// is shifted by minus the pivot before it is turned. On 197047 the platform
+/// the whole run is driven on has its mesh at 0..8 in x and z and a pivot at
+/// its centre, (4, 0, 4); placing it by its corner put the road 1.5 m off the
+/// car and cost that map 62 % of its samples.
+pub fn free(pos: [f32; 3], rot: [f32; 3], pivot: [f32; 3]) -> Xform {
     // The map stores free rotation as (yaw, pitch, roll) in radians. Yaw
     // dominates on every map this project has looked at; pitch and roll are
     // composed after it, in that order, about the already-turned axes.
     let m = yaw(rot[0], pos);
-    if rot[1] == 0.0 && rot[2] == 0.0 {
+    let m = if rot[1] == 0.0 && rot[2] == 0.0 {
+        m
+    } else {
+        let (sp, cp) = rot[1].sin_cos();
+        let pitch = [1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp, 0.0, 0.0, 0.0];
+        let (sr, cr) = rot[2].sin_cos();
+        let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        compose(&compose(&m, &pitch), &roll)
+    };
+    if pivot == [0.0; 3] {
         return m;
     }
-    let (sp, cp) = rot[1].sin_cos();
-    let pitch = [1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp, 0.0, 0.0, 0.0];
-    let (sr, cr) = rot[2].sin_cos();
-    let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-    compose(&compose(&m, &pitch), &roll)
+    let shift = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -pivot[0], -pivot[1], -pivot[2]];
+    compose(&m, &shift)
 }
 
 /// The map-wide vertical offset between cell rows and world metres.

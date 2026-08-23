@@ -860,6 +860,7 @@ fn describe(n: &Node) -> String {
             format!("material {} ({})", n, mapgeom::scene::physics_name(*p))
         }
         Node::ItemModel(i) => format!("item model -> node {}", i),
+        Node::Pivot(p) => format!("item placement, pivot {:?}", p),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

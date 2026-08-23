@@ -109,6 +109,9 @@ pub struct Collector<'a> {
     pub store: &'a mut DataStore,
     pub scene: Scene,
     pub stats: Stats,
+    /// The pivot of the last item model walked: which point of the mesh a
+    /// placement position names. Zero for anything that carries none.
+    pub pivot: [f32; 3],
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
     /// spin forever.
     max_depth: usize,
@@ -116,7 +119,13 @@ pub struct Collector<'a> {
 
 impl<'a> Collector<'a> {
     pub fn new(store: &'a mut DataStore) -> Collector<'a> {
-        Collector { store, scene: Scene::default(), stats: Stats::default(), max_depth: 24 }
+        Collector {
+            store,
+            scene: Scene::default(),
+            stats: Stats::default(),
+            pivot: [0.0; 3],
+            max_depth: 24,
+        }
     }
 
     /// Add everything a file contributes, placed by `at`.
@@ -151,6 +160,14 @@ impl<'a> Collector<'a> {
         let slots = graph.slots.clone();
         self.stats.recovered += graph.recovered.len();
         drop(graph);
+        // The placement param is not reachable from the geometry root — the
+        // item hands its shape to one node and its pivot sits in another — so
+        // it is read off the slot table rather than walked to.
+        for s in &slots {
+            if let Slot::Node(Node::Pivot(p)) = s {
+                self.pivot = *p;
+            }
+        }
         if let Some(n) = root {
             self.node(&n, &slots, at, depth);
         }
@@ -213,7 +230,8 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
-            Node::Material(..) => {}
+            // The pivot is read off the slot table in `model`, not walked to.
+            Node::Material(..) | Node::Pivot(_) => {}
             Node::Crystal(c) => {
                 self.stats.visual_meshes += 1;
                 for m in &c.meshes {

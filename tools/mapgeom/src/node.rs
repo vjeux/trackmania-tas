@@ -34,6 +34,7 @@ pub const C_VARIANT_LIST: u32 = 0x2F0BC000;
 pub const C_BLOCK_ITEM: u32 = 0x2E025000;
 pub const C_CRYSTAL: u32 = 0x09003000;
 pub const C_COMMON_ITEM_ENTITY_MODEL: u32 = 0x2E027000;
+pub const C_ITEM_PLACEMENT: u32 = 0x2E020000;
 
 /// Classes whose node body is a single struct with no chunk framing.
 fn no_body_chunks(class_id: u32) -> bool {
@@ -163,6 +164,9 @@ pub enum Node {
     /// A material: its name, and the physics id the car feels through it.
     Material(String, u8),
     ItemModel(i32),
+    /// A `CGameItemPlacementParam`: which point of the model a placement's
+    /// position actually names.
+    Pivot([f32; 3]),
     Other(u32),
 }
 
@@ -178,6 +182,7 @@ impl Node {
             Node::Crystal(_) => C_CRYSTAL,
             Node::Material(..) => C_MATERIAL_USER_INST,
             Node::ItemModel(_) => C_ITEM_MODEL,
+            Node::Pivot(_) => C_ITEM_PLACEMENT,
             Node::Other(c) => *c,
         }
     }
@@ -340,6 +345,9 @@ pub struct Acc {
     pub crystals: Vec<CrystalMesh>,
     pub material_name: String,
     pub physics_id: u8,
+    /// `CGameItemPlacementParam`: the point of the model the map places, in
+    /// the model's own frame.
+    pub pivot: [f32; 3],
     pub touched: bool,
 }
 
@@ -359,6 +367,7 @@ impl Acc {
             crystals: Vec::new(),
             material_name: String::new(),
             physics_id: 0,
+            pivot: [0.0; 3],
             touched: false,
         }
     }
@@ -375,6 +384,7 @@ impl Acc {
                 meshes: self.crystals,
             }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
+            C_ITEM_PLACEMENT => Node::Pivot(self.pivot),
             C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
                 Node::ItemModel(self.entity_model)
             }

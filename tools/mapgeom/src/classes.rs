@@ -451,6 +451,21 @@ impl<'a> Graph<'a> {
                 self.noderef()?; // IntroClipList
                 Ok(())
             }
+            // ------------------------- CGameItemPlacementParam: the PIVOT
+            // A placement's position names the item's PIVOT, not the origin of
+            // its mesh. Ignoring that is a silent lateral offset of half a
+            // block on every item with an off-centre origin: on 197047, whose
+            // whole run is on 75 placements of one 8 x 8 platform whose mesh
+            // runs 0..8 in x and z, it put the road a metre and a half off the
+            // car and cost the map 62 % of its samples.
+            0x2E020001 => {
+                acc.touched = true;
+                let pivots = self.r.array(|r| r.vec3())?;
+                if let Some(p) = pivots.first() {
+                    acc.pivot = *p;
+                }
+                Ok(())
+            }
             0x2E002020 => {
                 let _v = self.r.u32()?;
                 self.r.string()?; // iconFid
@@ -1448,6 +1463,7 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x2E002020
             | 0x2E002021
             | 0x2E002023
+            | 0x2E020001
             | 0x090FD000
             | 0x090FD001
             | 0x090FD002

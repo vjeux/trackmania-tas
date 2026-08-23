@@ -10,6 +10,9 @@ use tmmaps::map::{MapFile, FREE_BLOCK_FLAG};
 
 /// One model's geometry in its own local frame, plus the footprint it implies.
 pub struct LocalModel {
+    /// Which point of `scene` a placement position names. Zero unless the
+    /// model carries a `CGameItemPlacementParam`.
+    pub pivot: [f32; 3],
     pub scene: Scene,
     pub size: (f32, f32),
 }
@@ -96,10 +99,14 @@ pub struct Assembler<'a> {
 /// The zip path a map's model name refers to, if it is a custom model.
 ///
 /// A map spells an embedded block `FlinkIceBlocks\3-1-1-1-Ice-Light.Block.Gbx_CustomBlock`
-/// and the zip holds it at `Items/FlinkIceBlocks/3-1-1-1-Ice-Light.Block.Gbx`.
+/// and the zip holds it under a container folder — `Items/…` on 134672 and
+/// **`Blocks/…`** on 197047, whose whole run is on 75 placements of one
+/// embedded platform. Keying on `Items/` alone left that map at 2.6 % of its
+/// samples over a surface with the model reading `76 placements of 3 models
+/// had no geometry`. So the name is matched as a SUFFIX of the zip path
+/// rather than under an assumed folder.
 fn embedded_key(name: &str) -> String {
-    let n = name.trim_end_matches("_CustomBlock").replace('\\', "/");
-    format!("items/{}", n.to_lowercase())
+    name.trim_end_matches("_CustomBlock").replace('\\', "/").to_lowercase()
 }
 
 impl<'a> Assembler<'a> {
@@ -124,8 +131,29 @@ impl<'a> Assembler<'a> {
     }
 
     /// A model the map carries itself, if this name is one.
+    ///
+    /// The map's spelling is matched as a suffix of the zip path, longest
+    /// suffix first: 197047 places the same platform under two names,
+    /// `StupsKiesel\MiniPlatform\…` and `StupsKiesel\StupsKiesel\MiniPlatform\…`,
+    /// and carries two files that differ only by that folder.
     fn embedded_model(&mut self, name: &str) -> Option<LocalModel> {
-        let bytes = self.embedded.get(&embedded_key(name))?.clone();
+        let key = embedded_key(name);
+        let bytes = self
+            .embedded
+            .get(&key)
+            .or_else(|| {
+                // Shortest match: 197047 carries the same platform twice, at
+                // `…/StupsKiesel/MiniPlatform/…` and
+                // `…/StupsKiesel/StupsKiesel/MiniPlatform/…`, and the shorter
+                // name is a suffix of BOTH paths. The longer file is the other
+                // block's.
+                self.embedded
+                    .iter()
+                    .filter(|(k, _)| k.ends_with(&format!("/{}", key)))
+                    .min_by_key(|(k, _)| k.len())
+                    .map(|(_, v)| v)
+            })?
+            .clone();
         let model = match Model::parse(&bytes, name) {
             Ok(m) => m,
             Err(e) => {
@@ -142,7 +170,7 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { scene, size })
+        Some(LocalModel { pivot: c.pivot, scene, size })
     }
 
     /// A block model's geometry, in block-local metres.
@@ -211,7 +239,7 @@ impl<'a> Assembler<'a> {
         merge_stats(&mut self.stats, &c.stats);
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { scene, size })
+        Some(LocalModel { pivot: c.pivot, scene, size })
     }
 
     pub fn item_model(&mut self, name: &str) -> Option<&LocalModel> {
@@ -237,17 +265,22 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { scene, size })
+        Some(LocalModel { pivot: c.pivot, scene, size })
     }
 
     /// Assemble a map into one scene.
+    ///
+    /// A FREE placement — an item, or a block the author dragged off the grid
+    /// — names the model's PIVOT, so the mesh is shifted by minus the pivot
+    /// before it is turned. A GRID placement names a cell and is not shifted:
+    /// the cell IS the anchor.
     pub fn map(&mut self, m: &MapFile, yoff: f32, with_items: bool) -> Scene {
         let mut out = Scene::default();
         for b in &m.blocks {
             let free = b.flags & FREE_BLOCK_FLAG != 0;
             let xf: Xform = {
-                let size = match self.block_model(&b.name) {
-                    Some(lm) => lm.size,
+                let (size, pivot) = match self.block_model(&b.name) {
+                    Some(lm) => (lm.size, lm.pivot),
                     None => {
                         self.note(&b.name, false);
                         continue;
@@ -255,8 +288,8 @@ impl<'a> Assembler<'a> {
                 };
                 if free {
                     match (b.free_pos, b.free_rot) {
-                        (Some(p), Some(r)) => place::free(p, r),
-                        (Some(p), None) => place::free(p, [0.0; 3]),
+                        (Some(p), Some(r)) => place::free(p, r, pivot),
+                        (Some(p), None) => place::free(p, [0.0; 3], pivot),
                         _ => continue,
                     }
                 } else {
@@ -271,14 +304,18 @@ impl<'a> Assembler<'a> {
         }
         if with_items {
             for it in &m.items {
-                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0]);
-                match self.item_model(&it.model) {
-                    Some(lm) => {
-                        let s = &lm.scene;
-                        out.append(s, &xf);
-                        self.note(&it.model, true);
+                let pivot = match self.item_model(&it.model) {
+                    Some(lm) => lm.pivot,
+                    None => {
+                        self.note(&it.model, false);
+                        continue;
                     }
-                    None => self.note(&it.model, false),
+                };
+                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0], pivot);
+                if let Some(lm) = self.item_model(&it.model) {
+                    let s = &lm.scene;
+                    out.append(s, &xf);
+                    self.note(&it.model, true);
                 }
             }
         }
