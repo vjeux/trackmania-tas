@@ -6,7 +6,7 @@ short.**
 
 **Fall 2025 - 16 (CP1 end)** — TAS **4.830** (−0.001) | AT 4.831 | WR 4.834 by OriginalCJM
 
-https://github.com/user-attachments/assets/8c9001d7-61df-4dab-923f-cda6a5f6c81f
+https://github.com/user-attachments/assets/7ba69df0-29bb-42d3-8cc3-daf6158360a2
 
 **Our 4.830 and OriginalCJM's world record, both in one camera — and they are
 never two cars.** Maximum separation over the whole run is **0.184 m**, mean
