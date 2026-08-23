@@ -24,6 +24,7 @@ pub mod engine;
 pub mod ident;
 pub mod oracle;
 pub mod regen;
+pub mod script;
 pub mod selftest;
 pub mod trim;
 pub mod verify;

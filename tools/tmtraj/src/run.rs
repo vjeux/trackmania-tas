@@ -40,6 +40,7 @@ tmtraj — read-only analysis of a TM2020 run. Times print as seconds (36.049).
 WHAT DOES THE FILE SAY
   show    FILE...                    span, checkpoints, entities, first samples
   export  FILE   [--csv F] [--json F] [--full-json F] [--head N]
+  csvdiff A.csv B.csv [--tol-ms N]  two trajectory CSVs, on the instants they share
   export  --dir D... [--out-csv D] [--out-json D] [--jobs N]
   fields                             every decoded field, with its confidence tier
 
@@ -94,6 +95,7 @@ pub fn run() {
     let code = match argv[0].as_str() {
         "show" => cmd_show(rest),
         "export" => cmd_export(rest),
+        "csvdiff" => crate::csvdiff::cmd(rest),
         "fields" => {
             record::print_field_confidence();
             0
@@ -243,6 +245,14 @@ fn cmd_export(argv: &[String]) -> i32 {
     if !dirs.is_empty() {
         return export_tree(&a, &dirs);
     }
+    // Read the output flags BEFORE finish(): finish() rejects any flag that
+    // has not been asked for yet, so asking afterwards made every --csv /
+    // --json / --full-json an "unknown flag" and this command unusable.
+    let outs: Vec<(Option<String>, fn(&Decoded) -> String)> = vec![
+        (a.one("csv").map(|s| s.to_string()), serial::csv_string as fn(&Decoded) -> String),
+        (a.one("json").map(|s| s.to_string()), serial::path_json_string),
+        (a.one("full-json").map(|s| s.to_string()), serial::full_json_string),
+    ];
     let a = a.finish(EXPORT_USAGE);
     let Some(path) = a.positional.first() else {
         eprint!("{}", EXPORT_USAGE);
@@ -256,12 +266,8 @@ fn cmd_export(argv: &[String]) -> i32 {
         }
     };
     let mut wrote = false;
-    for (flag, text) in [
-        ("csv", serial::csv_string as fn(&Decoded) -> String),
-        ("json", serial::path_json_string),
-        ("full-json", serial::full_json_string),
-    ] {
-        if let Some(f) = a.one(flag) {
+    for (f, text) in &outs {
+        if let Some(f) = f {
             std::fs::write(f, text(&dec)).expect("write");
             println!("wrote {}", f);
             wrote = true;
