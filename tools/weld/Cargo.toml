@@ -1,0 +1,17 @@
+[package]
+name = "weld"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "weld"
+path = "src/main.rs"
+
+[workspace]
+
+[profile.release]
+opt-level = 2
+
+[dependencies]
+gbx = { path = "../gbx" }
+miniz_oxide = "0.9.1"

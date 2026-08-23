@@ -16,14 +16,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghost"
-version = "1.0.0"
-dependencies = [
- "gbx",
- "tmtraj",
-]
-
-[[package]]
 name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -33,15 +25,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "tmmaps"
-version = "0.2.0"
-dependencies = [
- "ghost",
-]
-
-[[package]]
-name = "tmtraj"
-version = "1.0.0"
+name = "weld"
+version = "0.1.0"
 dependencies = [
  "gbx",
+ "miniz_oxide",
 ]
