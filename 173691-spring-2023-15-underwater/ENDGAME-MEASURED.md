@@ -125,7 +125,7 @@ impossible positive constant term. So:
 | terminal sink | **2.65 – 2.68 m/s** |
 | ⇒ a glide's horizontal reach | **asymptote `v0/k`, i.e. 47 – 59 m at the water speed cap**; 61.9 m observed on the real landing, so call the ceiling **62 m** |
 | flat-water speed cap | 28.6 m/s (103 km/h) |
-| turbo | 104 m/s (374 km/h) and it **persists ≈ 340 m / 4 s**, but all five turbos are ≥ 790 m from the stadium |
+| turbo | 104 m/s (374 km/h) and it **persists ≈ 340 m / 4 s**, but the nearest of the five turbos is 559 m from the trigger plane in a straight line and ~1.1 km along the only drivable route to it |
 | apex gain off the map's steepest ramp | **+3.0 m measured** (launch y 154.9 → apex 157.9), +5.2 m as the upper bound from the fitted law |
 
 > **The horizontal law is fitted over `|vh|` 0.4 … 26.4 m/s and must not be
@@ -230,7 +230,7 @@ The asymptotic reach is 47–59 m (four fits) and the best measured glide from t
 launch reaches `z = 448.2` at deck height and `z = 437.7` at y = 130.
 **Short by 46–57 m**, and the shortfall is bounded by an asymptote, so no
 amount of launch tuning closes it. It would need ~183 km/h at the lip against a
-103 km/h cap, and the nearest turbo is 790 m away with a 340 m half-life.
+103 km/h cap, and the nearest turbo is 559 m away in a straight line (≈1.1 km by road) against a measured 340 m half-life.
 
 **Wall 2 — from the deck, the plane's live band is 16–20 m up and there is no
 ramp.** 15.73 m to the gate row's floor at 130, 19.70 m to the lowest height
