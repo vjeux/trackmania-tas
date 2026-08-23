@@ -64,6 +64,15 @@ pub struct RefLineData {
     pub xyz: Vec<f32>,
     /// n
     pub s: Vec<f32>,
+    /// Race ms of the first and last reference sample this line was built
+    /// from, and how many of its ticks run PAST the candidate tape's own last
+    /// tick. All zero for a line built straight from points.
+    ///
+    /// These exist because the line's length used to depend silently on the
+    /// candidate tape's length; see [`RefLineData::from_samples`].
+    pub first_ms: i64,
+    pub last_ms: i64,
+    pub past_tape: usize,
 }
 
 impl RefLineData {
@@ -83,7 +92,7 @@ impl RefLineData {
             xyz.push(p[2] as f32);
             s.push(acc as f32);
         }
-        RefLineData { n, xyz, s }
+        RefLineData { n, xyz, s, first_ms: 0, last_ms: 0, past_tape: 0 }
     }
 
     /// Arclength at a tape tick, for turning a checkpoint time into a progress
@@ -1004,18 +1013,48 @@ impl RefLineData {
     /// Interpolation is not a nicety: telemetry is on a 50 ms grid and ticks
     /// are 10 ms, so at 100 km/h the live position is up to 0.7 m from the
     /// nearest recorded sample.
+    ///
+    /// # `nticks` is the tape's length and it must NOT decide the line's
+    ///
+    /// This used to drop every reference sample at or past `nticks`, so **the
+    /// reference line stopped where the CANDIDATE TAPE stopped** -- and a
+    /// candidate tape is routinely shorter than the reference, because a graft
+    /// that reaches the same place sooner is shorter by exactly the time it
+    /// saved. The line then ends short of the finish, its last index is
+    /// reachable without crossing anything, and the arclength ladder tops out
+    /// at 100% on a tape that cannot finish. Measured on 267460: the incumbent
+    /// line is 560 m, and grafted tapes of 2131 and 2129 ticks got lines of
+    /// 471 m and 470 m -- the length tracking the tape's tick count, which is
+    /// the fingerprint. Two searches then spent 500 000 evaluations sitting at
+    /// "100%" 63 m short of the flag.
+    ///
+    /// So the grid is long enough for every sample the tape's clock can
+    /// address, whatever the tape's own length, and how far it runs past the
+    /// tape is reported rather than silently applied.
     pub fn from_samples(
         rows: &[(i64, f64, f64, f64)],
         start_offset_ms: i32,
         nticks: usize,
     ) -> Result<RefLineData, String> {
-        let mut pts: Vec<Option<[f64; 3]>> = vec![None; nticks];
+        let idx = |ms: i64| (ms - start_offset_ms as i64) / 10;
+        let need = rows
+            .iter()
+            .map(|&(ms, ..)| idx(ms))
+            .filter(|&t| t >= 0)
+            .max()
+            .map(|t| t as usize + 1)
+            .unwrap_or(0);
+        let grid = nticks.max(need);
+        let mut pts: Vec<Option<[f64; 3]>> = vec![None; grid];
         let mut nrow = 0;
+        let (mut first_ms, mut last_ms) = (i64::MAX, i64::MIN);
         for &(ms, x, y, z) in rows {
-            let t = (ms - start_offset_ms as i64) / 10;
-            if t >= 0 && (t as usize) < nticks {
+            let t = idx(ms);
+            if t >= 0 && (t as usize) < grid {
                 pts[t as usize] = Some([x, y, z]);
                 nrow += 1;
+                first_ms = first_ms.min(ms);
+                last_ms = last_ms.max(ms);
             }
         }
         if nrow < 10 {
@@ -1026,7 +1065,7 @@ impl RefLineData {
         for i in 0..first {
             pts[i] = pts[first];
         }
-        for i in last + 1..nticks {
+        for i in last + 1..grid {
             pts[i] = pts[last];
         }
         let mut i = first;
@@ -1052,7 +1091,11 @@ impl RefLineData {
             i = b + 1;
         }
         let flat: Vec<[f64; 3]> = pts.into_iter().map(|p| p.unwrap()).collect();
-        Ok(RefLineData::from_points(&flat))
+        let mut line = RefLineData::from_points(&flat);
+        line.first_ms = first_ms;
+        line.last_ms = last_ms;
+        line.past_tape = grid.saturating_sub(nticks);
+        Ok(line)
     }
 }
 

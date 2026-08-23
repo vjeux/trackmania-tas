@@ -100,3 +100,66 @@ fn arclength_is_monotone() {
         assert!(line.s[i] >= line.s[i - 1], "arclength went backwards at {}", i);
     }
 }
+
+/// THE REGRESSION. **The candidate tape's length must not decide the reference
+/// line's length.**
+///
+/// `from_samples` dropped every reference sample at or past `nticks`, and
+/// `nticks` is the CANDIDATE's tick count. A graft that reaches the same place
+/// sooner is shorter by exactly the time it saved, so its reference line was
+/// short by exactly the part of the route that still had to be driven -- and
+/// the line's own last index then sits somewhere the car can reach without
+/// finishing. On 267460 the incumbent's line is 560 m; grafted tapes of 2131
+/// and 2129 ticks got 471 m and 470 m, the length tracking the tape's tick
+/// count. Two searches hill-climbed to "100% of the reference line" 63 m short
+/// of the flag and stayed there for 500 000 evaluations.
+///
+/// The pin is that the length is the SAME for a tape shorter than the
+/// reference and a tape longer than it. Reverting the `nticks.max(need)` makes
+/// the short case report half the line.
+#[test]
+fn a_short_candidate_tape_does_not_shorten_the_reference_line() {
+    // 1000 samples, 10 ms apart, 1 m apart: a 999 m line.
+    let rows: Vec<(i64, f64, f64, f64)> =
+        (0..1000).map(|i| (i as i64 * 10, i as f64, 0.0, 0.0)).collect();
+
+    let long = RefLineData::from_samples(&rows, 0, 4000).unwrap();
+    let short = RefLineData::from_samples(&rows, 0, 500).unwrap();
+    let exact = RefLineData::from_samples(&rows, 0, 1000).unwrap();
+
+    for (name, l) in [("long", &long), ("short", &short), ("exact", &exact)] {
+        assert!(
+            (l.s_at_tick(usize::MAX) - 999.0).abs() < 1e-2,
+            "{} tape: reference line is {:.1} m, not the 999 m the samples describe",
+            name,
+            l.s_at_tick(usize::MAX)
+        );
+        assert_eq!(l.first_ms, 0);
+        assert_eq!(l.last_ms, 9990);
+    }
+    // and the line says how far past the tape's own end it runs, so a tape
+    // that cannot address the whole line is visible in one printed line.
+    assert_eq!(short.past_tape, 500);
+    assert_eq!(exact.past_tape, 0);
+    assert_eq!(long.past_tape, 0);
+    // the long tape pads with the last point, which adds no arclength.
+    assert_eq!(long.n, 4000);
+    assert!((long.s_at_tick(3999) - long.s_at_tick(999)).abs() < 1e-4);
+}
+
+/// A sample the tape's clock cannot address at all -- before tick 0 -- is still
+/// dropped, and that is correct: the car is not there. `start_offset_ms` is
+/// negative on every tape in this project (the standing start), so this is the
+/// ordinary case and not an edge one.
+#[test]
+fn samples_before_the_tapes_first_tick_are_dropped_and_the_head_clamps() {
+    let rows: Vec<(i64, f64, f64, f64)> =
+        (0..200).map(|i| (i as i64 * 10 - 1000, i as f64, 0.0, 0.0)).collect();
+    // start_offset -500 ms: the first 50 samples are before tick 0.
+    let l = RefLineData::from_samples(&rows, -500, 300).unwrap();
+    assert_eq!(l.first_ms, -500, "the first addressable sample");
+    assert_eq!(l.last_ms, 990);
+    // 50 m of the 199 m are unreachable, and the head clamps to x = 50.
+    assert!((l.s_at_tick(usize::MAX) - 149.0).abs() < 1e-2);
+    assert!((l.xyz[0] - 50.0).abs() < 1e-4);
+}

@@ -718,8 +718,12 @@ fn run_fork(
                 .unwrap_or_else(|e| die(e));
     }
     eprintln!(
-        "fork: reference line {:.0} m, predicates disarmed after {:.0} m",
+        "fork: reference line {:.0} m over race {}..{}, {} tick(s) of it past the tape's own end; \
+         predicates disarmed after {:.0} m",
         watch.refline.s_at_tick(usize::MAX),
+        secs(watch.refline.first_ms),
+        secs(watch.refline.last_ms),
+        watch.refline.past_tape,
         watch.finish_s
     );
     print!("{}", watch.describe());
