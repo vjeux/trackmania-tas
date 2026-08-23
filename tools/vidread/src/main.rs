@@ -19,6 +19,7 @@ mod keytape;
 mod lamps;
 mod sections;
 mod trace;
+mod wetread;
 mod xcheck;
 
 use digits::{Field, Patch, Templates};
@@ -433,6 +434,74 @@ fn main() {
             let engine = enginecmp::load_engine(&need(&args, "--engine")).unwrap_or_else(|e| die(&e));
             enginecmp::report(&video, &engine, num(&args, "--tol", 8.0f64), num(&args, "--run", 6usize), num(&args, "--tol-ms", 50i64), &mut o);
         }
+        // Train the wetness glyphs: same eye-labelling path as the speed field,
+        // but the cells are found from the `%` anchor rather than fixed.
+        "wettrain" => {
+            let mut samples: BTreeMap<(usize, char), Vec<Patch>> = BTreeMap::new();
+            // --labels "FRAME=PCTX:DIGITS", the % x measured off an ascii dump.
+            let mut want: BTreeMap<u64, (usize, Vec<char>)> = BTreeMap::new();
+            for spec in need(&args, "--labels").split(',') {
+                let (i, rest) = spec.split_once('=').unwrap_or_else(|| die("IDX=PCTX:DIGITS"));
+                let (px, ds) = rest.split_once(':').unwrap_or_else(|| die("IDX=PCTX:DIGITS"));
+                want.insert(i.parse().unwrap(), (px.parse().unwrap(), ds.chars().collect()));
+            }
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if let Some((px, ds)) = want.get(&i) {
+                    let fd = |x: usize| {
+                        digits::Field::parse(&format!(
+                            "{x};{};{};{}",
+                            wetread::CELL_Y,
+                            wetread::CELL_W,
+                            wetread::CELL_H
+                        ))
+                    };
+                    samples.entry((0, '%')).or_default().push(Patch::cut(&f, &fd(*px), 0, 0, 0));
+                    for (k, c) in ds.iter().rev().enumerate() {
+                        let x = *px as f32 - wetread::PITCH * (k + 1) as f32;
+                        samples
+                            .entry((0, *c))
+                            .or_default()
+                            .push(Patch::cut(&f, &fd(x.round() as usize), 0, 0, 0));
+                    }
+                }
+                i += 1;
+            }
+            for (k, v) in &samples {
+                eprintln!("glyph {}: {} samples", k.1, v.len());
+            }
+            Templates::from_samples(wetread::CELL_W, wetread::CELL_H, false, &samples).write(&mut o);
+        }
+
+        "wetread" => {
+            let t = Templates::read(
+                &std::fs::read_to_string(need(&args, "--templates"))
+                    .unwrap_or_else(|e| die(&e.to_string())),
+            );
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let pct_min: f32 = num(&args, "--pct-min", 0.55);
+            let digit_min: f32 = num(&args, "--digit-min", 0.55);
+            writeln!(o, "t\tpct\ttext\tpct_x\tpct_score\tworst").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                match wetread::read(&f, &t, span_min, pct_min, digit_min) {
+                    None => writeln!(o, "{:.4}\t\t\t\t\t", at(i)).unwrap(),
+                    Some(rd) => writeln!(
+                        o,
+                        "{:.4}\t{}\t{}\t{}\t{:.3}\t{:.3}",
+                        at(i),
+                        rd.value.map(|v| format!("{v}")).unwrap_or_default(),
+                        rd.text,
+                        rd.pct_x,
+                        rd.pct_score,
+                        rd.worst
+                    )
+                    .unwrap(),
+                }
+                i += 1;
+            }
+        }
+
         _ => die("usage: vidread lamps|sections|ink|patches|train|read|trace ..."),
     }
 }

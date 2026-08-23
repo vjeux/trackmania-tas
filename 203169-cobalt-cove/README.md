@@ -453,11 +453,34 @@ a dark tunnel to a white wall. Controls: present at 540/565/567/569 where the
 icon is visible in the dump; absent at 556 and 571 where it is not.
 
 **Not done: decoding the digits.** They are ~9×13 px over wildly varying
-backgrounds, and with the labelling budget I had, the honest options were a
-reader I could not control or no reader. I stopped at the one I can defend. The
-tool that makes the labelling possible without a display is `vidread ascii`,
-which prints any rectangle as a text ramp — that is how every reading above was
-made.
+backgrounds. `vidread wetread` is written — it anchors on the `%` glyph and
+reads right-aligned digits leftwards from it, which is both what the variable
+field needs and the guard against the `! Slip` trap — but its **templates are
+not trained**, because with the labelling budget I had the honest options were
+a reader I could not control or no reader. Four glyphs (0, 2, 3, 4) are legible
+in the frames I read; the other six need eye readings I did not get to, and one
+frame I tried to read produced a string no percentage can be, which is exactly
+the failure mode a half-trained alphabet has.
+
+### The acceptance test that reader will need, measured
+
+Whoever finishes it does not have to trust it. Over three human replays (283
+decreasing steps) the dry-out law is exact:
+
+* **Every decrease is an integer number of 1/255 units — 0 of 283 are not.**
+  The channel is a u8 and nothing between samples is interpolated.
+* Decreases come in exactly **two kinds**: gradual dry-out at **1 or 2 units
+  per 50 ms** (213 of 283), and an **instant reset to 0.000 in 100 ms** when
+  the car leaves the water.
+* Gradual stretches run at **0.098, 0.099 and 0.101 /s** on the three
+  replays — 10 percentage points per second, so a soaked car dries in about
+  ten seconds.
+
+So a decoded series can be checked **without any ground truth for the run being
+read**: every decrease is 1–2 units per 50 ms or a reset; gradual stretches run
+at 0.10 /s; and it never rises except in water. A mis-decoded tens digit is a
+10–30 point step with no reset, and a mis-decoded units digit breaks the
+quantisation. Three independent checks, none of which needs the run simulated.
 
 ## 10. What is banked
 

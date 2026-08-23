@@ -15,6 +15,24 @@
 //! has found something real rather than a coincidence is UNIQUENESS plus a
 //! decoding that is exact rather than merely correlated.
 //!
+//! # The encoding checklist
+//!
+//! Every assumption below was made silently by an earlier version of this
+//! command and cost a channel. The next person to add a channel type will
+//! find a fourth; add it here.
+//!
+//! 1. **The scale.** `u8`, `u8/255`, `f32` and an affine `a*u8+b` are all
+//!    scored. Scoring a gear as a 0..1 quantity gave 0.00 % exact beside a
+//!    0.9953 correlation -- the shape of a right answer told the wrong
+//!    question.
+//! 2. **The rounding.** Round-to-nearest and truncation differ by 17
+//!    percentage points on wetness (83 % against 96 %). Both are scored.
+//! 3. **The range.** The f32 branch once filtered candidates to 0..1, because
+//!    the first channel it looked for was a fraction -- so it could not see a
+//!    wheel rotation that runs to 1607. It filters to the REFERENCE's range.
+//! 4. **The exactness test.** A channel the record does not quantise needs
+//!    agreement to the reference's printed precision, not to half a u8 step.
+//!
 //! Two traps this is shaped around, both of which cost this project time
 //! before:
 //!
