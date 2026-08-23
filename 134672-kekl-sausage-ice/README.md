@@ -10,6 +10,15 @@ Nothing here has been or will be submitted to a Nadeo leaderboard.
 > and the car is exact for 8.9 s and lost by 9.6 s. So the reference used
 > throughout is **68.442 (Robbalobb, rank 2)**, the fastest run on the board that
 > today's game reproduces to the millisecond.
+>
+> **Update, 2026-08-23 — it re-simulates exactly on its own build.** Nadeo's
+> dated dedicated-server archives still serve builds back to 2020, and on the
+> **2022-06-21** server Roevhaal's tape validates at **63.546** with all five of
+> its splits to the millisecond — as do all ten of this map's build-113150
+> records, and none of the five modern ones. Run the same 2022 tape on
+> 2022-01-01 or 2022-03-19 and it fails, so the instrument can tell builds
+> apart. His run is real driving, not a recording artefact, and the author time
+> was stamped into the map file in the same physics era. `../OLDBUILD.md`.
 
 ---
 
