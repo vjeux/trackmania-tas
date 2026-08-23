@@ -76,15 +76,6 @@ impl Ref {
         *self.s.last().unwrap_or(&0.0)
     }
 
-    /// Unit direction of the reference at arclength `arc`.
-    pub fn tangent(&self, arc: f64) -> [f64; 3] {
-        let i = self.seg_at(arc);
-        let (a, b) = (&self.p[i], &self.p[i + 1]);
-        let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-        let n = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-9);
-        [dx / n, dy / n, dz / n]
-    }
-
     /// Index of the reference sample at or just before `arc`.
     pub fn index_at(&self, arc: f64) -> usize {
         self.seg_at(arc)
@@ -97,67 +88,6 @@ impl Ref {
         }
     }
 
-    /// Nearest point to `q` on the reference POLYLINE, restricted to
-    /// arclengths in `[lo, hi]`. Returns (arclength, distance).
-    ///
-    /// Segment-wise rather than vertex-wise, and continuous rather than
-    /// indexed: the whole point is that a slow run must be able to advance a
-    /// fraction of a fast reference's sample step.
-    pub fn nearest_in_band(&self, q: &[f64; 3], lo: f64, hi: f64) -> (f64, f64) {
-        let lo = lo.max(0.0).min(self.total());
-        let hi = hi.max(lo).min(self.total());
-        let i0 = self.seg_at(lo);
-        let i1 = self.seg_at(hi);
-        let mut best = (lo, f64::MAX);
-        for i in i0..=i1 {
-            let (a, b) = (&self.p[i], &self.p[i + 1]);
-            let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-            let l2 = dx * dx + dy * dy + dz * dz;
-            let u = if l2 > 1e-12 {
-                (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy + (q[2] - a[2]) * dz) / l2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let seg_len = l2.sqrt();
-            let arc = (self.s[i] + u * seg_len).clamp(lo, hi);
-            let uu = if seg_len > 1e-9 { (arc - self.s[i]) / seg_len } else { 0.0 };
-            let pt = [a[0] + uu * dx, a[1] + uu * dy, a[2] + uu * dz];
-            let dd = d3(q, &pt);
-            if dd < best.1 {
-                best = (arc, dd);
-            }
-        }
-        best
-    }
-
-    /// Arclength of the point on the reference nearest `q`, searched in a
-    /// window ahead of `from_idx`.
-    ///
-    /// The window is what makes this work on a ribbon that folds back on
-    /// itself: a global nearest-point search on a sausage jumps to the
-    /// neighbouring pass of the track and reports a run as having teleported
-    /// hundreds of metres down the route.
-    ///
-    /// **The width is load-bearing and it is set by physics, not by taste.**
-    /// Reference samples are ~2 m apart and no car on this map covers more
-    /// than 4 m in a 50 ms sample, so a run can advance at most ~3 reference
-    /// samples per step. The first version of this searched 400 samples ahead
-    /// — 800 m — and the self-control caught it at once: every human run
-    /// "drove" the route in 35-55 s, because the projection was hopping to the
-    /// next fold of the sausage. A wide window does not produce a slightly
-    /// worse answer, it produces a fictional one.
-    fn project(&self, q: &[f64; 3], from_idx: usize, ahead: usize) -> (f64, usize, f64) {
-        let lo = from_idx;
-        let hi = (from_idx + ahead).min(self.p.len() - 1);
-        let mut best = (f64::MAX, lo);
-        for i in lo..=hi {
-            let d = d3(q, &self.p[i]);
-            if d < best.0 {
-                best = (d, i);
-            }
-        }
-        (self.s[best.1], best.1, best.0)
-    }
 }
 
 /// Project one run onto the reference, returning (reference arclength, time).
