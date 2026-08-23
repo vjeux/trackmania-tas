@@ -48,30 +48,36 @@ pub fn jobs(root: &Path) -> Vec<Job> {
     out
 }
 
-/// The shortest file name in `dir` ending in `suffix`, preferring one that
-/// starts `rank00001` when there is a ranked set.
+/// The best file in `dir` ending in `suffix`.
+///
+/// For ghosts that means **the lowest rank**: this project's ghost files are
+/// named `rank00001_…`, `rank01_…`, `r001_…`, `p00001_…`, `hl_rank00001_…`,
+/// so the rank is read as the first run of digits in the name rather than by
+/// matching any one of those spellings. Ties, and files with no number at all,
+/// fall back to the shortest name — which for a map file picks the untouched
+/// original out of a directory that has accumulated repairs and segment maps.
 fn pick(dir: &Path, suffix: &str) -> Option<PathBuf> {
-    let mut best: Option<PathBuf> = None;
+    let key = |n: &str| -> (u32, usize) {
+        let rank = n
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(u32::MAX);
+        (rank, n.len())
+    };
+    let mut best: Option<(PathBuf, (u32, usize))> = None;
     for e in std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()) {
         let p = e.path();
         let n = p.file_name()?.to_string_lossy().to_string();
         if !n.ends_with(suffix) {
             continue;
         }
-        let rank1 = n.starts_with("rank00001");
-        let better = match &best {
-            None => true,
-            Some(b) => {
-                let bn = b.file_name().unwrap().to_string_lossy().to_string();
-                let brank1 = bn.starts_with("rank00001");
-                (rank1 && !brank1) || (rank1 == brank1 && n.len() < bn.len())
-            }
-        };
-        if better {
-            best = Some(p);
+        let k = key(&n);
+        if best.as_ref().map_or(true, |(_, bk)| k < *bk) {
+            best = Some((p, k));
         }
     }
-    best
+    best.map(|(p, _)| p)
 }
 
 /// Run every job, `jobs_n` at a time, writing `<out>/<id>.txt` per map and

@@ -14,37 +14,73 @@ pub struct LocalModel {
     pub size: (f32, f32),
 }
 
-/// Where a block model lives in the pack, across the environments that carry
-/// terrain-adapted copies of the Stadium set. Where a model exists in both,
-/// the geometry is identical.
+/// Where a block model lives in the pack.
+///
+/// A block name resolves through **five** block-info families, not one, and
+/// the file extension changes with the family:
+///
+/// | family | extension | what it holds |
+/// |---|---|---|
+/// | `GameCtnBlockInfoClassic` | `.EDClassic.Gbx` | roads, walls, platforms |
+/// | `GameCtnBlockInfoPillar` | `.EDClassic.Gbx` | the supports under everything |
+/// | `GameCtnBlockInfoFlat` | `.EDFlat.Gbx` | the terrain sheet — `Grass` |
+/// | `GameCtnBlockInfoFrontier` | `.EDFrontier.Gbx` | cliffs and hills |
+/// | `GameCtnBlockInfoTransition` | `.EDTransition.Gbx` | the joins between them |
+///
+/// Classic and Pillar each additionally carry a `Theme\` subfolder, which is
+/// where the seasonal sets live (`SnowRoadStraight`, `RallyCastleRoadStraight`)
+/// — 122 more block models that are otherwise invisible.
+///
+/// Looking in Classic alone left 125 537 placements across the corpus with no
+/// geometry, 92 619 of them `DecoWallBasePillar`.
+///
+/// The environments beyond Stadium carry terrain-adapted copies of the Stadium
+/// set; where a model exists in both the geometry is identical.
 fn block_candidates(name: &str) -> Vec<String> {
-    let mut v = vec![format!(
-        "Stadium\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
-        name
-    )];
-    // `Stadium256` carries the stadium shell itself (`Stade4096`,
-    // `Stade1536`), which is what a DECORATION map is made of.
-    v.push(format!(
-        "Stadium256\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
-        name
-    ));
+    let mut v = Vec::new();
+    for env in ["Stadium", "Stadium256"] {
+        // `Stadium256` carries the stadium shell itself (`Stade4096`,
+        // `Stade1536`), which is what a DECORATION map is made of.
+        for (family, ext) in [
+            ("GameCtnBlockInfoClassic", "EDClassic"),
+            ("GameCtnBlockInfoPillar", "EDClassic"),
+            ("GameCtnBlockInfoFlat", "EDFlat"),
+            ("GameCtnBlockInfoFrontier", "EDFrontier"),
+            ("GameCtnBlockInfoTransition", "EDTransition"),
+        ] {
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Theme\\{}.{}.Gbx", env, family, name, ext));
+        }
+    }
     for env in ["BlueBay", "GreenCoast", "RedIsland", "WhiteShore"] {
-        v.push(format!(
-            "{}\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\Stadium\\{}.EDClassic.Gbx",
-            env, name
-        ));
+        for (family, ext) in [
+            ("GameCtnBlockInfoClassic", "EDClassic"),
+            ("GameCtnBlockInfoPillar", "EDClassic"),
+            ("GameCtnBlockInfoFlat", "EDFlat"),
+            ("GameCtnBlockInfoFrontier", "EDFrontier"),
+            ("GameCtnBlockInfoTransition", "EDTransition"),
+        ] {
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Stadium\\{}.{}.Gbx", env, family, name, ext));
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
+        }
     }
     v
 }
 
 fn item_candidates(name: &str) -> Vec<String> {
-    // A map spells an item either bare or with its extension already on.
+    // A map spells an item either bare or with its extension already on, and
+    // the seasonal items live one folder deeper.
     let base = name.trim_end_matches(".Item.Gbx");
-    vec![
+    let mut v = vec![
         format!("Stadium\\Items\\{}.Item.Gbx", base),
+        format!("Stadium\\Items\\Theme\\{}.Item.Gbx", base),
         format!("{}.Item.Gbx", base),
         base.to_string(),
-    ]
+    ];
+    for env in ["GreenCoast", "RedIsland", "BlueBay", "WhiteShore"] {
+        v.push(format!("{}\\Items\\Stadium\\{}.Item.Gbx", env, base));
+    }
+    v
 }
 
 pub struct Assembler<'a> {
@@ -131,7 +167,14 @@ impl<'a> Assembler<'a> {
         if let Some(lm) = self.embedded_model(name) {
             return Some(lm);
         }
-        let path = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())?;
+        let Some(path) = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())
+        else {
+            // A map's block list is not only blocks: the gates are ITEMS
+            // placed on the grid (`GateCheckpointRight32m`, `GateSpecial32m*`),
+            // and so are the rotors and the seasonal props. A name that is not
+            // a block model is worth one more lookup before it becomes a hole.
+            return self.build_item(name);
+        };
         let model = self.store.load_model(&path).ok()?;
         let mut prefabs = model.refs_ending(".Prefab.Gbx");
         if prefabs.is_empty() {
