@@ -1,5 +1,15 @@
 # [Turtle Trial] Leto
 
+**[Turtle Trial] Leto** — TAS **218.812** (−136.369) | AT 355.181 | WR 441.002 by Bald_tm
+
+https://github.com/user-attachments/assets/ef4abed1-3897-44cc-8719-98458b015add
+
+The TAS with Bald_tm's world record as the opponent, chase camera on our car,
+and this run's own inputs drawn along the bottom from the 10 ms input chunk —
+what the driver pressed, not the 50 ms echo in the telemetry samples. Two thirds
+of what you are watching is a car being driven upside down at walking pace.
+
+
 **Nobody on this map has ever needed to drive better — they needed to fail less.
 Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 

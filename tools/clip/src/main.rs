@@ -19,7 +19,7 @@ clip cut   <in.webm> <out.mp4> [--to SECONDS]
     Trimming the opponent ghost before staging is the cheaper fix; this is for
     the ones already rendered. The output is probed, not assumed.
 
-clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F]
+clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F] [--crf Q]
     Draw a run's own inputs -- steering, throttle, brake, respawn, and a history
     strip -- onto a finished clip. Reads the 10 ms input chunk (what the driver
     pressed), never the 50 ms telemetry echo (what the car had, and on a
@@ -104,6 +104,9 @@ fn go(args: &[String]) -> Result<(), String> {
             }
             if let Some(v) = num("--history-ms") {
                 o.history_ms = v.parse().map_err(|e| format!("--history-ms: {e}"))?;
+            }
+            if let Some(v) = num("--crf") {
+                o.crf = v.parse().map_err(|e| format!("--crf: {e}"))?;
             }
             let ff = platform::from_env()?;
             overlay::run(&ff, Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]), &o)
