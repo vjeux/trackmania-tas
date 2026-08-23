@@ -44,7 +44,7 @@ drove them.
 
 **Fall 2025 - 01 Reverse (CP1 end)** — TAS **10.594** (−0.004) | AT 10.598 | WR 10.602 by ShcrTM
 
-https://github.com/user-attachments/assets/1497b29f-cab6-4ee0-ac56-9dfbe7fd9373
+https://github.com/user-attachments/assets/0d988786-a13a-448a-9591-22a0d2dad890
 
 **Our 10.594 and ShcrTM's world record, both in one camera, shot on our car —
 and they never come apart.** Maximum separation over the whole run is **0.86 m**,

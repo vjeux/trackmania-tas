@@ -23,7 +23,7 @@ finish at any resolution tried.
 
 **U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR 7.893 by Whatever8319
 
-https://github.com/user-attachments/assets/702a7a24-1629-4a19-9f18-731da47d61cf
+https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
 
 **Our 7.463 and Whatever8319's world record, both in one camera, on our car.**
 On the ground the two are one car — the ground phase is not searched here, and
