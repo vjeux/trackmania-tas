@@ -221,6 +221,32 @@ recording?** Of the eleven files the skin census flags, ten pass by quotation �
 author-time lap"* (228607) — and 270051 was the only failure. Two independent
 instruments agree on that one file.
 
+## A caveat that appears later than the number it qualifies will be copied without it
+
+Same failure as the map costs above, at document scale rather than sentence
+scale: **the number travels and the qualification does not.**
+
+`SEARCH.md` §4's controls table listed *"the after-key puts him 5 mm from the
+finish"* as a control. §5.9, two hundred lines later, explains that the point
+being scored **is the author's own last telemetry sample** — he is at it by
+definition, so the 5 mm is arithmetic and not evidence. The number had been
+lifted into the controls table without the paragraph that empties it.
+
+The strongest form of the evidence: **the author of the caveat is the one who
+copied it wrongly, into their own table, having written the disclaimer
+themselves.** Nobody misunderstood anything; the distance between the two
+passages was enough.
+
+Two fixes, and the structural one matters more than the textual one:
+
+* the controls table no longer claims it;
+* **§5.9 was reordered so the disclaimer no longer trails the number it
+  disclaims.** A qualification that reads after its number is a qualification
+  that will be separated from it.
+
+This sits beside *An exemption must quote the page it exempts* because both are
+about a claim surviving the trip from where it was measured to where it is used.
+
 ---
 
 # 3. How an instrument lies
