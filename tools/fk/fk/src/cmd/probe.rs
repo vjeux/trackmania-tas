@@ -40,6 +40,8 @@ pub struct ProbeOpts {
     pub span: u32,
     /// Print this many best offsets.
     pub top: usize,
+    /// Also score `a*u8 + b`, for a channel the record stores packed.
+    pub affine: Option<(f64, f64)>,
 }
 
 /// One candidate offset's agreement with the reference series.
@@ -76,6 +78,7 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 }
 
 pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<(), String> {
+    let affine = o.affine;
     let reference = traj::Reference::load(&o.reference)?;
     let want = crate::traj::Reference::channel_from(&o.reference, &o.channel)
 
@@ -202,6 +205,29 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
             enc: "u8/255",
         });
     }
+    // An AFFINE u8: `a*v + b`, the encoding a small integer takes when the
+    // record stores it packed -- gear is `4*u8 + 1`. Passed in rather than
+    // guessed, because a fitted coefficient absorbs a wrong offset.
+    if let Some((a, b)) = affine {
+        for off in 4..reclen {
+            let raw: Vec<f64> =
+                pairs.iter().map(|(i, _)| a * rows[*i].rec[off] as f64 + b).collect();
+            let mut distinct: Vec<u8> = pairs.iter().map(|(i, _)| rows[*i].rec[off]).collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            let exact = raw.iter().zip(&refvals).filter(|(x, y)| (*x - *y).abs() < 1e-9).count()
+                as f64
+                / refvals.len() as f64;
+            hits.push(Hit {
+                off: off as i64 - span as i64 - 4,
+                exact,
+                corr: pearson(&raw, &refvals),
+                distinct: distinct.len(),
+                enc: "affine",
+            });
+        }
+    }
+
     // A RAW u8, unscaled. Not every channel is a 0..1 quantity: a gear or a
     // count is a small integer, and scaling it by 1/255 makes an exact match
     // impossible -- the first version of this scored gear at 0.00 % while its
@@ -225,7 +251,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     }
     for off in (4..reclen.saturating_sub(4)).step_by(1) {
         let raw: Vec<f64> = pairs.iter().map(|(i, _)| getf32(&rows[*i].rec, off)).collect();
-        if raw.iter().any(|v| !v.is_finite() || *v < -0.01 || *v > 1.01) {
+        // Plausible means "in the reference's own range", not "in 0..1". The
+        // first version hardcoded 0..1 because the first channel it looked for
+        // was a fraction, and it then silently could not see a wheel rotation
+        // that runs to 1607. An assumption about a channel's range is the same
+        // class of mistake as an assumption about its encoding.
+        let pad = (hi - lo).abs().max(1e-6) * 0.5;
+        if raw.iter().any(|v| !v.is_finite() || *v < lo - pad || *v > hi + pad) {
             continue;
         }
         let mut distinct: Vec<u64> = raw.iter().map(|v| (v * 1e6) as u64).collect();
@@ -246,6 +278,15 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
                 (v * 255.0).round() / 255.0
             }
         };
+        // For a channel the record does NOT quantise to a u8 -- a rotation, a
+        // length -- the right test is agreement to the printed precision of
+        // the reference, not to half a u8 step.
+        let direct = raw
+            .iter()
+            .zip(&refvals)
+            .filter(|(a, b)| (*a - *b).abs() <= 1e-5 * b.abs().max(1.0))
+            .count() as f64
+            / refvals.len() as f64;
         let hit = |trunc: bool| {
             raw.iter()
                 .zip(&refvals)
@@ -253,7 +294,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
                 .count() as f64
                 / refvals.len() as f64
         };
-        let exact = hit(false).max(hit(true));
+        let exact = hit(false).max(hit(true)).max(direct);
         hits.push(Hit {
             off: off as i64 - span as i64 - 4,
             exact,

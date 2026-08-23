@@ -62,6 +62,7 @@ fn main() {
     let mut o = BufWriter::new(out.lock());
     let mut f = Frame::new(w, h);
     let at = |i: u64| t0 + i as f64 / fps;
+    let at2 = at;
 
     match cmd.as_str() {
         "lamps" => {
@@ -102,6 +103,75 @@ fn main() {
             let gap: usize = num(&args, "--gap", 2);
             let rows = sections::read_table(&mut r);
             sections::sections(&rows, min_len, gap, &mut o);
+        }
+
+        // Per-frame ink in a rectangle, as a series. `ink` sums over every frame
+        // and answers "where are the cells"; this answers "on which frames is
+        // there anything to read at all", which is the question that decides
+        // whether a readout can be an objective.
+        "inkseries" => {
+            let n: Vec<usize> =
+                need(&args, "--rect").split(',').map(|s| s.parse().unwrap()).collect();
+            // Contrast, not level: this text is white over backgrounds that run
+            // from a dark tunnel to a white wall, so an absolute threshold
+            // measures the scenery. The span between the rectangle's brightest
+            // and darkest pixels is what a glyph adds.
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            writeln!(o, "t\tp95\tp05\tspan\tpresent").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                let mut v: Vec<f32> = Vec::with_capacity(n[2] * n[3]);
+                for y in n[1]..n[1] + n[3] {
+                    for x in n[0]..n[0] + n[2] {
+                        v.push(f.minc(x, y));
+                    }
+                }
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let hi = v[(v.len() - 1) * 95 / 100];
+                let lo = v[(v.len() - 1) * 5 / 100];
+                writeln!(
+                    o,
+                    "{:.4}\t{:.1}\t{:.1}\t{:.1}\t{}",
+                    at(i),
+                    hi,
+                    lo,
+                    hi - lo,
+                    ((hi - lo) >= span_min) as u8
+                )
+                .unwrap();
+                i += 1;
+            }
+        }
+
+        // A rectangle as TEXT. The contact-sheet PGM is the right tool when a
+        // human can look at it; this is the right tool when the readout is 30
+        // pixels wide and the labeller is working down a pipe.
+        "ascii" => {
+            let n: Vec<usize> =
+                need(&args, "--rect").split(',').map(|s| s.parse().unwrap()).collect();
+            let at: Vec<u64> = arg(&args, "--frames")
+                .unwrap_or_else(|| "0".into())
+                .split(',')
+                .map(|s| s.parse().unwrap())
+                .collect();
+            let ramp: Vec<char> = " .:-=+*#%@".chars().collect();
+            let lo: f32 = num(&args, "--lo", 60.0);
+            let hi: f32 = num(&args, "--hi", 230.0);
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if at.contains(&i) {
+                    writeln!(o, "# frame {} t {:.4}  rect {:?}", i, at2(i), n).unwrap();
+                    for y in n[1]..n[1] + n[3] {
+                        let mut s = String::new();
+                        for x in n[0]..n[0] + n[2] {
+                            let v = ((f.minc(x, y) - lo) / (hi - lo)).clamp(0.0, 1.0);
+                            s.push(ramp[(v * (ramp.len() - 1) as f32).round() as usize]);
+                        }
+                        writeln!(o, "{}", s).unwrap();
+                    }
+                }
+                i += 1;
+            }
         }
 
         "ink" => {

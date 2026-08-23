@@ -431,7 +431,35 @@ the video's HUD the way the speed was read, and score candidates on it. That is
 the same work as §1 and §5, on a channel that constrains the route rather than
 the speed.
 
-## 9. What is banked
+## 9. The wetness readout on screen: located, and not yet decoded
+
+The simulator side is done (§8). The video side is where this arm stops, and
+precisely where matters.
+
+**Located.** The bottom-right status box draws a **droplet icon at x 2119–2130,
+y 1230–1242** (2560×1440 master) followed by the percentage: digit cells about
+9 px apart from x ≈ 2135, glyph box ≈ 10×15, then a `%`. Read by eye off ASCII
+dumps: **43 %** at video 565, **20 %** at 567 and 569.
+
+**A trap for whoever finishes it.** The same box draws a **`! Slip` line at the
+same y**, so the line's content varies and a reader that assumes digits will
+decode letters as numbers. `S`, `l`, `i`, `p` at 540 is what that looks like.
+
+**Available on 62.2 % of the run.** Over all 4380 frames of the final run the
+droplet is on screen on **2726** of them (`wetness/wetpresence.tsv` lists the
+stretches). Detected by **contrast** — p95 − p05 of `min(r,g,b)` over the icon
+rect ≥ 45 — not by an absolute level, because the box sits over everything from
+a dark tunnel to a white wall. Controls: present at 540/565/567/569 where the
+icon is visible in the dump; absent at 556 and 571 where it is not.
+
+**Not done: decoding the digits.** They are ~9×13 px over wildly varying
+backgrounds, and with the labelling budget I had, the honest options were a
+reader I could not control or no reader. I stopped at the one I can defend. The
+tool that makes the labelling possible without a display is `vidread ascii`,
+which prints any rectangle as a text ramp — that is how every reading above was
+made.
+
+## 10. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
 
@@ -449,7 +477,7 @@ recording), **`recon`** (grow a tape against a speed trace), `ghost tape
 script` (an event list to a tape) and `tmtraj csvdiff` (two trajectories on the
 instants they share).
 
-## 10. Attribution
+## 11. Attribution
 
 The run is **Wirtual's**, on **Nadeo's** map, made with **Acepter's**
 Trackmania Input Control Kit. Video:
