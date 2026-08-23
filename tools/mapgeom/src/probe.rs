@@ -300,30 +300,3 @@ fn height_at(a: [f32; 3], b: [f32; 3], c: [f32; 3], x: f32, z: f32) -> Option<f3
     Some(w0 * a[1] + w1 * b[1] + w2 * c[1])
 }
 
-/// The height-fit criterion: how many of a run's samples are RESTING — within
-/// `max_gap` of a surface — and the median of those gaps.
-///
-/// Choosing this correctly matters more than it looks. Two wrong criteria were
-/// tried first and both produce a confident wrong answer:
-///
-/// * *"how many samples have anything under them"* picks whichever height
-///   drops the run onto the stadium FLOOR, because grass is everywhere. On
-///   134672 that scored 93 % of samples over a surface at a wandering 3.2 m.
-/// * *"the largest group of samples sharing a gap"* is degenerate under a
-///   vertical shift: lowering the whole model by a metre raises every gap by a
-///   metre and the same samples still share one. It also picked the wrong cell
-///   row on maps with a deck under the road — 146612 fitted a consistent
-///   2.048 m.
-///
-/// A car rests CENTIMETRES above what it is on, so the window is anchored at
-/// zero. Measured ride heights on maps this model reproduces run
-/// 0.013 - 0.073 m.
-pub fn resting(index: &Index, points: &[[f32; 3]], reach: f32, max_gap: f32) -> (usize, f32) {
-    let mut gaps: Vec<f32> = points.iter().filter_map(|p| index.below(*p, reach)).map(|h| h.gap).collect();
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = gaps.partition_point(|g| *g <= max_gap);
-    if n == 0 {
-        return (0, f32::NAN);
-    }
-    (n, gaps[n / 2])
-}

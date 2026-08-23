@@ -13,7 +13,8 @@ COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
   resolve <logical-path>        which pack entry a logical path is stored under
   refs <logical-path>           a file's external reference table
-  dump <path>                   walk a file's node graph and summarise it
+  dump <path> [--body F]        walk a file's node graph and summarise it;
+                                --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   extract <logical-path> <file>    one pack file, decrypted and decompressed
@@ -24,7 +25,11 @@ COMMANDS
                                 fit the map height and grade the model: how
                                 far above the surface the car sat, and what
                                 the surface was
-  corpus --root DIR --out DIR [--jobs N] [--maps a,b] [-- <check flags>]
+  compare --before DIR --after DIR [--out F]
+                                the before/after coverage table, as markdown,
+                                from two directories of transcripts
+  corpus --root DIR --out DIR [--jobs N] [--maps a,b] [--pin id=ghost]
+         [-- <check flags>]
                                 grade every map in a tree, in parallel, into
                                 one directory of transcripts + summary.tsv
   where <file.Map.Gbx> --at X,Z [--yoff N]
@@ -152,7 +157,7 @@ fn score_at(scene: &mapgeom::scene::Scene, runs: &[Run], reach: f32) -> (usize, 
     let mut score = 0usize;
     let mut centre = f32::NAN;
     for r in runs {
-        let (n, c) = mapgeom::probe::resting(&idx, &r.points, reach, RESTING);
+        let (n, c) = mapgeom::coverage::resting(&idx, &r.motions, reach, RESTING);
         score += n;
         if centre.is_nan() {
             centre = c;
@@ -215,6 +220,12 @@ fn main() {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let m = load_any(&mut store, &p);
+            // The decompressed body, for when a chunk layout has to be read
+            // off the bytes. `MAPGEOM_TRACE=1` says where in it the walk was.
+            if let Some(out) = flag(&a.rest, "--body") {
+                std::fs::write(&out, &m.body).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {} ({} bytes of body)", out, m.body.len());
+            }
             let g = m.graph().unwrap_or_else(die);
             println!("{}  class 0x{:08X}  {} nodes", m.path, m.class_id, m.num_nodes);
             if let Some(root) = &g.root {
@@ -476,7 +487,17 @@ fn main() {
             let only: Vec<String> = flag(&a.rest, "--maps")
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
-            let mut js = mapgeom::corpus::jobs(std::path::Path::new(&root));
+            let mut js = mapgeom::corpus::jobs(std::path::Path::new(&root), &{
+                let mut pins = std::collections::BTreeMap::new();
+                for (i, x) in a.rest.iter().enumerate() {
+                    if x == "--pin" {
+                        if let Some((id, g)) = a.rest.get(i + 1).and_then(|s| s.split_once('=')) {
+                            pins.insert(id.to_string(), g.to_string());
+                        }
+                    }
+                }
+                pins
+            });
             if !only.is_empty() {
                 js.retain(|j| only.contains(&j.id));
             }
@@ -503,6 +524,21 @@ fn main() {
             std::fs::write(&table, &s).unwrap_or_else(|e| die(e.to_string()));
             println!("{}", s);
             println!("wrote {}", table.display());
+        }
+        "compare" => {
+            let before =
+                flag(&a.rest, "--before").unwrap_or_else(|| die("compare needs --before".into()));
+            let after =
+                flag(&a.rest, "--after").unwrap_or_else(|| die("compare needs --after".into()));
+            let s = mapgeom::corpus::compare(
+                std::path::Path::new(&before),
+                std::path::Path::new(&after),
+            );
+            print!("{}", s);
+            if let Some(out) = flag(&a.rest, "--out") {
+                std::fs::write(&out, &s).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {}", out);
+            }
         }
         "where" => {
             let mut store = open(&a);

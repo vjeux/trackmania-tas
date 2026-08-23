@@ -217,11 +217,25 @@ impl Verdict {
     }
     /// The ride height along the car's own down axis — the true one, and on a
     /// banked road a smaller number than the plumb gap by exactly the cosine.
+    /// Over the samples the car was STANDING on something: a flight that
+    /// happens to point its roof at a wall is not a ride height.
     pub fn median_ride(&self) -> f32 {
-        pct(&sorted(&self.body), 0.5)
+        pct(&self.standing_ride(), 0.5)
     }
     pub fn ride_pct(&self, q: f64) -> f32 {
-        pct(&sorted(&self.body), q)
+        pct(&self.standing_ride(), q)
+    }
+
+    fn standing_ride(&self) -> Vec<f32> {
+        let mut g: Vec<f32> = self
+            .classes
+            .iter()
+            .zip(&self.body)
+            .filter(|(c, g)| matches!(c, Class::Resting | Class::Loose) && g.is_finite())
+            .map(|(_, g)| *g)
+            .collect();
+        g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        g
     }
 
     /// The half-width of the tightest window holding half the plumb gaps — a
@@ -262,10 +276,43 @@ impl Verdict {
     }
 }
 
-fn sorted(v: &[f32]) -> Vec<f32> {
-    let mut g: Vec<f32> = v.iter().copied().filter(|g| g.is_finite()).collect();
-    g.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    g
+/// The height-fit criterion: how many samples the RECORDING says were in
+/// ground contact are RESTING on the model — within `max_gap` along the car's
+/// own down axis — and the median of those distances.
+///
+/// Choosing this correctly matters more than it looks. Three criteria were
+/// tried before this one and the first two produce a confident wrong answer:
+///
+/// * *"how many samples have anything under them"* picks whichever height
+///   drops the run onto the stadium FLOOR, because grass is everywhere. On
+///   134672 that scored 93 % of samples over a surface at a wandering 3.2 m.
+/// * *"the largest group of samples sharing a gap"* is degenerate under a
+///   vertical shift: lowering the whole model by a metre raises every gap by a
+///   metre and the same samples still share one. It also picked the wrong cell
+///   row on maps with a deck under the road — 146612 fitted a consistent
+///   2.048 m.
+/// * *"how many samples are within 0.25 m of a surface, straight down"* is
+///   anchored at zero and got 31 of 33 maps right, but it counts flight
+///   samples that a wrong height happens to catch, and it cannot see a road
+///   the car is on the side of.
+///
+/// A car rests CENTIMETRES above what it is on, so the window is anchored at
+/// zero; measured ride heights run 0.013 - 0.073 m. And the recording already
+/// says which samples were resting on anything at all, which is information
+/// the model cannot fake.
+pub fn resting(index: &Index, ms: &[Motion], reach: f32, max_gap: f32) -> (usize, f32) {
+    let mut gaps: Vec<f32> = ms
+        .iter()
+        .filter(|m| m.contact)
+        .filter_map(|m| index.along(m.p, [-m.up[0], -m.up[1], -m.up[2]], reach).or_else(|| index.below(m.p, reach)))
+        .map(|h| h.gap)
+        .collect();
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = gaps.partition_point(|g| *g <= max_gap);
+    if n == 0 {
+        return (0, f32::NAN);
+    }
+    (n, gaps[n / 2])
 }
 
 fn pct(g: &[f32], q: f64) -> f32 {
@@ -273,4 +320,10 @@ fn pct(g: &[f32], q: f64) -> f32 {
         return f32::NAN;
     }
     g[(((g.len() - 1) as f64) * q).round() as usize]
+}
+
+fn sorted(v: &[f32]) -> Vec<f32> {
+    let mut g: Vec<f32> = v.iter().copied().filter(|g| g.is_finite()).collect();
+    g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    g
 }

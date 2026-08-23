@@ -565,10 +565,22 @@ impl<'a> Graph<'a> {
                 self.r.lookback()?; // ArchetypeBlockInfoId
                 self.r.lookback()?; // ArchetypeBlockInfoCollectionId
                 let n = self.r.u32()? as usize;
+                crate::reader::trace(|| {
+                    format!("    blockitem v{} {} variants at 0x{:x}", version, n, self.r.o)
+                });
                 let mut first = -1;
                 for i in 0..n {
+                    crate::reader::trace(|| {
+                        format!(
+                            "      variant {} at 0x{:x} next u32 0x{:08X}",
+                            i,
+                            self.r.o,
+                            self.r.peek_u32().unwrap_or(0)
+                        )
+                    });
                     self.r.u32()?; // variant key
                     let v = self.noderef()?;
+                    crate::reader::trace(|| format!("      -> node {} at 0x{:x}", v, self.r.o));
                     if i == 0 {
                         first = v;
                     }
@@ -577,14 +589,35 @@ impl<'a> Graph<'a> {
                 if version < 1 {
                     return Ok(());
                 }
+                // Version 1 adds a second table, one entry per variant. It
+                // exists because a v1 block hands out a NULL node in the
+                // variant list above and puts its geometry here instead --
+                // 210218's whole track is 83 embedded wood platforms that all
+                // look like this, and reading the entry as a 32-bit flag word
+                // (there was no v1 file to check against when this was
+                // written) walked straight off into a garbage node reference
+                // and cost the map every one of them.
+                //
+                // Read off the bytes of `PlatformWoodBase.Block.Gbx`: a byte
+                // saying the table is present, then per variant a byte of
+                // flags, then whichever of mesh / collision / box / offset
+                // that byte claims.
                 if self.r.u8()? != 0 {
                     for _ in 0..n {
-                        let flags = self.r.u32()?;
+                        let flags = self.r.u8()?;
                         if flags & 1 != 0 {
-                            self.noderef()?; // mesh
+                            let mesh = self.noderef()?;
+                            // A v1 block's variant list hands out null; this
+                            // is where its shape actually is.
+                            if acc.entity_model < 0 {
+                                acc.entity_model = mesh;
+                            }
                         }
                         if flags & 2 != 0 {
-                            self.noderef()?; // surf
+                            let surf = self.noderef()?; // collision surface
+                            if acc.entity_model < 0 {
+                                acc.entity_model = surf;
+                            }
                         }
                         if flags & 4 != 0 {
                             self.r.boxf()?;
