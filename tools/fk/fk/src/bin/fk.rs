@@ -18,6 +18,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk server bench    throughput against the batched plain oracle
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
+  fk resync          put an old recording's tape back on its own recorded line
   fk regen           rewrite a ghost's telemetry from engine state
   fk carrier         name the sample bytes a regenerated ghost inherits, and write them
 
@@ -104,6 +105,34 @@ fn dispatch(a: &[String]) -> Result<(), String> {
         // an inconsistency to paper over: a harness that measures the watchdog
         // over a window is not the same shape of command as one that reads a
         // trajectory at a checkpoint you name.
+        "resync" => {
+            let rest = &a[1..];
+            let (engine, tape, at) = common(rest)?;
+            cmd::resync::run(
+                &engine,
+                tape,
+                at,
+                cmd::resync::Opts {
+                    reference: flag(rest, "--reference")
+                        .ok_or("fk resync needs --reference REC.csv")?
+                        .to_string(),
+                    tol: flag(rest, "--tol").map(|s| s.parse().unwrap()).unwrap_or(1.0f64),
+                    evals: num(rest, "--evals").unwrap_or(400) as usize,
+                    window: num(rest, "--window").unwrap_or(80) as usize,
+                    seed: num(rest, "--seed").unwrap_or(1) as u64,
+                    out: flag(rest, "--out").map(|s| s.to_string()),
+                    control_break_tick: num(rest, "--control-break").map(|v| v as usize),
+                    control_break_delta: num(rest, "--control-delta").unwrap_or(8) as i32,
+                    maxdelta: num(rest, "--maxdelta").unwrap_or(24) as i32,
+                    maxspan: num(rest, "--maxspan").unwrap_or(3) as usize,
+                    onset: flag(rest, "--onset").map(|s| s.parse().unwrap()).unwrap_or(0.02f64),
+                    minstep: num(rest, "--minstep").unwrap_or(0),
+                    ctlticks: num(rest, "--ctlticks").unwrap_or(80) as usize,
+                    lo: num(rest, "--lo").map(|v| v as usize),
+                    hi: num(rest, "--hi").map(|v| v as usize),
+                },
+            )
+        }
         "watch" => cmd::watch::run(&a[1..]),
         "regen" => cmd::regen::run(&a[1..]),
         "carrier" => cmd::carrier::run(&a[1..]),

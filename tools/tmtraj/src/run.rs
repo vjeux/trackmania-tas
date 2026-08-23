@@ -74,6 +74,7 @@ EVERY PUBLISHED FILE AT ONCE
   corpus  audit  --root R --refs F     the splice test against a named reference list
 
 A POPULATION OF RUNS
+  geom    path|selfcut|near ...        the SHAPE of a run: length, cuts, line-vs-line
   lines   report|matrix|stats|demo --dir D [--stations N] [--eps E,...]
           [--metric projection|station|dtw] [--ref NAME] [--sort time|name]
 
@@ -171,6 +172,7 @@ pub fn run() {
             }
         }
         "lines" => cmd_lines(rest),
+        "geom" => crate::geomcmd::cmd(rest),
         "selftest" => {
             let r = selftest::selftest(true);
             if !r.skipped.is_empty() {

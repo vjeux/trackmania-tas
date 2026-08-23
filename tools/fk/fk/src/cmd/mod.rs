@@ -3,6 +3,7 @@
 
 pub mod carrier;
 pub mod regen;
+pub mod resync;
 pub mod server;
 pub mod trace;
 pub mod watch;

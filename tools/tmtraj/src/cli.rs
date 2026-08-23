@@ -141,7 +141,13 @@ impl Args {
         let known = self.asked.borrow().clone();
         for s in &self.seen {
             if !known.iter().any(|k| k == s) {
-                self.bad.borrow_mut().push(format!("unknown flag --{}", s));
+                self.bad.borrow_mut().push(format!(
+                    "unknown flag --{}\n  (if this command DOES implement --{}, the bug is here: \
+                     `finish` compares what was SEEN against what has been ASKED FOR SO FAR, so \
+                     it must be called AFTER every `one`/`num`/`many`/`has` in the command, not \
+                     before them)",
+                    s, s
+                ));
             }
         }
         let bad = self.bad.borrow().clone();

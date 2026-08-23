@@ -32,6 +32,7 @@ use std::path::Path;
 
 /// A ghost's input tape, decoded into the channels the engine consumes, plus
 /// enough of the container to write a modified copy back out.
+#[derive(Clone)]
 pub struct Tape {
     /// Steer per tick, as the raw byte the format stores. The engine reads it
     /// as `(byte as i8) as f32 / 127.0`.
