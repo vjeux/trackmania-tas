@@ -1582,6 +1582,34 @@ pub fn gather_fields(
             rows.iter().map(|r| -r.rel).max().unwrap_or(0).max(0) + 8,
         )
     };
+    // TWO PHASES, because the wide window is needed at ONE INSTANT and the
+    // narrow one at all of them.
+    //
+    // What this used to do: gather 1.25 MB of memory at every one of ~260
+    // instants, write all 1.36 GB of it to a file in /tmp, and read it back.
+    // Twenty-four regeneration attempts run in parallel, so that is 32 GB
+    // through the disk to extract about 200 KB of car state. It was I/O-bound
+    // by three orders of magnitude, and on a busy box it took minutes.
+    //
+    // The width is only there to FIND the copy of the car that has the fields,
+    // and the code below does that from a single probe instant (`probe = n/2`)
+    // -- every other use is four wheel offsets and the state itself. So:
+    //
+    //   phase A   wide, but COARSE: one instant in `PHASE_A_STRIDE`, enough to
+    //             find the copy and to take a median over. ~16 instants.
+    //   phase B   NARROW -- the vehicle state is 864 bytes, stated by the class
+    //             descriptor -- at every instant, positioned on what phase A
+    //             found.
+    //
+    // Same answers, ~1/500th of the bytes. The dump also goes to a RAM-backed
+    // tmpfs when one is available, so even the wide phase never reaches a disk.
+    // The stride is chosen to leave ENOUGH INSTANTS, not to be as coarse as
+    // possible. Phase A must still pair with the clean run (the guard below
+    // wants 20 shared instants, and a median over a handful is not a median),
+    // so it targets ~48 and never goes below that. A fixed stride of 16 left
+    // 17 and tripped the guard -- correctly: "they are not the same run" is
+    // exactly what too few shared instants cannot be distinguished from.
+    const PHASE_A_TARGET: usize = 48;
     let mut extra: record::ExtraSegs = Vec::new();
     let span = back + fwd;
     let each = (span as u32).div_ceil(6);
@@ -1593,6 +1621,19 @@ pub fn gather_fields(
         }
         o += each as i64;
     }
+    // Where a record offset came from, as a rel -- so phase B can ask for the
+    // copy phase A found. The record is [0..4] clock, then the production
+    // window, then the extras in the order they were requested.
+    let rel_of = |po: usize, extra: &record::ExtraSegs| -> Option<i64> {
+        let mut at = 4usize + record::win_len() as usize;
+        for (rel, len) in extra {
+            if po >= at && po < at + *len as usize {
+                return Some(*rel + (po - at) as i64);
+            }
+            at += *len as usize;
+        }
+        None
+    };
     let g = GatherOpts {
         bias_override: Some(anchors.bias),
         anchors: Some(anchors),
@@ -1602,11 +1643,53 @@ pub fn gather_fields(
         dedup: Some((0, 4 + record::win_len())),
         choose_copy: false,
         self_check: false,
-        extra,
+        extra: extra.clone(),
         ..GatherOpts::production(dump)
+    };
+    // PHASE A -- WIDE, BUT ONLY WHERE IT PAYS.
+    //
+    // A calibrated field offset skips this entirely. The copy of the car that
+    // holds the fields sits at a fixed offset from the anchor for a given
+    // binary and map, exactly as the anchor itself sits at a fixed offset from
+    // the module base -- and `Anchors` already caches `pos_delta`, `quat_off`
+    // and `vel_off` for that reason. It did not cache this one, so a search
+    // that has one right answer was re-run on every fork, at 1.36 GB a time.
+    // `FK_FIELD_REL` supplies it; the wheel-liveness guard and the 1e-3 m
+    // position check still run, so a stale calibration can only FAIL and fall
+    // back to searching -- it cannot produce a wrong file.
+    let cached_rel: Option<i64> =
+        std::env::var("FK_FIELD_REL").ok().and_then(|v| v.parse().ok());
+    // How coarse phase A can be. The gather is on the RECORDING's grid, so the
+    // instant count is the ghost's sample count -- not the clean run's, which
+    // is five times denser at 10 ms and made this over-stride by 5x (48 asked
+    // for, 10 delivered, and the guard correctly refused to call that the same
+    // run). Conservative: never coarser than 4, which is a 4x saving with 60+
+    // instants left on a typical run and cannot approach the guard's floor.
+    let n_samples = (truth.len() as i64 * 10 / period.max(1)).max(1);
+    let stride = ((n_samples / PHASE_A_TARGET as i64).max(1)).min(4);
+    let wide_period = if cached_rel.is_some() { period } else { period * stride };
+    let g = GatherOpts {
+        period: wide_period,
+        extra: if cached_rel.is_some() {
+            // Nothing wide is needed: ask only for the state, at the offset we
+            // already know. 864 bytes, from the class descriptor.
+            vec![(cached_rel.unwrap() - 0x50 - 8, 0x360 + 16)]
+        } else {
+            extra.clone()
+        },
+        ..g
     };
     let two = record::run_clean_anch(c, &g)?;
     let recs = record::read_samples_pair(dump, two.reclen);
+    if verbose || cached_rel.is_none() {
+        println!(
+            "field gather phase A: {} instants at {} ms, record {} B ({:.1} MB gathered)",
+            recs.len(),
+            wide_period,
+            two.reclen,
+            recs.len() as f64 * two.reclen as f64 * 2.0 / 1e6
+        );
+    }
 
     // Pair the gathered instants with the clean run's own measured positions.
     let mut idx: Vec<usize> = Vec::new();
@@ -1684,13 +1767,38 @@ pub fn gather_fields(
         return Err("no copy in the field window holds the trajectory the clean run measured".into());
     }
     cands.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let live = |o: usize, w: Write| -> usize {
+    // ARE THE FOUR WHEEL-ROTATION SLOTS LIVE? That is what separates the copy
+    // of the car that carries the fields from a bare position copy with dead
+    // memory around it, and it is the guard that stops a file full of zeroed
+    // wheels passing every acceptance test.
+    //
+    // The offsets come from the TABLE when there is one. In layout mode there
+    // are no rows -- the writer's transcription replaces them -- so the filter
+    // matched nothing, `live` returned 0 for every candidate, and the guard
+    // refused every copy including the right one. It read exactly like "the
+    // window does not reach the car" while the car was sitting at 0.000000 m.
+    //
+    // So in layout mode the offsets are stated from the measured structure
+    // instead: `CARRIER.md`'s wheel record is `car + 88 + 44k` with the
+    // rotation at +4, i.e. car+92, +136, +180, +224 — the exact four offsets
+    // the table's `u16@6/8/10/12` rows carry, confirmed on eight keys. They are
+    // CAR-relative already; deriving them from the class descriptor's
+    // state-relative 0x88 and subtracting 0x50 puts them 32 bytes low, which
+    // scores 3 of 4 on neighbouring live floats and is the kind of near-miss
+    // that looks like a result.
+    let wheel_rels: Vec<i64> = if layout_mode {
+        (0..4).map(|k| 92 + 44 * k).collect()
+    } else {
         rows.iter()
-            .filter(|r| {
-                matches!(r.ch, Channel::U16(b) if (6..=12).contains(&b) && b % 2 == 0)
-            })
-            .filter(|r| {
-                let q = o as i64 + r.rel;
+            .filter(|r| matches!(r.ch, Channel::U16(b) if (6..=12).contains(&b) && b % 2 == 0))
+            .map(|r| r.rel)
+            .collect()
+    };
+    let live = |o: usize, w: Write| -> usize {
+        wheel_rels
+            .iter()
+            .filter(|rel| {
+                let q = o as i64 + **rel;
                 if q < 0 || q as usize + 4 > reclen {
                     return false;
                 }
@@ -1716,6 +1824,15 @@ pub fn gather_fields(
          own measured path over {} instants, {} of 4 wheel slots live ({} copies)",
         po, wr.name(), err, n, nlive, cands.len()
     );
+    // PRINT THE CALIBRATION. This is the one right answer the search just
+    // spent 1.36 GB finding; naming it is what lets the next run be a lookup.
+    if let Some(rel) = rel_of(po, &extra) {
+        println!(
+            "  calibration: FK_FIELD_REL={}   (re-run with this and phase A is skipped \
+             entirely -- the guards still run, so a stale value can only fail)",
+            rel
+        );
+    }
     // A MEASUREMENT WORTH READING, not a diagnostic.
     //
     // `err` is how far the copy that HAS THE FIELDS sits from the copy the
