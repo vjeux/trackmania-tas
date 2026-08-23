@@ -111,6 +111,66 @@ own contact. He scrubs just as hard as we do. The five and a half seconds come
 entirely from **not driving the two loops** — it is a shortcut, not a grip
 trick.
 
+## The technique has a name, and the U-shape works
+
+**2026-08-23.** Two things were open above: what the trick is actually called,
+and whether the corner can be taken as a single U instead of a loop. Both are
+now settled.
+
+**It is a Scandinavian flick.** The rally pendulum turn: steer *away* from the
+corner, then snap the lock *into* it with the throttle lifted, and the car's own
+yaw inertia carries it round further than the grip can steer it. The Trackmania
+community uses that name for TM2020 ice — there is a tutorial titled
+*"Scandinavian Flick | Full-Speed Ice | Trackmania 2020"* — and BirdieTM's
+*"COMPLETE Ice Tutorial"* has a chapter called **"360/270 Degree Turn"**, which
+is the same manoeuvre driven all the way round. The game's own wiki has the
+pages you would look for and they are empty stubs; the knowledge is in videos.
+
+![the U-turn against Wirtual's figure-eight](the-u-turn.png)
+
+**Blue is Wirtual. Red is the flick.** He drives a figure-eight — two loops —
+and the flick is one tight U straight out onto the ramp.
+
+Here is the manoeuvre, read out of engine memory tick by tick:
+
+| race | steer | gas | brake | eastward speed |
+|---|---|---|---|---|
+| 5.100 – 5.300 | +0.03 → +0.45, building **away** | off | off | −13.6 m/s |
+| 5.400 – 5.600 | **full lock** | **off** | **pulsed** | −8.6 → −6.5 |
+| 5.700 – 6.000 | full lock held | on | off | −1.6 → **+8.0** |
+| 6.200 – 6.400 | **counter-steer to full opposite** | on | off | +17.0 → +21.0 |
+| **6.990** | settled | on | off | **+28.3** |
+
+**The car turns from west to east in 0.600 s, on the ground, without leaving the
+platform.** Wirtual's loops take 2.150 s just to stop him going west, and his
+best eastward speed is **+16.9 m/s at 8.000**. The flick has **+28.3 m/s at
+6.990** — 67 % more speed, a second earlier.
+
+Two independent searches at different deadlines both stop at 28.34 m/s to four
+significant figures, so that is not a search running out of time: **28.34 m/s is
+what the corner has to give**, measured at the east edge of the platform.
+
+### It still does not make the lap faster, and now we know the price
+
+The flick reaches the map's big turbo gate at **14.059**, against **14.766** for
+our own 21.022 and **15.370** for Wirtual — **0.707 s inside our best lap**,
+confirmed by two instruments that share no code.
+
+It gets there **43.7 m/s** where our lap arrives at **56.4** and Wirtual at
+**57.1**. Its own trace says why: it runs the deck's southern edge at 161.8 km/h
+**eight metres below the deck**, has to climb back, and **stops dead — 4.2 km/h
+at race 11.500** — before the turbo pad rescues it.
+
+> **The loop is not there for the corner. It is there to reach the 24 m drop.**
+> Wirtual's second loop ends at the top of a descent that converts 41 → 175 km/h,
+> and that descent is where the launch speed comes from. A flick that deletes the
+> loop deletes the drop with it. The corner was never the expensive part.
+
+So the open question sharpens rather than closes: the U exists, it is a second
+and 11 m/s better than the loop, and it has to be joined to a run-up that still
+ends **high**. Turning the U north and up into Wirtual's own descent, instead of
+east along the deck, is the line nobody has driven yet.
+
 ## Where it stops
 
 Skipping the loops also skips the drop that pays for them, so we arrive at the
@@ -177,6 +237,7 @@ The 21.022 tape the clip is shot from is not committed here. What is in
 | `replays/TAS_22698_lowinput.Ghost.Gbx` | **ten steering values — the one worth studying** |
 | `inputs/m267460_TAS_lowinput_76inputs.script.txt` | the low-input run as a readable script |
 | `inputs/m267460_TAS_thinned_82inputs.script.txt` | the thinned run |
+| `replays/UTURN_28ms_east_at_6990.Ghost.Gbx` | **the U-turn.** NOT a lap -- it DNFs. It is the tape the section above is measured on: +28.35 m/s east at race 6.990, on the ground, one tight U instead of two loops |
 
 TMX map [267460](https://trackmania.exchange/maps/267460).
 
