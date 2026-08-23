@@ -342,6 +342,111 @@ gate.
 > each of which reproduces its own record to 0.007 m. This is a detection rule
 > anyone can apply, and it is how the ≈0.5 mm was eventually caught.
 
+## A relocated gate measures a PLANE CROSSING, and a plane crossing is not a route
+
+Two failures of the same instrument, measured on 267460's pit on 2026-08-23.
+The instrument is the standard one: move the map's own `Goal` item to a place
+you want timed, and read the oracle's finish time as an arrival time. It is a
+fine ruler — `tmmaps segments` is built on it — and it has two edges nobody had
+written down.
+
+### The car that fires it may have left the map
+
+24 300 explicit programs were scored against a gate placed on the reference
+line at the pit's far corner. **Three beat both reference tapes by 1.610 s** —
+5.389 against 6.999 for the human world record *and* for our own incumbent, the
+same number twice, which reads exactly like a real shortcut.
+
+`fk trace` on one of them, and it is not a shortcut:
+
+```
+ 6.500 (702.7, 95.5, 704.5) 170.4 km/h
+ 8.000 (671.6, 34.0, 652.7) 255.2
+ 8.500 (661.9, 10.1, 636.1) 142.1
+19.500 ( 14.8,  8.0, 250.2) 368.2
+21.000 (-94.8,  8.0, 189.3) 225.3
+```
+
+**y = 8.0 is the plane under the world.** The car fell off the pit, and on its
+way down it flew through the gate's plane and fired it. It then slid 800 m west
+of the map at 368 km/h. The trace is sound — self-check ok, 1956 rows,
+|d(pos)/dt − v| median 0.052 m/s — so this is a real car doing a real thing, and
+the thing is falling.
+
+This is the **fourth** time on this map that a search record has been read as a
+property of the route, and it is the first time the mechanism has a name:
+**an objective placed in open space can be satisfied by a trajectory that has
+left the track.** A relocated gate does not ask "did you drive here", it asks
+"did you cross this plane", and those differ exactly when the candidate is
+airborne — which is the state every interesting candidate on a trial map spends
+half its time in.
+
+Two mechanical guards, either of which separates the three fallers from every
+real arrival with no judgement required:
+
+* **score the gate together with a containment predicate.** `--pred
+  'pit:box:...,ymin=<the surface>'` aborts a candidate that leaves the volume
+  the route lives in, so a faller never reaches the gate at all.
+* **compare path length against the reference.** The faller's own regeneration
+  anchor measured **1189.5 m** against the real run's **817.6 m**. A candidate
+  whose path is half as long again as the reference's did not take a shortcut.
+
+Corollary for the other direction, contributed by the regeneration arm the same
+night: `ghost regen` refused these tapes with *"the locate found something that
+is not the car"*, and sent someone looking for a broken tape for half an hour.
+The locate was right; what it found was a faller, and the record it was being
+compared against was the **donor container's** — Wirtual's line. **A refusal
+that names the wrong cause is worse than a slow answer.**
+
+### And it is a knife-edge: 2.7 cm flips an arrival into a DNF
+
+The same gate, on the same station, differing only in where the anchor was put:
+
+```
+i11@705.200,113.300,735.200/0   ->  6.999   (3 of 3 runs)
+i11@705.221,113.273,735.215/0   ->  DNF     (3 of 3 runs)
+```
+
+The oracle is deterministic; both readings reproduce exactly. The car's own `y`
+at that instant is **113.273**, so the first anchor is **2.7 cm above the car**
+and the second is level with it. A y-sweep at 0.5 m steps says what the rule is:
+
+| anchor relative to the car | result |
+|---|---|
+| −6.0 … 0.0 | DNF at every step |
+| +0.5 … +6.0 | fires — **at 5.499**, not 6.999 |
+
+So **the trigger volume hangs DOWNWARD from the anchor** (reach measured between
+4 and 8 m: at the map's own finish the anchor is 8 m above the grass, and on
+this station +8 stops firing), and the car must be *below* it.
+
+The nasty half is the second column. At +0.5 the gate reaches far enough down to
+catch an **earlier, different pass** of the same run, and reports 5.499. **A
+gate that fires 1.5 s early does not look broken — it looks like a better
+time.** Every "improvement" of that shape is a placement artefact.
+
+What follows, and it is checkable rather than remembered:
+
+* **Place the anchor 2–4 m above the height you expect the car at**, and say in
+  the page which height that was.
+* **A ruler is admissible only if it is INVARIANT.** The pit rulers are not: the
+  useful one on this map is at the turbo gate, and it reads human 15.370, our
+  incumbent 14.766, the east-flick DNF, **identically at dy = 1, 3 and 5 m**.
+  That invariance is what makes it usable; quote it beside the ruler.
+* **Never read a DNF from a relocated gate as an absence.** It is "this plane
+  was not crossed in the direction and height band this placement can see",
+  which is a statement about the placement. Yaw matters as much as height: on
+  this map the same station fires for the reference at yaw π/2 and DNFs at yaw
+  0, because those are the x- and z-perpendicular planes and the car crosses
+  only one of them.
+
+A first negative was drawn from **14 400 programs against a single-orientation
+plane** before any of this was measured. It was worth nothing, and the positive
+control in the batch did not catch it — the control fired, because the control
+is the tape the placement was fitted to. Same shape as §3's *"any detector
+calibrated on a reference, then applied to candidates that differ from it, has a
+control of exactly this shape available — and passing it means nothing."*
+
 ## Test for a time shift, not a distance
 
 A one-tick offset is a **pure time shift**, so it appears as a distance that
