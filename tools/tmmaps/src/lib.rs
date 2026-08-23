@@ -35,4 +35,5 @@ pub mod oracle;
 pub mod rotate;
 pub mod secs;
 pub mod segments;
+pub mod splice;
 pub mod selftest;

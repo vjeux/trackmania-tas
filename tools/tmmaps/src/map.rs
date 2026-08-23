@@ -742,6 +742,22 @@ impl MapFile {
 
     /// Build the patched file bytes.
     pub fn build(&self) -> Vec<u8> {
+        self.build_reporting().0
+    }
+
+    /// Build the patched file bytes and say how the compressed stream was
+    /// produced (`splice.rs`). `build` is this without the report.
+    pub fn build_reporting(&self) -> (Vec<u8>, crate::splice::Spliced) {
+        let body = self.patched_body();
+        self.gbx.write_body(&body)
+    }
+
+    /// The new DECOMPRESSED body: every raw patch applied, and the two chunks
+    /// this tool can re-encode replaced. With no rename in play, `reemit`
+    /// reproduces its region byte for byte, so the body differs from the stock
+    /// one in exactly the bytes of the edit — which is what lets the writer
+    /// splice rather than recompress.
+    pub fn patched_body(&self) -> Vec<u8> {
         let mut body = self.gbx.body.clone();
         for (off, bytes) in &self.raw_patches {
             body[*off..*off + bytes.len()].copy_from_slice(bytes);
@@ -798,26 +814,26 @@ impl MapFile {
         for ((s, e), b) in splices {
             out.splice(s..e, b);
         }
-        let g = Gbx {
-            version: self.gbx.version,
-            format: self.gbx.format,
-            ref_comp: self.gbx.ref_comp,
-            unknown: self.gbx.unknown,
-            class_id: self.gbx.class_id,
-            user_data: self.gbx.user_data.clone(),
-            num_nodes: self.gbx.num_nodes, // carried over: never recomputed
-            ref_table: self.gbx.ref_table.clone(),
-            body: out,
-        };
-        // Maps must be written compressed; the server rejects a 'U' body.
-        g.build(true)
+        out
     }
 
     pub fn write_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.write_to_reporting(path).map(|_| ())
+    }
+
+    /// Write, and hand back how the file was produced. The commands a human
+    /// drives print it; the loops (`ladder`, `dropscan`) do not, because a
+    /// thousand identical lines is not a report.
+    pub fn write_to_reporting(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<crate::splice::Spliced> {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
         }
-        std::fs::write(path, self.build())
+        let (bytes, sp) = self.build_reporting();
+        std::fs::write(path, bytes)?;
+        Ok(sp)
     }
 }
 

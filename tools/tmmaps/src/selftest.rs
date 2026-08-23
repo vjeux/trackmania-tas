@@ -109,6 +109,7 @@ pub fn run(args: &[String]) -> ! {
 // ------------------------------------------------------------------ PURE
 
 fn pure(s: &mut Suite) {
+    splice_checks(s);
     // ---- container round trip, on every fixture map
     for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
         let Some(p) = fixture(name) else {
@@ -621,6 +622,7 @@ fn oracle_tier(s: &mut Suite, args: &[String]) {
     );
 
     inert_instrument(s, &server, &map1, &g1);
+    splice_oracle(s, &server, &map1, &g1);
 }
 
 /// IS THE INSTRUMENT ALIVE?
@@ -718,4 +720,197 @@ fn inert_instrument(s: &mut Suite, server: &str, map1: &Path, g1: &Path) {
 
 fn fname(p: &Path) -> String {
     p.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+// ------------------------------------------------------------------ SPLICE
+
+/// THE WRITER'S OWN CONTROLS.
+///
+/// Everything above asks whether the right BODY was produced. These ask
+/// whether the right FILE was — the question the dedicated server cannot be
+/// asked, because it accepts a rebuilt map as readily as a spliced one, and
+/// the game client is the only thing that has ever said otherwise.
+///
+/// Four checks per fixture, and the fourth is what makes the third mean
+/// anything: the re-emitted form of the SAME body must share nothing, or an
+/// "identical" verdict would be one a broken comparison also returns.
+fn splice_checks(s: &mut Suite) {
+    for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
+        let Some(p) = fixture(name) else {
+            s.skipped("PURE", &format!("splice {}", name), "fixture missing");
+            continue;
+        };
+        let m = MapFile::load(&p);
+        let stock_file = std::fs::read(&p).unwrap();
+        let stock_stream = m.gbx.comp.clone().expect("a map fixture is LZO-compressed");
+
+        // 1. THE WALK AGREES WITH liblzo2. This module decides which stream
+        //    bytes are literals; a walk that disagrees with the real decoder
+        //    would patch the wrong bytes and every later check would be about
+        //    a file nobody can read.
+        match crate::splice::scan(&stock_stream) {
+            Ok((sc, matches)) => {
+                let replayed = sc.replay(&stock_stream, &matches);
+                s.check(
+                    "PURE",
+                    &format!("splice.scan_agrees {}", name),
+                    replayed == m.gbx.body,
+                    &format!(
+                        "{} literal runs, {} matches, {} cut points, {} bytes of body reproduced \
+                         from the walk alone",
+                        sc.lits.len(),
+                        matches.len(),
+                        sc.cuts.len(),
+                        sc.out_len
+                    ),
+                );
+            }
+            Err(e) => s.bad("PURE", &format!("splice.scan_agrees {}", name), &e),
+        }
+
+        // 2. NO EDIT, NO CHANGE — at the FILE level. `roundtrip` compares
+        //    decompressed bodies, which is the right level for a re-emitting
+        //    writer and far too weak for this one.
+        let (written, sp) = m.build_reporting();
+        s.check(
+            "PURE",
+            &format!("splice.no_edit_is_byte_identical {}", name),
+            written == stock_file,
+            &format!("{} bytes in, {} out, method {:?}", stock_file.len(), written.len(), sp.method),
+        );
+
+        // 3. ONE CELL MOVE CHANGES THREE BYTES AND NOTHING ELSE.
+        let Some(b) = m.blocks.iter().find(|b| b.free_off.is_none() && b.flags != 0xFFFF_FFFF).cloned()
+        else {
+            s.skipped("PURE", &format!("splice.edit_is_local {}", name), "no grid block");
+            continue;
+        };
+        let mut m2 = MapFile::load(&p);
+        let (cx, cy, cz) = b.coords();
+        m2.move_block_cell(b.index, (cx, cy + 1, cz));
+        let (edited, sp2) = m2.build_reporting();
+        let body2 = crate::gbx::Gbx::parse(&edited).body;
+        let diff = m
+            .gbx
+            .body
+            .iter()
+            .zip(&body2)
+            .filter(|(x, y)| x != y)
+            .count();
+        let carried = sp2.shared_prefix + sp2.shared_suffix;
+        s.check(
+            "PURE",
+            &format!("splice.edit_is_local {}", name),
+            body2.len() == m.gbx.body.len() && diff <= 3 && carried * 100 / stock_stream.len() >= 90,
+            &format!(
+                "block#{} one cell up: {} body bytes differ, {} of {} stream bytes carried \
+                 verbatim ({} %), method {:?}",
+                b.index,
+                diff,
+                carried,
+                stock_stream.len(),
+                carried * 100 / stock_stream.len(),
+                sp2.method
+            ),
+        );
+
+        // 4. THE NEGATIVE CONTROL FOR 3. Recompressing the same body shares
+        //    essentially nothing with the stock stream, so check 3 is a test
+        //    and not a tautology.
+        let reemit = crate::gbx::lzo_compress(&m.gbx.body);
+        let shared = reemit.iter().zip(&stock_stream).take_while(|(x, y)| x == y).count();
+        s.check(
+            "PURE",
+            &format!("splice.reemit_shares_nothing {}", name),
+            shared * 100 / stock_stream.len() < 10,
+            &format!(
+                "the same body recompressed: {} bytes against the stock stream's {}, {} shared \
+                 from the front",
+                reemit.len(),
+                stock_stream.len(),
+                shared
+            ),
+        );
+
+        // 5. A RENAME CANNOT BE SPLICED, AND THE WRITER SAYS SO rather than
+        //    pretending. The name is a length change in the body, so every
+        //    offset after it moves and no part of the stock stream survives.
+        let mut m3 = MapFile::load(&p);
+        m3.set_block_name(b.index, &format!("{}XX", b.name));
+        let (_, sp3) = m3.build_reporting();
+        s.check(
+            "PURE",
+            &format!("splice.rename_falls_back {}", name),
+            sp3.method == crate::splice::Method::Reemit,
+            &format!("renaming block#{} reports method {:?}", b.index, sp3.method),
+        );
+    }
+}
+
+/// THE TWO WRITERS MUST AGREE WITH THE ENGINE.
+///
+/// A splice that changed the map in any way the simulation can see would be a
+/// worse bug than the one it fixes, and the byte checks above cannot see a
+/// simulation. So: the same edit, written both ways, must give the same time
+/// to the millisecond — and the pair is only a control because the edit is one
+/// the run DOES feel (the checkpoint the reference ghost drives through),
+/// which the row before it establishes by returning something other than
+/// 19.538.
+fn splice_oracle(s: &mut Suite, server: &str, map1: &Path, g1: &Path) {
+    let dir = scratch("splice");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let m0 = MapFile::load(map1);
+    // An OFF-ROUTE block, deliberately: the two writers must agree on a number
+    // and not on a DNF. `inert_instrument` supplies the other half — the same
+    // splice writer moving the checkpoint the run drives through, which DNFs —
+    // so "19.538 both ways" here is not a writer that did nothing.
+    let Some(b) = m0
+        .blocks
+        .iter()
+        .find(|b| b.name == "Beach" && b.free_off.is_none())
+        .or_else(|| m0.blocks.iter().find(|b| b.waypoint_tag.is_none() && b.free_off.is_none()))
+        .cloned()
+    else {
+        s.skipped("ORACLE", "splice.same_time_as_reemit", "no off-route grid block");
+        return;
+    };
+    let (cx, cy, cz) = b.coords();
+
+    let spliced = dir.join("spliced.Map.Gbx");
+    let mut m = MapFile::load(map1);
+    m.move_block_cell(b.index, (cx, cy + 4, cz));
+    let (bytes, sp) = m.build_reporting();
+    std::fs::write(&spliced, &bytes).unwrap();
+
+    // The same body, written the old way.
+    let reemitted = dir.join("reemitted.Map.Gbx");
+    let body = m.patched_body();
+    let stream = crate::gbx::lzo_compress(&body);
+    std::fs::write(&reemitted, m.gbx.file_with_stream(&body, &stream)).unwrap();
+
+    let res = oracle::run_maps(
+        &[
+            (spliced.clone(), vec![g1.to_path_buf()]),
+            (reemitted.clone(), vec![g1.to_path_buf()]),
+        ],
+        2,
+        server,
+    );
+    let a = oracle::times(&res[0]).get(&fname(g1)).cloned().flatten();
+    let b2 = oracle::times(&res[1]).get(&fname(g1)).cloned().flatten();
+    s.check(
+        "ORACLE",
+        "splice.same_time_as_reemit",
+        a == b2 && a == Some(19538),
+        &format!(
+            "block#{} {} four cells up, written by {:?}: {} — and re-emitted: {}",
+            b.index,
+            b.name,
+            sp.method,
+            secs::opt(a),
+            secs::opt(b2)
+        ),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

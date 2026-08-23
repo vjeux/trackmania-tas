@@ -22,8 +22,7 @@ which is machine-readable and keeps integer ms.
 
 | | command | what it does |
 |---|---|---|
-| **read** | `tmmaps waypoints MAP` | spawn, checkpoints, goal — the indices every mover takes |
-| | `tmmaps census MAP [--filter PAT] [--free]` | **every** block, unbaked *and* baked, with its real position, as TSV |
+| **read** | `tmmaps waypoints MAP` | spawn, checkpoints, goal — the indices every mover takes || | `tmmaps census MAP [--filter PAT] [--free]` | **every** block, unbaked *and* baked, with its real position, as TSV |
 | | `tmmaps region MAP --box A:B [--filter PAT]` | everything inside a world box. **A gate is a structure, not a block** |
 | | `tmmaps chunks MAP` | every skippable body chunk with its size |
 | **change** | `tmmaps move MAP --out F --move SPEC…` | position-only surgery: grid cell, free block, baked free block, item |
@@ -35,6 +34,8 @@ which is machine-readable and keeps integer ms.
 | | `tmmaps oracle --map M --ghosts G…` | drive the dedicated server over (map, ghosts) batches |
 | | `tmmaps cporder MAP TRAJ.csv --splits …` | which waypoint produced which declared split |
 | **control** | `tmmaps selftest [--strict]` | the whole suite, one command |
+| | `tmmaps bodydiff STOCK EDITED` | what an edit changed, on decompressed bodies, attributed to the placement it belongs to — and how much of the file survived |
+| | `tmmaps rewrite MAP --out F [--reemit]` | write a map back with NO edit, by either writer: the isolator for "does the client mind the WRITER?" |
 | | `tmmaps roundtrip MAP` | parse and re-emit unchanged, on decompressed bodies |
 | | `tmmaps origin MAP` | every mover, at its own placement, must reproduce the file byte for byte |
 | | `tmmaps renamecheck MAP` | the rename round trip, which `roundtrip` cannot be |
@@ -71,6 +72,81 @@ each, all through the plain oracle:
 is why it survived: the difference between them is 77.8 m and 249 m of driving,
 and the only instrument the project had returned one number per run. `region`
 tells them apart before anything is simulated, in a command that costs nothing.
+
+---
+
+## 1a. THE WRITER: an edit is spliced into the stock file, never re-emitted
+
+Every command above writes through one path, and that path **patches the stock
+file's own LZO stream**. Nothing has to ask for it and nothing can forget it.
+
+The reason is a limit this tool could not see. `roundtrip` compares
+*decompressed bodies*, because **LZO recompression is not bit-reproducible** —
+and it is not close: the game ships maps compressed by a stronger LZO variant
+than `lzo1x_1_compress`, so re-emitting 173691 returns a file **29 763 bytes
+longer that shares nothing after the header with the file the game
+downloaded**. The dedicated server accepts that; whether the game client does is
+a question we could never ask cheaply, and the honest state of it is in §6.
+
+So the writer stopped asking. `splice.rs` walks the stock stream, finds where
+its literals live, and produces the smallest change that yields the new body:
+
+| method | the output file is | when |
+|---|---|---|
+| **literal** | the stock file, byte for byte, with the edited bytes overwritten **inside** the compressed stream. Same length. | every edited byte is a literal in the stock stream |
+| **middle** | the stock stream either side of one short recompressed stretch | an edited byte sits inside a match, so it is not in the stream to overwrite |
+| **tail** | the stock stream to a cut, then a recompressed tail | an edit with no instruction boundary far enough past it — in practice only an edit at the very end |
+| **re-emit** | the whole body recompressed | **only** when the body's LENGTH changed: a rename, or an item-model swap. Nothing else produces one |
+
+Measured, one cell byte moved on the three fixtures and on 173691:
+
+```
+map1.Map.Gbx    1 body byte   99 % of the stock stream carried verbatim   middle
+map2.Map.Gbx    1 body byte   97 %                                        middle
+goth.Map.Gbx    1 body byte   99 %                                        literal
+173691 stock    1 body byte   99.99 % (1 867 504 of 1 867 677)            middle
+```
+
+And with **no** edit at all the output is the input, byte for byte — the origin
+control at file level, which `origin` and `roundtrip` could only assert about
+the body (`splice.no_edit_is_byte_identical`, all three fixtures).
+
+**Resuming the stock stream after a spliced stretch is sound because an LZO
+match names a DISTANCE, not an address**: the output either side sits at its
+original offsets, so every later instruction means what it meant. Two things
+have to hold, and both are enforced rather than assumed — the resumed opcode
+must be a MATCH (the one opcode class that reads the same whether the decoder
+arrives from a literal run or from the top of its loop), and no later match may
+reach back into the edited bytes. The second is guaranteed by a resume point
+past `0xBFFF` bytes, **the furthest back any LZO1X match can reach**, which is
+tried when the near ones do not verify.
+
+### Every write is verified before it is a file
+
+Whatever the method, the produced stream is decompressed with liblzo2 and
+required to equal the intended body **over its whole length** before the bytes
+are returned. That is an equality on what the game will read, not a checksum of
+what we meant, so a splicer that dropped an edit, or that let a later match
+copy a patched byte, cannot pass it. `splice.scan_agrees` in the suite is the
+other half: the stream walk reconstructs the body **from its own literal runs
+and match arithmetic**, and must agree with liblzo2 — because this module
+decides which bytes are literals, and a walk that disagreed would patch the
+wrong ones.
+
+`splice.reemit_shares_nothing` is the negative control that keeps
+`splice.edit_is_local` honest: the same body recompressed shares **0** bytes
+with the stock stream, so "99 % carried verbatim" is a measurement and not a
+comparison that returns true for everything.
+
+### What it does NOT do, and why the rename is the boundary
+
+A rename changes the length of a string in the body, so every offset after it
+moves and no part of the stock stream survives. `segments`' block-rename
+fallback and its gate promotion are therefore still **re-emission**, and the
+writer says so in one line rather than pretending (`tmmaps rewrite --reemit` is
+that same writer on purpose, with no edit in the file, so the two can be
+compared in the client). If a rig needs a rename, it is a rig for the oracle —
+see §6.
 
 ---
 
@@ -260,21 +336,29 @@ tmmaps selftest --strict     # a SKIP is a failure
 cargo test --release         # the same suite, through cargo
 ```
 
-**29 checks over seven checked-in fixtures**: two campaign maps with their
+**45 checks over seven checked-in fixtures**: two campaign maps with their
 reference ghosts, 173691's author map with the added finish gate that taught us
 the structure lesson, and a **captured dedicated-server transcript**. Two tiers:
 
-* **PURE** — container round trip on all three maps; the origin control
-  (81 094 movers on the big map, 0 failures); the census seeing both block
-  chunks; the gate-structure quartet; the mover refusals; the container-class
-  refusal with its positive twin; the transcript-driven oracle-parser checks
-  **and the mutation control that proves the transcript can catch a wrong
-  parser**; the filename guard with its positive twin; time formatting.
+* **PURE** — the writer's five splice controls on all three maps (the stream
+  walk against liblzo2; a no-edit write byte-identical to its input; one cell
+  move changing one body byte with 97–99 % of the stock stream carried; the
+  re-emit negative control that shares nothing; and a rename reporting
+  re-emission rather than pretending); container round trip on all three maps;
+  the origin control (81 094 movers on the big map, 0 failures); the census
+  seeing both block chunks; the gate-structure quartet; the mover refusals; the
+  container-class refusal with its positive twin; the transcript-driven
+  oracle-parser checks **and the mutation control that proves the transcript can
+  catch a wrong parser**; the filename guard with its positive twin; time
+  formatting.
 * **ORACLE** — the real dedicated server: the identity candidate first (an
   untouched map must give each ghost its own declared time, or nothing below is
   interpretable); every map-1 segment reproducing its declared split to the
   millisecond; the map-2 block-rename fallback firing early by 0.167 and not by
-  "some amount"; and the alive-instrument pair.
+  "some amount"; the alive-instrument pair; and the two writers agreeing to the
+  millisecond on one edit (19.538 spliced, 19.538 re-emitted) — which is a
+  control only because the alive-instrument pair has just shown the same writer
+  DNF-ing a run when it moves a block that run drives through.
 
 `--strict` exists because a suite whose fixtures are missing prints green lines
 and proves nothing: the previous version returned early from every oracle test
@@ -312,14 +396,42 @@ capability — free-block surgery — is `tmmaps move` composed with
 
 ## 6. What is NOT safe, and what I could not check
 
-* **"It validated" is still not "it renders".** A re-emitted map loads in the
-  dedicated server and has never loaded in the game client — both the map
-  extracted from a replay and an edit built from the downloaded file sat
-  forever on "loading map". There is no game client on a Linux box, so nothing
-  here can prove an import. The honest controls are the byte-level round trip
-  and the origin control, and they are both in the suite. **If a scene has to
-  be filmed, film it on a map file the game already has and swap it in with
-  `ghost map set`.**
+* **"It validated" is still not "it renders" — and the reason we could never
+  say more is now a scheduled experiment rather than a shrug.** Two files have
+  been tried in the game client and both sat forever on "loading map": a map
+  extracted from a replay, and an edit built from the downloaded file. **Both
+  were re-emitted, and neither was tried beside an untouched copy of the same
+  map in the same session**, so what that measures is UNKNOWN: the client's own
+  driver documents a second cause with the identical symptom — *"`EditMap` on a
+  not-ready `ManiaTitleControlScriptAPI` returns without error and loads
+  nothing"* (`RENDER-PIPELINE.md`) — and the most recent failure, 2026-08-22
+  22:46, is exactly `editmap: ok` followed by a 120 s wait that never sees the
+  editor. `shootctl` does await `ready` first, which weakens that reading
+  without closing it.
+
+  What settles it is four `EditMap` loads in one session, and they are staged at
+  `~/persistent/private-30d/tm-mapsplice/clienttest/`: **A** the untouched
+  download (the positive control — if A hangs, the failure is not our writer),
+  **B** the same map re-emitted with no edit in it (isolates the WRITER), **C**
+  a spliced edit, one body byte, 99.99 % of the stock stream verbatim, and
+  **D** the re-emitted rig that failed (the negative control, in the same
+  session). Until those run, "a re-emitted map never loads in the client" is a
+  **hypothesis with n = 2 and no control**, and the splice path is justified by
+  what it *is* — a file that differs from a file the client already loads only
+  in the bytes of the edit — rather than by what it fixes.
+
+* **A rig that needs a RENAME is a rig for the oracle, not for the camera.**
+  173691's finish rig neutralises four checkpoints by renaming
+  `PlatformTechCheckpointSlope2*` to `PlatformTechFinishSlope2*`, and that is
+  load-bearing: with the checkpoints intact, position-only reconstructions of
+  the same rig all return DNF (measured, four variants, one batch — moving the
+  gate alone, plus moving the four checkpoint blocks away, plus moving the start
+  block, in both combinations). A rename cannot be spliced, **and it puts model
+  names into the file that the client must be able to instantiate and the
+  headless server never looks at** — a second reason a renamed rig is the wrong
+  thing to hand a camera. Film the ghost on the stock map instead: a ghost plays
+  from its own recorded samples and carries the map uid, so the run appears
+  wherever the geometry it drove through is unchanged.
 * **The origin control cannot see a trigger-volume change.** It is a byte
   identity on a position-only mover. That is why the model-swapping commands
   were deleted rather than controlled: there is no control here that would have

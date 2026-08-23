@@ -276,12 +276,17 @@ dropped, because the bit does not exist in that coding.
 **A re-emitted map loads in the dedicated server but never in the game client,
 and a replay whose embedded map the client cannot parse silently fails to
 import.** So "it validated" is not "it renders".
-→ **not fixed, and the tool does not pretend otherwise.** `ghost map set` never
-re-emits a map: it splices the *bytes you give it* in unchanged, so a map that
-loaded before still loads. There is no game client on a Linux box, so nothing
-here can prove an import; the honest control is the round-trip (put the carried
-map back → the body is byte-identical) plus the empty-Maps validation, and both
-are in the suite.
+→ **the first half is now UNKNOWN rather than known, and `tmmaps` no longer
+re-emits.** Two files failed to load in the client and both were re-emitted,
+but neither was tried beside an untouched copy of the same map in the same
+session, and the client's own driver documents a second cause with the identical
+symptom (`RENDER-PIPELINE.md`, "`EditMap` on a not-ready
+`ManiaTitleControlScriptAPI` returns without error and loads nothing"). The
+four-file batch that attributes it is in `tools/tmmaps/MAPS.md` §6. What HAS
+changed: every `tmmaps` write splices into the stock file's own LZO stream
+(§1a there), so an edited map differs from the file the game downloaded in the
+bytes of the edit and 99 % of nothing else — and `ghost map set` still never
+re-emits a map, it splices the bytes you give it in unchanged.
 
 **Read every result directory by mtime, never by filename.**
 → nothing in this tool reads a result directory. Every number it prints comes
