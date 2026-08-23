@@ -276,17 +276,18 @@ dropped, because the bit does not exist in that coding.
 **A re-emitted map loads in the dedicated server but never in the game client,
 and a replay whose embedded map the client cannot parse silently fails to
 import.** So "it validated" is not "it renders".
-→ **the first half is now UNKNOWN rather than known, and `tmmaps` no longer
-re-emits.** Two files failed to load in the client and both were re-emitted,
-but neither was tried beside an untouched copy of the same map in the same
-session, and the client's own driver documents a second cause with the identical
-symptom (`RENDER-PIPELINE.md`, "`EditMap` on a not-ready
-`ManiaTitleControlScriptAPI` returns without error and loads nothing"). The
-four-file batch that attributes it is in `tools/tmmaps/MAPS.md` §6. What HAS
-changed: every `tmmaps` write splices into the stock file's own LZO stream
-(§1a there), so an edited map differs from the file the game downloaded in the
-bytes of the edit and 99 % of nothing else — and `ghost map set` still never
-re-emits a map, it splices the bytes you give it in unchanged.
+→ **the first half is FALSE, measured 2026-08-23 with its controls.** Four
+`EditMap` loads in one session: the untouched download loads (11.5 s), the same
+map **re-emitted with no edit** loads (10.0 s), a **spliced** edit loads
+(10.1 s), and the one file that does not load is a rig with four RENAMED block
+models — which sticks with the map's own name rendering as `(???)`. The two
+historical failures had two other causes, both since found: a `/mnt/c/...` WSL
+path that `EditMap` accepts and returns `ok` for while loading nothing, and a
+not-ready title API with the same silent signature. The live rule is narrower
+and sharper: **a renamed block model is what the client refuses, and the oracle
+cannot see it** — `tools/tmmaps/MAPS.md` §6. And `tmmaps` no longer re-emits at
+all: every write splices into the stock file's own LZO stream (§1a there), as
+`ghost map set` has always done for the map a replay carries.
 
 **Read every result directory by mtime, never by filename.**
 → nothing in this tool reads a result directory. Every number it prints comes

@@ -100,12 +100,18 @@ fn show(a: &[String]) {
     for (i, e) in rd.ents.iter().enumerate() {
         let cls = rd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
         println!(
-            "  ent {i}: desc {} class 0x{cls:08X}  {} samples x {} B  t {} .. {}{}",
+            "  ent {i}: desc {} class 0x{cls:08X}  {} samples x {} B  t {} .. {}  u01 {} u02 {} \
+             u03 {} u04 {}  {} delta2 block(s){}",
             e.type_,
             e.times.len(),
             e.sample_size,
             e.times.first().copied().unwrap_or(0),
             e.times.last().copied().unwrap_or(0),
+            e.u01,
+            e.u02,
+            e.u03,
+            e.u04,
+            e.deltas2.len(),
             if Some(i) == veh { "   <- the car this project reads" } else { "" }
         );
     }

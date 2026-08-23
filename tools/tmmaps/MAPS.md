@@ -85,8 +85,12 @@ The reason is a limit this tool could not see. `roundtrip` compares
 and it is not close: the game ships maps compressed by a stronger LZO variant
 than `lzo1x_1_compress`, so re-emitting 173691 returns a file **29 763 bytes
 longer that shares nothing after the header with the file the game
-downloaded**. The dedicated server accepts that; whether the game client does is
-a question we could never ask cheaply, and the honest state of it is in §6.
+downloaded**. The dedicated server accepts that, and so — measured since, §6 —
+does the game client. The splice is not what makes an edited map loadable; it is
+what keeps an edited map **attributable**: a file that differs from one the
+client already loads in the bytes of the edit and nothing else cannot be
+suspected of anything a rebuild might have done, and this project spent a day
+suspecting exactly that.
 
 So the writer stopped asking. `splice.rs` walks the stock stream, finds where
 its literals live, and produces the smallest change that yields the new body:
@@ -419,49 +423,55 @@ capability — free-block surgery — is `tmmaps move` composed with
 
 ## 6. What is NOT safe, and what I could not check
 
-* **"It validated" is still not "it renders" — and the reason we could never
-  say more is now a scheduled experiment rather than a shrug.** Two files have
-  been tried in the game client and both sat forever on "loading map": a map
-  extracted from a replay, and an edit built from the downloaded file. **Both
-  were re-emitted, and neither was tried beside an untouched copy of the same
-  map in the same session**, so what that measures is UNKNOWN: the client's own
-  driver documents a second cause with the identical symptom — *"`EditMap` on a
-  not-ready `ManiaTitleControlScriptAPI` returns without error and loads
-  nothing"* (`RENDER-PIPELINE.md`) — and the most recent failure, 2026-08-22
-  22:46, is exactly `editmap: ok` followed by a 120 s wait that never sees the
-  editor. `shootctl` does await `ready` first, which weakens that reading
-  without closing it.
+* **The client loads a spliced map, and a re-emitted one — MEASURED, four
+  `EditMap` loads in one session on 2026-08-23, each with its control beside
+  it.**
 
-  What settles it is four `EditMap` loads in one session, and they are staged at
-  `~/persistent/private-30d/tm-mapsplice/clienttest/`: **A** the untouched
-  download (the positive control — if A hangs, the failure is not our writer),
-  **B** the same map re-emitted with no edit in it (isolates the WRITER), **C**
-  a spliced edit, one body byte, 99.99 % of the stock stream verbatim, and
-  **D** the re-emitted rig that failed (the negative control, in the same
-  session). Until those run, "a re-emitted map never loads in the client" is a
-  **hypothesis with n = 2 and no control**, and the splice path is justified by
-  what it *is* — a file that differs from a file the client already loads only
-  in the bytes of the edit — rather than by what it fixes.
+  | | file | result |
+  |---|---|---|
+  | A | the untouched published download | **loads**, editor after 11.5 s, `map: "Spring 2023 - 15 (Underwater)"` |
+  | B | the same map, **no edit**, compressed stream rebuilt | **loads**, 10.0 s, same name |
+  | C | the **spliced** edit — one body byte, gate #4633 down | **loads**, 10.1 s, same name |
+  | D | the re-emitted rig with four RENAMED checkpoint models | **hangs at 120 s** |
 
-* **A rig that needs a RENAME is a rig for the oracle, not for the camera.**
-  173691's finish rig neutralises four checkpoints by renaming
+  So **re-emission was never the map problem and neither is the splice**, and
+  the old claim in this section — "a re-emitted map loads in the dedicated
+  server and has never loaded in the game client" — was two failures with no
+  control, on files that also carried something else. Two other causes were
+  found while this was open, and each accounts for part of the old evidence: a
+  `/mnt/c/...` WSL path, which `EditMap` accepts and returns `ok` for while
+  loading nothing, and a not-ready title API with the same silent signature.
+
+  **What D does is not a hang, it is a refusal the client narrates**: `ctx`
+  stays 0 and a `FrameMessage` says `"Updating data...\n$<$> (???)..."` with a
+  progress bar stuck at 0 — **the map's own name renders as `(???)`, so the
+  game never resolved the file's identity**, where A/B/C all name the map
+  within 11 s. D differs from B in exactly one thing: four blocks renamed
+  `PlatformTechCheckpointSlope2*` → `PlatformTechFinishSlope2*`. Which is the
+  next bullet, now with the client's half of the evidence.
+
+* **A RENAMED BLOCK MODEL IS THE ONE EDIT THE CLIENT REFUSES — and the oracle
+  cannot see it.** 173691's finish rig neutralises four checkpoints by renaming
   `PlatformTechCheckpointSlope2*` to `PlatformTechFinishSlope2*`, and that is
   load-bearing: with the checkpoints intact, position-only reconstructions of
   the same rig all return DNF (measured, four variants, one batch — moving the
   gate alone, plus moving the four checkpoint blocks away, plus moving the start
-  block, in both combinations). A rename cannot be spliced, **and it puts a
-  model name into the file that the client must be able to instantiate while
-  the headless server never looks at it** — measured, not supposed:
-  `tmmaps renamecheck map1.Map.Gbx --ghosts map1_wr_19538.Ghost.Gbx` renames an
-  off-route block to `Beach_prsRenameCheck`, a model no block library has, and
-  **the dedicated server validates the reference ghost on it at an unchanged
-  19.538**. So the oracle's 37.599 on a rig whose four checkpoints were renamed
-  `PlatformTechCheckpointSlope2*` → `PlatformTechFinishSlope2*` is not evidence
-  that those models exist, and not evidence the client can load that map —
-  though it is not evidence they do not, either; `renamecheck` is a check on
-  the lookback table and this is its by-product. Film the ghost on the stock
-  map instead: a ghost plays from its own recorded samples and carries the map
-  uid, so the run appears wherever the geometry it drove through is unchanged.
+  block, in both combinations).
+
+  It is also the only difference between the map the client loads in 10 s (B
+  above) and the one it never resolves (D). And the oracle is **blind** to it,
+  measured rather than supposed: `tmmaps renamecheck map1.Map.Gbx --ghosts
+  map1_wr_19538.Ghost.Gbx` renames an off-route block to
+  `Beach_prsRenameCheck`, a model no block library has, and **the dedicated
+  server validates the reference ghost on it at an unchanged 19.538**. So a
+  rig's 37.599 says nothing about whether the models it names exist. Two
+  instruments, opposite answers, and the client's is the one about rendering.
+
+  A rename cannot be spliced either — the name's length changes, so every offset
+  after it moves. **So: a rig that needs a rename is a rig for the oracle, not
+  for the camera.** Film the ghost on the stock map instead: a ghost plays from
+  its own recorded samples and carries the map uid, so the run appears wherever
+  the geometry it drove through is unchanged.
 * **The origin control cannot see a trigger-volume change.** It is a byte
   identity on a position-only mover. That is why the model-swapping commands
   were deleted rather than controlled: there is no control here that would have
