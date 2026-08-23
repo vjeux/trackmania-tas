@@ -257,7 +257,7 @@ the fixtures checked in under `tools/testdata`.
 | **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
 | **the search climbing a state key** | 228811, seeded with the human world record: key **0.97 → 57.4**, and the state it scores moves from z = 714.9 to **z = 709.1**, the launcher line |
 | **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
-| **the whole ladder, on the map it was built for** | 228811, seeded with the human world record: state → launch → aim → **21.223**, a route no human on the leaderboard drives. 216 improvements confirmed, **0 phantoms**, and every banked finisher re-simulates to the millisecond in its name from a fresh process |
+| **the whole ladder, on a map with known ground truth** | 228811 (already beaten -- incumbent 20.237, AT 20.555 -- which is why it is the right place to prove an instrument). From the human world record as its seed: state → launch → aim → **a validated finish on the launcher route no human drives**, in one hour against the hand-built private fork's 2 h 43 min. 216 improvements confirmed, **0 phantoms** |
 | **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
 
 ### One check that did not work, one that did, and a false negative I nearly published
@@ -707,7 +707,7 @@ On 228811, seeded with the human world record:
 |---|---|---|
 | C | `min(abs(bodyright), 5*(-vz))`, wide box | key **0.97 → 57.4**; state walks onto the launcher line, z 714.9 → 709.1. 1 049 160 evals, 99 confirmed, 0 phantoms |
 | D | the author's whole contact state | **−43.7 → −5.11**: 0.29 m from his contact, 3.60 m/s from his velocity, **53.8° away in attitude**. 870 570 evals, 159 confirmed, 0 phantoms |
-| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **`and finished, 21.223`**. 2 732 610 evals, 216 confirmed, **0 phantoms** |
+| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **a validated finish on the launcher route**. 2 732 610 evals, 216 confirmed, **0 phantoms**. Not a record: see below |
 
 Arm D reproduced the map's central finding from a cold start, and
 `TECHNIQUE.md`, written six weeks earlier from the private fork, says the same
@@ -732,23 +732,53 @@ changing what it is optimising:
 *** GATE and finished, 21.223
 ```
 
-**21.223**, from a 22.637 seed, through the route no human on the leaderboard
-drives. 2 732 610 evaluations, 216 improvements confirmed by the plain oracle,
-**zero phantoms**; every banked finisher re-simulates to exactly the millisecond
-in its name in a fresh process, with the human world record carried in the same
-batch and returning 22.637 exactly. It is not the private fork's 20.237 -- that
-took a further finish-time search from seeds like these, and the private fork's
-own log has it reaching its first validated finisher after 2 h 43 min -- and it
-was found in ONE HOUR by a mechanism that knows nothing about this map, with the
-whole objective on the command line.
+**THE RESULT HERE IS NOT A TIME, AND 21.223 IS NOT A RECORD.** This map is
+already beaten: the project's incumbent is **20.237** and the author time is
+**20.555**. Quoting 21.223 next to those invites exactly the wrong reading.
 
-And arm K measured something new on the way. Before it fired, its state reached
-**side 98.2 with −vz 30.9 at (79.5, 50.1, 712.7)** -- both components above the
-published firing thresholds (85 m/s of body-lateral speed, ~17 m/s of downward
-crossing), in the right place, and nothing happened. So the published
-conjunction is *necessary and not sufficient*, and what is missing is the third
-thing arm D ran into: the attitude. Two arms, two objectives, one wall -- and
-then a third arm went round it.
+What arm K demonstrates is the instrument. **From the human world record as its
+seed, a cold search found the launcher route that no human on the leaderboard
+drives, and crossed the line on it, in one hour** — where the private fork,
+hand-built for this map, took **2 h 43 min** to its first validated finisher on
+the same route. 2 732 610 evaluations, 216 improvements confirmed by the plain
+oracle, **zero phantoms**; every banked finisher re-simulates to exactly the
+millisecond in its name from a fresh process, with the human world record
+carried in the same batch and returning 22.637 exactly.
+
+228811 was chosen precisely *because* it is solved: a map with known ground
+truth is the only place an instrument like this can be shown to work rather than
+merely to produce numbers. The 20.237 came from a further finish-time search
+seeded from tapes like these, and nothing here attempts to reproduce it.
+
+### 5.13 A finding about the map, not about the tool
+
+**228811's published firing condition is NECESSARY AND NOT SUFFICIENT.**
+
+`TECHNIQUE.md` and `RESULT-AT-BEATEN.md` both state the trigger as a
+conjunction: body-lateral speed ≥ 85 m/s, crossing z downwards at ≥ ~17 m/s.
+That was measured over 1343 launches and it is right about what every launch
+has. It is not the whole condition, and two arms of this session reached that
+from opposite directions:
+
+* **Arm K** drove the conjunction to **side 98.2 with −vz 30.9 at
+  (79.5, 50.1, 712.7)** — both components comfortably above their thresholds, on
+  the deck, downstream of the checkpoint — and **nothing fired**.
+* **Arm D**, aiming at the author's whole 6-D contact state, closed position to
+  **0.29 m** and velocity to **3.60 m/s** and stopped **53.8° away in
+  attitude** — which is the same wall `TECHNIQUE.md` describes hitting with the
+  private fork ("within 0.3 m … within 3 m/s … and nothing happened").
+
+The two arms used different objectives, different windows and different seeds
+and landed on the same missing ingredient. That is what makes it a finding
+rather than a null: the conjunction is a property every launch has, not a
+condition that produces one, and the third term is the car's attitude.
+
+**Arm K's own finish went around this, it did not solve it.** Once the event
+clause was armed the search stopped optimising the conjunction and started
+optimising *did it fire*, found a state that does, and never had to know why.
+That is the correct behaviour for a search and a poor substitute for knowing the
+trigger — anyone quoting the conjunction as the answer should quote this
+alongside it.
 
 ---
 
