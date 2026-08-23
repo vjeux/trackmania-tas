@@ -742,6 +742,22 @@ impl MapFile {
 
     /// Build the patched file bytes.
     pub fn build(&self) -> Vec<u8> {
+        self.build_reporting().0
+    }
+
+    /// Build the patched file bytes and say how the compressed stream was
+    /// produced (`splice.rs`). `build` is this without the report.
+    pub fn build_reporting(&self) -> (Vec<u8>, crate::splice::Spliced) {
+        let body = self.patched_body();
+        self.gbx.write_body(&body)
+    }
+
+    /// The new DECOMPRESSED body: every raw patch applied, and the two chunks
+    /// this tool can re-encode replaced. With no rename in play, `reemit`
+    /// reproduces its region byte for byte, so the body differs from the stock
+    /// one in exactly the bytes of the edit — which is what lets the writer
+    /// splice rather than recompress.
+    pub fn patched_body(&self) -> Vec<u8> {
         let mut body = self.gbx.body.clone();
         for (off, bytes) in &self.raw_patches {
             body[*off..*off + bytes.len()].copy_from_slice(bytes);
@@ -798,26 +814,44 @@ impl MapFile {
         for ((s, e), b) in splices {
             out.splice(s..e, b);
         }
-        let g = Gbx {
-            version: self.gbx.version,
-            format: self.gbx.format,
-            ref_comp: self.gbx.ref_comp,
-            unknown: self.gbx.unknown,
-            class_id: self.gbx.class_id,
-            user_data: self.gbx.user_data.clone(),
-            num_nodes: self.gbx.num_nodes, // carried over: never recomputed
-            ref_table: self.gbx.ref_table.clone(),
-            body: out,
-        };
-        // Maps must be written compressed; the server rejects a 'U' body.
-        g.build(true)
+        // A LENGTH CHANGE WITH NO RENAME IN PLAY IS A WRITER BUG, NOT AN EDIT.
+        //
+        // Every mover here writes a fixed-size field, so with no rename the
+        // re-emitted regions must come back the length they went in. When they
+        // do not, this tool's Id-table re-encoder has not reproduced the map,
+        // and the file it would write is one whose blocks chunk silently grew —
+        // which nothing downstream can see. Found by sweeping 285 maps: one
+        // (`route_170035_roseshaft.Map.Gbx`, a derived map with a 268-entry
+        // lookback table) comes back 1010 bytes longer with no edit at all.
+        // Refuse rather than ship it.
+        assert!(
+            !self.renames.is_empty() || out.len() == self.gbx.body.len(),
+            "this map's body came back {} bytes {} with NO rename asked for — the Id-table \
+             re-encoder has not reproduced it, so every edit written here would silently \
+             re-serialise the blocks chunk. Refusing to write.",
+            (out.len() as i64 - self.gbx.body.len() as i64).abs(),
+            if out.len() > self.gbx.body.len() { "longer" } else { "shorter" },
+        );
+        out
     }
 
     pub fn write_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.write_to_reporting(path).map(|_| ())
+    }
+
+    /// Write, and hand back how the file was produced. The commands a human
+    /// drives print it; the loops (`ladder`, `dropscan`) do not, because a
+    /// thousand identical lines is not a report.
+    pub fn write_to_reporting(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<crate::splice::Spliced> {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
         }
-        std::fs::write(path, self.build())
+        let (bytes, sp) = self.build_reporting();
+        std::fs::write(path, bytes)?;
+        Ok(sp)
     }
 }
 

@@ -167,6 +167,11 @@ pub struct Gbx {
     pub num_nodes: u32,
     pub ref_table: Vec<u8>,
     pub body: Vec<u8>,
+    /// The file's OWN compressed stream, exactly as it was read. Kept so an
+    /// edit can be spliced into it rather than recompressed over it — see
+    /// `splice.rs` and `build_spliced`. `None` for a body that was stored
+    /// uncompressed.
+    pub comp: Option<Vec<u8>>,
 }
 
 impl Gbx {
@@ -186,6 +191,7 @@ impl Gbx {
             user_data = data[r.o..r.o + n].to_vec();
             r.skip(n);
         }
+        let mut comp: Option<Vec<u8>> = None;
         let num_nodes = r.u32();
         let ref_start = r.o;
         parse_ref_table(&mut r, version);
@@ -193,6 +199,7 @@ impl Gbx {
         let body = if body_comp == b'C' {
             let uncomp = r.u32() as usize;
             let csize = r.u32() as usize;
+            comp = Some(data[r.o..r.o + csize].to_vec());
             lzo_decompress(&data[r.o..r.o + csize], uncomp)
         } else {
             data[r.o..].to_vec()
@@ -207,6 +214,7 @@ impl Gbx {
             num_nodes,
             ref_table,
             body,
+            comp,
         }
     }
 
@@ -234,23 +242,47 @@ impl Gbx {
         out
     }
 
-    /// Rebuild the whole file. `compress` recompresses the body with LZO1X-1
-    /// (what the game itself uses); the container's numNodes and refTable are
-    /// carried over untouched -- a byte patcher never changes the node count,
-    /// which is precisely the bug that cost the Python version a day.
-    pub fn build(&self, compress: bool) -> Vec<u8> {
-        if compress {
-            let c = lzo_compress(&self.body);
-            let mut out = self.header_bytes(b'C');
-            out.extend_from_slice(&(self.body.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(c.len() as u32).to_le_bytes());
-            out.extend_from_slice(&c);
-            out
-        } else {
-            let mut out = self.header_bytes(b'U');
-            out.extend_from_slice(&self.body);
-            out
-        }
+    /// Write this container back out with `new_body` as its body.
+    ///
+    /// The body is **spliced into the file's own compressed stream** wherever
+    /// the edit allows, so an edited map stays byte-identical to the stock file
+    /// everywhere the edit did not reach. See `splice.rs` for the methods and
+    /// for the verification every one of them goes through. `numNodes` and the
+    /// refTable are carried over untouched — a byte patcher never changes the
+    /// node count, which is precisely the bug that cost the Python version a
+    /// day.
+    ///
+    /// Maps are always written compressed: the dedicated server refuses a map
+    /// with a `'U'` body ("Can't load map").
+    pub fn write_body(&self, new_body: &[u8]) -> (Vec<u8>, crate::splice::Spliced) {
+        let sp = match &self.comp {
+            Some(stock) => crate::splice::splice(stock, &self.body, new_body),
+            // A map read from an uncompressed container has no stock stream to
+            // splice into; it gets one built for it.
+            None => {
+                let stream = lzo_compress(new_body);
+                crate::splice::Spliced {
+                    stream,
+                    method: crate::splice::Method::Compress,
+                    shared_prefix: 0,
+                    shared_suffix: 0,
+                    stock_len: 0,
+                    changed_bytes: 0,
+                }
+            }
+        };
+        let out = self.file_with_stream(new_body, &sp.stream);
+        (out, sp)
+    }
+
+    /// The whole file: this container's header, then `stream` declared as the
+    /// compressed form of a body `body_len` long.
+    pub fn file_with_stream(&self, new_body: &[u8], stream: &[u8]) -> Vec<u8> {
+        let mut out = self.header_bytes(b'C');
+        out.extend_from_slice(&(new_body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+        out.extend_from_slice(stream);
+        out
     }
 }
 

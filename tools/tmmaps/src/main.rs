@@ -20,7 +20,7 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, dropscan, gbx, map, oracle, rotate, secs, segments, selftest};
+use tmmaps::{census, controls, dropscan, gbx, map, oracle, rotate, secs, segments, splice, selftest};
 
 use std::path::{Path, PathBuf};
 
@@ -515,8 +515,8 @@ fn main() {
                     }
                 }
             }
-            m.write_to(&out).expect("write moved map");
-            println!("wrote {}", out.display());
+            let sp = m.write_to_reporting(&out).expect("write moved map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
         }
         "oracle" => {
             // --map M --ghosts a b c  (repeatable)
@@ -581,6 +581,8 @@ fn main() {
             }
         }
         "roundtrip" => controls::cmd_roundtrip(&args),
+        "bodydiff" => splice::cmd_bodydiff(&args),
+        "rewrite" => splice::cmd_rewrite(&args),
         "renamecheck" => {
             // `prs`: the RENAMING round-trip. The identity round-trip
             // (`tmmaps roundtrip`) is blind to a whole class of surgery bug,
@@ -1006,9 +1008,8 @@ fn main() {
             // spans the y cells around the car and lets the ladder's own
             // fire-time check say which ones were real.
             let cells = args.iter().any(|a| a == "--cells");
-            // The curtain is a list of block indices, but --block is a String
-            // because it also accepts the `iN` item form. Default the curtain to
-            // the block itself, as a string, rather than to a usize it cannot be.
+            // Block designators, not numbers: `iN` names an item, so a curtain
+            // entry is a string exactly like `--block` is.
             let curtain: Vec<String> = match flag(&args, "--curtain") {
                 Some(s) => s.split(',').map(|x| x.trim().to_string()).collect(),
                 None => vec![bidx.clone()],
@@ -1194,6 +1195,17 @@ MEASURING WITH A MAP
 CONTROLS — run these before you trust a map-surgery result
   tmmaps selftest [--engine] [--strict]
         the whole suite in one command. --engine adds the dedicated server.
+  tmmaps bodydiff STOCK EDITED
+        what an edit changed, on the DECOMPRESSED bodies, attributed to the
+        placement each differing byte belongs to — plus how much of the file
+        itself the two share. A SPLICED edit differs in the bytes of the edit
+        and nowhere else; a re-emitted map shares the header and then nothing.
+  tmmaps rewrite MAP --out F [--reemit]
+        write a map back with NO edit. The default output is the stock file
+        byte for byte; --reemit rebuilds the compressed stream, which is what
+        every map this project wrote before the splice path existed. The pair
+        isolates the WRITER from the EDIT — the one question the dedicated
+        server cannot be asked, because it accepts both.
   tmmaps roundtrip MAP
         parse and re-emit unchanged; compares DECOMPRESSED bodies (LZO is not
         bit-reproducible, so file hashes are the wrong level)

@@ -46,8 +46,10 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | | `ghost tape expand IN OUT` | rewrite every "same as previous tick" packet explicitly; semantically a no-op and the oracle says so |
 | | `ghost tape diff A.gtape B.gtape` · `stats` · `bits` | compare two tapes; summarise one; census which bits of the state literal ever vary |
 | | `ghost tape sync-record IN OUT` | rewrite the telemetry's recorded steer / gas / brake from the tape — they are fully determined by it and need no engine |
-| **the record itself** | `ghost record show FILE` | every entity in the telemetry record, its class, sample count and time span — and which one this project reads as the car |
-| | `ghost record rebuild IN OUT --span MS` | throw the vehicle entities away and lay a fresh one on a 50 ms grid out to `--span`, every sample a copy of one template. Scaffolding for `regen` when the carrier's grid does not cover the run |
+| **the record itself** | `ghost record show FILE` | every entity in the telemetry record, its class, sample count, time span, its `u01..u04`, and whether it is **LIVE or a placeholder** — plus the count of live non-vehicle records, which is what the client cares about |
+| | `ghost record rebuild IN OUT --span MS` | throw the other **vehicle** entities away and lay a fresh car on a 50 ms grid out to `--span`, every sample a copy of one template. **Keeps the container's non-vehicle records**, clipped to the span. Scaffolding for `regen` when the carrier's grid does not cover the run |
+| | `ghost record graft-scene IN OUT --from CARRIER [--car-deltas]` | put those records back into a file an older rebuild stripped — the repair for a ghost that crashes the game client on import |
+| | `ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]` | the vehicle entity's UNIDENTIFIED header fields, for a client-import bisect. Refuses unless the car's samples come back byte-identical |
 | **car state** | `ghost regen IN OUT --map M [--neutralise] [--inputs]` | run the real engine on this file's own inputs, capture per-sample car state, write it in — behind a gate that refuses a bad locate. `--neutralise` also zeros the 49 per-run bytes the transform encoder does not write, so no per-run byte of the donor survives |
 | | `ghost regen-control FILE --map M` | the fixed point: regenerate a file that already knows its own answer and require it back |
 | | `ghost trajdiff A B` | two files' recorded trajectories, at every shift from −3 to +3 samples |
@@ -66,6 +68,29 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | added | `ghost selftest [--engine] [--strict]` | the whole suite, one command |
 
 ### Things added beyond the six, and why
+
+* **The record's non-vehicle entities are not scenery to throw away.** The grid
+  rebuild used to keep exactly one entity — the car — and that is what makes a
+  regenerated ghost **crash the game client on import**. Measured 2026-08-23 on
+  the render box, every run behind a same-session control: the container
+  173691's film is built in imports untouched; the same file regenerated
+  crashes, three times across two revisions; **grafting its one live
+  `0x2D001000` record back makes it import**; and three other single-field
+  repairs (the car's `u01`, the declared checkpoint count, the ghost-result race
+  time) each crash without it. A clean file given the crasher's `u01` still
+  imports, which killed the field lead outright.
+
+  So `rebuild_to` keeps them, clipped to the run's span, and `ghost record
+  graft-scene` repairs files an older rebuild stripped. **It is not a rule and
+  the code says so**: `TAS_67319` has no live non-vehicle record either and
+  imports cleanly, so what separates those two files is still open. `verify`'s
+  V11 is a WARNING that names the repair and its counter-example — a gate that
+  failed on the shape would fail sixty-odd published files that are fine.
+
+  **Nothing headless can see this.** The dedicated server re-simulates the input
+  chunk and never reads the scene: `TAS_57482` passes V1–V10, re-simulates to
+  57.482, and kills the client. A client import is the only instrument, which
+  is why it belongs in the render pipeline rather than here.
 
 * **`ghost trim` lengthens.** `u02 extend` — append copies of the last packet —
   had 15 callsites, and when `u02` was deleted the capability went with it: the
@@ -276,12 +301,18 @@ dropped, because the bit does not exist in that coding.
 **A re-emitted map loads in the dedicated server but never in the game client,
 and a replay whose embedded map the client cannot parse silently fails to
 import.** So "it validated" is not "it renders".
-→ **not fixed, and the tool does not pretend otherwise.** `ghost map set` never
-re-emits a map: it splices the *bytes you give it* in unchanged, so a map that
-loaded before still loads. There is no game client on a Linux box, so nothing
-here can prove an import; the honest control is the round-trip (put the carried
-map back → the body is byte-identical) plus the empty-Maps validation, and both
-are in the suite.
+→ **the first half is FALSE, measured 2026-08-23 with its controls.** Four
+`EditMap` loads in one session: the untouched download loads (11.5 s), the same
+map **re-emitted with no edit** loads (10.0 s), a **spliced** edit loads
+(10.1 s), and the one file that does not load is a rig with four RENAMED block
+models — which sticks with the map's own name rendering as `(???)`. The two
+historical failures had two other causes, both since found: a `/mnt/c/...` WSL
+path that `EditMap` accepts and returns `ok` for while loading nothing, and a
+not-ready title API with the same silent signature. The live rule is narrower
+and sharper: **a renamed block model is what the client refuses, and the oracle
+cannot see it** — `tools/tmmaps/MAPS.md` §6. And `tmmaps` no longer re-emits at
+all: every write splices into the stock file's own LZO stream (§1a there), as
+`ghost map set` has always done for the map a replay carries.
 
 **Read every result directory by mtime, never by filename.**
 → nothing in this tool reads a result directory. Every number it prints comes
@@ -558,7 +589,7 @@ ghost regen declared.Ghost.Gbx final.Ghost.Gbx --map map2.Map.Gbx
    G2 first sample at (1552.00, 34.00, 560.00)
    G1 tape/record agreement kappa 1.000 over 455 samples (best lag 0 ms)
    G4 oracle on the written file: 22.738
-ghost verify final.Ghost.Gbx --map map2.Map.Gbx      # V1..V7 PASS
+ghost verify final.Ghost.Gbx --map map2.Map.Gbx      # V1..V11 PASS
 ```
 
 Every fixture that carries a person's identity has been through

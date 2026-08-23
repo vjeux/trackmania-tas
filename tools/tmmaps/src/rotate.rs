@@ -281,8 +281,8 @@ pub fn cmd(args: &[String]) {
             s.block, m0.blocks[s.block].name, home, s.v, v
         );
     }
-    m.write_to(&out).expect("write rotated map");
-    println!("wrote {}", out.display());
+    let sp = m.write_to_reporting(&out).expect("write rotated map");
+    println!("wrote {}\n  {}", out.display(), sp.summary());
 
     // Read it back and say what the file now claims, so a rotation that did not
     // land cannot be reported as one that did.

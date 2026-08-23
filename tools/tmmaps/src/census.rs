@@ -417,7 +417,8 @@ pub fn cmd_clear(args: &[String]) {
         }
         moved += 1;
     }
-    m.write_to(&out).expect("write cleared map");
+    let sp = m.write_to_reporting(&out).expect("write cleared map");
+    println!("  {}", sp.summary());
 
     // THE CONTROL: read back the map we just wrote, not the one in memory.
     let after = MapFile::load(&out);
