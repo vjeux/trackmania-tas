@@ -148,6 +148,8 @@ pub fn cmd_climb(a: &[String]) -> i32 {
         let v: Vec<f64> = p.split(',').chain(q.split(',')).filter_map(|x| x.parse().ok()).collect();
         if v.len() == 6 { Some(v) } else { None }
     });
+    let matchtick: usize = flag(a, "--matchtick").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let matchpos: Option<Vec<f64>> = flag(a, "--matchpos").map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect::<Vec<f64>>()).filter(|v: &Vec<f64>| v.len() == 3 || v.len() == 6);
     let endw: f64 = flag(a, "--endw").and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let (bonus_y, bonus_w) = match flag(a, "--bonus").and_then(|s| s.split_once(':').map(|(y, w)| (y.parse().unwrap_or(0.0), w.parse().unwrap_or(0.0)))) {
         Some(v) => v,
@@ -207,6 +209,37 @@ pub fn cmd_climb(a: &[String]) -> i32 {
                         .output();
                     let _ = std::fs::remove_dir_all(&work);
                     if let Ok(t) = Traj::load(&csv) {
+                        // ---- state matching: get the car to a place at a TICK, so a
+                        // solved manoeuvre spliced after that tick replays. The score
+                        // is the negative distance, and a finish dwarfs it.
+                        if let Some(m) = &matchpos {
+                            // Match the state, not just the point: two positions 0.4 s
+                            // apart pin the velocity too, and the manoeuvre spliced
+                            // after the match tick is velocity-sensitive.
+                            let tt = matchtick as f64 * 0.01 - 1.56;
+                            let mut best = f64::MAX;
+                            for r in &t.rows {
+                                if (r.t - tt).abs() < 0.06 {
+                                    let d = ((r.x - m[0]).powi(2) + (r.y - m[1]).powi(2) + (r.z - m[2]).powi(2)).sqrt();
+                                    if d < best { best = d; }
+                                }
+                            }
+                            if m.len() >= 6 {
+                                let mut b2 = f64::MAX;
+                                for r in &t.rows {
+                                    if (r.t - tt - 0.4).abs() < 0.06 {
+                                        let d = ((r.x - m[3]).powi(2) + (r.y - m[4]).powi(2) + (r.z - m[5]).powi(2)).sqrt();
+                                        if d < b2 { b2 = d; }
+                                    }
+                                }
+                                if b2 < 1e8 { best += b2; }
+                            }
+                            let ended = t.rows.last().map(|r| r.t).unwrap_or(99.0);
+                            let s = if ended < 46.0 { 1_000_000.0 } else { -best };
+                            scores.lock().unwrap()[i] = (s, format!("dist {best:.2} at race {tt:.2}"));
+                            let _ = std::fs::remove_file(&csv);
+                            continue;
+                        }
                         // ---- lexicographic goal score, non-overlapping bands.
                         // Height first, then distance, then inside, then finished:
                         // a car on the deck is 17 m from the gate box in Y and a car
@@ -328,6 +361,8 @@ pub fn cmd_shift(a: &[String]) -> i32 {
     let template = need("--template");
     let out = need("--out");
     let n: usize = flag(a, "--shift").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let drop: usize = flag(a, "--drop").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let presegs: Vec<String> = a.iter().enumerate().filter(|(i, s)| *s == "--preseg" && i + 1 < a.len()).map(|(i, _)| a[i + 1].clone()).collect();
     let pre: Vec<i32> = flag(a, "--pre")
         .unwrap_or("1,1,0")
         .split(',')
@@ -345,10 +380,19 @@ pub fn cmd_shift(a: &[String]) -> i32 {
             t.steer[k] = *pre.first().unwrap_or(&1);
             t.accel[k] = *pre.get(1).unwrap_or(&1);
             t.brake[k] = *pre.get(2).unwrap_or(&0);
-        } else if k - n < b.idx.len() {
-            t.steer[k] = b.steer[k - n];
-            t.accel[k] = b.accel[k - n];
-            t.brake[k] = b.brake[k - n];
+            // --preseg t0:t1:steer:accel:brake overrides the constant prefix
+            for sg in &presegs {
+                let p: Vec<i32> = sg.split(':').filter_map(|v| v.parse().ok()).collect();
+                if p.len() == 5 && k >= p[0] as usize && k < p[1] as usize {
+                    t.steer[k] = p[2];
+                    t.accel[k] = p[3];
+                    t.brake[k] = p[4];
+                }
+            }
+        } else if k - n + drop < b.idx.len() {
+            t.steer[k] = b.steer[k - n + drop];
+            t.accel[k] = b.accel[k - n + drop];
+            t.brake[k] = b.brake[k - n + drop];
         } else {
             t.steer[k] = 1;
             t.accel[k] = 0;

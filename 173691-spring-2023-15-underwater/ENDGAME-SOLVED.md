@@ -1,5 +1,11 @@
 # 173691 "Spring 2023-15 (Underwater)" — the endgame is SOLVED: a car on the lower canopy finishes the map
 
+> **This arm was stood down mid-investigation on 2026-08-22: the map was beaten
+> by other means.** Everything below was measured before that and stands on its
+> own — it is the endgame of this map, from the deck, with its controls. The
+> one thing left unfinished is the graft in §4.1, which had got the car's state
+> at the splice tick to within 9 m when work stopped.
+
 Arm **B2**, 2026-08-22, node `3089.od.fbinfra.net`, branch `uw173691-finish-b2`.
 Rust only. Every number is read off the live engine re-simulating a written
 `.Ghost.Gbx`, and the headline is a **plain-oracle** verdict on the file as
@@ -184,10 +190,20 @@ CP-neutralised rig, where the real start is neutralised too.
    (1314.5, 114.0, 448.2) to the wedge at (1532, 113.9, 447) and re-solve the
    last 28 s from there. The whole run fits inside the 47.86 s the rig
    simulates, and the map's budget is 2672.290.
+   *Where it got to before this arm was stood down*: splicing the solved
+   manoeuvre after a searched run-up (`uwlab shift --drop`, then
+   `uwlab climb --matchtick/--matchpos` on the run-up only, matching two
+   positions 0.4 s apart so the velocity is pinned too) took the state error at
+   the splice tick from **141 m to 9.09 m**. The partial run-up is banked as
+   `graft_partial_9m.gtape`; the manoeuvre is velocity-sensitive, so the splice
+   does not fire until the match closes.
 2. **The checkpoints.** The finish on the real map needs all of them; CP c
    (#2180 at (976, 186, 1072)) has still never fired.
 3. **The wedge's ceiling.** 194.07 was where the search stopped, not where the
    mechanism does; the last improvement was still +9 m.
+
+A second, 0.3 s faster finish from the same rig is banked beside the first:
+`FINISH_refined.Ghost.Gbx`, oracle **37.599, cps=1**.
 
 ## 5. HOW TO REPRODUCE
 
