@@ -299,8 +299,7 @@ fn cmd_export(argv: &[String]) -> i32 {
         (a.one("csv").map(|s| s.to_string()), serial::csv_string as fn(&Decoded) -> String),
         (a.one("json").map(|s| s.to_string()), serial::path_json_string),
         (a.one("full-json").map(|s| s.to_string()), serial::full_json_string),
-    ];
-    let a = a.finish(EXPORT_USAGE);
+    ];    let a = a.finish(EXPORT_USAGE);
     let Some(path) = a.positional.first() else {
         eprint!("{}", EXPORT_USAGE);
         return 2;
@@ -315,8 +314,7 @@ fn cmd_export(argv: &[String]) -> i32 {
     let mut wrote = false;
     for (f, text) in &outs {
         if let Some(f) = f {
-            std::fs::write(f, text(&dec)).expect("write");
-            println!("wrote {}", f);
+            std::fs::write(f, text(&dec)).expect("write");            println!("wrote {}", f);
             wrote = true;
         }
     }

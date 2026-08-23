@@ -161,6 +161,60 @@ pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<S
 /// the anchoring that would make them portable is not built. Until it is, the
 /// honest thing is to write ZERO and say which byte, rather than pass the
 /// donor's through where it reads as ours.
+/// Channels the pipeline writes that MUST be alive on any real run, and the
+/// ones that may legitimately rest.
+///
+/// The distinction matters because `dead_channels` refuses, and refusing is
+/// only right where a constant value is impossible rather than merely
+/// unusual. A car that drives for 3 km always turns its wheels; a car on a
+/// short run may never change gear and may never touch the turbo, so claiming
+/// those as must-be-live would refuse honest work -- this project's most
+/// expensive failure shape, and the reason C3 and C8 had to be superseded.
+///
+/// The four wheel ROTATIONS are the diagnostic ones: the carrier-bytes arm
+/// measured that a bare position copy has the car's position with dead memory
+/// around it, so its wheel slots read 0 of 4 live while the real vehicle struct
+/// reads 4 of 4, with nothing in between.
+pub fn must_be_live() -> &'static [(usize, &'static str)] {
+    &[
+        (14, "steer echo"),
+        (15, "gas echo"),
+        (47, "position x"),
+        (51, "position y"),
+        (55, "position z"),
+        (59, "orientation angle"),
+        (65, "speed"),
+        // The wheel rotations, once `fk regen --carrier` writes them. Until
+        // then they are in `unwritten_channels` and zeroed, and a zeroed
+        // channel that is not claimed is not a defect.
+        (6, "front-left wheel rotation"),
+        (8, "front-right wheel rotation"),
+        (10, "rear-right wheel rotation"),
+        (12, "rear-left wheel rotation"),
+    ]
+}
+
+/// Written from engine state, but a constant value is legitimate on a short or
+/// gentle run, so a dead one is REPORTED and never refused.
+pub fn may_rest() -> &'static [(usize, &'static str)] {
+    &[
+        (0, "unnamed u16"),
+        (2, "side speed"),
+        (4, "rpm"),
+        (22, "an angle"),
+        (23, "front-left suspension travel"),
+        (24, "front-left ground material"),
+        (25, "front-right suspension travel"),
+        (26, "front-right ground material"),
+        (27, "rear-right suspension travel"),
+        (28, "rear-right ground material"),
+        (29, "rear-left suspension travel"),
+        (30, "rear-left ground material"),
+        (31, "turbo"),
+        (91, "gear"),
+    ]
+}
+
 pub fn unwritten_channels() -> &'static [(usize, &'static str)] {
     &[
         (5, "rpm"),

@@ -55,27 +55,59 @@ fn fk_binary() -> String {
     "fk".into()
 }
 
-/// The shim `fk` will load, when the caller names one.
+/// Where the LD_PRELOAD shim is.
 ///
-/// This used to be a SECOND copy of `fk`'s own lookup, and it knew only the
-/// shim's old name (`libfkshim.so`) with a hard-coded `/tmp/fk/rs/...`
-/// fallback. `tools/search` builds `libforkshim.so`, so the copy here never
-/// found the current shim and always handed `fk` the stale one left in `/tmp`
-/// by an old bundle -- and a mismatched shim does not fail, it HANGS: the
-/// child answers the `G` command with something that is not the `GO` ack, and
-/// four regenerations sat in that state for forty-five minutes each before
-/// anyone looked (measured 2026-08-22; the same run against the repo's shim
-/// finishes in 10 s).
+/// **Both names are tried.** The crate was renamed `forkshim` and its artefact
+/// with it (`libforkshim.so`); `fk`'s own lookup accepts either, and this one
+/// did not, so from a clean clone `ghost regen` handed the fork server a path
+/// that does not exist. The server then panics inside `forksrv` with a bare
+/// `NotFound` — once per attempt, twenty-four times — and the output reads
+/// exactly like twenty-four bad locates. That is the failure this crate's own
+/// README warns about, reproduced by this crate.
 ///
-/// So there is no lookup here any more. `fk` owns resolving the shim, because
-/// `fk` is what loads it; this only forwards an explicit choice.
 ///
-/// This was fixed twice on the same day, independently, and the other fix
-/// taught this one both names and both search roots. That version is the reason
-/// the diagnosis below is precise -- but it left TWO lookups in the tree, which
-/// is the defect that produced the bug in the first place. One owner.
-fn explicit_shim() -> Option<String> {
-    std::env::var("FK_SHIM").ok()
+/// This was fixed twice on the same day, independently. The other fix deleted
+/// this lookup outright on the principle that `fk` should own resolving what
+/// `fk` loads -- which is right about the duplication and wrong about the
+/// failure mode: forwarding nothing means a missing shim is discovered by the
+/// fork server, twenty-four times, in the words of twenty-four failed locates.
+/// Refusing here, by name, is worth the second copy.
+///
+/// Returns `None` rather than a guess: a made-up default is what turns a
+/// wiring error into a physics story. The caller refuses and names the knob.
+fn shim() -> Option<String> {
+    if let Ok(v) = std::env::var("FK_SHIM") {
+        return Some(v);
+    }
+    const NAMES: [&str; 2] = ["libforkshim.so", "libfkshim.so"];
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    // beside the fk binary that will actually run -- NOT beside this one. They
+    // are different crates in different trees.
+    let fk = fk_binary();
+    if let Some(d) = std::path::Path::new(&fk).parent() {
+        dirs.push(d.to_path_buf());
+        // `cargo build` leaves the shim in the SEARCH workspace's target dir,
+        // never in fk's own: the shim and the driver `#[path]`-include one
+        // `pred_core.rs`, so a second copy would be a second judge.
+        dirs.push(d.join("../../../search/target/release"));
+    }
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(d) = me.parent() {
+            dirs.push(d.to_path_buf());
+            dirs.push(d.join("../search/target/release"));
+            dirs.push(d.join("../../search/target/release"));
+        }
+    }
+    dirs.push(std::path::PathBuf::from("/tmp/fk/rs/target/release"));
+    for d in dirs {
+        for n in NAMES {
+            let p = d.join(n);
+            if p.exists() {
+                return Some(p.to_string_lossy().into());
+            }
+        }
+    }
+    None
 }
 
 
@@ -117,13 +149,11 @@ pub fn run_regen(template: &str, map: &str, out: &str, extra: &[String]) -> Rege
         abspath(out),
         "--dump".into(),
         dump,
+        "--shim".into(),
+        shim,
         "--server".into(),
         crate::oracle::server_dir(None).to_string_lossy().to_string(),
     ];
-    if let Some(s) = explicit_shim() {
-        args.push("--shim".into());
-        args.push(s);
-    }
     args.extend_from_slice(extra);
     let o = Command::new(fk_binary()).args(&args).output();
     match o {
@@ -198,6 +228,15 @@ pub fn cmd(a: &[String]) {
                 v.push(k.to_string());
                 v.push(x.to_string());
             }
+        }
+        // `--carrier TABLE` is the carrier-bytes arm's flag: it writes 25 more
+        // per-sample channels from engine memory in the SAME engine run, so
+        // there is no second pass and no ordering rule. The table is named
+        // explicitly rather than defaulted, because `must_be_live` has to agree
+        // with it and a default would let the two drift apart silently.
+        if let Some(t) = flag(a, "--carrier") {
+            v.push("--carrier".into());
+            v.push(t.to_string());
         }
         for k in ["--verbose", "--inherit-outside", "--allow-partial",
                   "--keep-transform", "--noanchor"] {
@@ -514,15 +553,25 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
     // driven run does is hold one at a single value for 3 km. The list is
     // whatever the pipeline currently claims to write, so a channel promoted
     // out of `unwritten_channels` comes under this on the same day.
-    let claim: Vec<(usize, &str)> = vec![
-        (14, "steer echo"),
-        (15, "gas echo"),
-        (47, "position x"),
-        (51, "position y"),
-        (55, "position z"),
-        (59, "orientation angle"),
-        (65, "speed"),
-    ];
+    // Two lists, because refusing is only right where a constant is impossible.
+    // A car that drives 3 km always turns its wheels; a car on a short run may
+    // never change gear or touch the turbo, and refusing those would refuse
+    // honest work -- which is how C3 and C8 had to be superseded.
+    let carrier_written = has(a, "--carrier");
+    let claim: Vec<(usize, &str)> = crate::finish::must_be_live()
+        .iter()
+        .copied()
+        .filter(|(o, _)| carrier_written || *o >= 14)
+        .collect();
+    match crate::finish::dead_channels(out, &crate::finish::may_rest()) {
+        Ok(v) if v.is_empty() || !carrier_written => {}
+        Ok(v) => {
+            for d in &v {
+                println!("   at rest (written, but a constant value is legitimate): {d}");
+            }
+        }
+        Err(_) => {}
+    }
     match crate::finish::dead_channels(out, &claim) {
         Ok(v) if v.is_empty() => println!("   every channel this pipeline writes varies over the run."),
         Ok(v) => {
