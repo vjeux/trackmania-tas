@@ -27,7 +27,7 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
 | reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
 | where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
-| the next observable | **tyre wetness** — on screen, in the telemetry, a positional integral, and it separates two human runs at 49 % of instants |
+| the next observable | **tyre wetness** — a positional integral, on screen, and now READ OUT OF THE ENGINE at `car+180` (95.4–96.0 % exact, negative control declines at 44 %) |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -394,15 +394,42 @@ three different points of the run.
 * **And it is on screen**, so it can be read for the whole run the same way the
   speed was.
 
-**One thing has to be built before it can be a search objective**, and it is a
-harness limit rather than a physics one: `fk trace`'s per-tick readout is a
-**44-byte window** — clock, quaternion, position, velocity
-(`forkoracle::layout`) — and wetness is not inside it. The engine plainly
-computes wetness, since the recording carries it; the readout simply does not
-reach that far. Widening the window to include it is the task, and it is the
-last piece: with wetness read off the video and out of the engine, the
-objective becomes positional over the *whole* run, including the reroute where
-no human line exists to compare against.
+**One thing had to be built, and it is now built.** `fk trace`'s per-tick
+readout gathered 44 bytes — clock, quaternion, position, velocity — and wetness
+was outside it. That was a decision, not a limit: the engine computes it, since
+the recording carries it.
+
+`fk probe` (new) finds a named channel by asking the recording. Gather a wide
+window around the located car, take the game's own series for the channel, and
+report every offset whose bytes reproduce it — a search with a ground-truth
+answer key, which cannot talk itself into a wrong answer the way a
+self-consistency argument can.
+
+**Result: `wetness` is an f32 at `car+180`.**
+
+| | |
+|---|---|
+| exact on steady ticks | **95.63 %** and 95.95 % (two probe ticks, Sapi), **95.37 %** (Bren, a different ghost) |
+| correlation | **0.9997** |
+| next-best offset anywhere in 2 KB | 31–47 % |
+| **negative control** | the same tape against **another run's** answer key: **44.10 %, NOT FOUND** — the probe declines |
+| end to end | `fk trace` now emits a `wetness` column agreeing with the recordings to a mean \|diff\| of **0.00104** (Sapi) and 0.00079 (Bren) — inside the record's own u8 quantisation of 1/255 = 0.0039 |
+| the widening disturbs nothing | the same tape traced before and after: 8060 shared instants, position max difference **0.000 m** |
+
+Three things the probe had to be taught, each of which produced a wrong answer
+first: a channel that barely varies matches everywhere (so it states the
+reference's own variation and refuses to rank without enough of it);
+mid-transition ticks are not comparable, because the record is on a 50 ms grid
+and the fork reports every 10 ms; and **which rounding the record uses is not
+something to assume** — round-to-nearest and truncation differ by 17 percentage
+points here, so both are scored. An unscaled `u8` encoding is tried too, after
+scoring a gear as a 0..1 quantity gave 0.00 % exact beside a 0.9953 correlation,
+which is the shape of a right answer being told the wrong question.
+
+**What remains** is to make it the objective: read the wetness percentage off
+the video's HUD the way the speed was read, and score candidates on it. That is
+the same work as §1 and §5, on a channel that constrains the route rather than
+the speed.
 
 ## 9. What is banked
 
