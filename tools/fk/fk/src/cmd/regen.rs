@@ -498,14 +498,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let mut w = written_bytes(ss, !keepx, neutral);
     if tape { w[14] = true; w[15] = true; w[18] = true; }
-    for r in &carrier {
-        match r.ch {
-            crate::carrier::Channel::Byte(b) if b < ss => w[b] = true,
-            crate::carrier::Channel::U16(b) if b + 1 < ss => {
-                w[b] = true;
-                w[b + 1] = true;
+    // WHICH BYTES THE CARRIER CLAIMS. In table mode that is one per row. In
+    // LAYOUT mode there are no rows -- the sentinel stands for "the writer's
+    // whole transcription" -- so the mask has to come from what the gather
+    // actually returned, which it does below once `carrier_vals` is in hand.
+    // Marking only the sentinel's byte 0 here left every other channel unmarked
+    // and therefore unwritten, and the acceptance gate then correctly refused a
+    // file whose wheel rotations were all zero.
+    let layout_mode = carrier.len() == 1 && carrier[0].rel == i64::MIN;
+    if !layout_mode {
+        for r in &carrier {
+            match r.ch {
+                crate::carrier::Channel::Byte(b) if b < ss => w[b] = true,
+                crate::carrier::Channel::U16(b) if b + 1 < ss => {
+                    w[b] = true;
+                    w[b + 1] = true;
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     // THE CARRIER FIELDS, from a second gather paired to this one by the race
@@ -568,11 +578,56 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .collect();
         // The recording's own orientation, when the container carries this
         // run's. Reported against, never chosen by -- see `gather_fields`.
-        let truth_q: std::collections::HashMap<i64, [f64; 4]> = times
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (*t, gbx::record::read_transform_pub(&raws[i], 47).1))
-            .collect();
+        //
+        // AND ONLY WHEN IT REALLY IS THIS RUN'S. On a transplanted container
+        // the recorded samples are the DONOR's driving, so this "answer key" is
+        // a different car on a different line -- and the veto in
+        // `gather_fields` then refuses the correct orientation for disagreeing
+        // with a stranger. Measured on 276874: the ranking's top candidate is
+        // 3.02957 rad from the container's recording, which is 174 degrees --
+        // not a near miss, a different run.
+        //
+        // The clean run has just measured THIS run's own positions per
+        // millisecond, so the test is cheap and needs no recording: if the
+        // container's recorded path does not follow the path the engine just
+        // drove, its orientation is not an answer key either. One metre is far
+        // wider than any pairing error (the copies sit half a millimetre apart)
+        // and far tighter than a different route.
+        let key_is_ours = {
+            let mut n = 0usize;
+            let mut off = 0usize;
+            for (i, t) in times.iter().enumerate() {
+                let Some(p) = truth.get(t) else { continue };
+                let r = gbx::record::read_transform_pub(&raws[i], 47).0;
+                let d = ((r[0] - p[0]).powi(2) + (r[1] - p[1]).powi(2) + (r[2] - p[2]).powi(2))
+                    .sqrt();
+                n += 1;
+                if d > 1.0 {
+                    off += 1;
+                }
+            }
+            let ours = n >= 20 && (off as f64) < 0.1 * n as f64;
+            if !ours {
+                println!(
+                    "--carrier: the container's own recording is NOT this run ({} of {} \
+                     instants more than 1 m from the path the engine just drove), so its \
+                     orientation is not an answer key and the veto is disabled. The \
+                     reference-free ranking decides alone, as it must on the transplanted \
+                     containers this exists for.",
+                    off, n
+                );
+            }
+            ours
+        };
+        let truth_q: std::collections::HashMap<i64, [f64; 4]> = if key_is_ours {
+            times
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, gbx::record::read_transform_pub(&raws[i], 47).1))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
         let (gp, gph) = grid_of(&times);
         let fdump = format!("{}.fields", dump);
         let mut last = String::new();
@@ -594,6 +649,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if carrier_vals.is_empty() {
             println!("ABORT: the carrier fields could not be read: {}. No file written.", last);
             std::process::exit(3);
+        }
+        // In layout mode the claimed bytes are whatever the writer's
+        // transcription produced -- see the note at `w`'s construction.
+        if layout_mode {
+            if let Some(v) = carrier_vals.values().next() {
+                for (ch, _) in &v.fields {
+                    if let crate::carrier::Channel::Byte(b) = ch {
+                        if *b < ss {
+                            w[*b] = true;
+                        }
+                    }
+                }
+                println!(
+                    "--carrier layout: {} of {} sample bytes come from the writer's own \
+                     transcription",
+                    v.fields.len(),
+                    ss
+                );
+            }
         }
         let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
             Default::default();
