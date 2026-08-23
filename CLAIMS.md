@@ -556,3 +556,21 @@ tmtraj corpus claims --root .   # does a page agree with the files in its own di
 tmtraj corpus dup    --root .   # two published files of one map carrying one recording
 tmtraj adjudicate ...           # settle a dup verdict against the engine
 ```
+
+## Scratch named after the input is single-instance per input
+
+**A tool whose scratch path comes from its input is single-instance per input,
+and nothing says so.** `ghost roundtrip` named its working files after the
+SUBJECT (`<subject>.roundtrip.Ghost.Gbx`, `<subject>.grid.Ghost.Gbx`), so two
+runs comparing two locate settings on ONE subject — which is what comparing
+settings *means* — shared a grid file and read each other half-written. For
+forty minutes the logs showed only `falling back to the anchor search`, which is
+what a genuinely hard locate looks like, and one of the runs also reported
+`no oracle available` because its input was being rewritten underneath it. Two
+plausible physics stories, one filesystem collision.
+
+Several tools here take a subject and write scratch beside it, so this is a
+class rather than an incident. The fix is a process id in the name and an
+explicit `--out`; the rule is that **a parallel run is the normal way to
+compare two settings, and a tool that cannot survive one should say so or stop
+being one.**
