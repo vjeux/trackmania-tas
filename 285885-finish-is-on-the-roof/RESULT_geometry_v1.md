@@ -1,11 +1,11 @@
-# 285885 `finish is on the roof to your right` — the roof inverts a car that falls onto it, and a wall stops it 37 m short
+# `finish is on the roof to your right` — the roof inverts a car that falls onto it, and a wall keeps it 37 m from the finish
 
 Arm `roof285885`, 2026-08-22, node 78880.od. **The author time 43.079 was NOT
 beaten and our 50.229 was NOT improved.** What this arm adds is a rotation
 mechanism nobody had found — **the roof inverts a car that falls onto it**, in
 1.0 s, with no input, at 100 km/h, and a wall stops it 37 m from the finish
 (§8) — the first measurement of the *geometry* this map is played on, a
-correction to the arithmetic the closure note states, and five enumerated
+correction to the arithmetic the closure note states, and seven enumerated
 negatives, every one of them with a positive control in the same batch.
 
 Rust only; no Python and no shell scripts. Every tool is a subcommand of an
@@ -516,7 +516,42 @@ no-ops, 841 distinct tapes), scored on five rungs — including the patch at its
 | the patch at its real height, (419, 144.0, 1704.6) | **0** |
 
 **There is no landing between the wall and the void.**
-## 12. What is left, and what a successor should not repeat
+
+## 12. The southern approach: 152 hops, and every one of them is at the same lip
+
+§11 leaves exactly one door: be above the finish face arriving from the south,
+off the ramp the run already climbs. If any line off that ramp gives more than
+the 0.10–0.15 s §10 measured, the fall does the rest.
+
+768 rectangular overrides of the fast route over race 39.0–41.0 — the two
+seconds before and at the patch — at 8 steering values × 4 lengths × 6 starts ×
+throttle-off and brake-on (0 no-ops, 768 distinct tapes). 260 of them were read
+back as live trajectories and passed through `tmtraj airborne` (§10).
+
+| box | episodes |
+|---|---|
+| the whole finish roof, x 400–500, z 1600–1740 | **152** |
+| **the finish face itself, x 400–500, z 1672–1740** | **0** |
+
+Positive control, in the same command: the unperturbed fast tape has exactly
+one episode in the wide box, at 42.690–42.780 — the z ≈ 1668 lip.
+
+And that is what all 152 are. Every one of them starts at **z = 1663…1669** and
+runs 0.08–0.20 s at 180–210 km/h with an apex gain under a metre: the same lip,
+taken at speed, by every line. Not one episode anywhere on the face between the
+lip and the patch, 36 m further on.
+
+The reason is geometry, and it is visible in the reference trajectory. From the
+foot of the climb to the patch the ramp is **smooth and concave** — the car's
+own `vy` climbs monotonically from +5.0 to +8.9 m/s across x 385 → 455 while it
+follows the surface. There is no convexity to leave. The only break in the whole
+face is the z ≈ 1668 lip, and it is **36 m past the patch**, on the far side.
+
+> The southern approach gives 0.1 s of air, once, in the wrong place, and no
+> line changes that. A car cannot get above the finish face from the ramp,
+> because the ramp does not have an edge before the finish.
+
+## 13. What is left, and what a successor should not repeat
 
 **Do not re-run:**
 
@@ -535,29 +570,32 @@ no-ops, 841 distinct tapes), scored on five rungs — including the patch at its
   the final climb by 34.13 s**, against 37.978 for the fastest tape ever built
   and 41.279 for our record (§5).
 
-**The three things that are genuinely open**, in the order I would try them:
+**Both ways onto the finish face are now closed, with controls.**
 
-0. **Nothing on the north side.** §11 closes the approach from above: 3 904
-   evaluations against the z = 1667.6 wall, from four arrival speeds and nine
-   drop points, with a firing control in every batch, and not one crossing.
-   The wall ends at x ≈ 507 and past it is the world edge. So a successor
-   should NOT spend a run trying to reach the finish face from the north.
+* **From the north** (§11): 3 904 evaluations against the z = 1667.6 wall, four
+  arrival speeds, nine drop points, a firing control in every batch, not one
+  crossing. The wall ends at x ≈ 507 and past it is the world edge.
+* **From the south** (§12): 768 overrides of the run's own ramp line, 260 read
+  as live trajectories, **152 ballistic episodes on the roof and 0 on the finish
+  face**. Every episode is the z ≈ 1668 lip, 36 m past the patch, worth 0.1 s
+  and under a metre. The ramp is smooth and concave from the foot of the climb
+  to the patch — there is no edge to leave.
 
-1. **Get above the finish face with air under it** (§8; §10 says how NOT to look
-   for it). This is the arm's
-   recommendation and it supersedes "land on the rim" as the way to state the
-   problem. The fall does the whole endgame for free: 1.0 s, no input, `u_y`
-   −1.000, 100 km/h, on the finish's own plane. What is needed is not tilt and
-   not budget — it is **altitude over z 1668–1704, x 419–507**. The south face,
-   which is the natural place to fall from, is walled 37 m short (892 tapes,
-   0 crossings, 521-firing control) and east of x ≈ 460 there is no roof there
-   at all (1 386 evaluations, two controls).
-2. **Land on the rim** (§9), which is the same idea from the other end: 13 m of
-   apex short, from a coupled entry-speed + steering move at the launcher. Note
-   what §8 adds to it — landing on the rim's *south* face buys the inverted
-   slide and then the wall, so the landing must be east of x ≈ 460 or north of
-   z ≈ 1668.
-3. **The AT's provenance — and I ran the control, which killed my own hint.**
+So the inverted fall (§8) is a real, free, 100 km/h rotation source that the
+map's geometry keeps on the wrong side of a wall, and neither approach to that
+side exists. **A successor should not spend a run on either.**
+
+**What is left**, in the order I would try it:
+
+1. **Land on the rim** (§9) — 13 m of apex short, from a coupled entry-speed +
+   steering move at the launcher, and the only remaining lead that is about
+   *reaching* somewhere rather than firing the gate. What §11 and §12 add to it:
+   the rim's *south* face buys the inverted slide and then the wall, and the
+   face beyond the wall cannot be reached from either side, so a landing there
+   would have to be **on the finish face itself** — east of x ≈ 460, north of
+   z ≈ 1668, from the air. That is a harder target than "land on the rim", and
+   it is the honest version of it.
+2. **The AT's provenance — and I ran the control, which killed my own hint.**
    The medals are Nadeo's own derivation from 43.079 (×1.07 / ×1.2 / ×1.5,
    rounded to the second: 46 / 52 / 65), so the author time came from a
    validation and was not typed in. I noticed the map's header names

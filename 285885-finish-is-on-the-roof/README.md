@@ -92,9 +92,20 @@ more from six others, on the fast route's own up-ramp line, with the fast route
 itself firing all six of those rungs in order as the control. Nothing crosses.
 East of x ≈ 460 there is no roof above the deck to fall onto at all.
 
-So the endgame's open question is no longer "where is 26° of tilt" — it is
-**"how does the run get above the finish face (z 1668–1704, x 419–507) with air
-under it".** The fall does the rest for free.
+That reframes the endgame's question from "where is 26° of tilt" to "how does
+the run get above the finish face with air under it" — **and both ways onto that
+face are now measured shut.** From the north, 3 904 evaluations against the wall
+across four arrival speeds and nine drop points, with a firing control in every
+batch, put nothing past it; the one place where a faster probe does clear the
+wall, at x ≈ 496, it also clears the roof, because x = 507 is the world edge.
+From the south, 768 overrides of the run's own ramp line give **152 ballistic
+episodes on the roof and 0 on the finish face** — every one of them the same
+z ≈ 1668 lip, 36 m past the patch, worth 0.1 s and under a metre. The ramp is
+smooth and concave from the foot of the climb to the patch: there is no edge to
+leave.
+
+So the rotation the finish needs exists, is free, and comes at 100 km/h — and
+the map keeps it on the far side of a wall that nothing can cross.
 
 ## The author time is not beaten, and here is the size of it
 
