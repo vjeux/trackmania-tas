@@ -169,7 +169,24 @@ fn show(a: &[String]) {
         rd.custom_modules.len()
     );
     for (i, d) in rd.descs.iter().enumerate() {
-        println!("  desc {i}: class 0x{:08X}", d.class_id);
+        // u04 is the descriptor's own payload. GBX.NET calls it unknown; if the
+        // engine puts the recorded FIELD LIST anywhere in the file, it is here,
+        // so print it rather than its length.
+        println!(
+            "  desc {i}: class 0x{:08X}  u01 {} u02 {} u03 {} u05 {}  u04 {} B{}",
+            d.class_id,
+            d.u01,
+            d.u02,
+            d.u03,
+            d.u05,
+            d.u04.len(),
+            if d.u04.is_empty() {
+                String::new()
+            } else {
+                let hex: Vec<String> = d.u04.iter().map(|b| format!("{b:02x}")).collect();
+                format!(": {}", hex.join(" "))
+            }
+        );
     }
     let veh = pick_vehicle(&rd);
     let mut live_scene = 0usize;

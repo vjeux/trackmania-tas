@@ -1,0 +1,8 @@
+[package]
+name = "asmdig"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "asmdig"
+path = "src/main.rs"

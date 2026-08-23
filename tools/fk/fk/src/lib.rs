@@ -66,6 +66,7 @@ pub mod session;
 pub mod record;
 pub mod tape;
 pub mod traj;
+pub mod vislayout;
 
 /// Print a fatal error and exit 2. Reserved for a caller's mistake (a missing
 /// flag, an unreadable file). A measurement that fails its own control exits 3,

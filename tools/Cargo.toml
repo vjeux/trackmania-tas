@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gbx", "asmshape", "ghost", "dsprobe", "chunkswap", "strpatch", "tmtraj", "tmmaps", "mapgeom", "tmsite", "shootctl", "clip", "uwlab", "vidread", "recon", "wsx", "pkz2", "rend"]
+members = ["gbx", "asmshape", "asmdig", "ghost", "dsprobe", "chunkswap", "strpatch", "tmtraj", "tmmaps", "mapgeom", "tmsite", "shootctl", "clip", "uwlab", "vidread", "recon", "wsx", "pkz2", "rend"]
 # tools/fk and tools/forkoracle are their own workspaces (they pin -O3 + LTO for
 # the engine paths); they are built from their own directories.
 exclude = ["fk", "forkoracle"]

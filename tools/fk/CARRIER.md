@@ -1,5 +1,17 @@
 # CARRIER.md — reading the sample bytes out of engine memory
 
+> **2026-08-23: five rows below are contradicted by the game's own writer, which
+> has since been disassembled — see `SAMPLE-LAYOUT.md`.** Nothing in this
+> document or in `carrier-bytes.tsv` has been edited: the contradictions are
+> reported there with the measurement that settles each one. They are `b22`
+> (the coefficient is 255/2π, not the wheel constant), `u16@4` rpm (65535/30000
+> exactly, no offset), `b31` (a 3-bit enum plus one flag bit, not a byte copy),
+> the four ground-material bytes (13 is substituted when the wheel's flag bit 1
+> is set), and the refutation of the dirt channel (the hypothesis was right; the
+> slot is dead in the dedicated server). §5's "byte 89 is closed" is also
+> overturned: it is bit 0 of a 32-bit field spanning bytes 89-91 that carries
+> all five reactor members and the gear.
+
 A `CSceneVehicleVis` telemetry sample is **116 bytes**. `fk regen` writes 22 of
 them (the transform) and the tape echo writes 3 more; the other **91 were still
 the donor container's**, which is why `ghost regen` named them every time it
