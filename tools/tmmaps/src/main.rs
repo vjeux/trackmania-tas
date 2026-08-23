@@ -1087,6 +1087,22 @@ CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume ch
         `i439` / `b2089` when block and item indices collide.
 
 MEASURING WITH A MAP
+  tmmaps dropscan MAP --out DIR --tape GHOST (--cells CX:CX:S,CY,CZ:CZ:S | --cell
+                  CX,CY,CZ[,DIR] | --tapes DIR) [--dirs D,..] [--target X,Y,Z]
+                  [--jobs N] [--at frac:F,..] [--fk PATH] [--server DIR] [--keep]
+        READ THE ENVIRONMENT'S GEOMETRY WITH THE CAR. Moves the spawn to a cell,
+        drives the car off it under a fixed straight-throttle tape, and reads
+        the landing out of the live engine (`fk trace`): one probe is one map
+        plus one trace, and the summary is apex, resting place, closest approach
+        to --target, and when. This is how you ask "what is over there" on a map
+        whose surfaces belong to the DECORATION and not to the map file.
+        --tapes DIR instead scores a POPULATION OF TAPES on the untouched map,
+        with the same readout — the poor man's state objective.
+        Controls, both refusals: the spawn moved to its OWN cell must reproduce
+        the untouched map byte-for-byte, and a probe at the real spawn cell must
+        start where the map's spawn is. A trace that is all zeroes is REFUSED:
+        it passes fk's self-check and means the cell produced no car at all
+        (every cell outside the map grid does).
   tmmaps ladder MAP --spec F --ghosts G... [-j N]
         arrival-time ladders. One rung per spec line, whitespace-separated
         moves, so a rung is a CURTAIN of gates across the corridor rather than

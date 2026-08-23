@@ -23,24 +23,42 @@ The finish gate is an item sunk below the surface of the roof. A car resting on
 the roof sits **above** the trigger, and driving over the finish does nothing at
 all. All three recorded runs drive over it repeatedly without finishing.
 
-The world record's lowest point inside the gate's footprint is
+The near-miss is not a matter of millimetres of height, and the paragraph that
+used to stand here saying it was has been **retired**. The trigger tests a point
+fixed in the car's BODY, about 0.84 m up its own up-axis — the car's roof — so
+what it measures is *attitude*, not altitude: inverting the car moves the tested
+point 1.7 m down, and that is why all three humans finish upside down. Model-free
+witness, one tape and one gate: rank 1 reaches a tested point of 143.962 without
+finishing and then finishes with a tested point of 144.486, **half a metre
+higher**. Upright on the fast line the tested point sits 1.087 m above the roof
+plane and the trigger needs plane − 0.034: **about 26° of body tilt, or nothing.**
 
-```
-y = 145.2506      against a ceiling of      y = 145.2500
-```
+That near-miss costs rank 1 **10.6 s** and rank 2 **37.2 s** of driving on,
+turning round and coming back to fire the gate from the other side.
 
-**It misses by under five millimetres.** Rank 2 misses by about 15 mm, rank 3 by
-about 20 mm — the same near-miss three times, not three different routes. That
-near-miss costs rank 1 **10.6 s** and rank 2 **37.2 s** of driving on, turning
-round and coming back to fire the gate from the other side.
+What the record does wrong on its second pass is simple: it **snaps to full
+right lock on the roof and climbs out of the trigger volume about 4 m too
+early.** It needs to stay in the box a moment longer.
 
-Raise the gate by five millimetres and all three runs finish about ten seconds
-earlier. **Five millimetres of gate height is worth 10.170.**
+## Where this is actually played
 
-What the record actually does wrong is simple: it **snaps to full right lock on
-the roof and climbs out of the trigger volume about 4 m too early.** The car is
-already low enough on the way up — it does not need a landing, a bounce or a dip.
-It needs to stay in the box a moment longer.
+The map is 113 blocks, every one of them at y = 10, and **two waypoints: the
+spawn and the Goal. There are no checkpoints.** The Goal stands at
+(419.03, 144.00, 1704.64) — 500 m past the last block in z and 134 m above the
+highest one. Every surface the endgame is driven on belongs to the **Stadium
+decoration**, not to the map.
+
+The 113 blocks are one walled corridor from the spawn at (144, 10, 656) to
+(1296, 10, 1168), screens stacked to y = 34 on both sides. It is the only
+accelerator on the map — off it, from a standstill, the car does about 6 m/s —
+and it has exactly one exit. So the route is forced: out along the corridor at
+620 km/h, off the north-east corner, onto the stadium, and west along it.
+
+Measured with drop probes (`tmmaps dropscan`), the stadium presents a deck at
+**y ≈ 50, z ≈ 1585** across x 592…944, and a high rim at **y ≈ 145…158,
+z ≈ 1620…1670** from x ≈ 340 to x ≈ 1180 that carries the finish, falling to
+y ≈ 110 at x ≈ 1449 and y ≈ 99 at x ≈ 1591. The run's launch apexes at 74.9 m
+and passes *under* the rim's east end.
 
 ## The run, as inputs
 
@@ -57,7 +75,14 @@ version. The published tape is a clean override of the steering channel rather
 than a literal key press, so the thing to trust is the tolerance below, not the
 tape's exact contents.
 
-**The sector-by-sector guide for the rest of this map is not written yet.**
+**The author time is not beaten and, on the route the map allows, it is a long
+way off.** Our fastest upright line reaches the finish patch at **41.037** and
+cannot fire the sunken gate; the only flip anyone has made work costs
+**+8.95 s** over the last 133 m, so a run must reach the foot of the final climb
+by **34.13** to come in under 43.079 — against **37.978**, the earliest arrival
+there by any tape ever built on this map. The full measurement set, the geometry,
+and the enumerated negatives are in
+`~/persistent/private-30d/tm-unbeaten/285885/roof285885_RESULT_v1.md`.
 
 ## How forgiving it is
 
