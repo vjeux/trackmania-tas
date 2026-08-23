@@ -196,16 +196,13 @@ somehow load-bearing for his finish.
   "4.4 m", which the next idea can be measured against in ten minutes instead of
   a day. `diag/k*.Map.Gbx` is rebuilt by one `tmmaps shift` per rung;
   `imt3_map_relief9m.Map.Gbx` is banked as a worked example.
-* **One lead I could not test.** There may be a dirt ledge at approximately
-  (830, 120, 742): `PlatformDirtBase` at (830, 112, 736) is the same block whose
-  twin at (736, 112, 737) is the flick's landing platform, and that twin's
-  surface sits ~8 m above and ~6 m north of its stored origin. Applying the same
-  offset puts a ledge **6 m above the deck**, which is the height half of the
-  deficit exactly. Nothing has ever driven there. My plumb probe (spawn block
-  moved above it with `tmmaps move 0@…`, then `fk trace` the fall) failed on the
-  LOCATE, not on the geometry — the blind locator needs the car moving, and a
-  car dropped from rest gives it nothing to bite on. Fork later, or give the
-  probe tape some throttle. Twenty minutes.
+* **THE LEDGE IS REAL — see §11. `mapgeom plumb`, calibrated against this
+  map's own recording to 0.1 m, finds a continuous ASPHALT surface at
+  **y = 125.5** spanning x 782-846 and z 724-756 -- the canopy row at
+  (765..893, 119, 740). That is **11.5 m above the launch deck**, against a
+  height deficit of 5-6 m. Nothing has ever been on it, and my attempt to put
+  a car there died on a FAILED YES-CONTROL, so it is unresolved rather than
+  negative. Settle it first.
 
 ---
 
@@ -244,3 +241,58 @@ what gets a search out of band 0.
 | prior claims corrected | 1 — "the only reachable opening puts the car past the flag" |
 
 Nothing was submitted to any leaderboard. The map is **OPEN**.
+
+---
+
+## 11. THE LEDGE IS REAL, AND I COULD NOT PUT A CAR ON IT
+
+The lead named in §8 is confirmed as GEOMETRY and unresolved as a ROUTE.
+
+`mapgeom plumb` reads collision surfaces straight out of the server's own
+packs, with no engine and no car. Calibrated twice against this map's own
+recording, at `yoff 0`:
+
+| where | the car's own y | the model's surface |
+|---|---|---|
+| (762, 722), race 13.5 | 105.83 | **105.649** Asphalt |
+| the spawn, (909, 755) | 140.73 | **140.828** Asphalt |
+
+0.1–0.2 m on both. The model is the map.
+
+**And it says there is a second deck.** Above the run-up deck (Asphalt at
+**y = 114.0**) there is a continuous **Asphalt** surface at **y = 125.5**:
+
+| | |
+|---|---|
+| in x | continuous 782 → 846 at 125.514–125.515, then nothing at 862 |
+| in z | continuous 724 → 756 (with a step up to 129.8 / 133.8 at z 744–748) |
+| height over the deck | **11.5 m** |
+
+That is the row of `CanopyCenterFlatBase` blocks at (765/797/829/861/893, 119,
+740) — a 64 m × 32 m roof, **Asphalt, not decoration**, sitting eleven and a
+half metres above the launch deck. The height half of the wall deficit is
+5–6 m. Nothing in this project has ever been on it.
+
+**Why this is not a result.** I tried to put a car there — moved the spawn block
+above the roof, drove forward with a throttle-only tape — and the answer is
+about my instrument, not the roof:
+
+* `fk trace` **could not locate the car**: `verr 1.0000 m/s at mean speed 13.9`,
+  then a readout with a constant 3.6 km/h, which is the known 267460 locate
+  defect and not a car.
+* So I switched to an oracle-only test — a relocated Goal high enough that a car
+  on the roof fires it and a car that fell to the deck does not — and **the
+  yes-control failed**: the gate placed directly on top of the spawn returns
+  DNF, at five placements.
+
+**When a control fails the null is about the instrument.** Both the roof test
+and its deck control returned DNF, and with a dead yes-control neither of those
+DNFs means anything. The roof is UNRESOLVED, and it is the first thing the next
+arm should settle.
+
+Two ways in, for whoever picks it up. `tmmaps dropscan` (main) drives a car off
+a moved spawn and reads the landing from the live engine, which is the exact
+case here. Or fix the locate first: this map's documented recipe is
+`FK_QERR_MAX=0.5 FK_MIN_SPEED=8 FK_BOUNDS="600,1300,10,260,560,860"` — I passed
+the first two and not the bounds box, and the bounds box is the one that makes
+this map's locate work.
