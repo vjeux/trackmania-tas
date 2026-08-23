@@ -485,6 +485,25 @@ pub fn run(path: &str, a: &[String]) -> Report {
         r.add("V7", Verdict::Na, format!("no dedicated server at {} (set TM_SERVER or --server)", server.display()));
     } else if has(a, "--no-oracle") {
         r.add("V7", Verdict::Na, "--no-oracle");
+    } else if flag(a, "--map").is_none() && c.embedded_map().is_none() {
+        // NO MAP ANYWHERE IS AN INSTRUMENT STATE, NOT A VERDICT ABOUT THE RUN.
+        //
+        // Without `--map` the Maps directory is emptied, and a file that does
+        // not carry its own map then cannot finish whatever is on its tape --
+        // the server has nothing to drive on. Running it anyway produced
+        // "FAIL V7 oracle: DNF (cps None) on this file ... not publishable",
+        // which reads as a judgement on the run and is a judgement on the
+        // command line. A correct 239.133 was refused this way once.
+        //
+        // `--empty-maps` (V8) is the deliberate zero-map control, and it is for
+        // files that DO carry a map; it is unaffected.
+        r.add(
+            "V7",
+            Verdict::Na,
+            "no map: this file carries none and no --map was given, so the oracle would have \
+             nothing to drive on and would report DNF whatever is on the tape. Pass --map."
+                .to_string(),
+        );
     } else {
         let mode = match flag(a, "--map") {
             Some(m) => MapsMode::One(std::path::Path::new(m)),

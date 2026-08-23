@@ -284,12 +284,44 @@ impl Ff {
     }
 
     /// How long is this file, and does it play at all?
+    pub fn probe_duration(&self, file: &Path) -> Result<f64, String> {
+        let out = self.ffprobe_entries(file, "format=duration", None)?;
+        parse_probe_duration(&out).ok_or_else(|| {
+            format!("{} does not probe as playable (duration: {out:?})", file.display())
+        })
+    }
+
+    /// How big is the picture?
+    ///
+    /// The sweep's inventory needs this to tell a split-view clip from a
+    /// single-camera one without watching it: a side-by-side composition is
+    /// twice as wide as it is tall, and nothing else we render is.
+    pub fn probe_dims(&self, file: &Path) -> Result<(u32, u32), String> {
+        let out = self.ffprobe_entries(file, "stream=width,height", Some("v:0"))?;
+        let t = out.trim();
+        let (w, h) = t.split_once(['x', ',']).ok_or_else(|| {
+            format!("{} does not probe as video ({t:?})", file.display())
+        })?;
+        Ok((
+            w.trim().parse().map_err(|_| format!("width {w:?}"))?,
+            h.trim().parse().map_err(|_| format!("height {h:?}"))?,
+        ))
+    }
+
+    /// One ffprobe call, with the staging the `wsl` platform needs.
     ///
     /// On the `wsl` platform the file is copied onto the Windows drive first
     /// when it is not already there -- ffprobe.exe cannot read `/home/vjeux/...`
     /// and answers an empty string, which reads exactly like "not playable".
-    /// That staging copy is the whole reason this function is not two lines.
-    pub fn probe_duration(&self, file: &Path) -> Result<f64, String> {
+    /// That staging copy is the whole reason this is not two lines, and it is
+    /// here rather than in each caller so a second kind of probe cannot get it
+    /// wrong.
+    fn ffprobe_entries(
+        &self,
+        file: &Path,
+        entries: &str,
+        stream: Option<&str>,
+    ) -> Result<String, String> {
         let staged = match self.kind {
             FfKind::WindowsExe if wsl_to_windows(file).is_none() => {
                 std::fs::create_dir_all(&self.stage_dir)
@@ -308,27 +340,23 @@ impl Ff {
         let target = staged.clone().unwrap_or_else(|| file.to_path_buf());
         let arg = self.arg_path(&target);
         let out = arg.and_then(|a| {
-            capture(Command::new(&self.ffprobe).args([
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
-                &a,
-            ]))
+            let mut v = vec!["-v".to_string(), "error".to_string()];
+            if let Some(s) = stream {
+                v.push("-select_streams".into());
+                v.push(s.to_string());
+            }
+            v.push("-show_entries".into());
+            v.push(entries.to_string());
+            v.push("-of".into());
+            v.push("csv=p=0".into());
+            v.push(a);
+            capture(Command::new(&self.ffprobe).args(&v))
         });
         if let Some(t) = staged {
             let _ = std::fs::remove_file(t);
         }
         let out = out?;
-        parse_probe_duration(&out.stdout).ok_or_else(|| {
-            format!(
-                "{} does not probe as playable ({})",
-                file.display(),
-                out.why()
-            )
-        })
+        Ok(out.stdout)
     }
 }
 

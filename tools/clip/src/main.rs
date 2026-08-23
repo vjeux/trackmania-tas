@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clip::{cut, overlay, platform, ship, split};
+use clip::{cut, inventory, overlay, platform, ship, split};
 
 const USAGE: &str = "\
 clip ship  <file.mp4> <map-dir> [release-asset-name]
@@ -19,7 +19,7 @@ clip cut   <in.webm> <out.mp4> [--to SECONDS]
     Trimming the opponent ghost before staging is the cheaper fix; this is for
     the ones already rendered. The output is probed, not assumed.
 
-clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F]
+clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F] [--crf Q]
     Draw a run's own inputs -- steering, throttle, brake, respawn, and a history
     strip -- onto a finished clip. Reads the 10 ms input chunk (what the driver
     pressed), never the 50 ms telemetry echo (what the car had, and on a
@@ -34,6 +34,13 @@ clip alignment <ghost.Gbx> [--span-ms N]
 clip split <left.mp4> <right.mp4> <left-label> <right-label> <out.mp4>
     Two runs side by side, for maps where a chase camera provably cannot hold
     both cars. The shorter run holds its final frame so the gap reads as time.
+
+clip inventory [--root D] [--tsv] [--probe]
+    What is published, per map, read off the pages: the map's NAME, its headline
+    caption, how many videos it carries, and WHICH TREATMENT its clip used --
+    two-car, single-car or split. A map with no video plans two-car. Nothing is
+    estimated: a page that does not say what its scene contained reads UNKNOWN,
+    which is a page to read rather than a default to apply.
 
 Environment:
     CLIP_PLATFORM   native | wsl          (default: native if ffmpeg is on PATH)
@@ -105,6 +112,9 @@ fn go(args: &[String]) -> Result<(), String> {
             if let Some(v) = num("--history-ms") {
                 o.history_ms = v.parse().map_err(|e| format!("--history-ms: {e}"))?;
             }
+            if let Some(v) = num("--crf") {
+                o.crf = v.parse().map_err(|e| format!("--crf: {e}"))?;
+            }
             let ff = platform::from_env()?;
             overlay::run(&ff, Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]), &o)
         }
@@ -145,6 +155,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 Path::new(&args[5]),
             )
         }
+        "inventory" => inventory::main(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())

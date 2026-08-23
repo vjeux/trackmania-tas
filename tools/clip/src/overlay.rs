@@ -252,11 +252,18 @@ pub struct Opts {
     pub to: Option<f64>,
     pub history_ms: i64,
     pub margin: i64,
+    /// x264 quality. 19 is the published clips' encode and is the default;
+    /// **a long clip needs a higher number to fit.** GitHub refuses an asset
+    /// over 100 MB, and 220 s of 1280x720 at crf 19 is 171 MB -- so on this
+    /// project's long maps the choice is a slightly softer picture or no video
+    /// at all. `clip ship` cannot tell you this in advance, which is why it is
+    /// a flag rather than something to discover at the upload.
+    pub crf: u32,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { offset_ms: 0, fps: 30.0, to: None, history_ms: 3000, margin: 24 }
+        Opts { offset_ms: 0, fps: 30.0, to: None, history_ms: 3000, margin: 24, crf: 19 }
     }
 }
 
@@ -288,7 +295,7 @@ pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
         "-c:v".into(),
         "libx264".into(),
         "-crf".into(),
-        "19".into(),
+        o.crf.to_string(),
         "-preset".into(),
         "medium".into(),
         "-pix_fmt".into(),

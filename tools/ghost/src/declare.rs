@@ -55,15 +55,45 @@ pub fn cmd(a: &[String]) {
     // the server compares the LENGTH of that list with the map's checkpoint
     // count before it simulates anything.
     let want_cps = num(a, "--cps");
-    let want_splits: Option<Vec<i32>> = flag(a, "--splits").map(|s| {
-        s.split(',')
+    // --splits a,b,c: the intermediate checkpoint times, in seconds or ms.
+    //
+    // The gap this fills: `ghost declare` wrote the declared TIME at every site
+    // and had nothing that wrote the SPLIT LIST, so a repaired file could carry
+    // its own time and the carrier's checkpoints -- which is exactly what
+    // 238835's two NORETRY files do, and the page has to say so. A file whose
+    // splits are somebody else's is not fully ours however good its trajectory
+    // is.
+    //
+    // The times are PASSED IN rather than derived, and that is deliberate: the
+    // plain oracle reports `NbCheckpoints` and not the crossing times, so this
+    // toolchain has no way to measure them from the file alone. Inventing them
+    // would be worse than leaving them -- `--cps` already writes 0.000, which
+    // reads as "this container does not know its splits" where a donor's number
+    // reads as a measurement. When a caller HAS the times (from the search that
+    // produced the run, or from `tmmaps`' per-checkpoint segment maps), this is
+    // how they get into the file.
+    let want_splits: Option<Vec<i64>> = flag(a, "--splits").map(|v| {
+        v.split(',')
             .map(|x| {
-                x.trim().parse::<i32>().unwrap_or_else(|_| {
-                    die(format!("--splits wants milliseconds, comma separated; got {:?}", x))
-                })
+                let t = x.trim();
+                let f: f64 = t.parse().unwrap_or_else(|_| die(format!("--splits: {t:?} is not a number")));
+                // Seconds with a decimal is how this project writes times, so
+                // "12.475" means 12475 ms; a bare integer is already ms.
+                if t.contains('.') { (f * 1000.0).round() as i64 } else { f as i64 }
             })
             .collect()
     });
+    if let (Some(sp), Some(n)) = (&want_splits, want_cps) {
+        if sp.len() as i64 + 1 != n {
+            die(format!(
+                "--splits has {} intermediate checkpoint(s) and --cps says {} in total; the last \
+                 entry is the finish and is taken from the declared time, so --splits wants {}",
+                sp.len(),
+                n,
+                n - 1
+            ));
+        }
+    }
     let before: Vec<i32> = c.splits();
     let body = trim::rewrite_result(&body, |r| {
         r.race_ms = ms as i32;
@@ -86,7 +116,7 @@ pub fn cmd(a: &[String]) {
             // `--time`. The read-back control below requires the last one to
             // BE the declared time, which is the one relation that holds on
             // every reference ghost in the corpus.
-            r.entries = sp.iter().map(|t| (*t, 1)).collect();
+            r.entries = sp.iter().map(|t| (*t as i32, 1)).collect();
         } else if let Some(n) = want_cps {
             // Every intermediate entry becomes 0.000. This is the borrowed-
             // container case by construction -- the count only changes when the
@@ -108,7 +138,34 @@ pub fn cmd(a: &[String]) {
             // `tmmaps` builds a segment map per declared split and refuses a
             // ghost whose count is not the map's.
             let n = n.clamp(1, 199) as usize;
-            r.entries = (0..n).map(|k| if k + 1 == n { (ms as i32, 1) } else { (0, 0) }).collect();
+            r.entries = (0..n)
+                .map(|k| {
+                    if k + 1 == n {
+                        (ms as i32, 1)
+                    } else {
+                        match &want_splits {
+                            Some(sp) => (sp.get(k).copied().unwrap_or(0) as i32, 1),
+                            None => (0, 0),
+                        }
+                    }
+                })
+                .collect();
+        } else if let Some(sp) = &want_splits {
+            // No --cps: keep the list's length and write the times we were
+            // given into it, the last entry being the race time.
+            let n = r.entries.len();
+            if n != sp.len() + 1 {
+                die(format!(
+                    "this file declares {} checkpoint(s) and --splits gives {} intermediate \
+                     time(s). Pass --cps {} to change the count as well.",
+                    n,
+                    sp.len(),
+                    sp.len() + 1
+                ));
+            }
+            for (k, e) in r.entries.iter_mut().enumerate() {
+                e.0 = if k + 1 == n { ms as i32 } else { sp[k] as i32 };
+            }
         } else if let Some(last) = r.entries.last_mut() {
             // The final split is the race time. That holds on every reference
             // ghost in the corpus, so a `--time` that left it behind would
@@ -150,7 +207,7 @@ pub fn cmd(a: &[String]) {
     }
     let after: Vec<i32> = c2.splits();
     if let Some(sp) = &want_splits {
-        if after != *sp {
+        if after.iter().map(|v| *v as i64).collect::<Vec<i64>>() != *sp {
             die(format!(
                 "read-back control FAILED: asked for splits {:?}, the file declares {:?}",
                 sp, after
@@ -176,6 +233,31 @@ pub fn cmd(a: &[String]) {
                 after.len()
             ));
         }
+    }
+    // The split list has to come back as asked, and it has to be MONOTONIC and
+    // inside the run: a list that is not increasing, or whose last intermediate
+    // is past the finish, is another run's however it got there. That is the
+    // cheapest test for the defect this flag exists to repair, and it costs one
+    // read of the file we just wrote.
+    if let Some(sp) = &want_splits {
+        let got: Vec<i32> = after.iter().copied().collect();
+        let want: Vec<i32> = sp.iter().map(|v| *v as i32).chain(std::iter::once(ms as i32)).collect();
+        if got != want {
+            die(format!(
+                "read-back control FAILED: splits are {:?}, asked for {:?}",
+                got.iter().map(|v| secs(*v as i64)).collect::<Vec<_>>(),
+                want.iter().map(|v| secs(*v as i64)).collect::<Vec<_>>()
+            ));
+        }
+    }
+    if after.windows(2).any(|w| w[1] <= w[0]) || after.last().map_or(false, |l| *l as i64 != ms) {
+        println!(
+            "  NOTE: the checkpoint list {:?} is not strictly increasing up to the declared time \
+             {}. On a repaired container that is the DONOR's list surviving; pass --splits with \
+             this run's own crossing times, or --cps N to zero them honestly.",
+            after.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>(),
+            secs(ms)
+        );
     }
     if let Some(r) = c2.result() {
         if r.race_ms as i64 != ms {
