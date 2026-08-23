@@ -720,27 +720,38 @@ first.
 
 ### It dates the reroute, and it corrects `--corridor-to`
 
+Two controls first, because a gate that cannot tell two runs apart is not a
+gate and one that disagrees with the recording is not reading the channel:
+
+* **It discriminates.** Human 218053 against human 222683, over the 1780
+  instants they share: within 10 points on **51.9 %** of them, mean |diff|
+  **34.95** points; against 235245, 65.8 % and 19.64. So two real runs of this
+  map differ by more than 10 points at about half of their shared instants —
+  an independent reimplementation reproducing §8's 870-of-1780.
+* **Engine and recording are the same channel.** 218053's recorded telemetry
+  against a full-run `fk trace` of 218053's own tape: 1777 shared instants,
+  **100.0 % within 10 points, mean |diff| 0.08 points.** Candidates only ever
+  produce the engine side, so this is the one that licenses the gate.
+
 Held against the human replays (`recon wetcmp`), the video's wetness:
 
-* is **identical through the launch**, to race 9.9 — the reset instant matches
-  218053's to within 40 ms and 222683's to within 130 ms;
-* **agrees to within 10 points to race ≈ 27 s**;
-* **diverges decisively from race 41.8 s** — the video reads 44 % and 37 %
-  where Sapi reads 0, so this run crossed water about 1.5 s earlier than the
-  human route does — and at 50.2 s the video reads 100 % against Sapi's 25 %.
+* is **indistinguishable through the launch** — at a 10-point tolerance the
+  last agreed instant with 218053 is race **10.038**, and the reset instant
+  matches 218053's to within 40 ms and 222683's to within 130 ms;
+* **first differs measurably at race 22.355**, where the video reads 100 % and
+  Sapi is at 55.7 % and still rising — this run was back in the water about
+  0.45 s before the human route puts a car there;
+* and **diverges decisively from race 41.8 s** — 44 % and 37 % where Sapi reads
+  0 — with 100 % against Sapi's 25 % at 50.2 s.
 
-Two independent instruments say the same thing, which is the control that
-matters here: Sapi's **recorded** telemetry and a full-run **`fk trace`** of
-Sapi's tape score the video at 41.6 % and 42.9 % within 5 points, mean |diff|
-15.04 and 14.93. The objective reads the same whether it comes from a recording
-or from the engine — and candidates only ever produce the latter.
-
-The first real difference is earlier than 41.8 s, though: at race 24.4 the
-video is at 90 % while Sapi is still at 100, so **this run left the water about
-a second before the human route does, at race ≈ 23.4 s.** `--corridor-to 30000`
-was set at "CP2" by assumption; the water history says the shared route ends
-nearer **23.4 s**. It changes no number here — no candidate reaches 23 s — but
-it is a measured value replacing a guessed one.
+The video has no readable frame between 10.038 and 22.355, so **the divergence
+began somewhere inside that window and this instrument cannot say where.** What
+it does say is that the shared-route assumption is *supported* to race 10.038
+and *refuted* by 22.355. `--corridor-to 30000` was set at "CP2" by assumption;
+nothing here supports a value past **22355**, and the honest reading is that
+past race 10 s the corridor is asserting something the wetness does not back.
+It changes no number in this arm — no candidate reaches race 11 — but it is the
+first evidence anyone has had about where that parameter belongs.
 
 ### On the incumbent, it confirms rather than lowers
 
@@ -775,8 +786,9 @@ them is a larger number:
 
 1. it **confirmed** that the 12.330 was not bought by a wrong water history,
    which is the failure mode the corridor caught for position;
-2. it **dated the reroute** at race ≈23.4 s (first divergence) and 41.8 s
-   (decisive), replacing an assumption in `--corridor-to`;
+2. it **dated the reroute** — indistinguishable from the human route to race
+   10.038, measurably different by 22.355, decisively so by 41.8 — which is the
+   first evidence about where `--corridor-to` belongs;
 3. it is **ready** for the region past CP2, where nothing else this arm has
    built makes any claim, and where 543 of its 574 readings live.
 

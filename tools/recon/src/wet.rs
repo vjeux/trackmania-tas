@@ -27,8 +27,16 @@ pub type Wet = BTreeMap<i64, f64>;
 
 /// A decoded video series: `t<TAB>pct`, seconds and integer percent, blanks
 /// for the frames the reader refused.
+///
+/// The header is REQUIRED, and that is not fussiness. A two-column telemetry
+/// file — race milliseconds and a 0..1 fraction — parses perfectly well as this
+/// format and yields a series at 9000 seconds reading 1 %, silently. A loader
+/// that cannot fail is a loader that returns the wrong units.
 pub fn load_video(path: &str) -> Option<Wet> {
     let txt = std::fs::read_to_string(path).ok()?;
+    if !txt.starts_with("t\tpct\t") {
+        return None;
+    }
     let mut m = Wet::new();
     for l in txt.lines() {
         if l.starts_with('#') || l.starts_with("t\t") {

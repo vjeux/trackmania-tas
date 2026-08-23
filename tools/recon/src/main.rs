@@ -393,7 +393,14 @@ fn cmd_wetcmp(a: &[String]) {
     let get = |k: &str, d: &str| -> String {
         a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned().unwrap_or(d.into())
     };
-    let video = wet::load_video(&get("--video", "wet_video.tsv")).expect("decoded video wetness");
+    // The reference side takes either shape: the decoded video series, or a
+    // simulated/recorded one. Holding two HUMANS against each other is how you
+    // ask whether this observable discriminates at all, which is a question
+    // about the objective and not about any candidate.
+    let vpath = get("--video", "wet_video.tsv");
+    let video = wet::load_video(&vpath)
+        .or_else(|| wet::load_series(&vpath))
+        .expect("reference wetness series");
     let tol: f64 = get("--wet-tol", "5").parse().unwrap();
     let run: usize = get("--wet-run", "6").parse().unwrap();
     let match_ms: i64 = get("--match-ms", "50").parse().unwrap();
