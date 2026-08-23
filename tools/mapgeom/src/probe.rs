@@ -42,6 +42,11 @@ pub struct Hit {
 /// the glTF are untouched.
 pub const WATER_DRAFT: f32 = 0.90;
 
+/// How far ABOVE a sample a surface may be and still be the one it is resting
+/// on. Two centimetres of numerical slack, not a modelling choice: see
+/// `Index::below`.
+pub const TOUCH: f32 = 0.02;
+
 /// A uniform grid over XZ holding triangle references, so a plumb line does
 /// not have to test a million triangles.
 pub struct Index {
@@ -148,7 +153,12 @@ impl Index {
             let b = verts[t[1] as usize];
             let c = verts[t[2] as usize];
             if let Some(y) = height_at(a, b, c, p[0], p[2]) {
-                if y <= p[1] + 0.001 && p[1] - y <= reach {
+                // A hair ABOVE the sample still counts. A car resting on a
+                // surface can read a millimetre under it, and on water it
+                // reads exactly ON it: the plane sits at an 8 m cell boundary
+                // minus WATER_DRAFT and the sample sits at the same number, so
+                // a strict test loses whichever side the last bit falls.
+                if y <= p[1] + TOUCH && p[1] - y <= reach {
                     if best.map_or(true, |(by, _)| y > by) {
                         best = Some((y, *gi as usize));
                     }

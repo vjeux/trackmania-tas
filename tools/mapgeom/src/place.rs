@@ -78,33 +78,48 @@ pub fn grid_block(cell: (i32, i32, i32), dir: u8, size: (f32, f32), yoff: f32) -
     compose(&yaw_quarter(0, origin), &local)
 }
 
-/// The transform for a free-placed block or an item: an absolute position in
-/// metres, a yaw in radians, and the model's own pivot.
+/// The transform for a free-placed BLOCK: an absolute position in metres and a
+/// yaw in radians. A free block carries no pivot of its own.
+pub fn free(pos: [f32; 3], rot: [f32; 3]) -> Xform {
+    turned(pos, rot)
+}
+
+/// The transform for a placed ITEM.
 ///
-/// The position names the **pivot**, not the origin of the mesh, so the mesh
-/// is shifted by minus the pivot before it is turned. On 197047 the platform
-/// the whole run is driven on has its mesh at 0..8 in x and z and a pivot at
-/// its centre, (4, 0, 4); placing it by its corner put the road 1.5 m off the
-/// car and cost that map 62 % of its samples.
-pub fn free(pos: [f32; 3], rot: [f32; 3], pivot: [f32; 3]) -> Xform {
-    // The map stores free rotation as (yaw, pitch, roll) in radians. Yaw
-    // dominates on every map this project has looked at; pitch and roll are
-    // composed after it, in that order, about the already-turned axes.
-    let m = yaw(rot[0], pos);
-    let m = if rot[1] == 0.0 && rot[2] == 0.0 {
-        m
-    } else {
-        let (sp, cp) = rot[1].sin_cos();
-        let pitch = [1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp, 0.0, 0.0, 0.0];
-        let (sr, cr) = rot[2].sin_cos();
-        let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-        compose(&compose(&m, &pitch), &roll)
-    };
-    if pivot == [0.0; 3] {
+/// The position names the item's **pivot**, and the pivot comes from the
+/// PLACEMENT rather than from the model: an item may declare several — the
+/// tube `InflatableTubeCurve4` declares two, 28 m apart, and Cobalt Cove uses
+/// a different one at each of the three placements around one corner — and
+/// nothing in the model says which. The map's field is the vector from the
+/// pivot to the model's origin, i.e. minus the model's own pivot (197047's
+/// platform declares `(4, 0, 4)` and every placement of it records
+/// `(-4, 0, -4)`), so it is ADDED.
+///
+/// Placing by the mesh origin instead put 197047's whole run 1.5 m off its
+/// road and cost that map 97 % of its samples.
+pub fn anchored(pos: [f32; 3], rot: [f32; 3], pivot: [f32; 3], scale: f32) -> Xform {
+    let m = turned(pos, rot);
+    let s = if scale > 0.0 { scale } else { 1.0 };
+    if pivot == [0.0; 3] && s == 1.0 {
         return m;
     }
-    let shift = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -pivot[0], -pivot[1], -pivot[2]];
-    compose(&m, &shift)
+    let inner = [s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, s, pivot[0] * s, pivot[1] * s, pivot[2] * s];
+    compose(&m, &inner)
+}
+
+/// A position and a (yaw, pitch, roll) in radians, as one transform. Yaw
+/// dominates on every map this project has looked at; pitch and roll are
+/// composed after it, in that order, about the already-turned axes.
+fn turned(pos: [f32; 3], rot: [f32; 3]) -> Xform {
+    let m = yaw(rot[0], pos);
+    if rot[1] == 0.0 && rot[2] == 0.0 {
+        return m;
+    }
+    let (sp, cp) = rot[1].sin_cos();
+    let pitch = [1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp, 0.0, 0.0, 0.0];
+    let (sr, cr) = rot[2].sin_cos();
+    let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+    compose(&compose(&m, &pitch), &roll)
 }
 
 /// The map-wide vertical offset between cell rows and world metres.

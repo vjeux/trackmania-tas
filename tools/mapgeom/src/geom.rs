@@ -111,9 +111,6 @@ pub struct Collector<'a> {
     pub stats: Stats,
     /// Inside a moving block: triangles collected now are named `(moving)`.
     moving: bool,
-    /// The pivot of the last item model walked: which point of the mesh a
-    /// placement position names. Zero for anything that carries none.
-    pub pivot: [f32; 3],
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
     /// spin forever.
     max_depth: usize,
@@ -125,7 +122,6 @@ impl<'a> Collector<'a> {
             store,
             scene: Scene::default(),
             stats: Stats::default(),
-            pivot: [0.0; 3],
             moving: false,
             max_depth: 24,
         }
@@ -173,14 +169,6 @@ impl<'a> Collector<'a> {
         let slots = graph.slots.clone();
         self.stats.recovered += graph.recovered.len();
         drop(graph);
-        // The placement param is not reachable from the geometry root — the
-        // item hands its shape to one node and its pivot sits in another — so
-        // it is read off the slot table rather than walked to.
-        for s in &slots {
-            if let Slot::Node(Node::Pivot(p)) = s {
-                self.pivot = *p;
-            }
-        }
         if let Some(n) = root {
             self.node(&n, &slots, at, depth);
         }
@@ -270,8 +258,7 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
-            // The pivot is read off the slot table in `model`, not walked to.
-            Node::Material(..) | Node::Pivot(_) => {}
+            Node::Material(..) => {}
             Node::Crystal(c) => {
                 self.stats.visual_meshes += 1;
                 for m in &c.meshes {

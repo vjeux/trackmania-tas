@@ -600,8 +600,8 @@ fn main() {
                 }
                 let tris = asm.item_model(&it.model).map(|l| l.scene.tri_count()).unwrap_or(0);
                 println!(
-                    "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3}  {} triangles",
-                    it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, tris
+                    "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3} pivot {:?} scale {}  {} triangles",
+                    it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pivot, it.scale, tris
                 );
             }
         }
@@ -914,7 +914,6 @@ fn describe(n: &Node) -> String {
             format!("material {} ({})", n, mapgeom::scene::physics_name(*p))
         }
         Node::ItemModel(i) => format!("item model -> node {}", i),
-        Node::Pivot(p) => format!("item placement, pivot {:?}", p),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

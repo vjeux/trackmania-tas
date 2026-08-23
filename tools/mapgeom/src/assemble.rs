@@ -10,9 +10,6 @@ use tmmaps::map::{MapFile, FREE_BLOCK_FLAG};
 
 /// One model's geometry in its own local frame, plus the footprint it implies.
 pub struct LocalModel {
-    /// Which point of `scene` a placement position names. Zero unless the
-    /// model carries a `CGameItemPlacementParam`.
-    pub pivot: [f32; 3],
     pub scene: Scene,
     pub size: (f32, f32),
 }
@@ -170,7 +167,7 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     /// A block model's geometry, in block-local metres.
@@ -239,7 +236,7 @@ impl<'a> Assembler<'a> {
         merge_stats(&mut self.stats, &c.stats);
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     pub fn item_model(&mut self, name: &str) -> Option<&LocalModel> {
@@ -265,22 +262,21 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     /// Assemble a map into one scene.
     ///
-    /// A FREE placement — an item, or a block the author dragged off the grid
-    /// — names the model's PIVOT, so the mesh is shifted by minus the pivot
-    /// before it is turned. A GRID placement names a cell and is not shifted:
-    /// the cell IS the anchor.
+    /// An ITEM is placed by its own record: position, all three rotations,
+    /// the PIVOT that position names, and a scale. A GRID block is placed by
+    /// its cell, and a FREE block by an absolute position with no pivot.
     pub fn map(&mut self, m: &MapFile, yoff: f32, with_items: bool) -> Scene {
         let mut out = Scene::default();
         for b in &m.blocks {
             let free = b.flags & FREE_BLOCK_FLAG != 0;
             let xf: Xform = {
-                let (size, pivot) = match self.block_model(&b.name) {
-                    Some(lm) => (lm.size, lm.pivot),
+                let size = match self.block_model(&b.name) {
+                    Some(lm) => lm.size,
                     None => {
                         self.note(&b.name, false);
                         continue;
@@ -288,8 +284,8 @@ impl<'a> Assembler<'a> {
                 };
                 if free {
                     match (b.free_pos, b.free_rot) {
-                        (Some(p), Some(r)) => place::free(p, r, pivot),
-                        (Some(p), None) => place::free(p, [0.0; 3], pivot),
+                        (Some(p), Some(r)) => place::free(p, r),
+                        (Some(p), None) => place::free(p, [0.0; 3]),
                         _ => continue,
                     }
                 } else {
@@ -304,14 +300,11 @@ impl<'a> Assembler<'a> {
         }
         if with_items {
             for it in &m.items {
-                let pivot = match self.item_model(&it.model) {
-                    Some(lm) => lm.pivot,
-                    None => {
-                        self.note(&it.model, false);
-                        continue;
-                    }
-                };
-                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0], pivot);
+                if self.item_model(&it.model).is_none() {
+                    self.note(&it.model, false);
+                    continue;
+                }
+                let xf = place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
                 if let Some(lm) = self.item_model(&it.model) {
                     let s = &lm.scene;
                     out.append(s, &xf);

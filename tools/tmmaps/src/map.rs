@@ -125,6 +125,13 @@ pub struct ItemRec {
     pub yaw: f32,
     pub raw_coords: [u8; 3],
     pub pos: [f32; 3],
+    pub pitch: f32,
+    pub roll: f32,
+    /// The point of the model this placement's `pos` names, in model space.
+    /// Read from the PLACEMENT, not the model: an item may declare several
+    /// pivots and only the placement says which point was used.
+    pub pivot: [f32; 3],
+    pub scale: f32,
     pub waypoint_tag: Option<String>,
 }
 
@@ -1085,8 +1092,8 @@ fn parse_items(
             ids.push(read_id(&mut r, &mut table)); // author
             let yaw_off = r.o;
             let yaw = r.f32();
-            let _pitch = r.f32();
-            let _roll = r.f32();
+            let pitch = r.f32();
+            let roll = r.f32();
             let coord_off = r.o;
             let raw_coords = [r.u8(), r.u8(), r.u8()];
             ids.push(read_id(&mut r, &mut table)); // anchorTreeId
@@ -1103,7 +1110,12 @@ fn parse_items(
             // v8 tail: u16 flags, Vec3 pivot, f32 scale, [FileRef packDesc if
             // flags & 4], Vec3, Vec3
             let flags = r.u16();
-            r.skip(12 + 4);
+            // The PLACEMENT carries its own pivot and scale, and the pivot is
+            // the one that counts: an item model may declare several pivots
+            // (`InflatableTubeCurve4` has two) and nothing in the model says
+            // which one a given placement used. This does.
+            let pivot = [r.f32(), r.f32(), r.f32()];
+            let scale = r.f32();
             if flags & 4 != 0 {
                 read_file_ref(&mut r);
             }
@@ -1118,6 +1130,10 @@ fn parse_items(
                 yaw,
                 raw_coords,
                 pos,
+                pitch,
+                roll,
+                pivot,
+                scale,
                 waypoint_tag: tag,
             });
         }

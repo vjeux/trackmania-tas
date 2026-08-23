@@ -510,41 +510,6 @@ impl<'a> Graph<'a> {
                 self.noderef()?; // IntroClipList
                 Ok(())
             }
-            // ------------------------- CGameItemPlacementParam: the PIVOT
-            // A placement's position names the item's PIVOT, not the origin of
-            // its mesh. Ignoring that is a silent lateral offset of half a
-            // block on every item with an off-centre origin: on 197047, whose
-            // whole run is on 75 placements of one 8 x 8 platform whose mesh
-            // runs 0..8 in x and z, it put the road a metre and a half off the
-            // car and cost the map 62 % of its samples.
-            // NPlugTrigger_SSpecialProperty, next to the waypoint in every
-            // gate prefab: a transform and six more floats, seventy-six bytes,
-            // and no geometry. Read off the same file.
-            0x0917A000 => {
-                let _version = self.r.u32()?;
-                self.r.take(48)?; // Iso4
-                self.r.take(24)?;
-                Ok(())
-            }
-            0x2E020001 => {
-                acc.touched = true;
-                let pivots = self.r.array(|r| r.vec3())?;
-                if let Some(p) = pivots.first() {
-                    acc.pivot = *p;
-                }
-                Ok(())
-            }
-            // CGameCommonItemEntityModelEdition: the EDITED form of a custom
-            // item — the shape as the editor holds it, a CPlugCrystal, rather
-            // than baked into a static object. 134672 carries three items like
-            // this (a loop piece and two light fittings) and 197047 none.
-            0x2E026000 => {
-                acc.touched = true;
-                let _version = self.r.u32()?;
-                let _item_type = self.r.u32()?;
-                acc.entity_model = self.noderef()?; // MeshCrystal
-                Ok(())
-            }
             0x2E002020 => {
                 let _v = self.r.u32()?;
                 self.r.string()?; // iconFid
@@ -1584,7 +1549,6 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x2E002020
             | 0x2E002021
             | 0x2E002023
-            | 0x2E020001
             | 0x0917A000
             | 0x2E026000
             | 0x090FD000
