@@ -38,6 +38,7 @@
 //! `ghost verify` re-simulates the written file to prove that rather than
 //! assuming it.
 
+use gbx::container::secs;
 use gbx::record::{Ent, RecordData};
 use gbx::recwrite::rewrite_ghost;
 use crate::cli::{die, flag, num};
@@ -100,47 +101,41 @@ fn show(a: &[String]) {
     }
 }
 
-fn rebuild(a: &[String]) {
-    let inp = a.first().unwrap_or_else(|| die("ghost record rebuild IN OUT --span MS"));
-    let out = a.get(1).unwrap_or_else(|| die("ghost record rebuild IN OUT --span MS"));
-    let span: i64 = num(a, "--span").unwrap_or_else(|| die("--span MS: how far the record must reach"));
-    let period: i64 = num(a, "--period").unwrap_or(50);
-    let tmpl_from = flag(a, "--template-from").map(|s| s.to_string());
-    let tmpl_idx: i64 = num(a, "--template").unwrap_or(0);
-    if period <= 0 {
-        die("--period must be positive");
+/// Lay a fresh 50 ms grid out to `span_ms`, one vehicle entity, every sample a
+/// copy of one template. The library form of `ghost record rebuild`; `regen`
+/// calls it on every run so the grid the engine writes into is ours.
+///
+/// `template_from` names another ghost to take the template sample from, for a
+/// file whose own record has no vehicle entity at all.
+pub fn rebuild_to(
+    inp: &str,
+    out: &str,
+    span_ms: i64,
+    template_from: Option<&str>,
+    period: i64,
+) -> Result<String, String> {
+    if period <= 0 || span_ms <= 0 {
+        return Err("a rebuilt record needs a positive span and period".into());
     }
-    if span <= 0 {
-        die("--span must be positive");
-    }
-
-    // The template sample. By default the file's own -- see the module note on
-    // why that is safe once the regeneration that follows is neutralised.
     let template: Vec<u8> = {
-        let src = tmpl_from.clone().unwrap_or_else(|| inp.clone());
-        let body = gbx::record::load_body(&src).unwrap_or_else(|e| die(e));
-        let (ver, blob) = gbx::record::find_entrecord_blob(&body).unwrap_or_else(|e| die(e));
-        let rd = gbx::record::parse_record_data(&blob, ver).unwrap_or_else(|e| die(e));
-        let vi = pick_vehicle(&rd).unwrap_or_else(|| {
-            die(format!(
-                "{src} has no vehicle entity to take a template sample from -- \
-                 pass --template-from FILE naming a ghost of this map that has one"
-            ))
-        });
+        let src = template_from.unwrap_or(inp);
+        let body = gbx::record::load_body(src)?;
+        let (ver, blob) = gbx::record::find_entrecord_blob(&body)?;
+        let rd = gbx::record::parse_record_data(&blob, ver)?;
+        let vi = pick_vehicle(&rd).ok_or_else(|| {
+            format!(
+                "{src} has no vehicle entity to take a template sample from -- name one with \
+                 --template-from"
+            )
+        })?;
         let e = &rd.ents[vi];
-        let k = tmpl_idx.clamp(0, e.times.len() as i64 - 1) as usize;
-        e.raw[k * e.sample_size..(k + 1) * e.sample_size].to_vec()
+        e.raw[..e.sample_size].to_vec()
     };
 
-    let n = (span / period) as usize + 1;
+    let n = (span_ms / period) as usize + 1;
     let mut before = String::new();
-    let (rawlen_before, rawlen_after) = rewrite_ghost(inp, out, |rd| {
+    rewrite_ghost(inp, out, |rd| {
         let vi = pick_vehicle(rd);
-        // Everything about the entity except its samples comes from the car
-        // entity we are replacing, so the record still says it is the same kind
-        // of thing recorded the same way. With no vehicle entity at all
-        // (186935) there is nothing to copy, and desc 0 with zeroed fields is
-        // what the reader needs and all it needs.
         let (type_, u01, u04) = match vi {
             Some(i) => (rd.ents[i].type_, rd.ents[i].u01, rd.ents[i].u04),
             None => {
@@ -148,22 +143,20 @@ fn rebuild(a: &[String]) {
                     .descs
                     .iter()
                     .position(|d| d.class_id == gbx::record::CLASS_CSCENEVEHICLEVIS)
-                    .unwrap_or_else(|| {
-                        die("this record declares no CSceneVehicleVis desc, so a rebuilt \
-                             entity would have no class -- rebuild into a container of this \
-                             map that does")
-                    });
+                    .ok_or(
+                        "this record declares no CSceneVehicleVis desc, so a rebuilt entity would \
+                         have no class",
+                    )?;
                 (d as i32, 0, 0)
             }
         };
         before = format!(
-            "{} entities, vehicle {} samples spanning {} .. {}",
+            "{} entities, car {} samples spanning {} .. {}",
             rd.ents.len(),
             vi.map(|i| rd.ents[i].times.len()).unwrap_or(0),
-            vi.and_then(|i| rd.ents[i].times.first().copied()).unwrap_or(0),
-            vi.and_then(|i| rd.ents[i].times.last().copied()).unwrap_or(0),
+            secs(vi.and_then(|i| rd.ents[i].times.first().copied()).unwrap_or(0) as i64),
+            secs(vi.and_then(|i| rd.ents[i].times.last().copied()).unwrap_or(0) as i64),
         );
-
         let ss = template.len();
         let mut raw = Vec::with_capacity(n * ss);
         let mut times = Vec::with_capacity(n);
@@ -173,40 +166,50 @@ fn rebuild(a: &[String]) {
         }
         // ONE car, and only one. The other vehicle entities are other people's
         // cars -- 26 of them in 227654's carrier -- and a render draws every
-        // one of them. Dropping them is not tidiness: it is the difference
-        // between a clip of our run and a clip of somebody's server session.
-        rd.ents = vec![Ent { type_, u01, u02: 0, u03: span as i32, u04, times, raw, sample_size: ss, deltas2: Vec::new() }];
-        // Data keyed to entities that no longer exist.
+        // one. The non-vehicle entities are what keep the scene alive after our
+        // car has finished.
+        rd.ents = vec![Ent {
+            type_,
+            u01,
+            u02: 0,
+            u03: span_ms as i32,
+            u04,
+            times,
+            raw,
+            sample_size: ss,
+            deltas2: Vec::new(),
+        }];
         rd.bulk_notices.clear();
         rd.custom_modules.clear();
         rd.start_ms = 0;
-        rd.end_ms = span as i32;
+        rd.end_ms = span_ms as i32;
         Ok(())
-    })
-    .unwrap_or_else(|e| die(e));
+    })?;
 
-    println!("{inp}: {before}");
-    println!(
-        "{out}: 1 entity, {n} samples every {period} ms spanning 0 .. {span}  \
-         (record payload {rawlen_before} -> {rawlen_after} B)"
-    );
-
-    // READ IT BACK. The encoder is exercised by a round-trip control elsewhere;
-    // this is the check that THIS write produced the grid that was asked for,
-    // and it costs one parse.
-    let d = gbx::record::decode_ghost(out).unwrap_or_else(|e| die(format!("reading {out} back: {e}")));
+    // Read it back: this is the check that THIS write produced the grid that
+    // was asked for, and it costs one parse.
+    let d = gbx::record::decode_ghost(out).map_err(|e| format!("reading {out} back: {e}"))?;
     if d.samples.len() != n {
-        die(format!("wrote {n} samples and read back {}", d.samples.len()));
+        return Err(format!("wrote {n} samples and read back {}", d.samples.len()));
     }
-    let last = d.samples.last().map(|s| s.time_ms as i64).unwrap_or(-1);
-    if last != (n as i64 - 1) * period {
-        die(format!("last sample is at {last} ms, expected {}", (n as i64 - 1) * period));
+    Ok(format!(
+        "{before} -> 1 entity, {n} samples every {period} ms spanning 0.000 .. {}",
+        secs(span_ms)
+    ))
+}
+
+fn rebuild(a: &[String]) {
+    let inp = a.first().unwrap_or_else(|| die("ghost record rebuild IN OUT --span MS"));
+    let out = a.get(1).unwrap_or_else(|| die("ghost record rebuild IN OUT --span MS"));
+    let span: i64 =
+        num(a, "--span").unwrap_or_else(|| die("--span MS: how far the record must reach"));
+    let period: i64 = num(a, "--period").unwrap_or(50);
+    let tf = flag(a, "--template-from");
+    match rebuild_to(inp, out, span, tf, period) {
+        Ok(msg) => println!(
+            "{out}: {msg}\nThis file is NOT yet a run -- every sample is a copy of the template. \
+             `ghost regen` is what makes it one, and it does this step itself."
+        ),
+        Err(e) => die(e),
     }
-    println!(
-        "read back: {} samples, {} .. {} ms -- every one a copy of the template, \
-         so this file is NOT yet a run. Next: ghost regen --neutralise --inputs",
-        d.samples.len(),
-        d.samples.first().map(|s| s.time_ms).unwrap_or(0),
-        last
-    );
 }

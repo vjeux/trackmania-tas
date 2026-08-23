@@ -6,12 +6,12 @@
 //! Rust only. There is no interpreter anywhere in this pipeline and no shell
 //! script carries any logic.
 
-use ghost::cli::{die, flag, has, need, num};
+use ghost::cli::{die, has, need, num};
 use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{engine, hdr, ident, map_uid_of, oracle, record, regen, selftest, trim, verify};
+use ghost::{declare, engine, hdr, ident, map_uid_of, record, regen, roundtrip, selftest, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -62,6 +62,11 @@ CAR STATE  (operation 3)
         --spawn-ref FILE names the recording G2 checks the start against, for a
         template whose own record is a rebuilt grid (a constant identifies
         nothing, and G2 says UNMEASURED rather than passing).
+  ghost roundtrip GHOST --map MAP [--bar MM] [--keep]
+        The end-to-end control: regenerate a recording the game itself wrote,
+        from its own inputs, and require its own trajectory back. The answer key
+        is in the file and nothing about it can be tuned. Floor 0.48-0.52 mm
+        (client vs dedicated server); default bar 5 mm.
   ghost regen-control FILE --map MAP
         The fixed-point control: regenerate a ghost that already carries its own
         true telemetry and require the result to reproduce it.
@@ -196,7 +201,7 @@ fn main() {
         "tape" => cmd_tape(rest),
         "map" => cmd_map(rest),
         "trim" => trim::cmd(rest),
-        "declare" => cmd_declare(rest),
+        "declare" => declare::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
             let what = rest.first().map(|s| s.as_str()).unwrap_or("show");
@@ -208,6 +213,7 @@ fn main() {
         "record" => record::cmd(rest),
         "regen" => regen::cmd(rest),
         "regen-control" => regen::control(rest),
+        "roundtrip" => roundtrip::cmd(rest),
         "verify" => verify::cmd(rest),
         "selftest" => selftest::cmd(rest),
         o => die(format!("unknown command {:?} (try `ghost --help`)", o)),
@@ -867,190 +873,3 @@ fn cmd_map(a: &[String]) {
     }
 }
 
-/// a human and never copied from a search log.
-/// `ghost declare` -- set the time the file DECLARES.
-///
-/// After the inputs change, the declared time is the old run's. Every check
-/// that compares "what the file says" with "what the file does" then compares a
-/// stale number, and a file that declares somebody else's time while validating
-/// its own is exactly the shape of the container bugs that cost this project
-/// five withdrawn clips.
-///
-/// `--from-oracle` is the form to use: it asks the plain oracle what the file
-/// actually does and writes THAT, so the number is never typed by a human and
-/// never copied out of a search log.
-fn cmd_declare(a: &[String]) {
-    let inp = a.first().unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
-    let out = a.get(1).unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
-    let c = Container::load(inp).unwrap_or_else(|e| die(e));
-    let ms: i64 = if has(a, "--from-oracle") {
-        let server = oracle::server_dir(flag(a, "--server"));
-        let mode = match flag(a, "--map") {
-            Some(m) => oracle::MapsMode::One(std::path::Path::new(m)),
-            None => oracle::MapsMode::Empty,
-        };
-        match oracle::validate(&server, std::path::Path::new(inp), mode, "declare") {
-            Err(e) => die(format!("the oracle could not run: {}", e)),
-            Ok(r) => match r.time_ms {
-                Some(t) => {
-                    println!("the plain oracle re-simulated {} to {}", inp, secs(t));
-                    t
-                }
-                None => die(format!(
-                    "the oracle returns DNF (cps {:?}) for this file, so there is no time to \
-                     declare. A partial run should keep the window's end: use --time MS.",
-                    r.cps
-                )),
-            },
-        }
-    } else {
-        num(a, "--time").unwrap_or_else(|| die("give --time MS or --from-oracle --map M"))
-    };
-    let mut body = c.body().to_vec();
-    trim::set_all_declared(&mut body, ms as u32);
-    // The ghost-result chunk carries the race time AND the checkpoint list, and
-    // the server compares the LENGTH of that list with the map's checkpoint
-    // count before it simulates anything.
-    let want_cps = num(a, "--cps");
-    let before: Vec<i32> = c.splits();
-    let body = trim::rewrite_result(&body, |r| {
-        r.race_ms = ms as i32;
-        if let Some(n) = want_cps {
-            // Every intermediate entry becomes 0.000. This is the borrowed-
-            // container case by construction -- the count only changes when the
-            // file moved to a map with a different number of checkpoints -- and
-            // every intermediate time in the list is then the DONOR map's,
-            // measured on a route this file no longer drives. A zero says "this
-            // container does not know its intermediate splits"; carrying the
-            // donor's numbers forward would say something false and look right.
-            //
-            // WHAT THIS IS AND IS NOT FOR. The audit that asked for `--cps`
-            // believed the server refused a count mismatch as `wrong simu`
-            // without simulating. It does not: measured on two maps and six
-            // counts, a finishing tape validates whatever its declared count
-            // says, and `wrong simu` is what the server returns when the
-            // simulation does not reproduce the DECLARED RESULT -- on a
-            // partial run it even says how far it got (`wrong simu, but
-            // reached some checkpoints (1 out of 2)`), which is a simulation,
-            // not a pre-check. The count is a claim this toolchain reads:
-            // `tmmaps` builds a segment map per declared split and refuses a
-            // ghost whose count is not the map's.
-            let n = n.clamp(1, 199) as usize;
-            r.entries = (0..n).map(|k| if k + 1 == n { (ms as i32, 1) } else { (0, 0) }).collect();
-        } else if let Some(last) = r.entries.last_mut() {
-            // The final split is the race time. That holds on every reference
-            // ghost in the corpus, so a `--time` that left it behind would
-            // produce a file whose own last checkpoint disagrees with its own
-            // declared time.
-            last.0 = ms as i32;
-        }
-    })
-    .unwrap_or_else(|e| die(e));
-    let stage = format!("{}.declare-stage", out);
-    // THE HEADER HOLDS ITS OWN COPIES. A .Replay.Gbx keeps the race time twice
-    // more, in header chunk 0x03093000 as a raw u32 and in the header XML as
-    // `<times best="...">`. Writing only the body leaves a file whose body
-    // census reads "1 copy, all 36.049" while the header still says the
-    // carrier's 49.958 -- which is exactly what this command shipped before.
-    let mut gbx = c.gbx.clone();
-    let mut hdr_log: Vec<String> = Vec::new();
-    if let Some(e) = hdr::rewrite(&c, false, None, Some(ms as u32)) {
-        gbx.user_data = e.user_data;
-        hdr_log = e.log.into_iter().filter(|l| !l.contains("LEFT ALONE")).collect();
-    }
-    container::write_gbx(&gbx, body, &stage).unwrap_or_else(|e| die(e));
-    // The telemetry record declares its own span, separately from the samples.
-    // Leaving it at the old run's is the same defect one level down, and
-    // `ghost verify` reports it, so fix it here rather than print it later.
-    let mut span_note = String::new();
-    if gbx::recwrite::find_rec_site(&Container::load(&stage).unwrap().gbx.body).is_ok() {
-        let r = gbx::recwrite::rewrite_ghost(&stage, out, |rd| {
-            let last = rd.ents.iter().filter_map(|e| e.times.last().copied()).max().unwrap_or(0);
-            rd.end_ms = (ms as i32).max(last);
-            Ok(())
-        });
-        match r {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&stage);
-                span_note = format!("  the record's own span now ends at {}", secs(ms));
-            }
-            Err(e) => {
-                std::fs::rename(&stage, out).ok();
-                span_note = format!("  the record span was left alone: {}", e);
-            }
-        }
-    } else {
-        std::fs::rename(&stage, out).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
-    }
-    let c2 = Container::load(out).unwrap_or_else(|e| die(e));
-    let dt: Vec<u32> = c2.declared_times().into_iter().map(|x| x.1).collect();
-    if dt.iter().any(|v| *v as i64 != ms) {
-        die(format!("read-back control FAILED: declared copies are {:?}", dt));
-    }
-    let after: Vec<i32> = c2.splits();
-    if let Some(n) = want_cps {
-        if after.len() as i64 != n.clamp(1, 199) {
-            die(format!(
-                "read-back control FAILED: asked for {} checkpoints, the file declares {}",
-                n,
-                after.len()
-            ));
-        }
-    }
-    if let Some(r) = c2.result() {
-        if r.race_ms as i64 != ms {
-            die(format!(
-                "read-back control FAILED: the result chunk declares {} and the header {}",
-                secs(r.race_ms as i64),
-                secs(ms)
-            ));
-        }
-    }
-    // The header's own copies, which the body census cannot see.
-    let hdr_times = hdr::header_declared_ms(&c2);
-    let wrong: Vec<String> = hdr_times
-        .iter()
-        .filter(|(_, v)| *v as i64 != ms)
-        .map(|(w, v)| format!("{} = {}", w, secs(*v as i64)))
-        .collect();
-    if !wrong.is_empty() {
-        die(format!(
-            "read-back control FAILED: the HEADER still declares another time: {}",
-            wrong.join(", ")
-        ));
-    }
-    println!("wrote {}", out);
-    println!("  declared {} in {} copies, all equal (read-back control OK)", secs(ms), dt.len());
-    for l in &hdr_log {
-        println!("{}", l);
-    }
-    if !hdr_times.is_empty() {
-        println!(
-            "  and {} header copy/copies, all {} (0x03093000 u32 and the XML `best`)",
-            hdr_times.len(),
-            secs(ms)
-        );
-    }
-    println!("  the ghost-result chunk's race time was set to the same value");
-    if want_cps.is_some() {
-        println!(
-            "  checkpoints {:?}  (was {:?})",
-            after.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>(),
-            before.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>()
-        );
-        println!(
-            "  NOTE: the intermediate times are written as 0.000 because this file's old ones\n\
-             \x20       were another map's, and 0.000 reads as \"this container does not know its\n\
-             \x20       splits\" where a donor's number would read as a measurement. MEASURED on\n\
-             \x20       the dedicated server (build 2026-05-15): neither the COUNT nor the VALUES\n\
-             \x20       gate validation -- counts of 1, 2, 3, 5 and 9 on a 4-checkpoint map all\n\
-             \x20       come back IsValid true at the same time, and so do zeroed splits. The\n\
-             \x20       count matters to THIS toolchain: a segment map is built against the\n\
-             \x20       ghost's declared splits, and tmmaps refuses when there are the wrong\n\
-             \x20       number of them."
-        );
-    }
-    if !span_note.is_empty() {
-        println!("{}", span_note);
-    }
-}

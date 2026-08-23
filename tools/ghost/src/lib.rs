@@ -20,12 +20,15 @@
 //! ```
 
 pub mod cli;
+pub mod declare;
 pub mod engine;
+pub mod finish;
 pub mod hdr;
 pub mod ident;
 pub mod oracle;
 pub mod record;
 pub mod regen;
+pub mod roundtrip;
 pub mod script;
 pub mod selftest;
 pub mod trim;
