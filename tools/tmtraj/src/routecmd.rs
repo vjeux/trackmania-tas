@@ -256,7 +256,6 @@ pub fn cmd(argv: &[String]) -> i32 {
         eprint!("{}", USAGE);
         return 2;
     }
-    let path = a.positional[0].clone();
     let near = a.one("near").map(|s| s.to_string());
     let top: usize = a.num("top", 5);
     let wheres: Vec<String> = a.many("where").iter().map(|s| s.to_string()).collect();
@@ -273,7 +272,52 @@ pub fn cmd(argv: &[String]) -> i32 {
         return cmd_margin(&a.positional, &cross_specs, spec);
     }
 
-    let t = load(&path);
+    // Every positional, not just the first. The usage has always said
+    // `CSV|GHOST...` and only `--margin` honoured it: every other query read
+    // `positional[0]` and silently ignored the rest, so a shell glob over a
+    // family of candidates reported ONE file's answer under a command line
+    // that named forty. That is the failure mode this crate exists to avoid --
+    // an answer that looks like the question you asked.
+    let mut rc = 0;
+    let mut empty = 0usize;
+    let many = a.positional.len() > 1;
+    for (i, p) in a.positional.iter().enumerate() {
+        if many && i > 0 {
+            println!();
+        }
+        match run_one(
+            p, &near, top, &wheres, firstn, lastn, every, &want_cols, summary, &cross_specs,
+        ) {
+            0 => {}
+            1 => empty += 1,
+            n => rc = n,
+        }
+    }
+    // An empty selection is exit 1 -- and over a family it stays exit 1 only
+    // when EVERY file was empty, because "none of them" and "some of them" are
+    // different answers.
+    if rc == 0 && empty == a.positional.len() {
+        rc = 1;
+    }
+    rc
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_one(
+    path: &str,
+    near: &Option<String>,
+    top: usize,
+    wheres: &[String],
+    firstn: Option<usize>,
+    lastn: Option<usize>,
+    every: Option<usize>,
+    want_cols: &Option<String>,
+    summary: bool,
+    cross_specs: &[String],
+) -> i32 {
+    let path = path.to_string();
+    let path = path.as_str();
+    let t = load(path);
     let (cx, cy, cz) = (t.need("x"), t.need("y"), t.need("z"));
     let ct = t.col("time_ms").unwrap_or(0);
 
@@ -350,7 +394,7 @@ pub fn cmd(argv: &[String]) -> i32 {
 
     // --cross: every crossing of a plane, interpolated. Not a row filter --
     // see the module docs for why a nearby row is the wrong answer.
-    for spec in &cross_specs {
+    for spec in cross_specs {
         let p = parse_plane(&t, spec);
         let cs = crossings(&t, &p);
         println!("\ncrossings of {}={}: {}", p.axis, p.at, cs.len());
