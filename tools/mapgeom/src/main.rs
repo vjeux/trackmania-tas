@@ -375,7 +375,7 @@ fn main() {
                 let mats = v.materials();
                 let top = mats.iter().max_by_key(|(_, n)| **n).map(|(k, _)| k.clone());
                 println!(
-                    "SUMMARY\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}",
+                    "SUMMARY\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}",
                     run.name,
                     yoff,
                     v.classes.len(),
@@ -383,10 +383,10 @@ fn main() {
                     v.owed(),
                     v.covered_fraction(),
                     v.median_gap(),
-                    v.pct(0.90),
+                    v.gap_pct(0.90),
                     v.tightest_half(),
+                    v.median_ride(),
                     v.count(mapgeom::coverage::Class::Airborne),
-                    v.count(mapgeom::coverage::Class::Tilted),
                     v.count(mapgeom::coverage::Class::Missing),
                     top.unwrap_or_else(|| "-".to_string()),
                     b.ranked().first().map(|(n, _)| if n.is_empty() { "(empty cell)" } else { n }).unwrap_or("-"),
@@ -491,8 +491,8 @@ fn main() {
             let res = mapgeom::corpus::run(&js, std::path::Path::new(&out), jobs_n, &extra);
             let table = std::path::Path::new(&out).join("summary.tsv");
             let mut s = String::from(
-                "map\tghost\tyoff\tsamples\traw\towed\tcovered\tmedian\tp90\thalfwin\t\
-                 airborne\ttilted\tmissing\ttop_material\tworst_blame\n",
+                "map\tghost\tyoff\tsamples\traw\towed\tcovered\tmedian\tp90\thalfwin\tride\t\
+                 airborne\tmissing\ttop_material\tworst_blame\n",
             );
             for (id, line) in &res {
                 s.push_str(id);
@@ -679,18 +679,19 @@ fn die<T>(e: String) -> T {
 /// The grading of one run against the model.
 ///
 /// Two coverage numbers are printed and both are needed. **raw** is every
-/// sample with any surface within reach, over every sample — the number the
-/// first corpus run reported, kept so a before/after comparison is like for
-/// like. **owed** counts only the samples the model is answerable for: the
-/// recording says the car was on something, and it was upright. A sample the
+/// sample with any surface straight below within reach, over every sample —
+/// the number the first corpus run reported, kept so a before/after comparison
+/// is like for like. **owed** counts only the samples the model is answerable
+/// for: the recording says the car was standing on something. A sample the
 /// recording says was in flight is not a hole in the model.
 ///
-/// The control on that split is printed beside it: the mean vertical
-/// acceleration under each value of the recording's contact bit. If the bit
+/// Both controls on that split are printed beside it. The mean vertical
+/// acceleration under each value of the recording's contact bit: if the bit
 /// means what its name says, the airborne rows read the map's gravity (about
-/// −24.6 m/s²) and the contact rows read near zero. A map where they do not is
-/// a map where this classification means nothing, and it says so here rather
-/// than quietly moving the coverage number.
+/// −24.6 m/s²) and the contact rows read near zero. And how much of the run
+/// was upright, which is the check on the quaternion the down-axis probe is
+/// aimed by — a flat map that is not nearly all upright has a broken
+/// quaternion, not an interesting road.
 fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
     use mapgeom::coverage::Class;
     let n = v.classes.len();
@@ -702,12 +703,10 @@ fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
         100.0 * v.raw_fraction()
     );
     println!(
-        "    accounted for       {} resting, {} loose, {} airborne, {} tilted, \
-         {} MISSING SURFACE",
+        "    accounted for       {} resting, {} loose, {} airborne, {} MISSING SURFACE",
         v.count(Class::Resting),
         v.count(Class::Loose),
         v.count(Class::Airborne),
-        v.count(Class::Tilted),
         v.count(Class::Missing),
     );
     if v.owed() > 0 {
@@ -718,22 +717,28 @@ fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
         );
     }
     println!(
-        "    contact bit control  in contact {:.1} m/s^2 (n {}), airborne {:.1} m/s^2 (n {}), \
-         agrees with free-fall on {:.1} %",
+        "    controls            contact bit: in contact {:.1} m/s^2 (n {}), airborne {:.1} \
+         m/s^2 (n {}), agrees with free-fall on {:.1} %; median car tilt {:.1} deg",
         v.accel_contact.0,
         v.accel_contact.1,
         v.accel_air.0,
         v.accel_air.1,
         100.0 * v.bit_vs_freefall.0 as f32 / v.bit_vs_freefall.1.max(1) as f32,
+        v.median_tilt(),
     );
     if v.gaps.iter().any(|g| g.is_finite()) {
         println!(
             "    gap below the car   median {:.3} m   p10 {:.3}   p90 {:.3}   \
              tightest half-window +/-{:.3} m",
             v.median_gap(),
-            v.pct(0.10),
-            v.pct(0.90),
+            v.gap_pct(0.10),
+            v.gap_pct(0.90),
             v.tightest_half()
+        );
+        println!(
+            "    ride height on the car's own down axis   median {:.3} m   p90 {:.3}",
+            v.median_ride(),
+            v.ride_pct(0.90)
         );
         let mats = v.materials();
         let total: usize = mats.values().sum();

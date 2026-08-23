@@ -127,6 +127,47 @@ impl Index {
         best.map(|(y, gi)| Hit { gap: p[1] - y, material: self.groups[gi].0.clone() })
     }
 
+    /// The first surface a ray from `p` in direction `d` meets, within `reach`
+    /// metres.
+    ///
+    /// A vertical plumb line asks *what is under this point*, which is the
+    /// wrong question for a car on a loop or a wall ride: the surface holding
+    /// it up is beside it, or above it. Firing along the car's own **down**
+    /// axis asks *what is this car standing on*, which is the question the
+    /// model is being graded against, and it is the same question on flat
+    /// ground.
+    pub fn along(&self, p: [f32; 3], d: [f32; 3], reach: f32) -> Option<Hit> {
+        // reach is metres and a cell is 32 m, so the ray cannot leave the 3x3
+        // of columns around its origin before it runs out.
+        let ci = bucket(p[0], self.origin[0], self.cell, self.nx) as i32;
+        let cj = bucket(p[2], self.origin[1], self.cell, self.nz) as i32;
+        let mut best: Option<(f32, usize)> = None;
+        for dj in -1..=1 {
+            for di in -1..=1 {
+                let (i, j) = (ci + di, cj + dj);
+                if i < 0 || j < 0 || i >= self.nx as i32 || j >= self.nz as i32 {
+                    continue;
+                }
+                for (gi, ti) in &self.buckets[j as usize * self.nx + i as usize] {
+                    let (_, verts, tris) = &self.groups[*gi as usize];
+                    let t = tris[*ti as usize];
+                    if let Some(dist) = ray_tri(
+                        p,
+                        d,
+                        verts[t[0] as usize],
+                        verts[t[1] as usize],
+                        verts[t[2] as usize],
+                    ) {
+                        if dist <= reach && best.map_or(true, |(bd, _)| dist < bd) {
+                            best = Some((dist, *gi as usize));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(d, gi)| Hit { gap: d, material: self.groups[gi].0.clone() })
+    }
+
     /// The nearest point of any triangle to `p`, within `radius` metres, and
     /// what material it belongs to.
     ///
@@ -162,6 +203,36 @@ impl Index {
             }
         }
         best.map(|(d, gi)| (d, self.groups[gi].0.clone()))
+    }
+}
+
+/// Möller–Trumbore, two-sided: the distance along `d` from `p` to triangle
+/// `abc`, or `None` if the ray misses. Two-sided because the collision hull of
+/// a road is a shell and which way its normals face is not the question.
+fn ray_tri(p: [f32; 3], d: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
+    let e1 = sub(b, a);
+    let e2 = sub(c, a);
+    let h = cross(d, e2);
+    let det = dot(e1, h);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = sub(p, a);
+    let u = inv * dot(s, h);
+    if !(-1e-5..=1.000_01).contains(&u) {
+        return None;
+    }
+    let q = cross(s, e1);
+    let v = inv * dot(d, q);
+    if v < -1e-5 || u + v > 1.000_01 {
+        return None;
+    }
+    let t = inv * dot(e2, q);
+    if t >= 0.0 {
+        Some(t)
+    } else {
+        None
     }
 }
 
