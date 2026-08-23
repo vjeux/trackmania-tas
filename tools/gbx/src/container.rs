@@ -315,7 +315,24 @@ pub struct GhostResult {
     pub race_ms: i32,
     pub u01: i32,
     pub u02: i32,
-    pub nb_respawns: i32,
+    /// Word 4 of the chunk. **It was called `nb_respawns` and it is not one.**
+    ///
+    /// Measured (arm `ksi2`, 2026-08-22): all **fifteen** human records on
+    /// 134672 read **5** here, while their input tapes hold 0, 1 and 2 respawn
+    /// events respectively — and on 279218 the files whose tapes DO hold a
+    /// respawn event read **0**. A field that is constant across a population
+    /// whose respawn counts differ, and zero on files that respawn, is not
+    /// counting respawns.
+    ///
+    /// Nor is it the checkpoint count: 134672 reads 5 with 5 entries, 249521
+    /// reads 1 with 2, 279218 reads 0 with 1, and this crate's own fixture
+    /// reads 3 with 4. Whatever it is, nothing in this toolchain may key on it
+    /// until somebody identifies it against a control, and the name is now
+    /// neutral so that no caller can be misled by it again.
+    ///
+    /// The respawn count that IS trustworthy comes from the tape: the respawn
+    /// bit of each input packet (`ghost inspect` prints it as "respawn ticks").
+    pub word4_unidentified: i32,
     /// `(checkpoint time ms, per-entry tag)` in driving order. The last entry
     /// is the finish, and its time is the race time.
     pub entries: Vec<(i32, i32)>,
@@ -344,7 +361,7 @@ impl GhostResult {
             race_ms: raw[1] as i32,
             u01: raw[2] as i32,
             u02: raw[3] as i32,
-            nb_respawns: raw[4] as i32,
+            word4_unidentified: raw[4] as i32,
             entries: (0..n as usize)
                 .map(|k| {
                     (
@@ -369,7 +386,7 @@ impl GhostResult {
         w.push(self.race_ms);
         w.push(self.u01);
         w.push(self.u02);
-        w.push(self.nb_respawns);
+        w.push(self.word4_unidentified);
         w.push(self.entries.len() as i32);
         for (t, tag) in &self.entries {
             w.push(*t);
@@ -771,7 +788,7 @@ mod result_tests {
         let r = GhostResult::decode(WR).expect("decodes");
         assert_eq!(r.checkpoints(), vec![7617, 13308, 16316, 19538]);
         assert_eq!(r.race_ms, 19538);
-        assert_eq!(r.nb_respawns, 3);
+        assert_eq!(r.word4_unidentified, 3);
         assert_eq!(r.version, 1);
     }
 

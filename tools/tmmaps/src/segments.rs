@@ -883,8 +883,16 @@ pub fn make_all_ordered(
             None => false,
             Some(v) if out[i].exact => v == want,
             // the block-rename fallback fires at the cell ENTRY: EARLY, and
-            // by less than MATCH_TOL_MS. Late, or early by more, is a failure.
-            Some(v) => (want - v) > 0 && (want - v) <= MATCH_TOL_MS,
+            // by less than MATCH_TOL_MS. Late is a failure; early by more is a
+            // failure; and EXACT is the best case, not a failure.
+            //
+            // It was written `(want - v) > 0`, which refuses `v == want`. On
+            // 134672 all four rungs reproduced the reference's own split to
+            // the millisecond and the tool REFUSED all four, with the deviation
+            // printed as `+0.000` right beside the word FAIL. An acceptance
+            // test that rejects a perfect result does not fail safe: it sends
+            // the next arm off to build the ruler by hand.
+            Some(v) => (want - v) >= 0 && (want - v) <= MATCH_TOL_MS,
         };
         out[i].time = t;
         out[i].verified = ok;

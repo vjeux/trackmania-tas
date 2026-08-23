@@ -984,6 +984,66 @@ fn main() {
             assert!(!times.is_empty(), "give --times or --from/--to[/--step]");
             println!("# rungspec from {} block#{}", args[2], bidx);
             println!("# predicted fire time for each rung IS its own t (ms), minus the nose lead");
+            // --cells: emit GRID-CELL moves and a CURTAIN, instead of one free
+            // placement.
+            //
+            // Two facts force this and both were measured on 134672. (1) Every
+            // waypoint on that map is a GRID block, and a free `@x,y,z` move of
+            // one is refused by the mover — correctly, because a grid block
+            // ignores a position. So a rung there can only be a cell. (2) A
+            // single 32 m cell is SILENT for a large fraction of placements: a
+            // gate put in the cell the reference is standing in at 8.000 s did
+            // not fire for any of four tapes, while a four-gate curtain over
+            // the cells it passes through fired for all four, within 0.2 s of
+            // each other.
+            //
+            // The y cell cannot be computed from the car's height: waypoints on
+            // one map sit at cell y 13 under cars at 51-59 m and at 14 under a
+            // car at 52.5 m, because the gate's own anchor is at a different
+            // height inside the block for each gate model. So the curtain
+            // spans the y cells around the car and lets the ladder's own
+            // fire-time check say which ones were real.
+            let cells = args.iter().any(|a| a == "--cells");
+            let curtain: Vec<usize> = match flag(&args, "--curtain") {
+                Some(s) => s.split(',').map(|x| x.trim().parse().unwrap()).collect(),
+                None => vec![bidx],
+            };
+            let win: f64 = flag(&args, "--window").map(|s| s.parse().unwrap()).unwrap_or(400.0);
+            if cells {
+                for t in &times {
+                    // the distinct (x, z) cells the reference occupies from
+                    // this rung's time to `win` ms later -- the corridor the
+                    // curtain has to close off
+                    let mut xz: Vec<(i64, i64)> = Vec::new();
+                    let mut ys: Vec<i64> = Vec::new();
+                    let mut u = *t;
+                    while u <= *t + win {
+                        let p = at(u);
+                        let c = ((p[0] / 32.0).floor() as i64, (p[2] / 32.0).floor() as i64);
+                        if !xz.contains(&c) {
+                            xz.push(c);
+                        }
+                        let yc = (p[1] / 8.0).floor() as i64;
+                        for d in [6i64, 7, 8] {
+                            if !ys.contains(&(yc + d)) {
+                                ys.push(yc + d);
+                            }
+                        }
+                        u += 50.0;
+                    }
+                    let mut moves: Vec<String> = Vec::new();
+                    'outer: for (cx, cz) in &xz {
+                        for cy in &ys {
+                            if moves.len() >= curtain.len() {
+                                break 'outer;
+                            }
+                            moves.push(format!("{}:{},{},{}", curtain[moves.len()], cx, cy, cz));
+                        }
+                    }
+                    println!("{}   # t={:.0}", moves.join(" "), t);
+                }
+                return;
+            }
             for t in times {
                 let p = at(t);
                 let mut line = format!(

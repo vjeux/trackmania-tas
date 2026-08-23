@@ -22,6 +22,8 @@ pub(crate) mod facingcmd;
 pub(crate) mod impactcmd;
 pub(crate) mod intgcmd;
 pub mod aircmd;
+pub(crate) mod envelope;
+pub(crate) mod geomcmd;
 pub mod json;
 pub mod lines;
 pub(crate) mod manifest;

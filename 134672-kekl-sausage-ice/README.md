@@ -1,15 +1,29 @@
-# KEKL- SAUSAGE ICE — a 2620 m ice ribbon, and the author time still stands
+# KEKL- SAUSAGE ICE — a 2620 m ice ribbon, and an author time set by a different car
 
-**KEKL- SAUSAGE ICE** — TAS **67.319** (+8.632) | AT 58.687 | WR 68.442 by Robbalobb
+**KEKL- SAUSAGE ICE** — TAS **67.200** (+8.513) | AT 58.687 | WR 68.442 by Robbalobb
 
 TMX 134672 · uid `agH9XtjTZd8iZbuGp_KhC16jMO7` · author `Travis.TM` · 15 records
 Nothing here has been or will be submitted to a Nadeo leaderboard.
 
-> **On the world record.** Roevhaal's 63.546 was set on a 2022 game build and
-> does not re-simulate on a current one — feed it to Nadeo's own validator today
-> and the car is exact for 8.9 s and lost by 9.6 s. So the reference used
-> throughout is **68.442 (Robbalobb, rank 2)**, the fastest run on the board that
-> today's game reproduces to the millisecond.
+> **On the world record — and on the author time.** Roevhaal's 63.546 was set on
+> the 2022 build `113150`, and it does not re-simulate today. That has been read
+> here as the map amplifying a recording quantum. It is measured now, and it is
+> not that. All fifteen records have now been measured against their own
+> recorded lines, and the split is perfect: **the ten that do not replay leave
+> their line in the same corner within a third of a second of each other — race
+> 4.04-4.39 for nine of the ten — and all ten leave it on the same side. The
+> five that do replay never leave it at all** (0.0002 m over a whole lap).
+> Today's car runs wide there; the old car turned more.
+>
+> The author time is `authorScore: 58687` inside a map file Nadeo stamped on
+> **2022-07-31**, so it belongs to that build too. **Beating it means beating a
+> time set by a car that corners better than the one we search with.** The 4.9 s
+> nobody could explain between the two populations has a mechanism, and it is in
+> the car, not in the map. Section *Why the 2022 half of the field does not
+> replay* has the measurement and its controls.
+>
+> The reference used throughout for anything that must re-simulate is still
+> **68.442 (Robbalobb, rank 2)**.
 
 ---
 
@@ -44,9 +58,9 @@ committed continuous drift and the steering is there to rotate the car, not to
 hold it. Both the record and this TAS spend the lap sideways at **~22.8 m/s of
 pure lateral speed**.
 
-## The honest headline: the author time is 8.632 away, and it is not a driving problem
+## The honest headline: the author time is 8.513 away, and it is not a driving problem
 
-The AT is **58.687**. This TAS is **67.319** — a second inside the best human
+The AT is **58.687**. This TAS is **67.200** — a second inside the best human
 that re-simulates, and still nowhere near it. That is not for want of searching,
 and the reason is specific enough to state as a number.
 
@@ -58,8 +72,9 @@ sector, and it is eaten in one place:
 
 | | CP1 | CP2 | CP3 | CP4 | finish |
 |---|---|---|---|---|---|
-| **this TAS** | **12.475** | **31.492** | **45.396** | **61.703** | **67.319** |
-| previous best TAS | 13.906 | 33.106 | 45.437 | 63.942 | 67.404 |
+| **this TAS** | **12.475** | **31.492** | **45.396** | **61.703** | **67.200** |
+| the 67.319 it supersedes | **12.475** | **31.492** | **45.396** | **61.703** | 67.319 |
+| the 67.404 before that | 13.906 | 33.106 | 45.437 | 63.942 | 67.404 |
 | Robbalobb 68.442 | 13.906 | 33.106 | 45.437 | 63.812 | 68.442 |
 
 The last hop is the 8 m drop off the raised section into the finish gate. The
@@ -68,8 +83,14 @@ faster than both other runs on *every single hop into* CP4. Arrive at that drop
 faster and you arrive at it wrong.
 
 That is why the author time is out of reach from this direction: at 3.8 %
-conversion, closing 8.632 s through better driving before the drop would need
-something like 227 s of upstream gain.
+conversion, closing 8.513 s through better driving before the drop would need
+something like 224 s of upstream gain.
+
+**The 0.119 s from 67.319 to 67.200 is all in the closing sector** (5.616 →
+5.497), with CP1-CP4 unchanged to the millisecond: 135 450 evaluations over the
+last 9.5 s of the tape, 24 improvements confirmed by the plain oracle and 0
+phantoms. The five endgame searches the 67.319 arm ran had settled; what moved
+it was giving the failures a gradient with a verified `--seg 3` ladder.
 
 ### Why arriving faster arrives wrong: the lap hits the wall four times
 
@@ -102,15 +123,63 @@ every parameter and RNG seed: **0 legal out of 5342 finishers from our own
 state**, against **931 per round** in the clean basin.
 
 **The next lever, for anyone taking it further:** score the *state* at the
-pre-descent rung — lateral speed, not arrival time — and chain backward. If it
-joins, the ceiling is about **65.7**, which is still 7.0 over the author time.
+pre-descent rung — and it is a bigger difference than "lateral speed". Measured
+at matched DISTANCE rather than matched time, 75 m before the descent entry:
 
-**And there is no secret route.** Of the map's 117 drivable surface cells, 99
-have been driven by at least one of the 15 records. The 18 that have not are
-inside-corners of curves, one cell past the finish, and a 128 m dead-end spur
-that stops 64 m short of — and 8 m below — the raised section it points at.
+| at 2400 m along the route | km/h | lateral m/s | on the ground? | yaw |
+|---|---|---|---|---|
+| **this TAS** | 149.6 | **1.28** | **airborne** | +127.9° |
+| Roevhaal 63.546 | 134.5 | 37.32 | yes | −97.8° |
+| Robbalobb 68.442 | 125.2 | 29.14 | yes | −67.8° |
+| rank 3 69.522 | 133.9 | −21.64 | yes | +164.4° |
+
+We arrive **off the ground, straight, and 130–220° from every human's heading**,
+and 75 m later our lateral speed is +34.67 where all three of them are at −28 to
+−32 — sliding the other way. That is the state a chained search has to hit, and
+"0.3 against 22.2 m/s of lateral speed" understated it.
+
+**And there is no secret route — but the old argument for that was the wrong
+test.** This page used to count *undriven cells*: 99 of the map's 117 drivable
+surface cells have been driven by some record, and the 18 that have not are
+inside-corners, one cell past the finish, and a 128 m dead-end spur that stops
+64 m short of — and 8 m below — the raised section it points at.
+
+**A shortcut does not need an undriven cell. It needs to SKIP driven ones.** The
+right question is where the line comes back near itself after a long interval,
+and over the whole 2615 m lap, at a 40 m bar, there is **exactly one** place:
+
+| from | to | it would save | how close | verdict |
+|---|---|---|---|---|
+| 34.600 | 55.200 | **20.600** | 9.73 m | **skips CP3 — void** |
+| 60.500 | 67.250 | 6.750 | 53.67 m | **skips CP4 — void** (only at a 90 m bar) |
+
+Both folds of the sausage cross a checkpoint, and nothing else on the lap comes
+within 90 m of itself except the trivial neighbours of the current point. The
+route is forced, and its length with it: every clean run in the field travels
+**2615–2623 m** (the four that travel 2650–3850 m are the ones that spun).
+
+**What the route is worth, measured at 10 m instead of at five checkpoints.**
+The bound this page used to quote — 63.263 — is a sum of best SECTORS, five
+numbers on a 67 s lap, so it can only see a swap between whole sectors. Project
+every run onto one centreline by monotone alignment, so a run that spins is
+charged for the detour instead of being credited with speed somewhere it was
+not, and price each 10 m at the shortest time anyone has ever taken to cross it:
+
+```
+RAW ENVELOPE      = 50.978      (human recordings only, without this TAS: 52.589)
+FEASIBLE ENVELOPE = 51.567      (after a forward-backward pass under this field's own accel limits)
+```
+
+against an author time of 58.687. The control that licenses those numbers: run
+the identical pipeline on ONE run's own data and it must return that run's own
+lap — **16 of 16 do**, to 0.006–0.36 s. It is an optimistic bound and cannot be
+driven, because it stitches together cars in states that cannot be reached from
+one another; that is exactly what makes it useful as a negative. **The author
+time does not require a speed nobody has reached anywhere on this route.**
 
 **Nor is there a splice that gets there.** Take this TAS's sector 1 and sector 4
+(the two the cold search wins outright), the best sector 2 and sector 3 anyone
+in the field has driven, and the best closing sector ever recorded here:
 (the two the cold search wins outright), the best sector 2 and sector 3 anyone
 in the field has driven, and the best closing sector ever recorded here:
 
@@ -119,6 +188,32 @@ in the field has driven, and the best closing sector ever recorded here:
 ```
 
 **Still 2.517 over the author time**, and nobody has ever driven that lap.
+
+## The uncomfortable number: a human drove this map 3.773 s faster than the TAS
+
+Roevhaal's 63.546 is real recorded telemetry of a real drive over the same
+2621 m. Whatever the build difference costs us, it is not an excuse for this:
+
+| | S1 | S2 | S3 | S4 | S5 | lap |
+|---|---|---|---|---|---|---|
+| this TAS | **12.475** | 19.017 | 13.904 | **16.307** | 5.497 | 67.200 |
+| Roevhaal | 13.492 | **17.651** | **11.309** | 17.130 | **3.964** | 63.546 |
+
+We are the best in the field in two sectors and worse than *every* top human in
+sector 3. At a 25 m grain every loss is the same event — the lap arrives too
+fast and craters. Through 1550–1700 m our speed goes 120 → **72** → 101 → **77**
+km/h where Roevhaal holds 181 → 177 → 155 → 132; our peak is 272.0 km/h and our
+troughs are 59–77, where his peak is ~254 and his troughs 109–135.
+
+**And it is not reachable by searching near our own line.** Two windowed
+searches aimed at exactly those places, 2.5 hours and 40 workers each, scored at
+the next real checkpoint through a verified segment map, bought **0.222** and
+**0.051** against deficits of 2.595 and 1.366. Two further 100-minute searches
+that took the sector-3 winners and rewrote the whole tail produced **zero
+finishers** between them — so a faster line into CP3 does not merely convert
+badly, it does not reconnect at all inside a budget that comfortably finds 24
+improvements when the tail is searched from the incumbent itself. Reseeding on
+new basins is what broke 208024 open; here it does not.
 
 ## How chaotic this map actually is
 
@@ -174,10 +269,11 @@ Every number above is the map's own finish gate through Nadeo's dedicated-server
 validator, on the **unmodified** `.Map.Gbx` — md5 `e73cb7b4e201edd176be97566adffb4b`,
 and byte-for-byte identical to the copy Nadeo's own CDN serves today.
 
-* The lap re-simulates to **67319** on three cold runs, one tape per invocation,
-  against two separately obtained copies of the map.
-* Known-answer controls in the same session: 68442, 94940 and the previous best
-  67404 all exact; the 2022 world record DNFs, as it does for everyone.
+* The current lap re-simulates to **67.200** from two separate processes against
+  two separately obtained copies of the map, and the 67.319 before it to 67.319
+  on three cold runs, one tape per invocation.
+* Known-answer controls in the same batches: 68.442, 94.940 and the previous
+  best 67.404 all exact; the 2022 world record DNFs, as it does for everyone.
 * 5 of the 15 records were set on current game builds and **all 5 re-simulate to
   the millisecond**; the 10 that do not are all from the one 2022 build.
 
@@ -185,10 +281,26 @@ and byte-for-byte identical to the copy Nadeo's own CDN serves today.
 
 The searched tape and the watchable ghost are two different things: a search
 output carries the *telemetry* of whatever ghost's container it was built in, so
-it can time correctly and play back as somebody else's run. The 67.319 ghost has
-been **regenerated** — its position, orientation and speed are read out of the
-engine sample by sample, and its declared time and checkpoint list are its own
-(12.475 / 31.492 / 45.396 / 61.703 / 67.319, not the carrier's).
+it can time correctly and play back as somebody else's run. Both published
+ghosts have been **regenerated** — position, orientation and speed read out of
+the engine sample by sample — and both declare their own time and their own
+checkpoint list (12.475 / 31.492 / 45.396 / 61.703, then 67.200 or 67.319).
+
+> **The split list was a real gap until this arm, and it is worth naming.**
+> `ghost declare --time` rewrites the race time and the LAST checkpoint entry
+> and leaves every intermediate one alone — so a regenerated file on a borrowed
+> container declared its own finish beside **four of the donor's splits**, in
+> one list, with nothing in the file to say which was which. The deleted `u02
+> declare --splits` could write them and its replacement could not.
+> `ghost declare --splits` is that capability back, with a read-back control and
+> a refusal if the last split is not the declared time.
+>
+> The same chunk holds a word this toolchain called `nb_respawns`, and it is
+> **not one**: all fifteen human records here read **5** while their tapes hold
+> 0, 1 and 2 respawn events, and on 279218 the files whose tapes DO respawn read
+> **0**. It is not the checkpoint count either (5 with 5 entries here, 1 with 2
+> on 249521, 3 with 4 on the format crate's own fixture). It is now called
+> `word4_unidentified`, so that nothing keys on a guess.
 
 The fidelity of that regeneration is measured, not assumed: run the same
 pipeline on Robbalobb's own ghost, whose true telemetry we already have, and it
@@ -241,10 +353,131 @@ the copy the validator uses. `tmtraj impacts --against` is the census.
 
 | file | what |
 |---|---|
-| `replays/TAS_67404.Ghost.Gbx` | the previous best TAS, 67.404 |
+| `replays/TAS_67200.Ghost.Gbx` | **the current best, 67.200** — regenerated from engine state, `tmtraj check` **PUBLISHABLE (0 fail, 0 warn)**, `ghost verify` V1–V10 pass, span 0.000 → 67.200. Its declared splits are **its own** (12.475 / 31.492 / 45.396 / 61.703 / 67.200), measured on segment maps that reproduce two independent runs' splits exactly, and written with the `ghost declare --splits` this arm added — before it, a regenerated file declared its own finish beside four of the container donor's checkpoint times. |
+| `replays/TAS_67319.Ghost.Gbx` | the 67.319 it supersedes — regenerated from engine state, no sample byte the donor's, span 0.000 → 67.319 |
+| `replays/TAS_67404.Ghost.Gbx` | the TAS before that, 67.404 |
 | `replays/KEYBOARD_67625.Ghost.Gbx` | keyboard tape, 67.625 |
-
-| `replays/TAS_67319.Ghost.Gbx` | **the 67.319 itself** — regenerated from engine state, no sample byte the donor's, span 0.000 → 67.319 |
+| `ARM-ksi2-RESULT.md` | the 2026-08-22 arm in full: the envelope, the shortcut census, the divergence measurement, and every control behind them |
 
 Every time and split on this page comes from the validator, not from a file
 kept here.
+
+---
+
+## Why the 2022 half of the field does not replay
+
+*Arm `ksi2`, 2026-08-22. This replaces "the map amplifies a recording quantum"
+with a measurement that has a direction.*
+
+`fk trace` runs a tape through the real engine and reports the car's own state
+per tick; comparing that against the trajectory the same file records — **with
+the whole-tick lag scanned rather than assumed** — measures the divergence
+directly. The lag is not optional: at 150 km/h one 10 ms tick is 0.42 m, so at
+lag 0 a file that replays perfectly reads as 0.42 m of "drift" at every point of
+its lap. Scan it and the same file reads 0.0002 m.
+
+That is the instrument's floor, and it is set by a current-build recording:
+**Robbalobb's 68.442 sits 0.0002 m from its own recorded line for the whole
+68 s.** Two different fork points give bit-identical divergence curves, so the
+resume is not what is being measured.
+
+Against that floor — **all fifteen records on the board, measured**:
+
+| ghost | replays today? | leaves its own recorded line at | lateral sign at 5.06 |
+|---|---|---|---|
+| **Roevhaal 63.546** | no | **4.040** | −0.866 |
+| rank 5 73.922 | no | **4.090** | −0.856 |
+| rank 12 87.676 | no | **4.090** | −1.087 |
+| rank 3 69.522 | no | **4.190** | −0.890 |
+| rank 6 74.859 | no | **4.190** | −0.832 |
+| rank 7 76.689 | no | **4.190** | −0.685 |
+| rank 9 79.967 | no | **4.240** | −0.570 |
+| rank 4 70.543 | no | **4.290** | −0.525 |
+| rank 15 103.785 | no | **4.390** | −0.505 |
+| rank 8 76.919 | no | **4.690** | −0.164 |
+| **Robbalobb 68.442** | **yes** | never | +0.000 |
+| rank 10 80.534 | **yes** | never | +0.000 |
+| rank 11 84.366 | **yes** | never | +0.000 |
+| rank 13 94.940 | **yes** | never | +0.000 |
+| rank 14 101.259 | **yes** | one sample at 85.890, 0.0002 m either side | +0.000 |
+
+(5 cm bar. The onsets shift by a few hundredths with the fork tick — a resume is
+not the same run — so read the *clustering*, not the third decimal.)
+
+**Ten of ten and five of five: perfect separation, and nine of the ten land
+inside 0.35 s of each other.** They land in one corner — cell (27, 14, 23),
+`RoadBumpCurve1`, a **stock** block, at the onset of the lap's first big slide.
+Not on custom ice: there is no `FlinkIceBlock` within four cells of it.
+
+**It has a sign, and the sign is the same in all ten.** About 90 % of each
+divergence is lateral, and in every one of them today's car ends up on the
+**outside** of the corner — it rotates less than the old car did on the same
+inputs, whether that recording was holding full lock (Roevhaal, rank 15: steer
++127) or no steering at all (ranks 5 and 8: steer 0). A chaotic map amplifying a
+rounding seed would take a random side; ten of ten agreeing is 1 in 512, and
+they agree on the place as well.
+
+**It is a step, not a drift.** Roevhaal's discrepancy crosses 5 cm within
+**0.05 s** of being born. A whole steering unit, at one tick, on this map at
+that moment, does **not** move the car 5 cm off its own line in the next 3.6 s.
+So this is not a small input-scale difference accumulating; it is a step in the
+car's state at a single contact — which is what a bump-road curve taken at
+138 km/h and 15 m/s of slip is made of.
+
+**It cannot be repaired, and the control says that is about the tape.**
+`fk resync` puts up one fork server, locates once, then tries thousands of
+candidate corrections against the recorded line, scored on the *sync horizon* —
+the race time at which the engine's run of the candidate first leaves the
+recording. The positive control: take Robbalobb's tape, which tracks its own
+recording for 68.390, break it by ten steering units at one tick (the horizon
+collapses to 8.370), and repair it with the same machinery —
+**8.370 → 20.390 → 35.760 → 55.410 in 4 000 evaluations, and still climbing.**
+The subject, over six configurations and up to 45 108 evaluations, including the
+brake and throttle channels because Roevhaal is at full lock throughout:
+**5.060 → 8.670**, and both of the moves that helped were brake taps — the
+compensation the measurement above predicts, since braking on ice rotates the
+car. Two independent searches from different windows with different move sets
+both stall at 8.35–8.67 out of 63.5.
+
+### What it means for the author time
+
+`authorScore: 58687` sits inside a map file Nadeo stamped **2022-07-31**; the ten
+records that do not replay are from build `113150`, dated 2022-07-06. **The
+author time and the whole non-replaying half of the field are the same build**,
+and that build's car rotates more than ours in this map's defining manoeuvre.
+
+Two things follow and they point in opposite directions, so both are said:
+
+* **Against reaching it:** every "the route is worth X" number anchored on 2022
+  driving — the 63.546 world record, the old field-best-sector sum of 63.263 —
+  is a number about a car that corners better than ours.
+* **For reaching it:** the route's own envelope, computed at 10 m from runs the
+  current engine reproduces, is **50.978**, and the splice bound of 61.204 is
+  assembled from parts that all re-simulate today. **58.687 is inside what the
+  current car has already done, metre by metre.** What stands in the way is the
+  search, which is still 3.773 s slower than a human.
+
+**One experiment would make this a fact about the game rather than about this
+map**, and it is cheap: one pre-2023 recording taken at high slip on a **stock**
+bump curve, on any map. The sibling-map control that read "the 2022 build's
+physics are ours" (134682, 41.5 s reproduced exactly) has a mean side speed of
+**5.68 m/s**; this map's field slides at **18.13**. If the divergence reproduces
+off 134672, it is a build-level change in car rotation, and every pre-2023
+reference this project uses is affected.
+
+**It was attempted here and it is UNMEASURED, not negative — the instrument
+refused.** Map **134525** (same author, same week, 15 records) is the natural
+experiment: six of its records DNF and nine replay, and the split is nearly by
+date — every DNF is from 2023-05 to 2023-08 and every pass from 2023-08-29 on,
+with one pair **fifty-four seconds apart** on either side of the line. On that
+map the locate works on a passing ghost and says the right thing (**r01, a
+2023-08-29 pass: 0.0003 m, never diverges past 5 cm**), which is the positive
+control. On the failing ones it **refuses**: at fork ticks 120, 400, 600 and 750
+`fk trace` reports "best candidate is not self-consistent enough … refusing to
+guess", and at tick 900 the run has already left its line so the reading is
+meaningless (175 m). A locate that will not qualify is not evidence about the
+recording, and the honest column for 134525's failures is UNMEASURED.
+
+That leaves the sibling test open and worth someone's hour: it needs either a
+locate that qualifies earlier on that map, or a third map with the same
+date-split and a friendlier locate.

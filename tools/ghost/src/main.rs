@@ -91,7 +91,7 @@ TRIM  (operation 5)
         directions.
 
 DECLARE
-  ghost declare IN OUT (--time MS | --from-oracle --map M) [--cps N]
+  ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]
         Set the time the file DECLARES, in every copy of it, and in the
         ghost-result chunk. --cps N also sets the NUMBER of checkpoint entries,
         which a container borrowed from another map gets wrong: it declares the
@@ -281,9 +281,10 @@ fn cmd_inspect(a: &[String]) {
             r.entries.len()
         );
         println!(
-            "              the result chunk declares race {} and {} respawns",
+            "              the result chunk declares race {}; its word 4 is {} (UNIDENTIFIED --\n\
+             \x20             it was called nb_respawns and is not one: see GhostResult)",
             secs(r.race_ms as i64),
-            r.nb_respawns
+            r.word4_unidentified
         );
         if let Some((_, d)) = c.declared_times().first() {
             if *d as i32 != r.race_ms {
