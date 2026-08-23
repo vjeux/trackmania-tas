@@ -5,12 +5,27 @@ need to fall off it less. Their gap to the author time is 34.513 s, and eight of
 their failed attempts each lasted longer than that.**
 
 
-> ### ⚠️ No video — there is no car in the file
+> ### There was a car in the file all along, and it was parked at the origin
 >
-> `BEST_793893` carries no `CSceneVehicleVis` entity at all: it satisfies a
-> finiteness check vacuously, and there is nothing to render. The other two
-> tapes on this page are not substitutes. The 793.893 is unaffected — it is a
-> property of the input tape, which the oracle validates.
+> This page said `BEST_793893` carried **no `CSceneVehicleVis` entity at all**.
+> That was wrong, and the wrong diagnosis is why it sat unfixable for days: the
+> file has one, 15 533 samples spanning 0.000 → 793.850 — and every position in
+> it is `(0, 0, 0)`. A zeroed memory slot, not a missing entity. One line of
+> `tmtraj check` says so: *"the car travels 0.0000 m over 1 distinct points"*.
+>
+> **It is repaired.** `replays/BEST_793893.Ghost.Gbx` is regenerated from engine
+> state: 15 878 samples on its own 50 ms grid, 10 881.6 m of driven path, span
+> 0.000 → 793.893, first sample on the start block to 0.000 m and 0.008° of
+> keby's own recording. The oracle re-simulates the written file to 793.893.
+>
+> Eleven per-sample channels this pipeline cannot yet read out of the engine —
+> rpm, per-wheel ice and dirt, ground contact, gear — are written as **zero**
+> rather than inherited from the container, and named as such. The line and the
+> speed are this run's; the tyre and contact effects are absent rather than
+> somebody else's.
+>
+> **Still no video.** At 793.893 s this is the longest run in the project and
+> the render box became unavailable before it could be filmed.
 
 | run | time | vs author time |
 |---|---|---|
@@ -71,6 +86,6 @@ walking-pace magnet climbing where a single 10 ms input is not load-bearing.
 
 | file | what |
 |---|---|
-| `replays/BEST_793893.Ghost.Gbx` | the best run |
+| `replays/BEST_793893.Ghost.Gbx` | **the best run** — regenerated, its own telemetry, one car in the file |
 | `replays/CUT_795034.Ghost.Gbx` | the sixteen sector cuts, before input minimisation |
 | `replays/ONE_ATTEMPT_DELETED_2501894.Ghost.Gbx` | **keby's own run with one 73.260 s fall removed — under the author time** |
