@@ -86,10 +86,47 @@ fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
     }
 }
 
+/// A map path the GAME can resolve, or a refusal.
+///
+/// `EditMap` is handed this string and does not validate it: given
+/// `/mnt/c/Users/...` -- the WSL spelling of a path that is perfectly real from
+/// this side of the bridge -- the plugin answers `ok`, the title API reports
+/// `IsReady: true` with no dialog, the client keeps rendering, and `ctx` sits
+/// at 0 until the wait times out. That is indistinguishable from a map the game
+/// cannot load, and it cost most of an evening: four "hangs" were read as
+/// evidence about three map files and a title-API race, and every one of them
+/// was this spelling. The successful loads in the same session's logs all read
+/// `C:/Users/...`.
+///
+/// So the conversion happens here, once, and anything still unresolvable is
+/// REFUSED rather than handed over -- a wiring error must not be able to come
+/// back as a fact about a map.
+fn game_path(p: &str) -> Result<String, String> {
+    // /mnt/<drive>/rest  ->  <DRIVE>:/rest
+    if let Some(rest) = p.strip_prefix("/mnt/") {
+        let mut it = rest.splitn(2, '/');
+        if let (Some(d), Some(tail)) = (it.next(), it.next()) {
+            if d.len() == 1 && d.chars().next().unwrap().is_ascii_alphabetic() {
+                return Ok(format!("{}:/{}", d.to_ascii_uppercase(), tail));
+            }
+        }
+        return Err(format!("{p}: looks like a WSL path but names no drive"));
+    }
+    // Already a Windows path: C:/... or C:\...
+    let b = p.as_bytes();
+    if b.len() >= 3 && (b[0] as char).is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\') {
+        return Ok(p.to_string());
+    }
+    Err(format!(
+        "{p}: not a path the game can resolve. EditMap accepts anything and \
+         silently loads nothing, so this is refused here. Give a Windows path \
+         (C:/Users/...) or a WSL path under /mnt/<drive>/."
+    ))
+}
+
 /// The one number that says where the game is: 0 menu, 1 track editor,
 /// 2 MediaTracker, 3 in a race.
-fn ctx() -> Option<i64> {
-    let body = http_get("/ctx", 5).ok()?;
+fn ctx() -> Option<i64> {    let body = http_get("/ctx", 5).ok()?;
     let key = "\"ctx\":";
     let i = body.find(key)? + key.len();
     let rest = &body[i..];
@@ -968,6 +1005,10 @@ fn main() {
                 eprintln!("drive needs --map <path>");
                 std::process::exit(2);
             }
+            let map = match game_path(&map) {
+                Ok(m) => m,
+                Err(e) => { eprintln!("{e}"); std::process::exit(2); }
+            };
             // The plugin reads the path from a file: paths carry backslashes and
             // spaces, and a hand-rolled URL decoder is one more thing to be wrong
             // about.
@@ -1189,6 +1230,10 @@ fn loaded_uid() -> Option<String> {
 /// Every step is checked against the object graph before the next one runs, so
 /// a failure names the step instead of surfacing later as a black video.
 fn setup(map: &str, ghosts: &[String]) -> i32 {
+    let map = &match game_path(map) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("{e}"); return 2; }
+    };
     let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
     let _ = std::fs::create_dir_all(store);
     if std::fs::write(format!("{store}/editmap.txt"), map).is_err() {
