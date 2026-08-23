@@ -12,6 +12,7 @@ mod align;
 mod digits;
 mod enginecmp;
 mod frame;
+mod glyphs;
 mod ink;
 mod keylag;
 mod keyphys;
@@ -471,6 +472,44 @@ fn main() {
                 eprintln!("glyph {}: {} samples", k.1, v.len());
             }
             Templates::from_samples(wetread::CELL_W, wetread::CELL_H, false, &samples).write(&mut o);
+        }
+
+        // Cluster every digit box in the run. The alphabet comes out of the
+        // data; only the NAMES are left for the law to pin down.
+        "wetcluster" => {
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let radius: f32 = num(&args, "--radius", 0.82);
+            let min_members: usize = num(&args, "--min-members", 8);
+            let pctx: f32 = num(&args, "--pct-x", 0.0);
+            let mut cl = glyphs::Clusters::new(wetread::CELL_W, wetread::CELL_H);
+            let mut i = 0u64;
+            let mut frames = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                if wetread::icon_present(&f, span_min) {
+                    frames += 1;
+                    for k in 1..=3 {
+                        let x = pctx - wetread::PITCH * k as f32;
+                        if x < 1.0 {
+                            break;
+                        }
+                        let fd = digits::Field::parse(&format!(
+                            "{};{};{};{}",
+                            x.round() as usize,
+                            wetread::CELL_Y,
+                            wetread::CELL_W,
+                            wetread::CELL_H
+                        ));
+                        cl.add(&Patch::cut(&f, &fd, 0, 0, 0), (i, k), radius);
+                    }
+                }
+                i += 1;
+            }
+            let dropped = cl.prune(min_members);
+            eprintln!(
+                "{frames} frames with the icon, {} clusters ({dropped} pruned below {min_members} members)",
+                cl.c.len()
+            );
+            cl.print_ascii(&mut o);
         }
 
         "wetread" => {

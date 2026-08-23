@@ -482,6 +482,34 @@ at 0.10 /s; and it never rises except in water. A mis-decoded tens digit is a
 10–30 point step with no reset, and a mis-decoded units digit breaks the
 quantisation. Three independent checks, none of which needs the run simulated.
 
+### The labelling attempt, and the circular dependency that stops it
+
+Rather than read six more glyphs by eye, I clustered: extract every digit box
+from every frame where the droplet is up, cluster the 10×15 bitmaps, and the
+alphabet falls out with only the *names* unknown — which the dry-out law above
+can then pin down. `vidread wetcluster` does that.
+
+**It returns 72 clusters, not 10**, over 2726 frames and 2556 boxes (the three
+largest hold 1192, 1170 and 983). That is a real result and it names the
+blocker precisely:
+
+**the digit cells cannot be cut until the `%` is found, and the `%` cannot be
+found without a template.** The field is left-aligned after the icon, so its
+cells move with the value; cutting them at a fixed x — which is all an untrained
+reader can do — samples a different part of the field on every frame, and what
+clusters is the background. That is the circle: the anchor needs a glyph, the
+glyph needs the anchor.
+
+It is breakable and I did not get to it. Two ways, either of which is an hour:
+train the `%` alone from a handful of eye readings (it is one glyph, and it is
+the only one that must be right), or find the field's right edge geometrically
+— the `%` is the rightmost ink in the box and its position is derivable from an
+ink profile per frame rather than from a template.
+
+**Do not read the 72 as noise.** A cluster count far from ten, on data where
+ten is the answer, is the instrument reporting that its cells are wrong — which
+is exactly what it is for. Nine clusters would have been the dangerous outcome.
+
 ## 10. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
