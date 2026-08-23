@@ -23,6 +23,8 @@
 //! Each candidate costs one `ghost tape script`, one `ghost tape inject` and
 //! one `fk trace`; they are independent and run in parallel.
 
+mod corridor;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -76,6 +78,8 @@ pub struct Cfg {
     pub run: usize,
     pub match_ms: i64,
     pub keep_before: bool,
+    pub corridor_m: f64,
+    pub corridor_run: usize,
 }
 
 /// (race ms at which tracking stops, mean |diff| before it)
@@ -108,6 +112,27 @@ fn load_video(path: &str) -> BTreeMap<i64, f64> {
         m.insert((f[0].parse::<f64>().unwrap() * 1000.0).round() as i64, f[1].parse().unwrap());
     }
     m
+}
+
+fn load_positions(path: &Path) -> Option<BTreeMap<i64, (f64, f64, f64)>> {
+    let txt = std::fs::read_to_string(path).ok()?;
+    let mut lines = txt.lines();
+    let hdr: Vec<&str> = lines.next()?.split(',').collect();
+    let c = |n: &str| hdr.iter().position(|h| *h == n);
+    let (ct, cx, cy, cz) = (c("time_ms")?, c("x")?, c("y")?, c("z")?);
+    let mut m = BTreeMap::new();
+    for l in lines {
+        let f: Vec<&str> = l.split(',').collect();
+        if let (Some(Ok(t)), Some(Ok(x)), Some(Ok(y)), Some(Ok(z))) = (
+            f.get(ct).map(|v| v.parse::<i64>()),
+            f.get(cx).map(|v| v.parse::<f64>()),
+            f.get(cy).map(|v| v.parse::<f64>()),
+            f.get(cz).map(|v| v.parse::<f64>()),
+        ) {
+            m.insert(t, (x, y, z));
+        }
+    }
+    Some(m)
 }
 
 fn load_engine(path: &Path) -> Option<BTreeMap<i64, f64>> {
@@ -161,7 +186,13 @@ fn score(video: &BTreeMap<i64, f64>, eng: &BTreeMap<i64, f64>, tol: f64, run: us
     Score { until: last_ok, err: if n > 0 { sum / n as f64 } else { 1e9 } }
 }
 
-fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Option<Score> {
+fn evaluate(
+    cfg: &Cfg,
+    id: usize,
+    evs: &[Ev],
+    video: &BTreeMap<i64, f64>,
+    corr: Option<&corridor::Corridor>,
+) -> Option<Score> {
     let d = cfg.work.join(format!("c{id}"));
     std::fs::create_dir_all(&d).ok()?;
     let ev = d.join("ev.txt");
@@ -222,7 +253,20 @@ fn evaluate(cfg: &Cfg, id: usize, evs: &[Ev], video: &BTreeMap<i64, f64>) -> Opt
     if eng.len() < 100 {
         return None;
     }
-    Some(score(video, &eng, cfg.tol, cfg.run, cfg.match_ms))
+    let mut sc = score(video, &eng, cfg.tol, cfg.run, cfg.match_ms);
+    // A candidate that has LEFT THE TRACK keeps the video's speed for a while
+    // as it falls -- 16 m away and 4 m below, and still scoring. Where the
+    // human corridor makes a claim, it is the earlier of the two that is true.
+    if let Some(c) = corr {
+        if let Some(pos) = load_positions(&tr) {
+            if let Some(left) = c.departs(&pos, cfg.corridor_m, cfg.corridor_run, 30) {
+                if left < sc.until {
+                    sc.until = left;
+                }
+            }
+        }
+    }
+    Some(sc)
 }
 
 /// Race windows the video OBSERVED directly, in which the search may not
@@ -293,8 +337,32 @@ fn main() {
         run: get("--run", "6").parse().unwrap(),
         match_ms: get("--match-ms", "50").parse().unwrap(),
         keep_before: a.iter().any(|x| x == "--keep-before"),
+        corridor_m: get("--corridor-m", "12").parse().unwrap(),
+        corridor_run: get("--corridor-run", "5").parse().unwrap(),
     };
     let video = load_video(&get("--video", "video.tsv"));
+    // --corridor FILE.csv (repeatable): human trajectories that bound where a
+    // car on this route can be. --corridor-to is the race time past which the
+    // run being reconstructed stops following that route.
+    let corridor_files: Vec<String> = a
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| *x == "--corridor")
+        .map(|(i, _)| a[i + 1].clone())
+        .collect();
+    let corr = if corridor_files.is_empty() {
+        None
+    } else {
+        let until: i64 = get("--corridor-to", "30000").parse().unwrap();
+        let c = corridor::Corridor::load(&corridor_files, until).expect("corridor");
+        eprintln!(
+            "corridor: {} human lines, authoritative to race {:.3} s, tube {} m",
+            c.lines.len(),
+            until as f64 / 1000.0,
+            get("--corridor-m", "12")
+        );
+        Some(c)
+    };
     let rounds: usize = get("--rounds", "12").parse().unwrap();
     let batch: usize = get("--batch", "48").parse().unwrap();
     let seed: u64 = get("--seed", "20260822").parse().unwrap();
@@ -323,11 +391,11 @@ fn main() {
             let key = match f[2] { "gas" => "gas", "brake" => "brake", "left" => "left", "right" => "right", _ => continue };
             evs.push(Ev { ms: f[0].parse().unwrap(), press: f[1] == "press", key });
         }
-        let sc = evaluate(&cfg, 999, &evs, &video).expect("evaluate");
+        let sc = evaluate(&cfg, 999, &evs, &video, corr.as_ref()).expect("evaluate");
         println!("{} events: tracks to {:.3} s, mean |diff| {:.2}", evs.len(), sc.until as f64 / 1000.0, sc.err);
         return;
     }
-    let mut best_score: Score = evaluate(&cfg, 0, &best, &video).expect("the seed tape must evaluate");
+    let mut best_score: Score = evaluate(&cfg, 0, &best, &video, corr.as_ref()).expect("the seed tape must evaluate");
     println!("seed: tracks to {:.3} s, mean |diff| {:.2} km/h", best_score.until as f64 / 1000.0, best_score.err);
 
     // --anchor FILE.events, repeatable: an observed record, spliced in and then
@@ -367,7 +435,7 @@ fn main() {
     best.sort();
     best.dedup();
     if !windows.is_empty() {
-        best_score = evaluate(&cfg, 0, &best, &video).expect("the anchored seed must evaluate");
+        best_score = evaluate(&cfg, 0, &best, &video, corr.as_ref()).expect("the anchored seed must evaluate");
         println!(
             "with anchors: tracks to {:.3} s, mean |diff| {:.2} km/h",
             best_score.until as f64 / 1000.0,
@@ -393,12 +461,13 @@ fn main() {
                 let cands = &cands;
                 let cfg = &cfg;
                 let video = &video;
+                let corr = corr.as_ref();
                 s.spawn(move || loop {
                     let i = next.fetch_add(1, Ordering::SeqCst);
                     if i >= cands.len() {
                         break;
                     }
-                    if let Some(sc) = evaluate(cfg, i + 1, &cands[i], video) {
+                    if let Some(sc) = evaluate(cfg, i + 1, &cands[i], video, corr) {
                         out.lock().unwrap().push((i, sc));
                     }
                 });

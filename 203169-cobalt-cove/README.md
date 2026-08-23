@@ -25,8 +25,8 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | the run's inputs, recovered | **674 ticks — 6.7 s of 72.6** (race ≈55.4–58.1 and 58.2–64.4) |
 | the map in our oracle | exact: the dedicated server re-simulates Sapi's 88.898 to the millisecond |
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
-| reconstruction from race 0 | seeded from a human replay's opening, tracks the video's speed to race **12.938 s**; five different seeds all land in a 0.45 s band; from an empty tape, only 4.055 s |
-| geometry for a positional objective | `mapgeom` covers only **60–65 %** of this map's driven samples — the coverage work has to land first |
+| reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
+| where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -218,7 +218,9 @@ first run and 60 in each of the others. **The wall is a property of the
 objective, not of the seed or the RNG**, which is a much stronger statement
 than any one run's number.
 
-Best overall: **race 12.938 s of 72.589**, mean |diff| 3.97 km/h.
+Best on the speed objective alone: **race 12.938 s of 72.589**, mean |diff|
+3.97 km/h — but see §6, where about half a second of that turns out to have
+been bought by driving off the track.
 
 Both an independent scorer (`vidread enginecmp`) and `recon`'s own agree
 exactly on the same trace, which is worth saying because they are two
@@ -229,8 +231,8 @@ before.
 human reference), in the pipe turn Wirtual describes as "at real speed this
 just looks ridiculous the way it's driven". The video's car holds 172–176 km/h
 through it and then *accelerates* to 188; every candidate we can build bleeds
-away — 174 → 154 → 130 → 99 → 67 over the next two seconds. The TAS carries
-speed through a corner that nothing we can find carries speed through.
+away — 174 → 154 → 130 → 99 → 67 over the next two seconds. §6 says what is
+actually happening there, and it is not a grip problem.
 
 **Two things it is not.** It is not Wirtual's tape: it is a tape whose speed
 matches his for 12.9 s, seeded by somebody else's driving, and where the two
@@ -242,43 +244,105 @@ car that is on the line from one three metres left of it, so the search buys
 tenths of tracking with a line that is going somewhere else, and in a pipe turn
 that is immediately fatal. The missing observable is position.
 
-## 6. Position — the missing observable, and whether the geometry is ready
+## 6. The wall, diagnosed: the candidate is off the track
 
-The fix for a scalar objective is a positional one, and `tools/mapgeom` (new on
-`main`) exists to supply it: stock block **collision** geometry out of
-`dedicated_TMStadium.pak`, plus decoration and the map's embedded items. Before
-building a camera-pose solve on it I graded it here, which is the check its own
-author asks for.
+"Bleeds speed in the corner" was the wrong description, and the right one was a
+plumb line away. The pipe turn past CP1 is a **Metal** surface at y ≈ 40–42
+(`mapgeom plumb` at ten points along a human's line through it: Metal at every
+point that has a triangle at all). Here is where the best speed-only candidate
+actually is, against Sapi's line at the same instants:
 
-**Cobalt Cove is in the weak half.** `mapgeom check`, four human replays:
-
-| replay | samples over a surface | median gap below the car |
+| race | distance from the human line | height difference |
 |---|---|---|
-| Bren 105.569 | 1318/2112 (**62.4 %**) | 0.246 m |
-| Zai 105.385 | 1310/2108 (62.1 %) | — |
-| Elya 114.975 | 1498/2300 (65.1 %) | — |
-| Sapi 88.898 | 1073/1780 (60.3 %) | 0.525 m |
+| 11.000 | 1.6 m | −0.3 m |
+| 12.000 | 3.5 m | +0.1 m |
+| 12.500 | **16.0 m** | −3.8 m |
+| 13.000 | 42.1 m | −12.2 m |
+| 14.000 | 106.6 m | −10.8 m |
 
-So **roughly a third of every real run on this map has no triangle beneath it**,
-and the vertical fit is 0.25–0.53 m rather than the 0.09 m the tool reaches on
-its good maps. Twelve stock files fail to open, and the ones this map depends
-on are conspicuous: `ObstacleRotor`, `ObstacleTurnstile`, `ObstacleTube`,
-`Flag`, `FinishCenter8mv2` — the **moving blocks**, which are exactly what
-Wirtual spends the checkpoint-4 section of the video complaining about. A
-camera-pose solve against a model missing them would fail in a way that looks
-like the solver being wrong.
+It leaves the pipe at about race 12.2 and falls eight metres onto the concrete
+below — `plumb` at its 12.75 position finds no surface until Concrete at
+y 33.0, where the car is at y 33.7. **And the speed objective kept paying it
+for another 0.7 s while it fell**, because a falling car passes through the
+right speeds on the way down. The plateau was never a search-budget problem and
+it is not really about corner grip either: the objective admits cars that are
+not on the track.
 
-Two things follow, and the second is the more interesting:
+### A positional constraint that needs no camera pose
 
-* **This map needs the coverage work before a pose solve is worth attempting.**
-  That is a dependency, not a verdict on the approach.
-* **The moving blocks explain the state-locate failure too.** A map full of
-  rotors, turnstiles and flags is a map full of independently moving,
-  self-consistent float triples — which is precisely why the locate here needed
-  a 1.2 m anchor to avoid adopting a spinning decoy, and why it converged in
-  one window on a map without them.
+The video does not say where the car was. **Four human replays do say where a
+car can be**, and on the stretch where this run follows the normal route — CP0
+to CP2, which Wirtual's own commentary confirms — a candidate outside the
+envelope of the human lines has left the track. `recon --corridor` adds exactly
+that: distance to the nearest human position at the same instant, and the score
+becomes the earlier of "stopped tracking the speed" and "left the corridor".
+`--corridor-to` is where the caller states the route stops being shared, and
+past it the corridor makes no claim.
 
-## 7. What is banked
+Three controls, and the middle one is the one that matters:
+
+* **A human's own run is not penalised.** Zai's untouched tape scores 10.771 s
+  with the corridor and 10.771 s without it.
+* **A HELD-OUT human is not penalised.** Bren, scored against a corridor built
+  from the other three drivers only, gets 9.605 s with the corridor and 9.605 s
+  without — at tube radii of 3, 5 and 8 m alike. So the corridor is not merely
+  memorising the runs it was built from.
+* **The off-track candidate is caught, and caught earlier as the tube tightens**:
+  12.938 → 12.270 (8 m) → 12.130 (5 m) → 11.980 (3 m). A gate that responded to
+  its own parameter in the wrong direction, or not at all, would be measuring
+  something else.
+
+### What the honest number is
+
+Re-running the search with the corridor active (tube 3 m, two seeds, 90 rounds
+of 48):
+
+| | speed only | speed + corridor |
+|---|---|---|
+| Zai-seeded | 12.938 s | **12.130 s** |
+| Sapi-seeded | 12.671 s | 12.380 s |
+
+**So about 0.5 s of the previous best was bought by leaving the track.** The
+honest figure for this arm is **race 12.380 s of 72.589**, and it is a smaller
+number that means more than the larger one did.
+
+Two things this does not do. It does not extend the reconstruction — the
+corridor can only ever lower a score, never raise one. And it stops being
+evidence where Wirtual reroutes; everything above is inside CP0–CP2, where his
+own narration says he drives the normal way.
+
+## 7. Position — where the geometry stands
+
+`tools/mapgeom` is the positional observable in the long run. Graded here
+against four human replays it covered **60.3–65.1 %** of driven samples with a
+0.25–0.53 m vertical fit — the weak half of its range. The geometry arm has
+since reported that its current head reaches **80.3 % raw / 87.9 % of the
+samples the model owes**, at a **0.101 m** median gap on this exact map and
+replay, which is comfortably enough for a pose solve; that work is not on
+`main` at the time of writing and the numbers in the table above are what this
+box could measure.
+
+Two corrections to what I concluded from the older tool, both from that arm and
+both worth carrying:
+
+* **The moving blocks were not the cause.** Opening `CPlugDynaObjectModel`
+  moved this map's coverage by 0.2 points, and exactly 1 of 1457 samples rests
+  on one. They are drawn at rest pose and reported separately, never averaged
+  in — a swept hull is worse than useless as a ride-height probe.
+* **What was missing is water, and it is physics rather than a hole.** A car on
+  water sits **0.900 m under** the plane (measured on this map's own 8 m-boundary
+  water planes, four times out of four), so a downward plumb read every water
+  sample as uncovered. `PlatformWaterHFCInsideShort` is this map's internal
+  name and a third of the run is on water — **any position observable derived
+  from this geometry has to carry the same 0.900 m convention**, or a pose solve
+  sits a metre high over every water section.
+
+**But the pipe turn is not a water problem, and I checked rather than assuming**:
+ten plumb points along the human line through it return Metal at y 40–42 at
+every point that has a triangle, and two of the ten have none. The failure
+there is the car being off the surface entirely, not on the wrong one.
+
+## 8. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
 
@@ -296,7 +360,7 @@ recording), **`recon`** (grow a tape against a speed trace), `ghost tape
 script` (an event list to a tape) and `tmtraj csvdiff` (two trajectories on the
 instants they share).
 
-## 8. Attribution
+## 9. Attribution
 
 The run is **Wirtual's**, on **Nadeo's** map, made with **Acepter's**
 Trackmania Input Control Kit. Video:
