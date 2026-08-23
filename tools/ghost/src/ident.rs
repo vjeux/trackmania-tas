@@ -327,14 +327,29 @@ pub fn cmd(a: &[String]) {
                     Role::Nickname => name.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Trigram => trigram.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Login => login.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
-                    // A ZONE IS A PERSON'S COUNTRY. 137 of the project's 158
-                    // published ghosts carry none and 21 carry a stranger's
-                    // (Austria on nine 165922 files, Russia on the Leto
-                    // author-cuts, the United Kingdom on the Blev carrier) --
-                    // the same 152-vs-15-vs-nothing-in-between shape the
-                    // account id has, and a field nobody had listed. Cleared by
-                    // --anonymise for the same reason the club tag is.
-                    Role::Zone => zone.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
+                    // A ZONE IS A PERSON'S COUNTRY, and 21 published ghosts
+                    // carry a stranger's -- Austria on nine 165922 files,
+                    // Russia on the Leto author-cuts, the United Kingdom on the
+                    // Blev carrier -- against 137 that carry none. It is the
+                    // same shape as the account id and it was on nobody's
+                    // strip-list.
+                    //
+                    // IT IS STILL NOT BLANKED, AND THE SUITE IS WHY. The zone
+                    // is the ANCHOR this scanner finds the trigram and the club
+                    // tag by: `World|...` is the only self-identifying string
+                    // in that block, so the trigram is "the string before it"
+                    // and the club tag "the string after". Emptying it makes
+                    // both unfindable -- O7 caught it immediately, asking for
+                    // trigram VJX and reading back None. Blanking a field by
+                    // destroying the landmark that locates its neighbours would
+                    // trade a named leak for two silent ones.
+                    //
+                    // So it is set only when asked (`--zone ""` works), and
+                    // `ghost verify` V3 reports a carried zone. Doing it
+                    // properly needs the scanner to find the trigram and club
+                    // tag structurally rather than relative to the zone, which
+                    // is a change to make with the corpus in front of you.
+                    Role::Zone => zone.map(|s| s.to_string()),
                     Role::ClubTag => clubtag.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
                     Role::Locator => if anon { Some(String::new()) } else { None },
                     Role::AccountId => if anon { Some(String::new()) } else { None },

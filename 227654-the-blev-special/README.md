@@ -5,21 +5,34 @@ respawns cost it 82 seconds, and the seven that are left are all in the
 nine-second crawl into the corner at 47 s — get wedged there by 40.0 s instead
 of 46.9 s and the author time falls.**
 
-> ### ⚠️ No video, and five replay files withdrawn
+> ### The recording is fixed. `TAS_57482` carries its own run.
 >
-> `TAS_57493`, `TAS_57498`, `TAS_57503`, `TAS_57573` and `TAS_59912_watchable`
-> have been removed: each carried ailiei.'s 147.031 trajectory — the human world
-> record — rather than its own, four of them at 365 of 365 samples and the 57.503
-> as a splice at 364 of 365. **The times below are real.** Every one of these
-> tapes re-simulates on the game's own oracle to the millisecond in its name;
-> what was wrong was the *recording*, not the result. Replacements will be
-> regenerated. `HUMAN_WR_retries_cut_64871` stays — it is published AS the
+> Five files were withdrawn from this page because each carried ailiei.'s
+> 147.031 trajectory — the human world record — rather than its own. That is
+> repaired: **`replays/TAS_57482.Ghost.Gbx` is regenerated from the engine, and
+> every position, orientation and speed in it is this run's.**
+>
+> It took working out why the map had defeated three previous attempts. The
+> carrier here is a 27-player server replay, and this project's readers all take
+> *the vehicle entity with the most samples* and call that the recording — which
+> on this file reads "365 samples spanning 1.310 → 19.480 s" for a 57.482 s run,
+> so 38 seconds of the race looked unrecordable. **The record is not truncated.
+> It is one car split into 27 entities, one per respawn, tiling 0 → 147.000 s end
+> to end.** The repair lays down a single fresh entity on its own 50 ms grid —
+> which also stops a render drawing the other 26 people's cars.
+>
+> The times were never in doubt: the oracle reads the input archive, and every
+> tape re-simulates to the millisecond in its name. What was wrong was the
+> recording. `HUMAN_WR_retries_cut_64871` stays as it is — it is published AS the
 > human's lap with the respawns removed, so carrying his trajectory is the point.
-> Nothing on this page has ever been filmed.
+>
+> **Still no video.** The render box became unavailable before this could be
+> filmed.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
-| `TAS_57493` *(no file)* | **57.493** | **−0.360** | reach the corner about 7 s early, then drive the human's own escape |
+| [`TAS_57482`](replays/TAS_57482.Ghost.Gbx) | **57.482** | **−0.371** | the record here, regenerated: reach the corner about 7 s early, then drive the human's own escape |
+| `TAS_57493` *(no file)* | 57.493 | −0.360 | the same idea, 11 ms slower |
 | `TAS_57573` *(no file)* | 57.573 | −0.280 | the first tape to beat the author time here |
 | `TAS_59912` *(no file)* | 59.912 | +2.059 | the best keyboard-only run |
 | [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the world record with its eleven respawns spliced out** |
@@ -118,5 +131,6 @@ touch the input that decides it.
 | file | what |
 |---|---|
 | `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed — published as his recording, which is what it is |
-| `replays/TAS_57518.Ghost.Gbx` | the family's fastest surviving tape |
+| `replays/TAS_57482.Ghost.Gbx` | **the fastest run on this map, and the only tape here whose recording is its own** — regenerated from engine state, span 0.000 → 57.482, one car in the file |
+| `replays/TAS_57518.Ghost.Gbx` | the family's next tape — its telemetry is still the carrier's |
 | `replays/TAS_57537.Ghost.Gbx`, `replays/TAS_57577.Ghost.Gbx` | the rest of the family — **one trajectory, not two runs** |

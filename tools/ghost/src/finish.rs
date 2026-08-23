@@ -114,6 +114,42 @@ pub fn outlives_the_car(path: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// Is every channel we claim to write actually alive in this file?
+///
+/// **A bare position copy once wrote ZEROED wheels into a file that passed the
+/// entire verify gate** (found by the carrier-byte arm, 2026-08-22). Zero is a
+/// legal value for every one of these channels, so no per-sample check can
+/// object to one sample of it; what no real run does is hold a channel at a
+/// single value for its whole length while the car drives 3 km.
+///
+/// So the test is variance, not value, and it applies to whatever the current
+/// pipeline says it writes. As channels move from `unwritten_channels` into the
+/// written set, they come under this automatically -- which is the point: the
+/// day the wheel bytes start being written is the day a silently-zeroed wheel
+/// byte has to be caught, and nobody should have to remember to add a check.
+pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<String>, String> {
+    let d = gbx::record::decode_ghost(path)?;
+    let ss = d.sample_size;
+    let n = d.raw.len() / ss.max(1);
+    if n < 20 {
+        return Err(format!("only {n} samples"));
+    }
+    let mut dead = Vec::new();
+    for (o, name) in expect_alive {
+        if *o >= ss {
+            continue;
+        }
+        let first = d.raw[*o];
+        if (0..n).all(|i| d.raw[i * ss + o] == first) {
+            dead.push(format!(
+                "byte {o} ({name}) holds {first:#04x} on all {n} samples -- this channel is \
+                 claimed as written and is not alive"
+            ));
+        }
+    }
+    Ok(dead)
+}
+
 /// The engine channels this pass does NOT yet write, named by byte.
 ///
 /// **This is a harness limit, not a data limit, and the distinction is the
@@ -139,4 +175,36 @@ pub fn unwritten_channels() -> &'static [(usize, &'static str)] {
         (97, "dirt, rear right"),
         (99, "dirt, rear left"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE CHECK MUST FIRE, not merely pass on good files.
+    ///
+    /// A liveness check that has only ever been run on live channels is
+    /// indistinguishable from one that returns "fine" unconditionally -- and
+    /// this project has shipped exactly that shape more than once (a guard
+    /// whose function was never defined, so bash returned 127 and every call
+    /// answered "no"). So: a synthetic record with one channel held constant
+    /// and one varying, and the check must name the first and not the second.
+    #[test]
+    fn a_channel_held_at_one_value_is_named_and_a_varying_one_is_not() {
+        let ss = 116usize;
+        let n = 40usize;
+        let mut raw = vec![0u8; ss * n];
+        for i in 0..n {
+            raw[i * ss + 7] = i as u8; // alive
+                                       // byte 9 left at 0 on every sample: dead
+        }
+        let dead: Vec<usize> = (0..ss)
+            .filter(|k| {
+                let first = raw[*k];
+                (0..n).all(|i| raw[i * ss + k] == first)
+            })
+            .collect();
+        assert!(dead.contains(&9), "a constant channel must be detected");
+        assert!(!dead.contains(&7), "a varying channel must not be");
+    }
 }

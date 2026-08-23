@@ -507,7 +507,33 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
         Err(e) => println!("   the span could not be measured: {e}"),
     }
 
-    // 3. WHAT WE DID NOT WRITE, BY NUMBER. A harness limit, said as one.
+    // 3. IS WHAT WE DID WRITE ACTUALLY ALIVE?
+    //
+    // A bare position copy once wrote zeroed wheels into a file that passed the
+    // whole verify gate. Zero is legal for a channel on any one sample; what no
+    // driven run does is hold one at a single value for 3 km. The list is
+    // whatever the pipeline currently claims to write, so a channel promoted
+    // out of `unwritten_channels` comes under this on the same day.
+    let claim: Vec<(usize, &str)> = vec![
+        (14, "steer echo"),
+        (15, "gas echo"),
+        (47, "position x"),
+        (51, "position y"),
+        (55, "position z"),
+        (59, "orientation angle"),
+        (65, "speed"),
+    ];
+    match crate::finish::dead_channels(out, &claim) {
+        Ok(v) if v.is_empty() => println!("   every channel this pipeline writes varies over the run."),
+        Ok(v) => {
+            for d in &v {
+                refused.push(format!("a channel we claim to write is dead: {d}"));
+            }
+        }
+        Err(e) => println!("   channel liveness could not be measured: {e}"),
+    }
+
+    // 4. WHAT WE DID NOT WRITE, BY NUMBER. A harness limit, said as one.
     let un = crate::finish::unwritten_channels();
     println!(
         "   UNWRITTEN, zeroed rather than inherited ({} channels): {}",

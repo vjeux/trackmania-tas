@@ -4,12 +4,35 @@
 Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 
 
-> ### ⚠️ No video — every tape on this page is refused on the contact bytes
+> ### The contact bytes were the carrier's. `BEST_218812` is regenerated.
 >
-> `BEST_218812`, `KEYBOARD_218877` and `MINIMAL_219581` all fail the gate's
-> C3/C5/C6 contact checks: those bytes belong to the carrier, not to our run.
-> Here the human control convicts rather than exonerates — the human world
-> record passes the same checks. The times are unaffected.
+> The three tapes here were refused on the gate's contact checks, and the human
+> control convicted rather than exonerated: Bald_tm's own recording passes the
+> same checks. It was right to convict. Measured byte by byte against the
+> container this file was built in, **bytes 89, 91, 93, 95, 97 and 99 — ground
+> contact, gear, and dirt on all four wheels — were bit-identical to his
+> recording on every one of 4359 samples.** Every tyre effect and contact spark
+> a render would draw fired at the instant *his* run had it.
+>
+> `replays/BEST_218812.Ghost.Gbx` is now regenerated from engine state and no
+> sample byte in it is the donor's. Eleven channels this pipeline cannot yet
+> read out of the engine — rpm, per-wheel ice and dirt, ground contact, gear —
+> are written as **zero** rather than inherited, and named as such: those
+> quantities are in the engine's memory and have been fitted against a real
+> recording, so this is a gap in our anchoring, not a limit of the data. **The
+> line and the speed are this run's. The tyre effects are absent rather than
+> somebody else's.**
+>
+> One further defect, found by watching a render: the file declared a record
+> span of **441.000** — Bald_tm's, inherited — for a car that stops at 217.95,
+> and kept his 8820-sample non-vehicle entity at full length. The MediaTracker
+> renders a clip as long as its longest block, so a first attempt came out
+> **7:21 for a 218.812 run**, and when the camera's target entity ended at 218 s
+> the camera drifted to the top of the map and stayed there for the second half.
+> Two symptoms, one inherited number. The file's span is now its own.
+>
+> **Still no video.** The render box became unavailable before this could be
+> re-filmed.
 
 | tape | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

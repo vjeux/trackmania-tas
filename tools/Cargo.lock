@@ -30,6 +30,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mapgeom"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "miniz_oxide",
+ "tmmaps",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -37,6 +46,10 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
 ]
+
+[[package]]
+name = "recon"
+version = "0.1.0"
 
 [[package]]
 name = "shootctl"
@@ -63,6 +76,14 @@ dependencies = [
  "gbx",
  "ghost",
 ]
+
+[[package]]
+name = "uwlab"
+version = "0.1.0"
+
+[[package]]
+name = "vidread"
+version = "0.1.0"
 
 [[package]]
 name = "wsx"
