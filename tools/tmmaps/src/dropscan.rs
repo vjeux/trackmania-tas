@@ -43,7 +43,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::map;
-use crate::cli::die as cli_die;
 // `tools/ghost` owns the ghost format; tmmaps reaches it through that crate
 // rather than depending on `gbx` a second time (and `crate::gbx` here is
 // tmmaps' own MAP container, a different thing entirely).

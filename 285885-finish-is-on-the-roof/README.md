@@ -75,8 +75,30 @@ version. The published tape is a clean override of the steering channel rather
 than a literal key press, so the thing to trust is the tolerance below, not the
 tape's exact contents.
 
-**The author time is not beaten and, on the route the map allows, it is a long
-way off.** Our fastest upright line reaches the finish patch at **41.037** and
+## The roof inverts a car that falls onto it
+
+The finish needs the car about 26° past level, and everyone assumed that meant
+finding a *rotation source* on the roof. There is a much simpler one, and it has
+been there all along: **fall onto the roof from above and the car lands upside
+down.** Measured from the live engine — a car dropped 36 m onto the roof's south
+face is at `u_y = −1.000`, completely inverted, one second later, with no input
+at all, doing 100 km/h and sliding straight at the finish on the finish's own
+plane. Every previous inverted crossing was a 4-to-14 km/h crawl that cost 8.42 s.
+
+**A wall at z = 1667.6 stops it 37 m short.** The car goes 60 → 13 km/h in one
+tick and sits there. 892 tapes were thrown at that wall from one drop point (521
+of them fire the last rung before it, none fires anything past it), and 1 386
+more from six others, on the fast route's own up-ramp line, with the fast route
+itself firing all six of those rungs in order as the control. Nothing crosses.
+East of x ≈ 460 there is no roof above the deck to fall onto at all.
+
+So the endgame's open question is no longer "where is 26° of tilt" — it is
+**"how does the run get above the finish face (z 1668–1704, x 419–507) with air
+under it".** The fall does the rest for free.
+
+## The author time is not beaten, and here is the size of it
+
+Our fastest upright line reaches the finish patch at **41.037** and
 cannot fire the sunken gate; the only flip anyone has made work costs
 **+8.95 s** over the last 133 m, so a run must reach the foot of the final climb
 by **34.13** to come in under 43.079 — against **37.978**, the earliest arrival

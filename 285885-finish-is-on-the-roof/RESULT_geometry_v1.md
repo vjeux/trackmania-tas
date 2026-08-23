@@ -1,11 +1,12 @@
-# 285885 `finish is on the roof to your right` — the map is played on the STADIUM, and the route is forced
+# 285885 `finish is on the roof to your right` — the roof inverts a car that falls onto it, and a wall stops it 37 m short
 
 Arm `roof285885`, 2026-08-22, node 78880.od. **The author time 43.079 was NOT
-beaten and our 50.229 was NOT improved.** What this arm adds is the first
-measurement of the *geometry* this map is played on, a correction to the
-arithmetic the closure note states, an independent confirmation of the endgame
-closure from a new instrument, and three enumerated negatives with positive
-controls.
+beaten and our 50.229 was NOT improved.** What this arm adds is a rotation
+mechanism nobody had found — **the roof inverts a car that falls onto it**, in
+1.0 s, with no input, at 100 km/h, and a wall stops it 37 m from the finish
+(§8) — the first measurement of the *geometry* this map is played on, a
+correction to the arithmetic the closure note states, and five enumerated
+negatives, every one of them with a positive control in the same batch.
 
 Rust only; no Python and no shell scripts. Every tool is a subcommand of an
 existing CLI in `tools/`, on branch `roof285885`.
@@ -225,7 +226,102 @@ removed), and the file was restored by re-downloading it from
 the store**. That is worth keeping for its own sake: *the map is recoverable
 from Nadeo, bit-for-bit, in one command with no authentication.*
 
-## 8. The launcher has a ceiling, and it is 13 m below the rim
+## 8. THE ROOF INVERTS A CAR THAT FALLS ONTO IT — and a wall stops it 37 m short
+
+This is the arm's real finding and it is a mechanism nobody has named. `dropscan`
+can put a car above the finish roof, which nothing else on this project could,
+and what happens then is the state the finish has always needed.
+
+**A car dropped onto the roof's south face lands INVERTED and slides at speed.**
+Spawn (13, 33, 47) — world (432, 202, 1520) — drives off the block at ~55 km/h
+and falls 36 m onto the roof at (430, 166, 1580). Its own trajectory, read live:
+
+| race | position | km/h | `u_y` |
+|---|---|---|---|
+| 2.87 | (432.0, 176.5, 1569.1) | 152 | **+0.055** (falling, rotating) |
+| 3.83 | (426.5, 165.2, 1596.3) | — | **−0.987** |
+| 4.67 | (424.1, 160.4, 1617.7) | 91 | **−1.000** |
+| 5.67 | (418.1, 155.7, 1639.1) | 75 | −0.986 |
+| 6.87 | (410.8, 150.9, 1660.7) | 66 | −0.996 |
+| **7.27** | **(408.5, 149.4, 1667.0)** | **60** | **−0.997** |
+| 7.47 | (407.7, 149.2, 1667.6) | **13** | −0.998 |
+| 8.07 → | (407.0, 149.1, 1667.7) | 2 | — |
+
+The finish needs `u_y ≤ 0.895`. This car is at **−1.000** — completely inverted
+— travelling at **60–100 km/h**, on the finish's own roof plane (the measured
+heights match `410.5518 + 0.09211x − 0.17895z` to a few centimetres), heading
+straight at the patch. Every previous inverted crossing on this map was a
+4-to-14 km/h crawl bought with 8.42 s of driving.
+
+**And it is stopped dead by a wall at z = 1667.6.** 60 → 13 km/h in one tick,
+and the car sits there for the rest of the race. **The patch is at z = 1704.64:
+it is 37 m short.**
+
+### The wall, laddered
+
+15 rungs along the slide line, the real Goal item moved, 1.5 m above the fitted
+roof plane. The positive control is inside the ladder: the first nine rungs fire,
+in strict time order.
+
+| rung z | 1600 | 1616 | 1632 | 1648 | 1664 | **1672** | 1680 | 1688 | 1696 | 1704 | 1712 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| fires at | 3.905 | 4.525 | 5.232 | 6.044 | 6.968 | **DNF** | DNF | DNF | DNF | DNF | DNF |
+
+### 892 tapes cannot cross it
+
+Rectangular overrides on the probe tape over race 1.5–6.5 s (11 starts × 3
+lengths × 27 steer/accel/brake combinations, 0 no-ops), scored on five rungs:
+
+| rung | fires |
+|---|---|
+| z = 1664, the last one the plain probe reaches — **the positive control** | **521 / 892** |
+| z = 1672 | **0** |
+| z = 1680 | **0** |
+| z = 1696 | **0** |
+| the patch, raised 2 m | **0** |
+
+### And the south face does not extend east to where the wall has a gap
+
+The fast upright route crosses the wall's z on its own up-ramp at x ≈ 460–507,
+so the barrier is not continuous in x. Six more spawn cells (x 496–560, two
+heights) × 231 tapes = **1 386 evaluations** were scored on **the fast route's
+own up-ramp line**, six rungs taken from its trajectory at 300 ms intervals:
+
+* **Control A — are the rungs real?** The fast tape on the untouched map fires
+  all six in order: 41.024 / 41.324 / 41.654 / 41.954 / 42.244 / 42.544. They
+  sit exactly on its own run.
+* **Control B — do the probes reach anything?** A rung on the deck at
+  (512, 52, 1610) fires for 12 of 231 at 6.904.
+* **Result: 0 of 1 386 fire any rung on the up-ramp line**, and rungs on the
+  *roof* at x 450 and x 500 fire nothing either — those probes fall past to the
+  deck at y ≈ 50.
+
+**So the roof's south face exists only over x ≈ 340–460, it is walled at
+z = 1667.6, and east of x ≈ 460 there is no roof above the deck to fall onto.**
+
+### What this changes, and what it does not
+
+It does not beat the map. It replaces "there is no rotation source near the
+patch" with something sharper:
+
+> **There IS a rotation source at the patch — the roof itself, if you arrive
+> from above. It inverts the car completely, in about 1.0 s, with no input at
+> all, and leaves it doing 100 km/h. The map separates it from the finish by
+> 37 m of wall, and the only part of the roof with clear air above it is on the
+> wrong side of that wall.**
+
+The previous arm's 797-probe survey is not contradicted. It asked whether a car
+*on the roof* can leave it near the patch, and the answer is still no. This is
+the opposite question — whether a car *above the roof* can arrive on it — and the
+answer is yes, spectacularly, in the one place that does not connect.
+
+For a successor that is a far better-posed target than "find 26° of tilt":
+**find any way for the real run to be above the finish face (z 1668–1704,
+x 419–507) with air under it.** The rest of the endgame is then already
+measured.
+
+## 9. The launcher has a ceiling, and it is 13 m below the rim
+
 
 §3 raises the one route idea the geometry does not immediately forbid. The
 finish is on a rim at y ≈ 145…158 whose **east end is at y ≈ 110 (x 1449) and
@@ -262,16 +358,19 @@ previous arm measured to have *negative* gain in exit speed above an entry of
 136.5 m/s. It also leaves the second half of the idea untested: **nobody knows
 whether the rim is drivable westward at all**, and no instrument in this
 project can find out without first putting a car on it, because the whole
-structure is outside the map grid (§3).
+structure is outside the map grid (§3). **§8 does put a car on it** — from
+above, by falling — and what it finds there is the inverted slide and the wall.
 
-## 9. What is left, and what a successor should not repeat
+## 10. What is left, and what a successor should not repeat
 
 **Do not re-run:**
 
-* the endgame. Four independent instruments now agree: the trigger needs ~26°
-  of body tilt at the patch; the only flipper within reach is the corner at
-  (507, 1660), 100 m away, and it wedges the car at 5 km/h (traced tick by tick
-  here, §6a); 644 post-patch overrides finish nothing.
+* the endgame *as a search for tilt on the roof*. The trigger needs ~26° of
+  body tilt at the patch; the only flipper reachable *along* the roof is the
+  corner at (507, 1660), 100 m away, and it wedges the car at 5 km/h (traced
+  tick by tick here, §6a); 644 post-patch overrides finish nothing. **§8
+  reframes this**: the tilt is free if you arrive from above, so the open
+  question is altitude, not rotation.
 * the rotation survey. 797 probes over race 36.5–41.5 (previous arm) plus 828
   over race 33.0–35.4 (here, §6b) — two disjoint windows, and the second one
   covers the only ballistic tumble the route contains.
@@ -283,22 +382,28 @@ structure is outside the map grid (§3).
 
 **The two things that are genuinely open**, in the order I would try them:
 
-1. **Land on the rim.** 13 m of apex, and then the unknown question of whether
-   the rim is drivable west. The next move is not another single-window sweep —
-   it is two coupled operators (an entry-speed change plus a steering change) at
-   the launcher, scored on `dropscan --tapes`'s apex, with the rim's own height
-   (98.9 m at x 1591, 110.3 at x 1449) as the bar. A candidate that clears the
-   bar is worth a full trace immediately: if it lands on the rim at ~15 s at
-   y ≈ 110, the whole 12.4 s traverse and the 4 s climb come off the run, which
-   is far more than the 3.85 s §5 says the author time needs.
-2. **The AT's provenance.** The medals are Nadeo's own derivation from 43.079
-   (×1.07 / ×1.2 / ×1.5, rounded to the second: 46 / 52 / 65), so the author
-   time was set by a validation and not typed in. But the author's own alt
-   account takes **50.639 to reach the patch for the first time**, and our
-   heavily-TASed upright route takes **41.037** — so 43.079 sits 2.04 s off a
-   TAS and 7.56 s ahead of the only human line on the map. Either the author has
-   a route nobody has found, or the map was validated in a state that is not the
-   state it shipped in. TMX has one version, uploaded 2025-12-29 and never
-   updated, no replays and no comments, so the question cannot be settled from
-   the outside — but it should be recorded next to the map's "unbeaten" status,
-   because it changes what "unbeaten" means here.
+1. **Get above the finish face with air under it** (§8). This is the arm's
+   recommendation and it supersedes "land on the rim" as the way to state the
+   problem. The fall does the whole endgame for free: 1.0 s, no input, `u_y`
+   −1.000, 100 km/h, on the finish's own plane. What is needed is not tilt and
+   not budget — it is **altitude over z 1668–1704, x 419–507**. The south face,
+   which is the natural place to fall from, is walled 37 m short (892 tapes,
+   0 crossings, 521-firing control) and east of x ≈ 460 there is no roof there
+   at all (1 386 evaluations, two controls).
+2. **Land on the rim** (§9), which is the same idea from the other end: 13 m of
+   apex short, from a coupled entry-speed + steering move at the launcher. Note
+   what §8 adds to it — landing on the rim's *south* face buys the inverted
+   slide and then the wall, so the landing must be east of x ≈ 460 or north of
+   z ≈ 1668.
+3. **The AT's provenance**, worth an hour and no more. The medals are Nadeo's
+   own derivation from 43.079 (×1.07 / ×1.2 / ×1.5, rounded to the second:
+   46 / 52 / 65), so the author time came from a validation and was not typed
+   in — but the map carries **no embedded author ghost** (no chunk
+   `0x0305B00F`), its header says `validated="1"` and it also names
+   `EPP_EditorPluginLoads`. Meanwhile the author's own alt account takes
+   **50.639** to reach the patch for the first time and our heavily-TASed
+   upright route takes **41.037**, so 43.079 sits 2.04 s off a TAS and 7.56 s
+   ahead of the only human line on the map. TMX has one version, uploaded
+   2025-12-29 and never updated, no replays and no comments, so the question
+   cannot be settled from outside — but it belongs next to the map's "unbeaten"
+   status, because it changes what "unbeaten" means here.
