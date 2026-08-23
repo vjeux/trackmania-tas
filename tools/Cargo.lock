@@ -11,6 +11,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "clip"
 version = "0.1.0"
+dependencies = [
+ "gbx",
+]
 
 [[package]]
 name = "gbx"
@@ -24,6 +27,15 @@ name = "ghost"
 version = "1.0.0"
 dependencies = [
  "gbx",
+]
+
+[[package]]
+name = "mapgeom"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "miniz_oxide",
+ "tmmaps",
 ]
 
 [[package]]
@@ -41,6 +53,10 @@ version = "0.1.0"
 dependencies = [
  "gbx",
 ]
+
+[[package]]
+name = "recon"
+version = "0.1.0"
 
 [[package]]
 name = "shootctl"
@@ -67,3 +83,15 @@ dependencies = [
  "gbx",
  "ghost",
 ]
+
+[[package]]
+name = "uwlab"
+version = "0.1.0"
+
+[[package]]
+name = "vidread"
+version = "0.1.0"
+
+[[package]]
+name = "wsx"
+version = "0.1.0"
