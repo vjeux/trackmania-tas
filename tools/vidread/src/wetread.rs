@@ -25,6 +25,62 @@ pub const CELL_H: usize = 15;
 /// Distance between the left edges of neighbouring digit cells.
 pub const PITCH: f32 = 9.6;
 
+/// The band of columns the readout occupies, measured from the icon so the
+/// whole thing rides with the HUD rather than with absolute frame coordinates.
+pub const BAND: (usize, usize) = (ICON.x + ICON.w + 2, ICON.x + ICON.w + 62);
+
+/// Per-column ink over the glyph rows only, as a fraction of the rows.
+///
+/// Rows, not the whole box: the `! Slip` line shares this y range, and a
+/// profile taken over the full box height mixes it in. Ink is measured against
+/// the column band's own dark level rather than an absolute threshold, because
+/// this box sits over everything from a dark tunnel to a white wall.
+pub fn ink_profile(f: &Frame) -> Vec<f32> {
+    let mut lvl: Vec<f32> = Vec::new();
+    for x in BAND.0..BAND.1 {
+        for y in CELL_Y..CELL_Y + CELL_H {
+            lvl.push(f.minc(x, y));
+        }
+    }
+    lvl.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let dark = lvl[(lvl.len() - 1) * 20 / 100];
+    let bright = lvl[(lvl.len() - 1) * 98 / 100];
+    let cut = dark + (bright - dark) * 0.55;
+    (BAND.0..BAND.1)
+        .map(|x| {
+            (CELL_Y..CELL_Y + CELL_H).filter(|&y| f.minc(x, y) >= cut).count() as f32
+                / CELL_H as f32
+        })
+        .collect()
+}
+
+/// The field's right edge: the rightmost run of inked columns in the band.
+///
+/// Returns the x of the column just past the last ink, which is where a cell
+/// grid anchored on the `%` starts. No template is involved, which is the
+/// point: the cells cannot be cut until the right edge is known, and a
+/// template for the `%` cannot be trained until the cells can be cut.
+pub fn right_edge(f: &Frame, min_ink: f32, max_gap: usize) -> Option<usize> {
+    let p = ink_profile(f);
+    let last = (0..p.len()).rev().find(|&i| p[i] >= min_ink)?;
+    // Walk left through the glyph, tolerating the gaps inside a `%`.
+    let mut i = last;
+    let mut gap = 0usize;
+    while i > 0 {
+        i -= 1;
+        if p[i] >= min_ink {
+            gap = 0;
+        } else {
+            gap += 1;
+            if gap > max_gap {
+                break;
+            }
+        }
+    }
+    Some(BAND.0 + last + 1)
+}
+
+
 /// Is the readout on screen? Contrast, not level: the box sits over everything
 /// from a dark tunnel to a white wall, so an absolute threshold measures the
 /// scenery rather than the icon.

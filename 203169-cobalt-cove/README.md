@@ -482,33 +482,56 @@ at 0.10 /s; and it never rises except in water. A mis-decoded tens digit is a
 10–30 point step with no reset, and a mis-decoded units digit breaks the
 quantisation. Three independent checks, none of which needs the run simulated.
 
-### The labelling attempt, and the circular dependency that stops it
+### The labelling attempt: the circle, and the geometric way out of it
 
 Rather than read six more glyphs by eye, I clustered: extract every digit box
 from every frame where the droplet is up, cluster the 10×15 bitmaps, and the
 alphabet falls out with only the *names* unknown — which the dry-out law above
-can then pin down. `vidread wetcluster` does that.
+can then pin down, since a descending dry-out stretch spells its own labels.
+`vidread wetcluster` does that.
 
-**It returns 72 clusters, not 10**, over 2726 frames and 2556 boxes (the three
-largest hold 1192, 1170 and 983). That is a real result and it names the
-blocker precisely:
-
-**the digit cells cannot be cut until the `%` is found, and the `%` cannot be
-found without a template.** The field is left-aligned after the icon, so its
-cells move with the value; cutting them at a fixed x — which is all an untrained
+**The first run returned 72 clusters, not 10**, and that named the blocker
+exactly: **the digit cells cannot be cut until the `%` is found, and the `%`
+cannot be found without a template.** The field is left-aligned after the icon,
+so its cells move with the value; cutting at a fixed x — all an untrained
 reader can do — samples a different part of the field on every frame, and what
-clusters is the background. That is the circle: the anchor needs a glyph, the
-glyph needs the anchor.
+clusters is the background.
 
-It is breakable and I did not get to it. Two ways, either of which is an hour:
-train the `%` alone from a handful of eye readings (it is one glyph, and it is
-the only one that must be right), or find the field's right edge geometrically
-— the `%` is the rightmost ink in the box and its position is derivable from an
-ink profile per frame rather than from a template.
+**The way out is geometric, and it works.** The `%` is the rightmost ink in the
+box, so a per-frame **ink profile** gives the field's right edge with no
+template at all. `vidread wetedge` measures it: ink per column over the glyph
+*rows only* (the `! Slip` line shares this y, and a full-height profile mixes
+it in), thresholded against the band's own dark level rather than an absolute
+one, anchored on the droplet so the whole measurement rides with the HUD.
 
-**Do not read the 72 as noise.** A cluster count far from ten, on data where
-ten is the answer, is the instrument reporting that its cells are wrong — which
-is exactly what it is for. Nine clusters would have been the dangerous outcome.
+Over the run's 2726 droplet frames it finds an edge on **2725**, and the
+distribution is exactly what a right-aligned `%` after a 1-, 2- or 3-digit
+number should give — **three sharp modes**:
+
+| right edge | frames | |
+|---|---|---|
+| 2159 | **1334** | |
+| 2165 | **480** | |
+| 2174 | **169** | |
+| 2193 | 402 | the band's own right end — a saturated background, i.e. the detector failing *loudly* |
+| everything else | ~340 | scattered singletons |
+
+So the edge is measurable on about 85 % of the frames the icon is up, and the
+15 % where it is not announce themselves by pinning to the band edge.
+
+**Re-clustering on those per-frame cuts takes 72 → 45** (at a tighter radius;
+77 at the original one, with the members roughly tripled because a real cut
+finds three digits where a fixed cut found background). The direction is right
+and the count is not yet 10, so the cut is better and not yet correct. What is
+left is bounded: exclude the 2193 frames, and resolve whether the residual
+spread is sub-pixel phase — which would be one template bank per phase, exactly
+as the speed field needed.
+
+**Do not read 72, or 45, as noise.** A cluster count far from ten, on data
+where ten is the answer, is the instrument reporting that its cells are wrong,
+which is what it is for. **Nine would have been the dangerous outcome**: two
+glyphs merged, unseparable afterwards, and a reader subtly wrong on one digit
+forever. A result that fails visibly beats one that fails invisibly.
 
 ## 10. What is banked
 

@@ -476,19 +476,58 @@ fn main() {
 
         // Cluster every digit box in the run. The alphabet comes out of the
         // data; only the NAMES are left for the law to pin down.
+        // The ink profile and the right edge it yields, per frame. The check
+        // before any glyph exists.
+        "wetedge" => {
+            let span_min: f32 = num(&args, "--span-min", 45.0);
+            let min_ink: f32 = num(&args, "--min-ink", 0.25);
+            let max_gap: usize = num(&args, "--max-gap", 3);
+            let show = args.iter().any(|a| a == "--profile");
+            writeln!(o, "t\tpresent\tright_edge\tprofile").unwrap();
+            let mut i = 0u64;
+            while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
+                let p = wetread::icon_present(&f, span_min);
+                let e = if p { wetread::right_edge(&f, min_ink, max_gap) } else { None };
+                write!(o, "{:.4}\t{}\t{}", at(i), p as u8, e.map(|v| v.to_string()).unwrap_or_default()).unwrap();
+                if show && p {
+                    let prof = wetread::ink_profile(&f);
+                    write!(o, "\t").unwrap();
+                    for v in prof {
+                        write!(o, "{}", (v * 9.0).round() as u8).unwrap();
+                    }
+                }
+                writeln!(o).unwrap();
+                i += 1;
+            }
+        }
+
         "wetcluster" => {
             let span_min: f32 = num(&args, "--span-min", 45.0);
             let radius: f32 = num(&args, "--radius", 0.82);
             let min_members: usize = num(&args, "--min-members", 8);
+            // --pct-x 0 means: find the right edge per frame from the ink
+            // profile, which is the only way to cut a left-aligned field whose
+            // cells move with its value.
             let pctx: f32 = num(&args, "--pct-x", 0.0);
+            let min_ink: f32 = num(&args, "--min-ink", 0.25);
+            let max_gap: usize = num(&args, "--max-gap", 3);
             let mut cl = glyphs::Clusters::new(wetread::CELL_W, wetread::CELL_H);
             let mut i = 0u64;
             let mut frames = 0u64;
             while f.read_from(&mut r).unwrap_or_else(|e| die(&e.to_string())) {
                 if wetread::icon_present(&f, span_min) {
+                    let base = if pctx > 0.0 {
+                        Some(pctx)
+                    } else {
+                        wetread::right_edge(&f, min_ink, max_gap).map(|v| v as f32)
+                    };
+                    let Some(base) = base else {
+                        i += 1;
+                        continue;
+                    };
                     frames += 1;
                     for k in 1..=3 {
-                        let x = pctx - wetread::PITCH * k as f32;
+                        let x = base - wetread::PITCH * k as f32;
                         if x < 1.0 {
                             break;
                         }
