@@ -70,3 +70,38 @@ start: the checkpoints sit on Tech, **Dirt** and **Ice** platform blocks, and th
 segments that decide the map are the three after CP8.
 
 No replay is published for this map.
+
+## The hill after CP2, and how the driver gets up it
+
+Between the second checkpoint and the third the route climbs a 32 m-wide ice
+ramp from y = 106 to the y = 138 deck. It is where every attempt to re-drive
+this map has stopped, and for a long time it was read as an energy wall: a car
+coasting up the fall line with its engine cut by a gate at the top, stopping
+0.11 m short of the next marker.
+
+That reading was arithmetic on the wrong constant. Gravity in this game is
+**24.3 m/s²**, measured here from 335 free-fall stretches of the driver's own
+recording, not 9.81 — so the "2.4× gravity" deceleration on the climb is
+**0.97×**, an ordinary coast, and differencing the car's energy with the right
+constant shows the engine **making** energy all the way up, including past the
+gate. The run ends in a 22–34 m/s² deceleration over 1.51 m, which is a wall,
+not a stall.
+
+**The driver climbs this ramp in switchbacks**, and resolved sample by sample
+each traverse is a **full-lock turn of about 1.2 seconds followed by 2.5 seconds
+of straight running with the steering back at zero** — holding full lock across
+a traverse scrubs the speed the traverse exists to carry. He crosses the ramp
+five times between z ≈ 450 and z ≈ 478, at 25–49 km/h, taking 45 s and two
+complete failures to gain 32 m of height, each traverse at 8–12° where the fall
+line is 20–27°.
+
+Driving that manoeuvre in the simulator gets a car up the hill and onto the
+deck. **It collects the map's third checkpoint** — `cps=3` on the unmodified
+map through the plain oracle, where the driver's own tape and every previous
+attempt return `cps=2`, deterministic over three runs and reproduced on a fresh
+copy of the map. The car reaches the deck at 164 s and runs on to x = 1 067,
+160 m past the point where every earlier attempt slid back and wedged.
+
+Three checkpoints of eleven. The map is still not driven and the author time is
+not beaten. Details, controls and what is still open: `tools/pkz2`, and the
+arm's write-up in the store.

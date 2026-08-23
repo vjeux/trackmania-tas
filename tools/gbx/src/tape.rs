@@ -109,6 +109,19 @@ fn pack_prev(word0: u32, flags: u32) -> u64 {
     (((flags & 0x3F_FFFF) as u64) << 5) | ((word0 & 0xF) as u64)
 }
 
+/// The literal a repeated state word is equivalent to.
+///
+/// A `w=prev` / `w=prev2` packet carries no state literal, and the respawn
+/// input lives in bit 31 of one -- so on a tape whose words are mostly
+/// repeated (566 327 packets, 18 997 input events) a respawn cannot be
+/// WRITTEN at all, which is the harness gap `FK.md` G1 names from the other
+/// side. This turns a repeat into the literal the decoder itself derives from
+/// it, after which the bit is writable. It is the format's own arithmetic, so
+/// re-decoding the result reproduces the same word0/flags.
+pub fn literal_for(word0: u32, flags: u32) -> u64 {
+    pack_prev(word0, flags)
+}
+
 #[derive(Clone, Debug)]
 pub struct Archive {
     pub format_version: u32,
