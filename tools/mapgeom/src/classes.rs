@@ -114,65 +114,6 @@ impl<'a> Graph<'a> {
                 }
                 Ok(Node::ItemModel(first))
             }
-            // NPlugTrigger_SWaypoint: the volume a checkpoint or finish gate
-            // FIRES on. It carries a trigger shape and nothing the car can
-            // rest on, so no geometry comes out of it — but it has to be
-            // walked, because it sits in the middle of the gate prefabs and
-            // everything after it in the file is unreachable until it is.
-            // Read off the bytes of `Items\Gate\CheckpointRight32m.Prefab.Gbx`:
-            // sixteen bytes, of which the second word is a reference to a
-            // shape that already exists.
-            0x09178000 => {
-                let _version = self.r.u32()?;
-                self.noderef()?; // TriggerShape
-                self.r.take(8)?;
-                Ok(Node::Other(class_id))
-            }
-            // Two more trigger-side classes in the gate prefabs, both eight
-            // and sixteen bytes of metadata with no geometry. Same file, same
-            // method: the entity after them has an identity quaternion and a
-            // -1 parameter chunk, which pins where they end.
-            0x0917B000 => {
-                self.r.take(8)?;
-                Ok(Node::Other(class_id))
-            }
-            // `CPlugDynaObjectModel`: a block that MOVES. Eighty-three bytes
-            // at version 13, identical in every one in the pack (rotor, tube,
-            // turnstile, flag, light ray), read off `ObstacleTube6m` and
-            // confirmed against the other three — the rotor is the file that
-            // names its two shapes, `MoveShape` at the first reference and
-            // `HitShape` at the second, which is what fixes their order.
-            //
-            // The member list is in the game's own class reference
-            // (`next.openplanet.dev/Plug/CPlugDynaObjectModel`); the byte
-            // layout is not, and this is it:
-            //
-            // ```
-            //  0 version = 13      0x18 f32 BreakSpeedKmh     0x36 u32
-            //  4 u32 IsStatic      0x1c f32 Mass              0x3a u32
-            //  8 u32 DynamizeOnSpawn 0x20 f32 LightAlive_Min  0x3e u32
-            //  c ref Mesh          0x24 f32 LightAlive_Max    0x42 u8
-            // 10 ref DynaShape     0x28 u32                   0x43 ref LocAnim
-            // 14 ref StaticShape   0x2c u32                   0x47 u32
-            //                      0x30 u8, 0x31 u8           0x4b u32
-            //                      0x32 u32                   0x4f ref WaterModel
-            // ```
-            C_DYNA_OBJECT => {
-                let _version = self.r.u32()?;
-                let _is_static = self.r.u32()?;
-                let _dynamize_on_spawn = self.r.u32()?;
-                let mesh = self.noderef()?;
-                let dyna_shape = self.noderef()?;
-                let static_shape = self.noderef()?;
-                self.r.take(4 * 6)?; // break speed, mass, two light durations, two words
-                self.r.take(2)?;
-                self.r.take(4 * 4)?;
-                self.r.take(1)?;
-                self.noderef()?; // LocAnim
-                self.r.take(8)?;
-                self.noderef()?; // WaterModel
-                Ok(Node::Dyna(DynaObject { mesh, dyna_shape, static_shape }))
-            }
             // NPlugDyna_SConstraintModel: a spring, no geometry.
             0x2F074000 => {
                 self.r.take(4 * 5)?;
@@ -510,41 +451,6 @@ impl<'a> Graph<'a> {
                 self.noderef()?; // IntroClipList
                 Ok(())
             }
-            // ------------------------- CGameItemPlacementParam: the PIVOT
-            // A placement's position names the item's PIVOT, not the origin of
-            // its mesh. Ignoring that is a silent lateral offset of half a
-            // block on every item with an off-centre origin: on 197047, whose
-            // whole run is on 75 placements of one 8 x 8 platform whose mesh
-            // runs 0..8 in x and z, it put the road a metre and a half off the
-            // car and cost the map 62 % of its samples.
-            // NPlugTrigger_SSpecialProperty, next to the waypoint in every
-            // gate prefab: a transform and six more floats, seventy-six bytes,
-            // and no geometry. Read off the same file.
-            0x0917A000 => {
-                let _version = self.r.u32()?;
-                self.r.take(48)?; // Iso4
-                self.r.take(24)?;
-                Ok(())
-            }
-            0x2E020001 => {
-                acc.touched = true;
-                let pivots = self.r.array(|r| r.vec3())?;
-                if let Some(p) = pivots.first() {
-                    acc.pivot = *p;
-                }
-                Ok(())
-            }
-            // CGameCommonItemEntityModelEdition: the EDITED form of a custom
-            // item — the shape as the editor holds it, a CPlugCrystal, rather
-            // than baked into a static object. 134672 carries three items like
-            // this (a loop piece and two light fittings) and 197047 none.
-            0x2E026000 => {
-                acc.touched = true;
-                let _version = self.r.u32()?;
-                let _item_type = self.r.u32()?;
-                acc.entity_model = self.noderef()?; // MeshCrystal
-                Ok(())
-            }
             0x2E002020 => {
                 let _v = self.r.u32()?;
                 self.r.string()?; // iconFid
@@ -644,22 +550,10 @@ impl<'a> Graph<'a> {
                 self.r.lookback()?; // ArchetypeBlockInfoId
                 self.r.lookback()?; // ArchetypeBlockInfoCollectionId
                 let n = self.r.u32()? as usize;
-                crate::reader::trace(|| {
-                    format!("    blockitem v{} {} variants at 0x{:x}", version, n, self.r.o)
-                });
                 let mut first = -1;
                 for i in 0..n {
-                    crate::reader::trace(|| {
-                        format!(
-                            "      variant {} at 0x{:x} next u32 0x{:08X}",
-                            i,
-                            self.r.o,
-                            self.r.peek_u32().unwrap_or(0)
-                        )
-                    });
                     self.r.u32()?; // variant key
                     let v = self.noderef()?;
-                    crate::reader::trace(|| format!("      -> node {} at 0x{:x}", v, self.r.o));
                     if i == 0 {
                         first = v;
                     }
@@ -668,35 +562,14 @@ impl<'a> Graph<'a> {
                 if version < 1 {
                     return Ok(());
                 }
-                // Version 1 adds a second table, one entry per variant. It
-                // exists because a v1 block hands out a NULL node in the
-                // variant list above and puts its geometry here instead --
-                // 210218's whole track is 83 embedded wood platforms that all
-                // look like this, and reading the entry as a 32-bit flag word
-                // (there was no v1 file to check against when this was
-                // written) walked straight off into a garbage node reference
-                // and cost the map every one of them.
-                //
-                // Read off the bytes of `PlatformWoodBase.Block.Gbx`: a byte
-                // saying the table is present, then per variant a byte of
-                // flags, then whichever of mesh / collision / box / offset
-                // that byte claims.
                 if self.r.u8()? != 0 {
                     for _ in 0..n {
-                        let flags = self.r.u8()?;
+                        let flags = self.r.u32()?;
                         if flags & 1 != 0 {
-                            let mesh = self.noderef()?;
-                            // A v1 block's variant list hands out null; this
-                            // is where its shape actually is.
-                            if acc.entity_model < 0 {
-                                acc.entity_model = mesh;
-                            }
+                            self.noderef()?; // mesh
                         }
                         if flags & 2 != 0 {
-                            let surf = self.noderef()?; // collision surface
-                            if acc.entity_model < 0 {
-                                acc.entity_model = surf;
-                            }
+                            self.noderef()?; // surf
                         }
                         if flags & 4 != 0 {
                             self.r.boxf()?;
@@ -1366,47 +1239,38 @@ impl<'a> Graph<'a> {
         Ok(())
     }
 
-    /// `CPlugVisual3D`'s inline vertex array.
-    ///
-    /// **Inline vertices only exist when the visual has no vertex STREAM.** The
-    /// two are alternatives, and reading the inline form anyway consumes forty
-    /// bytes per vertex of somebody else's data: on 210218's embedded ice
-    /// blocks that walked 604 bytes past the chunk and then read a 4-billion
-    /// element tangent array, and the file failed to open at all.
     fn visual_inline_vertices(&mut self, acc: &mut Acc) -> R<()> {
         let f = acc.visual_flags;
         let n = acc.visual.count as usize;
-        if acc.visual.vertex_streams.is_empty() {
-            if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
-                for _ in 0..n {
-                    let p = self.r.vec3()?;
-                    let nl = self.r.vec3()?;
-                    self.r.take(16)?;
-                    acc.visual.inline_positions.push(p);
-                    acc.visual.inline_normals.push(nl);
-                }
-            } else {
-                for _ in 0..n {
-                    let p = self.r.vec3()?;
-                    let nl = if !f.bit22 || f.use_vertex_normal {
-                        if f.compress_float3_local3d {
-                            dec3n(self.r.u32()?)
-                        } else {
-                            self.r.vec3()?
-                        }
+        if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
+            for _ in 0..n {
+                let p = self.r.vec3()?;
+                let nl = self.r.vec3()?;
+                self.r.take(16)?;
+                acc.visual.inline_positions.push(p);
+                acc.visual.inline_normals.push(nl);
+            }
+        } else if acc.visual.vertex_streams.is_empty() {
+            for _ in 0..n {
+                let p = self.r.vec3()?;
+                let nl = if !f.bit22 || f.use_vertex_normal {
+                    if f.compress_float3_local3d {
+                        dec3n(self.r.u32()?)
                     } else {
-                        [0.0, 0.0, 0.0]
-                    };
-                    if !f.bit22 || f.use_vertex_color {
-                        if f.compress_float4_color {
-                            self.r.u32()?;
-                        } else {
-                            self.r.take(16)?;
-                        }
+                        self.r.vec3()?
                     }
-                    acc.visual.inline_positions.push(p);
-                    acc.visual.inline_normals.push(nl);
+                } else {
+                    [0.0, 0.0, 0.0]
+                };
+                if !f.bit22 || f.use_vertex_color {
+                    if f.compress_float4_color {
+                        self.r.u32()?;
+                    } else {
+                        self.r.take(16)?;
+                    }
                 }
+                acc.visual.inline_positions.push(p);
+                acc.visual.inline_normals.push(nl);
             }
         }
         let per = if f.compress_float3_local3d { 4 } else { 12 };
@@ -1584,9 +1448,6 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x2E002020
             | 0x2E002021
             | 0x2E002023
-            | 0x2E020001
-            | 0x0917A000
-            | 0x2E026000
             | 0x090FD000
             | 0x090FD001
             | 0x090FD002

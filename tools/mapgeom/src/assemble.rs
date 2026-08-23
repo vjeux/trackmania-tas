@@ -10,80 +10,41 @@ use tmmaps::map::{MapFile, FREE_BLOCK_FLAG};
 
 /// One model's geometry in its own local frame, plus the footprint it implies.
 pub struct LocalModel {
-    /// Which point of `scene` a placement position names. Zero unless the
-    /// model carries a `CGameItemPlacementParam`.
-    pub pivot: [f32; 3],
     pub scene: Scene,
     pub size: (f32, f32),
 }
 
-/// Where a block model lives in the pack.
-///
-/// A block name resolves through **five** block-info families, not one, and
-/// the file extension changes with the family:
-///
-/// | family | extension | what it holds |
-/// |---|---|---|
-/// | `GameCtnBlockInfoClassic` | `.EDClassic.Gbx` | roads, walls, platforms |
-/// | `GameCtnBlockInfoPillar` | `.EDClassic.Gbx` | the supports under everything |
-/// | `GameCtnBlockInfoFlat` | `.EDFlat.Gbx` | the terrain sheet — `Grass` |
-/// | `GameCtnBlockInfoFrontier` | `.EDFrontier.Gbx` | cliffs and hills |
-/// | `GameCtnBlockInfoTransition` | `.EDTransition.Gbx` | the joins between them |
-///
-/// Classic and Pillar each additionally carry a `Theme\` subfolder, which is
-/// where the seasonal sets live (`SnowRoadStraight`, `RallyCastleRoadStraight`)
-/// — 122 more block models that are otherwise invisible.
-///
-/// Looking in Classic alone left 125 537 placements across the corpus with no
-/// geometry, 92 619 of them `DecoWallBasePillar`.
-///
-/// The environments beyond Stadium carry terrain-adapted copies of the Stadium
-/// set; where a model exists in both the geometry is identical.
+/// Where a block model lives in the pack, across the environments that carry
+/// terrain-adapted copies of the Stadium set. Where a model exists in both,
+/// the geometry is identical.
 fn block_candidates(name: &str) -> Vec<String> {
-    let mut v = Vec::new();
-    for env in ["Stadium", "Stadium256"] {
-        // `Stadium256` carries the stadium shell itself (`Stade4096`,
-        // `Stade1536`), which is what a DECORATION map is made of.
-        for (family, ext) in [
-            ("GameCtnBlockInfoClassic", "EDClassic"),
-            ("GameCtnBlockInfoPillar", "EDClassic"),
-            ("GameCtnBlockInfoFlat", "EDFlat"),
-            ("GameCtnBlockInfoFrontier", "EDFrontier"),
-            ("GameCtnBlockInfoTransition", "EDTransition"),
-        ] {
-            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
-            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Theme\\{}.{}.Gbx", env, family, name, ext));
-        }
-    }
+    let mut v = vec![format!(
+        "Stadium\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
+        name
+    )];
+    // `Stadium256` carries the stadium shell itself (`Stade4096`,
+    // `Stade1536`), which is what a DECORATION map is made of.
+    v.push(format!(
+        "Stadium256\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
+        name
+    ));
     for env in ["BlueBay", "GreenCoast", "RedIsland", "WhiteShore"] {
-        for (family, ext) in [
-            ("GameCtnBlockInfoClassic", "EDClassic"),
-            ("GameCtnBlockInfoPillar", "EDClassic"),
-            ("GameCtnBlockInfoFlat", "EDFlat"),
-            ("GameCtnBlockInfoFrontier", "EDFrontier"),
-            ("GameCtnBlockInfoTransition", "EDTransition"),
-        ] {
-            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Stadium\\{}.{}.Gbx", env, family, name, ext));
-            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
-        }
+        v.push(format!(
+            "{}\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\Stadium\\{}.EDClassic.Gbx",
+            env, name
+        ));
     }
     v
 }
 
 fn item_candidates(name: &str) -> Vec<String> {
-    // A map spells an item either bare or with its extension already on, and
-    // the seasonal items live one folder deeper.
+    // A map spells an item either bare or with its extension already on.
     let base = name.trim_end_matches(".Item.Gbx");
-    let mut v = vec![
+    vec![
         format!("Stadium\\Items\\{}.Item.Gbx", base),
-        format!("Stadium\\Items\\Theme\\{}.Item.Gbx", base),
         format!("{}.Item.Gbx", base),
         base.to_string(),
-    ];
-    for env in ["GreenCoast", "RedIsland", "BlueBay", "WhiteShore"] {
-        v.push(format!("{}\\Items\\Stadium\\{}.Item.Gbx", env, base));
-    }
-    v
+    ]
 }
 
 pub struct Assembler<'a> {
@@ -99,14 +60,10 @@ pub struct Assembler<'a> {
 /// The zip path a map's model name refers to, if it is a custom model.
 ///
 /// A map spells an embedded block `FlinkIceBlocks\3-1-1-1-Ice-Light.Block.Gbx_CustomBlock`
-/// and the zip holds it under a container folder — `Items/…` on 134672 and
-/// **`Blocks/…`** on 197047, whose whole run is on 75 placements of one
-/// embedded platform. Keying on `Items/` alone left that map at 2.6 % of its
-/// samples over a surface with the model reading `76 placements of 3 models
-/// had no geometry`. So the name is matched as a SUFFIX of the zip path
-/// rather than under an assumed folder.
+/// and the zip holds it at `Items/FlinkIceBlocks/3-1-1-1-Ice-Light.Block.Gbx`.
 fn embedded_key(name: &str) -> String {
-    name.trim_end_matches("_CustomBlock").replace('\\', "/").to_lowercase()
+    let n = name.trim_end_matches("_CustomBlock").replace('\\', "/");
+    format!("items/{}", n.to_lowercase())
 }
 
 impl<'a> Assembler<'a> {
@@ -131,29 +88,8 @@ impl<'a> Assembler<'a> {
     }
 
     /// A model the map carries itself, if this name is one.
-    ///
-    /// The map's spelling is matched as a suffix of the zip path, longest
-    /// suffix first: 197047 places the same platform under two names,
-    /// `StupsKiesel\MiniPlatform\…` and `StupsKiesel\StupsKiesel\MiniPlatform\…`,
-    /// and carries two files that differ only by that folder.
     fn embedded_model(&mut self, name: &str) -> Option<LocalModel> {
-        let key = embedded_key(name);
-        let bytes = self
-            .embedded
-            .get(&key)
-            .or_else(|| {
-                // Shortest match: 197047 carries the same platform twice, at
-                // `…/StupsKiesel/MiniPlatform/…` and
-                // `…/StupsKiesel/StupsKiesel/MiniPlatform/…`, and the shorter
-                // name is a suffix of BOTH paths. The longer file is the other
-                // block's.
-                self.embedded
-                    .iter()
-                    .filter(|(k, _)| k.ends_with(&format!("/{}", key)))
-                    .min_by_key(|(k, _)| k.len())
-                    .map(|(_, v)| v)
-            })?
-            .clone();
+        let bytes = self.embedded.get(&embedded_key(name))?.clone();
         let model = match Model::parse(&bytes, name) {
             Ok(m) => m,
             Err(e) => {
@@ -170,7 +106,7 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     /// A block model's geometry, in block-local metres.
@@ -195,14 +131,7 @@ impl<'a> Assembler<'a> {
         if let Some(lm) = self.embedded_model(name) {
             return Some(lm);
         }
-        let Some(path) = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())
-        else {
-            // A map's block list is not only blocks: the gates are ITEMS
-            // placed on the grid (`GateCheckpointRight32m`, `GateSpecial32m*`),
-            // and so are the rotors and the seasonal props. A name that is not
-            // a block model is worth one more lookup before it becomes a hole.
-            return self.build_item(name);
-        };
+        let path = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())?;
         let model = self.store.load_model(&path).ok()?;
         let mut prefabs = model.refs_ending(".Prefab.Gbx");
         if prefabs.is_empty() {
@@ -239,7 +168,7 @@ impl<'a> Assembler<'a> {
         merge_stats(&mut self.stats, &c.stats);
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     pub fn item_model(&mut self, name: &str) -> Option<&LocalModel> {
@@ -265,22 +194,17 @@ impl<'a> Assembler<'a> {
         }
         let hi = scene.max_corner();
         let size = place::footprint(hi[0], hi[2]);
-        Some(LocalModel { pivot: c.pivot, scene, size })
+        Some(LocalModel { scene, size })
     }
 
     /// Assemble a map into one scene.
-    ///
-    /// A FREE placement — an item, or a block the author dragged off the grid
-    /// — names the model's PIVOT, so the mesh is shifted by minus the pivot
-    /// before it is turned. A GRID placement names a cell and is not shifted:
-    /// the cell IS the anchor.
     pub fn map(&mut self, m: &MapFile, yoff: f32, with_items: bool) -> Scene {
         let mut out = Scene::default();
         for b in &m.blocks {
             let free = b.flags & FREE_BLOCK_FLAG != 0;
             let xf: Xform = {
-                let (size, pivot) = match self.block_model(&b.name) {
-                    Some(lm) => (lm.size, lm.pivot),
+                let size = match self.block_model(&b.name) {
+                    Some(lm) => lm.size,
                     None => {
                         self.note(&b.name, false);
                         continue;
@@ -288,8 +212,8 @@ impl<'a> Assembler<'a> {
                 };
                 if free {
                     match (b.free_pos, b.free_rot) {
-                        (Some(p), Some(r)) => place::free(p, r, pivot),
-                        (Some(p), None) => place::free(p, [0.0; 3], pivot),
+                        (Some(p), Some(r)) => place::free(p, r),
+                        (Some(p), None) => place::free(p, [0.0; 3]),
                         _ => continue,
                     }
                 } else {
@@ -304,18 +228,14 @@ impl<'a> Assembler<'a> {
         }
         if with_items {
             for it in &m.items {
-                let pivot = match self.item_model(&it.model) {
-                    Some(lm) => lm.pivot,
-                    None => {
-                        self.note(&it.model, false);
-                        continue;
+                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0]);
+                match self.item_model(&it.model) {
+                    Some(lm) => {
+                        let s = &lm.scene;
+                        out.append(s, &xf);
+                        self.note(&it.model, true);
                     }
-                };
-                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0], pivot);
-                if let Some(lm) = self.item_model(&it.model) {
-                    let s = &lm.scene;
-                    out.append(s, &xf);
-                    self.note(&it.model, true);
+                    None => self.note(&it.model, false),
                 }
             }
         }

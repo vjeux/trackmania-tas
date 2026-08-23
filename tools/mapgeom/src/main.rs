@@ -1,6 +1,11 @@
-use mapgeom::coverage::RESTING;
 use mapgeom::node::{Node, Slot};
 use mapgeom::{names, store::DataStore, store::STADIUM_KEY};
+
+/// How close to a surface a sample has to be to count as RESTING on it.
+/// Measured ride heights on maps this model reproduces run 0.013 - 0.073 m, so
+/// 0.25 m is generous; what it must not be is metres, or the fit finds the
+/// stadium floor. See `probe::Report::resting`.
+const RESTING: f32 = 0.25;
 
 const USAGE: &str = "\
 mapgeom -- TM2020 map geometry
@@ -13,8 +18,7 @@ COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
   resolve <logical-path>        which pack entry a logical path is stored under
   refs <logical-path>           a file's external reference table
-  dump <path> [--body F]        walk a file's node graph and summarise it;
-                                --body writes the decompressed body out
+  dump <path>                   walk a file's node graph and summarise it
   model <path> --out F          a single file's geometry, as .glb or .obj
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   extract <logical-path> <file>    one pack file, decrypted and decompressed
@@ -25,22 +29,7 @@ COMMANDS
                                 fit the map height and grade the model: how
                                 far above the surface the car sat, and what
                                 the surface was
-  compare --before DIR --after DIR [--out F]
-                                the before/after coverage table, as markdown,
-                                from two directories of transcripts
-  corpus --root DIR --out DIR [--jobs N] [--maps a,b] [--pin id=ghost]
-         [-- <check flags>]
-                                grade every map in a tree, in parallel, into
-                                one directory of transcripts + summary.tsv
-  where <file.Map.Gbx> --at X,Z [--yoff N]
-                                every block and item record the map places
-                                near a point, with where it lands and how many
-                                triangles it produced
-  holes <file.Map.Gbx> --ghost G... --yoff N [--radius M]
-                                every stretch of the run the model has no
-                                surface under, and how far the nearest
-                                triangle is -- absent, or merely too narrow
-  plumb <file.Map.Gbx> --at X,Z... [--yoff N]
+  plumb <file.Map.Gbx> --at X,Z [--yoff N]
                                 every surface in one vertical column
 
 `dump` and `model` take either a pack path or a local file, so a model pulled
@@ -104,10 +93,7 @@ fn load_any(store: &mut DataStore, name: &str) -> mapgeom::store::Model {
 }
 
 /// Build the whole scene for one map at one height: its blocks and items, the
-/// models it embeds, and the stadium it sits in. The third return is the
-/// assembler's model table — which models were placed, and which of them
-/// produced no triangles — which is what `blame` turns a hole into a name
-/// with.
+/// models it embeds, and the stadium it sits in.
 fn build(
     store: &mut DataStore,
     m: &tmmaps::map::MapFile,
@@ -115,8 +101,7 @@ fn build(
     with_items: bool,
     deco: bool,
     verbose: bool,
-) -> (mapgeom::scene::Scene, mapgeom::geom::Stats, std::collections::BTreeMap<String, (usize, bool)>)
-{
+) -> (mapgeom::scene::Scene, mapgeom::geom::Stats) {
     let mut asm = mapgeom::assemble::Assembler::new(store);
     match asm.with_embedded(m) {
         Ok(0) => {}
@@ -146,18 +131,22 @@ fn build(
         }
     }
     let stats = std::mem::take(&mut asm.stats);
-    let used = std::mem::take(&mut asm.used);
-    (scene, stats, used)
+    (scene, stats)
 }
 
 /// How well one candidate map height explains a set of runs: how many samples
-/// are RESTING on a surface, and the median of those gaps.
-fn score_at(scene: &mapgeom::scene::Scene, runs: &[Run], reach: f32) -> (usize, f32) {
+/// share a ride height, and what that height is.
+fn score_at(
+    scene: &mapgeom::scene::Scene,
+    ghosts: &[(String, Vec<[f32; 3]>, [f32; 4])],
+    reach: f32,
+) -> (usize, f32) {
     let idx = mapgeom::probe::Index::build(scene, 32.0);
     let mut score = 0usize;
     let mut centre = f32::NAN;
-    for r in runs {
-        let (n, c) = mapgeom::coverage::resting(&idx, &r.motions, reach, RESTING);
+    for (_, pts, _) in ghosts {
+        let r = mapgeom::probe::Report::of(&idx, pts, reach);
+        let (n, c) = r.resting(RESTING);
         score += n;
         if centre.is_nan() {
             centre = c;
@@ -220,12 +209,6 @@ fn main() {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let m = load_any(&mut store, &p);
-            // The decompressed body, for when a chunk layout has to be read
-            // off the bytes. `MAPGEOM_TRACE=1` says where in it the walk was.
-            if let Some(out) = flag(&a.rest, "--body") {
-                std::fs::write(&out, &m.body).unwrap_or_else(|e| die(e.to_string()));
-                println!("wrote {} ({} bytes of body)", out, m.body.len());
-            }
             let g = m.graph().unwrap_or_else(die);
             println!("{}  class 0x{:08X}  {} nodes", m.path, m.class_id, m.num_nodes);
             if let Some(root) = &g.root {
@@ -287,9 +270,9 @@ fn main() {
             let deco = !a.rest.iter().any(|x| x == "--no-deco");
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             println!("{}: {} blocks, {} items, yoff {}", p, m.blocks.len(), m.items.len(), yoff);
-            let (mut scene, stats, _) = build(&mut store, &m, yoff, with_items, deco, true);
-            for g in ghost_runs(&a.rest) {
-                scene.add_line(&g.name, g.points, g.colour);
+            let (mut scene, stats) = build(&mut store, &m, yoff, with_items, deco, true);
+            for g in ghost_lines(&a.rest) {
+                scene.add_line(&g.0, g.1, g.2);
             }
             report(&stats, &scene);
             write_scene(&scene, &out);
@@ -320,8 +303,8 @@ fn main() {
             let deco = !a.rest.iter().any(|x| x == "--no-deco");
             let reach: f32 = flag(&a.rest, "--reach").and_then(|s| s.parse().ok()).unwrap_or(6.0);
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            let runs = ghost_runs(&a.rest);
-            if runs.is_empty() {
+            let ghosts = ghost_lines(&a.rest);
+            if ghosts.is_empty() {
                 die::<()>("check needs at least one --ghost".into());
             }
             let given: Option<f32> = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok());
@@ -342,8 +325,8 @@ fn main() {
                         };
                         let mut pass_best = (f32::NAN, 0usize);
                         for y in cands {
-                            let (scene, _, _) = build(&mut store, &m, y, with_items, deco, false);
-                            let (score, centre) = score_at(&scene, &runs, reach);
+                            let (scene, _) = build(&mut store, &m, y, with_items, deco, false);
+                            let (score, centre) = score_at(&scene, &ghosts, reach);
                             if score > pass_best.1 {
                                 pass_best = (y, score);
                             }
@@ -367,180 +350,40 @@ fn main() {
                 }
             };
 
-            let (scene, stats, used) = build(&mut store, &m, yoff, with_items, deco, true);
+            let (scene, stats) = build(&mut store, &m, yoff, with_items, deco, true);
             let idx = mapgeom::probe::Index::build(&scene, 32.0);
             report(&stats, &scene);
             println!("{}\n  yoff {}  ({} triangles indexed)", p, yoff, idx.triangle_count());
-            for run in &runs {
-                let v = mapgeom::coverage::Verdict::of(&idx, &run.motions, reach);
-                grade(&run.name, &v);
-                let b = mapgeom::blame::of(&m, &used, &v, &run.points, yoff);
-                if b.total > 0 {
-                    println!("    what the map has where the model does not:");
-                    for (name, n) in b.ranked().iter().take(10) {
-                        let label = if name.is_empty() { "(no block or item in that cell)" } else { name };
-                        println!("      {:>6} samples  {}", n, label);
-                    }
-                }
-                // One machine-readable line per run, for `corpus` to collect.
-                let mats = v.materials();
-                let top = mats.iter().max_by_key(|(_, n)| **n).map(|(k, _)| k.clone());
+            for (name, pts, _) in &ghosts {
+                let r = mapgeom::probe::Report::of(&idx, pts, reach);
                 println!(
-                    "SUMMARY\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}",
-                    run.name,
-                    yoff,
-                    v.classes.len(),
-                    v.raw_fraction(),
-                    v.owed(),
-                    v.covered_fraction(),
-                    v.median_gap(),
-                    v.gap_pct(0.90),
-                    v.tightest_half(),
-                    v.median_ride(),
-                    v.count(mapgeom::coverage::Class::Airborne),
-                    v.count(mapgeom::coverage::Class::Missing),
-                    top.unwrap_or_else(|| "-".to_string()),
-                    b.ranked().first().map(|(n, _)| if n.is_empty() { "(empty cell)" } else { n }).unwrap_or("-"),
+                    "  {}: {}/{} samples over a surface ({:.1} %)",
+                    name,
+                    r.hits,
+                    r.samples,
+                    100.0 * r.hits as f32 / r.samples.max(1) as f32
                 );
-            }
-        }
-        "holes" => {
-            let mut store = open(&a);
-            let p = a.rest.get(1).cloned().unwrap_or_default();
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let reach: f32 = flag(&a.rest, "--reach").and_then(|s| s.parse().ok()).unwrap_or(6.0);
-            let radius: f32 =
-                flag(&a.rest, "--radius").and_then(|s| s.parse().ok()).unwrap_or(48.0);
-            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            let runs = ghost_runs(&a.rest);
-            let (scene, _, used) = build(
-                &mut store,
-                &m,
-                yoff,
-                !a.rest.iter().any(|x| x == "--no-items"),
-                !a.rest.iter().any(|x| x == "--no-deco"),
-                false,
-            );
-            let idx = mapgeom::probe::Index::build(&scene, 32.0);
-            for run in &runs {
-                let v = mapgeom::coverage::Verdict::of(&idx, &run.motions, reach);
-                grade(&run.name, &v);
-                let b = mapgeom::blame::of(&m, &used, &v, &run.points, yoff);
-                println!("  {} holes, by what the map has there:", b.total);
-                for (name, n) in b.ranked() {
-                    let label =
-                        if name.is_empty() { "(no block or item in that cell)" } else { name };
-                    println!("    {:>6} samples  {}", n, label);
-                }
-                // Consecutive missing samples are one hole; 525 lines is not
-                // a diagnosis and a dozen spans is.
-                println!("  each stretch, and how far the nearest triangle is:");
-                let mut i = 0usize;
-                let mut shown = 0;
-                while i < v.classes.len() {
-                    if v.classes[i] != mapgeom::coverage::Class::Missing {
-                        i += 1;
-                        continue;
-                    }
-                    let start = i;
-                    while i < v.classes.len()
-                        && v.classes[i] == mapgeom::coverage::Class::Missing
-                    {
-                        i += 1;
-                    }
-                    let mid = run.points[(start + i) / 2];
-                    let near = idx.nearest(mid, radius);
-                    let col = idx.column(mid[0], mid[2]);
-                    shown += 1;
-                    if shown > 24 {
-                        continue;
-                    }
+                if r.hits > 0 {
                     println!(
-                        "    samples {:>5}..{:<5} ({:>3}) at ({:.1}, {:.1}, {:.1})  nearest \
-                         triangle {}  deepest column entry {}",
-                        start,
-                        i - 1,
-                        i - start,
-                        mid[0],
-                        mid[1],
-                        mid[2],
-                        match &near {
-                            Some((d, mat)) => format!("{:.2} m ({})", d, mat),
-                            None => format!("none within {:.0} m", radius),
-                        },
-                        match col.iter().find(|(y, _)| *y <= mid[1]) {
-                            Some((y, mat)) => format!("{:.2} m below ({})", mid[1] - y, mat),
-                            None => "nothing below at any depth".to_string(),
-                        }
+                        "    gap below the car   median {:.3} m   p10 {:.3}   p90 {:.3}   \
+                         tightest half-window +/-{:.3} m",
+                        r.median(),
+                        r.pct(0.10),
+                        r.pct(0.90),
+                        r.tightest_half()
                     );
-                }
-                if shown > 24 {
-                    println!("    ... {} more stretches", shown - 24);
+                    let mut mats: Vec<(&String, &usize)> = r.materials.iter().collect();
+                    mats.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+                    let line: Vec<String> = mats
+                        .iter()
+                        .take(6)
+                        .map(|(m, n)| format!("{} {:.0}%", m, 100.0 * **n as f32 / r.hits as f32))
+                        .collect();
+                    println!("    driven over         {}", line.join(", "));
                 }
             }
         }
-        "corpus" => {
-            let root = flag(&a.rest, "--root").unwrap_or_else(|| die("corpus needs --root".into()));
-            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("corpus needs --out".into()));
-            let jobs_n: usize =
-                flag(&a.rest, "--jobs").and_then(|s| s.parse().ok()).unwrap_or(12);
-            let only: Vec<String> = flag(&a.rest, "--maps")
-                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-                .unwrap_or_default();
-            let mut js = mapgeom::corpus::jobs(std::path::Path::new(&root), &{
-                let mut pins = std::collections::BTreeMap::new();
-                for (i, x) in a.rest.iter().enumerate() {
-                    if x == "--pin" {
-                        if let Some((id, g)) = a.rest.get(i + 1).and_then(|s| s.split_once('=')) {
-                            pins.insert(id.to_string(), g.to_string());
-                        }
-                    }
-                }
-                pins
-            });
-            if !only.is_empty() {
-                js.retain(|j| only.contains(&j.id));
-            }
-            // Everything after `--` is handed to each `check`.
-            let extra: Vec<String> = a
-                .rest
-                .iter()
-                .position(|x| x == "--")
-                .map(|i| a.rest[i + 1..].to_vec())
-                .unwrap_or_default();
-            eprintln!("{} maps, {} at a time", js.len(), jobs_n);
-            let res = mapgeom::corpus::run(&js, std::path::Path::new(&out), jobs_n, &extra);
-            let table = std::path::Path::new(&out).join("summary.tsv");
-            let mut s = String::from(
-                "map\tghost\tyoff\tsamples\traw\towed\tcovered\tmedian\tp90\thalfwin\tride\t\
-                 airborne\tmissing\ttop_material\tworst_blame\n",
-            );
-            for (id, line) in &res {
-                s.push_str(id);
-                s.push('\t');
-                s.push_str(line.trim_start_matches("SUMMARY\t"));
-                s.push('\n');
-            }
-            std::fs::write(&table, &s).unwrap_or_else(|e| die(e.to_string()));
-            println!("{}", s);
-            println!("wrote {}", table.display());
-        }
-        "compare" => {
-            let before =
-                flag(&a.rest, "--before").unwrap_or_else(|| die("compare needs --before".into()));
-            let after =
-                flag(&a.rest, "--after").unwrap_or_else(|| die("compare needs --after".into()));
-            let s = mapgeom::corpus::compare(
-                std::path::Path::new(&before),
-                std::path::Path::new(&after),
-            );
-            print!("{}", s);
-            if let Some(out) = flag(&a.rest, "--out") {
-                std::fs::write(&out, &s).unwrap_or_else(|e| die(e.to_string()));
-                println!("wrote {}", out);
-            }
-        }
-        "where" => {
+        "plumb" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -550,85 +393,11 @@ fn main() {
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
             if at.len() < 2 {
-                die::<()>("where needs --at X,Z".into());
+                die::<()>("plumb needs --at X,Z (or X,Y,Z)".into());
             }
-            let (x, z) = (at[0], at[at.len() - 1]);
+            let (x, z) = if at.len() >= 3 { (at[0], at[2]) } else { (at[0], at[1]) };
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
-            asm.with_embedded(&m).ok();
-            let (cx, cz) = ((x / 32.0).floor() as i32, (z / 32.0).floor() as i32);
-            println!("records within one cell of x {} z {} (cell {},{}):", x, z, cx, cz);
-            for b in &m.blocks {
-                let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
-                let c = b.coords();
-                let (bx, bz) = if free {
-                    match b.free_pos {
-                        Some(q) => ((q[0] / 32.0).floor() as i32, (q[2] / 32.0).floor() as i32),
-                        None => continue,
-                    }
-                } else {
-                    (c.0, c.2)
-                };
-                if (bx - cx).abs() > 1 || (bz - cz).abs() > 1 {
-                    continue;
-                }
-                let lm = asm.block_model(&b.name);
-                let size = lm.map(|l| l.size).unwrap_or((f32::NAN, f32::NAN));
-                let tris = lm.map(|l| l.scene.tri_count()).unwrap_or(0);
-                let origin_y = if free {
-                    b.free_pos.map(|q| q[1]).unwrap_or(f32::NAN)
-                } else {
-                    8.0 * c.1 as f32 + yoff
-                };
-                println!(
-                    "  block {:<52} {} cell {:?} dir {}  world y {:.2}  footprint {:.0}x{:.0}  \
-                     {} triangles",
-                    b.name,
-                    if free { "FREE" } else { "grid" },
-                    c,
-                    b.dir,
-                    origin_y,
-                    size.0,
-                    size.1,
-                    tris
-                );
-            }
-            for it in &m.items {
-                let (ix, iz) = ((it.pos[0] / 32.0).floor() as i32, (it.pos[2] / 32.0).floor() as i32);
-                if (ix - cx).abs() > 1 || (iz - cz).abs() > 1 {
-                    continue;
-                }
-                let tris = asm.item_model(&it.model).map(|l| l.scene.tri_count()).unwrap_or(0);
-                println!(
-                    "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3}  {} triangles",
-                    it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, tris
-                );
-            }
-        }
-        "plumb" => {
-            let mut store = open(&a);
-            let p = a.rest.get(1).cloned().unwrap_or_default();
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            let ats: Vec<[f32; 3]> = a
-                .rest
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| *s == "--at")
-                .filter_map(|(i, _)| a.rest.get(i + 1))
-                .filter_map(|s| {
-                    let v: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
-                    match v.len() {
-                        2 => Some([v[0], 0.0, v[1]]),
-                        3 => Some([v[0], v[1], v[2]]),
-                        _ => None,
-                    }
-                })
-                .collect();
-            if ats.is_empty() {
-                die::<()>("plumb needs --at X,Z (or X,Y,Z), repeatable".into());
-            }
-            let (scene, _, _) = build(
+            let (scene, _) = build(
                 &mut store,
                 &m,
                 yoff,
@@ -637,19 +406,10 @@ fn main() {
                 false,
             );
             let idx = mapgeom::probe::Index::build(&scene, 32.0);
-            for at in &ats {
-                let col = idx.column(at[0], at[2]);
-                println!(
-                    "column at x {} z {} (yoff {}): {} surfaces  (Water is at the plane a car\n  RESTS on, {} m below where it is drawn -- see probe::WATER_DRAFT)",
-                    at[0],
-                    at[2],
-                    yoff,
-                    col.len(),
-                    mapgeom::probe::WATER_DRAFT
-                );
-                for (y, mat) in col.iter().take(40) {
-                    println!("  y {:>10.3}   {}", y, mat);
-                }
+            let col = idx.column(x, z);
+            println!("column at x {} z {} (yoff {}): {} surfaces", x, z, yoff, col.len());
+            for (y, mat) in col.iter().take(40) {
+                println!("  y {:>10.3}   {}", y, mat);
             }
         }
         _ => {
@@ -659,19 +419,9 @@ fn main() {
     }
 }
 
-/// One driven run: its trajectory, and the motion the recording itself
-/// reports at every sample. The second half is what lets a hole in the model
-/// be told apart from a car in the air.
-struct Run {
-    name: String,
-    points: Vec<[f32; 3]>,
-    motions: Vec<mapgeom::coverage::Motion>,
-    colour: [f32; 4],
-}
-
-/// `--ghost F` (repeatable): a driven trajectory in the same world frame as
-/// the model, so the two can be looked at together.
-fn ghost_runs(args: &[String]) -> Vec<Run> {
+/// `--ghost F` (repeatable): a driven trajectory as a polyline in the same
+/// world frame as the model, so the two can be looked at together.
+fn ghost_lines(args: &[String]) -> Vec<(String, Vec<[f32; 3]>, [f32; 4])> {
     const COLOURS: [[f32; 4]; 4] = [
         [1.0, 0.15, 0.15, 1.0],
         [1.0, 0.85, 0.10, 1.0],
@@ -688,7 +438,7 @@ fn ghost_runs(args: &[String]) -> Vec<Run> {
     {
         match gbx::decode_ghost(p) {
             Ok(d) => {
-                let points: Vec<[f32; 3]> =
+                let pts: Vec<[f32; 3]> =
                     d.samples.iter().map(|s| [s.x as f32, s.y as f32, s.z as f32]).collect();
                 let name = std::path::Path::new(p)
                     .file_stem()
@@ -697,16 +447,11 @@ fn ghost_runs(args: &[String]) -> Vec<Run> {
                 println!(
                     "  ghost {}: {} samples, first {:?}, last {:?}",
                     name,
-                    points.len(),
-                    points.first().copied().unwrap_or_default(),
-                    points.last().copied().unwrap_or_default()
+                    pts.len(),
+                    pts.first().copied().unwrap_or_default(),
+                    pts.last().copied().unwrap_or_default()
                 );
-                out.push(Run {
-                    name: format!("path_{}", name),
-                    motions: mapgeom::coverage::motions(&d.samples),
-                    points,
-                    colour: COLOURS[i % COLOURS.len()],
-                });
+                out.push((format!("path_{}", name), pts, COLOURS[i % COLOURS.len()]));
             }
             Err(e) => eprintln!("  ghost {}: {}", p, e),
         }
@@ -717,90 +462,6 @@ fn ghost_runs(args: &[String]) -> Vec<Run> {
 fn die<T>(e: String) -> T {
     eprintln!("{}", e);
     std::process::exit(1);
-}
-
-/// The grading of one run against the model.
-///
-/// Two coverage numbers are printed and both are needed. **raw** is every
-/// sample with any surface straight below within reach, over every sample —
-/// the number the first corpus run reported, kept so a before/after comparison
-/// is like for like. **owed** counts only the samples the model is answerable
-/// for: the recording says the car was standing on something. A sample the
-/// recording says was in flight is not a hole in the model.
-///
-/// Both controls on that split are printed beside it. The mean vertical
-/// acceleration under each value of the recording's contact bit: if the bit
-/// means what its name says, the airborne rows read the map's gravity (about
-/// −24.6 m/s²) and the contact rows read near zero. And how much of the run
-/// was upright, which is the check on the quaternion the down-axis probe is
-/// aimed by — a flat map that is not nearly all upright has a broken
-/// quaternion, not an interesting road.
-fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
-    use mapgeom::coverage::Class;
-    let n = v.classes.len();
-    println!(
-        "  {}: {}/{} samples over a surface ({:.1} % raw)",
-        name,
-        v.gaps.iter().filter(|g| g.is_finite()).count(),
-        n,
-        100.0 * v.raw_fraction()
-    );
-    println!(
-        "    accounted for       {} resting, {} loose, {} airborne, {} MISSING SURFACE",
-        v.count(Class::Resting),
-        v.count(Class::Loose),
-        v.count(Class::Airborne),
-        v.count(Class::Missing),
-    );
-    if v.owed() > 0 {
-        println!(
-            "    of the {} samples the model owes, {:.1} % have a surface \
-             ({} of them on a block that MOVES, drawn at its rest pose)",
-            v.owed(),
-            100.0 * v.covered_fraction(),
-            v.on_moving(),
-        );
-    }
-    println!(
-        "    controls            contact bit: in contact {:.1} m/s^2 (n {}), airborne {:.1} \
-         m/s^2 (n {}), agrees with free-fall on {:.1} % -- {}; median car tilt {:.1} deg",
-        v.accel_contact.0,
-        v.accel_contact.1,
-        v.accel_air.0,
-        v.accel_air.1,
-        100.0 * v.bit_vs_freefall.0 as f32 / v.bit_vs_freefall.1.max(1) as f32,
-        if v.trusted_bit {
-            "BIT USED"
-        } else {
-            "BIT REJECTED, free-fall used instead"
-        },
-        v.median_tilt(),
-    );
-    if v.gaps.iter().any(|g| g.is_finite()) {
-        println!(
-            "    gap below the car   median {:.3} m   p10 {:.3}   p90 {:.3}   \
-             tightest half-window +/-{:.3} m",
-            v.median_gap(),
-            v.gap_pct(0.10),
-            v.gap_pct(0.90),
-            v.tightest_half()
-        );
-        println!(
-            "    ride height on the car's own down axis   median {:.3} m   p90 {:.3}",
-            v.median_ride(),
-            v.ride_pct(0.90)
-        );
-        let mats = v.materials();
-        let total: usize = mats.values().sum();
-        let mut mats: Vec<(&String, &usize)> = mats.iter().collect();
-        mats.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
-        let line: Vec<String> = mats
-            .iter()
-            .take(6)
-            .map(|(m, k)| format!("{} {:.0}%", m, 100.0 * **k as f32 / total.max(1) as f32))
-            .collect();
-        println!("    driven over         {}", line.join(", "));
-    }
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -871,10 +532,6 @@ fn write_scene(scene: &mapgeom::scene::Scene, out: &str) {
 fn describe(n: &Node) -> String {
     match n {
         Node::Prefab(p) => format!("CPlugPrefab, {} entities", p.ents.len()),
-        Node::Dyna(d) => format!(
-            "CPlugDynaObjectModel mesh={} moving shape={} static shape={}",
-            d.mesh, d.dyna_shape, d.static_shape
-        ),
         Node::StaticObject(s) => format!(
             "CPlugStaticObjectModel mesh={} collidable={} shape={}",
             s.mesh, s.mesh_collidable, s.shape
@@ -914,7 +571,6 @@ fn describe(n: &Node) -> String {
             format!("material {} ({})", n, mapgeom::scene::physics_name(*p))
         }
         Node::ItemModel(i) => format!("item model -> node {}", i),
-        Node::Pivot(p) => format!("item placement, pivot {:?}", p),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }
