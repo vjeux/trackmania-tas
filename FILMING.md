@@ -43,7 +43,20 @@ frames better.
 A separation of zero and a separation you cannot see are the same picture. Decode
 both to CSV and compare md5s; equal means one tape is carrying the other's run,
 and the clip would be one lap wearing two liveries. On 285268 all eight of our
-tapes decode to a human's trajectory.
+tapes decoded to a human's trajectory — **which is why this rule exists.**
+
+*(Status of that example, checked 2026-08-22: the 285268 files have since been
+repaired. `tmtraj corpus splice --root .` now reports all five of ours **CLEAN**
+against `HUMAN_rank2_keyboard_49491` — 0 of 986–990 samples identical, worst
+separation 3.55–15.60 m. The rule stands; its worked example is now a
+before-and-after rather than a live defect.)*
+
+**Two cheaper ways to run this check than by hand**, both over the whole corpus:
+`tmtraj corpus splice --root .` for telemetry that is another driver's, and
+`tmtraj corpus dup --root .` for two of *our* files carrying one recording.
+Note `corpus dup` **silently passed everything until 2026-08-22** — it shelled
+out to a command that does not exist and read the failure as "the tapes are
+identical" — so any pre-dated clearance from it means nothing (`tools/README.md`).
 
 ## 4. The caption
 

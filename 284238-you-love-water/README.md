@@ -140,6 +140,13 @@ copy 0's kicker by 1.00 m in a matched A/B — one block's f32 `y`, so the car
 arrives in a bit-identical state — leaves the roll profile essentially unchanged
 (+105.2 against +108.4, both locking at +89.5 and driving the wall).
 
+> **That kicker-height experiment is VOID, 2026-08-22.** The 1.00 m kicker is a
+> **four-block assembly with one free block**, so moving "one block's f32 `y`"
+> moved a quarter of the kicker and built a step in it. The same mistake voids
+> the raise experiment. **A matched A/B is only matched if it moved the whole
+> object** — and the car arriving bit-identically is exactly what makes that
+> invisible.
+
 The one encouraging measurement: a standing start off copy 0 flies the good line
 to within 2–7 m of it, point for point. The line is not exotic and this car can
 drive it — copy 0 has the run-up that produces it and the others do not.
@@ -150,6 +157,36 @@ water ramps with tech blocks that give every copy a flat run-up. A human beats
 that map's author time. Nobody has beaten this one.
 
 ## What the obstacle actually is: the engagement point
+
+> ### ⚠️ RETRACTED 2026-08-22 — the discriminator is the crossing angle, not `engage_x`
+>
+> **Everything in this section is a real measurement and the law it states is
+> not the mechanism.** `engage_x` correlates with the frozen roll rate across
+> the 27 tapes below, and the later work shows what it was standing in for:
+> **the crossing angle `vz` at the ice kicker.**
+>
+> The correction was earned the right way round — **by perturbing the run that
+> WORKS** instead of inferring a bar from our own failures. Taking Yhomas's own
+> 46.112 on the sibling map and moving one flag at a time: he **rides at
+> vz −23.72 and unloads at −22.91**, and his checkpoint arrival falls
+> 69.40 → 55.47 → 43.83 → **22.44 m/s** as vz weakens to −18.4. **Our record
+> engages at vz −2.3**, and the best shot at −18.2. That is the whole 47 s.
+>
+> And the reason it cannot simply be steered to: **the water launcher is a
+> shallow trough** (−0.78 °/m, floor at Z 927.4) where his tech deck is flat
+> (0.09 °/m). Loading the wheels needs roll ≈ 0, which is *the floor*; the
+> rotation needs vz ≤ −24, which is *3 m up the wall*. They are the same
+> variable, which is why every intervention below trades one for the other.
+> One tape of 36 kept its wheels loaded — at the floor, at vz −12, reaching the
+> wall at 32.3 m/s against his 79.5.
+>
+> **Two experiments on this page are additionally void**, and for a reason worth
+> keeping: **the 1.00 m kicker is a four-block assembly with one free block**, so
+> both "raise/lower the kicker" A/Bs moved a *quarter* of it and built a step
+> (99.81 → 50.84). A matched A/B is only matched if it moved the whole object.
+>
+> Read the rest of this section as **the measurements, which stand**, and not as
+> the law. Details: memory key `tm2020-map284238-symmetry.md`.
 
 **The obstacle is governed by one number — `engage_x`, the point on the curved
 ice kicker where the car first engages it.** That sets the car's roll rate at the
@@ -197,12 +234,13 @@ arrived at roll −147 and −172 against the target of +86.
 So inside a 190-tick window the steering cannot recover the ~50 m that the
 required brake costs. **That is a mechanism, not a budget.**
 
-**The open question, for anyone who wants it:** move `engage_x` by 5 m without
-spending the line. The untried candidate is **approach height** — the car meets a
-*rising* curve, so the vertical axis is geometrically the strongest lever and
-nobody has probed it. Separately, the water start is 1.30 s with no upstream
-coupling and has never been searched with a time-varying control; it may simply
-be worth more than any of this.
+**The open question, for anyone who wants it:** the two levers above are
+superseded by the crossing-angle finding at the top of this section — the target
+is **vz ≤ −24 at the kicker with the wheels still loaded**, and the trough
+geometry makes those two demands the same variable pulling opposite ways. The
+one lead nobody has spent: **the water start is 1.30 s with no upstream coupling
+and has never been searched** with a time-varying control. It may simply be
+worth more than any of this.
 
 ## The record's time is mostly retries
 
