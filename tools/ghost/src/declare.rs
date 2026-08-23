@@ -23,8 +23,8 @@ use gbx::container::secs;
 /// actually does and writes THAT, so the number is never typed by a human and
 /// never copied out of a search log.
 pub fn cmd(a: &[String]) {
-    let inp = a.first().unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
-    let out = a.get(1).unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M)"));
+    let inp = a.first().unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]"));
+    let out = a.get(1).unwrap_or_else(|| die("ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]"));
     let c = Container::load(inp).unwrap_or_else(|e| die(e));
     let ms: i64 = if has(a, "--from-oracle") {
         let server = oracle::server_dir(flag(a, "--server"));
@@ -55,10 +55,39 @@ pub fn cmd(a: &[String]) {
     // the server compares the LENGTH of that list with the map's checkpoint
     // count before it simulates anything.
     let want_cps = num(a, "--cps");
+    let want_splits: Option<Vec<i32>> = flag(a, "--splits").map(|s| {
+        s.split(',')
+            .map(|x| {
+                x.trim().parse::<i32>().unwrap_or_else(|_| {
+                    die(format!("--splits wants milliseconds, comma separated; got {:?}", x))
+                })
+            })
+            .collect()
+    });
     let before: Vec<i32> = c.splits();
     let body = trim::rewrite_result(&body, |r| {
         r.race_ms = ms as i32;
-        if let Some(n) = want_cps {
+        if let Some(sp) = &want_splits {
+            // THE SPLITS ARE A CLAIM, AND THEY WERE THE CARRIER'S.
+            //
+            // `--time` rewrites the race time and the LAST entry and leaves
+            // every intermediate one alone -- so a searched tape on a borrowed
+            // container declares its own finish beside the donor's checkpoint
+            // times. On 134672 that reads 13.906 / 33.106 / 45.437 / 63.812 /
+            // 67.200: four of another driver's splits and one of ours, in one
+            // list, with nothing in the file to say which is which. The
+            // deleted `u02 declare --splits` could write them and its
+            // replacement could not, and every regenerated ghost since has
+            // carried the gap.
+            //
+            // Measure them the way this toolchain measures a split -- one
+            // verified segment map per checkpoint, `tmmaps segments` then
+            // `tmmaps oracle` -- and pass them here. Milliseconds, like
+            // `--time`. The read-back control below requires the last one to
+            // BE the declared time, which is the one relation that holds on
+            // every reference ghost in the corpus.
+            r.entries = sp.iter().map(|t| (*t, 1)).collect();
+        } else if let Some(n) = want_cps {
             // Every intermediate entry becomes 0.000. This is the borrowed-
             // container case by construction -- the count only changes when the
             // file moved to a map with a different number of checkpoints -- and
@@ -120,6 +149,25 @@ pub fn cmd(a: &[String]) {
         die(format!("read-back control FAILED: declared copies are {:?}", dt));
     }
     let after: Vec<i32> = c2.splits();
+    if let Some(sp) = &want_splits {
+        if after != *sp {
+            die(format!(
+                "read-back control FAILED: asked for splits {:?}, the file declares {:?}",
+                sp, after
+            ));
+        }
+        match sp.last() {
+            Some(last) if *last as i64 == ms => {}
+            Some(last) => die(format!(
+                "the last split is {} and the declared time is {}. On every reference ghost in \
+                 this corpus the final entry IS the race time, so a file written this way would \
+                 contradict itself.",
+                secs(*last as i64),
+                secs(ms)
+            )),
+            None => die("--splits was empty"),
+        }
+    }
     if let Some(n) = want_cps {
         if after.len() as i64 != n.clamp(1, 199) {
             die(format!(
@@ -141,6 +189,13 @@ pub fn cmd(a: &[String]) {
     println!("wrote {}", out);
     println!("  declared {} in {} copies, all equal (read-back control OK)", secs(ms), dt.len());
     println!("  the ghost-result chunk's race time was set to the same value");
+    if want_splits.is_some() {
+        println!(
+            "  checkpoints {:?}  (was {:?})",
+            after.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>(),
+            before.iter().map(|s| secs(*s as i64)).collect::<Vec<_>>()
+        );
+    }
     if want_cps.is_some() {
         println!(
             "  checkpoints {:?}  (was {:?})",
