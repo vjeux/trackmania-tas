@@ -7,7 +7,7 @@ a single 20 ms blip off the left key at 46.0 s is worth 0.011.**
 
 **Pain ft Mango & Teuflum** — TAS **49.275** (−0.007) | AT 49.282 | WR 49.291 by Ssnake01
 
-https://github.com/user-attachments/assets/f98396d1-1d74-4788-beab-86ccc1cd81e9
+https://github.com/user-attachments/assets/d53ea01e-c3fb-45a6-b44c-7d182d59c7e1
 
 **Our 49.275 and Ssnake01's world record, both in one camera, shot on our car —
 and this time they really are two cars.** They separate by **12.88 m** at the
