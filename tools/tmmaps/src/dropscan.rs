@@ -62,6 +62,10 @@ struct Probe {
     id: usize,
     cell: (i32, i32, i32),
     dir: u8,
+    /// When set, this probe is a TAPE on the untouched map rather than a moved
+    /// spawn: the population being scored is a family of candidate inputs, and
+    /// what is measured is where the car got, not what the map is made of.
+    tape: Option<PathBuf>,
 }
 
 struct Summary {
@@ -292,7 +296,7 @@ pub fn cmd(args: &[String]) {
             for cx in rng(parts[0]) {
                 for cz in rng(parts[2]) {
                     for d in &dirs {
-                        probes.push(Probe { id: 0, cell: (cx, cy, cz), dir: *d });
+                        probes.push(Probe { id: 0, cell: (cx, cy, cz), dir: *d, tape: None });
                     }
                 }
             }
@@ -309,11 +313,30 @@ pub fn cmd(args: &[String]) {
                 die("--cell cx,cy,cz[,dir]");
             }
             let d = if p.len() > 3 { p[3] as u8 } else { dirs[0] };
-            probes.push(Probe { id: 0, cell: (p[0], p[1], p[2]), dir: d });
+            probes.push(Probe { id: 0, cell: (p[0], p[1], p[2]), dir: d, tape: None });
         }
     }
     if probes.is_empty() {
-        die("no probes: give --cells or --cell");
+        // --tapes DIR: score a POPULATION OF TAPES on the untouched map instead
+        // of a population of spawn cells. Same readout — where did the car get,
+        // how high, how close to the target, and when — which is the poor man's
+        // state objective: a relocated Goal is a fine ruler but a 2.6 m deep
+        // trigger box is a bad search objective, because a candidate 2 m off
+        // the line reads as "DNF" and not as "missed by 2 m".
+        if let Some(d) = f("--tapes") {
+            let mut v: Vec<PathBuf> = std::fs::read_dir(&d)
+                .unwrap_or_else(|e| die(&format!("{}: {}", d, e)))
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.to_string_lossy().ends_with(".Ghost.Gbx"))
+                .collect();
+            v.sort();
+            for p in v {
+                probes.push(Probe { id: 0, cell: (0, 0, 0), dir: 0, tape: Some(p) });
+            }
+        }
+    }
+    if probes.is_empty() {
+        die("no probes: give --cells, --cell or --tapes");
     }
     for (i, p) in probes.iter_mut().enumerate() {
         p.id = i + 1;
@@ -361,7 +384,7 @@ pub fn cmd(args: &[String]) {
     );
 
     // ---- control 2: the reference probe, at the real spawn ----------------
-    let mut all: Vec<Probe> = vec![Probe { id: 0, cell: home, dir: home_dir }];
+    let mut all: Vec<Probe> = vec![Probe { id: 0, cell: home, dir: home_dir, tape: None }];
     all.extend(probes.into_iter());
 
     let queue = Arc::new(Mutex::new(all));
@@ -385,14 +408,20 @@ pub fn cmd(args: &[String]) {
         hs.push(std::thread::spawn(move || loop {
             let p = { queue.lock().unwrap().pop() };
             let Some(p) = p else { break };
-            let tag = format!("p{:04}_{}_{}_{}_d{}", p.id, p.cell.0, p.cell.1, p.cell.2, p.dir);
+            let tag = if let Some(t) = &p.tape {
+                format!("t{:04}_{}", p.id, t.file_stem().unwrap_or_default().to_string_lossy())
+            } else {
+                format!("p{:04}_{}_{}_{}_d{}", p.id, p.cell.0, p.cell.1, p.cell.2, p.dir)
+            };
             let mp = out_dir.join(format!("{}.Map.Gbx", tag));
-            {
+            if p.tape.is_none() {
                 let mut m = map::MapFile::load(Path::new(&map_path));
                 m.move_block_cell(spawn_block, p.cell);
                 m.set_block_dir(spawn_block, p.dir);
                 m.write_to(&mp).expect("write probe map");
             }
+            let mp = if p.tape.is_some() { PathBuf::from(&map_path) } else { mp };
+            let tape = p.tape.clone().unwrap_or_else(|| tape.clone());
             let csv = out_dir.join(format!("{}.csv", tag));
             let work = out_dir.join(format!("work_{}", tag));
             // The car locator is value-based and it REFUSES rather than guesses:
@@ -458,6 +487,25 @@ pub fn cmd(args: &[String]) {
                 Ok(_) => match read_trace(&csv) {
                     Err(e) => s.note = e,
                     Ok(rows) => {
+                        // A trace of ZEROES passes fk's own self-check — the
+                        // velocity is consistent with the position and the
+                        // quaternion is a unit — and it means the car was never
+                        // there. On this map every spawn cell OUTSIDE the map
+                        // grid's own extent produces exactly that: 210 of 245
+                        // "ok" probes in the first wide scan reported the car
+                        // at (0,0,0) for the whole run. Refuse them by name
+                        // rather than averaging them into a heightmap.
+                        let moved = rows.iter().any(|r| {
+                            (r.1.abs() + r.3.abs()) > 1.0 && (r.1 - rows[0].1).abs()
+                                + (r.3 - rows[0].3).abs()
+                                > 0.5
+                        });
+                        if !moved {
+                            s.note = "NO CAR: the trace is all zeroes or never moves — this spawn \
+                                      cell produced no vehicle (outside the map grid?)"
+                                .to_string();
+                            let _ = &s.note;
+                        } else {
                         s.ok = true;
                         s.rows = rows.len();
                         s.t0 = rows[0].0;
@@ -491,11 +539,18 @@ pub fn cmd(args: &[String]) {
                         s.xend = l.1;
                         s.yend = l.2;
                         s.zend = l.3;
+                        }
                     }
                 },
             }
-            if !keep {
+            if !keep && p.tape.is_none() {
+                // ONLY a map this scan WROTE may be removed. In --tapes mode
+                // `mp` is the caller's own map — an earlier version of this
+                // line deleted the map file out of the shared store, which is
+                // exactly the class of bug a scratch-cleaning branch invites.
                 let _ = std::fs::remove_file(&mp);
+            }
+            if !keep {
                 let _ = std::fs::remove_dir_all(&work);
             }
             s.note = if s.note.is_empty() { format!("at {}", used) } else { format!("{} [at {}]", s.note, used) };
