@@ -22,6 +22,7 @@
 
 pub mod bits;
 pub mod container;
+pub mod header;
 pub mod record;
 pub mod recwrite;
 pub mod tape;

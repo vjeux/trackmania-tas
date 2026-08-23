@@ -57,6 +57,7 @@ WHAT DOES THE TRAJECTORY SAY (not the flag)
   motion  FILE [--race S] [--g G]    ballistic / supported / unknown, and the flag beside it
   wheels  FILE [--race S]            wheel radius, and whether the wheel bytes are alive
   facing  FILE... [--ref R] [--route CSV] [--shift-ms N]
+  route   CSV [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
 
 EVERY PUBLISHED FILE AT ONCE
   corpus  splice --root R [--refs F]   telemetry that is another driver's
@@ -116,6 +117,7 @@ pub fn run() {
         "motion" => crate::whlcmd::cmd_motion(rest),
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),
+        "route" => crate::routecmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
         "lines" => cmd_lines(rest),
         "selftest" => {

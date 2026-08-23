@@ -361,6 +361,23 @@ pub fn load_refs(path: &str) -> Result<Vec<Ref>, String> {
     Ok(out)
 }
 
+/// Does the ghost's own manifest list the ground-contact byte among the fields
+/// INHERITED from the carrier?
+///
+/// Scoped to the `fields_inherited` array on purpose: a bare substring search
+/// over the whole manifest would also match the word in an `engine_note` or a
+/// tool argument, and an exemption granted by prose is not an exemption.
+fn manifest_says_contact_inherited(ghost: &str, override_: Option<&str>) -> bool {
+    let p = override_
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{}.manifest.json", ghost));
+    let Ok(s) = std::fs::read_to_string(p) else { return false };
+    let Some(i) = s.find("\"fields_inherited\"") else { return false };
+    let Some(j) = s[i..].find(']') else { return false };
+    let span = s[i..i + j].to_ascii_lowercase();
+    span.contains("contact")
+}
+
 fn map_of(p: &std::path::Path) -> String {
     // <corpus>/<mapdir>/replays/<file>
     p.parent()
@@ -908,7 +925,15 @@ pub fn gate_one(
     let mut unmeasured = 0usize;
 
     // ---- A. the C-checks -------------------------------------------------
-    let (ccode, cfails, cwarns, clines) = run_checks(ghost, race);
+    // Does the file's OWN manifest declare the ground-contact byte inherited
+    // from the carrier? `ghost regen` writes 22 of the 116 bytes in a sample
+    // from the engine plus three from the tape; the other 91, byte 89's
+    // contact flag among them, stay the carrier's. C6 and C10 read byte 89, so
+    // on such a file they are measuring the CARRIER -- and this gate's own
+    // rule is that an input it cannot read is never a verdict about the
+    // subject. The file has to say so itself: no manifest, no exemption.
+    let contact_inherited = manifest_says_contact_inherited(ghost, manifest_override);
+    let (ccode, cfails, cwarns, clines) = run_checks(ghost, race, contact_inherited);
     for l in &clines {
         lines.push(format!("  {}", l));
     }
@@ -1607,12 +1632,19 @@ Without a human reference the file is UNTESTED for contamination, never clean.
 ///   * the gate then exercises THE COMMAND A PERSON WOULD RUN, byte for byte.
 ///     If `tmtraj check` and the gate ever disagree, that is a bug in one of
 ///     them, and a library call would hide it.
-fn run_checks(ghost: &str, race: i64) -> (i32, usize, usize, Vec<String>) {
+fn run_checks(ghost: &str, race: i64, contact_inherited: bool) -> (i32, usize, usize, Vec<String>) {
     let exe = std::env::current_exe().unwrap_or_else(|_| "tmtraj".into());
     let mut c = std::process::Command::new(exe);
     c.arg("check").arg(ghost);
     if race > 0 {
         c.arg("--race").arg(race.to_string());
+    }
+    // The contact byte is one of the 91 per-sample bytes `ghost regen` leaves
+    // as the carrier's. When the file's OWN manifest declares it inherited,
+    // a check that reads it is measuring the carrier, not the subject -- and
+    // an input the gate cannot read is never a verdict about the file.
+    if contact_inherited {
+        c.arg("--contact-inherited");
     }
     let out = match c.output() {
         Ok(o) => o,

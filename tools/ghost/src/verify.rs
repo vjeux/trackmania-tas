@@ -145,45 +145,79 @@ pub fn run(path: &str, a: &[String]) -> Report {
     }
 
     // ---- V2 declared-time census -----------------------------------------
+    // THE HEADER COUNTS TOO. A .Replay.Gbx holds the race time twice more, in
+    // header chunk 0x03093000 and in the header XML, and this census used to
+    // read only the body -- so it printed "1 copies, all 36.049" about a file
+    // whose header still said 49.958. A count of a set you cannot see all of
+    // is worse than no count.
     let dts = c.declared_times();
-    let mut vals: Vec<u32> = dts.iter().map(|x| x.1).collect();
+    let hdr_ts = crate::hdr::header_declared_ms(&c);
+    let mut vals: Vec<u32> = dts.iter().map(|x| x.1).chain(hdr_ts.iter().map(|x| x.1)).collect();
+    let total = vals.len();
     vals.sort();
     vals.dedup();
-    if dts.is_empty() {
+    let where_ = format!(
+        "{} in the body, {} in the header",
+        dts.len(),
+        hdr_ts.len()
+    );
+    if total == 0 {
         r.add("V2", Verdict::Na, "this container declares no race time");
     } else if vals.len() > 1 {
+        let detail: Vec<String> = dts
+            .iter()
+            .map(|(o, v)| format!("body@{} {}", o, secs(*v as i64)))
+            .chain(hdr_ts.iter().map(|(w, v)| format!("{} {}", w, secs(*v as i64))))
+            .collect();
         r.add(
             "V2",
             Verdict::Fail,
             format!(
-                "declared-time census: {} copies carrying {} DIFFERENT times ({:?}) -- \
-                 the file declares one time and another",
-                dts.len(),
+                "declared-time census: {} copies ({}) carrying {} DIFFERENT times -- {}",
+                total,
+                where_,
                 vals.len(),
-                vals.iter().map(|v| secs(*v as i64)).collect::<Vec<_>>()
+                detail.join(", ")
             ),
         );
     } else {
         r.add(
             "V2",
             Verdict::Pass,
-            format!(
-                "declared-time census: {} copies, all {}",
-                dts.len(),
-                secs(vals[0] as i64)
-            ),
+            format!("declared-time census: {} copies ({}), all {}", total, where_, secs(vals[0] as i64)),
         );
     }
 
     // ---- V3 container identity -------------------------------------------
     let fields = ident::scan(&c);
-    let foreign: Vec<String> = fields
+    let mut foreign: Vec<String> = fields
         .iter()
         .filter(|f| matches!(f.role, Role::AccountId | Role::Locator) && !f.s.is_empty())
-        .map(|f| format!("{} {:?}", f.role.label(), f.s))
+        .map(|f| format!("body {} {:?}", f.role.label(), f.s))
         .collect();
+    // ...and the driver identity in the header, which this check could not see.
+    // The map's own author block is deliberately NOT in this list: it is the
+    // map's, it stays, and laundering it would be a misattribution the other
+    // way. `hdr::header_driver_identity` draws that line structurally.
+    let hdr_id = crate::hdr::header_driver_identity(&c);
+    for (wh, v) in &hdr_id {
+        if !v.is_empty() && v != "TAS" && !v.chars().all(|ch| ch == 'x') {
+            foreign.push(format!("header {} {:?}", wh, v));
+        }
+    }
     if foreign.is_empty() {
-        r.add("V3", Verdict::Pass, "container identity: no account id and no locator URL");
+        r.add(
+            "V3",
+            Verdict::Pass,
+            format!(
+                "container identity: no account id and no locator URL in the body{}",
+                if hdr_id.is_empty() {
+                    " (this container has no replay header to carry one)".to_string()
+                } else {
+                    format!(", and the {} header driver field(s) are ours", hdr_id.len())
+                }
+            ),
+        );
     } else {
         r.add(
             "V3",
@@ -428,7 +462,144 @@ pub fn run(path: &str, a: &[String]) -> Report {
             },
         }
     }
+    // ---- V10 the raw-bytes backstop --------------------------------------
+    //
+    // Every check above is STRUCTURED: it reads a field this crate knows how
+    // to find. The whole class of defect this gate exists for is a field
+    // nobody thought of -- so the last check does not think. It scans the
+    // file's bytes for anything that LOOKS like somebody's identity or like a
+    // race time that is not this run's, and fails on a hit.
+    //
+    // It is dumb on purpose. The structured checks tell you WHICH field; this
+    // one tells you THAT THERE IS ONE, which is the part we kept getting
+    // wrong: the header defect that motivated it sat in front of a green V2
+    // and a green V3 for a day.
+    //
+    // The embedded map's own byte range is excluded by POSITION. Everything in
+    // there is the map's -- its author block, its name, its own uid -- and it
+    // stays. That exclusion is the only thing in this check that knows
+    // anything, and it is a range, not a value.
+    {
+        let raw = std::fs::read(path).unwrap_or_default();
+        let hdr_len = raw.len().saturating_sub(c.body().len());
+        // The map sits at a body offset; convert to a file offset.
+        let map_range = c.embedded_map().map(|(o, n)| (hdr_len + o, hdr_len + o + n));
+        // ...and the map's own attribution in the replay header, by position.
+        let mut allow: Vec<(usize, usize)> = crate::hdr::legitimate_map_ranges(&c, hdr_len);
+        if let Some(m) = map_range {
+            allow.push(m);
+        }
+        let inside_any = |at: usize| allow.iter().any(|(a, b)| at >= *a && at < *b);
+        let ours: Vec<String> = {
+            let mut v: Vec<String> = vec!["TAS".into()];
+            v.extend(c.uids().into_iter().map(|(_, u)| u));
+            v
+        };
+        let own_ms: Vec<String> = {
+            let mut s: Vec<String> =
+                c.declared_times().iter().map(|(_, v)| v.to_string()).collect();
+            s.extend(crate::hdr::header_declared_ms(&c).iter().map(|(_, v)| v.to_string()));
+            s.sort();
+            s.dedup();
+            s
+        };
+        let mut hits: Vec<String> = Vec::new();
+        // (a) storage-object locator URLs and skin paths carrying a uuid
+        for pat in ["storageObjects/", "core.trackmania.nadeo.live"] {
+            for at in find_all(&raw, pat.as_bytes()) {
+                if inside_any(at) {
+                    continue;
+                }
+                hits.push(format!("a locator URL at {} ({:?})", at, snippet(&raw, at, 72)));
+            }
+        }
+        // (b) 22-character base64url tokens: the shape of an account id
+        for (at, tok) in b64_tokens(&raw) {
+            if inside_any(at) || ours.iter().any(|o| *o == tok) {
+                continue;
+            }
+            if tok.chars().all(|ch| ch == 'x') {
+                continue;
+            }
+            hits.push(format!("an account-id-shaped token at {}: {:?}", at, tok));
+        }
+        // (c) a `best="..."` in the header XML that is not this run's time
+        for at in find_all(&raw, b"best=\"") {
+            let v: String = raw[at + 6..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .map(|b| *b as char)
+                .collect();
+            if !v.is_empty() && !own_ms.contains(&v) {
+                hits.push(format!("best=\"{}\" at {}, which is not this file's declared time", v, at));
+            }
+        }
+        if hits.is_empty() {
+            r.add(
+                "V10",
+                Verdict::Pass,
+                format!(
+                    "raw-bytes backstop: nothing that looks like another person's identity or \
+                     another run's time, outside the embedded map's own {} B",
+                    map_range.map_or(0, |(a2, b)| b - a2)
+                ),
+            );
+        } else {
+            r.add(
+                "V10",
+                Verdict::Fail,
+                format!("raw-bytes backstop found {}: {}", hits.len(), hits.join("; ")),
+            );
+        }
+    }
     r
+}
+
+fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    if needle.is_empty() || hay.len() < needle.len() {
+        return out;
+    }
+    for i in 0..=hay.len() - needle.len() {
+        if &hay[i..i + needle.len()] == needle {
+            out.push(i);
+        }
+    }
+    out
+}
+
+fn snippet(b: &[u8], at: usize, n: usize) -> String {
+    b[at..(at + n).min(b.len())].iter().map(|c| if c.is_ascii_graphic() { *c as char } else { '.' }).collect()
+}
+
+/// Maximal runs of base64url characters, reported when they are exactly the
+/// 22 characters a 16-byte account id encodes to.
+fn b64_tokens(b: &[u8]) -> Vec<(usize, String)> {
+    let ok = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        if !ok(b[i]) {
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < b.len() && ok(b[i]) {
+            i += 1;
+        }
+        if i - s == 22 {
+            if let Ok(t) = std::str::from_utf8(&b[s..i]) {
+                // an id has both cases or a digit; a 22-letter English word does not
+                let has_digit = t.chars().any(|c| c.is_ascii_digit());
+                let mixed = t.chars().any(|c| c.is_ascii_uppercase())
+                    && t.chars().any(|c| c.is_ascii_lowercase());
+                if has_digit && mixed {
+                    out.push((s, t.to_string()));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn cmd(a: &[String]) {

@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{engine, ident, map_uid_of, oracle, regen, selftest, trim, verify};
+use ghost::{engine, hdr, ident, map_uid_of, oracle, regen, selftest, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -93,9 +93,18 @@ IDENTITY  (operation 6)
   ghost identity show FILE
   ghost identity set IN OUT [--name N] [--trigram XXX] [--skin PATH|default]
                             [--login L] [--zone Z] [--clubtag T] [--anonymise]
+                            [--pad-ids]
         Car skin, display name and 3-letter trigram. --anonymise also drops the
         account id and the storage locator URL, which are the two foreign
-        identifiers a strip-list usually misses.
+        identifiers a strip-list usually misses -- AND the driver block in the
+        replay header and in body chunk 0x03093018, which are the two a
+        body-only anonymiser misses. --pad-ids keeps the old behaviour of
+        padding an unresizable id to `xxxx...` instead of removing it.
+  ghost header show FILE
+        The replay HEADER: its chunk table, the driver fields, the map's own
+        attribution (which stays), and every copy of the race time the header
+        holds -- the copies the body census cannot see. A plain .Ghost.Gbx has
+        no replay header and says so.
 
 VERIFY
   ghost verify FILE [--map MAP] [--expect-ms MS] [--server DIR]
@@ -179,6 +188,13 @@ fn main() {
         "trim" => trim::cmd(rest),
         "declare" => cmd_declare(rest),
         "identity" => ident::cmd(rest),
+        "header" => {
+            let what = rest.first().map(|s| s.as_str()).unwrap_or("show");
+            match what {
+                "show" => hdr::cmd_show(rest.get(1).map(|s| s.as_str()).unwrap_or_else(|| die("ghost header show FILE"))),
+                o => die(format!("unknown `ghost header` operation {:?}", o)),
+            }
+        }
         "regen" => regen::cmd(rest),
         "regen-control" => regen::control(rest),
         "verify" => verify::cmd(rest),
@@ -897,7 +913,18 @@ fn cmd_declare(a: &[String]) {
     })
     .unwrap_or_else(|e| die(e));
     let stage = format!("{}.declare-stage", out);
-    container::write_gbx(&c.gbx, body, &stage).unwrap_or_else(|e| die(e));
+    // THE HEADER HOLDS ITS OWN COPIES. A .Replay.Gbx keeps the race time twice
+    // more, in header chunk 0x03093000 as a raw u32 and in the header XML as
+    // `<times best="...">`. Writing only the body leaves a file whose body
+    // census reads "1 copy, all 36.049" while the header still says the
+    // carrier's 49.958 -- which is exactly what this command shipped before.
+    let mut gbx = c.gbx.clone();
+    let mut hdr_log: Vec<String> = Vec::new();
+    if let Some(e) = hdr::rewrite(&c, false, None, Some(ms as u32)) {
+        gbx.user_data = e.user_data;
+        hdr_log = e.log.into_iter().filter(|l| !l.contains("LEFT ALONE")).collect();
+    }
+    container::write_gbx(&gbx, body, &stage).unwrap_or_else(|e| die(e));
     // The telemetry record declares its own span, separately from the samples.
     // Leaving it at the old run's is the same defect one level down, and
     // `ghost verify` reports it, so fix it here rather than print it later.
@@ -945,8 +972,31 @@ fn cmd_declare(a: &[String]) {
             ));
         }
     }
+    // The header's own copies, which the body census cannot see.
+    let hdr_times = hdr::header_declared_ms(&c2);
+    let wrong: Vec<String> = hdr_times
+        .iter()
+        .filter(|(_, v)| *v as i64 != ms)
+        .map(|(w, v)| format!("{} = {}", w, secs(*v as i64)))
+        .collect();
+    if !wrong.is_empty() {
+        die(format!(
+            "read-back control FAILED: the HEADER still declares another time: {}",
+            wrong.join(", ")
+        ));
+    }
     println!("wrote {}", out);
     println!("  declared {} in {} copies, all equal (read-back control OK)", secs(ms), dt.len());
+    for l in &hdr_log {
+        println!("{}", l);
+    }
+    if !hdr_times.is_empty() {
+        println!(
+            "  and {} header copy/copies, all {} (0x03093000 u32 and the XML `best`)",
+            hdr_times.len(),
+            secs(ms)
+        );
+    }
     println!("  the ghost-result chunk's race time was set to the same value");
     if want_cps.is_some() {
         println!(
