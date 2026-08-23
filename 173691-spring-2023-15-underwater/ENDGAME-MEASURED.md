@@ -18,7 +18,7 @@ working against.
 | the lower canopy | **not "sealed"** — it is **LOW**. The deck the car already lands on is `y = 114.16`; the wall's live floor is ≈ 131. The gap is **17 m**, not the 48 m that "reach the upper deck" implies. |
 | what is 17 m up | a **solid, drivable ledge at y ≈ 130.2 → 134** inside the gate slot (the `StructurePillar` tops / gate plinths in cells 42…46 × 15). Driving on it **finishes the map** — measured, `28.827` on a checkpoint-neutralised probe map, with the trajectory. |
 | why it still fails | **nothing on the map connects 114.16 to 130.16, and nothing can fly there.** Complete block census of the stadium footprint between the two decks — 456 blocks, all of them: water fill, vertical `StructurePillar`, the stands' lowest slope whose bottom edge is 162, and the two gate rows. No ramp, no slope, no platform. |
-| and from the air | the last road's exit is `(1345.4, 154.9, 387.1)`. The trigger plane is at `z ≈ 494.5`, so the nearest live point is **107 m downrange**. Underwater the glide's horizontal reach has a hard asymptote at `v0/k = 58.5 m` (k measured 0.489 /s, linear), and the best flight ever found off that lip — the previous arm's 40 000-evaluation search — reaches `z = 448.2` at deck height and `z ≈ 437.7` at y = 130. **Short by 46–57 m of a 62 m budget, against an asymptote.** |
+| and from the air | the last road's exit is `(1345.4, 154.9, 387.1)`. The trigger plane is at `z ≈ 494.5`, so the nearest live point is **107 m downrange**. Underwater the glide's horizontal reach has a hard asymptote at `v0/k` — **47–59 m at the water speed cap, from four independent drag fits** — and the best flight ever found off that lip, the previous arm's 40 000-evaluation search, reaches `z = 448.2` at deck height and `z = 437.7` at y = 130. **Short by 46–57 m of a 62 m budget, against an asymptote.** |
 
 So the map is closed by two independent walls, and the write-up below gives the
 number for each.
@@ -105,21 +105,30 @@ y ≈ 131, drove east along it and finished at y = 133.97.
 
 ## 2. THE WATER, MEASURED
 
-Fitted with `uwlab drag` over the 9.5 s free-flight window of the banked landing
-run, three nested laws each time so that "which law" is a residual and not an
-assumption:
+Fitted with `uwlab drag` over free-flight windows, three nested laws each time so
+that "which law" is a residual and not an assumption — and on **four independent
+glides**, so the bound below is not one tape's accident:
+
+| glide | vertical g | terminal | horizontal law | k | reach at 28.6 m/s |
+|---|---|---|---|---|---|
+| GothMommy's own demo, steer 0 | 2.16 | 2.68 | linear (rms 1.30 vs 1.48) | 0.595 | 48.1 m |
+| the same run, other decode | 1.99 | 2.68 | linear (3.56 vs 3.62) | 0.602 | 47.5 m |
+| the ramp-climb `gt2`, steer 0 | 2.34 | 2.65 | linear (1.16 vs 1.17) | 0.533 | 53.7 m |
+| the banked landing (wiggling) | 2.04 | 2.65 | linear (2.66 vs 2.77) | 0.489 | 58.5 m |
+
+**Linear wins on all four**, and every quadratic fit wants a physically
+impossible positive constant term. So:
 
 | | |
 |---|---|
-| effective gravity in free water | **g = 2.04 m/s²** (air is ≈ 24.6) |
-| terminal sink | **2.65 m/s**, vertical k = 0.77 /s |
-| horizontal drag | **LINEAR, k = 0.489 /s** — rms 2.66 against the quadratic fit's 2.77, and the quadratic fit wants a physically impossible constant term |
-| ⇒ a glide's horizontal reach | **asymptote `v0/k` = 58.5 m at the water speed cap**; 61.9 m observed on the real landing (the model under-reads ~6 %) |
+| effective gravity in free water | **g ≈ 2.0 – 2.3 m/s²** (air is ≈ 24.6) |
+| terminal sink | **2.65 – 2.68 m/s** |
+| ⇒ a glide's horizontal reach | **asymptote `v0/k`, i.e. 47 – 59 m at the water speed cap**; 61.9 m observed on the real landing, so call the ceiling **62 m** |
 | flat-water speed cap | 28.6 m/s (103 km/h) |
 | turbo | 104 m/s (374 km/h) and it **persists ≈ 340 m / 4 s**, but all five turbos are ≥ 790 m from the stadium |
 | apex gain off the map's steepest ramp | **+3.0 m measured** (launch y 154.9 → apex 157.9), +5.2 m as the upper bound from the fitted law |
 
-> **The horizontal law is fitted over `|vh|` 0.5 … 25.3 m/s and must not be
+> **The horizontal law is fitted over `|vh|` 0.4 … 26.4 m/s and must not be
 > extrapolated to turbo speed.** Over the turbo segment of the 1 831 m tape the
 > car loses only 3.6 m/s² at 90 m/s, where `k·v` would be 44 — but the engine is
 > boosting there, so that segment measures thrust-minus-drag and not drag, and I
@@ -216,7 +225,7 @@ The last road's drivable exit is `(1345.4, 154.9, 387.1)` at 25.5 m/s
 y = 155 and leaves at 17° of pitch — the first tape in this project's store that
 does; the road is byte-identical between the stock map and the author's copy).
 The trigger plane is `z ≈ 494.5`, so the nearest live point is 107 m of z away.
-The asymptotic reach is 58.5 m and the best measured glide from that lip is
+The asymptotic reach is 47–59 m (four fits) and the best measured glide from that lip is
 61.9 m; the previous arm's 40 000-evaluation flight search on exactly this
 launch reaches `z = 448.2` at deck height and `z = 437.7` at y = 130.
 **Short by 46–57 m**, and the shortfall is bounded by an asymptote, so no
@@ -232,7 +241,8 @@ in between.
 
 **The one surface that is nearly in range is unreachable.** The massif at
 y ≈ 162 has its east edge at x ≈ 1290. That is 54–64 m from the trigger plane —
-inside the 58.5 m asymptote — and it is also only 22 m and 8 m of climb from the
+inside the most generous of the four asymptotes (58.5 m) and outside the other
+three — and it is also only 22 m and 8 m of climb from the
 stands' lowest slope at (1312, 170.16, 512), against a 5.2 m apex, so it is the
 one place on the map from which either target is nearly on. But it is an island:
 the plumb lattice reads 63.4–63.9 m for **every** column between it and the road
