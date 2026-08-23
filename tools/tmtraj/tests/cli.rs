@@ -203,7 +203,14 @@ fn every_command_in_the_usage_text_exists() {
     let mut named: Vec<&str> = Vec::new();
     for line in usage.lines() {
         let t = line.trim_start();
-        if line.starts_with("  ") && !t.is_empty() && t.chars().next().unwrap().is_lowercase() {
+        // A COMMAND LINE IS INDENTED EXACTLY TWO SPACES; a wrapped description
+        // is indented to the description column. Keying on "starts with two
+        // spaces" swept up the continuation of `impacts`, whose second line
+        // begins "and whether a second engine reading agrees" -- so the test
+        // demanded a command called `and` and failed on `main`, on a help text
+        // that was correct. A test that reads a layout has to read the layout.
+        let indent = line.len() - t.len();
+        if indent == 2 && !t.is_empty() && t.chars().next().unwrap().is_lowercase() {
             if let Some(w) = t.split_whitespace().next() {
                 if w.chars().all(|c| c.is_ascii_lowercase()) && w.len() > 2 {
                     named.push(w);

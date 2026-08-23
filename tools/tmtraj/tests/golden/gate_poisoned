@@ -17,6 +17,6 @@ note   C12       human_23013.Ghost.Gbx: low growth (1.1x) after the tapes part a
 PASS   C12       the trajectories part after the inputs part, as they must
 n/a    C-oracle  no --server/--map given -- THE FILE HAS NOT BEEN RE-SIMULATED
 n/a    E-stale    no --source given -- THIS FILE HAS NOT BEEN CHECKED against the one-tick-stale buffer copy, which passes every other check in this gate
-FAIL   C-spawn   at the common instant 0.000 this record is 679.2596 m and 0.000 deg from human_22730.Ghost.Gbx's. Every run of this map starts in the same place facing the same way; this position is another object, or the orientation encoding is permuted.
+FAIL   C-spawn   at 0.000 s this run is 679.2596 m and 0.000 deg from human_22730.Ghost.Gbx's sample at the same instant. Every run of this map starts in the same place facing the same way; this position is another object, or the orientation encoding is permuted.
 FAIL   C-route   no --route given. The record has NOT been checked against the engine by any instrument other than the one that wrote it -- every other check in this gate READS the record, so none of them can disagree with it about where the car was. Produce one with `fk btraj2 --template THIS FILE ... --out route.csv`.
 n/a    D-manifest  no manifest at $TESTDATA/poisoned_searchtape.Ghost.Gbx.manifest.json -- THIS FILE IS UNPROVENANCED. It may be perfectly good; nothing in it says so. (--require-manifest makes this a refusal.)
