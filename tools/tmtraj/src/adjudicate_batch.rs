@@ -45,7 +45,7 @@ pub fn cmd(argv: &[String]) -> i32 {
 
     // Per-file verdicts are cached: a file appears in many pairs and its own
     // record check does not depend on the partner.
-    let mut own: BTreeMap<String, (f64, f64, String)> = BTreeMap::new();
+    let mut own: BTreeMap<String, (f64, f64, String, i64)> = BTreeMap::new();
     let mut rows: Vec<(String, String, String, Verdict, f64, usize)> = Vec::new();
 
     for line in txt.lines() {
@@ -58,24 +58,24 @@ pub fn cmd(argv: &[String]) -> i32 {
         let pa = format!("{repo}/{mapdir}/replays/{a}");
         let pb = format!("{repo}/{mapdir}/replays/{b}");
 
-        let mut pick = |ghost: &str, stem: &str| -> Option<(String, f64, f64)> {
+        let mut pick = |ghost: &str, stem: &str| -> Option<(String, f64, f64, i64)> {
             let key = format!("{mapid}/{stem}");
-            if let Some((w, m, t)) = own.get(&key) {
-                return Some((t.clone(), *w, *m));
+            if let Some((w, m, t, sh)) = own.get(&key) {
+                return Some((t.clone(), *w, *m, *sh));
             }
             let got = best_trace(&dir, &mapid, stem, ghost)?;
-            own.insert(key, (got.1, got.2, got.0.clone()));
+            own.insert(key, (got.1, got.2, got.0.clone(), got.3));
             Some(got)
         };
 
         let sa = a.trim_end_matches(".Ghost.Gbx");
         let sb = b.trim_end_matches(".Ghost.Gbx");
-        let (Some((ta, wa, ma)), Some((tb, wb, mb))) = (pick(&pa, sa), pick(&pb, sb)) else {
+        let (Some((ta, wa, ma, sha)), Some((tb, wb, mb, shb))) = (pick(&pa, sa), pick(&pb, sb)) else {
             rows.push((mapdir, a, b, Verdict::NoTrace, 0.0, 0));
             continue;
         };
         let _ = (ma, mb);
-        match adjudicate_pair(&pa, &ta, &pb, &tb) {
+        match adjudicate_pair(&pa, &ta, sha, &pb, &tb, shb) {
             Some((v, sep, n)) => rows.push((mapdir, a, b, v, sep, n)),
             None => rows.push((mapdir, a, b, Verdict::NoTrace, 0.0, 0)),
         }
@@ -91,9 +91,9 @@ pub fn cmd(argv: &[String]) -> i32 {
     println!();
     println!("PER-FILE, does the file's record match the engine's run of its own tape:");
     let mut bad = 0usize;
-    for (k, (w, md, t)) in &own {
+    for (k, (w, md, t, sh)) in &own {
         let tag = if *w <= 0.01 { "OWN-RUN" } else { bad += 1; "MISMATCH" };
-        println!("  {tag:9} {k}   worst {w:.4} m  median {md:.4} m   (best of the sweep: {})", t.rsplit('/').next().unwrap_or(t));
+        println!("  {tag:9} {k}   worst {w:.4} m  median {md:.4} m   (best of the sweep: {}, shift {sh})", t.rsplit('/').next().unwrap_or(t));
     }
     println!();
     for (k, v) in &counts {

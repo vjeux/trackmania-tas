@@ -252,7 +252,7 @@ pub fn cmd(argv: &[String]) -> i32 {
     // sits above it is EITHER a record that is not its own tape's run OR a
     // locate that landed on the wrong object -- this test cannot tell those
     // apart on its own, and says so rather than picking.
-    const OWN: f64 = 0.01;
+    const OWN: f64 = OWN_BAR;
     let verdict = |name: &str, worst: f64, med: f64| {
         if worst <= OWN {
             println!("  {name}: record IS its own tape's run (worst {worst:.4} m, median {med:.4} m)");
@@ -354,9 +354,19 @@ impl Verdict {
 /// This is the corpus's own rule, learned on the position decoys: *test for a
 /// TIME SHIFT, not a distance.*
 pub fn trace_vs_record(ghost: &str, trace: &str) -> Option<(f64, f64)> {
+    trace_vs_record_shift(ghost, trace).map(|(w, m, _)| (w, m))
+}
+
+/// As `trace_vs_record`, and also the SHIFT at which it was achieved. The
+/// caller needs that shift: comparing two traces that were each accepted at a
+/// different shift, without applying it, reintroduces exactly the one-tick
+/// error the scan removed. Measured: on 126859 that produced FOUR identical
+/// "defects" at 2.140111 m -- one tick at 222 m/s -- on five files every one of
+/// which reproduces its own record to 0.007 m.
+pub fn trace_vs_record_shift(ghost: &str, trace: &str) -> Option<(f64, f64, i64)> {
     let r = record::decode_ghost(ghost).ok()?;
     let s = read_trace(trace).ok()?;
-    let mut best: Option<(f64, f64)> = None;
+    let mut best: Option<(f64, f64, i64)> = None;
     for shift in -3i64..=3 {
         let mut d: Vec<f64> = Vec::new();
         for p in &r.samples {
@@ -369,8 +379,8 @@ pub fn trace_vs_record(ghost: &str, trace: &str) -> Option<(f64, f64)> {
         }
         let worst = d.iter().cloned().fold(0.0f64, f64::max);
         let med = median(&mut d);
-        if best.as_ref().is_none_or(|(bw, _)| worst < *bw) {
-            best = Some((worst, med));
+        if best.as_ref().is_none_or(|(bw, _, _)| worst < *bw) {
+            best = Some((worst, med, shift));
         }
     }
     best
@@ -382,19 +392,38 @@ pub fn trace_vs_record(ghost: &str, trace: &str) -> Option<(f64, f64)> {
 /// THE ACCEPTANCE RULE, and it is not "take the majority": two of 173636
 /// TAS_22072's three fork points agreed with each other on a wrong object and
 /// the third found the car. A test that can identify the answer beats a count.
-pub fn best_trace(dir: &str, mapid: &str, stem: &str, ghost: &str) -> Option<(String, f64, f64)> {
+pub fn best_trace(dir: &str, mapid: &str, stem: &str, ghost: &str) -> Option<(String, f64, f64, i64)> {
     let rd = std::fs::read_dir(dir).ok()?;
     let prefix = format!("{mapid}__{stem}__t");
-    let mut best: Option<(String, f64, f64)> = None;
+    let mut best: Option<(String, f64, f64, i64)> = None;
     for e in rd.flatten() {
         let p = e.path().to_string_lossy().to_string();
         let n = p.rsplit('/').next().unwrap_or(&p).to_string();
         if !n.starts_with(&prefix) || !n.ends_with(".csv") {
             continue;
         }
-        if let Some((w, m)) = trace_vs_record(ghost, &p) {
-            if best.as_ref().is_none_or(|(_, bw, _)| w < *bw) {
-                best = Some((p, w, m));
+        if let Some((w, m, sh)) = trace_vs_record_shift(ghost, &p) {
+            // AMONG TRACES THAT HAVE FOUND THE CAR, MORE COVERAGE WINS.
+            // A trace agreeing with the file's own record to <= 1 cm has
+            // found it; agreeing to 0.0005 m instead of 0.005 m is not a
+            // better answer to that question, and picking on it silently
+            // chose late fork points that did not reach the window the pair
+            // test needs -- 16 pairs read UNTESTED for that reason alone.
+            let start = first_ms(&p).unwrap_or(i64::MAX);
+            let better = match &best {
+                None => true,
+                Some((bp, bw, _, _)) => {
+                    let bstart = first_ms(bp).unwrap_or(i64::MAX);
+                    match (w <= OWN_BAR, *bw <= OWN_BAR) {
+                        (true, true) => start < bstart,
+                        (true, false) => true,
+                        (false, true) => false,
+                        (false, false) => w < *bw,
+                    }
+                }
+            };
+            if better {
+                best = Some((p, w, m, sh));
             }
         }
     }
@@ -404,7 +433,15 @@ pub fn best_trace(dir: &str, mapid: &str, stem: &str, ghost: &str) -> Option<(St
 /// The pair question: over the samples where the two RECORDS are bit-identical,
 /// how far apart does the engine put the two cars? Returns (verdict, worst
 /// separation on those samples, how many there were).
-pub fn adjudicate_pair(fa: &str, ta: &str, fb: &str, tb: &str) -> Option<(Verdict, f64, usize)> {
+/// Each trace is read at ITS OWN accepted shift -- see `trace_vs_record_shift`.
+pub fn adjudicate_pair(
+    fa: &str,
+    ta: &str,
+    sha: i64,
+    fb: &str,
+    tb: &str,
+    shb: i64,
+) -> Option<(Verdict, f64, usize)> {
     let ra = record::decode_ghost(fa).ok()?;
     let rb = record::decode_ghost(fb).ok()?;
     let sa = read_trace(ta).ok()?;
@@ -417,7 +454,7 @@ pub fn adjudicate_pair(fa: &str, ta: &str, fb: &str, tb: &str) -> Option<(Verdic
             continue;
         }
         let t = pa.time_ms as i64;
-        let (Some(va), Some(vb)) = (sa.at(t), sb.at(t)) else { continue };
+        let (Some(va), Some(vb)) = (sa.at(t + sha * 10), sb.at(t + shb * 10)) else { continue };
         worst = worst.max(dist(va, vb));
         n += 1;
     }
@@ -434,4 +471,18 @@ pub fn adjudicate_pair(fa: &str, ta: &str, fb: &str, tb: &str) -> Option<(Verdic
         Verdict::Inconclusive
     };
     Some((v, worst, n))
+}
+
+/// A trace agreeing with its file's own record to within this is accepted as
+/// having found the car. 20x the ~0.5 mm wrong-copy offset, and orders of
+/// magnitude below a genuinely different run.
+pub const OWN_BAR: f64 = 0.01;
+
+/// The first race instant a trace covers, for preferring coverage among traces
+/// that have all found the car.
+fn first_ms(path: &str) -> Option<i64> {
+    let t = std::fs::read_to_string(path).ok()?;
+    let mut l = t.lines();
+    l.next()?;
+    l.next()?.split(',').next()?.trim().parse().ok()
 }

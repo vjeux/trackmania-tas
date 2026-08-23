@@ -557,3 +557,68 @@ A respawn is an editable input (bit 31 of the state literal) and this project
 edits it deliberately. **Checked negative: including it changes the corpus
 census by nothing** — 607 / 135 / 38 / 8 / 8 before and after — so no pair was
 hiding a respawn-only difference. Stated as checked rather than assumed.
+
+---
+
+# I. THE 38 UNRESOLVED PAIRS, SETTLED AGAINST THE ENGINE
+
+§E said this "cannot be done from a clean checkout". **That was a harness limit
+written as a conclusion** — the maps are on the shared store and the oracle runs
+on this box. Corrected, and done.
+
+Evidence: `evidence/adjudication_final.txt`. Tools: `tmtraj adjudicate`,
+`tmtraj adjudicate-batch` (new), over 143 `fk trace` runs.
+
+## The result
+
+| n | verdict |
+|---|---|
+| **35** | **INNOCENT-INERT-INPUTS — MEASURED.** Wherever the two records agree bit for bit, the engine agrees bit for bit too, running each file's own tape. Those differing inputs had no authority there. |
+| 1 | INCONCLUSIVE at **0.001077 m** (173636) — and that is *below* each file's own trace-vs-record agreement (0.0008 m). It is innocent at the instrument's resolution; saying so is more honest than promoting it. |
+| 2 | UNTESTED — 238835 and 267859, and the reason is known (below). |
+| **0** | **DEFECTS.** |
+
+**25 of 26 traced files reproduce their own record to ≤ 0.0068 m**, i.e. their
+records *are* their own tapes' runs.
+
+## My own defect claim was wrong, and is retracted
+
+I published a warning box on 210218 saying the two files there carry one
+recording. The decisive test says the opposite: over the **1735 samples where
+the records agree bit for bit**, the engine puts the two cars at most
+**0.0001 m** apart, 1734 of them bit-identical. Both files are sound. Page
+corrected.
+
+**Why my reading failed**: I compared whole-file *rates* — records agree on
+93.8 % of samples, simulations on 94.1 % — which say nothing about whether those
+are the **same** samples. They are. That had to be measured.
+
+## Four instrument errors of mine on the way, each caught by a control
+
+1. **One trace is not enough.** 173636 `TAS_22072` read "does NOT match" at fork
+   ticks 400 and 700 (0.30 m) and **matched at tick 1000 (0.0008 m)**. Two
+   agreeing wrong answers — the reproduction-count trap. Acceptance is now
+   best-of-sweep.
+2. **Test for a time shift, not a distance.** At shift 0, five sound files read
+   MISMATCH at 0.56–1.54 m; scanned over −3…+3 ticks they read 0.005 m. Judging
+   at shift 0 would have condemned 210218 ×2 and 267460 ×3.
+3. **A pair test must use each trace at its own accepted shift.** Omitting that
+   produced **four identical "DEFECT" verdicts at 2.140111 m** on 126859 — one
+   tick at 222 m/s — on five files each of which reproduces its own record to
+   0.007 m. *An identical number across four independent findings is one
+   artefact.*
+4. **Picking the best-agreeing trace ignored coverage.** 16 pairs read UNTESTED
+   purely because the chosen fork point started after the window under test.
+   Among traces that have found the car, more coverage wins.
+
+## The two that stay UNTESTED, and why that is a map fact
+
+238835 and 267859 are the two **turtle** maps in the set — the car is inverted at
+walking pace for the whole run. **No file on either map locates**, at any of the
+14 fork points tried. That is not a property of the files, and it is
+independently diagnosed: the render arm reports the locate compares `d(pos)/dt`
+over a 50 ms sample against the stored velocity and demands 15 % of speed, so on
+a turtle trial the **real car scores 1.41 m/s against a bar of 1.14** and every
+anchor is refused. My failures land on exactly the maps their independent
+analysis predicts. **The honest statement is "this instrument cannot see these
+two maps", not anything about the files.**
