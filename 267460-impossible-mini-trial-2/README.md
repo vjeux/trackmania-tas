@@ -1,6 +1,14 @@
 # Impossible Mini Trial 2 (TMX 267460)
 
-**Author time 16.888 · World record 23.068 (Wirtual, the only record ever set on this map) · Our best 21.022**
+**Author time 16.888 · World record 23.068 (Wirtual, the only record ever set on this map) · Our best 18.234**
+
+> **2026-08-23: our best is now 18.234** (`replays/TAS_18234.Ghost.Gbx`,
+> `LAP.md`) — **4.834 under the world record and 1.346 over the author time.**
+> It drives the fast pit of `CREST.md`, reaching the turbo pad at race 11.44
+> where the old lap reached it at 14.79, and re-drives the whole ending.
+> Everything below this banner, including the clip, is about the **superseded
+> 21.022** lap and is kept because its account of the map is still the best one.
+> Read `CREST.md`, then `ENDING.md`, then `LAP.md`.
 
 This is **one of only two maps in this repo where we have not beaten the author
 time.** We are 2.046 under the human world record and still **4.134 over the

@@ -42,6 +42,9 @@ usage: tmtraj route CSV|GHOST... [query...]
   --first N / --last N          print the first / last N rows of the selection
   --every N                     print every Nth row of the selection
   --cols a,b,c                  which columns to print (default t,x,y,z,km/h,vy)
+                                plus a derived `s`: cumulative path length in
+                                metres from the first row, which is the same
+                                quantity the fork search reports progress in
 
   --cross AXIS=VALUE            EVERY crossing of a plane, interpolated between
                                 the two samples that straddle it, with its
@@ -68,6 +71,41 @@ struct Table {
 impl Table {
     fn col(&self, name: &str) -> Option<usize> {
         self.names.iter().position(|n| n == name)
+    }
+    /// Append `s`: cumulative path length in metres from the table's FIRST row.
+    ///
+    /// It is a derived column rather than a separate query because that is
+    /// what makes it composable — `--where 's>500'`, `--cols time_ms,s,x,y,z`
+    /// and `--first 1` then answer "where is the 500 m mark" with the tools
+    /// already here. The search's reference-line arclength is this same
+    /// quantity measured from the same first sample, so a `DNF 507 m of 560`
+    /// can be read straight off the reference trace.
+    fn add_arclength(&mut self) {
+        let (Some(cx), Some(cy), Some(cz)) = (self.col("x"), self.col("y"), self.col("z")) else {
+            return;
+        };
+        if self.col("s").is_some() {
+            return;
+        }
+        let mut acc = 0.0f64;
+        let mut prev: Option<(f64, f64, f64)> = None;
+        // A CSV row may carry more fields than the header names; `s` has to
+        // land at the index the name will have, so the row is cut to the
+        // header first.
+        let base = self.names.len();
+        for row in self.rows.iter_mut() {
+            let p = (row[cx], row[cy], row[cz]);
+            if let Some(q) = prev {
+                let d = ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2) + (p.2 - q.2).powi(2)).sqrt();
+                if d.is_finite() {
+                    acc += d;
+                }
+            }
+            prev = Some(p);
+            row.truncate(base);
+            row.push(acc);
+        }
+        self.names.push("s".to_string());
     }
     /// Column index or a fatal error naming what the file does have.
     fn need(&self, name: &str) -> usize {
@@ -110,7 +148,9 @@ fn load(path: &str) -> Table {
                 ]
             })
             .collect();
-        return Table { names, rows };
+        let mut t = Table { names, rows };
+        t.add_arclength();
+        return t;
     }
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|e| die(&format!("cannot read {}: {}", path, e)));
@@ -133,7 +173,9 @@ fn load(path: &str) -> Table {
         }
         rows.push(row);
     }
-    Table { names, rows }
+    let mut t = Table { names, rows };
+    t.add_arclength();
+    t
 }
 
 struct Pred {
