@@ -426,7 +426,66 @@ So the z ≈ 1668 feature is now characterised from both sides: **a lip that an
 inverted 60 km/h slide from the south hits head-on and dies against, and that a
 200 km/h upright car from the north skims over with 0.1 s of air.**
 
-## 11. What is left, and what a successor should not repeat
+## 11. The barrier at z = 1667.6 is a WALL, and it spans the whole roof
+
+§8 found it from one drop point. Dropping from 40 m higher (spawn y = 242 rather
+than 202) and across the whole width of the face settles what it is.
+
+Six probes, spawn x 400 → 560 at y = 242, all steer 0:
+
+| spawn x | comes to rest at | `u_y` at rest |
+|---|---|---|
+| 400 | (406.9, 148.2, **1669.6**) | — |
+| 432 | (433.2, 150.8, **1669.6**) | −0.844 |
+| 464 | (457.0, 152.9, **1669.6**) | — |
+| 496 | (479.9, 56.7, 1706.3) — **fell off the x = 507 world edge** | — |
+| 528 | (526.1, 158.9, **1669.6**) | — |
+| 560 | (553.0, 160.4, **1669.6**) | −0.844 |
+
+**Five of six stop at z = 1669.6 to four significant figures, 150 m apart in x,
+at five different heights**, each of them on the roof plane. That is a wall
+standing on the roof, running east–west across at least x 400…560, and the cars
+end wedged against it inverted at 4 km/h.
+
+The sixth is the informative one: at x ≈ 507 it does **not** stop — it goes
+straight past z = 1669.6 and keeps falling, through (507.0, 148.9, 1681.9) at
+107 km/h, down to the deck at y ≈ 57. That is the same x = 507 edge the fast
+route falls off at race 44. **So the wall ends at x ≈ 507 and beyond it there is
+no roof — there is the drop.**
+
+Which closes the geometry of the endgame completely:
+
+```
+   z 1620 ---------------- the roof's north edge, reachable from above
+   z 1669.6 ============== THE WALL, x 400 .. ~500      <-- south-bound stop
+   z 1670..1704 ......... the finish face: reachable ONLY from the south,
+                          by driving up the ramp, which is what our runs do
+   z 1704.6 * the patch
+   x 507 |||||||||||||||||  the world edge: past it, nothing
+```
+
+A car above the finish face would have to come over the wall, round it at
+x > 507 where the world ends, or be launched from the ramp itself — and §10
+measured the last of those: 0.10–0.15 s of air, 0.5–1.0 m, no rotation.
+
+### And a faster arrival does not clear it either
+
+690 rectangular overrides on the high-drop probe (10 starts over race 2–11 s ×
+3 lengths × 23 combinations; 30 no-ops, 571 distinct tapes), scored on four
+rungs:
+
+| rung | fires |
+|---|---|
+| (430, 152.5, 1660) — north of the wall, **the positive control** | **497 / 691** |
+| (428, 151.0, 1675) — 5 m past it | **0** |
+| (425, 149.0, 1690) — 20 m past it | **0** |
+| the patch at (419, 146.0, 1704.6) | **0** |
+
+Together with §8's 892 tapes from the lower drop and the 1 386 from six other
+drop points, that is **2 968 evaluations against this wall from three different
+arrival speeds and eight different places, with a firing control in every
+batch, and not one crossing.**
+## 12. What is left, and what a successor should not repeat
 
 **Do not re-run:**
 
@@ -446,6 +505,12 @@ inverted 60 km/h slide from the south hits head-on and dies against, and that a
   and 41.279 for our record (§5).
 
 **The three things that are genuinely open**, in the order I would try them:
+
+0. **Nothing on the north side.** §11 closes the approach from above: 2 968
+   evaluations against the z = 1667.6 wall, from three arrival speeds and eight
+   drop points, with a firing control in every batch, and not one crossing.
+   The wall ends at x ≈ 507 and past it is the world edge. So a successor
+   should NOT spend a run trying to reach the finish face from the north.
 
 1. **Get above the finish face with air under it** (§8; §10 says how NOT to look
    for it). This is the arm's
