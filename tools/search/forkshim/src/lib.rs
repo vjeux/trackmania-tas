@@ -38,7 +38,9 @@ use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 #[path = "../../forkoracle/src/pred_core.rs"]
 pub mod pred_core;
-use pred_core::{Eval, Gate, KeyOp, Pred, RefLine, KEYOP_BYTES, MAXKOPS, MAXP, PRED_BYTES, SUMMARY_BYTES};
+use pred_core::{
+    Eval, Fire, Gate, KeyOp, Pred, RefLine, KEYOP_BYTES, MAXKOPS, MAXP, PRED_BYTES, SUMMARY_BYTES,
+};
 
 const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 
@@ -292,6 +294,8 @@ struct WatchCfg {
     /// THE STATE OBJECTIVE, armed once in the parent and inherited by every
     /// fork child.
     gate: Gate,
+    /// THE EVENT, armed once in the parent like the gate.
+    fire: Fire,
     nseg: usize,
     seg: [(usize, usize); MAXP],
     /// MAP_SHARED page: the child's report, readable by the parent afterwards.
@@ -312,6 +316,7 @@ static mut WCFG: WatchCfg = WatchCfg {
     off_vel: 32,
     rec_len: 44,
     gate: Gate::NONE,
+    fire: Fire::NONE,
     nseg: 0,
     seg: [(0, 0); MAXP],
     out: core::ptr::null_mut(),
@@ -863,8 +868,42 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
             o += KEYOP_BYTES;
         }
         cfg.gate = gate;
+        // THE EVENT CLAUSE, trailing behind the gate.
+        if payload.len() >= o + 20 {
+            let mut fire = Fire::NONE;
+            fire.armed = g4(o) != 0;
+            fire.at = f32::from_bits(g4(o + 4));
+            fire.need = g4(o + 8).max(1);
+            fire.after_ticks = g4(o + 12);
+            fire.after_from_end = g4(o + 16) != 0;
+            o += 20;
+            fire.where_box.armed = g4(o) != 0;
+            o += 4;
+            for i in 0..6 {
+                fire.where_box.bounds[i] = f32::from_bits(g4(o + 4 * i));
+            }
+            o += 24;
+            for which in 0..2 {
+                let n = (g4(o) as usize).min(MAXKOPS - 1);
+                o += 4;
+                for i in 0..n {
+                    let k = KeyOp::decode(&payload[o..o + KEYOP_BYTES]);
+                    if which == 0 {
+                        fire.cond[i] = k;
+                    } else {
+                        fire.after[i] = k;
+                    }
+                    o += KEYOP_BYTES;
+                }
+                nk += n;
+            }
+            cfg.fire = fire;
+        } else {
+            cfg.fire = Fire::NONE;
+        }
     } else {
         cfg.gate = Gate::NONE;
+        cfg.fire = Fire::NONE;
     }
     (np, nref, nk)
 }
@@ -1359,6 +1398,7 @@ unsafe fn forkserver() {
                 ev.finish_s = cfg.finish_s;
                 ev.plane_x = cfg.plane_x;
                 ev.gate = cfg.gate;
+                ev.fire = cfg.fire;
                 WPREV_VALID.store(0, Ordering::SeqCst);
                 WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
                 WATCH_ON.store(1, Ordering::SeqCst);
@@ -1566,7 +1606,14 @@ static FINI: extern "C" fn() = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forkoracle::pred::{parse_gate, parse_spec, RefLineData, Watch};
+    use forkoracle::pred::{parse_fire, parse_gate, parse_spec, RefLineData, Watch};
+
+    /// `WCFG` is a `static mut` -- the child holds it in `.bss` and never
+    /// allocates -- so two tests calling `parse_arm` in parallel threads write
+    /// over each other. They did, and the failure looked like a wire-format bug
+    /// rather than a test-harness one. One lock, and each test sees its own
+    /// payload.
+    static ARM: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn a_watch() -> Watch {
         let mut w = Watch::new();
@@ -1590,11 +1637,22 @@ mod tests {
             "min(abs(bodyright), 5*(-vz)) * nose(0.888,0.451,-0.086)",
         )
         .unwrap();
+        w.fire = parse_fire(
+            "dspeed",
+            10.0,
+            3,
+            "xmin=56,xmax=80,ymin=48,ymax=54,zmin=704,zmax=713",
+            "-dist(366,50,736)",
+            7,
+            true,
+        )
+        .unwrap();
         w
     }
 
     #[test]
     fn the_arm_payload_survives_the_crossing_into_the_child() {
+        let _g = ARM.lock().unwrap_or_else(|e| e.into_inner());
         let w = a_watch();
         let segs = [(0x7f00_1000u64, 4u32), (0x7f00_2000, 40)];
         let payload = w.arm_payload(-1580, 0, 4, 20, 32, 44, &segs);
@@ -1643,11 +1701,30 @@ mod tests {
             cfg.gate.prog[i].encode(&mut b);
             assert_eq!(a, b, "key operation {} changed crossing the pipe", i);
         }
+        // THE EVENT, box and both programs
+        assert!(cfg.fire.armed, "the event clause did not survive the pipe");
+        assert_eq!(cfg.fire.at, w.fire.at);
+        assert_eq!(cfg.fire.need, w.fire.need, "the event's need count did not cross the pipe");
+        assert_eq!(cfg.fire.after_ticks, w.fire.after_ticks, "the after window did not cross");
+        assert_eq!(
+            cfg.fire.after_from_end, w.fire.after_from_end,
+            "which end the after window opens at did not cross the pipe"
+        );
+        assert!(cfg.fire.where_box.armed);
+        assert_eq!(cfg.fire.where_box.bounds, w.fire.where_box.bounds);
+        for (a, b) in [(&cfg.fire.cond, &w.fire.cond), (&cfg.fire.after, &w.fire.after)] {
+            for i in 0..forkoracle::pred::prog_len(b) {
+                let (mut x, mut y) = ([0u8; KEYOP_BYTES], [0u8; KEYOP_BYTES]);
+                a[i].encode(&mut x);
+                b[i].encode(&mut y);
+                assert_eq!(x, y, "event key operation {} changed crossing the pipe", i);
+            }
+        }
         // and it computes the same number on both sides of the wire
         let (p, v, q) = ([70.2, 50.4, 708.9], [-60.0, -20.0, -80.0], [0.7, 0.1, 0.7, 0.05]);
         assert_eq!(
-            pred_core::key_eval(&cfg.gate.prog, p, v, q),
-            forkoracle::pred_core::key_eval(&w.gate.prog, p, v, q)
+            pred_core::key_eval(&cfg.gate.prog, pred_core::St::at(p, v, q)),
+            forkoracle::pred_core::key_eval(&w.gate.prog, forkoracle::pred_core::St::at(p, v, q))
         );
 
         // and the predicates, by re-encoding what the child now holds
@@ -1660,21 +1737,36 @@ mod tests {
         }
     }
 
-    /// The timing plane and the gate are written last so that a shim built
-    /// before they existed simply ignores them. That is only true if a short
-    /// payload is safe.
+    /// The timing plane, the gate and the event are all written after the
+    /// fields an older shim knows about, so a shim built before any of them
+    /// existed simply ignores what it does not recognise. That is only true if
+    /// a short payload is safe at every one of those boundaries.
     #[test]
-    fn an_older_payload_without_the_timing_plane_or_the_gate_is_still_read() {
+    fn a_payload_cut_at_any_trailing_boundary_is_still_read() {
+        let _g = ARM.lock().unwrap_or_else(|e| e.into_inner());
         let w = a_watch();
         let full = w.arm_payload(0, 0, 4, 20, 32, 44, &[(0x1000, 4)]);
-        // everything from `plane_x` onwards removed: what a pre-plane driver
-        // would have sent
-        let cut = full.len() - 4 - 8 - 24 - 4 - 4 - KEYOP_BYTES * w.nkops();
+
+        // 1. cut before the EVENT block: gate armed, event not.
+        let fire_bytes = 4 + 4 + 4 + 4 + 4 + 4 + 24
+            + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.cond)
+            + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.after);
+        let cut = full.len() - fire_bytes;
+        let (np, nref, nk) = unsafe { parse_arm(&full[..cut]) };
+        assert_eq!((np, nref), (2, 64));
+        assert_eq!(nk, w.gate_kops(), "the gate's own key did not survive the cut");
+        let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
+        assert!(cfg.gate.armed, "the gate was lost by a cut that is past it");
+        assert!(!cfg.fire.armed, "a missing event clause must read as disarmed");
+
+        // 2. cut before the GATE block too: both disarmed, reference intact.
+        let cut = cut - 4 - 8 - 24 - 4 - 4 - KEYOP_BYTES * w.gate_kops();
         let (np, nref, nk) = unsafe { parse_arm(&full[..cut]) };
         assert_eq!((np, nref, nk), (2, 64, 0));
         let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
         assert_eq!(cfg.plane_x, 0.0, "a missing timing plane must read as disabled");
         assert!(!cfg.gate.armed, "a missing gate must read as disarmed");
+        assert!(!cfg.fire.armed, "a missing event clause must read as disarmed");
         assert_eq!(cfg.rl.n, 64, "the reference line was damaged by the short read");
     }
 }

@@ -6,7 +6,7 @@ result is allowed to leave it.
 ```
 cd tools/search
 cargo build --release
-TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 73 checks
+TM_SERVER=/path/to/TrackmaniaServer-dir cargo test --release    # 92 checks
 ```
 
 > **2026-08-22: this workspace did not compile, and its end-to-end tests had
@@ -69,6 +69,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
 | `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
+| `--fire --fire-at --fire-need --fire-where --after-key --after-ticks --after-from` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 
 **Added, because the behaviour existed but was not addressable:**
 
@@ -254,7 +255,12 @@ the fixtures checked in under `tools/testdata`.
 | **the state objective's key against the eleven modes it replaces** | seven expressions against the arithmetic they were, transcribed, over 400 states — agreement to 1e-3 relative |
 | **the state objective through the engine, on the map it was proven on** | the fork's measured gate state for the seed against the seed's own recorded telemetry: **0.0002 m, 0.067 m/s of speed, 0.965° of heading, 0.009° of attitude** — and the author's own contact, measured the same way, scores **86.81**, reproducing the published 86.8 m/s of body-lateral speed |
 | **the decoy test on a real map** | fired first time out and was right: a tape that stops driving drifts into the tight box (key 0.014) while the seed misses it by 1.53 m. The run stopped before the first candidate |
-| **the search climbing a state key** | 228811, 24 fork workers, seeded with the human world record: key **0.97 → 55.8** in 2.5 minutes, and the state it scores moves from z = 714.9 to **z = 709.15**, the launcher line |
+| **the search climbing a state key** | 228811, seeded with the human world record: key **0.97 → 57.4**, and the state it scores moves from z = 714.9 to **z = 709.1**, the launcher line |
+| **the launch detector against ground truth** | armed on the author's own lap it fires at **+118.68 m/s** in one tick (published: 323 → 751 km/h = 118.9) and the after-key puts him **5 mm** from the finish; on the human world record the same clause never fires |
+| **the whole ladder, on a map with known ground truth** | 228811 (already beaten -- incumbent 20.237, AT 20.555 -- which is why it is the right place to prove an instrument). From the human world record as its seed: state → launch → aim → **a validated finish on the launcher route no human drives**, in one hour against the hand-built private fork's 2 h 43 min. 216 improvements confirmed, **0 phantoms** |
+| **peak speed is not a launch detector** | a smooth run to 151 m/s -- the speed the world record itself reaches -- does not fire the rise detector, while the speed-thresholded control in the same test does |
+| **the load detector separates what a rate threshold cannot** | two fixtures turning equally hard, one a free rigid body and one with a wheel biting: both fire an `omega >= 200` control and only `domega` tells them apart |
+| **and it separates a REAL known-good pair** | 284238 ran it on a rider and two launchers: **0% of ticks under the bar against 51-71%** -- while the MEAN points the wrong way (13.30 for the rider against 19.8-24.3), because a free body is quiet stretches punctuated by impacts. §5.16 |
 
 ### One check that did not work, one that did, and a false negative I nearly published
 
@@ -435,16 +441,16 @@ every run outside the box scores the same and the search is a random walk
 **Entering a box is not doing the thing.** 228811's gate sits on 96 m of boost
 deck that all 48 runs on the leaderboard drive across. The human world record
 clips it with a key of **0.06** — doing none of the thing — and then finishes at
-22.637. With three bands and no bar that is a band-2 result: the seed is
+22.637. With no bar that is a top-band result: the seed is
 unbeatable except by a faster ordinary lap, and the state hunt is a finish-time
 search with extra steps, which is exactly the moat the mode exists to cross.
 
 This was not foreseen; it was measured, on the first run of the feature on that
 map. `--gate-min-key K` is the bar: a state under it does not count as having
 done the thing, so a tape that clips the box and finishes still ranks as a
-state. It defaults to no bar. It is the one knob here that is a number someone
-has to choose, and it is the general form of what the private fork hard-coded as
-a launch detector (`max_jump >= 10 m/s` at `x <= 80`).
+state. It defaults to no bar. See §5.10 for what turned out to be derivable
+about it and what did not -- and for why, once an event clause is armed, the
+event does this job better than any threshold on the key.
 
 ### 5.6 The identity control gets stronger, and it found a clock
 
@@ -571,60 +577,324 @@ is the kind check, *it did not finish*, and the rank is the search's own
 measurement — and `a_failure_is_banked_on_the_ladder_the_search_ranks_on` pins
 it. Any fork search that has not yet found a finisher was affected.
 
-### 5.9 What it cost, and what it bought
+### 5.9 The event: a place and a thing that happens are not the same shape
 
-73 checks, up from 41. New: `forkoracle/tests/gate.rs` (11) and
-`tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
-`score.rs` and `loop_invariants.rs` and two more in `oracle_e2e.rs` -- a false
-band-2 finish is refused like any other false time, and a state is banked as a
-state, named as one, with its measurement written out beside it. Everything but
-the engine-backed tests runs with no server, on the fixtures in `tools/testdata`,
-anchored on `CARGO_MANIFEST_DIR` so they do not depend on where the test is run
-from.
-
-On 228811, seeded with the human world record, 24 fork workers, key
-`min(abs(bodyright), 5*(-vz))` — the measured firing conjunction — the search
-took the key from **0.97 to 57.4** and moved the state it is scoring from
-`z = 714.9` to `z = 709.1`: the launcher line is at z ≈ 709. 35 minutes,
-1 049 160 evaluations, **99 improvements confirmed by the plain oracle and zero
-phantoms**; it was at 57.2 by minute six and flat after fifteen. The
-author's own contact, measured through the same mechanism from his own recorded
-telemetry, is **86.81** at (71.4, 50.4, 710.3) — which reproduces the published
-figure of 86.8 m/s of body-lateral speed to four digits, and is the strongest
-control available that the key is measuring the thing the map triggers on. The
-human world record scores **0.06** on that key: three orders of magnitude apart,
-which is what a state objective on the right quantity looks like.
-
-**And a second arm reproduced the map's central finding, independently.** Point
-the key at the author's whole contact state, built out of that measurement —
+The gate takes the car to a state. On 228811 that state is worth having only
+because the map then fires the car from 323 to 751 km/h in one contact — and
+nothing about a box can see that happen, or aim it. So there is a second clause:
 
 ```
---gate-key '-(dist(71.38,50.36,710.34) + vdist(-56.44,-2.79,-69.84)/5
-             + 10*(1 - nose(0.4798,0.2735,-0.8336)))'
+--fire dspeed --fire-at 10 \
+--fire-where 'xmin=40,xmax=80,ymin=45,ymax=60,zmin=700,zmax=760' \
+--after-key '-dist(366.07,95.11,693.99)'
 ```
 
-— and in fifteen minutes the search goes from −43.7 (the world record) to −5.12,
-where it stops: 30 minutes, 870 570 evaluations, 159 improvements confirmed and
-zero phantoms. Decomposed, that state is **0.29 m from the author's contact
-point with a velocity 3.60 m/s from his**, and it is **53.8° away in attitude**.
-`TECHNIQUE.md`, written from the private fork six weeks ago:
+* **`dspeed`** is the one-tick rise in speed, and the one term in the key
+  language that is not a property of a single instant. It is here because a
+  launch is a discontinuity. **Peak speed cannot do this job**: the human world
+  record on this map reaches 151 m/s at the finish under its own power, and
+  `peak_speed_is_not_a_launch_detector_but_the_rise_is` pins exactly that — a
+  smooth run to 151 m/s does not fire the rise detector, while the
+  speed-thresholded control in the same test does.
+* **The event is the FIRST tick the condition holds**, so a candidate that
+  crosses the threshold twice does not get to choose.
+* **`--fire-where` is not decoration.** A launch fired upstream of a checkpoint
+  the run still has to collect flies beautifully, passes within a metre of the
+  finish, and can never validate — measured on this map as 5 of 6 checkpoints,
+  DNF. Without the box the band is a trap.
+* **`--after-key` is measured only after the event.** The ordinary route passes
+  within 99 m of the finish on its way down the track, so the same quantity
+  measured from tick 0 pins every candidate at 99 m and flattens the objective
+  exactly where it has to bite.
+
+The bands become four and stay **cumulative**: `missed < reached < fired <
+finished`, each requiring the one below. With a clause armed, a run that
+finishes without firing is a `reached` — it drove the ordinary route, which is
+the local optimum the mode exists to escape.
+
+**GROUND TRUTH, with no server at all.** Armed on the author's own lap, decoded
+out of the map:
+
+```
+fk watch replay --trajectory at_ghost.csv --fire dspeed --fire-at 10 ...
+  fire: at tick 2020 (+118.68) at (75.63, 53.19, 708.33); after -0.0054 at tick 2210
+  gate: key +86.8105 at tick 2015 -- pos (71.38, 50.36, 710.34) ...
+```
+
+`TECHNIQUE.md` puts his contact at 323 → 751 km/h, which is **118.9 m/s**; the
+detector reads **118.68**. The after-key then places him 5 mm from the finish.
+On the human world record the same clause never fires. One positive, one
+negative, on real recordings, before any search ran.
+
+**And a trap in the after-key that this control walks straight past.** The point
+above is the author's own LAST TELEMETRY SAMPLE, so "5 mm from it" is a
+statement about arithmetic, not about finishing: he is at that point by
+definition. An after-key of `-dist(reference's own endpoint)` is a decoy of the
+same family as any other -- the reference maximises it trivially, and it can
+look like a validated objective when it is a tautology. It is still a usable
+GRADIENT for a search that is nowhere near, which is what it was used for here,
+but the number a reference scores on it is not evidence that the key means what
+you want. What settles that is the band above: a candidate that actually crosses
+the line becomes a `Finished` and meets the plain oracle.
+
+### 5.10 `--gate-min-key`, and what is derivable about it
+
+The bar was the one number in this feature that somebody had to choose, and
+choosing it wrong turns gate mode quietly back into a finish-time search. Two
+things改 that, and one does not.
+
+**Derivable: its failure.** The bar exists to keep the SEED out of the top
+bands. If the seed clears it, nothing the search finds can outrank the seed
+except a faster ordinary lap, and the moat is still there. That is checkable
+before anything runs, against the seed's own recording, and it is now a refusal
+with the two numbers in it. `--gate-min-key auto` sets the smallest bar that
+excludes the seed and says in the same breath that it is a **floor and not a
+target**.
+
+**Not derivable: the right value.** The right bar is near the key of the thing
+being hunted, and if that number were known the search would be most of the way
+there. `auto` on 228811 gives +0.078 against a target of 86.8.
+
+**But with an event armed the bar mostly stops mattering**, and that is the real
+answer. The event is a better anti-moat than any threshold on the key: the world
+record finishes at 22.637 having fired nothing, so it lands in `reached` however
+the bar is set. When there is a `--fire` clause, `auto` is the right setting;
+when there is not, the bar is doing the event's job by hand and deserves the
+suspicion the flag's help text gives it.
+
+### 5.11 The second decoy family, met on the way
+
+> An objective that can be maximised without achieving the goal is not a proxy,
+> it is a decoy.
+
+The startup decoy test catches one family: **doing less scores more**. It fired
+on this map first time out and was right. It cannot catch the other family — a
+fast, driven tape that maximises the key **somewhere useless** — and the three
+decoys 228811 originally met were all of that kind.
+
+It happened again here, live, and it is worth the space. With the gate box
+spanning the whole 80 m deck (`x 56..136`), the search took the firing
+conjunction to **100.5 — well above the author's own 86.8 — at x = 122.7**,
+forty metres upstream of the checkpoint the run still has to collect. A perfect
+state in a place where it can never pay.
+
+**The symptom is not "against a face".** That winner sat 83% of the way across
+its box, comfortably inside it. What is diagnostic is how far the optimum
+**migrated from where the seed itself crossed**: `x +63.7 m (80% of the box's
+80 m)`. So every improvement now prints its state's displacement from the seed's,
+per axis, as a fraction of the box.
+
+And it is a **report, not a verdict**, because the measurement says it has to be:
+the decoy migrated 80% of the box on x, and the *correct* answer — the author's
+own contact — migrates **51%** of the box on z, because that axis is only 9 m
+thick and he legitimately crosses low. A threshold fitted between 51% and 80% is
+a threshold fitted to two points. The numbers are printed; a person decides.
+
+The cure for the decoy itself is the box: narrowing x to `56..80` puts the gate
+where a launch can pay. That box has to include the seed's own crossing or the
+identity control cannot run — which is itself a useful constraint, and the
+search refuses rather than proceeding without the control.
+
+### 5.12 What it cost, and what it bought
+
+92 checks, up from 41. New: `forkoracle/tests/gate.rs` (26: the key language,
+the event, the load detector, the run's end) and `tmsearch/tests/seed_state.rs` (5), plus the band and decoy checks in
+`score.rs`, `loop_invariants.rs` and `oracle_e2e.rs`. Everything but the
+engine-backed tests runs with no server, on the fixtures in `tools/testdata`,
+anchored on `CARGO_MANIFEST_DIR`.
+
+On 228811, seeded with the human world record:
+
+| arm | objective | result |
+|---|---|---|
+| C | `min(abs(bodyright), 5*(-vz))`, wide box | key **0.97 → 57.4**; state walks onto the launcher line, z 714.9 → 709.1. 1 049 160 evals, 99 confirmed, 0 phantoms |
+| D | the author's whole contact state | **−43.7 → −5.11**: 0.29 m from his contact, 3.60 m/s from his velocity, **53.8° away in attitude**. 870 570 evals, 159 confirmed, 0 phantoms |
+| K | the same key, box narrowed to where a launch pays, launch clause armed | **the whole ladder, and the launcher fires.** `GATE key +1.11` (the seed) → `+98.40` → `FIRED, after −298.75` → `−19.99` → **a validated finish on the launcher route**. 2 732 610 evals, 216 confirmed, **0 phantoms**. Not a record: see below |
+
+Arm D reproduced the map's central finding from a cold start, and
+`TECHNIQUE.md`, written six weeks earlier from the private fork, says the same
+two numbers:
 
 > We built a run that reached the author's contact point to within **0.3 m**
 > with a velocity within **3 m/s** of his, and nothing happened. Position
 > doesn't trigger it. Speed doesn't trigger it. Which way the car is pointing
 > does.
 
-Two searches, two toolchains, the same two numbers and the same wall. That the
-general mechanism walks into it from a cold start, with the target expressed as
-one line of arithmetic, is the demonstration.
+**Arm K is the feature working end to end**, on the map it was designed for,
+from a cold start, with the whole objective written on the command line. The
+band transitions are one line each in the log, and each one is the search
+changing what it is optimising:
 
-**What it did not do: fire the launcher.** Neither arm reached the state that
-triggers it, and neither would have known if it had. The state objective takes
-the car to a state; what happens NEXT — a one-tick speed rise of tens of m/s,
-downstream of a checkpoint, aimed at the finish — is a different measurement,
-and the private fork needed a launch detector and a closest-approach-to-the-
-finish term to convert its first launches into a validated 20.237. Those are not
-in this feature and §6 says what it would take.
+```
+*** GATE key +1.1058                         <- the seed
+*** GATE key +92.9766                        <- the state
+*** GATE FIRED, after -298.7544              <- the launcher fires
+*** GATE FIRED, after -19.9934                <- aimed at the finish
+*** GATE and finished, 21.510                <- and across it
+*** GATE and finished, 21.223
+```
+
+**THE RESULT HERE IS NOT A TIME, AND 21.223 IS NOT A RECORD.** This map is
+already beaten: the project's incumbent is **20.237** and the author time is
+**20.555**. Quoting 21.223 next to those invites exactly the wrong reading.
+
+What arm K demonstrates is the instrument. **From the human world record as its
+seed, a cold search found the launcher route that no human on the leaderboard
+drives, and crossed the line on it, in one hour** — where the private fork,
+hand-built for this map, took **2 h 43 min** to its first validated finisher on
+the same route. 2 732 610 evaluations, 216 improvements confirmed by the plain
+oracle, **zero phantoms**; every banked finisher re-simulates to exactly the
+millisecond in its name from a fresh process, with the human world record
+carried in the same batch and returning 22.637 exactly.
+
+228811 was chosen precisely *because* it is solved: a map with known ground
+truth is the only place an instrument like this can be shown to work rather than
+merely to produce numbers. The 20.237 came from a further finish-time search
+seeded from tapes like these, and nothing here attempts to reproduce it.
+
+### 5.13 A finding about the map, not about the tool
+
+**228811's published firing condition is NECESSARY AND NOT SUFFICIENT.**
+
+`TECHNIQUE.md` and `RESULT-AT-BEATEN.md` both state the trigger as a
+conjunction: body-lateral speed ≥ 85 m/s, crossing z downwards at ≥ ~17 m/s.
+That was measured over 1343 launches and it is right about what every launch
+has. It is not the whole condition, and two arms of this session reached that
+from opposite directions:
+
+* **Arm K** drove the conjunction to **side 98.2 with −vz 30.9 at
+  (79.5, 50.1, 712.7)** — both components comfortably above their thresholds, on
+  the deck, downstream of the checkpoint — and **nothing fired**.
+* **Arm D**, aiming at the author's whole 6-D contact state, closed position to
+  **0.29 m** and velocity to **3.60 m/s** and stopped **53.8° away in
+  attitude** — which is the same wall `TECHNIQUE.md` describes hitting with the
+  private fork ("within 0.3 m … within 3 m/s … and nothing happened").
+
+The two arms used different objectives, different windows and different seeds
+and landed on the same missing ingredient. That is what makes it a finding
+rather than a null: the conjunction is a property every launch has, not a
+condition that produces one, and the third term is the car's attitude.
+
+**Arm K's own finish went around this, it did not solve it.** Once the event
+clause was armed the search stopped optimising the conjunction and started
+optimising *did it fire*, found a state that does, and never had to know why.
+That is the correct behaviour for a search and a poor substitute for knowing the
+trigger — anyone quoting the conjunction as the answer should quote this
+alongside it.
+
+---
+
+### 5.14 Angular velocity, and the load detector
+
+Added on request from the 284238 arm, with a measurement behind the request.
+That map's obstacle is decided by whether any wheel stays loaded, and the only
+readout of that inside a fork is this: **a car whose wheels have left the ground
+is a free rigid body, so its body-frame angular rate is exactly constant** —
+bit-identical for 40+ ticks. Position, velocity and attitude cannot see it. That
+arm has tapes matched to their human reference at **0.13 m, vz −25.13 and omega
+within 1.4 °/s on all three axes** that still take the wrong branch.
+
+| term | value |
+|---|---|
+| `omega` `omegax` `omegay` `omegaz` | body-frame angular rate, °/s, from `conj(q[t-1]) * q[t]` |
+| `domega` | the change in that rate per tick — **the load detector** |
+
+Body frame and not Euler, because an Euler rate is a statement about the world's
+axes and is not comparable between two copies of a module a map has screwed
+through −120°; a body rate is the same number in both. Shortest arc, because `q`
+and `−q` are one rotation and a car turning 1° would otherwise read as turning
+359°. `atan2` rather than `acos`, because near zero rotation `w ≈ 1` and `acos`
+loses every digit — which is exactly the regime the load detector works in.
+
+`domega` is to `dspeed` what a load is to a launch: the second term in the
+language that is not a property of a single instant, and for the same reason.
+
+**The control that matters is not "does it read the rate".** It is that `domega`
+separates a free body from a loaded one where an omega *threshold* cannot: both
+fixtures turn hard, both fire a `omega >= 200` control, and only the derivative
+tells them apart.
+
+### 5.15 Two hardenings, paid for on another map
+
+Both came from the 284238 arm's own failures, written up rather than worked
+around.
+
+**`--fire-need N`.** A load detector is not a single-tick test: `domega` is near
+zero for one tick whenever the car happens not to be turning. The event now
+takes a consecutive-tick count, like a predicate's `need`, and the event tick is
+the FIRST tick of the run that held it rather than the tick the count completed
+on.
+
+**`--after-ticks N`, and the general rule behind it.**
+
+> **A window whose end the CANDIDATE chooses is a decoy the instrument builds.**
+
+Their first load metric measured the omega freeze from the obstacle up to *the
+candidate's own nearest approach to a station downstream*. A candidate that
+missed the station therefore got a SHORT window, never reached its freeze inside
+it, and **scored 100% in contact — four launches read as rides and one nearly
+reached a write-up.**
+
+This crate's after-key was already safe in the one direction that matters — it
+is a maximum over every tick after the event, and aborting only removes ticks,
+so a candidate can never *inflate* it by ending early. But a fraction or a dwell
+measure needs a window that does not move at all, and that is one field.
+
+It is the same family as §5.11's decoy: an objective evaluated somewhere the
+candidate had a say in choosing.
+
+---
+
+### 5.16 An event has a duration, and 284238 needed its end
+
+The 284238 arm ran the load detector against a real known-good pair and sent
+back two things: a confirmation with a statistic in it, and a gap.
+
+**The confirmation — and the trap inside it.** Their pair, each window 900 ms
+from that tape's own kicker engagement so neither side gets a longer one:
+
+| tape | ticks | mean \|domega\| | max | ticks under 0.5 |
+|---|---|---|---|---|
+| Yhomas_TM 46.112, **rides** | 81 | 13.30 | 108.6 | 0 (0%) |
+| ours cu1best, **launches** | 91 | 24.34 | 589.3 | 64 (71%) |
+| ours b2r3, **launches** | 91 | 19.83 | 337.3 | 46 (51%) |
+
+The **fraction of ticks below the bar** separates cleanly, 0% against 51–71%.
+**The mean does not, and it points the wrong way** — the launching tapes average
+20–24 °/s of change against the rider's 13.30, because a free rigid body is long
+exactly-constant stretches *punctuated by violent impacts* (max 589 and 337
+against his 108.6), and the impacts dominate an average. Max does not separate
+either.
+
+So `--fire '-domega' --fire-at -0.5 --fire-need 3` is the right shape precisely
+because it asks for a RUN of quiet ticks rather than a small average. **Any
+variant that scores mean or peak |domega| ranks a launch above a ride on that
+map** — and "the rate barely changes" is the natural intuition, with the mean
+the natural way to write it. The mean is the trap.
+
+**Calibration, from the positive control:** the rider's minimum |domega| over
+those 900 ms is exactly **0.500**. He grazes the bar and never goes under it for
+a single tick. `--fire-need 3` is comfortable at 0.5; a bar tightened to 0.2
+would classify the rider as a launch. Calibrate on the positive, not on the
+synthetic.
+
+**The gap.** On that map the interesting quantity is not whether a tape ever
+goes rigid but **where it comes back**. Their best candidate goes rigid at the
+kicker like everything else and then *recovers contact 45 m later*. Under a
+first-tick-only rule that tape reads as a pure launch — the one tape doing the
+new thing is invisible to the objective.
+
+So an event now records its duration and its multiplicity:
+
+| field | meaning |
+|---|---|
+| `fire_end_tick` | the last tick of the run that fired, or −1 if it was still holding when the run ended — **which is what a pure launch looks like** |
+| `fire_runs` | how many separate qualifying runs there were |
+| `--after-from end` | open the after-window at the run's END rather than at the event |
+
+`a_run_that_ends_is_distinguishable_from_one_that_does_not` pins the case
+directly: two tapes that go rigid at the same tick, one recovering and one not,
+must not produce the same record.
 
 ---
 
@@ -680,19 +950,11 @@ reference line is inside both volumes. The search takes `--seg K:MAP` on faith.
 It could at least require that the segment map return the reference's own split
 for the reference tape.
 
-**8. An objective for what happens AFTER the state.** The gate takes the car to
-a state. On 228811 the state is worth having because the map then fires the car
-at 750 km/h — and nothing in this feature can see that happen, or aim it. The
-private fork needed two more measurements to convert its first launches into a
-validated lap: a **launch detector** (the largest one-tick rise in speed, and
-where — peak speed cannot do it, the human world record itself reaches 151 m/s
-at the finish) and **closest approach to the finish, measured only after a
-launch** (measured from tick 0 it pins every candidate at the 99 m the ordinary
-route passes within). Both are one-line additions to the child's summary and
-neither fits the gate's shape: a gate is a place, and these are an event and a
-distance conditioned on it. The honest generalisation is probably a second
-`--gate`-like clause whose box is armed by the first one firing — which is also
-what map 210218's backward chain wants, so it is one feature and not two.
+**8. A SECOND event, chained.** `--fire` is one event. Map 210218's backward
+chain wants a ladder of them -- reach here, then there, then there -- and the
+shape is already right: an event clause whose `--fire-where` box is armed only
+once the previous one has fired. That is a `Vec<Fire>` and an index in the
+summary, not a new idea.
 
 **9. `atan2`.** The key language has no inverse tangent, so "the angle of the
 velocity off an axis, in degrees" cannot be written. `nose()`/`along()` give the

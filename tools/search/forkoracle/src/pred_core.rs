@@ -179,9 +179,45 @@ pub struct Summary {
     pub gate_vel: [f32; 3],
     /// `(qw, qx, qy, qz)`, the car's orientation.
     pub gate_quat: [f32; 4],
+
+    /// THE EVENT. A gate is a PLACE; some of what a search is hunting is a
+    /// THING THAT HAPPENS, and the two are not the same shape.
+    ///
+    /// On 228811 the state the gate scores is worth having only because the map
+    /// then fires the car from 323 to 751 km/h in one contact. Nothing about a
+    /// box can see that, so `Fire` is a condition evaluated every tick, and
+    /// this is the first tick it held. -1 if it never did.
+    pub fire_tick: i32,
+    /// The condition's value at that tick, and where the car was.
+    pub fire_value: f32,
+    pub fire_pos: [f32; 3],
+    /// WHAT HAPPENED AFTER, maximised over the ticks strictly after the event.
+    ///
+    /// Measured only after the event, which is not a detail: on 228811 the
+    /// ordinary route passes within 99 m of the finish on its way down the
+    /// track, so "closest approach to the finish" measured from tick 0 pins
+    /// every candidate at 99 m and flattens the objective exactly where it has
+    /// to bite. `after_tick` is -1 when nothing was measured.
+    pub after_key: f32,
+    pub after_tick: i32,
+
+    /// WHERE THE EVENT STOPPED, and how many times it happened.
+    ///
+    /// An event has a duration, and on some maps that is the whole question.
+    /// 284238, measured: their best candidate goes rigid at the kicker like
+    /// everything else and then **recovers contact 45 m later** -- so under a
+    /// first-tick-only rule the one tape doing the new thing is
+    /// indistinguishable from a pure launch, and invisible to the objective.
+    ///
+    /// `fire_end_tick` is the last tick of the run that fired, or -1 if it was
+    /// still holding when the run ended (which is what a pure launch looks
+    /// like). `fire_runs` counts every separate qualifying run, so "it went
+    /// rigid twice" is a fact the search can see rather than one it discards.
+    pub fire_end_tick: i32,
+    pub fire_runs: u32,
 }
 
-pub const SUMMARY_BYTES: usize = 108;
+pub const SUMMARY_BYTES: usize = 148;
 pub const SUMMARY_MAGIC: u32 = 0x464B5057; // "FKPW"
 
 impl Summary {
@@ -206,6 +242,13 @@ impl Summary {
         gate_pos: [0.0; 3],
         gate_vel: [0.0; 3],
         gate_quat: [0.0; 4],
+        fire_tick: -1,
+        fire_value: 0.0,
+        fire_pos: [0.0; 3],
+        after_key: 0.0,
+        after_tick: -1,
+        fire_end_tick: -1,
+        fire_runs: 0,
     };
     pub fn encode(&self, o: &mut [u8]) {
         let w = |o: &mut [u8], i: usize, v: u32| o[i..i + 4].copy_from_slice(&v.to_le_bytes());
@@ -233,6 +276,15 @@ impl Summary {
         for i in 0..4 {
             w(o, 92 + 4 * i, self.gate_quat[i].to_bits());
         }
+        w(o, 108, self.fire_tick as u32);
+        w(o, 112, self.fire_value.to_bits());
+        for i in 0..3 {
+            w(o, 116 + 4 * i, self.fire_pos[i].to_bits());
+        }
+        w(o, 128, self.after_key.to_bits());
+        w(o, 132, self.after_tick as u32);
+        w(o, 136, self.fire_end_tick as u32);
+        w(o, 140, self.fire_runs);
     }
     pub fn decode(b: &[u8]) -> Option<Summary> {
         if b.len() < SUMMARY_BYTES {
@@ -264,6 +316,13 @@ impl Summary {
             gate_pos: [f(68), f(72), f(76)],
             gate_vel: [f(80), f(84), f(88)],
             gate_quat: [f(92), f(96), f(100), f(104)],
+            fire_tick: g(108) as i32,
+            fire_value: f(112),
+            fire_pos: [f(116), f(120), f(124)],
+            after_key: f(128),
+            after_tick: g(132) as i32,
+            fire_end_tick: g(136) as i32,
+            fire_runs: g(140),
         })
     }
 }
@@ -318,6 +377,35 @@ pub const KOP_MIN: u32 = 14;
 pub const KOP_MAX: u32 = 15;
 pub const KOP_NEG: u32 = 16;
 pub const KOP_ABS: u32 = 17;
+/// push the ONE-TICK RISE in speed, m/s per 10 ms tick. 0 on the first tick.
+///
+/// The first term that is not a function of the current state alone, and it is
+/// here because the event this feature exists to detect is not one: a launch is
+/// a discontinuity. On 228811 ordinary driving gains ~2 m/s in a tick and a
+/// flight gains 0.1, while the booster adds tens -- and **peak speed cannot do
+/// this job**, because the human world record itself reaches 151 m/s at the
+/// finish.
+pub const KOP_DSPEED: u32 = 18;
+/// push a component of the BODY-FRAME angular rate, deg/s: a[0] = 0|1|2.
+///
+/// From `conj(q[t-1]) * q[t]`, the rotation the car made in its OWN frame in one
+/// tick -- not a finite difference of Euler angles, which is frame-dependent and
+/// not comparable between two copies of a screw-symmetric module.
+pub const KOP_OMEGA: u32 = 19;
+/// push the MAGNITUDE of the body-frame angular rate, deg/s.
+pub const KOP_OMEGAMAG: u32 = 20;
+/// push the CHANGE in that rate between consecutive ticks, deg/s per tick.
+///
+/// **The load detector**, and the exact analogue of `dspeed` being the launch
+/// detector. A car whose wheels have left the ground is a FREE RIGID BODY: its
+/// body-frame omega is then exactly constant, bit-identical for tens of ticks
+/// (measured on 284238). Position, velocity and attitude cannot see that --
+/// tapes matched to a human reference at 0.13 m, vz −25.13 and omega within
+/// 1.4 deg/s on all three axes still take the wrong branch -- because what
+/// separates riding an obstacle from launching off it is whether ANY wheel is
+/// still loaded, and the only readout of that in the fork is this derivative
+/// going to zero.
+pub const KOP_DOMEGA: u32 = 21;
 
 /// One instruction. `a` carries a constant, an axis index, a world direction,
 /// or a point, depending on `op`; `axis` picks a body axis for `KOP_AXISDOT`.
@@ -373,7 +461,67 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// A malformed program (stack underflow, no result) returns `f32::NAN`, which
 /// the caller must treat as "this tick did not score". The parser makes that
 /// unreachable; the check is here because this runs inside the game server.
-pub fn key_eval(prog: &[KeyOp], pos: [f32; 3], vel: [f32; 3], quat: [f32; 4]) -> f32 {
+/// The state one key is evaluated against: the car, plus the one quantity that
+/// is not a property of a single instant.
+#[derive(Clone, Copy)]
+pub struct St {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    /// `(qw, qx, qy, qz)`
+    pub quat: [f32; 4],
+    /// The rise in speed since the previous tick, m/s. 0 on the first tick.
+    pub dspeed: f32,
+    /// Body-frame angular rate, deg/s. 0 until two ticks have been seen.
+    pub omega: [f32; 3],
+    /// The change in that rate since the previous tick, deg/s. 0 until three.
+    pub domega: f32,
+}
+
+impl St {
+    /// A state with no history, for the offline cases where a key is evaluated
+    /// against one sample rather than a stream. `dspeed`, `omega` and `domega`
+    /// are 0 there, so a key that uses them reads as "nothing happened" --
+    /// which is why an event key belongs in `--fire`, measured by the child
+    /// over a stream, and not fitted against a single sample.
+    pub fn at(pos: [f32; 3], vel: [f32; 3], quat: [f32; 4]) -> St {
+        St { pos, vel, quat, dspeed: 0.0, omega: [0.0; 3], domega: 0.0 }
+    }
+}
+
+/// The rotation `a -> b` expressed in `a`'s OWN frame, as a rate in deg/s.
+///
+/// `conj(a) * b`, shortest arc, over `dt`. Body frame and not Euler: an Euler
+/// rate is a statement about the world's axes and is not comparable between two
+/// copies of a module that a map has screwed through -120 degrees; a body rate
+/// is the same number in both.
+pub fn body_omega(a: [f32; 4], b: [f32; 4], dt: f32) -> [f32; 3] {
+    let (aw, ax, ay, az) = (a[0], -a[1], -a[2], -a[3]);
+    let (bw, bx, by, bz) = (b[0], b[1], b[2], b[3]);
+    let mut rw = aw * bw - ax * bx - ay * by - az * bz;
+    let mut rx = aw * bx + ax * bw + ay * bz - az * by;
+    let mut ry = aw * by - ax * bz + ay * bw + az * bx;
+    let mut rz = aw * bz + ax * by - ay * bx + az * bw;
+    // q and -q are the same rotation; take the shortest arc, or a car turning
+    // 1 degree reads as turning 359.
+    if rw < 0.0 {
+        rw = -rw;
+        rx = -rx;
+        ry = -ry;
+        rz = -rz;
+    }
+    let vn = (rx * rx + ry * ry + rz * rz).sqrt();
+    if !(vn > 1e-9) || dt <= 0.0 {
+        return [0.0; 3];
+    }
+    // atan2 rather than acos: near zero rotation `rw` is ~1 and acos loses
+    // every digit, which is exactly the regime the load detector works in.
+    let angle = 2.0 * vn.atan2(rw);
+    let k = angle / vn / dt * 57.295_78;
+    [rx * k, ry * k, rz * k]
+}
+
+pub fn key_eval(prog: &[KeyOp], s: St) -> f32 {
+    let (pos, vel, quat) = (s.pos, s.vel, s.quat);
     let mut st = [0.0f32; KSTACK];
     let mut sp = 0usize;
     let axes = body_axes(quat);
@@ -383,6 +531,13 @@ pub fn key_eval(prog: &[KeyOp], pos: [f32; 3], vel: [f32; 3], quat: [f32; 4]) ->
         }
         // unary and binary operators pop before they push
         let v = match k.op {
+            KOP_DSPEED => s.dspeed,
+            KOP_OMEGA => s.omega[(k.axis as usize) % 3],
+            KOP_OMEGAMAG => {
+                let o = s.omega;
+                (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt()
+            }
+            KOP_DOMEGA => s.domega,
             KOP_CONST => k.a[0],
             KOP_VEL => vel[(k.axis as usize) % 3],
             KOP_POS => pos[(k.axis as usize) % 3],
@@ -476,7 +631,8 @@ impl Default for Gate {
 }
 
 impl Gate {
-    pub const NONE: Gate = Gate {        armed: false,
+    pub const NONE: Gate = Gate {
+        armed: false,
         bounds: [0.0; 6],
         minspeed: 0.0,
         prog: [KeyOp::END; MAXKOPS],
@@ -491,6 +647,128 @@ impl Gate {
             .max(self.bounds[4] - pos[2])
             .max(pos[2] - self.bounds[5])
     }
+
+    /// THE SECOND DECOY FAMILY: an objective maximised at a place that cannot
+    /// pay.
+    ///
+    /// The startup decoy test catches "doing less scores more". It does not
+    /// catch the other shape, which is a fast, driven tape that maximises the
+    /// key SOMEWHERE USELESS -- and that one is not hypothetical either: armed
+    /// on 228811 with a box spanning the whole 80 m deck, the search took the
+    /// firing conjunction to **100.5, well above the author's own 86.8**, at
+    /// x = 122.7 -- forty metres upstream of the checkpoint the run still has to
+    /// collect, where no launch it produces can ever validate.
+    ///
+    /// There is no general test for "useless". There is a cheap and general
+    /// SYMPTOM, and it is not "against a face" -- the winner above sat 83% of
+    /// the way across its box, comfortably inside it. It is **how far the
+    /// optimum has MIGRATED from the state the search started at**. A box in
+    /// which the best state ends up 64 m from where the seed crossed is not
+    /// pinning a place; it is a region, and the search has quietly chosen which
+    /// part of the region to work in. That choice deserves to be visible,
+    /// because on this map it is the difference between a launch that validates
+    /// and one that cannot.
+    ///
+    /// **This is a REPORT, not a verdict, and the reason is measured.** On this
+    /// map the decoy migrated 80% of the box on x -- and the CORRECT answer,
+    /// the author's own contact, migrated 51% of the box on z, because that
+    /// axis is only 9 m thick and he legitimately crosses low. A threshold
+    /// fitted between 51% and 80% is a threshold fitted to two points, and this
+    /// project has paid for those before. So every improvement prints where its
+    /// state sits relative to the seed's, and a person decides.
+    ///
+    /// `None` only when the box has no span at all.
+    pub fn migration(&self, from: [f32; 3], to: [f32; 3]) -> Option<String> {
+        let names = ["x", "y", "z"];
+        let mut out: Vec<String> = Vec::new();
+        for i in 0..3 {
+            let span = self.bounds[2 * i + 1] - self.bounds[2 * i];
+            let d = to[i] - from[i];
+            if span > 0.0 {
+                out.push(format!(
+                    "{} {:+.1} m ({:.0}% of the box's {:.0} m)",
+                    names[i],
+                    d,
+                    100.0 * d.abs() / span,
+                    span
+                ));
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out.join(", "))
+        }
+    }
+}
+
+/// THE EVENT CLAUSE: a thing that happens, and what to score after it.
+///
+/// A `Gate` is a place. This is not, and the two do not have the same shape:
+/// the launch on 228811 is a one-tick discontinuity that can happen anywhere
+/// along 80 m of deck, and the objective after it is a distance to a point the
+/// car is nowhere near when the event fires.
+///
+/// So: `cond >= at` is checked every tick (optionally only inside `where_box`),
+/// the FIRST tick it holds is the event, and `after` is maximised over the
+/// ticks strictly after it.
+#[derive(Clone, Copy)]
+pub struct Fire {
+    pub armed: bool,
+    /// The condition, and the value it must reach.
+    pub cond: [KeyOp; MAXKOPS],
+    pub at: f32,
+    /// Consecutive ticks the condition must hold before it counts as the event.
+    ///
+    /// A load detector needs this: `domega` is near zero for one tick whenever
+    /// the car happens not to be turning, and what distinguishes a free rigid
+    /// body is that it STAYS near zero. Same idea as a predicate's `need`.
+    pub need: u32,
+    /// How many ticks after the event the after-key is measured over. 0 means
+    /// "to the end of the run".
+    ///
+    /// **A window whose end the candidate chooses is a decoy the instrument
+    /// builds** (284238, measured): a metric taken from an event to the
+    /// candidate's OWN nearest approach to something downstream gives a
+    /// candidate that misses a SHORT window, and four launches read as rides.
+    /// A maximum over "every tick after" is safe in the other direction --
+    /// aborting only removes ticks -- but a FIXED count is what a fraction or
+    /// a dwell measure needs, and it is one field.
+    pub after_ticks: u32,
+    /// Measure the after-window from the END of the firing run rather than its
+    /// start -- "where did it come back", not "what happened next".
+    pub after_from_end: bool,
+    /// Where the event is allowed to happen. `armed` false on this box means
+    /// anywhere.
+    ///
+    /// On 228811 this is what makes the difference between a launch that counts
+    /// and one that does not: a launch fired at x = 112 flies beautifully and
+    /// can pass within a metre of the finish, but it is upstream of the
+    /// checkpoint at x = 80 and the run can never validate. Measured: 5 of 6
+    /// checkpoints, DNF. Without the box the band is a trap.
+    pub where_box: Gate,
+    /// What to maximise after it. An empty program means the event itself is
+    /// the whole objective and every candidate that fires ties.
+    pub after: [KeyOp; MAXKOPS],
+}
+
+impl Default for Fire {
+    fn default() -> Fire {
+        Fire::NONE
+    }
+}
+
+impl Fire {
+    pub const NONE: Fire = Fire {
+        armed: false,
+        cond: [KeyOp::END; MAXKOPS],
+        at: 0.0,
+        need: 1,
+        after_ticks: 0,
+        after_from_end: false,
+        where_box: Gate::NONE,
+        after: [KeyOp::END; MAXKOPS],
+    };
 }
 
 /// The reference line: one position per tape tick, plus its cumulative
@@ -552,6 +830,8 @@ pub struct Eval {
     /// THE STATE OBJECTIVE: a box that records the car's whole state instead
     /// of aborting the run. See `Gate`.
     pub gate: Gate,
+    /// THE EVENT: a thing that happens, and what to score after it. See `Fire`.
+    pub fire: Fire,
     ring_sp: [f32; RINGW],
     ring_x: [f32; RINGW],
     ring_y: [f32; RINGW],
@@ -563,6 +843,15 @@ pub struct Eval {
     cur: usize,
     prev_valid: bool,
     prev: [f32; 3],
+    /// The previous tick's attitude and body-frame rate, for `omega`/`domega`.
+    prev_quat: [f32; 4],
+    prev_quat_valid: bool,
+    prev_omega: [f32; 3],
+    prev_omega_valid: bool,
+    /// Consecutive ticks the event condition has held, for `Fire::need`.
+    fire_cons: u32,
+    /// Is the run that fired still holding?
+    in_firing_run: bool,
     pub sum: Summary,
 }
 
@@ -575,6 +864,7 @@ impl Eval {
         finish_s: 0.0,
         plane_x: 0.0,
         gate: Gate::NONE,
+        fire: Fire::NONE,
         ring_sp: [0.0; RINGW],
         ring_x: [0.0; RINGW],
         ring_y: [0.0; RINGW],
@@ -584,6 +874,12 @@ impl Eval {
         cur: 0,
         prev_valid: false,
         prev: [0.0; 3],
+        prev_quat: [0.0; 4],
+        prev_quat_valid: false,
+        prev_omega: [0.0; 3],
+        prev_omega_valid: false,
+        fire_cons: 0,
+        in_firing_run: false,
         sum: Summary::ZERO,
     };
 
@@ -595,6 +891,12 @@ impl Eval {
         self.cur = 0;
         self.prev_valid = false;
         self.prev = [0.0; 3];
+        self.prev_quat_valid = false;
+        self.prev_omega_valid = false;
+        self.prev_quat = [0.0; 4];
+        self.prev_omega = [0.0; 3];
+        self.fire_cons = 0;
+        self.in_firing_run = false;
         self.sum = Summary::ZERO;
         self.sum.magic = SUMMARY_MAGIC;
     }
@@ -645,9 +947,100 @@ impl Eval {
         }
         self.sum.nticks += 1;
         self.sum.last_tick = tick;
+        // The one quantity that is not a property of a single instant, computed
+        // before `last_speed` is overwritten.
+        let dspeed = if self.sum.nticks > 1 { speed - self.sum.last_speed } else { 0.0 };
         self.sum.last_speed = speed;
         if speed > self.sum.max_speed {
             self.sum.max_speed = speed;
+        }
+        // BODY-FRAME ANGULAR RATE, and its derivative. Both need history, so
+        // both read zero until enough ticks have gone by -- and a key that
+        // uses them must not fire on that zero, which is what `Fire::need`
+        // and `after` being measured only past the event are for.
+        let omega = if self.prev_quat_valid {
+            body_omega(self.prev_quat, quat, 0.01)
+        } else {
+            [0.0; 3]
+        };
+        let domega = if self.prev_omega_valid {
+            let d = [
+                omega[0] - self.prev_omega[0],
+                omega[1] - self.prev_omega[1],
+                omega[2] - self.prev_omega[2],
+            ];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        } else {
+            0.0
+        };
+        if self.prev_quat_valid {
+            self.prev_omega = omega;
+            self.prev_omega_valid = true;
+        }
+        self.prev_quat = quat;
+        self.prev_quat_valid = true;
+        let st = St { pos, vel, quat, dspeed, omega, domega };
+
+        // ---- THE EVENT: when it happened, how long it lasted, how often.
+        //
+        // The event is the FIRST tick the condition holds for `need` ticks
+        // running, so it cannot be re-fired by a candidate that crosses the
+        // same threshold twice. But an event has a DURATION, and on some maps
+        // that is the whole question -- so the run's end and the number of runs
+        // are recorded too, and a candidate that goes rigid and then recovers
+        // contact is distinguishable from one that never came back.
+        //
+        // The after-key is a maximum over ticks after the event (or after the
+        // run's END, with `after_from_end`). Monotone under aborting for the
+        // same reason the gate key is: aborting only removes ticks.
+        if self.fire.armed {
+            let v = key_eval(&self.fire.cond, st);
+            let here = !self.fire.where_box.armed || self.fire.where_box.over(pos) <= 0.0;
+            let holds = v.is_finite() && v >= self.fire.at && here;
+
+            if holds {
+                self.fire_cons += 1;
+                if self.fire_cons == self.fire.need.max(1) {
+                    // a new qualifying run has just been established
+                    self.sum.fire_runs += 1;
+                    if self.sum.fire_tick < 0 {
+                        // the event is the FIRST tick of the run that held it,
+                        // not the tick the count completed on
+                        self.sum.fire_tick = tick - (self.fire.need.max(1) as i32 - 1);
+                        self.sum.fire_value = v;
+                        self.sum.fire_pos = pos;
+                        self.in_firing_run = true;
+                    }
+                }
+            } else {
+                if self.in_firing_run {
+                    // the run that fired has ended HERE: this is where contact
+                    // came back, and on 284238 it is the measurement.
+                    self.sum.fire_end_tick = tick - 1;
+                    self.in_firing_run = false;
+                }
+                self.fire_cons = 0;
+            }
+
+            // the window opens at the event, or at the end of its run
+            let from = if self.fire.after_from_end {
+                if self.sum.fire_end_tick >= 0 {
+                    self.sum.fire_end_tick
+                } else {
+                    i32::MAX
+                }
+            } else {
+                self.sum.fire_tick
+            };
+            if from >= 0 && from < i32::MAX && tick > from && self.fire.after[0].op != KOP_END {
+                let within = self.fire.after_ticks == 0
+                    || tick - from <= self.fire.after_ticks as i32;
+                let k = key_eval(&self.fire.after, st);
+                if within && k.is_finite() && (self.sum.after_tick < 0 || k > self.sum.after_key) {
+                    self.sum.after_key = k;
+                    self.sum.after_tick = tick;
+                }
+            }
         }
 
         // ---- THE STATE OBJECTIVE.
@@ -669,7 +1062,7 @@ impl Eval {
                 }
             } else {
                 self.sum.gate_miss = 0.0;
-                let key = key_eval(&self.gate.prog, pos, vel, quat);
+                let key = key_eval(&self.gate.prog, st);
                 if key.is_finite() && (self.sum.gate_tick < 0 || key > self.sum.gate_key) {
                     self.sum.gate_key = key;
                     self.sum.gate_tick = tick;

@@ -23,3 +23,50 @@ pub mod layout;
 pub mod blind;
 pub mod inputs;
 pub mod procmem;
+
+/// What an armed event clause saw, as the driver reports it.
+///
+/// `Unarmed` and `Silent` look identical in the child's summary -- a
+/// `fire_tick` of -1 either way -- and they mean opposite things to the
+/// ranking, so the distinction is the driver's own knowledge and is carried in
+/// the type rather than inferred from the wire.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EventSeen {
+    Unarmed,
+    Silent,
+    Fired {
+        tick: i32,
+        /// The condition's value when it fired -- on a launch detector, the
+        /// size of the one-tick speed rise, in m/s.
+        value: f32,
+        pos: [f32; 3],
+        /// The after-key, or 0 when no after-key was given.
+        after: f32,
+        /// -1 when the run ended on the firing tick, or no after-key was given.
+        after_tick: i32,
+    },
+}
+
+impl std::fmt::Display for EventSeen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventSeen::Unarmed => write!(f, "no event clause"),
+            EventSeen::Silent => write!(f, "the event never fired"),
+            EventSeen::Fired { tick, value, pos, after, after_tick } => write!(
+                f,
+                "FIRED at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}); after {:+.4}{}",
+                tick,
+                value,
+                pos[0],
+                pos[1],
+                pos[2],
+                after,
+                if *after_tick >= 0 {
+                    format!(" at tick {}", after_tick)
+                } else {
+                    String::new()
+                }
+            ),
+        }
+    }
+}

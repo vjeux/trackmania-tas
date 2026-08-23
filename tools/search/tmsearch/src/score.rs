@@ -17,6 +17,7 @@
 //! construction, for any checkpoint count, any map length and any progress
 //! measure. The constant cannot be got wrong because there is no constant.
 
+use forkoracle::EventSeen;
 use ghost::secs;
 
 /// How far a run that did not finish got. Two ladders, because the two
@@ -103,8 +104,18 @@ pub enum GateState {
     /// The car was inside. `key` is the state key at the best tick; bigger is
     /// better, and it may be any finite value, positive or negative.
     Reached { key: f64 },
-    /// It reached the gate AND finished the map. Now it is a time again, and
-    /// it is re-validated by the plain oracle exactly like any other time.
+    /// It reached the gate AND the event fired. `after` is what happened next,
+    /// maximised over the ticks after it.
+    ///
+    /// **A place and an event are not the same shape**, which is why this is a
+    /// band and not another term in the key. On 228811 the state the gate
+    /// scores is worth having only because the map then fires the car from 323
+    /// to 751 km/h in one contact, and what makes a launch good is where it
+    /// carries the car -- a quantity the car is nowhere near when the event
+    /// happens.
+    Fired { after: f64 },
+    /// All of that, and it finished. Now it is a time again, and it is
+    /// re-validated by the plain oracle exactly like any other time.
     Finished { ms: i64 },
 }
 
@@ -116,7 +127,8 @@ impl GateState {
             // module.
             GateState::Missed { miss_m } => (0, -miss_m),
             GateState::Reached { key } => (1, key),
-            GateState::Finished { ms } => (2, -(ms as f64)),
+            GateState::Fired { after } => (2, after),
+            GateState::Finished { ms } => (3, -(ms as f64)),
         }
     }
 }
@@ -129,21 +141,31 @@ impl GateState {
 ///   minimum speed.
 /// * `miss_m` -- its closest approach otherwise; `None` when nothing was
 ///   measured at all.
-/// * `min_key` -- how good the state has to be before FINISHING counts as
-///   having done the thing. `NEG_INFINITY` for no bar.
+/// * `min_key` -- how good the state has to be before the higher bands are
+///   available at all. `NEG_INFINITY` for no bar.
+///
+/// **The bands are cumulative.** Firing without reaching the gate is not the
+/// fired band, and finishing without firing is not the finished band, for the
+/// same reason the bar exists: each band means "everything below it, and this
+/// too". A run that finished by driving the ordinary route has not done the
+/// thing, and the whole point of the mode is that the ordinary route is the
+/// local optimum being escaped.
 pub fn gate_outcome(
     finish_ms: Option<i64>,
     key: Option<f64>,
     miss_m: Option<f64>,
     min_key: f64,
+    event: EventSeen,
 ) -> Outcome {
-    Outcome::Gate(match (finish_ms, key) {
-        (Some(ms), Some(k)) if k >= min_key => GateState::Finished { ms },
-        // Finished, but not having done the thing: it is still only a state,
-        // and on a map whose gate sits on the line everybody drives, this is
-        // the branch that keeps the seed beatable.
-        (_, Some(k)) => GateState::Reached { key: k },
-        (_, None) => GateState::Missed { miss_m: miss_m.unwrap_or(f64::INFINITY) },
+    Outcome::Gate(match key {
+        None => GateState::Missed { miss_m: miss_m.unwrap_or(f64::INFINITY) },
+        Some(k) if k < min_key => GateState::Reached { key: k },
+        Some(k) => match (event, finish_ms) {
+            (EventSeen::Fired { .. }, Some(ms)) => GateState::Finished { ms },
+            (EventSeen::Fired { after, .. }, None) => GateState::Fired { after: after as f64 },
+            (EventSeen::Unarmed, Some(ms)) => GateState::Finished { ms },
+            _ => GateState::Reached { key: k },
+        },
     })
 }
 
@@ -245,6 +267,7 @@ impl std::fmt::Display for Outcome {
         match self {
             Outcome::Finish { ms } => write!(f, "{}", secs(*ms)),
             Outcome::Gate(GateState::Reached { key }) => write!(f, "GATE key {:+.4}", key),
+            Outcome::Gate(GateState::Fired { after }) => write!(f, "GATE FIRED, after {:+.4}", after),
             Outcome::Gate(GateState::Finished { ms }) => write!(f, "GATE and finished, {}", secs(*ms)),
             Outcome::Gate(GateState::Missed { miss_m }) if miss_m.is_finite() => {
                 write!(f, "no gate, {:.2} m away", miss_m)
@@ -267,6 +290,7 @@ pub fn tag(o: &Outcome) -> String {
     match o {
         Outcome::Finish { ms } => secs(*ms).replace('.', "_"),
         Outcome::Gate(GateState::Reached { key }) => format!("gate_{:.4}", key).replace(['.', '-'], "_"),
+        Outcome::Gate(GateState::Fired { after }) => format!("fired_{:.4}", after).replace(['.', '-'], "_"),
         Outcome::Gate(GateState::Finished { ms }) => format!("gate_{}", secs(*ms).replace('.', "_")),
         Outcome::Gate(GateState::Missed { miss_m }) => {
             format!("nogate_{:.2}m", miss_m).replace('.', "_")
@@ -348,6 +372,12 @@ mod tests {
     }
     fn gatefin(ms: i64) -> Outcome {
         Outcome::Gate(GateState::Finished { ms })
+    }
+    fn firedb(after: f64) -> Outcome {
+        Outcome::Gate(GateState::Fired { after })
+    }
+    fn fired_ev(after: f32) -> EventSeen {
+        EventSeen::Fired { tick: 2019, value: 109.3, pos: [70.0, 50.0, 709.0], after, after_tick: 2100 }
     }
 
     /// THE regression this feature exists to make unrepresentable.
@@ -433,25 +463,91 @@ mod tests {
     #[test]
     fn a_finish_that_did_not_clear_the_bar_does_not_take_the_top_band() {
         // the human world record's own numbers
-        let wr = gate_outcome(Some(22_637), Some(0.0604), None, 60.0);
+        let wr = gate_outcome(Some(22_637), Some(0.0604), None, 60.0, EventSeen::Unarmed);
         assert_eq!(wr, reached(0.0604), "a 0.06 key took the top band");
         // a candidate that does the thing and dies still outranks it
-        assert!(gate_outcome(None, Some(70.0), None, 60.0) > wr);
+        assert!(gate_outcome(None, Some(70.0), None, 60.0, EventSeen::Unarmed) > wr);
         // and one that does the thing and finishes outranks everything
-        let did_it = gate_outcome(Some(20_237), Some(86.8), None, 60.0);
-        assert!(did_it > gate_outcome(None, Some(1e9), None, 60.0));
+        let did_it = gate_outcome(Some(20_237), Some(86.8), None, 60.0, EventSeen::Unarmed);
+        assert!(did_it > gate_outcome(None, Some(1e9), None, 60.0, EventSeen::Unarmed));
         // with no bar -- the default -- the seed is back on top and nothing
         // can beat it, which is the behaviour the flag exists to turn off.
-        let no_bar = gate_outcome(Some(22_637), Some(0.0604), None, f64::NEG_INFINITY);
-        assert!(no_bar > gate_outcome(None, Some(1e9), None, f64::NEG_INFINITY));
+        let no_bar = gate_outcome(Some(22_637), Some(0.0604), None, f64::NEG_INFINITY, EventSeen::Unarmed);
+        assert!(no_bar > gate_outcome(None, Some(1e9), None, f64::NEG_INFINITY, EventSeen::Unarmed));
     }
 
     #[test]
     fn the_bands_come_from_the_measurement_and_nothing_else() {
-        assert_eq!(gate_outcome(None, None, Some(3.5), 0.0), missed(3.5));
-        assert_eq!(gate_outcome(None, None, None, 0.0), missed(f64::INFINITY));
-        assert_eq!(gate_outcome(None, Some(-4.0), None, f64::NEG_INFINITY), reached(-4.0));
-        assert_eq!(gate_outcome(Some(1234), None, Some(2.0), 0.0), missed(2.0));
+        assert_eq!(gate_outcome(None, None, Some(3.5), 0.0, EventSeen::Unarmed), missed(3.5));
+        assert_eq!(gate_outcome(None, None, None, 0.0, EventSeen::Unarmed), missed(f64::INFINITY));
+        assert_eq!(gate_outcome(None, Some(-4.0), None, f64::NEG_INFINITY, EventSeen::Unarmed), reached(-4.0));
+        assert_eq!(gate_outcome(Some(1234), None, Some(2.0), 0.0, EventSeen::Unarmed), missed(2.0));
+    }
+
+
+    /// THE FOURTH BAND, and the cumulative rule that makes it mean something.
+    ///
+    /// A place and an event are different shapes: on 228811 the state the gate
+    /// scores is worth having only because the map then fires the car. So the
+    /// bands are `missed < reached < fired < finished`, and each REQUIRES the
+    /// one below -- a run that finishes without firing has driven the ordinary
+    /// route, which is the local optimum this mode exists to escape.
+    #[test]
+    fn the_event_band_sits_above_the_state_and_below_a_finish() {
+        let ev = fired_ev(-17.9);
+        // reached, fired, finished: strictly increasing
+        assert!(firedb(-17.9) > reached(1e9), "a fired run lost to a merely good state");
+        assert!(firedb(-1e9) > reached(1e9), "the bands are not ordered by value across them");
+        assert!(gatefin(20_237) > firedb(1e9), "a finish lost to a fired non-finisher");
+        // within the band, the after-key orders it: nearer the finish is better
+        assert!(firedb(-17.9) > firedb(-30.0));
+        // and the whole thing comes out of the band rule
+        // the after-key crosses the wire as f32, so the band carries what the
+        // child measured and not a widened literal
+        assert_eq!(gate_outcome(None, Some(86.8), None, 60.0, ev), firedb(-17.9f32 as f64));
+        assert_eq!(gate_outcome(Some(20_237), Some(86.8), None, 60.0, ev), gatefin(20_237));
+    }
+
+    /// **A FINISH THAT DID NOT FIRE IS NOT A FINISH, once an event is armed.**
+    ///
+    /// This is the whole reason the event is a band and not a bonus. With a
+    /// launch clause armed on 228811, the human world record finishes at 22.637
+    /// having fired nothing -- and if that took the top band the search would be
+    /// ranking on time again from the first evaluation.
+    #[test]
+    fn a_finish_without_the_event_does_not_take_the_top_band() {
+        let silent = EventSeen::Silent;
+        assert_eq!(
+            gate_outcome(Some(22_637), Some(86.8), None, 60.0, silent),
+            reached(86.8),
+            "a finish that fired nothing took a band above the state"
+        );
+        // and one candidate that DID fire, and died, outranks it
+        assert!(gate_outcome(None, Some(70.0), None, 60.0, fired_ev(-99.0)) > reached(86.8));
+        // with NO clause armed, the same finish is the top band, as before:
+        // the gate is then the whole objective.
+        assert_eq!(
+            gate_outcome(Some(22_637), Some(86.8), None, 60.0, EventSeen::Unarmed),
+            gatefin(22_637)
+        );
+    }
+
+    /// The bar governs everything above it. A state below the bar cannot reach
+    /// the fired band either, however spectacular the event: firing somewhere
+    /// the search was not pointed at is not progress towards anything.
+    #[test]
+    fn the_bar_gates_the_event_band_too() {
+        assert_eq!(gate_outcome(None, Some(0.06), None, 60.0, fired_ev(0.0)), reached(0.06));
+        assert_eq!(
+            gate_outcome(Some(20_237), Some(0.06), None, 60.0, fired_ev(0.0)),
+            reached(0.06)
+        );
+    }
+
+    #[test]
+    fn the_event_band_prints_and_tags_as_itself() {
+        assert_eq!(firedb(-17.9).to_string(), "GATE FIRED, after -17.9000");
+        assert_eq!(tag(&firedb(-17.9)), "fired__17_9000");
     }
 
     #[test]
