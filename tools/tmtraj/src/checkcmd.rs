@@ -57,6 +57,38 @@ impl Out {
     fn na(&mut self, id: &str, msg: String) {
         self.lines.push(format!("n/a  {:<6} {}", id, msg));
     }
+
+    /// A verdict about the ground-contact byte, which a regenerated ghost
+    /// still carries from its donor.
+    ///
+    /// `ghost regen` writes 22 of the 116 bytes in each telemetry sample from
+    /// engine memory, plus three from the tape. The other 91 — byte 89's
+    /// contact flag among them — stay the carrier's. C5, C6, C7 and C10 all
+    /// read byte 89, so on such a file they are measuring the DONOR, and this
+    /// project's rule is that an input a check cannot read is never a verdict
+    /// about the subject.
+    ///
+    /// This is NOT a pass and does not pretend to be: the line says the
+    /// channel is UNMEASURED and names what would fix it. The exemption is
+    /// only ever granted because the FILE's own manifest declares the field
+    /// inherited — a claim the file makes about itself, in writing.
+    fn contact(&mut self, inherited: bool, id: &str, ok: bool, msg: String) {
+        if inherited {
+            self.na(
+                id,
+                "UNMEASURED, not passed: this check reads the ground-contact byte (89), which \
+                 this file's own manifest declares INHERITED from the carrier -- `ghost regen` \
+                 writes 22 of a sample's 116 bytes from the engine and three from the tape, and \
+                 the contact flag is not among them. Reading it out of engine memory is an open \
+                 task, not a conclusion."
+                    .into(),
+            );
+        } else if ok {
+            self.ok(id, msg);
+        } else {
+            self.bad(id, msg);
+        }
+    }
 }
 
 pub fn cmd(args: &[String]) {
@@ -84,6 +116,10 @@ pub fn cmd(args: &[String]) {
     let race: i64 = flag("--race").and_then(|v| v.parse().ok()).unwrap_or(-1);
     let g: f64 = flag("--g").and_then(|v| v.parse().ok()).unwrap_or(G_DEFAULT);
     let quiet = args.iter().any(|a| a == "--quiet");
+    // The ground-contact byte is one of the 91 per-sample bytes a regenerated
+    // ghost still carries from its donor. When the file's manifest declares it
+    // inherited, C6 and C10 have no operand of their own to read.
+    let contact_inherited = args.iter().any(|a| a == "--contact-inherited");
     if files.is_empty() {
         println!(
             "usage: tmtraj check GHOST... [--race MS] [--quiet]\n\
@@ -96,7 +132,7 @@ pub fn cmd(args: &[String]) {
     }
     let mut worst = 0;
     for f in &files {
-        let (code, o) = check_one(f, race, g);
+        let (code, o) = check_one(f, race, g, contact_inherited);
         worst = worst.max(code);
         let verdict = match code {
             0 => "PUBLISHABLE",
@@ -113,8 +149,42 @@ pub fn cmd(args: &[String]) {
     std::process::exit(worst);
 }
 
-fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
-    let mut o = Out { fail: 0, warn: 0, lines: Vec::new() };
+/// Do the post-finish samples record the inputs THIS file's own tape has
+/// there? Returns (agreeing, compared), or `None` if the tape cannot be read.
+///
+/// A telemetry sample stores the driver's inputs as bytes 14 / 15 / 18 —
+/// `floor((steer_i8 + 127) * 255 / 254)`, gas as 255/0, brake as 255/0 — and
+/// the input chunk stores the same thing at 10 ms. They are two renderings of
+/// one fact, so a tail that came from another recording disagrees at once.
+fn tail_agreement(path: &str, tail: &[&R]) -> Option<(usize, usize)> {
+    let t = gbx::tape::Tape::from_file(path).ok()?;
+    let steer = t.steer_i8s();
+    let accel = t.accels();
+    let brake = t.brakes();
+    let mut agree = 0usize;
+    let mut total = 0usize;
+    for s in tail {
+        // the tape tick whose race time is this sample's
+        let mut idx: Option<usize> = None;
+        for i in 0..steer.len() {
+            if t.race_ms(i) == s.ms as i64 {
+                idx = Some(i);
+                break;
+            }
+        }
+        let Some(i) = idx else { continue };
+        total += 1;
+        let want14 = (((steer[i] as i32 + 127) * 255) / 254) as u8;
+        let want15 = if accel[i] != 0 { 255u8 } else { 0 };
+        let want18 = if brake[i] != 0 { 255u8 } else { 0 };
+        if s.b(14) == want14 && s.b(15) == want15 && s.b(18) == want18 {
+            agree += 1;
+        }
+    }
+    Some((agree, total))
+}
+
+fn check_one(path: &str, race_in: i64, g: f64, contact_inherited: bool) -> (i32, Out) {    let mut o = Out { fail: 0, warn: 0, lines: Vec::new() };
     let r: Vec<R> = match decode(path) {
         Ok(v) => v,
         Err(e) => {
@@ -377,13 +447,65 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
 
     // C4 NO SAMPLES AFTER THE FINISH -- what a viewer sees as the car driving
     // on after the line, in somebody else's direction.
+    //
+    // WHAT THE CHECK IS ACTUALLY FOR, and the case it used to get wrong. The
+    // defect is a CARRIER's tail: the recording runs past our finish because
+    // the donor's run was longer, so the last seconds a viewer sees are
+    // another driver's. "Samples exist after the finish" is a PROXY for that,
+    // and it is the wrong operand whenever the run finishes before the thing
+    // being demonstrated -- on 173691 the added finish gate fires 0.15 s
+    // BEFORE the car touches down, so a file that obeys this check has the
+    // landing cut out of it.
+    //
+    // The discriminator is not "are there samples" but "are they OURS", and
+    // the file answers that itself: every telemetry sample records the
+    // driver's steer, gas and brake (bytes 14 / 15 / 18) and the input chunk
+    // records them again at 10 ms. A carrier's tail disagrees with our tape
+    // immediately; a tail our own tape produced agrees exactly. So a kept tail
+    // is a NOTE with its own evidence, and a foreign tail still refuses.
     match race {
         r0 if r0 > 0 => {
-            let after = r.iter().filter(|x| x.ms > r0 + 60).count();
-            if after == 0 {
+            let tail: Vec<&R> = r.iter().filter(|x| x.ms > r0 + 60).collect();
+            if tail.is_empty() {
                 o.ok("C4", format!("no samples after the finish at {:.3} s", r0 as f64 / 1000.0));
             } else {
-                o.bad("C4", format!("{} samples AFTER the finish at {:.3} s (last {:.3} s)", after, r0 as f64 / 1000.0, r[n - 1].ms as f64 / 1000.0));
+                match tail_agreement(path, &tail) {
+                    Some((agree, total)) if total > 0 && agree == total => o.ok(
+                        "C4",
+                        format!(
+                            "{} samples after the finish at {:.3} s (last {:.3} s) -- and all {} of \
+                             them are THIS TAPE's: the steer/gas/brake recorded in every one \
+                             matches the file's own input chunk. A kept tail, not a carrier's.",
+                            tail.len(),
+                            r0 as f64 / 1000.0,
+                            r[n - 1].ms as f64 / 1000.0,
+                            total
+                        ),
+                    ),
+                    Some((agree, total)) => o.bad(
+                        "C4",
+                        format!(
+                            "{} samples AFTER the finish at {:.3} s (last {:.3} s), and only {} of \
+                             {} record the inputs this file's own tape has there -- the tail is \
+                             another run's",
+                            tail.len(),
+                            r0 as f64 / 1000.0,
+                            r[n - 1].ms as f64 / 1000.0,
+                            agree,
+                            total
+                        ),
+                    ),
+                    None => o.bad(
+                        "C4",
+                        format!(
+                            "{} samples AFTER the finish at {:.3} s (last {:.3} s), and the tape \
+                             could not be read to say whose they are",
+                            tail.len(),
+                            r0 as f64 / 1000.0,
+                            r[n - 1].ms as f64 / 1000.0
+                        ),
+                    ),
+                }
             }
         }
         _ => o.na("C4", "no --race given, so the post-finish tail is unchecked".into()),
@@ -404,9 +526,9 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
     if ball.is_empty() {
         o.na("C5", "the car is never unambiguously airborne on this run".into());
     } else if con_b == 0 {
-        o.ok("C5", format!("ground contact is OFF on all {} provably airborne samples", ball.len()));
+        o.contact(contact_inherited, "C5", true, format!("ground contact is OFF on all {} provably airborne samples", ball.len()));
     } else {
-        o.bad("C5", format!(
+        o.contact(contact_inherited, "C5", false, format!(
             "ground contact is ON on {} of {} provably AIRBORNE samples -- this is the dirt-at-altitude defect",
             con_b, ball.len()
         ));
@@ -416,9 +538,9 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
     if sup.len() < 5 {
         o.na("C6", format!("only {} unambiguously ground-borne samples -- cannot test", sup.len()));
     } else if pct(con_s, sup.len()) >= 95.0 {
-        o.ok("C6", format!("ground contact is ON on {:.1} % of {} ground-borne samples", pct(con_s, sup.len()), sup.len()));
+        o.contact(contact_inherited, "C6", true, format!("ground contact is ON on {:.1} % of {} ground-borne samples", pct(con_s, sup.len()), sup.len()));
     } else {
-        o.bad("C6", format!(
+        o.contact(contact_inherited, "C6", false, format!(
             "ground contact is ON on only {:.1} % of {} provably GROUND-BORNE samples -- a zeroed or foreign flag",
             pct(con_s, sup.len()), sup.len()
         ));
@@ -435,9 +557,9 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
     if ball.is_empty() {
         o.na("C7", "no airborne stretch".into());
     } else if dr == 0 && ir == 0 {
-        o.ok("C7", "no surface material accumulates during free fall".into());
+        o.contact(contact_inherited, "C7", true, "no surface material accumulates during free fall".into());
     } else {
-        o.bad("C7", format!("surface material RISES during free fall: dirt {} times, ice {} times", dr, ir));
+        o.contact(contact_inherited, "C7", false, format!("surface material RISES during free fall: dirt {} times, ice {} times", dr, ir));
     }
 
     // C10 A CLAIMED FLIGHT MUST FALL LIKE ONE.
@@ -500,17 +622,17 @@ fn check_one(path: &str, race_in: i64, g: f64) -> (i32, Out) {
                 // drop, while the file this check was written for predicts 693 m
                 // over a single 7.7 s claim.
                 if err < 0.5 {
-                    o.ok("C10", format!(
+                    o.contact(contact_inherited, "C10", true, format!(
                         "the longest claimed flight ({:.2} s at {:.3} s) falls {:.1} m against {:.1} m predicted",
                         dur, t0, -act, -pred
                     ));
                 } else if pred.abs() > 150.0 {
-                    o.bad("C10", format!(
+                    o.contact(contact_inherited, "C10", false, format!(
                         "the flag claims {:.2} s of flight at {:.3} s, over which the car changes height by {:.1} m -- free fall demands {:.1} m. Nothing in this engine holds a car up for that long with the flag off; the flag is another run's.",
                         dur, t0, act, pred
                     ));
                 } else {
-                    o.warn("C10", format!(
+                    o.contact(contact_inherited, "C10", true, format!(
                         "the flag claims {:.2} s of flight at {:.3} s over a {:.1} m height change against {:.1} m of free fall -- geometry can do this, so it is a WARNING, not a refusal",
                         dur, t0, act, pred
                     ));

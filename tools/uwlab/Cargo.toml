@@ -1,0 +1,14 @@
+[package]
+name = "uwlab"
+version = "0.1.0"
+edition = "2021"
+
+# `uwlab` is read-only trajectory analysis for the underwater map 173691. It
+# reads the 29-column CSV `tmtraj export --csv` / `fk trace` write and answers
+# geometry and physics questions about the water regime. It never writes a
+# ghost and never touches a map -- `ghost` and `tmmaps` own those.
+
+[dependencies]
+
+[profile.release]
+opt-level = 3

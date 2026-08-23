@@ -118,6 +118,7 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct Gbx {
     pub version: u16,
     pub format: u8,

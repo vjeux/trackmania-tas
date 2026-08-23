@@ -124,7 +124,122 @@ pub fn cmd(a: &[String]) {
 
 // ---------------------------------------------------------------------------
 
+/// The GBX header: the second container, and the one no check read.
+///
+/// These are PURE — no server, no map, no engine — because the defect they
+/// guard is a whole family of fields living somewhere the tool did not look,
+/// and a check that needs a 30 MB binary to run is a check that gets skipped.
+fn header_checks(s: &mut Suite) {
+    use gbx::header::{build_user_data, parse_user_data, replace_frames};
+
+    // A plain .Ghost.Gbx has no replay header at all. This is the SCOPE of the
+    // whole defect, so it is measured rather than remembered: it is why none
+    // of the plain ghosts this project has published can carry it.
+    let plain = Container::load(&s.f(GHOSTS[0])).unwrap();
+    s.check(
+        "header.plain_ghost_has_none",
+        parse_user_data(&plain.gbx.user_data).is_none(),
+        format!(
+            "a plain .Ghost.Gbx has no header chunk table ({} B of user data), so it cannot carry \
+             a header identity or a header copy of the declared time",
+            plain.gbx.user_data.len()
+        ),
+    );
+
+    let rp = s.f(REPLAY);
+    let replay = Container::load(&rp).unwrap();
+    let Some(chunks) = parse_user_data(&replay.gbx.user_data) else {
+        s.fail("header.replay_has_one", "the replay fixture has no header chunk table");
+        return;
+    };
+    s.pass(
+        "header.replay_has_one",
+        format!("the replay fixture carries {} header chunks", chunks.len()),
+    );
+
+    // parse -> build is the identity, or every edit below is writing into a
+    // structure this code does not actually understand.
+    s.check(
+        "header.chunks_roundtrip",
+        build_user_data(&chunks) == replay.gbx.user_data,
+        "parsing the header chunk table and rebuilding it reproduces the bytes exactly",
+    );
+
+    // Declining every frame must change nothing. The rewrite is
+    // `Fn(&str) -> Option<String>` precisely so that a frame the caller does
+    // not recognise is copied through, and this is that promise as a test.
+    let mut ident = true;
+    for c in &chunks {
+        let (out, n) = replace_frames(&c.data, |_| None);
+        ident &= n == 0 && out == c.data;
+    }
+    s.check(
+        "header.decline_is_identity",
+        ident,
+        "a rewrite that recognises no string leaves every header chunk byte-identical",
+    );
+
+    // The driver's identity and the run's own time, rewritten -- and the MAP's
+    // attribution left alone. On this fixture they are different people, which
+    // is the easy case; on 173691 they are the same person and the same 22
+    // bytes, which is why the rule is positional.
+    let before_ids = crate::hdr::header_driver_identity(&replay);
+    let before_map_author = parse_user_data(&replay.gbx.user_data)
+        .and_then(|cs| cs.iter().find(|c| c.id == 0x0309_3000).and_then(|c| crate::hdr::parse_3000(&c.data)))
+        .map(|p| p.map_author.text);
+    match crate::hdr::rewrite(&replay, true, Some("TAS"), Some(1234)) {
+        None => s.fail("header.anonymise", "the header rewrite refused a replay"),
+        Some(e) => {
+            let out = s.w("hdr_anon.Replay.Gbx");
+            let mut g = replay.gbx.clone();
+            g.user_data = e.user_data;
+            gbx::container::write_gbx(&g, replay.body().to_vec(), &out).unwrap();
+            let after = Container::load(&out).unwrap();
+            let ids = crate::hdr::header_driver_identity(&after);
+            let left: Vec<String> =
+                ids.iter().filter(|(_, v)| v != "TAS").map(|(w, v)| format!("{} {:?}", w, v)).collect();
+            s.check(
+                "header.anonymise",
+                !ids.is_empty() && left.is_empty(),
+                format!(
+                    "{} header driver field(s) were {:?} and are now all \"TAS\"",
+                    ids.len(),
+                    before_ids.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>()
+                ),
+            );
+            let times = crate::hdr::header_declared_ms(&after);
+            s.check(
+                "header.declare",
+                !times.is_empty() && times.iter().all(|(_, v)| *v == 1234),
+                format!(
+                    "all {} header copies of the race time now read 1.234 ({:?} before)",
+                    times.len(),
+                    crate::hdr::header_declared_ms(&replay)
+                        .iter()
+                        .map(|(_, v)| gbx::container::secs(*v as i64))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let map_author_after = parse_user_data(&after.gbx.user_data)
+                .and_then(|cs| {
+                    cs.iter().find(|c| c.id == 0x0309_3000).and_then(|c| crate::hdr::parse_3000(&c.data))
+                })
+                .map(|p| p.map_author.text);
+            s.check(
+                "header.map_author_untouched",
+                map_author_after.is_some() && map_author_after == before_map_author,
+                format!(
+                    "the MAP's own author is still {:?} -- it is the map's, not the driver's, and \
+                     laundering it would be a misattribution the other way",
+                    map_author_after.clone().unwrap_or_default()
+                ),
+            );
+        }
+    }
+}
+
 fn pure_tier(s: &mut Suite) {
+    header_checks(s);
     // --- the codec is an identity -------------------------------------------
     for g in GHOSTS.iter().chain([REPLAY, POISONED].iter()) {
         let p = s.f(g);

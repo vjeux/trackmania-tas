@@ -252,3 +252,24 @@ control behind each verdict.
   runs: four agreed and one was right. Two of the four wrong ones agreed with
   each other to the metre. Acceptance is the path length matching the map's own
   ribbon and the first sample matching the spawn — in that order — never a vote.
+
+## tools/mapgeom — the map as real 3D geometry
+
+```
+tools/mapgeom/    one binary, `mapgeom`: read the game's own data pack, place
+                  every block and item of a map at its true world position,
+                  and write the result as glTF, OBJ or a picture -- then GRADE
+                  it by dropping a plumb line from every sample of a run
+```
+
+Every earlier geometry result in this project was inferred: a deck height from
+plumb probes, a route from the block graph, "the ice IS the road" from deleting
+caps and watching what broke. This reads the shapes the game collides against,
+with the physics material on every triangle, and lays a driven trajectory over
+them in the same frame.
+
+[`MAPGEOM.md`](mapgeom/MAPGEOM.md) is where the geometry lives, how the pack's
+hashed asset names resolve, and what is still missing. The one number to know:
+across thirty-three maps checked in one batch, **twenty put the car within a quarter
+of a metre of the model and sixteen within 0.09 m** — and the maps where it
+does not are the model missing a surface, which the same command says out loud.

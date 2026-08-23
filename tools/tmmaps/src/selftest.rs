@@ -93,7 +93,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 pub fn run(args: &[String]) -> ! {
-    let strict = crate::has(args, "--strict");
+    let strict = crate::cli::has(args, "--strict");
     let mut s = Suite::new(strict);
     println!("tmmaps selftest — fixtures in {}", testdata().display());
     pure(&mut s);
@@ -520,7 +520,7 @@ fn naive_last_time(text: &str) -> Vec<Option<i64>> {
 // ---------------------------------------------------------------- ORACLE
 
 fn oracle_tier(s: &mut Suite, args: &[String]) {
-    let server = crate::server_of(args);
+    let server = crate::cli::server_of(args);
     if !Path::new(&server).join("TrackmaniaServer").exists() {
         for n in ["map1 segment splits", "map2 block-rename fallback", "identity candidate"] {
             s.skipped("ORACLE", n, "no dedicated server (set TM_SERVER or --server DIR)");

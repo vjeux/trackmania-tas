@@ -21,6 +21,7 @@
 
 pub mod cli;
 pub mod engine;
+pub mod hdr;
 pub mod ident;
 pub mod oracle;
 pub mod regen;

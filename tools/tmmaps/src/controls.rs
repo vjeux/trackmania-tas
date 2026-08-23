@@ -144,7 +144,7 @@ pub fn origin(src: &Path, verbose: bool) -> OriginReport {
 
 pub fn cmd_origin(args: &[String]) {
     let src = Path::new(&args[2]);
-    let r = origin(src, crate::has(args, "--verbose"));
+    let r = origin(src, crate::cli::has(args, "--verbose"));
     println!("origin control: {} movers, {} failures", r.checked, r.failures);
     for f in &r.failed {
         println!("  {}", f);

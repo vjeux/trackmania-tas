@@ -131,6 +131,47 @@ pub fn scan(c: &Container) -> Vec<Field> {
             out.push(Field { role, at: b.at, len: b.len, s: b.s.clone() });
         }
     }
+    // --- the REPLAY's own author node, body chunk 0x03093018.
+    //
+    // A `.Replay.Gbx` carries a fourth copy of the driver, past the nested
+    // ghost node entirely:
+    //
+    //     lookback titleId ("TMStadium")
+    //     u32      authorVersion
+    //     str      login, str nickname, str zone, str extra
+    //
+    // The walk above anchors on the ghost node and stops before this, so the
+    // block was never seen: an `--anonymise` that reported success left the
+    // driver's login and nickname here, and V3 could not see them either. The
+    // offsets are read, not assumed -- the first guess (`poff + 8`) was wrong
+    // by the whole title-id lookback and silently found nothing, which is what
+    // a wrong offset always looks like.
+    if let Some(&(_, _, poff, sz)) = chunks.iter().find(|k| k.0 == 0x03093018) {
+        let end = poff + sz;
+        let rd_u32 = |o: usize| -> Option<u32> {
+            body.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
+        let mut o = poff;
+        // the title id, as a lookback string
+        if rd_u32(o) == Some(0x4000_0000) {
+            o += 4;
+            let n = rd_u32(o).unwrap_or(0) as usize;
+            o += 4 + n;
+        } else {
+            o += 4;
+        }
+        o += 4; // authorVersion
+        for role in [Role::Login, Role::Nickname, Role::Zone] {
+            let Some(n) = rd_u32(o).map(|v| v as usize) else { break };
+            if n > 256 || o + 4 + n > end {
+                break;
+            }
+            if let Ok(s) = std::str::from_utf8(&body[o + 4..o + 4 + n]) {
+                out.push(Field { role, at: o, len: n, s: s.to_string() });
+            }
+            o += 4 + n;
+        }
+    }
     // --- the account id and the map uid.
     //
     // These are NOT skippable chunks: `0x0309200F` and `0x03092010` are written
@@ -239,6 +280,18 @@ pub fn cmd(a: &[String]) {
                 }
             }
             let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+            // Padding an unresizable field to `xxxx…` is a fallback, not the
+            // answer: the 126 clean containers in this repo carry NO account
+            // id, and a file with 22 `x`s is a third category nobody has seen.
+            // So when a dedicated server is available, SHORTEN and let the
+            // plain oracle adjudicate -- the control that already runs below
+            // deletes the output if the edit changed what the file does.
+            // `--pad-ids` forces the old behaviour.
+            let have_server = !has(rest, "--no-oracle")
+                && crate::oracle::server_dir(flag(rest, "--server"))
+                    .join("TrackmaniaServer")
+                    .exists();
+            let pad_ids = has(rest, "--pad-ids") || !have_server;
             let mut zero_cksum: Vec<usize> = Vec::new();
             let mut log: Vec<String> = Vec::new();
             // Which edits could be resized safely, so an anonymisation that
@@ -276,7 +329,8 @@ pub fn cmd(a: &[String]) {
                     // shorten: pad to the original byte length instead. `x`
                     // repeated is not a plausible account id or URL, which is
                     // the point.
-                    if v.len() != f.len && !chunks_ok(f.at, f.len) && anon && v.len() < f.len {
+                    if v.len() != f.len && !chunks_ok(f.at, f.len) && anon && v.len() < f.len && pad_ids
+                    {
                         let pad = "x".repeat(f.len);
                         log.push(format!(
                             "  {:<12} padded to {} bytes ({} cannot be resized in this container)",
@@ -310,7 +364,21 @@ pub fn cmd(a: &[String]) {
             let protect = c.embedded_map();
             let body = replace_strings(&pre, &edits, protect).unwrap_or_else(|e| die(e));
             let unframed = gbx::container::unframed_edits();
-            write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+            // THE HEADER IS A SECOND CONTAINER. A .Replay.Gbx keeps the
+            // driver's login, nickname, zone and account id in its header
+            // user-data as well, and nothing here read them: an --anonymise
+            // that reported success left `GothMommyTM` and his account id in
+            // the header of a file this project then published. The map's own
+            // attribution in the same header is left alone -- see `hdr`.
+            let mut gbx = c.gbx.clone();
+            let mut hdr_log: Vec<String> = Vec::new();
+            if anon {
+                if let Some(e) = crate::hdr::rewrite(&c, true, name, None) {
+                    gbx.user_data = e.user_data;
+                    hdr_log = e.log;
+                }
+            }
+            write_gbx(&gbx, body, out).unwrap_or_else(|e| die(e));
             // control: read it back and require every field to be what we asked
             let c2 = Container::load(out).unwrap_or_else(|e| die(e));
             let after = scan(&c2);
@@ -348,8 +416,32 @@ pub fn cmd(a: &[String]) {
                     die(format!("--anonymise left identifiers behind: {:?}", left));
                 }
             }
+            // and the same question of the header, which is where this check
+            // was blind: `--anonymise` used to leave the driver's login and
+            // nickname sitting in the header of a file it had just reported
+            // clean.
+            if anon {
+                let left: Vec<String> = crate::hdr::header_driver_identity(&c2)
+                    .into_iter()
+                    .filter(|(_, v)| {
+                        !v.is_empty()
+                            && v != name.unwrap_or("TAS")
+                            && !v.chars().all(|c| c == 'x')
+                    })
+                    .map(|(w, v)| format!("{} {:?}", w, v))
+                    .collect();
+                if !left.is_empty() {
+                    die(format!(
+                        "--anonymise left DRIVER identity in the HEADER: {:?}",
+                        left
+                    ));
+                }
+            }
             println!("wrote {}", out);
             for l in log {
+                println!("{}", l);
+            }
+            for l in hdr_log {
                 println!("{}", l);
             }
             println!("  read-back control OK");

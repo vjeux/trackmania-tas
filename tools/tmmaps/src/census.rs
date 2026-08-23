@@ -136,7 +136,7 @@ pub fn entries(m: &MapFile) -> Vec<Entry> {
 }
 
 fn filter_of(args: &[String]) -> Option<String> {
-    crate::flag(args, "--filter").map(|s| s.to_string())
+    crate::cli::flag(args, "--filter").map(|s| s.to_string())
 }
 
 fn matches(e: &Entry, pat: &Option<String>) -> bool {
@@ -151,7 +151,7 @@ fn matches(e: &Entry, pat: &Option<String>) -> bool {
 pub fn cmd_census(args: &[String]) {
     let m = MapFile::load(Path::new(&args[2]));
     let pat = filter_of(args);
-    let free_only = crate::has(args, "--free");
+    let free_only = crate::cli::has(args, "--free");
     println!("src\tid\tname\tcx\tcy\tcz\tflags\tplacement\tx\ty\tz\twp");
     let rows = m
         .blocks
@@ -251,13 +251,13 @@ fn print_region(found: &[Entry]) {
 
 pub fn cmd_region(args: &[String]) {
     let m = MapFile::load(Path::new(&args[2]));
-    let b = Box3::parse(crate::flag(args, "--box").expect("--box X0,Y0,Z0:X1,Y1,Z1"));
+    let b = Box3::parse(crate::cli::flag(args, "--box").expect("--box X0,Y0,Z0:X1,Y1,Z1"));
     let pat = filter_of(args);
     let mut found = in_box(&m, b, &pat);
-    if crate::has(args, "--items") {
+    if crate::cli::has(args, "--items") {
         found.retain(|e| e.item);
     }
-    if crate::has(args, "--blocks") {
+    if crate::cli::has(args, "--blocks") {
         found.retain(|e| !e.item);
     }
     print_region(&found);
@@ -280,9 +280,9 @@ pub fn cmd_region(args: &[String]) {
 /// actually contains. Exit 3 if anything is left.
 pub fn cmd_clear(args: &[String]) {
     let src = PathBuf::from(&args[2]);
-    let out = PathBuf::from(crate::flag(args, "--out").expect("--out F"));
-    let b = Box3::parse(crate::flag(args, "--box").expect("--box X0,Y0,Z0:X1,Y1,Z1"));
-    let to: Vec<f32> = crate::flag(args, "--to")
+    let out = PathBuf::from(crate::cli::flag(args, "--out").expect("--out F"));
+    let b = Box3::parse(crate::cli::flag(args, "--box").expect("--box X0,Y0,Z0:X1,Y1,Z1"));
+    let to: Vec<f32> = crate::cli::flag(args, "--to")
         .expect("--to X,Y,Z (where to park what is in the box)")
         .split(',')
         .map(|x| x.trim().parse().expect("a number"))

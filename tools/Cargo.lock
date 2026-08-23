@@ -27,6 +27,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mapgeom"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "miniz_oxide",
+ "tmmaps",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -64,6 +73,10 @@ dependencies = [
  "gbx",
  "ghost",
 ]
+
+[[package]]
+name = "uwlab"
+version = "0.1.0"
 
 [[package]]
 name = "vidread"

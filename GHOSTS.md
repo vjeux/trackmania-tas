@@ -57,6 +57,7 @@ decoded, `IsValid`, and the account id and login it read out of the file.
 | **length** | `ghost trim IN OUT [--from MS] [--to MS]` | set the run's window: cut head and/or tail, or **lengthen** it (`--to` past the end appends ticks holding the last input), keeping tape, telemetry, record span, checkpoints and every copy of the declared time coherent |
 | **identity** | `ghost identity show FILE` | skin, display name, trigram, zone, club tag, login, account id, locator URL — with offsets |
 | | `ghost identity set IN OUT --name N --trigram XXX --skin S [--anonymise]` | change them, with an oracle no-op control |
+| **the header** | `ghost header show FILE` | the replay HEADER's chunk table, its driver fields, the map's own attribution, and every copy of the race time it holds |
 | added | `ghost declare IN OUT --from-oracle --map M` | write the time the file **actually does**, asked of the plain oracle, into every copy |
 | added | `ghost declare IN OUT --time MS --cps N` | and the NUMBER of checkpoint entries, for a container borrowed from another map |
 | added | `ghost verify FILE [--map M] [--engine] [--empty-maps]` | the acceptance gate |
@@ -277,6 +278,48 @@ the account id in the **inline** chunk `0x0309200F` that a skippable-chunk walk
 walks straight past. `--anonymise` clears skin, locator URL, display name,
 trigram, club tag and account id in one pass and **fails if any of them
 survive**.
+
+**AND THE HEADER IS A SECOND CONTAINER, WHICH NOTHING READ FOR A DAY.**
+Found 2026-08-22 on 173691, after `--anonymise` and `declare --from-oracle` had
+both reported success and `ghost verify` had passed the file:
+
+```
+V2  declared-time census: 1 copies, all 36.049          <- body only
+V3  container identity: (nothing foreign)               <- body only
+```
+
+while its header still said `GothMommyTM`, `3Awx2_MzSdaCJZjZOht51A` and
+`<times best="49958">`. **"1 copies" was a count of a set the check could not
+see the rest of**, which is worse than no count.
+
+A `.Replay.Gbx` keeps, in its header user-data: the driver's nickname and login
+in chunk `0x03093000`, the race time as a **raw u32** in the same chunk, the
+race time again as `best=` in the XML of `0x03093001`, and the driver's login,
+nickname and zone in `0x03093002`. There is a fourth driver block in the
+**body**, chunk `0x03093018`, past the nested ghost node where the identity
+walk stops.
+
+→ `gbx::header` parses the chunk table and edits string frames with their
+length words; `ghost::hdr` parses `0x03093000` and `0x03093002` structurally;
+`identity set --anonymise` and `declare` cover all of it; `verify` V2 counts
+body **and** header copies and says where each is, V3 reports the header driver
+fields, and **V10 is a raw-bytes backstop** that greps the finished file for
+anything shaped like a person's identity or another run's time.
+
+**Legitimate versus foreign is decided by POSITION, never by value.** On 173691
+the map's author and the replay's driver are the same person and the same 22
+bytes. The map's own attribution — the meta triple in `0x03093000`, `author=`
+and `authorzone=` in the header XML, and everything inside the embedded map's
+byte range — is left alone, and V10 excludes it by offset.
+
+**Scope, measured: 0 of the 158 recordings published in this repo have a
+replay header chunk table at all.** A plain `.Ghost.Gbx` has none, so none of
+them can carry this. It bites the map-carrying containers. The positive control
+for that sweep is the replay fixture, which does have one — and, worth saying
+because the sentence at the bottom of this document claims otherwise, **that
+fixture's header still carries `Ibozz91` and his account id.** It is kept that
+way on purpose: `header.anonymise` needs a foreign value to start from. The
+"every fixture has been anonymised" line below is true of bodies only.
 
 **A cosmetic edit that quietly breaks the file.**
 Found here, by the control: renaming the driver inside a **replay** from
