@@ -66,6 +66,11 @@ pub enum Method {
     Middle,
     /// The stock stream verbatim to a cut, then a recompressed tail.
     Tail,
+    /// The whole body compressed from scratch because the source file had no
+    /// compressed stream of its own — a `'U'` body, which older writers in this
+    /// project produced and the dedicated server refuses ("Can't load map").
+    /// Nothing is lost by compressing it; there was simply nothing to splice.
+    Compress,
     /// The whole body recompressed: the only method that changes bytes the
     /// edit did not ask to change.
     Reemit,
@@ -77,6 +82,9 @@ impl Method {
             Method::Literal => "literal-patch (stock stream, edited bytes overwritten in place)",
             Method::Middle => "middle-splice (stock stream either side of one recompressed stretch)",
             Method::Tail => "tail-splice (stock stream verbatim to the cut, tail recompressed)",
+            Method::Compress => {
+                "compress (the source body was stored UNCOMPRESSED — there was no stream to splice)"
+            }
             Method::Reemit => "re-emit (whole body recompressed — the body's length changed)",
         }
     }

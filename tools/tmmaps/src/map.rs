@@ -814,6 +814,24 @@ impl MapFile {
         for ((s, e), b) in splices {
             out.splice(s..e, b);
         }
+        // A LENGTH CHANGE WITH NO RENAME IN PLAY IS A WRITER BUG, NOT AN EDIT.
+        //
+        // Every mover here writes a fixed-size field, so with no rename the
+        // re-emitted regions must come back the length they went in. When they
+        // do not, this tool's Id-table re-encoder has not reproduced the map,
+        // and the file it would write is one whose blocks chunk silently grew —
+        // which nothing downstream can see. Found by sweeping 285 maps: one
+        // (`route_170035_roseshaft.Map.Gbx`, a derived map with a 268-entry
+        // lookback table) comes back 1010 bytes longer with no edit at all.
+        // Refuse rather than ship it.
+        assert!(
+            !self.renames.is_empty() || out.len() == self.gbx.body.len(),
+            "this map's body came back {} bytes {} with NO rename asked for — the Id-table \
+             re-encoder has not reproduced it, so every edit written here would silently \
+             re-serialise the blocks chunk. Refusing to write.",
+            (out.len() as i64 - self.gbx.body.len() as i64).abs(),
+            if out.len() > self.gbx.body.len() { "longer" } else { "shorter" },
+        );
         out
     }
 

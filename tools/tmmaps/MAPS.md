@@ -138,8 +138,29 @@ wrong ones.
 with the stock stream, so "99 % carried verbatim" is a measurement and not a
 comparison that returns true for everything.
 
-### What it does NOT do, and why the rename is the boundary
+### The corpus sweep, and the one map it caught
 
+**285 maps** on the shared store and in the fixtures, each written back with no
+edit:
+
+```
+263  byte-identical to the input
+ 21  had an UNCOMPRESSED ('U') body — an older writer's output, nothing to
+     splice; they are now written compressed, which the server requires
+  1  REFUSED: route_170035_roseshaft.Map.Gbx
+```
+
+That last one is a real defect the splice path exposed rather than caused. Its
+body comes back **1010 bytes longer with no edit asked for** — this tool's
+Id-table re-encoder does not reproduce a map with a 268-entry lookback table,
+and `tmmaps roundtrip` fails on it the same way. Any edit ever written on that
+map silently re-serialised its blocks chunk.
+
+So the writer now **refuses**: a body whose length changed with **no rename in
+play** is a writer bug, not an edit, and a refusal is the only output that does
+not hide it.
+
+### What it does NOT do, and why the rename is the boundary
 A rename changes the length of a string in the body, so every offset after it
 moves and no part of the stock stream survives. `segments`' block-rename
 fallback and its gate promotion are therefore still **re-emission**, and the
@@ -428,12 +449,19 @@ capability — free-block surgery — is `tmmaps move` composed with
   load-bearing: with the checkpoints intact, position-only reconstructions of
   the same rig all return DNF (measured, four variants, one batch — moving the
   gate alone, plus moving the four checkpoint blocks away, plus moving the start
-  block, in both combinations). A rename cannot be spliced, **and it puts model
-  names into the file that the client must be able to instantiate and the
-  headless server never looks at** — a second reason a renamed rig is the wrong
-  thing to hand a camera. Film the ghost on the stock map instead: a ghost plays
-  from its own recorded samples and carries the map uid, so the run appears
-  wherever the geometry it drove through is unchanged.
+  block, in both combinations). A rename cannot be spliced, **and it puts a
+  model name into the file that the client must be able to instantiate while
+  the headless server never looks at it** — measured, not supposed:
+  `tmmaps renamecheck map1.Map.Gbx --ghosts map1_wr_19538.Ghost.Gbx` renames an
+  off-route block to `Beach_prsRenameCheck`, a model no block library has, and
+  **the dedicated server validates the reference ghost on it at an unchanged
+  19.538**. So the oracle's 37.599 on a rig whose four checkpoints were renamed
+  `PlatformTechCheckpointSlope2*` → `PlatformTechFinishSlope2*` is not evidence
+  that those models exist, and not evidence the client can load that map —
+  though it is not evidence they do not, either; `renamecheck` is a check on
+  the lookback table and this is its by-product. Film the ghost on the stock
+  map instead: a ghost plays from its own recorded samples and carries the map
+  uid, so the run appears wherever the geometry it drove through is unchanged.
 * **The origin control cannot see a trigger-volume change.** It is a byte
   identity on a position-only mover. That is why the model-swapping commands
   were deleted rather than controlled: there is no control here that would have

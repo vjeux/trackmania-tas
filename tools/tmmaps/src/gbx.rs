@@ -263,7 +263,7 @@ impl Gbx {
                 let stream = lzo_compress(new_body);
                 crate::splice::Spliced {
                     stream,
-                    method: crate::splice::Method::Reemit,
+                    method: crate::splice::Method::Compress,
                     shared_prefix: 0,
                     shared_suffix: 0,
                     stock_len: 0,
