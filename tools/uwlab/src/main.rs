@@ -7,6 +7,12 @@
 //! there. Those are trajectory questions, so this crate only ever reads a
 //! trajectory CSV. It writes no ghost and edits no map.
 
+mod blitz;
+mod chain;
+mod climb;
+mod platladder;
+mod skyline;
+mod sweep;
 mod traj;
 
 use traj::{Row, Traj};
@@ -31,6 +37,10 @@ uwlab — trajectory analysis for the underwater map. Times print as seconds.
   cols   REGION.tsv [--filter PAT] [--x A:B] [--z A:B] [--ymin Y]
                                 a `tmmaps region` dump as a COLUMN MAP: what is
                                 stacked over each 32 m cell, and how high
+  sweep  --map M --carrier G --template T.gtape --spawns cx,cy,cz,dir
+         [--tape NAME=segs] [--plan F] [--box B] [--jobs N] [--dir D]
+                                DIRECTED launches: spawn (with a heading) x
+                                tape, traced and scored per axis
 ";
 
 fn main() {
@@ -52,6 +62,13 @@ fn main() {
         "plumb" => cmd_plumb(rest),
         "maxy" => cmd_maxy(rest),
         "probemap" => cmd_probemap(rest),
+        "sweep" => sweep::cmd_sweep(rest),
+        "skyline" => skyline::cmd_skyline(rest),
+        "chain" => chain::cmd_chain(rest),
+        "lattice" => skyline::cmd_lattice(rest),
+        "blitz" => blitz::cmd_blitz(rest),
+        "platladder" => platladder::cmd_platladder(rest),
+        "climb" => climb::cmd_climb(rest),
         other => {
             eprintln!("uwlab: unknown command `{other}`");
             print!("{USAGE}");
