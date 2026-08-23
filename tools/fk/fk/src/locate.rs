@@ -806,6 +806,21 @@ pub fn locate_v2(
     verbose: bool,
 ) -> Result<Layout, String> {
     let ck = find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?;
+    // FK_STATE_OFF=<n> -- take the vehicle state slot at `base - n` instead of
+    // sweeping for it. The slot sits at a FIXED offset from the server's own
+    // base (measured: base-8183260 on every fork of every probe tick of the
+    // same build), so once a map has been located honestly the sweep is 50
+    // seconds of rediscovering the same address. It is an override, not a
+    // guess: `fk trace` still runs its own self-check on the trajectory it
+    // reads out, and the offset is only ever taken from a run that located.
+    if let Ok(v) = std::env::var("FK_STATE_OFF") {
+        let off: u64 = v.parse().map_err(|_| "FK_STATE_OFF is a decimal byte offset".to_string())?;
+        let pos = srv.base.checked_sub(off).ok_or("FK_STATE_OFF is past the base")?;
+        if verbose {
+            println!("STATE {:#014x} (base-{}) taken from FK_STATE_OFF", pos, off);
+        }
+        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 });
+    }
     let p = locate_pos2(srv, probe, recs, ck.addr, bounds, max_windows, verbose)?;
     Ok(Layout {
         pos: p.pos,

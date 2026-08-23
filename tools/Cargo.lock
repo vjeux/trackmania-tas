@@ -45,6 +45,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "recon"
+version = "0.1.0"
+
+[[package]]
 name = "shootctl"
 version = "0.1.0"
 
@@ -72,4 +76,8 @@ dependencies = [
 
 [[package]]
 name = "uwlab"
+version = "0.1.0"
+
+[[package]]
+name = "vidread"
 version = "0.1.0"

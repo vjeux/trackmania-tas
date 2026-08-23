@@ -339,9 +339,32 @@ fn cmd_inspect(a: &[String]) {
 }
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|expand|diff|stats|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|diff|stats|bits>"));
     let rest = &a[1..];
     match what {
+        "script" => {
+            let base = rest.first().unwrap_or_else(|| die("ghost tape script BASE.gtape --events F --out T.gtape"));
+            let ev = need(rest, "--events");
+            let out = need(rest, "--out");
+            let btxt = std::fs::read_to_string(base).unwrap_or_else(|e| die(format!("{}: {}", base, e)));
+            let etxt = std::fs::read_to_string(ev).unwrap_or_else(|e| die(format!("{}: {}", ev, e)));
+            let events = ghost::script::parse_events(&etxt).unwrap_or_else(|e| die(e));
+            let keep = has(rest, "--keep-before");
+            let txt = ghost::script::apply_from(&btxt, &events, keep).unwrap_or_else(|e| die(e));
+            let txt = match rest.iter().position(|x| x == "--signature-at") {
+                Some(i) => {
+                    let ms: i64 = rest[i + 1].parse().unwrap_or_else(|_| die("--signature-at wants a race time in ms"));
+                    ghost::script::signature(&txt, ms).unwrap_or_else(|e| die(e))
+                }
+                None => txt,
+            };
+            // control: the text we are about to write must parse as a tape,
+            // and re-emit as the same text. A script that produced something
+            // the codec cannot express is a failure here, not at inject time.
+            let t = Tape::from_text(&txt).unwrap_or_else(|e| die(format!("the scripted tape does not parse: {}", e)));
+            std::fs::write(&out, &txt).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+            println!("wrote {} ({} events, {} ticks)", out, events.len(), t.n());
+        }
         "extract" => {
             let src = rest.first().unwrap_or_else(|| die("ghost tape extract FILE --out T"));
             let out = need(rest, "--out");

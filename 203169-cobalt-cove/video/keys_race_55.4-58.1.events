@@ -1,0 +1,24 @@
+55360 record starts
+55360 press gas
+55360 press brake2
+55360 press left
+55360 press right
+55490 gap until 55510
+55590 gap until 55610
+55810 gap until 55950
+56050 gap until 56210
+56210 release brake2
+56210 release left
+56210 release right
+56470 gap until 56490
+56800 gap until 56820
+57120 gap until 57140
+57150 press right
+57320 release right
+57450 gap until 57470
+57470 press left
+57770 gap until 57790
+57900 release left
+57960 press right
+58100 gap until 58120
+58130 record ends

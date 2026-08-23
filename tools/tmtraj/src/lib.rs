@@ -5,6 +5,7 @@
 //! trajectory says the car did, whether two recordings are the same run, and
 //! whether a file is a physically coherent run of a car.
 
+mod csvdiff;
 mod run;
 pub use run::run;
 
