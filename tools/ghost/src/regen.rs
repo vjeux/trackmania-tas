@@ -247,11 +247,17 @@ pub fn cmd(a: &[String]) {
                 v.push(x.to_string());
             }
         }
-        // `--carrier TABLE` is the carrier-bytes arm's flag: it writes 25 more
-        // per-sample channels from engine memory in the SAME engine run, so
-        // there is no second pass and no ordering rule. The table is named
-        // explicitly rather than defaulted, because `must_be_live` has to agree
-        // with it and a default would let the two drift apart silently.
+        // `--carrier TABLE` writes more per-sample channels from engine memory
+        // in the SAME engine run, so there is no second pass and no ordering
+        // rule.
+        //
+        // `--carrier layout` is the successor and should be preferred: instead
+        // of a table of hand-fitted rows it uses the game's OWN writer,
+        // transcribed from the archiver at 0x9cfed0, and writes every byte that
+        // writer predicts. It needs no coefficients, it covers the packed
+        // bit-fields no per-byte affine fit can represent -- the five reactor
+        // members live across bytes 89, 90, 91 and 76 -- and it cannot drift
+        // from the table because there is no table.
         if let Some(t) = flag(a, "--carrier") {
             v.push("--carrier".into());
             v.push(t.to_string());

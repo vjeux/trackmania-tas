@@ -748,6 +748,28 @@ pub struct Row {
 }
 
 pub fn read_table(path: &str) -> Result<Vec<Row>, String> {
+    // `--carrier layout` is not a file. It asks for the game's OWN writer --
+    // `vislayout::pack`, transcribed from the archiver at 0x9cfed0 -- instead of
+    // a table of coefficients somebody fitted one channel at a time. It is
+    // represented as a single row with `rel == i64::MIN` so that every caller's
+    // plumbing (the `--carrier` flag, `must_be_live`, the gather's width
+    // calculation) keeps working unchanged, and the field gather recognises the
+    // sentinel and packs the whole 116 bytes.
+    //
+    // Prefer it. The table's rows were the only way to write these channels
+    // before the writer was read out of the binary, and five of the 23 turned
+    // out to encode the wrong law -- each scoring 100.00 % once read the way the
+    // game writes it, against 92-97 % as fitted.
+    if path == "layout" {
+        return Ok(vec![Row {
+            ch: Channel::Byte(0),
+            write: Write::Car,
+            rel: i64::MIN,
+            kind: Kind::Raw,
+            k: 0.0,
+            c: 0.0,
+        }]);
+    }
     let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut out = Vec::new();
     for l in s.lines() {

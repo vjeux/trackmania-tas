@@ -480,3 +480,23 @@ mod tests {
         assert_eq!(v30 + 4 + 1 + 4 + 4, 116); // v33 adds state+0x348
     }
 }
+
+/// Bytes whose SOURCE SLOT is identically zero in the dedicated server while a
+/// game-written recording's own values move.
+///
+/// This is a fourth verdict, distinct from "wrong offset" and from "could not
+/// be tested": the transcription is right, the slot is real, and *this binary
+/// never populates it*. Byte 34 is `floor(state[0x224] · 255)` and takes 137
+/// distinct values in the client's own recording of a nine-boost-gate map — and
+/// reads 0 in every instant the server produces. Same for 19, 20 and the four
+/// dirt slots.
+///
+/// They are listed rather than written because writing them would replace a
+/// real value with a confident zero, and nothing downstream would catch it: none
+/// of these bytes affects the simulation, so the plain oracle and the whole
+/// `ghost verify` gate pass on a file full of them. That is exactly the failure
+/// that put zeroed wheels into published clips.
+///
+/// To source them, run the CLIENT rather than the server. That is a task, not a
+/// conclusion.
+pub const DEAD_IN_SERVER: &[usize] = &[19, 20, 34, 93, 95, 97, 99];

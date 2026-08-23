@@ -1233,7 +1233,130 @@ fn merge(a: &[String]) -> Result<(), String> {
 /// the same run. The offsets and the coefficients then had no input from this
 /// recording at all, and the only thing the recording contributes is which copy
 /// of the car to read — which is a position match to a micron, not a fit.
+/// `fk carrier write --layout` — write EVERY byte the writer's own transcription
+/// predicts, instead of the hand-fitted table's rows.
+///
+/// # Why this replaces the table
+///
+/// The table is 23 rows, each one an offset and an affine coefficient somebody
+/// fitted against a recording, one channel at a time, over weeks. Every new
+/// channel cost another sweep, another answer key, and another argument about
+/// whether a 92 % agreement was a location or a coincidence — and five of the
+/// rows turned out to be the wrong ENCODING (`b22`'s constant is 255/2π and not
+/// the wheel constant; `b31` is a 3-bit enum plus a flag and not a byte copy;
+/// the ground materials substitute 13), each scoring 100.00 % once read the way
+/// the writer writes it.
+///
+/// `vislayout::pack` is the writer, transcribed from the archiver at
+/// `0x9cfed0` and the class descriptor at `0x9d2ea0`. It takes the state and
+/// returns all 116 bytes. So there is nothing left to fit, nothing to tie, and
+/// no per-byte dance: the packed bit-fields (the five reactor members across
+/// bytes 89, 90, 91 and 76, which NO per-byte affine fit could ever represent)
+/// come out with everything else.
+///
+/// # What it still refuses to do
+///
+/// Two classes of byte are left as the container's, and both are printed:
+///
+/// * **`UNPREDICTED`** — the orientation words (59..64), which need the
+///   matrix-to-quaternion step, and the countdown (108..111), which needs the
+///   archiver's caller-supplied timestamp.
+/// * **DEAD IN THIS BINARY** — a slot the dedicated server never populates
+///   while the container's own value moves. Byte 34, bytes 19/20 and the four
+///   dirt slots are identically zero in the server, so writing them would
+///   replace a real value with a confident zero. That is the failure mode this
+///   whole command exists to avoid, and it is checked per byte rather than
+///   assumed.
+fn write_layout(a: &[String]) -> Result<(), String> {
+    let c = ctx(a)?;
+    let verbose = a.iter().any(|x| x == "--verbose");
+    let dump = flag(a, "--dump")
+        .unwrap_or_else(|| format!("/tmp/fkcarrier-{}.bin", std::process::id()));
+    let outp = flag(a, "--out").ok_or("--out FILE is required")?;
+    let p = gather_wide(&c, num(a, "--back", 1048576), num(a, "--fwd", 262144), &dump, verbose)?;
+    let n = p.n();
+    let base = p.pos_off as i64 - 0x50;
+
+    // Predict every instant once, on the write the car was identified on.
+    let pred: Vec<[u8; 116]> = (0..n)
+        .map(|i| {
+            let g = Gathered { p: &p, w: Write::Car, base, i };
+            crate::vislayout::pack(&g)
+        })
+        .collect();
+
+    // Decide, per byte, whether we may write it. Three verdicts, all printed.
+    let mut writable: Vec<usize> = Vec::new();
+    let mut unpredicted: Vec<usize> = Vec::new();
+    let mut dead: Vec<usize> = Vec::new();
+    for b in 0..116 {
+        if crate::vislayout::UNPREDICTED.contains(&b) {
+            unpredicted.push(b);
+            continue;
+        }
+        let ours_live = (1..n).any(|i| pred[i][b] != pred[0][b]);
+        let theirs_live = p.sample.iter().any(|s| s[b] != p.sample[0][b]);
+        if theirs_live && !ours_live {
+            dead.push(b);
+            continue;
+        }
+        writable.push(b);
+    }
+    let exact = |b: usize| {
+        (0..n).filter(|&i| pred[i][b] == p.sample[i][b]).count() as f64 / n.max(1) as f64
+    };
+    println!(
+        "\n{} instants. {} bytes writable, {} not predicted {:?}, {} dead in this binary {:?}",
+        n,
+        writable.len(),
+        unpredicted.len(),
+        unpredicted,
+        dead.len(),
+        dead
+    );
+    println!(
+        "  agreement with the container, over the writable bytes: {} at 100 %, {} below",
+        writable.iter().filter(|b| exact(**b) >= 1.0).count(),
+        writable.iter().filter(|b| exact(**b) < 1.0).count()
+    );
+
+    let by_ms: std::collections::HashMap<i64, usize> =
+        p.ms.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+    let (mut wrote, mut skipped) = (0usize, 0usize);
+    gbx::recwrite::rewrite_ghost(&c.template, &outp, |rd| {
+        let ent = rd
+            .ents
+            .iter_mut()
+            .filter(|e| e.sample_size >= 100 && !e.times.is_empty())
+            .max_by_key(|e| e.times.len())
+            .ok_or("no vehicle entity")?;
+        let ss = ent.sample_size;
+        for (si, t) in ent.times.clone().iter().enumerate() {
+            let Some(i) = by_ms.get(&(*t as i64)).copied() else {
+                skipped += 1;
+                continue;
+            };
+            let s = &mut ent.raw[si * ss..(si + 1) * ss];
+            for b in &writable {
+                if *b < ss {
+                    s[*b] = pred[i][*b];
+                }
+            }
+            wrote += 1;
+        }
+        Ok(())
+    })?;
+    println!(
+        "wrote {} ({} samples rewritten, {} left alone -- no engine instant)",
+        outp, wrote, skipped
+    );
+    Ok(())
+}
+
 fn write(a: &[String]) -> Result<(), String> {
+    if a.iter().any(|x| x == "--layout") {
+        return write_layout(a);
+    }
     let c = ctx(a)?;
     let verbose = a.iter().any(|x| x == "--verbose");
     let dump = flag(a, "--dump").unwrap_or_else(|| format!("/tmp/fkcarrier-{}.bin", std::process::id()));
@@ -1444,8 +1567,21 @@ pub fn gather_fields(
     fwd: i64,
     verbose: bool,
 ) -> Result<std::collections::HashMap<i64, Instant>, String> {
-    let reach = rows.iter().map(|r| r.rel).max().unwrap_or(0).max(0) + 8;
-    let behind = rows.iter().map(|r| -r.rel).max().unwrap_or(0).max(0) + 8;
+    // The layout sentinel is `rel == i64::MIN`, so `-r.rel` OVERFLOWS and the
+    // max of the reaches is meaningless. What the packer actually needs is the
+    // whole vehicle state, which the class descriptor puts at 864 bytes with
+    // `Loc.translation` at 0x50 -- so 0x50 behind the car and 0x310 ahead of it,
+    // and not a byte more. Stated as a range rather than derived from rows,
+    // because there are no rows in that mode.
+    let layout_mode = rows.len() == 1 && rows[0].rel == i64::MIN;
+    let (reach, behind) = if layout_mode {
+        (0x310 + 8, 0x50 + 8)
+    } else {
+        (
+            rows.iter().map(|r| r.rel).max().unwrap_or(0).max(0) + 8,
+            rows.iter().map(|r| -r.rel).max().unwrap_or(0).max(0) + 8,
+        )
+    };
     let mut extra: record::ExtraSegs = Vec::new();
     let span = back + fwd;
     let each = (span as u32).div_ceil(6);
@@ -1825,7 +1961,36 @@ pub fn gather_fields(
             Write::Other => &recs[idx[i]].2,
         };
         let mut v = Vec::with_capacity(rows.len());
-        for r in rows {
+        // THE WHOLE SAMPLE, FROM THE WRITER, when the caller asked for the
+        // layout instead of a table of fitted rows.
+        //
+        // `--carrier layout` parses to a single sentinel row so every caller's
+        // plumbing is unchanged; here it means "use `vislayout::pack`". That
+        // transcription is the game's own archiver, so it produces every byte
+        // at once -- including the packed bit-fields (the five reactor members
+        // across bytes 89, 90, 91 and 76) that NO per-byte affine row could
+        // ever express, which is why three arms failed on byte 89 and the
+        // verdict called it closed.
+        //
+        // Bytes it must not touch are excluded here rather than downstream:
+        // `UNPREDICTED` (the orientation words and the countdown, which need
+        // inputs this transcription does not have) and `DEAD_IN_SERVER` --
+        // byte 34, 19, 20 and the four dirt slots read identically zero in the
+        // dedicated server, and writing them would put a confident zero where a
+        // real value was.
+        if layout_mode {
+            let g = GatheredRec { b, base: po as i64 - 0x50, reclen };
+            let packed = crate::vislayout::pack(&g);
+            for ch in 0..116usize {
+                if crate::vislayout::UNPREDICTED.contains(&ch)
+                    || crate::vislayout::DEAD_IN_SERVER.contains(&ch)
+                {
+                    continue;
+                }
+                v.push((Channel::Byte(ch), packed[ch] as u32));
+            }
+        }
+        for r in rows.iter().filter(|r| r.rel != i64::MIN) {
             let o = po as i64 + r.rel;
             if o < 0 || o as usize + 4 > reclen {
                 return Err(format!(
@@ -1887,4 +2052,49 @@ pub fn gather_fields(
     }
     let _ = (reach, behind);
     Ok(out)
+}
+
+/// One gathered instant's bytes, as a `vislayout::State`.
+///
+/// The field gather holds each instant as a flat record; `base` is where the
+/// vehicle state starts inside it (`car - 0x50`, since `Loc.translation` is at
+/// `0x50` of the state). Out-of-window reads return zero rather than panicking:
+/// a window that does not reach a field is a width bug, and the caller's
+/// `DEAD_IN_SERVER`/agreement reporting is what surfaces it.
+struct GatheredRec<'a> {
+    b: &'a [u8],
+    base: i64,
+    reclen: usize,
+}
+
+impl GatheredRec<'_> {
+    fn at(&self, off: usize) -> usize {
+        let o = self.base + off as i64;
+        if o < 0 || o as usize + 4 > self.reclen {
+            usize::MAX
+        } else {
+            o as usize
+        }
+    }
+}
+
+impl crate::vislayout::State for GatheredRec<'_> {
+    fn f32(&self, off: usize) -> f32 {
+        match self.at(off) {
+            usize::MAX => 0.0,
+            o => f32::from_le_bytes(self.b[o..o + 4].try_into().unwrap()),
+        }
+    }
+    fn u32(&self, off: usize) -> u32 {
+        match self.at(off) {
+            usize::MAX => 0,
+            o => u32::from_le_bytes(self.b[o..o + 4].try_into().unwrap()),
+        }
+    }
+    fn u8(&self, off: usize) -> u8 {
+        match self.at(off) {
+            usize::MAX => 0,
+            o => self.b[o],
+        }
+    }
 }
