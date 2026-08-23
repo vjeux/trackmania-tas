@@ -127,6 +127,26 @@ pub fn outlives_the_car(path: &str) -> Result<Option<String>, String> {
 /// written set, they come under this automatically -- which is the point: the
 /// day the wheel bytes start being written is the day a silently-zeroed wheel
 /// byte has to be caught, and nobody should have to remember to add a check.
+///
+/// **EXCEPT WHERE THE RUN ITSELF IS CONSTANT, AND THREE MAPS PAID FOR THAT.**
+/// `byte 15 (gas echo) holds 0xff on all samples` refused unluckE - get jiggy
+/// with it, Training 10 long and Great WTF of what #165 -- and on unluckE the
+/// input tape reads `accel=1` on **all 789 ticks**, so a constant gas echo is
+/// the CORRECT echo of a run that never lifts. The page says so in prose:
+/// "gas held throughout, brake never touched". The check was reading its own
+/// assumption -- that a real run varies every channel -- as a property of the
+/// file.
+///
+/// A channel is therefore dead only when it is constant AND the tape says the
+/// driver varied the thing it echoes. `echoes` names that link; a channel with
+/// no tape counterpart keeps the old unconditional test, because for position
+/// and speed there is nothing to consult and a constant really is impossible.
+///
+/// This is the failure shape the doc comment on [`must_be_live`] already warns
+/// about, arriving through the one door that comment did not cover: not "a
+/// channel that may rest", but a channel that is *usually* live and is
+/// legitimately constant on this particular run. The general lesson is in
+/// CLAIMS.md -- a check must consult the artefact rather than the average.
 pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<String>, String> {
     let d = gbx::record::decode_ghost(path)?;
     let ss = d.sample_size;
@@ -134,20 +154,65 @@ pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<S
     if n < 20 {
         return Err(format!("only {n} samples"));
     }
+    // What the driver actually did, where the tape can say.
+    let tape = gbx::tape::Tape::from_file(path).ok();
     let mut dead = Vec::new();
     for (o, name) in expect_alive {
         if *o >= ss {
             continue;
         }
         let first = d.raw[*o];
-        if (0..n).all(|i| d.raw[i * ss + o] == first) {
-            dead.push(format!(
-                "byte {o} ({name}) holds {first:#04x} on all {n} samples -- this channel is \
-                 claimed as written and is not alive"
-            ));
+        if !(0..n).all(|i| d.raw[i * ss + o] == first) {
+            continue;
         }
+        if let (Some(t), Some(kind)) = (&tape, echoes(*o)) {
+            if let Some(varied) = kind.varied_in(t) {
+                if !varied {
+                    // The run held this input for its whole length, so a
+                    // constant echo of it is right. Not a defect.
+                    continue;
+                }
+            }
+        }
+        dead.push(format!(
+            "byte {o} ({name}) holds {first:#04x} on all {n} samples -- this channel is \
+             claimed as written and is not alive"
+        ));
     }
     Ok(dead)
+}
+
+/// Which driver input a sample byte echoes, where one does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Echoes {
+    Steer,
+    Accel,
+    Brake,
+}
+
+impl Echoes {
+    /// Did the driver vary this input over the run? `None` when the tape
+    /// carries no ticks, which keeps the caller on the unconditional test
+    /// rather than letting an unreadable tape excuse a dead channel.
+    pub fn varied_in(self, t: &gbx::tape::Tape) -> Option<bool> {
+        let vals: Vec<i64> = match self {
+            Echoes::Steer => t.steer_i8s().iter().map(|v| *v as i64).collect(),
+            Echoes::Accel => t.accels().iter().map(|v| *v as i64).collect(),
+            Echoes::Brake => t.brakes().iter().map(|v| *v as i64).collect(),
+        };
+        let first = *vals.first()?;
+        Some(vals.iter().any(|v| *v != first))
+    }
+}
+
+/// The mapping, kept next to the check that uses it.
+pub fn echoes(byte: usize) -> Option<Echoes> {
+    match byte {
+        14 => Some(Echoes::Steer),
+        15 => Some(Echoes::Accel),
+        16 => Some(Echoes::Brake),
+        _ => None,
+    }
 }
 
 /// The engine channels this pass does NOT yet write, named by byte.
