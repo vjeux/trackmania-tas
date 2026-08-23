@@ -6,6 +6,22 @@ record holder uses.**
 
 **Great WTF of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR 8.197 by Titoch_tm
 
+> ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
+>
+> The replay this page publishes carries a recording that is **not its own
+> tape's run**: tape and recording agree on only **kappa 0.495** of samples,
+> where a file whose recording is its own reads 1.000. The clip below was shot
+> from that file, so **the car you are watching is not driving this run**.
+>
+> **The result stands.** The plain dedicated server re-simulates this file's
+> input tape to **7.998**, the time on this page — the inputs really do produce
+> it. What is wrong is the trajectory stored beside them, which is a property
+> of how the file was assembled rather than of the run.
+>
+> The repair is `ghost regen`, which rebuilds the telemetry from the tape on
+> the live engine; it has fixed others in this corpus. This page will be
+> re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+
 https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
 
 Single car: the **7.998**, our fastest run here, driven with analog steering and

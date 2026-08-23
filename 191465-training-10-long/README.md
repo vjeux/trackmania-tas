@@ -6,6 +6,22 @@ metre tighter. That is the whole map — and it is enough to beat an author time
 
 **Training 10 long** — TAS **13.071** (−0.009) | AT 13.080 | WR 13.081 by in-.-
 
+> ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
+>
+> The replay this page publishes carries a recording that is **not its own
+> tape's run**: tape and recording agree on only **kappa 0.382** of samples,
+> where a file whose recording is its own reads 1.000. The clip below was shot
+> from that file, so **the car you are watching is not driving this run**.
+>
+> **The result stands.** The plain dedicated server re-simulates this file's
+> input tape to **13.071**, the time on this page — the inputs really do produce
+> it. What is wrong is the trajectory stored beside them, which is a property
+> of how the file was assembled rather than of the run.
+>
+> The repair is `ghost regen`, which rebuilds the telemetry from the tape on
+> the live engine; it has fixed others in this corpus. This page will be
+> re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+
 https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
 
 Both cars are on screen: eight milliseconds apart, but the two drivers take
