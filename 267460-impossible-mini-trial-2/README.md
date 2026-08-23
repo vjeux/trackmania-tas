@@ -18,8 +18,15 @@ is the 2.046 we are ahead of the only human who has ever recorded a time here.
 The two runs are properly apart for most of it: **max 50.16 m, mean 18.13 m**,
 180 of 421 samples in the band where two cars read as two cars.
 
-The car path in the clip is regenerated from engine memory and accurate to **half
-a millimetre**, so the driving you see is exactly what the simulator validated.
+The car path in the clip is regenerated from engine memory and agrees with a
+second reading to **half a millimetre**. That used to be quoted here as
+"accurate to half a millimetre, so the driving you see is exactly what the
+simulator validated" — **corrected 2026-08-22**: ≈0.5 mm is now measured to be
+the distance between **two copies of the car in the server's own memory**, so
+that figure is what two readings of the *wrong* copy look like, and a gather
+that has found the car agrees bit-identically or at ~0.000001 m. The driving in
+the clip may still be exactly right; it is no longer this number that says so.
+**The time is untouched** — the oracle reads the tape.
 One byte is still the carrier's — the surface-contact flag, which reads "on" for
 15 of 39 samples where the car is provably airborne — so some of the *effects*,
 dirt spray, sparks and wheel behaviour at the edges, are not ours.

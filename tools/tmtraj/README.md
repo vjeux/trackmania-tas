@@ -107,6 +107,20 @@ family it could not run says so on its own line.
 | | |
 |---|---|
 | `motion FILE [--fit-g] [--per-sample]` | BALLISTIC / SUPPORTED / UNKNOWN from the second difference of position, with the recorded contact, dirt and ice bytes beside it |
+
+> **`motion` classifies from the POSITION and prints the contact byte beside it,
+> rather than trusting it — and here is why, measured 2026-08-22.** On 153527's
+> driver recording the derived `is_ground_contact` bit reads **False on all
+> 85 811 samples**, including a car standing still on a floor. A selector built
+> on that bit would have picked every sample or none, silently. `is_ground_contact`
+> is a DERIVED field (a bit-mask guess, see `tmtraj fields`), and the honest use
+> is the one this tool makes: classify from something else, show the bit, and let
+> the two agreeing be evidence *for the bit*. Stated the other way round it is
+> circular.
+>
+> Free fall for that classification is **g ≈ 24.3–24.6, not 9.81** — see
+> `CLAIMS.md`. The one place a fixed `g` still appears is C5's `25.20 ± 2.0`,
+> which is `a_y` at v_y ≈ +13 under the engine's actual law `a_y = −g − k·v_y`.
 | `wheels FILE` | the wheel radius, and separately whether the wheel bytes are alive at all |
 | `facing FILE... [--ref R \| --route CSV]` | is the car pointing where it is going |
 

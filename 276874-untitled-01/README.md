@@ -147,6 +147,16 @@ while replaying the tape's inputs — so it plays back as itself. 26 of 33
 independent regenerations agree to within 1 mm, and a cross-check against a
 completely different readout path agrees to **0.48 mm**.
 
+> **That 0.48 mm is now a reason to re-check, not a certificate — corrected
+> 2026-08-22.** ≈0.5 mm has been measured to be **the distance between two
+> copies of the car in the server's memory**, so agreement at that figure is
+> what two readings of the *wrong* copy look like; a gather that has found the
+> car agrees bit-identically or at ~0.000001 m. Note also that "26 of 33 agree"
+> is a **reproduction count, and a majority must never outrank a test that can
+> identify the answer** — five regenerations of one 134672 tape produced the car
+> once and four wrong picks, two of which agreed with each other to the metre.
+> The time is unaffected: the oracle reads the tape. See `tools/README.md`.
+
 ## Files
 
 | file | what |
