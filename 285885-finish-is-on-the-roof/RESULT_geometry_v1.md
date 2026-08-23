@@ -361,7 +361,72 @@ project can find out without first putting a car on it, because the whole
 structure is outside the map grid (§3). **§8 does put a car on it** — from
 above, by falling — and what it finds there is the inverted slide and the wall.
 
-## 10. What is left, and what a successor should not repeat
+## 10. I built an airborne detector with a control, and it was still a decoy
+
+§8 leaves one question: can the run get above the finish face? The natural
+instrument is a gate placed some metres above the surface, because the trigger
+has a floor 6.3 m below the item — a car ON the surface is below that floor and
+cannot fire it, so a gate at surface + 8 m should fire only for a car in the air.
+
+It looked properly controlled:
+
+* 12 rungs, 8 m above the fast route's own trajectory, across the whole finish
+  face. **The reference tape fires none of them.**
+* 3 rungs 0.4 m above the same line. **The reference tape fires all three**, at
+  39.719 / 40.924 / 42.149 — exactly where its own run is.
+
+Scored over 920 rectangular overrides of the fast route across race 37.6–41.2
+(0 no-ops among the families, 4 no-ops in the batch), **26 candidates fired the
+8 m rungs**, including 7 that fired the rung 8 m above the patch itself.
+
+**Every one of them is on the ground.** Traced live, they are simply driving a
+line further up the ramp, where the surface itself is 8 m higher than the
+reference line was: `s40800_l500_st-127_ax_b1` fires the +8 m patch rung at
+41.229 while climbing smoothly through (423.4, 146.1, 1697.3) at 154 km/h with
+`u_y` 0.982, y rising 0.9 m every 0.12 s with no ballistic signature at all.
+
+> A gate above a sloping surface is a **height detector wherever the candidate's
+> line differs from the line the gate was placed on**. The control that passes —
+> the reference fires nothing — cannot exclude it, because the reference is the
+> one line the rungs were fitted to. This is the same family as the "tilt
+> detector at `plane(x,z) − Δ`" that cost an earlier arm six climb rounds, in a
+> new disguise, and it survived a control that looked sufficient.
+
+### What replaces it: `tmtraj airborne`
+
+A reference-free detector. Free fall from the trajectory alone: a window in
+which the second difference of `y` matches the map's own gravity, taken from a
+5-point least-squares quadratic (a 3-point difference quantises to a ~10 m/s²
+comb at 1 mm / 10 ms). No reference line, no contact bit — which on a
+synthesised tape is the carrier's anyway.
+
+**Positive control**: on the fast route it recovers the airborne window §6b
+found by hand, 35.060–35.400 at (380, 112, 1842) at 167 km/h, and the run's fall
+off the world at x = 507 after 44.25 — 17 episodes, all of them real.
+
+### What it says about the finish face
+
+The 22 candidates that fired the decoy rungs, re-read with it, restricted to the
+finish face (x 380–505, z 1660–1760):
+
+* **17 of 22 do have a real ballistic episode there** — so the detector is not
+  simply silent.
+* Every one of them is **0.10–0.15 s long, at 170–210 km/h, and sits at
+  z ≈ 1665–1669**: they are the car hopping the same z ≈ 1668 lip that stops the
+  inverted slide from the other side, taken at speed from the up-ramp side.
+* The apex gain is **0.5–1.0 m**, and every episode is at race **42.1–43.0** —
+  *after* the patch, on the way past it.
+
+At 1.7 rad/s (the measured ramp-edge tumble rate) 0.15 s is 15°, against the 26°
+the trigger needs — and these hops rotate essentially not at all, because the
+car barely leaves the surface. **There is no usable air over the patch in this
+family.**
+
+So the z ≈ 1668 feature is now characterised from both sides: **a lip that an
+inverted 60 km/h slide from the south hits head-on and dies against, and that a
+200 km/h upright car from the north skims over with 0.1 s of air.**
+
+## 11. What is left, and what a successor should not repeat
 
 **Do not re-run:**
 
@@ -380,9 +445,10 @@ above, by falling — and what it finds there is the inverted slide and the wall
   the final climb by 34.13 s**, against 37.978 for the fastest tape ever built
   and 41.279 for our record (§5).
 
-**The two things that are genuinely open**, in the order I would try them:
+**The three things that are genuinely open**, in the order I would try them:
 
-1. **Get above the finish face with air under it** (§8). This is the arm's
+1. **Get above the finish face with air under it** (§8; §10 says how NOT to look
+   for it). This is the arm's
    recommendation and it supersedes "land on the rim" as the way to state the
    problem. The fall does the whole endgame for free: 1.0 s, no input, `u_y`
    −1.000, 100 km/h, on the finish's own plane. What is needed is not tilt and
