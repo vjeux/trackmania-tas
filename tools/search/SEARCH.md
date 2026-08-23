@@ -604,8 +604,9 @@ the key at the author's whole contact state, built out of that measurement —
 ```
 
 — and in fifteen minutes the search goes from −43.7 (the world record) to −5.12,
-where it stops. Decomposed, that state is **0.28 m from the author's contact
-point with a velocity 3.8 m/s from his**, and it is **54° away in attitude**.
+where it stops: 30 minutes, 870 570 evaluations, 159 improvements confirmed and
+zero phantoms. Decomposed, that state is **0.29 m from the author's contact
+point with a velocity 3.60 m/s from his**, and it is **53.8° away in attitude**.
 `TECHNIQUE.md`, written from the private fork six weeks ago:
 
 > We built a run that reached the author's contact point to within **0.3 m**
