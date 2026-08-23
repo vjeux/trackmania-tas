@@ -56,6 +56,8 @@ impl Box3 {
             hi: [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])],
         }
     }
+    /// Everything, for a control that has to find an object wherever it went.
+    pub const WORLD: Box3 = Box3 { lo: [-1e9; 3], hi: [1e9; 3] };
     pub fn holds(&self, p: [f32; 3]) -> bool {
         (0..3).all(|i| p[i] >= self.lo[i] && p[i] <= self.hi[i])
     }
@@ -278,6 +280,98 @@ pub fn cmd_region(args: &[String]) {
 /// The re-read is the whole point. Every earlier version of this operation
 /// reported what it intended to do; this one reports what the file it wrote
 /// actually contains. Exit 3 if anything is left.
+pub fn cmd_shift(args: &[String]) {
+    let src = PathBuf::from(&args[2]);
+    let out = PathBuf::from(crate::cli::flag(args, "--out").expect("--out F"));
+    let b = Box3::parse(crate::cli::flag(args, "--box").expect("--box X0,Y0,Z0:X1,Y1,Z1"));
+    let by: Vec<f32> = crate::cli::flag(args, "--by")
+        .expect("--by DX,DY,DZ (metres to displace what is in the box)")
+        .split(',')
+        .map(|x| x.trim().parse().expect("a number"))
+        .collect();
+    assert_eq!(by.len(), 3, "--by is dx,dy,dz in metres");
+    let by = [by[0], by[1], by[2]];
+    let pat = filter_of(args);
+
+    let mut m = MapFile::load(&src);
+    let found = in_box(&m, b, &pat);
+    println!("in the box before:");
+    print_region(&found);
+
+    // Positions BEFORE, keyed by id, so the control can require each object to
+    // have moved by exactly `by` -- not merely "the box is different now".
+    let mut want: Vec<(String, [f32; 3])> = Vec::new();
+    let mut stuck: Vec<String> = Vec::new();
+    for e in &found {
+        if e.placement == Placement::Cell {
+            stuck.push(format!(
+                "{} {} is a GRID block: it has no stored position, so `shift` cannot move it.",
+                e.id, e.name
+            ));
+            continue;
+        }
+        let p = [e.pos[0] + by[0], e.pos[1] + by[1], e.pos[2] + by[2]];
+        if e.item {
+            let i: usize = e.id[1..].parse().unwrap();
+            m.move_item_pos(i, p);
+        } else if e.baked {
+            let i: usize = e.id[1..].parse().unwrap();
+            m.move_baked_free(i, p);
+        } else {
+            let i: usize = e.id.parse().unwrap();
+            m.move_block_free(i, p);
+        }
+        want.push((e.id.clone(), p));
+    }
+    m.write_to(&out).expect("write shifted map");
+
+    // THE CONTROL, on the map as WRITTEN: every object must be where it was
+    // asked to go. A structure half-moved is the 173691 failure -- the run
+    // drives into the pieces that stayed.
+    let after = MapFile::load(&out);
+    let now = in_box(&after, Box3::WORLD, &pat);
+    let mut wrong = 0usize;
+    for (id, p) in &want {
+        match now.iter().find(|e| &e.id == id) {
+            Some(e) => {
+                let d = ((e.pos[0] - p[0]).powi(2)
+                    + (e.pos[1] - p[1]).powi(2)
+                    + (e.pos[2] - p[2]).powi(2))
+                .sqrt();
+                if d > 1e-3 {
+                    println!("  WRONG: {} wanted {:?}, got {:?}", id, p, e.pos);
+                    wrong += 1;
+                }
+            }
+            None => {
+                println!("  LOST: {} is not in the written map at all", id);
+                wrong += 1;
+            }
+        }
+    }
+    println!(
+        "\nshifted {} of {} by {:?}; wrote {}",
+        want.len(),
+        found.len(),
+        by,
+        out.display()
+    );
+    for s in &stuck {
+        println!("  refused: {}", s);
+    }
+    if wrong > 0 || !stuck.is_empty() {
+        eprintln!(
+            "REFUSING: {} object(s) did not land where they were sent and {} could not be \
+             moved at all. A partially shifted structure is worse than an unshifted one, \
+             because it looks like a measurement.",
+            wrong,
+            stuck.len()
+        );
+        std::process::exit(3);
+    }
+    println!("every object in the box moved by exactly {:?} in the written file", by);
+}
+
 pub fn cmd_clear(args: &[String]) {
     let src = PathBuf::from(&args[2]);
     let out = PathBuf::from(crate::cli::flag(args, "--out").expect("--out F"));

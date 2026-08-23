@@ -195,7 +195,8 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "clear", "segments", "move", "rotate", "ladder", "roundtrip",
+        "waypoints", "census", "region", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
@@ -206,6 +207,7 @@ fn main() {
         "selftest" => selftest::run(&args),
         "region" => census::cmd_region(&args),
         "clear" => census::cmd_clear(&args),
+        "shift" => census::cmd_shift(&args),
         "waypoints" => {
             let m = map::MapFile::load(Path::new(&args[2]));
             eprintln!(
@@ -1130,6 +1132,12 @@ CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume ch
         together. REFUSES when a free block within --group-radius (4 m) is not in
         the rotation -- the ice kicker of 284238 is FOUR blocks sharing an anchor
         and two arms rotated one of them, which reads exactly like a null result.
+  tmmaps shift MAP --out F --box X0,Y0,Z0:X1,Y1,Z1 --by DX,DY,DZ [--filter PAT]
+        DISPLACE everything in the box, then re-read the written map and require
+        each object to be exactly where it was sent. This is how you measure a
+        clearance: move an obstacle by known amounts and ask the oracle which
+        is the first that lets a tape through. A structure half-moved reads as
+        a measurement, so nothing is half-moved.
   tmmaps clear MAP --out F --box X0,Y0,Z0:X1,Y1,Z1 --to X,Y,Z [--filter PAT]
         move EVERYTHING in the box, then re-read the written map and REQUIRE
         the box to be empty. This is the enforced form of the lesson below.
