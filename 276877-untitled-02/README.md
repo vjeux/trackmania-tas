@@ -17,15 +17,34 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 **untitled 02** — TAS **9.415** (−21.984) | AT 31.399 | WR 14.959 by Its_Cam.
 
-https://github.com/user-attachments/assets/fb996518-80a2-4f6a-b200-3c26f7a01ce3
+https://github.com/user-attachments/assets/2b2e60ea-bd4f-4b68-ac8a-1f99957dfef4
 
-The clip is the **9.415**, the earlier rung of the same lattice skip — that is
-the tape that has been rebuilt on a clean carrier so far, trajectory 189 of 189
-positions bit-identical to its own original. **Ground contact and wheel rotation
-are still the carrier's**, because zeroing them would claim the car was airborne
-all run with wheels that never turned, so the dirt and spark effects may be wrong
-while the path is ours. Watching it, the middle of the run looks as though it
-leaves the track entirely; it does not — see below.
+The clip is the **9.415**, the earlier rung of the same lattice skip.
+**Re-shot 2026-08-23 from a ghost regenerated out of that tape**
+(`replays/TAS_9415.Ghost.Gbx`): the tape was identified by putting every stored
+file for this map through the plain oracle rather than by reading a header —
+the container it was searched in declares 29.286 — and the oracle finishes the
+written file at **9.415**. `ghost verify` is clean end to end: **kappa 1.000**
+(189 of 189 samples: the recording is this tape's own run, where the file the
+previous clip came from read 0.305), and the trajectory is bit-identical to that
+file, 0.000000 m over 189 samples. Nothing per-run in it is the container
+donor's — login `TAS`, no account id, our own livery — and the channels the
+state readout does not reach (rpm, gear, per-wheel ice and dirt, the
+ground-contact flag) are written as **zero and named**, so the dirt and spark
+effects are absent rather than somebody else's.
+
+Watching it, the middle of the run looks as though it leaves the track entirely;
+it does not — see below.
+
+**This map is where the camera byte was found.** The first regeneration of this
+tape verified clean and filmed *wrong*: after the landing at 8.5 the chase
+camera ended up under the ramp and the car was out of frame for the last second.
+Nothing headless could see it — position, velocity and quaternion were
+bit-identical to the file that films correctly. Seven renders bisected it to a
+single sample byte, **byte 32**, which the regenerator wrote as zero and which
+the game's camera reads; writing the constant **128** there is enough, and needs
+nothing from any other run. `GHOSTS.md`, "The camera reads a byte the gate
+cannot see", has the ladder and the controls.
 
 The split screen against Its_Cam.'s record was filmed from the 8.898 and came
 down with it. It returns when that tape is rebuilt.
@@ -161,5 +180,6 @@ human's video shows too.
 
 | file | what |
 |---|---|
-| *(no replay committed)* | The 8.898 tape was withdrawn — it reported a stranger's account, the same one as its sibling on [untitled 01](../276874-untitled-01) — and a rebuilt one is owed here. The rebuilt 9.415 the clip is shot from is not committed either. |
+| `replays/TAS_9415.Ghost.Gbx` | **the ghost the clip is shot from**, regenerated from the 9.415 tape on 2026-08-23. `ghost verify --map` V1–V11 clean, kappa 1.000, oracle 9.415 on the written file |
+| *(the 8.898 has no replay here)* | That tape was withdrawn — it reported a stranger's account, the same one as its sibling on [untitled 01](../276874-untitled-01) — and a rebuilt one is still owed. Its inputs are below and the oracle validates them at 8.898. |
 | `inputs/TAS_8898.inputs.csv` | per-tick inputs — **the run itself**: this is what the oracle validates at 8.898 |

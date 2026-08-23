@@ -1,8 +1,12 @@
 # Is each page's headline ghost actually its own run?
 
-**Six published pages carry a recording that is not their tape's run — and the
+**Five published pages carry a recording that is not their tape's run — and the
 plain oracle re-simulates every one of those tapes to the time the page claims.
 The times are sound. The films show a different car.**
+
+19 pages verify clean, 5 are refused, and 15 this check still cannot reach:
+the page states no headline time, or two replays carry it, or the directory has
+no replay in it at all. **An unreachable row is not a clean row.**
 
 Reproduce with `clip inventory --root . --verify [--markdown]`. It finds each
 page's headline replay by the milliseconds in its filename, runs `ghost verify`
@@ -17,9 +21,16 @@ defect, not a result defect. `kappa 1.000` means the recording is the tape's own
 run and the page can be filmed as it stands.
 
 The fix for a foreign recording is `ghost regen`, which rebuilds the telemetry
-from the tape on the live engine. Three were repaired that way today
+from the tape on the live engine. Three were repaired that way on 2026-08-22
 (0.151 → 1.000 on Tap water 01, 0.500 → 1.000, 0.521 → 1.000); Kacky Reloaded
 #290 is the first published from a repaired file.
+
+**untitled 01 and untitled 02 came off the "cannot reach" list on 2026-08-23**:
+both pages had no `replays/` directory, so the check had nothing to open. Each
+now carries the ghost its clip was shot from, regenerated from the tape the page
+publishes and verified V1–V11 clean. Their tapes were identified by SIMULATION —
+every stored file for those maps declares the search container's 29.286 in its
+header, and the oracle finishes exactly one of them at the page's time.
 
 | map | TAS | kappa (V6) | oracle (V7) | verdict |
 |---|---|---|---|---|
@@ -51,8 +62,8 @@ from the tape on the live engine. Three were repaired that way today
 | Fall 2025 - 16 (CP1 end) | 4.830 | 1.000 | 4.830 | OK |
 | Fall 2025 - 18 (CP1 end) | 4.492 | 1.000 | 4.492 | OK |
 | U10S_32 [Yeet] MAX-UP | 7.463 | 1.000 | 7.463 | OK |
-| untitled 01 | 12.759 | - | - | replays: No such file or directory (os error 2) |
-| untitled 02 | 9.415 | - | - | replays: No such file or directory (os error 2) |
+| untitled 01 | 12.759 | 1.000 | 12.759 | OK |
+| untitled 02 | 9.415 | 1.000 | 9.415 | OK |
 | Fall 2025 - 01 Reverse (CP1 end) | 10.594 | 1.000 | 10.594 | OK |
 | Fall 2025 - 13 Reverse (CP1 end) | 6.578 | - | - | 2 replays carry 6578: BEST_6578_ratcheted.Ghost.Gbx, champ_6578.Ghost.Gbx |
 | Fall 2025 - 22 Reverse (CP1 end) | 5.352 | 1.000 | 5.352 | OK |
@@ -60,6 +71,8 @@ from the tape on the live engine. Three were repaired that way today
 | Pain ft Mango & Teuflum | 49.275 | 1.000 | 49.275 | OK |
 | finish is on the roof to your right | ? | - | - | the page states no headline time |
 | [Turtle Trial] Leto | 218.812 | 1.000 | 218.812 | OK |
+
+37 pages: 19 whose recording IS their tape's run, 5 carrying another run, 13 not checkable.
 
 ## The rows that say nothing
 
