@@ -5,24 +5,47 @@
 //! is worse than no model, and a rendering cannot tell you which one you have.
 //! So the model is graded, not admired: for each ghost sample, find the
 //! highest triangle whose vertical projection contains the sample and that
-//! lies below it, and report the distribution of `sample.y - surface.y` — plus
-//! the physics material the car was over, which is a second, independent read
-//! on whether the right surface was found.
+//! lies below it, and report `sample.y - surface.y` plus the physics material
+//! the car was over.
+//!
+//! This module answers only *what is under this point*. Deciding what a
+//! missing answer MEANS — a hole in the model, or a car in the air — needs the
+//! recording's own dynamics and lives in `coverage`.
 //!
 //! **What a good answer looks like.** The gap is not zero: a ghost's position
 //! is the car's origin, which rides above the contact patch. What it should be
 //! is *tight and constant* — one narrow mode across the whole run. A bimodal
-//! or wandering gap means blocks are being placed at the wrong height, and a
-//! large "no surface below" fraction means they are being placed in the wrong
-//! place entirely.
+//! or wandering gap means blocks are being placed at the wrong height.
 
 use crate::scene::Scene;
-use std::collections::BTreeMap;
+
 
 pub struct Hit {
     pub gap: f32,
     pub material: String,
 }
+
+/// How far below the modelled water plane a floating car's origin sits.
+///
+/// MEASURED, and it is a hard number: on Cobalt Cove the water planes sit on
+/// exact 8 m cell boundaries (42.000, 130.000) and the car reads 41.100 and
+/// 129.100 — **0.900 m under, four times out of four**. Before this, a car on
+/// water had *nothing under it at all*: the plumb line only looks down, the
+/// water triangle is above the car's origin, and the sample counted as a hole
+/// in the model. That was the single largest remaining cause of missing
+/// coverage — the whole of 227654's 112-sample hole and the two biggest
+/// stretches on Cobalt Cove, all reporting `nearest triangle 0.85-0.98 m
+/// (Water)`.
+///
+/// So the index lowers every `Water` triangle by this much: what it holds is
+/// the plane a car RESTS on, not the plane the water is drawn at. `map` and
+/// the glTF are untouched.
+pub const WATER_DRAFT: f32 = 0.90;
+
+/// How far ABOVE a sample a surface may be and still be the one it is resting
+/// on. Two centimetres of numerical slack, not a modelling choice: see
+/// `Index::below`.
+pub const TOUCH: f32 = 0.02;
 
 /// A uniform grid over XZ holding triangle references, so a plumb line does
 /// not have to test a million triangles.
@@ -37,6 +60,11 @@ pub struct Index {
 }
 
 impl Index {
+    /// Build the plumb/ray index over a scene.
+    ///
+    /// **`NotCollidable` and `OffZone` triangles are left out.** They are real
+    /// geometry and a render should show them, but a car cannot rest on one,
+    /// and a probe that counts them reports coverage the game does not have.
     pub fn build(scene: &Scene, cell: f32) -> Index {
         let (lo, hi) = scene.bounds().unwrap_or(([0.0; 3], [1.0; 3]));
         let nx = (((hi[0] - lo[0]) / cell).ceil() as usize + 1).max(1);
@@ -50,7 +78,16 @@ impl Index {
             groups: Vec::new(),
         };
         for (name, g) in &scene.groups {
-            idx.groups.push((name.clone(), g.verts.clone(), g.tris.clone()));
+            if !crate::scene::is_collidable(name) {
+                continue;
+            }
+            let mut verts = g.verts.clone();
+            if name.starts_with("Water") {
+                for v in &mut verts {
+                    v[1] -= WATER_DRAFT;
+                }
+            }
+            idx.groups.push((name.clone(), verts, g.tris.clone()));
         }
         for (gi, (_, verts, tris)) in idx.groups.iter().enumerate() {
             for (ti, t) in tris.iter().enumerate() {
@@ -116,7 +153,12 @@ impl Index {
             let b = verts[t[1] as usize];
             let c = verts[t[2] as usize];
             if let Some(y) = height_at(a, b, c, p[0], p[2]) {
-                if y <= p[1] + 0.001 && p[1] - y <= reach {
+                // A hair ABOVE the sample still counts. A car resting on a
+                // surface can read a millimetre under it, and on water it
+                // reads exactly ON it: the plane sits at an 8 m cell boundary
+                // minus WATER_DRAFT and the sample sits at the same number, so
+                // a strict test loses whichever side the last bit falls.
+                if y <= p[1] + TOUCH && p[1] - y <= reach {
                     if best.map_or(true, |(by, _)| y > by) {
                         best = Some((y, *gi as usize));
                     }
@@ -125,6 +167,157 @@ impl Index {
         }
         best.map(|(y, gi)| Hit { gap: p[1] - y, material: self.groups[gi].0.clone() })
     }
+
+    /// The first surface a ray from `p` in direction `d` meets, within `reach`
+    /// metres.
+    ///
+    /// A vertical plumb line asks *what is under this point*, which is the
+    /// wrong question for a car on a loop or a wall ride: the surface holding
+    /// it up is beside it, or above it. Firing along the car's own **down**
+    /// axis asks *what is this car standing on*, which is the question the
+    /// model is being graded against, and it is the same question on flat
+    /// ground.
+    pub fn along(&self, p: [f32; 3], d: [f32; 3], reach: f32) -> Option<Hit> {
+        // reach is metres and a cell is 32 m, so the ray cannot leave the 3x3
+        // of columns around its origin before it runs out.
+        let ci = bucket(p[0], self.origin[0], self.cell, self.nx) as i32;
+        let cj = bucket(p[2], self.origin[1], self.cell, self.nz) as i32;
+        let mut best: Option<(f32, usize)> = None;
+        for dj in -1..=1 {
+            for di in -1..=1 {
+                let (i, j) = (ci + di, cj + dj);
+                if i < 0 || j < 0 || i >= self.nx as i32 || j >= self.nz as i32 {
+                    continue;
+                }
+                for (gi, ti) in &self.buckets[j as usize * self.nx + i as usize] {
+                    let (_, verts, tris) = &self.groups[*gi as usize];
+                    let t = tris[*ti as usize];
+                    if let Some(dist) = ray_tri(
+                        p,
+                        d,
+                        verts[t[0] as usize],
+                        verts[t[1] as usize],
+                        verts[t[2] as usize],
+                    ) {
+                        if dist <= reach && best.map_or(true, |(bd, _)| dist < bd) {
+                            best = Some((dist, *gi as usize));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(d, gi)| Hit { gap: d, material: self.groups[gi].0.clone() })
+    }
+
+    /// The nearest point of any triangle to `p`, within `radius` metres, and
+    /// what material it belongs to.
+    ///
+    /// This is the question that separates *the model has nothing here* from
+    /// *the model has this, a metre to the left*: a plumb line that finds
+    /// nothing under a car sitting 0.4 m from the edge of a road is measuring
+    /// a road that is too narrow, not a road that is absent, and the two want
+    /// completely different work.
+    pub fn nearest(&self, p: [f32; 3], radius: f32) -> Option<(f32, String)> {
+        let rings = (radius / self.cell).ceil() as i32;
+        let ci = bucket(p[0], self.origin[0], self.cell, self.nx) as i32;
+        let cj = bucket(p[2], self.origin[1], self.cell, self.nz) as i32;
+        let mut best: Option<(f32, usize)> = None;
+        for dj in -rings..=rings {
+            for di in -rings..=rings {
+                let (i, j) = (ci + di, cj + dj);
+                if i < 0 || j < 0 || i >= self.nx as i32 || j >= self.nz as i32 {
+                    continue;
+                }
+                for (gi, ti) in &self.buckets[j as usize * self.nx + i as usize] {
+                    let (_, verts, tris) = &self.groups[*gi as usize];
+                    let t = tris[*ti as usize];
+                    let d = point_tri_dist(
+                        p,
+                        verts[t[0] as usize],
+                        verts[t[1] as usize],
+                        verts[t[2] as usize],
+                    );
+                    if d <= radius && best.map_or(true, |(bd, _)| d < bd) {
+                        best = Some((d, *gi as usize));
+                    }
+                }
+            }
+        }
+        best.map(|(d, gi)| (d, self.groups[gi].0.clone()))
+    }
+}
+
+/// Möller–Trumbore, two-sided: the distance along `d` from `p` to triangle
+/// `abc`, or `None` if the ray misses. Two-sided because the collision hull of
+/// a road is a shell and which way its normals face is not the question.
+fn ray_tri(p: [f32; 3], d: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
+    let e1 = sub(b, a);
+    let e2 = sub(c, a);
+    let h = cross(d, e2);
+    let det = dot(e1, h);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = sub(p, a);
+    let u = inv * dot(s, h);
+    if !(-1e-5..=1.000_01).contains(&u) {
+        return None;
+    }
+    let q = cross(s, e1);
+    let v = inv * dot(d, q);
+    if v < -1e-5 || u + v > 1.000_01 {
+        return None;
+    }
+    let t = inv * dot(e2, q);
+    if t >= 0.0 {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+/// Distance from a point to a triangle. Projects onto the plane, and when the
+/// projection falls outside, takes the nearest of the three edges — the exact
+/// distance, not a bounding-box estimate, because the answer decides whether a
+/// surface is a hand's width away or genuinely absent.
+fn point_tri_dist(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let n = cross(ab, ac);
+    let nn = dot(n, n);
+    if nn > 1e-18 {
+        let ap = sub(p, a);
+        let w = dot(cross(ab, ap), n) / nn;
+        let v = dot(cross(ap, ac), n) / nn;
+        let u = 1.0 - v - w;
+        if u >= 0.0 && v >= 0.0 && w >= 0.0 {
+            return (dot(ap, n) / nn.sqrt()).abs();
+        }
+    }
+    seg_dist(p, a, b).min(seg_dist(p, b, c)).min(seg_dist(p, c, a))
+}
+
+fn seg_dist(p: [f32; 3], a: [f32; 3], b: [f32; 3]) -> f32 {
+    let ab = sub(b, a);
+    let d = dot(ab, ab);
+    let t = if d > 1e-18 { (dot(sub(p, a), ab) / d).clamp(0.0, 1.0) } else { 0.0 };
+    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    dot(sub(p, q), sub(p, q)).sqrt()
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn bucket(v: f32, origin: f32, cell: f32, n: usize) -> usize {
@@ -148,79 +341,3 @@ fn height_at(a: [f32; 3], b: [f32; 3], c: [f32; 3], x: f32, z: f32) -> Option<f3
     Some(w0 * a[1] + w1 * b[1] + w2 * c[1])
 }
 
-pub struct Report {
-    pub samples: usize,
-    pub hits: usize,
-    pub gaps: Vec<f32>,
-    pub materials: BTreeMap<String, usize>,
-}
-
-impl Report {
-    pub fn of(index: &Index, points: &[[f32; 3]], reach: f32) -> Report {
-        let mut r =
-            Report { samples: points.len(), hits: 0, gaps: Vec::new(), materials: BTreeMap::new() };
-        for p in points {
-            if let Some(h) = index.below(*p, reach) {
-                r.hits += 1;
-                r.gaps.push(h.gap);
-                *r.materials.entry(h.material).or_insert(0) += 1;
-            }
-        }
-        r.gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        r
-    }
-
-    /// How many samples are RESTING: sitting within `max_gap` of a surface,
-    /// and the median of those gaps.
-    ///
-    /// This is the fit criterion, and choosing it correctly matters more than
-    /// it looks. Two wrong criteria were tried first and both produce a
-    /// confident wrong answer:
-    ///
-    /// * *"how many samples have anything under them"* picks whichever height
-    ///   drops the run onto the stadium FLOOR, because grass is everywhere.
-    ///   On 134672 that scored 93 % of samples over a surface at a wandering
-    ///   3.2 m.
-    /// * *"the largest group of samples sharing a gap"* is degenerate under a
-    ///   vertical shift: lowering the whole model by a metre raises every gap
-    ///   by a metre and the same samples still share one. It also picked the
-    ///   wrong cell row on maps with a deck under the road -- 146612 fitted a
-    ///   consistent 2.048 m.
-    ///
-    /// A car rests CENTIMETRES above what it is on, so the window is anchored
-    /// at zero. Measured ride heights on maps this model reproduces run
-    /// 0.013 - 0.073 m.
-    pub fn resting(&self, max_gap: f32) -> (usize, f32) {
-        let n = self.gaps.partition_point(|g| *g <= max_gap);
-        if n == 0 {
-            return (0, f32::NAN);
-        }
-        (n, self.gaps[n / 2])
-    }
-
-    pub fn pct(&self, q: f64) -> f32 {
-        if self.gaps.is_empty() {
-            return f32::NAN;
-        }
-        let i = ((self.gaps.len() - 1) as f64 * q).round() as usize;
-        self.gaps[i]
-    }
-    pub fn median(&self) -> f32 {
-        self.pct(0.5)
-    }
-    /// The half-width of the tightest window holding half the samples — a
-    /// spread that is not fooled by the flight phases a plumb probe cannot
-    /// see, unlike an rms.
-    pub fn tightest_half(&self) -> f32 {
-        let n = self.gaps.len();
-        if n < 2 {
-            return f32::NAN;
-        }
-        let w = n / 2;
-        let mut best = f32::INFINITY;
-        for i in 0..=(n - w - 1) {
-            best = best.min(self.gaps[i + w] - self.gaps[i]);
-        }
-        best / 2.0
-    }
-}

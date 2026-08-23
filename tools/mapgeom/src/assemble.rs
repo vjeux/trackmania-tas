@@ -14,37 +14,73 @@ pub struct LocalModel {
     pub size: (f32, f32),
 }
 
-/// Where a block model lives in the pack, across the environments that carry
-/// terrain-adapted copies of the Stadium set. Where a model exists in both,
-/// the geometry is identical.
+/// Where a block model lives in the pack.
+///
+/// A block name resolves through **five** block-info families, not one, and
+/// the file extension changes with the family:
+///
+/// | family | extension | what it holds |
+/// |---|---|---|
+/// | `GameCtnBlockInfoClassic` | `.EDClassic.Gbx` | roads, walls, platforms |
+/// | `GameCtnBlockInfoPillar` | `.EDClassic.Gbx` | the supports under everything |
+/// | `GameCtnBlockInfoFlat` | `.EDFlat.Gbx` | the terrain sheet — `Grass` |
+/// | `GameCtnBlockInfoFrontier` | `.EDFrontier.Gbx` | cliffs and hills |
+/// | `GameCtnBlockInfoTransition` | `.EDTransition.Gbx` | the joins between them |
+///
+/// Classic and Pillar each additionally carry a `Theme\` subfolder, which is
+/// where the seasonal sets live (`SnowRoadStraight`, `RallyCastleRoadStraight`)
+/// — 122 more block models that are otherwise invisible.
+///
+/// Looking in Classic alone left 125 537 placements across the corpus with no
+/// geometry, 92 619 of them `DecoWallBasePillar`.
+///
+/// The environments beyond Stadium carry terrain-adapted copies of the Stadium
+/// set; where a model exists in both the geometry is identical.
 fn block_candidates(name: &str) -> Vec<String> {
-    let mut v = vec![format!(
-        "Stadium\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
-        name
-    )];
-    // `Stadium256` carries the stadium shell itself (`Stade4096`,
-    // `Stade1536`), which is what a DECORATION map is made of.
-    v.push(format!(
-        "Stadium256\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\{}.EDClassic.Gbx",
-        name
-    ));
+    let mut v = Vec::new();
+    for env in ["Stadium", "Stadium256"] {
+        // `Stadium256` carries the stadium shell itself (`Stade4096`,
+        // `Stade1536`), which is what a DECORATION map is made of.
+        for (family, ext) in [
+            ("GameCtnBlockInfoClassic", "EDClassic"),
+            ("GameCtnBlockInfoPillar", "EDClassic"),
+            ("GameCtnBlockInfoFlat", "EDFlat"),
+            ("GameCtnBlockInfoFrontier", "EDFrontier"),
+            ("GameCtnBlockInfoTransition", "EDTransition"),
+        ] {
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Theme\\{}.{}.Gbx", env, family, name, ext));
+        }
+    }
     for env in ["BlueBay", "GreenCoast", "RedIsland", "WhiteShore"] {
-        v.push(format!(
-            "{}\\GameCtnBlockInfo\\GameCtnBlockInfoClassic\\Stadium\\{}.EDClassic.Gbx",
-            env, name
-        ));
+        for (family, ext) in [
+            ("GameCtnBlockInfoClassic", "EDClassic"),
+            ("GameCtnBlockInfoPillar", "EDClassic"),
+            ("GameCtnBlockInfoFlat", "EDFlat"),
+            ("GameCtnBlockInfoFrontier", "EDFrontier"),
+            ("GameCtnBlockInfoTransition", "EDTransition"),
+        ] {
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\Stadium\\{}.{}.Gbx", env, family, name, ext));
+            v.push(format!("{}\\GameCtnBlockInfo\\{}\\{}.{}.Gbx", env, family, name, ext));
+        }
     }
     v
 }
 
 fn item_candidates(name: &str) -> Vec<String> {
-    // A map spells an item either bare or with its extension already on.
+    // A map spells an item either bare or with its extension already on, and
+    // the seasonal items live one folder deeper.
     let base = name.trim_end_matches(".Item.Gbx");
-    vec![
+    let mut v = vec![
         format!("Stadium\\Items\\{}.Item.Gbx", base),
+        format!("Stadium\\Items\\Theme\\{}.Item.Gbx", base),
         format!("{}.Item.Gbx", base),
         base.to_string(),
-    ]
+    ];
+    for env in ["GreenCoast", "RedIsland", "BlueBay", "WhiteShore"] {
+        v.push(format!("{}\\Items\\Stadium\\{}.Item.Gbx", env, base));
+    }
+    v
 }
 
 pub struct Assembler<'a> {
@@ -60,10 +96,14 @@ pub struct Assembler<'a> {
 /// The zip path a map's model name refers to, if it is a custom model.
 ///
 /// A map spells an embedded block `FlinkIceBlocks\3-1-1-1-Ice-Light.Block.Gbx_CustomBlock`
-/// and the zip holds it at `Items/FlinkIceBlocks/3-1-1-1-Ice-Light.Block.Gbx`.
+/// and the zip holds it under a container folder — `Items/…` on 134672 and
+/// **`Blocks/…`** on 197047, whose whole run is on 75 placements of one
+/// embedded platform. Keying on `Items/` alone left that map at 2.6 % of its
+/// samples over a surface with the model reading `76 placements of 3 models
+/// had no geometry`. So the name is matched as a SUFFIX of the zip path
+/// rather than under an assumed folder.
 fn embedded_key(name: &str) -> String {
-    let n = name.trim_end_matches("_CustomBlock").replace('\\', "/");
-    format!("items/{}", n.to_lowercase())
+    name.trim_end_matches("_CustomBlock").replace('\\', "/").to_lowercase()
 }
 
 impl<'a> Assembler<'a> {
@@ -88,8 +128,29 @@ impl<'a> Assembler<'a> {
     }
 
     /// A model the map carries itself, if this name is one.
+    ///
+    /// The map's spelling is matched as a suffix of the zip path, longest
+    /// suffix first: 197047 places the same platform under two names,
+    /// `StupsKiesel\MiniPlatform\…` and `StupsKiesel\StupsKiesel\MiniPlatform\…`,
+    /// and carries two files that differ only by that folder.
     fn embedded_model(&mut self, name: &str) -> Option<LocalModel> {
-        let bytes = self.embedded.get(&embedded_key(name))?.clone();
+        let key = embedded_key(name);
+        let bytes = self
+            .embedded
+            .get(&key)
+            .or_else(|| {
+                // Shortest match: 197047 carries the same platform twice, at
+                // `…/StupsKiesel/MiniPlatform/…` and
+                // `…/StupsKiesel/StupsKiesel/MiniPlatform/…`, and the shorter
+                // name is a suffix of BOTH paths. The longer file is the other
+                // block's.
+                self.embedded
+                    .iter()
+                    .filter(|(k, _)| k.ends_with(&format!("/{}", key)))
+                    .min_by_key(|(k, _)| k.len())
+                    .map(|(_, v)| v)
+            })?
+            .clone();
         let model = match Model::parse(&bytes, name) {
             Ok(m) => m,
             Err(e) => {
@@ -131,7 +192,14 @@ impl<'a> Assembler<'a> {
         if let Some(lm) = self.embedded_model(name) {
             return Some(lm);
         }
-        let path = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())?;
+        let Some(path) = block_candidates(name).into_iter().find(|p| self.store.resolve(p).is_some())
+        else {
+            // A map's block list is not only blocks: the gates are ITEMS
+            // placed on the grid (`GateCheckpointRight32m`, `GateSpecial32m*`),
+            // and so are the rotors and the seasonal props. A name that is not
+            // a block model is worth one more lookup before it becomes a hole.
+            return self.build_item(name);
+        };
         let model = self.store.load_model(&path).ok()?;
         let mut prefabs = model.refs_ending(".Prefab.Gbx");
         if prefabs.is_empty() {
@@ -198,6 +266,10 @@ impl<'a> Assembler<'a> {
     }
 
     /// Assemble a map into one scene.
+    ///
+    /// An ITEM is placed by its own record: position, all three rotations,
+    /// the PIVOT that position names, and a scale. A GRID block is placed by
+    /// its cell, and a FREE block by an absolute position with no pivot.
     pub fn map(&mut self, m: &MapFile, yoff: f32, with_items: bool) -> Scene {
         let mut out = Scene::default();
         for b in &m.blocks {
@@ -228,14 +300,15 @@ impl<'a> Assembler<'a> {
         }
         if with_items {
             for it in &m.items {
-                let xf = place::free(it.pos, [it.yaw, 0.0, 0.0]);
-                match self.item_model(&it.model) {
-                    Some(lm) => {
-                        let s = &lm.scene;
-                        out.append(s, &xf);
-                        self.note(&it.model, true);
-                    }
-                    None => self.note(&it.model, false),
+                if self.item_model(&it.model).is_none() {
+                    self.note(&it.model, false);
+                    continue;
+                }
+                let xf = place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                if let Some(lm) = self.item_model(&it.model) {
+                    let s = &lm.scene;
+                    out.append(s, &xf);
+                    self.note(&it.model, true);
                 }
             }
         }

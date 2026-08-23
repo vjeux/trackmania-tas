@@ -36,8 +36,21 @@ pub const CELL_Y: f32 = 8.0;
 ///
 /// Read off the model's own geometry rather than its unit list, with a 15 %
 /// overhang tolerance: a kerb or a sign that pokes past the last cell must not
-/// buy the block another one. Where the unit list is available this should be
-/// replaced by it — see MAPGEOM.md, "what is still missing".
+/// buy the block another one.
+///
+/// **It is WRONG on the decoration and the picture proves it.** A `Deco48x48`
+/// is four blocks -- two `Stade4096` whose mesh spans 4028 m in x and two
+/// `Stade1536` spanning 2048 -- and this heuristic reads those spans as
+/// footprints of 4032 x 768 and 2048 x 1536 cells. The two `dir = 0` copies do
+/// not care, because their shift is zero; the two `dir = 2` copies are shifted
+/// by the wrong amount and the stadium comes out smeared across four
+/// kilometres instead of closed around the map. That is why the assembled
+/// model of a 48 x 48 map stops at z 1632 while its playfield needs 1760, and
+/// it is a plausible single cause for several of the low-coverage maps.
+/// Setting the shift to zero instead is worse (the model then spans
+/// -4028..4028), so the answer is the block's real UNIT LIST and nothing
+/// else -- `CGameCtnBlockInfo`'s ground and air unit arrays, which need body
+/// readers this crate does not have. See MAPGEOM.md, "what is still missing".
 pub fn footprint(max_x: f32, max_z: f32) -> (f32, f32) {
     fn cells(m: f32) -> f32 {
         (((m / CELL_XZ) - 0.15).ceil()).max(1.0) * CELL_XZ
@@ -46,16 +59,30 @@ pub fn footprint(max_x: f32, max_z: f32) -> (f32, f32) {
 }
 
 /// The transform for a grid-placed block.
+///
+/// A rotation about the cell CORNER moves the block off its own cells, so it
+/// has to be shifted back — and the shift is not free to choose: it is
+/// determined by the quarter turn it is paired with. Pair them wrongly and
+/// `dir = 0` and `dir = 2` blocks stay exactly right while every `dir = 1` and
+/// `dir = 3` block moves by a whole footprint, which is invisible in the
+/// height fit (the misplaced blocks are at the correct HEIGHT) and takes about
+/// a third of a run off the model.
+///
+/// MEASURED, and the measurement is the reason this is written down: on
+/// 134672 the pairing below gives 87.1 % of samples a surface against 55.8 %
+/// for the mismatched one and 76.9 % for the other handedness, with the median
+/// ride height unmoved at 0.029 m — and 252289, which was already at 100 %,
+/// is bit-for-bit unchanged by all three.
 pub fn grid_block(cell: (i32, i32, i32), dir: u8, size: (f32, f32), yoff: f32) -> Xform {
     let (sx, sz) = size;
-    // The shift that keeps the turned block on its own cells.
-    let t = match dir & 3 {
-        0 => [0.0, 0.0, 0.0],
-        1 => [sz, 0.0, 0.0],
-        2 => [sx, 0.0, sz],
-        _ => [0.0, 0.0, sx],
+    // dir=1 -> (lx, lz) = (SZ - z, x);  dir=3 -> (z, SX - x).
+    let (steps, t) = match dir & 3 {
+        0 => (0u8, [0.0, 0.0, 0.0]),
+        1 => (3u8, [sz, 0.0, 0.0]),
+        2 => (2u8, [sx, 0.0, sz]),
+        _ => (1u8, [0.0, 0.0, sx]),
     };
-    let local = yaw_quarter(dir, t);
+    let local = yaw_quarter(steps, t);
     let origin = [
         CELL_XZ * cell.0 as f32,
         CELL_Y * cell.1 as f32 + yoff,
@@ -64,13 +91,39 @@ pub fn grid_block(cell: (i32, i32, i32), dir: u8, size: (f32, f32), yoff: f32) -
     compose(&yaw_quarter(0, origin), &local)
 }
 
-/// The transform for a free-placed block or an item: an absolute position in
-/// metres and a yaw in radians. Pitch and roll are carried through when the
-/// record has them.
+/// The transform for a free-placed BLOCK: an absolute position in metres and a
+/// yaw in radians. A free block carries no pivot of its own.
 pub fn free(pos: [f32; 3], rot: [f32; 3]) -> Xform {
-    // The map stores free rotation as (yaw, pitch, roll) in radians. Yaw
-    // dominates on every map this project has looked at; pitch and roll are
-    // composed after it, in that order, about the already-turned axes.
+    turned(pos, rot)
+}
+
+/// The transform for a placed ITEM.
+///
+/// The position names the item's **pivot**, and the pivot comes from the
+/// PLACEMENT rather than from the model: an item may declare several — the
+/// tube `InflatableTubeCurve4` declares two, 28 m apart, and Cobalt Cove uses
+/// a different one at each of the three placements around one corner — and
+/// nothing in the model says which. The map's field is the vector from the
+/// pivot to the model's origin, i.e. minus the model's own pivot (197047's
+/// platform declares `(4, 0, 4)` and every placement of it records
+/// `(-4, 0, -4)`), so it is ADDED.
+///
+/// Placing by the mesh origin instead put 197047's whole run 1.5 m off its
+/// road and cost that map 97 % of its samples.
+pub fn anchored(pos: [f32; 3], rot: [f32; 3], pivot: [f32; 3], scale: f32) -> Xform {
+    let m = turned(pos, rot);
+    let s = if scale > 0.0 { scale } else { 1.0 };
+    if pivot == [0.0; 3] && s == 1.0 {
+        return m;
+    }
+    let inner = [s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, s, pivot[0] * s, pivot[1] * s, pivot[2] * s];
+    compose(&m, &inner)
+}
+
+/// A position and a (yaw, pitch, roll) in radians, as one transform. Yaw
+/// dominates on every map this project has looked at; pitch and roll are
+/// composed after it, in that order, about the already-turned axes.
+fn turned(pos: [f32; 3], rot: [f32; 3]) -> Xform {
     let m = yaw(rot[0], pos);
     if rot[1] == 0.0 && rot[2] == 0.0 {
         return m;
