@@ -27,6 +27,7 @@ best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
 | per-tick engine state on this map | **located, and exact** — reproduces a ghost's own telemetry to a median **0.000 m** |
 | reconstruction from race 0 | speed only: race **12.938 s**, five seeds inside a 0.45 s band. **With a positional gate: 12.380 s** — about half a second of the larger number was bought by driving off the track |
 | where it fails | it leaves the pipe past CP1 at race ≈12.2 and falls 8 m; the speed objective keeps paying it while it falls |
+| the next observable | **tyre wetness** — on screen, in the telemetry, a positional integral, and it separates two human runs at 49 % of instants |
 
 The honest headline is the last line. Everything upstream of the search works,
 and is controlled; the search itself gets a few seconds in and stops.
@@ -311,38 +312,99 @@ corridor can only ever lower a score, never raise one. And it stops being
 evidence where Wirtual reroutes; everything above is inside CP0–CP2, where his
 own narration says he drives the normal way.
 
-## 7. Position — where the geometry stands
+## 7. Position — where the geometry stands, and one gate that does NOT work
 
-`tools/mapgeom` is the positional observable in the long run. Graded here
-against four human replays it covered **60.3–65.1 %** of driven samples with a
-0.25–0.53 m vertical fit — the weak half of its range. The geometry arm has
-since reported that its current head reaches **80.3 % raw / 87.9 % of the
-samples the model owes**, at a **0.101 m** median gap on this exact map and
-replay, which is comfortably enough for a pose solve; that work is not on
-`main` at the time of writing and the numbers in the table above are what this
-box could measure.
+`tools/mapgeom` is the positional observable in the long run. My first grading
+of it here (60.3–65.1 % of driven samples, 0.25–0.53 m fit) was of an older
+build. Re-measured **on this box** against the geometry arm's `mapgeom2`
+(`15db6bf`, fetched over ssh — `origin/main` is stuck at `0836d2c` while the
+render box is down):
 
-Two corrections to what I concluded from the older tool, both from that arm and
-both worth carrying:
+| replay | over a surface, raw | of the samples the model owes | median gap |
+|---|---|---|---|
+| Sapi 88.898 | **80.3 %** | **87.9 %** | **0.101 m** |
+| Bren 105.569 | 79.3 % | 85.1 % | 0.090 m |
+
+That is comfortably enough to fit a pose solve on, and it supersedes the table
+I published earlier. Two corrections from that arm, both worth carrying:
 
 * **The moving blocks were not the cause.** Opening `CPlugDynaObjectModel`
-  moved this map's coverage by 0.2 points, and exactly 1 of 1457 samples rests
-  on one. They are drawn at rest pose and reported separately, never averaged
-  in — a swept hull is worse than useless as a ride-height probe.
+  moved this map by 0.2 points; 1 of 1457 samples rests on one. They are drawn
+  at rest pose and reported separately — a swept hull is worse than useless as
+  a ride-height probe.
 * **What was missing is water, and it is physics rather than a hole.** A car on
-  water sits **0.900 m under** the plane (measured on this map's own 8 m-boundary
-  water planes, four times out of four), so a downward plumb read every water
-  sample as uncovered. `PlatformWaterHFCInsideShort` is this map's internal
-  name and a third of the run is on water — **any position observable derived
-  from this geometry has to carry the same 0.900 m convention**, or a pose solve
-  sits a metre high over every water section.
+  water sits **0.900 m under** the plane. `PlatformWaterHFCInsideShort` is this
+  map's internal name and 9 % of a human run here is over water, so **any
+  position observable derived from this geometry must carry that convention**
+  or it sits a metre high over every water section.
 
-**But the pipe turn is not a water problem, and I checked rather than assuming**:
-ten plumb points along the human line through it return Metal at y 40–42 at
-every point that has a triangle, and two of the ten have none. The failure
-there is the car being off the surface entirely, not on the wrong one.
+The residue is now inflatables (`InflatableMat1mCurve2`, `InflatableTube*`) and
+`RoadWater*` — all of which the map has and the model draws, so they are
+placement gaps rather than missing readers.
 
-## 8. What is banked
+### The general on-surface gate, and why it is a checker and not an objective
+
+The obvious generalisation of §6 is "a candidate with no triangle under it is
+dead", enforced every tick. I built it (`recon onsurface`) and **it fails its
+own control on this map**, in two independent ways:
+
+* **A held-out human fails it.** Bren, plumbed at 24 instants where Sapi is on
+  a surface, is off one at 4 of them — because the model still has holes. A
+  gate that kills 17 % of a real human run is not a gate.
+* **Falling off the track lands you on another surface.** The candidate that
+  leaves the pipe reads `on Concrete` from race 13.8 onward: it is on the floor
+  of the stadium, eight metres below the road, and perfectly "on a surface".
+
+So the honest statement is the narrow one: **on this map the human corridor is
+the working positional constraint and the on-surface test is not.** The
+checker is committed because it is the right test to run before believing a
+geometric gate anywhere — and because a negative that reproduces is worth
+more than an untested idea. On a map with tighter coverage and no floor beneath
+the track it may well work; here it does not, and I would not have known
+without the control.
+
+## 8. What else is in the frames — and the answer for past CP2
+
+The corridor works to CP2 and is silent after it, which is most of the run. So:
+what else does a frame contain that a candidate could be scored against?
+
+The bottom-right HUD carries four readouts, not one. Speed is the one this arm
+used. Beside it are a **gear** digit in a ring, an **RPM arc**, and — in a small
+box — a **tyre-wetness percentage**, seen at 91 %, 43 % and a `Slip` warning at
+three different points of the run.
+
+**Wetness is the one that matters, and it is the answer to the CP2 problem.**
+
+* **It is a positional integral.** Wetness is not a function of the car's state;
+  it is a function of *where the car has been*. Two candidates that agree in
+  speed at an instant but drove different routes to get there have different
+  wetness, and it does not wash out — it persists for seconds and decays.
+* **It is decisive on this map, measured.** Between two human replays of Cobalt
+  Cove, wetness differs by more than 10 percentage points at **870 of 1780
+  shared instants — 49 %**. Speed does not come close to separating them that
+  often. It cycles 0 → 100 → 0 several times per run as the route crosses water.
+* **The run's author says it is the point.** Wirtual's own commentary: *"going
+  into the ending pipe, we do not have wet tyres… whereas if you do it the same
+  way that the world record does, you will cross this water pool on your way to
+  the pipe. So the last part is a wet pipe. That's why he cannot really do the
+  skip that I did."* The reroute this reconstruction cannot yet reach is chosen
+  *for its wetness*.
+* **The simulator has it.** `wetness` is byte 101 of the 116-byte telemetry
+  sample, already decoded (`tmtraj fields`), already exported.
+* **And it is on screen**, so it can be read for the whole run the same way the
+  speed was.
+
+**One thing has to be built before it can be a search objective**, and it is a
+harness limit rather than a physics one: `fk trace`'s per-tick readout is a
+**44-byte window** — clock, quaternion, position, velocity
+(`forkoracle::layout`) — and wetness is not inside it. The engine plainly
+computes wetness, since the recording carries it; the readout simply does not
+reach that far. Widening the window to include it is the task, and it is the
+last piece: with wetness read off the video and out of the engine, the
+objective becomes positional over the *whole* run, including the reroute where
+no human line exists to compare against.
+
+## 9. What is banked
 
 `~/persistent/private-30d/tm-wirtual-perfect/`
 
@@ -360,7 +422,7 @@ recording), **`recon`** (grow a tape against a speed trace), `ghost tape
 script` (an event list to a tape) and `tmtraj csvdiff` (two trajectories on the
 instants they share).
 
-## 9. Attribution
+## 10. Attribution
 
 The run is **Wirtual's**, on **Nadeo's** map, made with **Acepter's**
 Trackmania Input Control Kit. Video:

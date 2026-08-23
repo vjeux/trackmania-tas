@@ -17,7 +17,7 @@
 //! too; it is simply never exercised by the stock blocks on this box.
 
 use crate::node::{Node, Slot};
-use crate::scene::{physics_name, Scene};
+use crate::scene::Scene;
 use crate::store::DataStore;
 use std::collections::HashMap;
 
@@ -109,6 +109,11 @@ pub struct Collector<'a> {
     pub store: &'a mut DataStore,
     pub scene: Scene,
     pub stats: Stats,
+    /// Inside a moving block: triangles collected now are named `(moving)`.
+    moving: bool,
+    /// The pivot of the last item model walked: which point of the mesh a
+    /// placement position names. Zero for anything that carries none.
+    pub pivot: [f32; 3],
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
     /// spin forever.
     max_depth: usize,
@@ -116,12 +121,29 @@ pub struct Collector<'a> {
 
 impl<'a> Collector<'a> {
     pub fn new(store: &'a mut DataStore) -> Collector<'a> {
-        Collector { store, scene: Scene::default(), stats: Stats::default(), max_depth: 24 }
+        Collector {
+            store,
+            scene: Scene::default(),
+            stats: Stats::default(),
+            pivot: [0.0; 3],
+            moving: false,
+            max_depth: 24,
+        }
+    }
+
+    /// The scene group a triangle joins: its physics material, marked when it
+    /// belongs to the hull of a block that moves.
+    fn group_name(&self, phys: u8) -> String {
+        let m = crate::scene::material_name(phys);
+        if self.moving {
+            format!("{} (moving)", m)
+        } else {
+            m
+        }
     }
 
     /// Add everything a file contributes, placed by `at`.
-    pub fn file(&mut self, logical: &str, at: &Xform, depth: usize) {
-        if depth > self.max_depth {
+    pub fn file(&mut self, logical: &str, at: &Xform, depth: usize) {        if depth > self.max_depth {
             self.stats.missing.push((logical.to_string(), "prefab nesting too deep".into()));
             return;
         }
@@ -151,6 +173,14 @@ impl<'a> Collector<'a> {
         let slots = graph.slots.clone();
         self.stats.recovered += graph.recovered.len();
         drop(graph);
+        // The placement param is not reachable from the geometry root — the
+        // item hands its shape to one node and its pivot sits in another — so
+        // it is read off the slot table rather than walked to.
+        for s in &slots {
+            if let Slot::Node(Node::Pivot(p)) = s {
+                self.pivot = *p;
+            }
+        }
         if let Some(n) = root {
             self.node(&n, &slots, at, depth);
         }
@@ -172,6 +202,33 @@ impl<'a> Collector<'a> {
                     self.slot(s.mesh, slots, at, depth);
                 }
             }
+            // A MOVING block. Its surface is somewhere different at every
+            // instant, so there is no pose that is simply correct — and a
+            // swept hull is worse than useless for a ride-height probe,
+            // because a rotor sweeps a disc the car is inside for a few
+            // hundredths of a second and outside for the rest.
+            //
+            // What is drawn here is the block **at its authored rest pose**,
+            // and the moving hull's triangles are named `<material> (moving)`
+            // so that a coverage number can be split rather than averaged. A
+            // sample resting on `(moving)` geometry is a sample whose surface
+            // this model happens to have caught at t = 0 and would not have
+            // caught a tick later; a sample resting on the static half is a
+            // real answer. Where a block gives the same node for both — the
+            // tube does — it is drawn once, as static.
+            Node::Dyna(d) => {
+                if d.static_shape >= 0 {
+                    self.slot(d.static_shape, slots, at, depth);
+                }
+                if d.mesh >= 0 {
+                    self.slot(d.mesh, slots, at, depth);
+                }
+                if d.dyna_shape >= 0 && d.dyna_shape != d.static_shape {
+                    let was = std::mem::replace(&mut self.moving, true);
+                    self.slot(d.dyna_shape, slots, at, depth);
+                    self.moving = was;
+                }
+            }
             Node::Surface(s) => {
                 self.stats.surfaces += 1;
                 for m in &s.meshes {
@@ -184,7 +241,7 @@ impl<'a> Collector<'a> {
                     }
                     self.stats.triangles += m.tris.len();
                     for (phys, tris) in by_mat {
-                        self.scene.add_tris(physics_name(phys), &verts, tris.into_iter());
+                        self.scene.add_tris(&self.group_name(phys), &verts, tris.into_iter());
                     }
                 }
             }
@@ -213,7 +270,8 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
-            Node::Material(..) => {}
+            // The pivot is read off the slot table in `model`, not walked to.
+            Node::Material(..) | Node::Pivot(_) => {}
             Node::Crystal(c) => {
                 self.stats.visual_meshes += 1;
                 for m in &c.meshes {

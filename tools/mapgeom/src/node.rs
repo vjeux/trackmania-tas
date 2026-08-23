@@ -34,6 +34,8 @@ pub const C_VARIANT_LIST: u32 = 0x2F0BC000;
 pub const C_BLOCK_ITEM: u32 = 0x2E025000;
 pub const C_CRYSTAL: u32 = 0x09003000;
 pub const C_COMMON_ITEM_ENTITY_MODEL: u32 = 0x2E027000;
+pub const C_ITEM_PLACEMENT: u32 = 0x2E020000;
+pub const C_DYNA_OBJECT: u32 = 0x09144000;
 
 /// Classes whose node body is a single struct with no chunk framing.
 fn no_body_chunks(class_id: u32) -> bool {
@@ -41,8 +43,9 @@ fn no_body_chunks(class_id: u32) -> bool {
         class_id,
         0x0912F000
             | 0x09144000
-            | C_STATIC_OBJECT
             | 0x09178000
+            | C_STATIC_OBJECT
+
             | 0x0917B000
             | 0x09187000
             | C_PREFAB
@@ -66,6 +69,19 @@ pub struct PrefabEnt {
 #[derive(Clone, Debug, Default)]
 pub struct Prefab {
     pub ents: Vec<PrefabEnt>,
+}
+
+/// `CPlugDynaObjectModel`: a block that MOVES -- a rotor, a turnstile, a
+/// tube, a flag. It carries up to three shapes, and which of them the car can
+/// be standing on is a question the geometry alone cannot answer; see
+/// `geom::Collector`.
+#[derive(Clone, Debug)]
+pub struct DynaObject {
+    pub mesh: i32,
+    /// the hull that moves (a rotor calls it `MoveShape`)
+    pub dyna_shape: i32,
+    /// the hull that does not (a rotor calls it `HitShape`)
+    pub static_shape: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +168,7 @@ pub struct Solid2 {
 pub enum Node {
     Prefab(Prefab),
     StaticObject(StaticObject),
+    Dyna(DynaObject),
     Surface(Surface),
     Solid2(Solid2),
     Visual(Visual),
@@ -163,6 +180,9 @@ pub enum Node {
     /// A material: its name, and the physics id the car feels through it.
     Material(String, u8),
     ItemModel(i32),
+    /// A `CGameItemPlacementParam`: which point of the model a placement's
+    /// position actually names.
+    Pivot([f32; 3]),
     Other(u32),
 }
 
@@ -171,6 +191,7 @@ impl Node {
         match self {
             Node::Prefab(_) => C_PREFAB,
             Node::StaticObject(_) => C_STATIC_OBJECT,
+            Node::Dyna(_) => C_DYNA_OBJECT,
             Node::Surface(_) => C_SURFACE,
             Node::Solid2(_) => C_SOLID2MODEL,
             Node::Visual(_) => C_VISUAL_INDEXED_TRIANGLES,
@@ -178,6 +199,7 @@ impl Node {
             Node::Crystal(_) => C_CRYSTAL,
             Node::Material(..) => C_MATERIAL_USER_INST,
             Node::ItemModel(_) => C_ITEM_MODEL,
+            Node::Pivot(_) => C_ITEM_PLACEMENT,
             Node::Other(c) => *c,
         }
     }
@@ -340,6 +362,9 @@ pub struct Acc {
     pub crystals: Vec<CrystalMesh>,
     pub material_name: String,
     pub physics_id: u8,
+    /// `CGameItemPlacementParam`: the point of the model the map places, in
+    /// the model's own frame.
+    pub pivot: [f32; 3],
     pub touched: bool,
 }
 
@@ -359,6 +384,7 @@ impl Acc {
             crystals: Vec::new(),
             material_name: String::new(),
             physics_id: 0,
+            pivot: [0.0; 3],
             touched: false,
         }
     }
@@ -375,6 +401,7 @@ impl Acc {
                 meshes: self.crystals,
             }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
+            C_ITEM_PLACEMENT => Node::Pivot(self.pivot),
             C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
                 Node::ItemModel(self.entity_model)
             }

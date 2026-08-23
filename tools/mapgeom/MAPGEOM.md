@@ -1,7 +1,9 @@
 # Where a TM2020 map's geometry actually lives
 
-*Written 2026-08-22, from a working extraction. Everything marked **MEASURED**
-was executed and checked against data. Everything else is marked.*
+*Written 2026-08-22 from a working extraction; revised the same day after the
+first corpus run turned out to be measuring a model with half the track in the
+wrong place. Everything marked **MEASURED** was executed and checked against
+data. Everything else is marked.*
 
 Until now every geometry result in this project was *inferred*: a deck height
 from 35 plumb probes, a route from the block graph, "the ice IS the road" from
@@ -16,16 +18,53 @@ tools/mapgeom            the crate
 mapgeom map M.Map.Gbx --out m.glb --png m.png --ghost G.Ghost.Gbx
 
 # fit the map height and GRADE the model: how far above the surface the
-# car sat, and what the surface was
+# car sat, what the surface was, and what is MISSING
 mapgeom check M.Map.Gbx --ghost G.Ghost.Gbx
+
+# every stretch of a run the model has nothing under, and how far the nearest
+# triangle is -- absent, or merely too narrow
+mapgeom holes M.Map.Gbx --ghost G.Ghost.Gbx --yoff -64
+
+# every record the map places near a point, and where each one landed
+mapgeom where M.Map.Gbx --at 777.8,328.9 --yoff -64
+
+# the whole corpus in one batch, and the before/after table
+mapgeom corpus --root ~/persistent/private-30d/tm-unbeaten --out ./run --jobs 12
+mapgeom compare --before ./corpus-check --after ./run
 
 # every surface in one vertical column -- a plumb probe, without the engine
 mapgeom plumb M.Map.Gbx --at X,Z --yoff N
 
 # what a map carries inside itself, and what one of those models is
 mapgeom items M.Map.Gbx --out ./emb
-mapgeom dump  ./emb/3-1-1-5-Ice-Light.Block.Gbx
+mapgeom dump  ./emb/3-1-1-5-Ice-Light.Block.Gbx [--body raw.bin]
 ```
+
+---
+
+## 0. What changed, and why the first numbers were wrong
+
+The first version of this document reported that 31 of 33 maps fitted a height,
+that 20 of them put the car within a quarter of a metre of the model, and that
+the rest were a **coverage** problem — the model missing surface. Two of those
+three claims were wrong, and the third was right for the wrong reason.
+
+**The largest single defect was in twelve lines of placement code.** A block
+turned a quarter or three quarters of the way round has to be shifted back onto
+its own cells after the rotation, and the shift was paired with the wrong
+rotation. `dir = 0` and `dir = 2` blocks were exactly right; **every `dir = 1`
+and `dir = 3` block was placed one whole footprint away.** That is invisible to
+a height fit — the misplaced blocks are at the correct HEIGHT, which is all the
+fit scores — and it is invisible in a top-down picture unless you already know
+what the track is supposed to look like. It took roughly a third of every run
+off the model.
+
+Four more defects, each found by asking the same question — *what does the map
+say is here, and did that model produce any triangles?* — are in §3 and §5.
+
+**And the metric itself was measuring the wrong thing.** "Samples with a
+surface beneath them" counts a car twelve metres in the air as a hole in the
+model. §4 replaces it.
 
 ---
 
@@ -38,9 +77,10 @@ mapgeom dump  ./emb/3-1-1-5-Ice-Light.Block.Gbx
 | the map's own chunk `0x03043054` | a ZIP of the **custom items and blocks** the author embedded | `embedded` |
 | a custom model's `CPlugCrystal` / `CPlugSolid2Model` | the authored **mesh**, with a material that carries a physics id | `classes` |
 
-The first three are all needed. Leave out the decoration and 173691 has nothing
-where its car comes to rest. Leave out the embedded models and 134672 — whose
-track is a custom ice ribbon — has 5 % of its run over any surface at all.
+All four are needed. Leave out the decoration and 173691 has nothing where its
+car comes to rest. Leave out the embedded models and 134672 — whose track is a
+custom ice ribbon — has 5 % of its run over any surface at all, and 197047 has
+2.6 %.
 
 ### What is NOT there
 
@@ -104,14 +144,14 @@ like "the pack does not have it" (it cost an hour here).
 
 ---
 
-## 3. Block → triangles
+## 3. Block → triangles, and where a block model actually lives
 
 ```
 CGameCtnBlockInfoClassic (.EDClassic.Gbx)
   reference table names its .Prefab.Gbx files
     CPlugPrefab            entities, each with a quaternion and a position
       CPlugStaticObjectModel     mesh (visual) + shape (collision)
-        CPlugSurface             TRIANGLES + EPlugSurfacePhysicsId per face
+        CPlugSurface             TRIANGLES + EPlugSurfaceMaterialId per face
         CPlugSolid2Model         visual mesh, via CPlugVisual + CPlugVertexStream
 ```
 
@@ -119,16 +159,30 @@ A prefab tree is deep and crosses files: `RoadDirtTiltCurve3` is two prefabs,
 one of which holds 51 entities of its own, and the walk touches 85 files to
 produce 24 064 triangles for one 3×3 block.
 
-**Variant selection is not implemented.** A block info names the prefabs of
-every variant (ground, air, and the numbered extras) and this takes the union.
-That is more than any single placement shows, and it is safe for the question
-the model answers — the variants differ in what is *under* the road, not in
-where the road is — but it is the first thing to fix. Doing it properly means
-walking `0x0304E023 / 0x0304E027 / 0x0304E02C` → `CGameCtnBlockInfoVariant`
-`0x0315B005` → `CGameCtnBlockInfoMobil` `0x03122003`, which is a dozen more
-chunk readers.
+### A block name resolves through FIVE families, not one — MEASURED
 
-### Placement — MEASURED
+Looking only in `GameCtnBlockInfoClassic` left **125 537 placements across the
+33-map corpus with no geometry at all**, 92 619 of them `DecoWallBasePillar`.
+The pack has five block-info folders and the extension changes with the folder:
+
+| family | extension | what is in it |
+|---|---|---|
+| `GameCtnBlockInfoClassic` | `.EDClassic.Gbx` | roads, walls, platforms |
+| `GameCtnBlockInfoPillar` | `.EDClassic.Gbx` | the supports under everything (103 Stadium entries) |
+| `GameCtnBlockInfoFlat` | `.EDFlat.Gbx` | the terrain sheet — Stadium has `Grass`; the other environments add `Water`, `Lake`, `Sea`, `Dirt`, `Land` |
+| `GameCtnBlockInfoFrontier` | `.EDFrontier.Gbx` | cliffs and hills |
+| `GameCtnBlockInfoTransition` | `.EDTransition.Gbx` | the joins between them |
+
+Classic and Pillar each carry a `Theme\` subfolder holding 122 more models —
+`SnowRoadStraight`, `RallyCastleRoadStraight` — which are otherwise invisible.
+
+**A map's block list is also not only blocks.** The gates, the rotors and the
+seasonal props are ITEMS placed on the grid, so a name that resolves as neither
+a block nor an embedded model gets one more lookup as an item.
+
+On 134672 this took "342 placements of 14 models had no geometry" to 82.
+
+### Placement — MEASURED, and it was wrong
 
 ```
 world = (32*cx + lx,  8*cy + yoff + y,  32*cz + lz)
@@ -138,72 +192,92 @@ dir=1: (lx,lz) = (SZ - z, x)          dir=3: (z,      SX - x)
 ```
 
 clockwise looking down, with `SX × SZ` the block's footprint in whole 32 m
-cells. The footprint is read off the model's own geometry with a 15 % overhang
-tolerance rather than from its unit list — good enough on everything measured,
-and the honest place to look first if a map ever comes out visibly wrong.
+cells. **The code did not implement this.** The shift that puts a turned block
+back on its own cells was paired with the opposite quarter turn, so `dir = 1`
+and `dir = 3` landed one footprint away — and `dir = 0` and `dir = 2`, which
+cannot tell the two pairings apart, stayed exactly right.
 
-`yoff` is per map. It is **fitted**, not supplied: `mapgeom check` sweeps whole
-8 m rows and keeps the one where the most samples of a run share a ride height
-(§4). On map 2 it lands on **−120**, which is the value the earlier arm
-calibrated by hand — an independent confirmation of both.
+Measured, on 134672, all three pairings at the same fitted height:
+
+| pairing | samples over a surface | median ride height | p90 |
+|---|---|---|---|
+| the shipped one | 55.8 % | 0.030 m | 2.521 m |
+| the other handedness | 76.9 % | 0.033 m | 1.044 m |
+| **the one above** | **87.1 %** | **0.029 m** | **0.287 m** |
+
+and 252289, which was already at 100 %, is unchanged by all three. That is what
+makes it a measurement rather than a preference: **the accuracy does not move,
+the coverage triples, and the map that had nothing to gain gains nothing.**
+
+**A FREE placement names the model's PIVOT, not its origin.**
+`CGameItemPlacementParam` chunk `0x2E020001` carries it. 197047's whole 100 s
+run is driven on 75 placements of one 8 × 8 platform whose mesh runs 0..8 in x
+and z with a pivot at its centre, `(4, 0, 4)`; placing it by the corner put
+every one of them 1.5 m from the car. A GRID placement is not shifted — the
+cell is the anchor.
+
+`yoff` is per map. It is **fitted**, not supplied (§4.2). On map 2 it lands on
+**−120**, the value the earlier arm calibrated by hand.
+
+### Variant selection is still not implemented
+
+A block info names the prefabs of every variant and this takes the union. It is
+the first thing left to fix; see §7.
 
 ---
 
 ## 4. Does the car sit on it? — the grading, MEASURED
 
-A model that looks plausible and puts the car three metres under the track is
-worse than no model, and a rendering cannot tell you which one you have. So
-`mapgeom check` drops a plumb line from every ghost sample, takes the highest
-triangle below it, and reports the distribution of `sample.y − surface.y` plus
-the physics material the car was over. It also *fits the map's height* from the
-same measurement (§4.2).
+### 4.1 The question the first metric could not answer
 
-### 4.1 Thirty maps
+`check` used to report *how many ghost samples have a surface within reach
+beneath them*, and treat the rest as holes in the model. On a map driven with
+big air that is simply false: a car twelve metres above a road the model DOES
+have is not a coverage failure, and a car on the inside of a loop has its road
+beside it rather than under it.
 
-Every map in `tm-unbeaten` with a map file and a ghost — 33 maps, one rank-1
-ghost each, no cherry-picking, run in one batch. Full output is banked at
-`~/persistent/private-30d/tm-mapgeom/corpus-check/`.
+Two things fix that and **neither of them is the model**:
 
-**Thirty-one of the thirty-three fitted a height at all. Twenty of those put
-the car within a quarter of a metre of the model, and sixteen within 0.09 m:**
+* **Ask the recording whether the car was touching anything.**
+  `is_ground_contact` is a DERIVED bit that nothing in this project had
+  cross-checked, so it is used **with its control printed beside it**: `vy` is
+  VERIFIED, and differentiating it gives the map's own gravity — about
+  −24.6 m/s² — in free flight against near zero under support.
+* **Probe along the car's own down axis, not straight down.** The quaternion is
+  VERIFIED too. On flat ground the two are the same question; on a loop only
+  one of them is right. Its control is printed too: the median angle between
+  the car's up axis and world up, which reads **0.6°** on the flat 252289 and
+  **12.0°** on 134672, driven permanently sideways on an ice ribbon.
 
-| gap median | n | maps |
-|---|---|---|
-| 0.009 - 0.086 m | 16 | 197047, 252289, 208024, 134672, 279197, 285268, 203330, 279209, 199100, 153527, 270051, 227969, 126859, 267460, 284238, 270053 |
-| 0.13 - 0.24 m | 4 | 146612, 227654, 286279, 203072 |
-| 0.34 - 0.62 m | 4 | 238835, 274191, 267859, 145875 |
-| 1.0 - 3.4 m | 7 | 285885, 210218, 279218, 228811, 228607, 191465, 249521 |
-| no height fits at all | 2 | 173636, 186935 |
+**The control fired, on the first corpus run that used it.** On 153527 the
+contact bit reads `false` on all 85 809 samples — and the mean vertical
+acceleration of that supposedly airborne population is **0.0 m/s²**, a car
+sitting on a road. Trusting it left the height fit with nothing to score and
+the map died with *"no map height puts this run on a surface"*, on a map it had
+been fitting to four centimetres. So the bit now has to earn its use: if the
+population it calls airborne does not fall at gravity, it is **rejected for
+that recording** and the free-fall measurement stands in. Rejected on 153527,
+286279 and 284238; used everywhere else; every run says which.
 
-A run over its own road reads like this — 153527, 85 811 samples:
+Every sample is then one of four things, and only one of them is a hole:
 
-```
-  yoff -64  (2 152 875 triangles indexed)
-  54 748/85 811 samples over a surface (63.8 %)
-  gap below the car   median 0.044 m   p10 0.013   p90 0.206   +/-0.020 m
-  driven over         Asphalt 72%, Grass 22%, ...
-```
+| class | meaning |
+|---|---|
+| `Resting` | standing on the model, within 0.25 m |
+| `Loose` | supported by something the model has, further off than a car rests |
+| `Airborne` | the recording says in flight — **the model owes nothing here** |
+| `Missing` | the recording says standing on something and the model has nothing there — **this is the coverage failure** |
 
-Four centimetres, held to ±0.020 m over fifty thousand samples, is the model
-and the run agreeing to the width of a tyre.
+**The first thing this measured, and it is a negative result.** On 134672 —
+the map vjeux looked at and asked why the car drives over black — 525 of the
+562 samples with no surface were samples the recording says were **in contact**.
+Only 72 were airborne. The honest coverage was 55.6 % against the raw 55.8 %:
+the black was not air, it was a hole, and the hole was the placement bug above.
 
-**The large-gap maps are a COVERAGE result, not a placement error.** Their
-windows are loose (±0.3 to ±1.4 m, against ±0.02 for the tight ones) and their
-"driven over" is Grass — the stadium floor. That is the probe reporting that
-the model has nothing where the car was and it found the ground instead. The
-next thing to build is named by that list, not guessed at.
+### 4.2 Fitting the map height, and three criteria, two of them confidently wrong
 
-Two independent confirmations that the frame itself is right:
-
-* **map 2 fits `yoff = −120`**, the value the earlier arm calibrated by hand.
-* **134672's custom ice ribbon**: `RoadIce 78 %` under the car at 0.030 m
-  (§5) — the model reproduces a surface that exists only inside that map file.
-
-### 4.2 Fitting the map height, and two criteria that were confidently wrong
-
-`world_y = 8*cy + yoff`, and `yoff` is per map. It is fitted here rather than
-supplied, and the *criterion* is the whole game — both wrong ones produce a
-tight, confident, wrong answer:
+`world_y = 8*cy + yoff`, and `yoff` is per map. The *criterion* is the whole
+game — the wrong ones produce a tight, confident, wrong answer:
 
 1. **"How many samples have anything under them."** Grass is everywhere, so
    this picks whichever height drops the run onto the stadium floor. On 134672
@@ -216,13 +290,19 @@ tight, confident, wrong answer:
    sits under the road: 146612 fitted −16 and reported a rock-steady
    **2.048 m ± 0.022**, which is a consistent wrong answer and looked exactly
    like a real finding for about an hour.
+3. **"How many samples are RESTING — within 0.25 m of a surface, straight
+   down."** Anchored at zero, and it got 31 of 33 maps right. But it counts
+   flight samples that a wrong height happens to catch, and it cannot see a
+   road the car is on the side of.
 
-The criterion that works is anchored at zero: **how many samples are RESTING —
-within 0.25 m of a surface.** A car rests centimetres above what it is on.
+What is used now is (3) with the two corrections of §4.1: **only the samples
+the recording says were standing on something, probed along the car's own down
+axis.** A car rests centimetres above what it is on; measured ride heights run
+0.013–0.073 m.
 
 The sweep is two passes, whole 8 m cell rows and then metre by metre, because
-nothing guarantees a map's height is a whole number of cells — and 252289 fits
-−60 with a 0.017 m gap over 100 % of its samples, so it is not.
+nothing guarantees a map's height is a whole number of cells — 252289 fits −60
+with a 0.017 m gap over 100 % of its samples, so it is not.
 
 ### 4.3 The independent cross-check — 173691's canopy deck
 
@@ -242,16 +322,35 @@ spanning 115 m — and only once the decoration map is loaded; without it that
 column holds nothing below 180 m. The car rests 0.62 m above it, against the
 0.45 m that map's road gives, so the two agree to about 0.2 m.
 
+### 4.4 The physics material table was wrong from id 26 up
+
+`EPlugSurfaceMaterialId` is enumerated in the game's own class reference
+(`next.openplanet.dev/MetaNotPersistent/GmSurfaceIds`). Transcribed from there,
+ids 0–25 matched what this crate had inferred and **everything from 26 on did
+not.** Two of the errors were not cosmetic:
+
+* 27 was called `RoadIce`. 27 is `Bumper_Deprecated`; **RoadIce is 74**, which
+  the old table had no name for at all. So the previous headline "134672's ice
+  ribbon reads `RoadIce 78 %`" was carried entirely by the map's EMBEDDED
+  blocks, whose material is a *link* and takes its name from the link path —
+  the stock collision beside it was reading as an unnamed id. With the real
+  table the two agree and the map reads **`RoadIce 97 %`**.
+* 28 was called `Bumper`. **28 is `NotCollidable`.** Triangles the car cannot
+  touch were eligible to be the surface underneath it.
+
+So the probe index now leaves `NotCollidable` and `OffZone` out. Measured
+effect on this corpus: **nothing** — no map has a sample resting on either,
+which is worth knowing and is not the same as not having checked. An id past
+the end of the enum prints as `Unknown(74)` rather than a bare `Unknown`,
+because a class of ids is not a diagnosis and the number is free.
 
 ---
 
-## 5. Custom items and blocks — the positive control
+## 5. Custom items and blocks — the positive control, and three ways to lose one
 
 A map's own models come out of chunk `0x03043054`: a length-prefixed block
-holding `filesMeta`, a ZIP, and a texture list. 134672 carries 17 files.
-
-The map spells an embedded block `FlinkIceBlocks\3-1-1-1-Ice-Light.Block.Gbx_CustomBlock`;
-the zip holds `Items/FlinkIceBlocks/3-1-1-1-Ice-Light.Block.Gbx`.
+holding `filesMeta`, a ZIP, and a texture list. 134672 carries 17 files, 210218
+carries 83.
 
 Two model formats turn up, and **both produce triangles** — which is what makes
 "the stock pack has no visual meshes" a statement about the pack:
@@ -261,12 +360,39 @@ Two model formats turn up, and **both produce triangles** — which is what make
 | `3-1-1-5-Ice-Light.Block.Gbx` | `CGameBlockItem` → `CPlugCrystal` | 13 628 triangles, 11 946 of them `RoadIce` |
 | `coconut.Item.gbx` | `CGameCommonItemEntityModel` → `CPlugStaticObjectModel` → `CPlugSolid2Model` → `CPlugVertexStream` | 80 triangles, 54 vertices, `Concrete`, bounds 2.3 × 2.4 × 2.4 m |
 
+Those two are the standing control: every reader change in this document was
+checked against them and neither number moved.
+
+**Three separate ways an embedded model was being lost**, all found by looking
+at the map with the worst coverage and asking what the map says is under the
+car:
+
+1. **The zip's container folder is not always `Items/`.** 197047 stores its
+   models under `Blocks/`, so both of them resolved to nothing and the map read
+   **2.6 %**. The map's spelling is now matched as a *suffix* of the zip path —
+   shortest match, because that map carries the same platform under
+   `…/StupsKiesel/MiniPlatform/…` and `…/StupsKiesel/StupsKiesel/MiniPlatform/…`
+   and the shorter name is a suffix of both.
+2. **`CGameBlockItem` version 1 hides its geometry in a second table.** A v1
+   block hands out a NULL node in its variant list and puts the shape in a
+   table after it: a byte saying the table is present, then per variant a byte
+   of flags, then whichever of mesh / collision hull / box / offset it claims.
+   The reader had been written with no v1 file to check against and read that
+   byte as a 32-bit word, so it stepped two bytes late into a garbage node
+   reference and the file failed to open at all. **210218's track is 83
+   embedded wood platforms and every one was lost that way** — the map fitted
+   −62 with the car 2.171 m above the model.
+3. **`CPlugVisual3D`'s inline vertex array is an ALTERNATIVE to a vertex
+   stream.** The condition that chose the 40-byte inline form did not check for
+   a stream, so on a visual that had one it ate 40 bytes per vertex of the next
+   thing in the file. That is why 210218's ice-and-wood blocks could not be
+   opened either.
+
 `CPlugCrystal` is the editor's editable mesh: vertices, n-gon faces, a material
 index per face. `CPlugMaterialUserInst` carries `surfacePhysicId`, the same
 enum a stock block's collision triangles carry — so a custom mesh is coloured by
-what the car *feels*, and 134672's custom ribbon reads as `RoadIce` beside a
-stock one. Where the material only LINKS a Nadeo material it has no id of its
-own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
+what the car *feels*. Where the material only LINKS a Nadeo material it has no
+id of its own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
 
 ---
 
@@ -277,46 +403,71 @@ own, and the link's own name is used (`Stadium\Media\Material\RoadIce`).
   byte-exactly. A chunk whose length is not written down cannot be stepped
   over, and guessing desynchronises the walk into somebody else's floats —
   which still produce numbers. `mapgeom` names the class and the chunk and
-  stops. `MAPGEOM_TRACE=1` prints every step of the walk, which is how a new
-  chunk reader gets written in minutes rather than by bisection.
+  stops. `MAPGEOM_TRACE=1` prints every step of the walk and `dump --body`
+  writes the decompressed body out, which is how every chunk layout in §5 was
+  read: find where the walk stopped, find the *next* thing whose shape you
+  already know (a prefab entity's identity quaternion and its `-1` parameter
+  chunk are unmistakable), and the bytes between them are the record.
+* **A reader written against no example is a guess wearing a reader's clothes.**
+  Both §5.2 and §5.3 were code that had never met the case it handled. Neither
+  failed quietly — that part of the design works — but neither was true either,
+  and both sat there being the reason a whole map was empty.
 * **`GbxLoc` is 28 bytes** (a position and a quaternion), not the 48 of an
   `Iso4`. Reading it as an `Iso4` inside a prefab's placement-group parameters
   swallows the rest of the file, and the failure surfaces as *"this prefab ends
   early"* one entity later. 131 prefabs failed this way.
 * **`CGameItemModel`'s waypoint chunk `0x2E00201F` is at version 13** in this
   pack; the community spec documents up to 12, and 13 drops the
-  `scriptWithSettings` node reference. Read off the bytes and checked against
-  every item in the pack.
+  `scriptWithSettings` node reference.
 * **A `Float3` vertex declaration is packed to `Dec3N` only in LOCAL 3D space.**
-  Positions are Global3D and stay full floats. Applying the packing to a
-  position reads a mesh's coordinates out of the wrong bytes and produces a
-  plausible-looking small mesh.
+  Positions are Global3D and stay full floats.
 * **The decoration `.Map.Gbx` files are ENCRYPTED in the pack** — nearly
   everything else carries ForceNoCrypt. The same pack key opens them.
-* **Terrain blocks are not in the Stadium pack under their map names.**
-  `Water`, `Grass`, `Bush`, `DirtCliff*` and friends have no
-  `GameCtnBlockInfoClassic` entry; on map 2 that is 4 274 placements of 39
-  models. They are terrain/decoration and are simply absent from the model.
-  `Water` matters for 284238 and 210218 and is unfinished work.
+* **A blame that says `(has geometry)` is a different problem from one that
+  does not.** `mapgeom check` names the block under every hole and marks
+  whether that model produced any triangles anywhere. No triangles means a
+  reader or a lookup is missing; triangles somewhere else means a PLACEMENT
+  problem, and those are the ones worth an hour.
 
 ---
 
 ## 7. What is still missing
 
-1. **Eleven maps of thirty-three where the run does not sit on the model**
-   (§4.1), and two where no height fits at all. Their windows are loose and their
-   "driven over" is Grass, so the model is missing the surface those runs are
-   on. That list is the next thing to work through, in order.
-2. **Block variant selection** (§3). The union of all variants is drawn.
-3. **Terrain blocks** — `Water` above all: on map 2 that is 2 568 placements.
-4. **The vertex stream's layout after the Position array.** On a 54-vertex
-   stream the normals start 4 bytes later than the declarations predict. The
-   reader takes the positions, then scans to the node terminator and *reports*
-   the recovery rather than guessing; normals and UVs are not read. Triangles
-   and materials are unaffected.
-5. **Stock visual meshes**, which need the game client's packs (§1).
-6. **The footprint heuristic** (§3) should be the block's unit list.
+Each of these is named by a measurement, not guessed at. The per-map detail is
+in the run directory's transcripts.
+
+1. **Water roads put the drivable surface about a metre below the modelled
+   water plane.** On 227654 the whole 112-sample hole is `RoadWaterStraight`,
+   and `holes` reports the nearest triangle at **0.53–0.98 m, material Water** —
+   the surface is there, the car is under it. Same signature on Cobalt Cove
+   (TMX 203169) and 228607. This is a modelling question — which triangle of a
+   water road is the one the car rides on — not a missing-geometry one, and it
+   is the largest remaining single cause.
+2. **Block variant selection.** The union of every variant is drawn. Safe for a
+   height probe and wrong for a picture, and it may also be *adding* surface
+   where a placement has none. Doing it properly means walking
+   `0x0304E023 / 0x0304E027 / 0x0304E02C` → `CGameCtnBlockInfoVariant`
+   `0x0315B005` → `CGameCtnBlockInfoMobil` `0x03122003`.
+3. **`VegetTreeModel` (class `0x2F086000`) has no reader** — 1 800 placements of
+   `WinterFrozenTree` and 536 of `FirSnowTall` on 210218 alone. Trees are
+   almost certainly not collidable, so this is probably worth nothing to
+   coverage; it is listed because the count is large enough to look alarming in
+   a transcript and it should not be mistaken for track.
+4. **Two crystal layer types, 13 and 18**, and `Flag.DynaObject.Gbx`
+   (`0x09144000`), `ObstacleTube` / `ObstacleRotor` / `ObstacleTurnstile`
+   `.DynaObject.Gbx`, and `KinematicConstraint` (`0x2F0CA000`). The obstacles
+   matter on maps built out of them (208024's rotors); the lights and flags do
+   not.
+5. **The footprint heuristic** (§3) reads a block's cell size off its own
+   geometry with a 15 % overhang tolerance. It should be the block's unit list,
+   and it feeds the `dir` shift, so an error there moves a whole block.
+6. **Stock visual meshes**, which need the game client's packs (§1). Not wanted
+   for this project: collision is the surface the car is on.
 7. **`yoff` from the decoration** rather than from a fit. The decoration names
    a `CGameCtnDecorationSize` (`0x0303B000`) which almost certainly carries the
    base height; its one chunk has no reader yet. That would remove the need for
    a ghost to build a model at all.
+8. **285885 is the one map still unexplained.** It fits −113 with the car
+   1.02 m above the model and 14.5 % of samples over a surface, and the blame
+   for 788 of its holes is *"no block or item in that cell"* — the run is over
+   cells the map file does not fill. Everything it does place resolves.

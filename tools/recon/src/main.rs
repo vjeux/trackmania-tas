@@ -24,6 +24,7 @@
 //! one `fk trace`; they are independent and run in parallel.
 
 mod corridor;
+mod onsurface;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -318,8 +319,39 @@ fn mutate(
     e
 }
 
+/// `recon onsurface` -- a CHECKER, deliberately not a search objective. It asks
+/// the map whether the car had anything under it, beside a human run at the
+/// same instants, because the model has holes and "no surface" only means
+/// something where a real run has one.
+fn cmd_onsurface(a: &[String]) {
+    let get = |k: &str, d: &str| -> String {
+        a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned().unwrap_or(d.into())
+    };
+    let map = get("--map", "map.Map.Gbx");
+    let yoff = get("--yoff", "-64");
+    let mg = get("--mapgeom", "mapgeom");
+    let (from, to, every) = (
+        get("--from-ms", "8000").parse().unwrap(),
+        get("--to-ms", "16000").parse().unwrap(),
+        get("--every-ms", "200").parse().unwrap(),
+    );
+    let drop_max: f64 = get("--drop-max", "3.0").parse().unwrap();
+    let cand = onsurface::load_traj(&get("--candidate", ""), from, to, every).expect("candidate");
+    let human = onsurface::load_traj(&get("--human", ""), from, to, every).expect("human");
+    let hp = onsurface::plumb(&mg, &map, &yoff, &human, drop_max).expect("plumb human");
+    let cp = onsurface::plumb(&mg, &map, &yoff, &cand, drop_max).expect("plumb candidate");
+    let href: BTreeMap<i64, bool> =
+        human.iter().zip(&hp).map(|(s, r)| (s.race_ms, r.is_some())).collect();
+    let mut o = std::io::stdout();
+    onsurface::report(&get("--label", "candidate"), &cand, &cp, &href, &mut o);
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
+    if a.first().map(|x| x.as_str()) == Some("onsurface") {
+        cmd_onsurface(&a[1..]);
+        return;
+    }
     let get = |k: &str, d: &str| -> String {
         a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned().unwrap_or(d.into())
     };
