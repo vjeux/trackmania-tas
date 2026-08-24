@@ -5,3 +5,6 @@
 2026-08-24T20:34:31Z	alarm	id=disk_filling	detail=380543 MB free, falling 7740.4 MB/min — empty in 49m
 2026-08-24T20:35:31Z	sample	evals=1162	worker_alive=1	node=42504	best=92	disk_free_mb=381581
 2026-08-24T20:36:31Z	sample	evals=1182	worker_alive=1	node=42504	best=112	disk_free_mb=381533
+2026-08-24T20:37:31Z	sample	evals=1182	worker_alive=1	node=42504	best=112	disk_free_mb=381529
+2026-08-24T20:38:31Z	sample	evals=1182	worker_alive=1	node=42504	best=112	disk_free_mb=381526
+2026-08-24T20:38:31Z	run_stop	why=stop file	node=42504
