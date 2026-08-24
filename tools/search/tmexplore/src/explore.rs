@@ -152,6 +152,7 @@ impl<'a> Explorer<'a> {
                 live: None,
                 visits: 0,
                 seen: 1,
+                cursor: 0,
             },
         );
         Ok(())
@@ -409,6 +410,7 @@ impl<'a> Explorer<'a> {
                     live: None,
                     visits: 0,
                     seen: 1,
+                    cursor: 0,
                 },
             );
             if kept {

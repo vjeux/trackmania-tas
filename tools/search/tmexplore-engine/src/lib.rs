@@ -37,8 +37,20 @@ use tmexplore::action::Input;
 use tmexplore::branch::{Progress, Route};
 use tmexplore::outcome::Verdict;
 
+pub mod fork;
 pub mod oracle;
+pub mod route;
+
+/// Tick -> `lroundf` clock, re-exported so the adapters do not each carry a copy
+/// of the fitted line. The fit is PER MAP and this one is map 2's; it only has
+/// to place a checkpoint near the right instant, because where the server
+/// actually stops is probed and is what every tick is labelled from.
+pub fn clock_for_tick_public(tick: i64, start_offset_ms: i32) -> u64 {
+    tmsearch::forkeval::clock_for_tick(tick, start_offset_ms)
+}
+pub use fork::{ForkBranch, ForkOpts};
 pub use oracle::EngineOracle;
+pub use route::{BRoute, MapPack};
 
 /// A route as a tab-separated file, until agent B's own format lands.
 ///
@@ -180,17 +192,44 @@ pub struct Paths {
     pub work: PathBuf,
 }
 
-/// Turn a `SimResult` into a `Verdict`, refusing to read a declaration as a
-/// simulation.
+/// Turn a `SimResult` into a `Verdict` — or refuse.
 ///
-/// This is three lines and it has its own function because a sixth copy of
-/// this parser, with no sanity bound on the time it accepts, was one of the
-/// defects found in the last audit of this layer. The rule: `time_ms` is what
-/// the server SIMULATED and `declared_ms` is what the FILE CLAIMS, and a
-/// careless parser reads the second one as a finish on a DNF.
-pub fn verdict_of(r: &ghost::oracle::SimResult) -> Verdict {
-    match r.time_ms {
-        Some(ms) => Verdict::Finish { ms },
-        None => Verdict::Dnf { cps: r.cps.unwrap_or(0) },
+/// # `None` is not a DNF, and this function exists because I collapsed them
+///
+/// The first real run on a campaign map reported `Dnf { cps: 0 }` for every
+/// tape. It was not driving: the container carried another map's uid and the
+/// server answered **`"Can't load map"`, `ValidatedResult: null`** — a
+/// container fault. Folded into `cps: 0` it looks exactly like a car that
+/// drove and collected nothing, and a search scoring it that way is optimising
+/// a broken pipeline.
+///
+/// So a refusal is an `Err` here and fails closed. The seven-ish descriptions
+/// that ARE a simulation are listed positively rather than the refusals being
+/// listed negatively: a new refusal reason should read as a refusal, not slip
+/// through as a DNF.
+///
+/// Note the trap right next to it: **`wrong simu` with nothing appended IS a
+/// DNF with zero checkpoints**, not a refusal. It sits one branch away from
+/// `wrong simu, but reached some checkpoints (N out of M)`.
+pub fn verdict_of(r: &ghost::oracle::SimResult) -> Result<Verdict, String> {
+    if let Some(ms) = r.time_ms {
+        // 4294967295 is the "never crossed the line" sentinel, not a finish.
+        if ms >= 0 && ms < 4_000_000_000 {
+            return Ok(Verdict::Finish { ms });
+        }
+        return Err(format!("the server reported the never-crossed sentinel {}", ms));
+    }
+    let d = r.desc.to_ascii_lowercase();
+    let simulated = d.starts_with("wrong simu")
+        || d.contains("reached some checkpoints")
+        || d.contains("race finished")
+        || d.contains("time is worse");
+    if simulated {
+        Ok(Verdict::Dnf { cps: r.cps.unwrap_or(0) })
+    } else {
+        Err(format!(
+            "the server DECLINED this file ({:?}); that is a container fault, not a DNF",
+            r.desc
+        ))
     }
 }

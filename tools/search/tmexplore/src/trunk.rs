@@ -24,6 +24,8 @@ struct Seg {
 /// The tree of committed input prefixes.
 pub struct Trunk {
     segs: Vec<Seg>,
+    /// The root's own tape, when the search was seeded from a banked run.
+    seed: Vec<Input>,
 }
 
 impl Default for Trunk {
@@ -42,6 +44,7 @@ impl Trunk {
                 end_tick: 0,
                 depth: 0,
             }],
+            seed: Vec::new(),
         }
     }
 
@@ -87,6 +90,9 @@ impl Trunk {
             end
         );
         let mut out = vec![Input::NEUTRAL; end as usize];
+        for (i, v) in self.seed.iter().enumerate().take(end as usize) {
+            out[i] = *v;
+        }
         let mut cur = Some(id);
         while let Some(c) = cur {
             let s = self.segs[c as usize];
@@ -157,5 +163,31 @@ mod tests {
         let t = Trunk::new();
         assert_eq!(t.end_tick(Trunk::ROOT), 0);
         assert!(t.inputs_to(Trunk::ROOT, 0).is_empty());
+    }
+}
+
+impl Trunk {
+    /// A tree whose ROOT already holds a tape.
+    ///
+    /// This is how a search restarts from a banked result instead of from the
+    /// grid. The first confirmed run on *Summer 2026 - 01* collected all three
+    /// checkpoints and stopped 417 m from the finish; continuing the ordinary
+    /// search re-explores those 1483 m on every node, which is work whose
+    /// answer is already on disk.
+    ///
+    /// The seed is OUR OWN previous output, re-simulated by the plain oracle
+    /// before it was banked. Building on it is regression-testing our own work,
+    /// not consulting a reference.
+    pub fn with_seed(seed: Vec<Input>) -> Trunk {
+        let n = seed.len() as u32;
+        Trunk {
+            segs: vec![Seg {
+                parent: None,
+                m: Macro { input: Input::NEUTRAL, k: 0 },
+                end_tick: n,
+                depth: 0,
+            }],
+            seed,
+        }
     }
 }

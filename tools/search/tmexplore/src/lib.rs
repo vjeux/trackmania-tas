@@ -49,6 +49,8 @@ pub mod archive;
 pub mod branch;
 pub mod explore;
 pub mod outcome;
+pub mod parallel;
+pub mod prune;
 pub mod rng;
 pub mod toy;
 pub mod trunk;

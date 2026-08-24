@@ -13,7 +13,7 @@ RUNG 0  (synthesizing a container with no human provenance)
   tmauto synth probe --map MAP.Map.Gbx [--ticks N] [--out DIR] [--raw]
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
-  tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N]
+  tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
                      [--declared MS] [--seed N] [--no-CHUNK ...]
         Write one synthesized container.
 
@@ -74,6 +74,54 @@ fn map_uid(map: &Path) -> Result<String, String> {
 /// at all, the container works, whatever the car then does.
 fn full_gas(ticks: usize) -> Vec<Input> {
     vec![Input::FULL_GAS; ticks]
+}
+
+/// Read an input tape from the tab-separated form the explorer writes when it
+/// banks a confirmed candidate: a `tick steer gas brake` header followed by one
+/// row per tick.
+///
+/// Rows are placed by their own `tick` column rather than by file order, and
+/// any tick the file does not mention is neutral — a tape whose rows are
+/// reordered or sparse therefore produces the same container as the dense one,
+/// which a positional read would not. Ticks are validated as strictly
+/// increasing so a duplicated row cannot silently overwrite a different input.
+fn tape_from_tsv(path: &std::path::Path) -> Result<Vec<Input>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut rows: Vec<(usize, Input)> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("tick") {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 4 {
+            return Err(format!("{}:{}: expected 4 tab-separated columns, got {}", path.display(), n + 1, f.len()));
+        }
+        let num = |i: usize, what: &str| -> Result<i64, String> {
+            f[i].parse::<i64>().map_err(|_| format!("{}:{}: {what} {:?} is not an integer", path.display(), n + 1, f[i]))
+        };
+        let tick = num(0, "tick")? as usize;
+        let steer = num(1, "steer")?;
+        if !(-128..=127).contains(&steer) {
+            return Err(format!("{}:{}: steer {steer} is outside i8", path.display(), n + 1));
+        }
+        rows.push((tick, Input::new(steer as i8, num(2, "gas")? != 0, num(3, "brake")? != 0)));
+    }
+    if rows.is_empty() {
+        return Err(format!("{}: no input rows", path.display()));
+    }
+    rows.sort_by_key(|(t, _)| *t);
+    for w in rows.windows(2) {
+        if w[0].0 == w[1].0 {
+            return Err(format!("{}: tick {} appears more than once", path.display(), w[0].0));
+        }
+    }
+    let last = rows.last().map(|(t, _)| *t).unwrap_or(0);
+    let mut inputs = vec![Input::NEUTRAL; last + 1];
+    for (t, i) in rows {
+        inputs[t] = i;
+    }
+    Ok(inputs)
 }
 
 fn cmd_synth_probe(args: &[String]) -> Result<(), String> {
@@ -483,8 +531,24 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         },
         num_nodes: arg(args, "--nodes").and_then(|v| v.parse().ok()).unwrap_or(1),
     };
-    let bytes = synth::synthesize(&full_gas(ticks), &meta, &set);
+    let inputs = match arg(args, "--tape") {
+        Some(t) => tape_from_tsv(std::path::Path::new(&t))?,
+        None => full_gas(ticks),
+    };
+    // The declared time governs how long the validator simulates -- not the
+    // tape's length -- so a tape supplied by file must carry its own declared
+    // time or it is cut short at the default.
+    if arg(args, "--declared").is_none() && arg(args, "--tape").is_some() {
+        meta.declared_ms = (inputs.len() as u32) * 10;
+    }
+    let bytes = synth::synthesize(&inputs, &meta, &set);
     std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
-    println!("wrote {} ({} bytes)", out.display(), bytes.len());
+    println!(
+        "wrote {} ({} bytes, {} ticks, declared {} ms)",
+        out.display(),
+        bytes.len(),
+        inputs.len(),
+        meta.declared_ms
+    );
     Ok(())
 }

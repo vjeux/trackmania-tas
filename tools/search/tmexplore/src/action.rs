@@ -62,6 +62,11 @@ pub struct Macro {
 /// Which steering ladder the search may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Alphabet {
+    /// **The crude one, and the one to start a map with.** Full gas, and one
+    /// of full-left / straight / full-right. Three actions, no brake, no lift.
+    /// It is not enough to drive a map well and it is enough to reach a first
+    /// checkpoint on an easy one, which is the only thing rung 1 asks.
+    ThreeGas,
     /// {−127, 0, +127} × gas × brake = 12 actions. A keyboard can produce
     /// every one of these and nothing else.
     Keyboard,
@@ -74,6 +79,7 @@ pub enum Alphabet {
 impl Alphabet {
     pub fn parse(s: &str) -> Result<Alphabet, String> {
         match s {
+            "three" | "3" => Ok(Alphabet::ThreeGas),
             "keyboard" | "kb" => Ok(Alphabet::Keyboard),
             "ladder5" => Ok(Alphabet::Ladder5),
             "ladder9" => Ok(Alphabet::Ladder9),
@@ -86,6 +92,7 @@ impl Alphabet {
 
     pub fn steers(&self) -> &'static [i8] {
         match self {
+            Alphabet::ThreeGas => &[-127, 0, 127],
             Alphabet::Keyboard => &[-127, 0, 127],
             Alphabet::Ladder5 => &[-127, -64, 0, 64, 127],
             Alphabet::Ladder9 => &[-127, -96, -64, -32, 0, 32, 64, 96, 127],
@@ -98,6 +105,13 @@ impl Alphabet {
     /// it, and on this game it is not the same as neither. Removing it because
     /// it "looks wrong" would be a limit the search could not state.
     pub fn actions(&self) -> Vec<Input> {
+        if matches!(self, Alphabet::ThreeGas) {
+            return self
+                .steers()
+                .iter()
+                .map(|&steer| Input { steer, gas: true, brake: false })
+                .collect();
+        }
         let mut v = Vec::new();
         for &steer in self.steers() {
             for &gas in &[true, false] {
@@ -110,7 +124,7 @@ impl Alphabet {
     }
 
     pub fn len(&self) -> usize {
-        self.steers().len() * 4
+        if matches!(self, Alphabet::ThreeGas) { self.steers().len() } else { self.steers().len() * 4 }
     }
 
     pub fn is_empty(&self) -> bool {

@@ -90,6 +90,7 @@ fn cfg_from(a: &Args) -> Cfg {
             speed_ms: a.num("band-speed", 5.0f32),
             yaw_deg: a.num("band-yaw", 20.0f32),
             state_blind: a.flag("state-blind"),
+            crude: a.flag("crude"),
         },
         seed: a.num("seed", 1u64),
         tick_limit: a.num("tick-limit", 4000u32),

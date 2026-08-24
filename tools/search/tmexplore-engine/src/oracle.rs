@@ -37,6 +37,7 @@ pub struct EngineOracle {
     dir: PathBuf,
     seq: AtomicU64,
     pub calls: AtomicU64,
+    prefix_ticks: AtomicU64,
 }
 
 impl EngineOracle {
@@ -62,7 +63,19 @@ impl EngineOracle {
             dir: work.to_path_buf(),
             seq: AtomicU64::new(0),
             calls: AtomicU64::new(0),
+            prefix_ticks: AtomicU64::new(0),
         })
+    }
+
+    /// The container's OWN input tape.
+    ///
+    /// This is what the fork server is simulating below its boundary and what
+    /// the shim is keyed on. It is not a driver, a seed or a reference line —
+    /// it is the bits the engine consumes before the search gets a say. Taking
+    /// it from the container rather than assuming it is neutral is what makes
+    /// the identity control able to pass at all.
+    pub fn template_inputs(&self) -> forkoracle::inputs::Inputs {
+        self.patcher.template.clone()
     }
 
     /// How many ticks a tape may have. The container's archive length.
@@ -70,17 +83,76 @@ impl EngineOracle {
         self.patcher.n()
     }
 
+    /// Lay a search tape into the container's tick frame.
+    ///
+    /// # The search's tick 0 is NOT the file's tick 0
+    ///
+    /// The fork server resumes at its own probed boundary and the ticks below
+    /// it are the container's own inputs — already consumed, and a write there
+    /// is a silent no-op. So the search's tick 0 is the BOUNDARY, and writing
+    /// its tape at file tick 0 produces a file that is a different run from
+    /// the one the fork evaluated.
+    ///
+    /// Measured: the fork reported a tape reaching station 55 with one gate
+    /// collected, and the plain oracle called the written file `Dnf cps 0`.
+    /// That reads exactly like the phantom pattern and it was an alignment
+    /// bug — which is why the first question to ask of a disagreement is
+    /// whether the two instruments were given the same run.
+    ///
+    /// Ticks past the end of the candidate keep the container's own inputs
+    /// rather than going neutral: a neutral pad lifts the throttle before the
+    /// line on any tape whose length was underestimated.
     fn to_inputs(&self, tape: &[Input]) -> forkoracle::inputs::Inputs {
         let n = self.patcher.n();
-        let mut steer = vec![0i8; n];
-        let mut gas = vec![false; n];
-        let mut brake = vec![false; n];
-        for (i, t) in tape.iter().take(n).enumerate() {
-            steer[i] = t.steer;
-            gas[i] = t.gas;
-            brake[i] = t.brake;
+        let base = &self.patcher.template;
+        let mut steer = base.steer.clone();
+        let mut gas = base.gas.clone();
+        let mut brake = base.brake.clone();
+        steer.resize(n, 0);
+        gas.resize(n, false);
+        brake.resize(n, false);
+        let off = self.prefix_ticks.load(Ordering::Relaxed) as usize;
+        for (i, t) in tape.iter().enumerate() {
+            let j = off + i;
+            if j >= n {
+                break;
+            }
+            steer[j] = t.steer;
+            gas[j] = t.gas;
+            brake[j] = t.brake;
         }
         forkoracle::inputs::Inputs { steer, gas, brake }
+    }
+
+    /// Where the search's tick 0 lands in the file: the fork server's own
+    /// probed boundary.
+    pub fn set_prefix_ticks(&self, n: u64) {
+        self.prefix_ticks.store(n, Ordering::Relaxed);
+    }
+    pub fn prefix_ticks(&self) -> u64 {
+        self.prefix_ticks.load(Ordering::Relaxed)
+    }
+
+    /// Confirm one tape and also return **the engine's own echo of the input
+    /// tape it decoded**.
+    ///
+    /// This is the control that matters at startup and it costs nothing. Two
+    /// tapes that differ in every tick must produce different echoes; if they
+    /// do not, the writer is not reaching the engine and every number after
+    /// that is about a run nobody wrote. Comparing verdicts cannot do this
+    /// job — two tapes that both crash at the first corner both return
+    /// `Dnf cps 0`, which is a true statement about the driving and no
+    /// statement at all about the plumbing.
+    pub fn confirm_echo(&self, tape: &[Input]) -> Result<(Verdict, String, String, String), String> {
+        let batch = self.seq.fetch_add(1, Ordering::Relaxed);
+        let mut buf = self.patcher.base.clone();
+        self.patcher.apply(&mut buf, &self.to_inputs(tape));
+        let p = self.dir.join(format!("echo_{}.Ghost.Gbx", batch));
+        std::fs::write(&p, &buf).map_err(|e| format!("{}: {}", p.display(), e))?;
+        let res = validate_many(&self.server, &[p.as_path()], MapsMode::One(&self.map), "tmexplore-echo")?;
+        let _ = std::fs::remove_file(&p);
+        let r = res.first().ok_or("the server mentioned no file")?;
+        Ok((crate::verdict_of(r)?, r.inputs.clone(), r.map_uid.clone(), r.desc.clone()))
     }
 
     /// Confirm a batch in one server launch.
@@ -92,7 +164,8 @@ impl EngineOracle {
         if tapes.is_empty() {
             return Ok(Vec::new());
         }
-        if tapes.iter().any(|t| t.len() > self.patcher.n()) {
+        let off = self.prefix_ticks.load(Ordering::Relaxed) as usize;
+        if tapes.iter().any(|t| t.len() + off > self.patcher.n()) {
             return Err(format!(
                 "a tape is longer than the container's input archive ({} ticks). \
                  A longer tape is a different run, and truncating it silently would be a result \
@@ -120,7 +193,7 @@ impl EngineOracle {
         for f in &files {
             let want = f.file_name().unwrap().to_string_lossy().to_string();
             match res.iter().find(|r| r.file.ends_with(&want)) {
-                Some(r) => out.push(crate::verdict_of(r)),
+                Some(r) => out.push(crate::verdict_of(r)?),
                 // A file the server never mentioned is a fact worth having,
                 // not a silent DNF: an absent row is not a failure row.
                 None => {

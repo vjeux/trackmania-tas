@@ -10,7 +10,14 @@ tmexplore = { path = "../tmexplore" }
 tmsearch = { path = "../tmsearch" }
 forkoracle = { path = "../forkoracle" }
 ghost = { path = "../../ghost" }
+tmtraj = { path = "../../tmtraj" }
+tmauto = { path = "../../tmauto" }
+fk = { path = "../../fk/fk" }
 
 [lib]
 name = "tmexplore_engine"
 path = "src/lib.rs"
+
+[[bin]]
+name = "tmexplore-real"
+path = "src/main.rs"

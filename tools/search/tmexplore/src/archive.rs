@@ -54,6 +54,12 @@ pub struct Bands {
     /// same place are comparable actually does. It is expected to be worse and
     /// the point is to measure how much.
     pub state_blind: bool,
+    /// **Crude bins: station, lateral, height, speed, checkpoints.** Heading,
+    /// wheel-contact pattern and airtime are dropped. Not a simplification for
+    /// its own sake: on a first map you cannot yet see what the bins are
+    /// failing to separate, and every extra field multiplies the archive.
+    /// Widen it once a car gets somewhere.
+    pub crude: bool,
 }
 
 impl Default for Bands {
@@ -65,6 +71,7 @@ impl Default for Bands {
             speed_ms: 5.0,
             yaw_deg: 20.0,
             state_blind: false,
+            crude: false,
         }
     }
 }
@@ -132,6 +139,18 @@ impl BinKey {
                 cps: 0,
             };
         }
+        if b.crude {
+            return BinKey {
+                station: route.station_of(pr.s),
+                lateral: qfloor(pr.lateral, b.lateral_m),
+                height: qfloor(st.pos[1], b.height_m),
+                speed: qfloor(st.speed(), b.speed_ms),
+                yaw: 0,
+                wheels: 0,
+                air: AirBucket::Grounded,
+                cps: st.cps,
+            };
+        }
         BinKey {
             station: route.station_of(pr.s),
             lateral: qfloor(pr.lateral, b.lateral_m),
@@ -184,6 +203,9 @@ pub struct Entry {
     pub visits: u32,
     /// How many distinct states have landed in this bin.
     pub seen: u32,
+    /// The route vertex this state matched, so a rollout resuming here starts
+    /// its window in the right place instead of re-anchoring globally.
+    pub cursor: u32,
 }
 
 pub struct Archive {

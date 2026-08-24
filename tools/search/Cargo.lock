@@ -16,6 +16,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fk"
+version = "1.0.0"
+dependencies = [
+ "branch",
+ "forkoracle",
+ "gbx",
+ "ghost",
+ "tmtraj",
+]
+
+[[package]]
 name = "forkoracle"
 version = "1.0.0"
 dependencies = [
@@ -53,6 +64,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmauto"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "ghost",
+]
+
+[[package]]
 name = "tmexplore"
 version = "1.0.0"
 
@@ -60,10 +79,13 @@ version = "1.0.0"
 name = "tmexplore-engine"
 version = "1.0.0"
 dependencies = [
+ "fk",
  "forkoracle",
  "ghost",
+ "tmauto",
  "tmexplore",
  "tmsearch",
+ "tmtraj",
 ]
 
 [[package]]
@@ -71,6 +93,14 @@ name = "tmsearch"
 version = "1.0.0"
 dependencies = [
  "forkoracle",
+ "gbx",
+ "ghost",
+]
+
+[[package]]
+name = "tmtraj"
+version = "1.0.0"
+dependencies = [
  "gbx",
  "ghost",
 ]

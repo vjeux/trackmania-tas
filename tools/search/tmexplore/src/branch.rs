@@ -99,6 +99,15 @@ pub struct Progress {
 /// Agent B's interface.
 pub trait Route: Send + Sync {
     fn progress(&self, pos: [f32; 3]) -> Progress;
+
+    /// Progress, matched in a window around `hint`. See [`ANCHOR`].
+    ///
+    /// The default ignores the hint, which is correct for a route that never
+    /// approaches itself and wrong for every real map.
+    fn progress_from(&self, pos: [f32; 3], hint: u32) -> (Progress, u32) {
+        let _ = hint;
+        (self.progress(pos), 0)
+    }
     /// Total route length, metres.
     fn length(&self) -> f32;
     /// Station spacing, metres. ~20 m.
@@ -191,3 +200,93 @@ pub trait PlainOracle {
     /// Re-simulate `tape` and return the server's own answer.
     fn confirm(&self, tape: &[Input]) -> Result<Verdict, String>;
 }
+
+/// **Progress must saturate before an uncollected required gate.**
+///
+/// Arc length is gameable, and a frontier ordered on arc length will game it:
+/// a car that cuts a corner accrues `s` without passing the checkpoint, and
+/// that is the *cheapest* way to score well, so the search will find it. The
+/// symptom is a run that makes beautiful progress down the track and never
+/// collects a checkpoint.
+///
+/// The cure is not a penalty term — a penalty is a number to tune, and the
+/// search will trade against it. It is a **cap**: a car that has not collected
+/// gate `g` cannot score past gate `g`'s station, however far down the map it
+/// flies. Nothing to tune, and the ordering stays a partial order over places
+/// on the track.
+///
+/// (The TAS-community lineage reached the same fix from the other direction:
+/// Linesight refuses to advance its progress index past a checkpoint unless
+/// the car came within 12 m of it.)
+pub struct GateLadder {
+    /// Tour order: arc length and world position of each required gate, the
+    /// finish last.
+    pub gates: Vec<(f32, [f32; 3])>,
+    /// How close counts as collected, metres.
+    pub radius: f32,
+}
+
+impl GateLadder {
+    pub fn empty() -> GateLadder {
+        GateLadder { gates: Vec::new(), radius: 8.0 }
+    }
+
+    /// Update the collected count for a car at `pos`, and return the arc
+    /// length it is allowed to be credited with.
+    ///
+    /// `on_route` is required as well as proximity, and the radius is tight,
+    /// because **"near the checkpoint" is not "through the checkpoint"**. At
+    /// 16 m the search collected gate 0 geometrically on tapes the plain
+    /// oracle called `Dnf cps 0`: the car passed beside the gate, the cap
+    /// lifted, and the frontier wandered on down a route it had not earned.
+    /// That is E's corner-cut failure wearing a loose tolerance instead of no
+    /// gate at all.
+    ///
+    /// A loose ladder is worse than no ladder: it MOVES THE CAP, so it does
+    /// not merely miscount, it unlocks progress the run did not make.
+    pub fn saturate(&self, collected: &mut u32, pos: [f32; 3], s: f32, on_route: bool) -> f32 {
+        if on_route {
+            if let Some(&(_, g)) = self.gates.get(*collected as usize) {
+                let d2 = (pos[0] - g[0]).powi(2) + (pos[1] - g[1]).powi(2) + (pos[2] - g[2]).powi(2);
+                if d2 <= self.radius * self.radius {
+                    *collected += 1;
+                }
+            }
+        }
+        match self.gates.get(*collected as usize) {
+            Some(&(gs, _)) => s.min(gs),
+            None => s,
+        }
+    }
+}
+
+/// **A route that comes back near itself makes nearest-vertex progress a lie.**
+///
+/// Measured, on *Summer 2026 - 01*: the spawn at (1584, 16, 784) is nearest to
+/// a route vertex at **s = 1483 m — station 74 of 97 — so the car scored 74/97
+/// before it had moved at all.** The archive's best entry was the root: station
+/// 74, zero ticks, zero gates. Every rollout was correctly capped at the first
+/// gate while the headline number came from a parked car.
+///
+/// The cure is the one the predicate work already paid for: **an argmin over a
+/// small window around where the car was last, not a global one.** A run walks
+/// the route, so its index walks with it; only the first sample anchors
+/// globally.
+///
+/// `hint` is the vertex index the previous sample matched, or
+/// [`ANCHOR`] to search the whole route.
+pub const ANCHOR: u32 = u32::MAX;
+
+/// The window searched around the hint, **in metres of arc length, not in
+/// vertices**.
+///
+/// Vertices was the obvious spelling and it was wrong: this map's route is 111
+/// vertices over 1900 m, so a 400-vertex window is 6.8 km — the whole route,
+/// i.e. a global argmin wearing a window's name. The parked car went on
+/// scoring 1483 m, capped to the first gate, and the archive's best entry was
+/// still a car that had not moved.
+///
+/// Back a little, because a car can be pushed backwards; forward far enough
+/// that one TICK of travel cannot outrun it (a tick at 90 m/s is 0.9 m).
+pub const CURSOR_BACK_M: f32 = 30.0;
+pub const CURSOR_AHEAD_M: f32 = 250.0;
