@@ -260,6 +260,26 @@ where
     Ok((blob.len(), raw.len()))
 }
 
+/// Encode a complete inline `CPlugEntRecordData` node from parsed fields.
+///
+/// The caller writes the surrounding node-reference index. This function owns
+/// the node itself: class id, its v11 compressed chunk, and the node terminator.
+/// Every byte is derived from [`RecordData`] plus GBX framing constants; no donor
+/// chunk participates.
+pub fn encode_record_node(rd: &RecordData) -> Vec<u8> {
+    let raw = encode_record_data(rd);
+    let comp = zlib_compress(&raw);
+    let mut out = Vec::with_capacity(24 + comp.len());
+    out.extend_from_slice(&crate::record::CLASS_CPLUGENTRECORDDATA.to_le_bytes());
+    out.extend_from_slice(&crate::record::CLASS_CPLUGENTRECORDDATA.to_le_bytes());
+    out.extend_from_slice(&rd.version.to_le_bytes());
+    out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+    out.extend_from_slice(&comp);
+    out.extend_from_slice(&0xFACADE01u32.to_le_bytes());
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Writing one CSceneVehicleVis sample
 // ---------------------------------------------------------------------------

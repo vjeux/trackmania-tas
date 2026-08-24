@@ -25,6 +25,10 @@ INSPECT
         the input tape, and the telemetry record.
   ghost chunks FILE
         The skippable-chunk table, for forensics.
+  ghost manifest FILE
+  ghost manifest diff LEFT RIGHT
+        Deterministic JSON: GBX header/chunks, packet-mode histogram and payload
+        shapes, full record grammar, and the first controlled-car sample.
 
 INPUTS  (operation 1 and 2)
   ghost tape extract FILE --out TAPE.gtape
@@ -227,6 +231,7 @@ fn main() {
             }
         }
         "engine" => engine::cmd(rest),
+        "manifest" => cmd_manifest(rest),
         "chunks" => cmd_chunks(rest),
         "dump" => {
             let c = Container::load(&rest[0]).unwrap_or_else(|e| die(e));
@@ -268,6 +273,23 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
+
+fn cmd_manifest(a: &[String]) {
+    match a.first().map(String::as_str) {
+        Some("validation") => {
+            let path = a.get(1).unwrap_or_else(|| die("ghost manifest validation FILE"));
+            let c = Container::load(path).unwrap_or_else(|e| die(e));
+            println!("{}", gbx::manifest::validation_manifest(c.body()).unwrap_or_else(|| "null".into()));
+        }
+        Some("diff") => {
+            let left = a.get(1).unwrap_or_else(|| die("ghost manifest diff LEFT RIGHT"));
+            let right = a.get(2).unwrap_or_else(|| die("ghost manifest diff LEFT RIGHT"));
+            println!("{}", gbx::manifest::diff_files(left, right).unwrap_or_else(|e| die(e)));
+        }
+        Some(path) => println!("{}", gbx::manifest::manifest_file(path).unwrap_or_else(|e| die(e))),
+        None => die("ghost manifest FILE | ghost manifest diff LEFT RIGHT"),
+    }
+}
 
 fn cmd_chunks(a: &[String]) {
     let c = Container::load(&a[0]).unwrap_or_else(|e| die(e));

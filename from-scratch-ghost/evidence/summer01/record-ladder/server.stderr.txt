@@ -1,0 +1,14 @@
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+Starting validation of 6 ghosts (in 1 maps)... 
+Validating batch of 00-no-record.Ghost.Gbx on map 'Summer 2026 - 01' (batch size = 6)...
+Invalid replay: 00-no-record.Ghost.Gbx (#28.Day64.Script)Invalid replay: 01-parent.Ghost.Gbx (#28.Day64.Script)Invalid replay: 02-descriptor.Ghost.Gbx (#28.Day64.Script)Invalid replay: 03-entity.Ghost.Gbx (#28.Day64.Script)Invalid replay: 04-first-sample.Ghost.Gbx (#28.Day64.Script)Invalid replay: 05-corrupt-start-x-plus-64m.Ghost.Gbx (#28.Day64.Script)
+---------------- 6 replays parsed --------------
+Can't load :   0% (  0)
+Incompatibl:   0% (  0)
+Is Invalid : 100% (  6)
+Is Valid   :   0% (  0)
+Unvalidable:   0% (  0)
+0:00:01 total elapsed, 0:00:00 elapsed per validation
+
+Exiting...

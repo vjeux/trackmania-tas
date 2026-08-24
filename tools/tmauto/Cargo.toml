@@ -14,3 +14,4 @@ path = "src/main.rs"
 [dependencies]
 gbx = { path = "../gbx" }
 ghost = { path = "../ghost" }
+tmmaps = { path = "../tmmaps" }

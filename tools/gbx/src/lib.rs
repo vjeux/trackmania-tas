@@ -23,6 +23,7 @@
 pub mod bits;
 pub mod container;
 pub mod header;
+pub mod manifest;
 pub mod record;
 pub mod recwrite;
 pub mod sample;

@@ -16,7 +16,7 @@ use gbx::{all_skip_chunks, container::write_gbx, Gbx};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: chunkswap --into A --from B --id 0xNNNNNNNN [--id ...] --out O\n\
+        "usage: chunkswap --into A --from B --id 0xNNNNNNNN [--id ...] [--insert-missing] --out O\n\
          \x20      chunkswap --list FILE\n\
          \x20      chunkswap --show FILE 0xNNNNNNNN"
     );
@@ -39,6 +39,7 @@ fn load(p: &str) -> Gbx {
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (mut into, mut from, mut out) = (String::new(), String::new(), String::new());
+    let mut insert_missing = false;
     let mut ids: Vec<u32> = Vec::new();
     let mut i = 0;
     while i < a.len() {
@@ -58,6 +59,10 @@ fn main() {
             "--id" => {
                 ids.push(parse_id(a.get(i + 1).map(|s| s.as_str()).unwrap_or_else(|| usage())));
                 i += 2;
+            }
+            "--insert-missing" => {
+                insert_missing = true;
+                i += 1;
             }
             "--list" => {
                 let g = load(a.get(i + 1).map(|s| s.as_str()).unwrap_or_else(|| usage()));
@@ -96,34 +101,63 @@ fn main() {
     let ga = load(&into);
     let gb = load(&from);
     let mut body = ga.body.clone();
-    // Collect the edits first, then apply them back-to-front so the offsets
-    // taken before the first edit stay valid.
+    // Collect whole-chunk replacements first, then apply them back-to-front so
+    // the offsets taken before the first edit stay valid. With
+    // --insert-missing this also serves as an explicit diagnostic instrument:
+    // a donor chunk may be inserted into an otherwise from-scratch container,
+    // but the resulting file is not publishable and the command says so.
+    let into_chunks = all_skip_chunks(&body);
+    let from_chunks = all_skip_chunks(&gb.body);
+    let mut ordering: Vec<(u32, usize)> = into_chunks.iter().map(|c| (c.0, c.1)).collect();
+    // Inline ghost chunks have no size marker and are therefore absent from
+    // `all_skip_chunks`, but they still participate in numeric ordering.
+    for inline_id in [0x0309_200Fu32, 0x0309_2010u32] {
+        let pat = inline_id.to_le_bytes();
+        if let Some(off) = (0..body.len().saturating_sub(3)).find(|off| {
+            body[*off..*off + 4] == pat
+                && !into_chunks.iter().any(|c| *off >= c.2 && *off < c.2 + c.3)
+        }) {
+            ordering.push((inline_id, off));
+        }
+    }
     let mut plan: Vec<(usize, usize, Vec<u8>)> = Vec::new();
     for id in &ids {
-        let ca = all_skip_chunks(&body)
-            .into_iter()
-            .find(|c| c.0 == *id)
-            .unwrap_or_else(|| {
-                eprintln!("chunkswap: no chunk 0x{id:08X} in {into}");
+        let cb = from_chunks.iter().find(|c| c.0 == *id).copied().unwrap_or_else(|| {
+            eprintln!("chunkswap: no chunk 0x{id:08X} in {from}");
+            std::process::exit(1)
+        });
+        let donor = gb.body[cb.1..cb.2 + cb.3].to_vec();
+        match into_chunks.iter().find(|c| c.0 == *id).copied() {
+            Some(ca) => {
+                println!("0x{:08X}: {} B -> {} B", id, ca.3, cb.3);
+                plan.push((ca.1, ca.2 + ca.3, donor));
+            }
+            None if insert_missing => {
+                let at = ordering.iter()
+                    .filter(|c| c.0 > *id)
+                    .min_by_key(|c| c.1)
+                    .map(|c| c.1)
+                    .unwrap_or_else(|| body.len().saturating_sub(4));
+                println!(
+                    "0x{:08X}: MISSING -> insert {} B at {}  [DIAGNOSTIC DONOR CHUNK]",
+                    id, donor.len(), at
+                );
+                plan.push((at, at, donor));
+            }
+            None => {
+                eprintln!(
+                    "chunkswap: no chunk 0x{id:08X} in {into}; pass --insert-missing only for a diagnostic ablation"
+                );
                 std::process::exit(1)
-            });
-        let cb = all_skip_chunks(&gb.body)
-            .into_iter()
-            .find(|c| c.0 == *id)
-            .unwrap_or_else(|| {
-                eprintln!("chunkswap: no chunk 0x{id:08X} in {from}");
-                std::process::exit(1)
-            });
-        println!("0x{:08X}: {} B -> {} B", id, ca.3, cb.3);
-        plan.push((ca.2, ca.3, gb.body[cb.2..cb.2 + cb.3].to_vec()));
+            }
+        }
     }
     plan.sort_by_key(|p| std::cmp::Reverse(p.0));
-    for (off, size, payload) in plan {
-        let mut nb = Vec::with_capacity(body.len() + payload.len());
-        nb.extend_from_slice(&body[..off - 4]); // the chunk's own size word
-        nb.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        nb.extend_from_slice(&payload);
-        nb.extend_from_slice(&body[off + size..]);
+    for (start, end, replacement) in plan {
+        let mut nb = Vec::with_capacity(body.len() + replacement.len());
+        nb.extend_from_slice(&body[..start]);
+        nb.extend_from_slice(&replacement);
+        nb.extend_from_slice(&body[end..]);
         body = nb;
     }
     if let Err(e) = write_gbx(&ga, body, &out) {

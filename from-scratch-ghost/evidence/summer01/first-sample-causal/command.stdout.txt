@@ -1,0 +1,2 @@
+map1.Map.Gbx	human-first-x-plus64.Ghost.Gbx	19.538	cps=4
+map1.Map.Gbx	p00001_19538.Ghost.Gbx	19.538	cps=4

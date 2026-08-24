@@ -58,6 +58,18 @@ fn pick_vehicle(rd: &RecordData) -> Option<usize> {
 
 pub fn cmd(a: &[String]) {
     match a.first().map(String::as_str) {
+        Some("seed-x") => {
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record seed-x IN OUT --dx METRES"));
+            let out = a.get(2).unwrap_or_else(|| die("ghost record seed-x IN OUT --dx METRES"));
+            let dx: f32 = flag(a, "--dx")
+                .unwrap_or_else(|| die("--dx METRES"))
+                .parse()
+                .unwrap_or_else(|_| die("--dx wants metres"));
+            match seed_x(inp, out, dx) {
+                Ok(msg) => println!("{out}: {msg}"),
+                Err(e) => die(e),
+            }
+        }
         Some("chain") => {
             let p = a.get(1).unwrap_or_else(|| die("ghost record chain FILE"));
             crate::splice::print_chain(p);
@@ -291,7 +303,9 @@ pub fn cmd(a: &[String]) {
             }
         }
         _ => die(
-            "ghost record rebuild IN OUT --span MS [--period MS] [--template N] [--hold-last]\n\
+            "ghost record seed-x IN OUT --dx METRES\n\
+             \x20                            -- causal probe: move only the first vehicle sample's x\n\
+             ghost record rebuild IN OUT --span MS [--period MS] [--template N] [--hold-last]\n\
              \x20                            -- --hold-last extends a record the car already\n\
              \x20                               holds by repeating its last sample: the car\n\
              \x20                               parked where it finished\n\
@@ -328,6 +342,30 @@ pub fn cmd(a: &[String]) {
              ghost record show FILE",
         ),
     }
+}
+
+fn seed_x(inp: &str, out: &str, dx: f32) -> Result<String, String> {
+    let mut before = 0.0f32;
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity")?;
+        let e = &mut rd.ents[vi];
+        if e.sample_size < 59 || e.raw.len() < e.sample_size {
+            return Err("the vehicle has no complete first transform".into());
+        }
+        before = f32::from_le_bytes(e.raw[47..51].try_into().unwrap());
+        e.raw[47..51].copy_from_slice(&(before + dx).to_le_bytes());
+        Ok(())
+    })?;
+    let back = gbx::record::decode_ghost(out)?;
+    let got = back.samples.first().ok_or("written file has no first sample")?.x;
+    if (got - (before + dx) as f64).abs() > 1e-5 {
+        let _ = std::fs::remove_file(out);
+        return Err("first-sample x did not read back at the requested value".into());
+    }
+    Ok(format!(
+        "first vehicle sample x {before:.6} -> {:.6}; every other field untouched",
+        before + dx
+    ))
 }
 
 fn show(a: &[String]) {

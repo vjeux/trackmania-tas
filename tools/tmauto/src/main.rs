@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 use tmauto::oracle::{self, Maps};
-use tmauto::synth::{self, ChunkSet, GhostMeta, UidEnc};
+use tmauto::synth::{self, ChunkSet, GhostMeta, RecordMode, UidEnc};
 use tmauto::tape::Input;
 
+mod ablate;
 mod artifact;
 mod cpladder;
 mod evalbug;
@@ -23,8 +24,14 @@ RUNG 0  (synthesizing a container with no human provenance)
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
-                     [--declared MS] [--seed N] [--no-CHUNK ...]
-        Write one synthesized container.
+                     [--declared MS] [--seed N] [--record MODE]
+                     [--corrupt-start-x METRES] [--no-CHUNK ...]
+        Write one synthesized container. MODE is none, parent, descriptor,
+        entity, or sample (default); each rung adds one record feature.
+  tmauto synth ladder --map MAP --out DIR [--tape T.tsv] [--ticks N]
+                       [--declared MS] [--checkpoints N]
+        Add parent, descriptor, entity and first sample one rung at a time;
+        preserve raw server stdout/stderr and a machine-readable manifest each.
 
 ORACLE
   tmauto verdict FILE... --map MAP.Map.Gbx
@@ -61,6 +68,7 @@ fn main() {
         ("synth", Some("reachcp")) => cmd_synth_reachcp(&args[2..]),
         ("bench", _) => cmd_bench(&args[1..]),
         ("synth", Some("matrix")) => cmd_synth_matrix(&args[2..]),
+        ("synth", Some("ladder")) => ablate::run(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
         ("startprobe", _) => startprobe::run(&args[1..]),
         ("cpladder", _) => cpladder::run(&args[1..]),
@@ -122,7 +130,11 @@ fn tape_from_tsv(path: &std::path::Path) -> Result<Vec<Input>, String> {
         if !(-128..=127).contains(&steer) {
             return Err(format!("{}:{}: steer {steer} is outside i8", path.display(), n + 1));
         }
-        rows.push((tick, Input::new(steer as i8, num(2, "gas")? != 0, num(3, "brake")? != 0)));
+        let mut input = Input::new(steer as i8, num(2, "gas")? != 0, num(3, "brake")? != 0);
+        if f.len() >= 5 {
+            input.respawn = num(4, "respawn")? != 0;
+        }
+        rows.push((tick, input));
     }
     if rows.is_empty() {
         return Err(format!("{}: no input rows", path.display()));
@@ -566,14 +578,34 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         let cps: Vec<i32> = (1..=ncp).map(|i| (ms as i32 / (ncp + 1)) * i).chain(std::iter::once(ms as i32)).collect();
         meta.set_declared(ms, cps);
     }
-    let bytes = synth::synthesize(&inputs, &meta, &set);
+    let record_mode = match arg(args, "--record") {
+        Some(s) => RecordMode::parse(&s)
+            .ok_or_else(|| "--record wants none|parent|descriptor|entity|sample".to_string())?,
+        None => RecordMode::Sample,
+    };
+    let corrupt_x_m: f32 = arg(args, "--corrupt-start-x")
+        .as_deref()
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| "--corrupt-start-x wants metres")?;
+    let initial = synth::initial_state_for_map(&map)?;
+    let bytes = synth::synthesize_complete(
+        &inputs,
+        &meta,
+        &set,
+        initial,
+        record_mode,
+        corrupt_x_m,
+    );
     std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
     println!(
-        "wrote {} ({} bytes, {} ticks, declared {} ms)",
-        out.display(),
-        bytes.len(),
-        inputs.len(),
-        meta.declared_ms
+        "wrote {} ({} bytes, {} ticks, declared {} ms, record {})",
+        out.display(), bytes.len(), inputs.len(), meta.declared_ms, record_mode.name()
+    );
+    println!(
+        "initial  pos=({:.3},{:.3},{:.3}) quat=({:.6},{:.6},{:.6},{:.6}) vel=(0,0,0) dir={:?} corrupt_x={:.3}",
+        initial.pos[0], initial.pos[1], initial.pos[2], initial.quat[0], initial.quat[1],
+        initial.quat[2], initial.quat[3], initial.roadtech_dir, corrupt_x_m
     );
     Ok(())
 }

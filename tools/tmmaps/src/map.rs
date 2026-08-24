@@ -163,6 +163,8 @@ pub struct Waypoint {
     pub coords: (i32, i32, i32),
     pub pos: Option<[f32; 3]>,
     pub yaw: Option<f32>,
+    /// Grid-block direction 0..3. `None` for item-carried waypoints.
+    pub dir: Option<u8>,
 }
 
 impl std::fmt::Display for Waypoint {
@@ -174,14 +176,21 @@ impl std::fmt::Display for Waypoint {
         };
         write!(
             f,
-            "<{}#{} {} tag={} cell={:?} pos={}>",
-            k, self.index, self.name, self.tag, self.coords, pos
+            "<{}#{} {} tag={} cell={:?} pos={} dir={:?}>",
+            k, self.index, self.name, self.tag, self.coords, pos, self.dir
         )
     }
 }
 
 pub struct MapFile {
     pub gbx: Gbx,
+    /// Map grid dimensions from the blocks chunk. They are exposed for format
+    /// completeness; vertical placement is selected by `decoration_id`, not by
+    /// these dimensions (both control maps are 64³ and have different origins).
+    pub size: [i32; 3],
+    /// Decoration id from the map's Ident. It selects the map-wide vertical
+    /// origin; unlike x/z, y cannot be derived from the block cell alone.
+    pub decoration_id: String,
     /// The BODY-LEVEL Id stream. Chunk 0x0304301F (blocks) and chunk
     /// 0x03043048 (baked blocks) share one lookback table -- measured: the
     /// baked chunk opens with `0x40000000 "Sea"` (a new definition, no id
@@ -524,7 +533,7 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let (blocks_region, mut body_ids, blocks, table) = parse_blocks(&body, &mut seen_nodes);
+        let (blocks_region, mut body_ids, blocks, table, size, decoration_id) = parse_blocks(&body, &mut seen_nodes);
         let mut body_regions = vec![blocks_region];
         let mut baked_chunk_off = None;
         let mut baked: Vec<BlockRec> = Vec::new();
@@ -544,6 +553,8 @@ impl MapFile {
         let (items_chunk_off, items_region, item_ids, items) = parse_items(&body);
         MapFile {
             gbx,
+            size,
+            decoration_id,
             body_regions,
             body_ids,
             blocks,
@@ -585,6 +596,7 @@ impl MapFile {
                 // how it must be moved.
                 pos: b.free_pos,
                 yaw: Some(yaw),
+                dir: Some(b.dir),
             });
         }
         for it in &self.items {
@@ -600,6 +612,7 @@ impl MapFile {
                 coords: it.coords(),
                 pos: Some(it.pos),
                 yaw: Some(it.yaw),
+                dir: None,
             });
         }
         out
@@ -860,7 +873,14 @@ impl MapFile {
 fn parse_blocks(
     body: &[u8],
     seen_nodes: &mut std::collections::HashSet<u32>,
-) -> ((usize, usize), Vec<IdField>, Vec<BlockRec>, Vec<String>) {
+) -> (
+    (usize, usize),
+    Vec<IdField>,
+    Vec<BlockRec>,
+    Vec<String>,
+    [i32; 3],
+    String,
+) {
     let hits = find_all(body, &BLOCKS_CHUNK.to_le_bytes());
     let start = *hits
         .iter()
@@ -881,14 +901,15 @@ fn parse_blocks(
         ids.len() - 1
     };
     // Ident mapInfo, string mapName, Ident decoration
-    push(&mut r, &mut table, &mut ids); // uid
-    push(&mut r, &mut table, &mut ids); // collection (raw)
-    push(&mut r, &mut table, &mut ids); // author
+    push(&mut r, &mut table, &mut ids); // map uid
+    push(&mut r, &mut table, &mut ids); // map collection
+    push(&mut r, &mut table, &mut ids); // map author
     let _map_name = r.string();
-    push(&mut r, &mut table, &mut ids);
-    push(&mut r, &mut table, &mut ids);
-    push(&mut r, &mut table, &mut ids);
-    let _size = [r.u32(), r.u32(), r.u32()];
+    let decoration_field = push(&mut r, &mut table, &mut ids);
+    let decoration_id = ids[decoration_field].name.clone().unwrap_or_default();
+    push(&mut r, &mut table, &mut ids); // decoration collection
+    push(&mut r, &mut table, &mut ids); // decoration author
+    let size = [r.u32() as i32, r.u32() as i32, r.u32() as i32];
     let _need_unlock = r.u32();
     let _version = r.u32();
     let nb = r.u32();
@@ -949,7 +970,7 @@ fn parse_blocks(
         });
         count += 1;
     }
-    ((start, r.o), ids, blocks, table)
+    ((start, r.o), ids, blocks, table, size, decoration_id)
 }
 
 /// Chunk 0x03043048 -- the BAKED blocks (the terrain the editor bakes into the

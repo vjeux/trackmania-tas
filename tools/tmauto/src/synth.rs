@@ -40,6 +40,8 @@
 //! no marker and no table entry.
 
 use crate::tape::{Input, Tape as InputTape};
+use gbx::record::{Desc, Ent, RecordData, CLASS_CSCENEVEHICLEVIS};
+use gbx::recwrite::{encode_record_node, write_transform, Xform};
 use gbx::tape::{Archive, Encoding, Packet, StateEnc, Tape as GbxTape};
 
 /// `CGameCtnGhost`.
@@ -290,7 +292,11 @@ pub fn inputs_payload(inputs: &[Input], meta: &GhostMeta) -> Vec<u8> {
         tail: Vec::new(),
         orig_bitstream: Vec::new(),
     };
-    GbxTape { chunk_version: meta.input_chunk_version, archives: vec![archive] }.to_payload(Encoding::Explicit)
+    GbxTape {
+        chunk_version: meta.input_chunk_version,
+        archives: vec![archive],
+    }
+    .to_payload(Encoding::Explicit)
 }
 
 /// The `0x0309202D` validation-block payload.
@@ -309,13 +315,13 @@ fn validation_payload(meta: &GhostMeta) -> Vec<u8> {
     v.extend_from_slice(&meta.cpu_kind.to_le_bytes()); // -> +0x1D8
     v.extend_from_slice(&meta.walltime_start.to_le_bytes()); // -> +0x1DC
     v.extend_from_slice(&meta.walltime_end.to_le_bytes()); // -> +0x1E0
-    v.extend_from_slice(&gbx_string(&meta.race_settings)); // -> +0x1E8
-    v.extend_from_slice(&[0u8; 32]); // -> +0x200, a 32-byte blob
+    v.extend_from_slice(&gbx_string("")); // -> +0x1E8, title id
+    v.extend_from_slice(&[0u8; 32]); // -> +0x200, title checksum
     v.extend_from_slice(&meta.settings_flags.to_le_bytes()); // -> +0x220
-    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x224
-    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x228
-    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x22C
-    v.extend_from_slice(&gbx_string("")); // -> +0x230
+    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x224, U03
+    v.extend_from_slice(&meta.validation_seed.to_le_bytes()); // -> +0x228
+    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x22C, U04
+    v.extend_from_slice(&gbx_string(&meta.race_settings)); // -> +0x230
     v
 }
 
@@ -347,6 +353,317 @@ pub fn meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
         )
     })?;
     Ok(GhostMeta::probe(&uid))
+}
+
+/// The authoritative initial transform encoded into a from-scratch record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InitialState {
+    pub pos: [f32; 3],
+    /// `(x, y, z, w)`, matching `gbx::recwrite::Xform`.
+    pub quat: [f64; 4],
+    pub vel: [f64; 3],
+    pub roadtech_dir: Option<u8>,
+}
+
+/// One rung of the record ablation ladder. Each value adds exactly one
+/// structural feature to the preceding value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordMode {
+    /// The pre-existing tmauto container: no 0x03092000 parent and no record.
+    None,
+    /// A version-9 0x03092000 parent with a null RecordData node reference.
+    Parent,
+    /// A v11 RecordData node with the vehicle descriptor and no entity.
+    Descriptor,
+    /// The descriptor plus one empty controlled-car entity.
+    Entity,
+    /// The entity plus one 116-byte sample at t=0.
+    Sample,
+}
+
+impl RecordMode {
+    pub fn parse(s: &str) -> Option<RecordMode> {
+        Some(match s {
+            "none" => RecordMode::None,
+            "parent" => RecordMode::Parent,
+            "descriptor" => RecordMode::Descriptor,
+            "entity" => RecordMode::Entity,
+            "sample" => RecordMode::Sample,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            RecordMode::None => "none",
+            RecordMode::Parent => "parent",
+            RecordMode::Descriptor => "descriptor",
+            RecordMode::Entity => "entity",
+            RecordMode::Sample => "sample",
+        }
+    }
+}
+
+/// `RoadTechStart` places the car 2.002 m above the grid cell origin. The 2 m
+/// road deck is a model constant; the extra 0.002 m is the standing suspension
+/// offset measured identically in game recordings on the two control maps.
+pub const ROADTECH_START_LOCAL_Y: f32 = 2.002;
+
+/// Read the semantic `Spawn` waypoint whose model is `RoadTechStart`.
+///
+/// The horizontal cell centre and four-way direction come directly from the
+/// map. The vertical origin comes from the map's decoration id and a table of
+/// decoration constants licensed by game-recorded tick-0 controls; then the
+/// RoadTechStart model contributes its fixed 2.002 m local spawn height.
+pub fn initial_state_for_map(map: &std::path::Path) -> Result<InitialState, String> {
+    let m = tmmaps::map::MapFile::load(map);
+    let w = m
+        .waypoints()
+        .into_iter()
+        .find(|w| w.tag == "Spawn" && w.name == "RoadTechStart")
+        .ok_or_else(|| {
+            format!(
+                "{}: no semantic RoadTechStart waypoint tagged Spawn",
+                map.display()
+            )
+        })?;
+    let (cx, cy, cz) = w.coords;
+    let yoff = match m.decoration_id.as_str() {
+        // Measured against game-recorded tick-0 samples on two independent
+        // TM2020 maps. These are decoration properties, not per-run values.
+        "Day64" => -40.0,
+        "Day" => -120.0,
+        other => {
+            return Err(format!(
+                "{}: RoadTechStart uses decoration {other:?}, whose vertical origin is not in the \n                 from-scratch writer's constant table. This is an unimplemented map constant, not \n                 evidence that the map has no start.",
+                map.display()
+            ))
+        }
+    };
+    let pos = match w.pos {
+        Some(mut p) => {
+            p[1] += ROADTECH_START_LOCAL_Y;
+            p
+        }
+        None => [
+            cx as f32 * 32.0 + 16.0,
+            cy as f32 * 8.0 + yoff + ROADTECH_START_LOCAL_Y,
+            cz as f32 * 32.0 + 16.0,
+        ],
+    };
+    let yaw = match w.dir {
+        Some(0) => 0.0,
+        Some(1) => -std::f64::consts::FRAC_PI_2,
+        Some(2) => std::f64::consts::PI,
+        Some(3) => std::f64::consts::FRAC_PI_2,
+        Some(d) => return Err(format!("RoadTechStart has invalid direction {d}")),
+        None => w.yaw.unwrap_or(0.0) as f64,
+    };
+    let h = yaw * 0.5;
+    Ok(InitialState {
+        pos,
+        quat: [0.0, h.sin(), 0.0, h.cos()],
+        vel: [0.0; 3],
+        roadtech_dir: w.dir,
+    })
+}
+
+/// A 116-byte TM2020 `CSceneVehicleVis` sample built from named constants, the
+/// map-derived transform, and tape tick 0.
+fn first_vehicle_sample(initial: InitialState, input: Input, corrupt_x_m: f32) -> Vec<u8> {
+    let mut d = vec![0u8; gbx::sample::SAMPLE_SIZE];
+    // Offset-binary neutral side speed and suspension lengths.
+    d[2..4].copy_from_slice(&32768u16.to_le_bytes());
+    for i in [23usize, 25, 27, 29] {
+        d[i] = 128;
+    }
+    // The three input-echo channels are completely determined by tape tick 0.
+    d[14] = gbx::record::steer_byte(input.steer);
+    d[15] = if input.gas { 255 } else { 0 };
+    d[18] = if input.brake { 255 } else { 0 };
+    // Grounded neutral render state. 32/33 are the documented offset-binary
+    // slip constants; ground-mode bit 0 means ground contact; gear raw 5 means
+    // first gear; simulation time coefficient 255 means 1.0.
+    d[32] = 128;
+    d[33] = 42;
+    d[89] = 1;
+    d[91] = 5;
+    d[102] = 255;
+    let mut x = initial;
+    x.pos[0] += corrupt_x_m;
+    write_transform(
+        &mut d,
+        gbx::sample::TRANSFORM.start,
+        &Xform {
+            pos: x.pos,
+            quat: x.quat,
+            vel: x.vel,
+        },
+    );
+    d
+}
+
+fn from_scratch_record(
+    inputs: &[Input],
+    meta: &GhostMeta,
+    initial: InitialState,
+    mode: RecordMode,
+    corrupt_x_m: f32,
+) -> RecordData {
+    let descs = vec![Desc {
+        class_id: CLASS_CSCENEVEHICLEVIS,
+        // CSceneVehicleVisState's vocabulary is 864 bytes in TM2020; schema 33
+        // writes 116-byte deltas. These are format constants, not donor bytes.
+        u01: 864,
+        u02: 0,
+        u03: 33,
+        u04: Vec::new(),
+        u05: 0,
+    }];
+    let ents = if mode == RecordMode::Descriptor {
+        Vec::new()
+    } else {
+        let (times, raw, sample_size) = if mode == RecordMode::Sample {
+            (
+                vec![0],
+                first_vehicle_sample(
+                    initial,
+                    inputs.first().copied().unwrap_or(Input::NEUTRAL),
+                    corrupt_x_m,
+                ),
+                gbx::sample::SAMPLE_SIZE,
+            )
+        } else {
+            (Vec::new(), Vec::new(), 0)
+        };
+        vec![Ent {
+            type_: 0,
+            // The engine's CSceneVehicleVis entity-kind word in TM2020 v11
+            // records. It is a format constant observed across recordings; it
+            // contains no driver or run data.
+            u01: 0x0200_0006,
+            u02: 0,
+            u03: times.last().copied().unwrap_or(0),
+            u04: 0,
+            times,
+            raw,
+            sample_size,
+            deltas2: Vec::new(),
+        }]
+    };
+    RecordData {
+        version: 11,
+        start_ms: 0,
+        end_ms: if mode == RecordMode::Sample {
+            0
+        } else {
+            meta.declared_ms as i32
+        },
+        descs,
+        notices: Vec::new(),
+        ents,
+        bulk_notices: Vec::new(),
+        custom_modules: Vec::new(),
+        bytes_consumed: 0,
+        bytes_total: 0,
+    }
+}
+
+/// Version 9 of `CGameCtnGhost` chunk 0x03092000, encoded from the public
+/// schema. The parent-only ablation writes a null RecordData reference; later
+/// rungs replace that one field with an inline node.
+fn record_parent_payload(record: Option<&RecordData>) -> Vec<u8> {
+    let mut v = Vec::new();
+    let put_u32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
+    let put_string = |v: &mut Vec<u8>, s: &str| {
+        v.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        v.extend_from_slice(s.as_bytes());
+    };
+    put_u32(&mut v, 9);
+    put_u32(&mut v, 0); // appearance version: no extra appearance string
+                        // Ident("CarSport", collection 10003, "Nadeo"). The first Id opens the
+                        // lookback stream with version 3; both strings are fresh definitions.
+    put_u32(&mut v, 3);
+    put_u32(&mut v, 0x4000_0000);
+    put_string(&mut v, "CarSport");
+    put_u32(&mut v, 10003);
+    put_u32(&mut v, 0x4000_0000);
+    put_string(&mut v, "Nadeo");
+    for x in [0.0f32, 0.0, 0.0] {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    put_u32(&mut v, 0); // no skin PackDesc entries
+    put_u32(&mut v, 0); // no badge
+    put_string(&mut v, "TAS");
+    put_string(&mut v, ""); // avatar
+    put_string(&mut v, "tmauto-from-scratch");
+    put_u32(&mut v, 0); // unnamed v4 boolean
+    match record {
+        Some(rd) => {
+            put_u32(&mut v, 1); // the first non-root node index
+            v.extend_from_slice(&encode_record_node(rd));
+        }
+        None => put_u32(&mut v, u32::MAX), // null RecordData node reference
+    }
+    put_u32(&mut v, 0); // trailing int array, empty
+    put_string(&mut v, "TAS"); // v6 trigram
+    put_string(&mut v, ""); // v7 zone
+    put_string(&mut v, ""); // v8 club tag
+    v
+}
+
+/// Synthesize a ghost with an independently encoded RecordData node.
+///
+/// This is separate from [`synthesize`] so the historical artifact-v1 byte
+/// identity remains replayable. New callers use this function; the ablation
+/// ladder can still request `RecordMode::None` to reproduce the old shape.
+pub fn synthesize_complete(
+    inputs: &[Input],
+    meta: &GhostMeta,
+    set: &ChunkSet,
+    initial: InitialState,
+    mode: RecordMode,
+    corrupt_x_m: f32,
+) -> Vec<u8> {
+    if mode == RecordMode::None {
+        return synthesize(inputs, meta, set);
+    }
+    let record = match mode {
+        RecordMode::None | RecordMode::Parent => None,
+        RecordMode::Descriptor | RecordMode::Entity | RecordMode::Sample => Some(
+            from_scratch_record(inputs, meta, initial, mode, corrupt_x_m),
+        ),
+    };
+    let mut with_nodes = set.clone();
+    with_nodes.num_nodes = if record.is_some() { 2 } else { 1 };
+    // Chunk 0x03092000 already opened the body-level Id stream for CarSport and
+    // Nadeo. The later validation uid is therefore a fresh Id without another
+    // version word; writing version 3 twice makes the server resolve no map.
+    with_nodes.uid_enc = UidEnc::IdNoVersion;
+    let base = synthesize(inputs, meta, &with_nodes);
+    let g = gbx::Gbx::parse(&base);
+    let mut body = skippable(CLASS_CGAMECTNGHOST, &record_parent_payload(record.as_ref()));
+    body.extend_from_slice(&g.body);
+    let mut out = g.header_bytes_u();
+    out.extend_from_slice(&body);
+    out
+}
+
+/// One-call complete writer: map + generated tape + documented constants.
+pub fn write_complete_for(
+    map: &std::path::Path,
+    inputs: &[Input],
+    min_ticks: usize,
+    meta: &GhostMeta,
+    mode: RecordMode,
+    corrupt_x_m: f32,
+    out: &std::path::Path,
+) -> Result<Vec<u8>, String> {
+    let initial = initial_state_for_map(map)?;
+    let padded = pad_to(inputs, min_ticks);
+    let bytes = synthesize_complete(&padded, meta, &ChunkSet::ALL, initial, mode, corrupt_x_m);
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {}", out.display(), e))?;
+    Ok(bytes)
 }
 
 /// Lengthen a tape so the archive outlives the run.
@@ -473,10 +790,17 @@ pub fn synthesize(inputs: &[Input], meta: &GhostMeta, set: &ChunkSet) -> Vec<u8>
         body.extend_from_slice(&ident(CHUNK_LOGIN, &gbx_string(&meta.login)));
     }
     if set.validate_uid {
-        body.extend_from_slice(&ident(CHUNK_VALIDATE_UID, &set.uid_enc.encode(&meta.map_uid)));
+        body.extend_from_slice(&ident(
+            CHUNK_VALIDATE_UID,
+            &set.uid_enc.encode(&meta.map_uid),
+        ));
     }
     let newc = |id: u32, p: &[u8]| -> Vec<u8> {
-        if set.new_chunks_skippable { skippable(id, p) } else { inline(id, p) }
+        if set.new_chunks_skippable {
+            skippable(id, p)
+        } else {
+            inline(id, p)
+        }
     };
     if set.version_chunk {
         body.extend_from_slice(&newc(CHUNK_VERSION, &meta.game_version.to_le_bytes()));
@@ -596,5 +920,65 @@ mod tests {
         let min = synthesize(&[Input::FULL_GAS; 10], &meta(), &ChunkSet::TAPE_ONLY);
         assert!(min.len() < all.len());
         assert_eq!(gbx::Gbx::parse(&min).class_id, CLASS_CGAMECTNGHOST);
+    }
+
+    #[test]
+    fn the_complete_writer_has_one_live_116_byte_car_at_the_requested_transform() {
+        let initial = InitialState {
+            pos: [10.25, 20.5, 30.75],
+            quat: [0.0, 0.0, 0.0, 1.0],
+            vel: [0.0; 3],
+            roadtech_dir: Some(0),
+        };
+        let bytes = synthesize_complete(
+            &[Input::FULL_GAS; 10],
+            &meta(),
+            &ChunkSet::ALL,
+            initial,
+            RecordMode::Sample,
+            0.0,
+        );
+        let g = gbx::Gbx::parse(&bytes);
+        assert_eq!(g.num_nodes, 2);
+        let d = gbx::record::decode_body(&g.body, "synthetic").expect("record decodes");
+        assert_eq!(d.version, 11);
+        assert_eq!(d.ents.len(), 1);
+        assert_eq!(d.samples.len(), 1);
+        assert_eq!(d.sample_size, 116);
+        assert_eq!(d.samples[0].time_ms, 0);
+        assert!((d.samples[0].x - 10.25).abs() < 1e-6);
+        assert!((d.samples[0].y - 20.5).abs() < 1e-6);
+        assert!((d.samples[0].z - 30.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn corrupting_the_initial_field_moves_exactly_that_field() {
+        let initial = InitialState {
+            pos: [10.0, 20.0, 30.0],
+            quat: [0.0, 0.0, 0.0, 1.0],
+            vel: [0.0; 3],
+            roadtech_dir: Some(0),
+        };
+        let good = synthesize_complete(
+            &[Input::FULL_GAS],
+            &meta(),
+            &ChunkSet::ALL,
+            initial,
+            RecordMode::Sample,
+            0.0,
+        );
+        let bad = synthesize_complete(
+            &[Input::FULL_GAS],
+            &meta(),
+            &ChunkSet::ALL,
+            initial,
+            RecordMode::Sample,
+            64.0,
+        );
+        let a = gbx::record::decode_body(&gbx::Gbx::parse(&good).body, "good").unwrap();
+        let b = gbx::record::decode_body(&gbx::Gbx::parse(&bad).body, "bad").unwrap();
+        assert!((b.samples[0].x - a.samples[0].x - 64.0).abs() < 1e-6);
+        assert_eq!(a.samples[0].y, b.samples[0].y);
+        assert_eq!(a.samples[0].z, b.samples[0].z);
     }
 }

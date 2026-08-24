@@ -211,7 +211,9 @@ fn main() {
         "waypoints" => {
             let m = map::MapFile::load(Path::new(&args[2]));
             eprintln!(
-                "blocks={} items={} body_regions={:?} items_region={:?}",
+                "size={:?} decoration={} blocks={} items={} body_regions={:?} items_region={:?}",
+                m.size,
+                m.decoration_id,
                 m.blocks.len(),
                 m.items.len(),
                 m.body_regions.clone(),
