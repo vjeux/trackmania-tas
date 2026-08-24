@@ -34,8 +34,8 @@ use crate::proc::capture;
 ///
 /// `-q:v 2` is only read by the mjpeg encoder; a `.png` output ignores it and
 /// is lossless, which is what a frame meant for inspection wants.
-pub fn ffmpeg_argv(input: &str, at: f64, out: &str) -> Vec<String> {
-    vec![
+pub fn ffmpeg_argv(input: &str, at: f64, out: &str, thumb: Option<u32>) -> Vec<String> {
+    let mut v = vec![
         "-v".into(),
         "error".into(),
         "-y".into(),
@@ -45,8 +45,19 @@ pub fn ffmpeg_argv(input: &str, at: f64, out: &str) -> Vec<String> {
         input.into(),
         "-frames:v".into(),
         "1".into(),
-        out.into(),
-    ]
+    ];
+    // A THUMBNAIL IS FOR LOOKING AT SOMEWHERE ELSE. A 1280x720 still is
+    // 400-900 KB of PNG, which does not fit down the pipe an agent driving this
+    // box has, so the frames it grabs cannot be looked at -- and FILMING.md
+    // rule 6 is "look at what you made". A scaled JPEG does fit.
+    if let Some(w) = thumb {
+        v.push("-vf".into());
+        v.push(format!("scale={w}:-2"));
+        v.push("-q:v".into());
+        v.push("6".into());
+    }
+    v.push(out.into());
+    v
 }
 
 /// `1.0,4.5,8` -> the times, in order given. An empty or unparsable entry is a
@@ -86,10 +97,10 @@ pub fn spread(duration: f64, n: usize) -> Vec<f64> {
     }
 }
 
-/// A still's filename: `<prefix>t<seconds, ms, underscored>.png`, so a
+/// A still's filename: `<prefix>t<seconds, ms, underscored>.<ext>`, so a
 /// directory of them sorts in time order and says what it is without a manifest.
-pub fn still_name(prefix: &str, at: f64) -> String {
-    format!("{prefix}t{:07.3}.png", at).replace('.', "_").replace("_png", ".png")
+pub fn still_name(prefix: &str, at: f64, ext: &str) -> String {
+    format!("{prefix}t{:07.3}", at).replace('.', "_") + "." + ext
 }
 
 pub struct Opts {
@@ -113,6 +124,8 @@ pub struct Opts {
     /// to exist and to be non-empty afterwards, so a time genuinely past the
     /// end fails on the still rather than on the probe.
     pub stream: bool,
+    /// Write a scaled JPEG of this width instead of a full-size PNG.
+    pub thumb: Option<u32>,
 }
 
 pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String> {
@@ -148,8 +161,8 @@ pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String>
                 secs(dur)
             ));
         }
-        let out = outdir.join(still_name(&o.prefix, at));
-        let args = ffmpeg_argv(&ff.arg_path(input)?, at, &ff.arg_path(&out)?);
+        let out = outdir.join(still_name(&o.prefix, at, if o.thumb.is_some() { "jpg" } else { "png" }));
+        let args = ffmpeg_argv(&ff.arg_path(input)?, at, &ff.arg_path(&out)?, o.thumb);
         let r = capture(Command::new(&ff.ffmpeg).args(&args))?;
         if !r.ok() {
             return Err(format!("ffmpeg failed at {}s: {}", secs(at), r.why()));
@@ -205,7 +218,7 @@ mod tests {
 
     #[test]
     fn the_seek_is_an_input_option() {
-        let a = ffmpeg_argv("in.mp4", 4.25, "out.png");
+        let a = ffmpeg_argv("in.mp4", 4.25, "out.png", None);
         let i = a.iter().position(|x| x == "-i").unwrap();
         let s = a.iter().position(|x| x == "-ss").unwrap();
         assert!(s < i, "-ss before -i, or a long clip decodes from zero");
@@ -236,10 +249,11 @@ mod tests {
 
     #[test]
     fn a_stills_name_sorts_in_time_order() {
-        assert_eq!(still_name("u01_", 4.25), "u01_t004_250.png");
-        assert_eq!(still_name("", 12.0), "t012_000.png");
-        let mut v = [still_name("", 10.0), still_name("", 2.0), still_name("", 1.5)];
+        assert_eq!(still_name("u01_", 4.25, "png"), "u01_t004_250.png");
+        assert_eq!(still_name("", 4.25, "jpg"), "t004_250.jpg");
+        assert_eq!(still_name("", 12.0, "png"), "t012_000.png");
+        let mut v = [still_name("", 10.0, "png"), still_name("", 2.0, "png"), still_name("", 1.5, "png")];
         v.sort();
-        assert_eq!(v, [still_name("", 1.5), still_name("", 2.0), still_name("", 10.0)]);
+        assert_eq!(v, [still_name("", 1.5, "png"), still_name("", 2.0, "png"), still_name("", 10.0, "png")]);
     }
 }

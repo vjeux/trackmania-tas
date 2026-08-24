@@ -189,26 +189,31 @@ pub fn cmd(a: &[String]) {
             let first = rd.ents.iter().filter_map(|e| e.times.first().copied()).min();
             rd.start_ms = first.unwrap_or(0).max(if lo_ms == i32::MIN { 0 } else { lo_ms });
             rd.end_ms = last.unwrap_or(declared as i32).min(if hi_ms == i32::MAX { i32::MAX } else { hi_ms });
-            // AN EMPTIED ENTITY IS NOT AN ENTITY, AND THE GAME CLIENT DIES ON
-            // ONE.
+            // AN EMPTIED ENTITY IS NOT AN ENTITY — AND ON A MULTI-ENTITY
+            // CONTAINER, REMOVING IT IS ITSELF FATAL TO THE CLIENT.
             //
             // Trimming a multi-entity record can cut every sample of an entity
             // whose whole life is outside the window -- which on 227654's
-            // carrier is 28 of 29, because that record is ONE CAR SPLIT AT ITS
-            // RESPAWNS and a 59 s window keeps only the first of them. This
-            // left them in place with 0 samples and sample_size 0, and the file
-            // read back perfectly: the oracle re-simulated it, the span was
-            // right, the declared time was right, `ghost verify` passed.
+            // carrier is 23 of 29 for a 60 s window, because that record is ONE
+            // CAR SPLIT AT ITS RESPAWNS. Leaving them in place with 0 samples
+            // and sample_size 0 reads back perfectly: the oracle re-simulates
+            // it, the span is right, the declared time is right, `ghost verify`
+            // passes. The game client CRASHED on importing that.
             //
-            // The game client CRASHED on importing it -- twice, reproducibly,
-            // taking the whole render with it: `read: Connection reset by peer`
-            // immediately after "staged 2 ghost(s)". That is the signature of
-            // 165922's nine files, whose record node holds zero entities and
-            // which were blacklisted for a year as "kills the game on import"
-            // before anyone knew why.
+            // So an emptied entity is REMOVED here. **That is not a fix on a
+            // container whose record the client is fussy about.** Measured on
+            // 227654 on 2026-08-24, with the unedited container importing as a
+            // control before and after: removing ANY entity from that record --
+            // a tail car, the scene record, or the placeholder that never had a
+            // sample -- kills the client on import, and `ghost trim --to 60000`
+            // (6 entities left) dies exactly like the 0-sample version did.
+            // Both shapes crash; this one at least cannot be mistaken for a
+            // record with a live entity in it.
             //
-            // So an entity left with no samples is REMOVED here, and the count
-            // is printed: a file that quietly loses 28 entities should say so.
+            // If you need to FILM a run whose record would have to lose
+            // entities, do not trim it: put the samples into the container the
+            // client already accepts with `ghost record resample --all-cars`,
+            // which changes no entity at all. 227654's clip is shot that way.
             let before_ents = rd.ents.len();
             rd.ents.retain(|e| !e.times.is_empty() && e.sample_size > 0);
             pruned = before_ents - rd.ents.len();
@@ -305,9 +310,13 @@ pub fn cmd(a: &[String]) {
         println!("  telemetry       {} samples kept, {} dropped", kept, dropped);
         if pruned > 0 {
             println!(
-                "  entities        {} emptied by the trim and REMOVED -- an entity with no \n\
-                 \x20                 samples crashes the game client on import, and the file \n\
-                 \x20                 reads back perfectly either way",
+                "  entities        {} emptied by the trim and REMOVED -- and BEWARE: on a \n\
+                 \x20                 multi-entity container the game CLIENT dies importing a \n\
+                 \x20                 record any entity has been removed from (measured on \n\
+                 \x20                 227654, controls either side). The file reads back \n\
+                 \x20                 perfectly and the dedicated server does not care. To FILM \n\
+                 \x20                 such a run use `ghost record resample --all-cars` instead, \n\
+                 \x20                 which changes no entity.",
                 pruned
             );
         }

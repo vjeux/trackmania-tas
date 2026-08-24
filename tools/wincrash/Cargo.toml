@@ -1,0 +1,8 @@
+[package]
+name = "wincrash"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wincrash"
+path = "src/main.rs"

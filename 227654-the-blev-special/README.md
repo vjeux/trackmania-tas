@@ -5,6 +5,36 @@ respawns cost it 82 seconds, and the seven that are left are all in the
 nine-second crawl into the corner at 47 s — get wedged there by 40.0 s instead
 of 46.9 s and the author time falls.**
 
+**The Blev Special** — TAS **57.482** (−0.371) | AT 57.853 | WR 147.031 by ailiei.
+
+> ### The clip exists now — 2026-08-24, and the cause is named
+>
+> This page said for a day that the game client dies importing any ghost of
+> this map whose record has been rebuilt, 24 variants deep, and that nothing
+> headless could see why. **It is measured now, and it is not our sample
+> bytes.**
+>
+> **The client dies when the record has had an ENTITY REMOVED from it.** Take
+> the container's own 29-entity record and drop exactly one — the last car, or
+> the placeholder that has no samples at all — and the game is gone, mid-import,
+> `read: Connection reset by peer`. Re-encode all 29 through the same writer and
+> it imports every time. **Write our own 1150 samples into all of them and it
+> imports too**, which is what the clip above is shot from.
+>
+> Read the crash rather than guessing at it: Windows logged every one.
+> `0xc0000005`, fault offset `+0xd3788a`, and the dump says the faulting
+> instruction is `mov eax,[rcx+4]` with `rcx = 0` — element 0 of an array the
+> function never checked, in the routine that formats `"Ghost:%1"` and adds one
+> MediaTracker ghost block per element. It null-checks the field at `+0x2f0`
+> and dereferences the array at `+0x2f8`.
+
+https://github.com/user-attachments/assets/fb6dd5bd-9666-4f45-8d8c-f7dd0b6c7c86
+
+*Two cars, chase camera on ours, ailiei.'s own driving with his eleven retries
+spliced out (64.871) as the opponent, our inputs drawn from
+`replays/TAS_57482.Ghost.Gbx`'s own 10 ms tape. The margin on this map is read
+against that 64.871, not against the 147.031 the leaderboard shows.*
+
 > ### The recording is fixed. `TAS_57482` carries its own run.
 >
 > Five files were withdrawn from this page because each carried ailiei.'s
@@ -43,12 +73,16 @@ of 46.9 s and the author time falls.**
 > state in more than one object and the gather had to be taught to say so.**
 >
 > **Still no video, and the reason is now a measured one, not a missing
-> machine.** The game CLIENT cannot import any ghost of this map whose record
-> has been rebuilt: it dies on import, every time, in every variant tried.
-> Twenty-four of them, one variable each, are in the table at the bottom of this
-> page. The dedicated server does not care — it re-simulates the input chunk and
-> never reads the scene — so nothing headless can see it, and every check in
-> this project passes on a file the game will not open.
+> machine.** *(SUPERSEDED 2026-08-24 — see the banner at the top of this page.
+> The clip exists; the twenty-four variants below all share one property, which
+> is that every one of them has FEWER ENTITIES in its record than the container
+> has, and that is the whole defect.)* The game CLIENT cannot import any ghost
+> of this map whose record has been rebuilt: it dies on import, every time, in
+> every variant tried. Twenty-four of them, one variable each, are in the table
+> at the bottom of this page. The dedicated server does not care — it
+> re-simulates the input chunk and never reads the scene — so nothing headless
+> can see it, and every check in this project passes on a file the game will
+> not open.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
@@ -224,12 +258,137 @@ What the file now carries, measured on the written file:
 oracle re-simulates the written file to **57.482**, and the engine's own run of
 the tape matches the recording to 0.0005 m mean / 0.0009 m worst.
 
-## Why there is still no clip: the client will not import a rebuilt record here
+## Why the client would not import it: one entity missing, and a null it never checks
 
-The game client crashes — process gone, mid-import — on every ghost of this map
-whose record has been rebuilt or re-cut, and imports the container's own
-untouched 29-entity record every time. Each row below is one variable, each run
-behind a fresh launch, all on 2026-08-24 on the render box:
+**An entity removed from this record kills the game client on import. That is
+the whole defect.** Not the sample bytes, not the neutralised channels, not the
+skin, the notices, `u01`, the scene records, the declared time, the span, or the
+entity order — every one of those was tested and none of them is it.
+
+### The crash, read rather than inferred
+
+Windows had recorded it all along. The Application event log, every Blev import
+attempt on 2026-08-24:
+
+```
+Faulting application name: Trackmania.exe, version: 2026.2.2.1751
+Exception code: 0xc0000005      Fault offset: 0x0000000000d3788a
+```
+
+`tools/wincrash` (new — a minidump and PE reader, std only) on the dump from
+the 07:37 import of `TAS_57482`:
+
+```
+param0  0 (read)   param1 0x4 (the faulting data address)
+rcx  0x0000000000000000     the null it dereferenced
+rax  0x000001eba4052dc0     the array element 0 came out of
+rdi  Trackmania.exe +0x1c66cd0  ==  the format string "Ghost:%1"
+rip  Trackmania.exe +0xd3788a
+```
+
+`.text` is not packed (`.pdata` is), so the instruction is readable straight out
+of the shipped executable:
+
+```
+d37870  cmp  QWORD PTR [G+0x2f0], 0     ; the only null check in the function
+d37877  je   ...
+d37880  mov  rax, QWORD PTR [G+0x2f8]   ; a DIFFERENT field
+d37887  mov  rcx, QWORD PTR [rax]       ; element 0 of it
+d3788a  mov  eax, DWORD PTR [rcx+0x4]   ; <-- FAULT
+```
+
+The function formats `"Ghost:%1"` and adds one MediaTracker ghost block per
+element of that array — it is the *import a ghost into the MediaTracker* path,
+which is exactly what `shootctl setup` drives. It checks one field for null and
+then dereferences element 0 of another. Whatever an entity removal does to that
+array, the game does not survive reading it.
+
+### What flips it: the container walked toward our file, one entity at a time
+
+Every row is the SAME sample bytes — the human's own — in the SAME container.
+Only the entity set changes. `ghost record ents IN OUT --keep/--drop` (new) makes
+each row one variable, and each row ran behind its own `launch --force`.
+
+| record | entities | import |
+|---|---|---|
+| the container as published | 29 | **imports** (the control, in all six sessions) |
+| `resample X --from X --all-cars` — re-encoded, record blob byte-identical | 29 | **imports** |
+| `ents --drop 99` — a no-op edit through the same writer | 29 | **imports** |
+| `ents --drop 28` — one TAIL car | 28 | CRASH |
+| `ents --drop 1` — the placeholder, which has NO SAMPLES | 28 | CRASH |
+| `ents --drop 0` — the scene record | 28 | CRASH |
+| `ents --drop 0,1` — the 27 cars alone | 27 | CRASH |
+| `ents --keep 0,1,3` — scene + placeholder + one car | 3 | CRASH |
+| `ents --keep 0..6` — the entity set a 60 s trim leaves | 7 | CRASH |
+| `ghost trim --to 60000` — the real thing | 6 | CRASH |
+| `ents --keep 3` / `--keep 2` — one car | 1 | CRASH |
+| **the container with OUR 1150 samples written into every car entity** | **29** | **IMPORTS** |
+
+**The control that makes this table mean anything**: one session ran
+control · noop · control · drop-1 (CRASH) · control · drop-28 (CRASH) · control,
+and **every control imported, including the two after a crash**. So
+`launch --force` really does recover the game and no row is measuring the row
+before it.
+
+**A correction to this page.** It used to say the carrier trimmed to
+140 / 100 / 80 / 68 / 61 / 60 s imports. Trims to 68 s and beyond are not cuts
+at all — this file declares 64.871, so `--to 100000` LENGTHENS the tape and
+leaves the record untouched, 29 entities, which is why they imported. A real
+`ghost trim --to 60000` leaves 6 entities and **crashes**, measured with a
+control either side.
+
+### And the other half: our sample bytes are innocent
+
+The published `TAS_57482` record is 1 entity where the container has 29, so its
+own crash is explained by the row above and says nothing about its bytes. Two
+offline scans and one import say the bytes are fine:
+
+* `tmtraj samplescan` (new) — **no non-finite f32** anywhere in the 113 4-byte
+  windows of any of our 1150 samples that the container's own record does not
+  also read as non-finite (nothing in a 116-byte sample is aligned, so most
+  windows are not floats at all and both files "fail" them identically).
+* The same command against the container's 2982 samples — the only bytes ours
+  takes outside the container's own value set are 19 and 20, which read `0` in
+  every one of our samples. **Control: 34 other files of ours read 0 there too,
+  and more than twenty of them have clips.** Not it.
+* And the import above: the container's record carrying our bytes goes in.
+
+### So this is how the map is filmed
+
+Do not rebuild the record here. Put our car into the record the client already
+accepts:
+
+```
+ghost record resample replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx OUT.Ghost.Gbx \
+    --from replays/TAS_57482.Ghost.Gbx --all-cars --mixed-run --fill-tol 25 --hold-last
+ghost identity set OUT.Ghost.Gbx SHOT.Ghost.Gbx \
+    --name TAS --trigram TAS --skin 'Skins\Models\CarSport\TAS.zip' --anonymise
+```
+
+* `--all-cars` because this record is one car split across 27 entities.
+* `--mixed-run` because the container and the source are different runs: the
+  result is a **shooting artefact and never a recording**, and the flag exists
+  so that nobody produces one by accident. It is not in `replays/` for the same
+  reason — the two lines above rebuild it exactly from two files that are.
+* `--fill-tol 25`: the container restarts its 50 ms grid after every entity
+  boundary, so **6 of its 1156 in-span instants are 10–20 ms off ours**. Those
+  six take our own nearest sample. The two source samples bracketing the worst
+  of them are **7.533 m** apart, so the substitution is worth up to a few metres
+  for one frame, six times in 57 seconds. Keeping the human's position at those
+  instants was the alternative and it is strictly worse.
+* `--hold-last` parks our car where it finished instead of letting the human's
+  90 s tail drive on inside our ghost.
+* A read-back gate re-reads the written file and requires all **1150** exact
+  instants to carry the source's own bytes. It passed.
+
+The scene is still 147 s long, so the render is ~6 minutes and `clip cut` takes
+it down to the run.
+
+### The 24 variants, kept
+
+Each row below is one variable, all on 2026-08-24, each behind a fresh launch.
+Read them now with the finding above in hand: **every crashing row has fewer
+entities than the container's 29, and every importing row has all 29.**
 
 | file | record | import |
 |---|---|---|
@@ -257,20 +416,22 @@ behind a fresh launch, all on 2026-08-24 on the render box:
 
 So it is not the neutralised bytes, not the skin, not the notices, not the
 declared time, not `u01`, not the scene records, not the span on its own and not
-the entity count on its own. **Two facts point somewhere.** The container
-survives being trimmed all the way down to 60.000 s and dies at 59.000 — so a
-record whose entity set has been edited is fine, and something about the last
-second and a half is not. And OUR record dies at every span we tried, 57.482
-through 147.030, in one entity or in seven. The variable those two leave
-standing is the one nothing here has isolated yet: the SAMPLE BYTES of a
-rebuilt entity against the ones the game wrote itself. The experiment is to
-take the file that imports (the carrier trimmed to 60.000) and overwrite its
-car samples with ours at the same instants — a `ghost record resample`, no new
-research, and it separates "our bytes" from "our record" in one run.
+the entity count on its own. *(SUPERSEDED. It is the entity count — or rather
+the removal — and the paragraph that used to stand here reasoned from a row that
+was wrong. It read: "The container survives being trimmed all the way down to
+60.000 s and dies at 59.000 — so a record whose entity set has been edited is
+fine, and something about the last second and a half is not." **The 60.000 s
+trim does not survive**; re-measured 2026-08-24 with a control either side, it
+crashes, and the trims that did import were the ones past the declared 64.871
+that never cut the record at all. The conclusion drawn from that row — that the
+sample bytes were the last variable standing — was the opposite of the truth.
+The bytes import; the missing entity does not.)*
 
 **A trap worth knowing before repeating any of this**: after a crash the game
 must be relaunched, and the next import into the corpse fails as
 `{"err":"not in the MediaTracker"}` — a silent refusal, not a crash. Two of the
 readings above read as "refused" first time and as "crash" once each was run
 behind its own `launch --force`. A bisect that does not relaunch between rows
-measures the previous row.
+measures the previous row. **And a bisect that does not re-import a known-good
+file AFTER a crash has not shown that the relaunch worked** — that control was
+run on 2026-08-24 and `launch --force` passes it.

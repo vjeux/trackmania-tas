@@ -57,6 +57,9 @@ IS IT A COHERENT RUN, AND IS IT OURS
 
 WHAT DOES THE TRAJECTORY SAY (not the flag)
   motion  FILE [--race S] [--g G]    ballistic / supported / unknown, and the flag beside it
+  samplescan FILE... [--against DONOR] [--bytes N,N]
+                                     non-finite f32s in every 4-byte window, and
+                                     byte values the donor never writes
   provenance FILE --carrier C        which of the 116 bytes are ours and which
                                      are still the container donor's
   impacts FILE... [--bar KMH] [--race S] [--against OTHER]
@@ -131,6 +134,7 @@ pub fn run() {
         }
         "impacts" => crate::impactcmd::cmd(rest),
         "provenance" => crate::provcmd::cmd(rest),
+        "samplescan" => crate::scancmd::cmd(rest),
         "airborne" => crate::aircmd::cmd(rest),
         "motion" => crate::whlcmd::cmd_motion(rest),
         "wheels" => crate::whlcmd::cmd_wheels(rest),

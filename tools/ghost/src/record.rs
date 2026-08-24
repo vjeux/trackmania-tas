@@ -123,6 +123,65 @@ pub fn cmd(a: &[String]) {
                 }
             }
         }
+        Some("blob") => {
+            // The DECOMPRESSED CPlugEntRecordData payload, straight to a file.
+            // A rewrite that changes the container's bytes may be changing
+            // nothing but the zlib stream, or it may be changing the record.
+            // Those are very different facts and only this tells them apart.
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record blob FILE OUT"));
+            let out = a.get(2).unwrap_or_else(|| die("ghost record blob FILE OUT"));
+            let body = gbx::record::load_body(inp).unwrap_or_else(|e| die(e));
+            let (ver, blob) =
+                gbx::record::find_entrecord_blob(&body).unwrap_or_else(|e| die(e));
+            std::fs::write(out, &blob).unwrap_or_else(|e| die(e.to_string()));
+            println!("{out}: version {ver}, {} bytes", blob.len());
+        }
+        Some("ents") => {
+            // Keep or drop whole entities, changing nothing else. This is the
+            // bisect between a record the client ACCEPTS and one it dies on:
+            // 227654's container imports with 29 entities and our rebuild dies
+            // with 1, and the only honest way to find which property matters is
+            // to walk one file toward the other one entity at a time.
+            let inp = a
+                .get(1)
+                .unwrap_or_else(|| die("ghost record ents IN OUT --keep LIST | --drop LIST"));
+            let out = a
+                .get(2)
+                .unwrap_or_else(|| die("ghost record ents IN OUT --keep LIST | --drop LIST"));
+            let keep = flag(a, "--keep").map(|s| parse_byte_ranges(&s));
+            let drop = flag(a, "--drop").map(|s| parse_byte_ranges(&s));
+            if keep.is_some() == drop.is_some() {
+                die("ghost record ents needs exactly one of --keep LIST / --drop LIST \
+                     (indices as `ghost record show` prints them, e.g. 2,3 or 2..29)");
+            }
+            let mut note = String::new();
+            match rewrite_ghost(inp, out, |rd| {
+                let n = rd.ents.len();
+                let survive: Vec<usize> = match (&keep, &drop) {
+                    (Some(k), _) => k.iter().copied().filter(|i| *i < n).collect(),
+                    (_, Some(d)) => (0..n).filter(|i| !d.contains(i)).collect(),
+                    _ => unreachable!(),
+                };
+                if survive.is_empty() {
+                    return Err("that would leave the record with no entity at all".into());
+                }
+                let mut kept = Vec::new();
+                for i in &survive {
+                    kept.push(rd.ents[*i].clone());
+                }
+                note = format!(
+                    "{} of {} entities kept: {:?}",
+                    kept.len(),
+                    n,
+                    survive
+                );
+                rd.ents = kept;
+                Ok(())
+            }) {
+                Ok(_) => println!("{out}: {note}"),
+                Err(e) => die(e),
+            }
+        }
         Some("show") => show(&a[1..]),
         Some("graft-scene") => {
             let inp = a.get(1).unwrap_or_else(|| {
@@ -149,7 +208,15 @@ pub fn cmd(a: &[String]) {
                 die("ghost record resample needs --from SRC.Ghost.Gbx -- the file whose CAR \
                      SAMPLES you want, written into IN's record")
             });
-            match resample(inp, out, &src) {
+            let opt = ResampleOpts {
+                all_cars: crate::cli::has(a, "--all-cars"),
+                report: crate::cli::has(a, "--report"),
+                mixed_run: crate::cli::has(a, "--mixed-run"),
+                bytes: flag(a, "--bytes").map(|s| parse_byte_ranges(&s)),
+                fill_tol_ms: flag(a, "--fill-tol").map_or(0, |s| s.parse().expect("--fill-tol MS")),
+                hold_last: crate::cli::has(a, "--hold-last"),
+            };
+            match resample_opt(inp, out, &src, &opt) {
                 Ok(m) => println!("{out}: {m}"),
                 Err(e) => die(e),
             }
@@ -227,6 +294,18 @@ pub fn cmd(a: &[String]) {
              ghost record entorder IN OUT --car-first | --car-last\n\
              \x20                            -- move the car to the front or the back: in every\n\
              \x20                               ghost the game wrote it is entity 0\n\
+             ghost record ents IN OUT --keep LIST | --drop LIST\n\
+             \x20                            -- keep or drop whole entities and change nothing\n\
+             \x20                               else. On 227654 removing ANY entity -- even one\n\
+             \x20                               with no samples -- kills the client on import,\n\
+             \x20                               and re-encoding all 29 does not\n\
+             ghost record resample IN OUT --from SRC [--all-cars] [--mixed-run]\n\
+             \x20                         [--fill-tol MS] [--hold-last] [--bytes LIST] [--report]\n\
+             \x20                            -- put SRC's car samples into IN's record, instant\n\
+             \x20                               for instant, changing nothing else. The way to\n\
+             \x20                               film a run whose own record the client refuses\n\
+             ghost record blob FILE OUT   -- the DECOMPRESSED record payload, for telling a\n\
+             \x20                               changed zlib stream from a changed record\n\
              ghost record show FILE",
         ),
     }
@@ -1272,23 +1351,91 @@ pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
 ///     and a partial overwrite is refused, because a file that is our
 ///     trajectory for 90 % of its length and somebody else's for the rest is
 ///     worse than either.
+/// What `resample` may do beyond its one-entity, whole-sample default.
+#[derive(Default)]
+pub struct ResampleOpts {
+    /// Write EVERY vehicle entity, not just the one `pick_vehicle` chose. A
+    /// server replay splits one car across many entities; the file the client
+    /// accepts on 227654 is exactly such a record, so the experiment needs all
+    /// of them.
+    pub all_cars: bool,
+    /// Measure and print the overlap; write nothing.
+    pub report: bool,
+    /// Acknowledge that IN and SRC are DIFFERENT RUNS. The result is a
+    /// diagnostic file — a container carrying another run's car — and must
+    /// never be published as a recording of either. Without this the same
+    /// same-run guards apply as before.
+    pub mixed_run: bool,
+    /// Write only these byte offsets of each sample, leaving the rest as the
+    /// target's. This is the bisect: it makes "which byte does the client
+    /// reject" a bounded search instead of an argument.
+    pub bytes: Option<Vec<usize>>,
+    /// After the source ends, repeat its LAST sample instead of leaving the
+    /// target's: the car parks where it finished rather than another driver
+    /// carrying on.
+    pub hold_last: bool,
+    /// Milliseconds of slack for a target instant the source does not have.
+    /// 227654's container re-aligns its 50 ms grid after every entity
+    /// boundary, so six of its ~1155 in-span instants sit 10-20 ms off ours.
+    /// With no slack those six would keep the TARGET's car — a one-frame
+    /// teleport into another driver's position — which is worse than our own
+    /// sample from 20 ms away. The worst offset actually used is reported.
+    pub fill_tol_ms: i32,
+}
+
+/// `19,47..69,91` -- the bisect's argument.
+pub fn parse_byte_ranges(s: &str) -> Vec<usize> {
+    let mut v = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        match part.split_once("..") {
+            Some((a, b)) => {
+                let a: usize = a.parse().expect("byte range start");
+                let b: usize = b.parse().expect("byte range end");
+                v.extend(a..b);
+            }
+            None => v.push(part.parse().expect("byte offset")),
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 pub fn resample(inp: &str, out: &str, src: &str) -> Result<String, String> {
+    resample_opt(inp, out, src, &ResampleOpts::default())
+}
+
+pub fn resample_opt(
+    inp: &str,
+    out: &str,
+    src: &str,
+    opt: &ResampleOpts,
+) -> Result<String, String> {
     // 1. SAME RUN? Tape first: it is the cheapest and the most damning.
-    let ti = gbx::tape::Tape::from_file(inp)?;
-    let ts = gbx::tape::Tape::from_file(src)?;
-    let (pi, ps) = (ti.to_payload(gbx::tape::Encoding::Verbatim),
-                    ts.to_payload(gbx::tape::Encoding::Verbatim));
-    if pi != ps {
-        return Err(format!(
-            "{inp} and {src} do not carry the same input tape ({} vs {} ticks). resample writes \
-             one file's car into another's container; with different tapes the result is a record \
-             of one run wearing another's inputs, which is the defect KAPPA.md is about.",
-            ti.n(), ts.n()
-        ));
+    //    --mixed-run says out loud that this file is a DIAGNOSTIC and not a
+    //    recording of anything; every other caller still gets the guard.
+    if !opt.mixed_run {
+        let ti = gbx::tape::Tape::from_file(inp)?;
+        let ts = gbx::tape::Tape::from_file(src)?;
+        let (pi, ps) = (
+            ti.to_payload(gbx::tape::Encoding::Verbatim),
+            ts.to_payload(gbx::tape::Encoding::Verbatim),
+        );
+        if pi != ps {
+            return Err(format!(
+                "{inp} and {src} do not carry the same input tape ({} vs {} ticks). resample \
+                 writes one file's car into another's container; with different tapes the result \
+                 is a record of one run wearing another's inputs, which is the defect KAPPA.md is \
+                 about. Pass --mixed-run only for a file that will never be published.",
+                ti.n(),
+                ts.n()
+            ));
+        }
     }
     let di = gbx::record::decode_ghost(inp)?;
     let ds = gbx::record::decode_ghost(src)?;
-    if di.race_time_ms != ds.race_time_ms {
+    if !opt.mixed_run && di.race_time_ms != ds.race_time_ms {
         return Err(format!(
             "declared times differ: {:?} vs {:?}",
             di.race_time_ms, ds.race_time_ms
@@ -1296,7 +1443,8 @@ pub fn resample(inp: &str, out: &str, src: &str) -> Result<String, String> {
     }
     if di.sample_size != ds.sample_size {
         return Err(format!(
-            "sample sizes differ: {} vs {}", di.sample_size, ds.sample_size
+            "sample sizes differ: {} vs {}",
+            di.sample_size, ds.sample_size
         ));
     }
     // 2. THE SOURCE'S CAR, indexed by instant.
@@ -1308,46 +1456,218 @@ pub fn resample(inp: &str, out: &str, src: &str) -> Result<String, String> {
             by_ms.insert(s.time_ms, &ds.raw[a..a + ss]);
         }
     }
-    let mut wrote = 0usize;
-    let mut missed: Vec<i32> = Vec::new();
-    let mut note = String::new();
-    rewrite_ghost(inp, out, |rd| {
-        let vi = pick_vehicle(rd).ok_or("no vehicle entity to resample")?;
-        let e = &mut rd.ents[vi];
-        if e.sample_size != ss {
-            return Err(format!(
-                "the target's car samples are {} B and the source's are {} B",
-                e.sample_size, ss
-            ));
+    let src_lo = ds.samples.iter().map(|s| s.time_ms).min().unwrap_or(0);
+    let src_hi = ds.samples.iter().map(|s| s.time_ms).max().unwrap_or(0);
+    if let Some(b) = &opt.bytes {
+        if b.iter().any(|o| *o >= ss) {
+            return Err(format!("--bytes names an offset past the {ss}-byte sample"));
         }
-        for (k, t) in e.times.iter().enumerate() {
-            match by_ms.get(t) {
-                Some(b) => {
-                    let a = k * ss;
-                    if a + ss <= e.raw.len() {
-                        e.raw[a..a + ss].copy_from_slice(b);
-                        wrote += 1;
+    }
+
+    let mut wrote = 0usize;
+    let mut filled = 0usize;
+    let mut worst_dt = 0i32;
+    let mut worst_gap_m = 0f32;
+    let mut held = 0usize;
+    let mut inside: Vec<i32> = Vec::new(); // target instants INSIDE the source's span with no sample
+    let mut outside = 0usize; // target instants past either end of the source
+    let mut per_ent: Vec<String> = Vec::new();
+    let mut note;
+
+    // the source's instants, sorted, for the nearest-instant fill
+    let mut src_times: Vec<i32> = by_ms.keys().copied().collect();
+    src_times.sort_unstable();
+
+    let mut edit = |rd: &mut RecordData| -> Result<(), String> {
+        let cars: Vec<usize> = if opt.all_cars {
+            (0..rd.ents.len())
+                .filter(|i| {
+                    let e = &rd.ents[*i];
+                    let cls = rd
+                        .descs
+                        .get(e.type_ as usize)
+                        .map(|d| d.class_id)
+                        .unwrap_or(0);
+                    cls == gbx::record::CLASS_CSCENEVEHICLEVIS && !e.times.is_empty()
+                })
+                .collect()
+        } else {
+            vec![pick_vehicle(rd).ok_or("no vehicle entity to resample")?]
+        };
+        if cars.is_empty() {
+            return Err("no CSceneVehicleVis entity with samples to resample".into());
+        }
+        for ci in cars {
+            let e = &mut rd.ents[ci];
+            if e.sample_size != ss {
+                return Err(format!(
+                    "entity {ci}'s samples are {} B and the source's are {} B",
+                    e.sample_size, ss
+                ));
+            }
+            let mut hit = 0usize;
+            for (k, t) in e.times.iter().enumerate() {
+                // exact instant, or the nearest one within the slack
+                let pick: Option<(&[u8], i32)> = match by_ms.get(t) {
+                    Some(b) => Some((*b, 0)),
+                    None if opt.fill_tol_ms > 0 && *t >= src_lo && *t <= src_hi => {
+                        let j = src_times.partition_point(|x| x < t);
+                        let cand = [j.checked_sub(1).map(|i| src_times[i]), src_times.get(j).copied()];
+                        // how far the car moves between the two source samples
+                        // that bracket this instant IS the error bound of the
+                        // substitution, and it belongs in the report.
+                        if let (Some(a), Some(b)) = (cand[0], cand[1]) {
+                            let (pa, pb) = (pos_of(by_ms[&a]), pos_of(by_ms[&b]));
+                            let d = ((pa[0] - pb[0]).powi(2)
+                                + (pa[1] - pb[1]).powi(2)
+                                + (pa[2] - pb[2]).powi(2))
+                            .sqrt();
+                            if d > worst_gap_m {
+                                worst_gap_m = d;
+                            }
+                        }
+                        cand.iter()
+                            .flatten()
+                            .map(|s| (*s, (*s - *t).abs()))
+                            .filter(|(_, d)| *d <= opt.fill_tol_ms)
+                            .min_by_key(|(_, d)| *d)
+                            .map(|(s, d)| (*by_ms.get(&s).unwrap(), d))
+                    }
+                    None => None,
+                };
+                match pick {
+                    Some((b, dt)) => {
+                        let a = k * ss;
+                        if a + ss <= e.raw.len() {
+                            match &opt.bytes {
+                                Some(sel) => {
+                                    for &o in sel {
+                                        e.raw[a + o] = b[o];
+                                    }
+                                }
+                                None => e.raw[a..a + ss].copy_from_slice(b),
+                            }
+                            wrote += 1;
+                            hit += 1;
+                            if dt != 0 {
+                                filled += 1;
+                                worst_dt = worst_dt.max(dt);
+                            }
+                        }
+                    }
+                    None => {
+                        if *t >= src_lo && *t <= src_hi {
+                            inside.push(*t);
+                        } else if opt.hold_last && *t > src_hi {
+                            // The car PARKS where it finished. Without this the
+                            // container's tail is another driver still racing,
+                            // 90 s of it, and only the video cut keeps him out
+                            // of the clip.
+                            let a = k * ss;
+                            let b = by_ms[&src_hi];
+                            if a + ss <= e.raw.len() {
+                                e.raw[a..a + ss].copy_from_slice(b);
+                                held += 1;
+                                hit += 1;
+                            }
+                        } else {
+                            outside += 1;
+                        }
                     }
                 }
-                None => missed.push(*t),
             }
+            per_ent.push(format!("e{ci}:{hit}/{}", e.times.len()));
         }
-        note = format!(
-            "car {} samples, {} overwritten from the source, {} with no source instant",
-            e.times.len(), wrote, missed.len()
-        );
         Ok(())
-    })?;
-    if !missed.is_empty() {
-        let _ = std::fs::remove_file(out);
+    };
+
+    if opt.report {
+        // Measure against a throwaway copy: a report writes nothing.
+        let tmp = format!("{out}.resample-report.tmp");
+        rewrite_ghost(inp, &tmp, &mut edit)?;
+        let _ = std::fs::remove_file(&tmp);
+    } else {
+        rewrite_ghost(inp, out, &mut edit)?;
+    }
+
+    note = format!(
+        "{wrote} sample(s) overwritten{} from {src} ({}), {filled} of them from the NEAREST \
+         instant (worst {worst_dt} ms, the car moves {worst_gap_m:.3} m between the two source \
+         samples that bracket it), {held} tail instant(s) holding the source's last sample, {} \
+         target instant(s) outside the source's {}..{} span left as the target's [{}]",
+        opt.bytes
+            .as_ref()
+            .map(|b| format!(" at {} byte offset(s)", b.len()))
+            .unwrap_or_default(),
+        if opt.all_cars { "every car entity" } else { "the longest car entity" },
+        outside,
+        secs(src_lo as i64),
+        secs(src_hi as i64),
+        per_ent.join(" ")
+    );
+    if !inside.is_empty() {
+        if !opt.report {
+            let _ = std::fs::remove_file(out);
+        }
         return Err(format!(
-            "{} of the target's car instants have no sample at the same time in {src} (first: \
-             {:?}). A partial overwrite would be our trajectory for part of the run and the \
-             target's for the rest, so nothing was written.",
-            missed.len(),
-            &missed[..missed.len().min(5)]
+            "{} target instant(s) INSIDE the source's own span have no sample at the same time in \
+             {src} (first: {:?}). That is a hole in the middle of the overwrite, not a tail, so \
+             nothing was written.",
+            inside.len(),
+            &inside[..inside.len().min(5)]
         ));
     }
+    if wrote == 0 {
+        if !opt.report {
+            let _ = std::fs::remove_file(out);
+        }
+        return Err(format!(
+            "no target instant matched any source instant; the two records do not share a sampling \
+             grid. {note}"
+        ));
+    }
+    if opt.report {
+        note.push_str("  [--report: nothing written]");
+        return Ok(note);
+    }
+
+    // THE READ-BACK GATE. Every claim above is about what this function
+    // intended; this is what the file says. Re-read the written record and
+    // require that every car instant the source covers now carries the
+    // source's own bytes.
+    let back = gbx::record::load_body(out)?;
+    let (bver, bblob) = gbx::record::find_entrecord_blob(&back)?;
+    let brd = gbx::record::parse_record_data(&bblob, bver)?;
+    let mut checked = 0usize;
+    let mut bad = 0usize;
+    for e in &brd.ents {
+        let cls = brd
+            .descs
+            .get(e.type_ as usize)
+            .map(|d| d.class_id)
+            .unwrap_or(0);
+        if cls != gbx::record::CLASS_CSCENEVEHICLEVIS || e.sample_size != ss {
+            continue;
+        }
+        for (k, t) in e.times.iter().enumerate() {
+            if let Some(want) = by_ms.get(t) {
+                checked += 1;
+                if &e.raw[k * ss..(k + 1) * ss] != *want {
+                    bad += 1;
+                }
+            }
+        }
+    }
+    if bad > 0 {
+        let _ = std::fs::remove_file(out);
+        return Err(format!(
+            "read-back: {bad} of {checked} instants the source covers do NOT carry the source's \
+             bytes in the written file. Nothing kept."
+        ));
+    }
+    note.push_str(&format!(
+        "  [read-back: {checked} exact instants carry the source's own bytes]"
+    ));
     Ok(note)
 }
 
@@ -1459,4 +1779,10 @@ fn rebuild(a: &[String]) {
         ),
         Err(e) => die(e),
     }
+}
+
+/// The sample's position, three f32 at 47 -- `gbx::sample`'s `TRANSFORM`.
+fn pos_of(s: &[u8]) -> [f32; 3] {
+    let f = |o: usize| f32::from_le_bytes(s[o..o + 4].try_into().unwrap());
+    [f(47), f(51), f(55)]
 }

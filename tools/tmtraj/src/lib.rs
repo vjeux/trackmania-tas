@@ -28,6 +28,7 @@ pub mod json;
 pub mod lines;
 pub(crate) mod manifest;
 pub(crate) mod provcmd;
+pub(crate) mod scancmd;
 pub(crate) mod routecmd;
 pub(crate) mod selftest;
 pub(crate) mod serial;
