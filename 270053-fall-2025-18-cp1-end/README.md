@@ -4,13 +4,13 @@
 lock anywhere between 0.240 and 0.770 is worth a millisecond or two, and it is
 what makes the faster corner exit pay.**
 
-**Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 (six players tied)
+**Fall 2025 - 18 (CP1 end)** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 (six players tied)
 
 https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
 
 Single car: the **4.492**, the tape that matches the author time.
 
-**Fall 2025 - 18 (CP1 end)** — TAS **4.492** (±0) | AT 4.492 | WR 4.495 by AffiTM
+**Fall 2025 - 18 (CP1 end)** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 by AffiTM
 
 https://github.com/user-attachments/assets/1279d078-eded-49ea-8b75-8c5085f1cde2
 
@@ -33,10 +33,19 @@ TMX map [270053](https://trackmania.exchange/maps/270053) · author **in-.-** ·
 **1,101 recorded runs** (board 2026-08-24; the field measurements on this page
 were taken over the 1,052 recorded then).
 
-The tape matches the author time exactly, which takes the author medal — the
-game awards it at or under the time. Nobody in 1,052 recorded attempts has managed
-either: this is the most-hunted map in the collection and the best human is
-0.003 short.
+The tape matches the author time exactly, **which is beating it**: the game
+awards the medal at or under the time, so a tie takes it. That is this repo's
+convention on both sides of the comparison — [`../CLAIMS.md`](../CLAIMS.md) —
+and it is why Great wtf of what #165 counts as beaten by a human on an 8.127
+that equals its author time. Nobody on this board has managed either: across
+1,101 recorded attempts the best human is 0.003 short. This is the most-hunted
+map in the collection.
+
+**What "taken" does and does not mean here, because the detail is worth
+keeping.** The medal is taken and the margin is zero. The true crossing is
+**4.49286**, and the next millisecond down — 4.491 — needs **7.8 cm** more
+travel by the line, which nothing found has produced. So this is a win with
+nothing behind it, not a win with room in it.
 
 ## The map in one paragraph
 

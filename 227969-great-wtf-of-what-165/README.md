@@ -70,7 +70,7 @@ ours arrives at the loop already ahead. We finish 0.147 in front.
 | TAS, 8-level action keys | 8.050 | −0.077 | −0.147 | — |
 | TAS, unconstrained | **7.998** | −0.129 | −0.199 | analog, 111 steering values |
 | Author time | 8.127 | — | −0.070 | — |
-| **Tannuleet — the board's record since 2026-08-23** | **8.127** | **±0 — equals the author time** | −0.070 | human, keyboard |
+| **Tannuleet — the board's record since 2026-08-23** | **8.127** | **±0 — ties the author time, which takes the medal** | −0.070 | human, keyboard |
 | Titoch_tm — the record until 2026-08-23 | 8.197 | +0.070 | — | keyboard, 11 steering events |
 
 TMX map [227969](https://trackmania.exchange/maps/227969) · author

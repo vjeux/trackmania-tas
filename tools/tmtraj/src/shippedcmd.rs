@@ -389,7 +389,7 @@ mod tests {
 **[[Turtle Trial] Angustus](238835-turtle-trial-angustus)** — author time `462.982` · ours **239.133** (−223.849) · best human 1964.933 (Quantiks) · 1 record\n\
 **[untitled 01](276874-untitled-01)** — author time `23.839` · ours **12.759** (−11.080) · best human *none — the board is empty* · 0 records\n\
 **[Spring 2023 - 15 (Underwater)](173691-spring-2023-15-underwater)** — author time `2672.290` · **beaten by a human: 1571.209 (Maionez77)** · ours — *no completion; the page's 36.049 is a landing, not a lap* · 1 record\n\
-**[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** — **equalled, not beaten** (±0) · best human 4.495 (AffiTM, six players tied) · 1101 records\n";
+**[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** (±0 — an exact tie takes the medal) · best human 4.495 (AffiTM, six players tied) · 1101 records\n";
         let rows = root_claims(readme);
 
         // The trainer link opens with `**[` and is not a claim. A line is an

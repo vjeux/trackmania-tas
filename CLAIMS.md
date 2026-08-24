@@ -25,6 +25,25 @@ tell which at a glance.
 Untagged prose is narrative, route description and driving advice. Tag the
 things a future arm could act on and get hurt by.
 
+## One convention, so it is not re-litigated per page: an exact tie is a beat
+
+**The game awards the author medal at or under the author time, so a run level
+with it has taken the medal.** That is the rule on *both* sides of every
+comparison in this repo, and stating it once is cheaper than arguing it
+twice:
+
+* **A human's tie beats it.** Tannuleet's 8.127 on Great wtf of what #165
+  equals the author time to the millisecond, so that map's author time is no
+  longer unbeaten by a human, and the front page files it under *beaten*.
+* **Our tie beats it.** Our 4.492 on Fall 2025 - 18 CP1 End equals its 4.492,
+  and the front page files it under *taken*, not under some lesser heading.
+
+Hedging one of those and not the other is how the same fact gets two verdicts
+depending on who set it. **What a tie does not do is imply room**: on
+Fall 2025 - 18 the true crossing is 4.49286 and the next millisecond needs
+7.8 cm more travel, which is worth saying on the page — the margin is the
+detail, the medal is the verdict, and they are different statements.
+
 ## The rule that generated this file
 
 **Never report a harness limit as a physics limit.** When our reader does not

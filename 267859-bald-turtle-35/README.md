@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
 |---|---|---|---|
 | **TAS 10.758 — fastest, and the file this directory publishes** | **10.758** | **−0.010** | **−0.301** |
 | TAS 10.759 — reproduced on three separately compiled binaries | 10.759 | −0.009 | −0.300 |
-| TAS 10.768 | 10.768 | ±0 — *equals* the author time | −0.291 |
+| TAS 10.768 | 10.768 | ±0 — ties the author time, which takes the medal | −0.291 |
 | TAS 10.769 | 10.769 | +0.001 | −0.290 |
 | Keyboard 10.788 | 10.788 | +0.020 | −0.271 |
 | TAS 10.859 | 10.859 | +0.091 | −0.200 |

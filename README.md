@@ -27,6 +27,13 @@ moved are named in `LEADERBOARDS.md`.
 time?** Not on whether we have. That is the axis the project exists on, and on
 eight maps the answer changed under us — six of them in the last three days.
 
+**An exact tie is a beat**, on either side of that comparison: the game awards
+the author medal at or under the time, so a run level with it has taken it.
+Great wtf of what #165 is in group 3 because a human matched 8.127 to the
+millisecond, and Fall 2025 - 18 CP1 End is in group 1 on a 4.492 that matches
+4.492. The convention is stated once in [`CLAIMS.md`](CLAIMS.md) so nobody
+re-litigates it per page.
+
 ---
 
 # 1 · Author time unbeaten by any human — and this TAS takes it
@@ -112,7 +119,7 @@ https://github.com/user-attachments/assets/0d988786-a13a-448a-9591-22a0d2dad890
 
 https://github.com/user-attachments/assets/7ba69df0-29bb-42d3-8cc3-daf6158360a2
 
-**[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** — **equalled, not beaten** (±0; matching the author time takes the medal) · best human 4.495 (AffiTM, six players tied) · 1101 records · the true crossing is 4.49286 and 4.491 needs 7.8 cm more travel
+**[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** (±0 — an exact tie takes the medal, so this is beaten) · best human 4.495 (AffiTM, six players tied) · 1101 records · the true crossing is 4.49286, and 4.491 needs 7.8 cm more travel — a win with nothing behind it
 
 https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
 
@@ -174,7 +181,7 @@ https://github.com/user-attachments/assets/308ba8de-8332-46c4-97d0-83745204e2af
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
-**[Great wtf of what #165](227969-great-wtf-of-what-165)** — author time `8.127` · **equalled by a human: 8.127 (Tannuleet, 2026-08-23)** — to the millisecond, and matching the author time takes the medal · ours **7.998** (−0.129) · 46 records · this page said "no human has beaten it"; that is [retracted there](227969-great-wtf-of-what-165), not deleted
+**[Great wtf of what #165](227969-great-wtf-of-what-165)** — author time `8.127` · **beaten by a human: 8.127 (Tannuleet, 2026-08-23)** — an exact tie to the millisecond, which takes the medal · ours **7.998** (−0.129) · 46 records · this page said "no human has beaten it"; that is [retracted there](227969-great-wtf-of-what-165), not deleted
 
 https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
 
