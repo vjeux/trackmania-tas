@@ -52,8 +52,31 @@ pub const FACADE: u32 = 0xFACADE01;
 pub const CHUNK_RACETIME: u32 = 0x03092005;
 pub const CHUNK_LOGIN: u32 = 0x0309200F;
 pub const CHUNK_VALIDATE_UID: u32 = 0x03092010;
+/// The ghost's own game version. **Read from the engine's chunk dispatch
+/// table**: `CGameCtnGhost`'s switch is indexed by `chunk_id & 0xFF` over
+/// `0x03092000..=0x0309202E`, and index `0x14`'s handler reads one `u32` into
+/// the ghost's version field and sets its "version present" flag.
+///
+/// Without this chunk the engine forces the version to **6** and refuses the
+/// file with *"Replay version TMr.6 is not compatible with the current game
+/// version TMr.8."* — measured.
+pub const CHUNK_VERSION: u32 = 0x03092014;
 pub const CHUNK_INPUTS: u32 = 0x0309201D;
 pub const CHUNK_RESULT: u32 = 0x0309202B;
+/// The validation block: exe version, checksum, os/cpu kind, **the walltime
+/// pair**, the race-settings string and **the race-settings flags**. Index
+/// `0x2D` in the same table.
+///
+/// Two of its fields are hard gates in the validator, and a file without this
+/// chunk fails both with their defaults:
+///
+/// * `settings` (`+0x220`, default `1`) must satisfy
+///   `(s & 0xE0) != 0 && (s & 0x700) != 0 && (s & 0x1C) != 0`, or the server
+///   says *"cannot validate scripted modes (settings: 1)"*;
+/// * the walltime pair (`+0x1DC`, `+0x1E0`, default `-1`) must both be set, or
+///   the server says *"walltime not set"* — and their difference must sit
+///   within `race_ms ± (10 s + 10 %)`, which is the arithmetic at the check.
+pub const CHUNK_VALIDATION: u32 = 0x0309202D;
 
 /// Everything that is not the tape.
 ///
@@ -81,10 +104,38 @@ pub struct GhostMeta {
     pub start_offset_ms: i32,
     /// Input-archive format version: 11 (33-bit state literal) or 12 (34-bit).
     pub format_version: u32,
+    /// The `0x0309201D` chunk version word.
+    pub input_chunk_version: u32,
     /// Archive header word whose meaning is not established here. Named
     /// `field0` in `gbx::tape` for the same reason.
     pub field0: u32,
+    /// The ghost's declared game version, written into chunk `0x03092014`.
+    /// The engine's current version is **8**; anything else is refused.
+    pub game_version: u32,
+    /// Validation block (`0x0309202D`) — the engine build string. Empty is
+    /// accepted; it is not a gate.
+    pub exe_version: String,
+    pub exe_checksum: u32,
+    pub os_kind: u32,
+    pub cpu_kind: u32,
+    /// The walltime pair, in unix seconds. Both must be set (`!= -1`) and
+    /// their difference must sit within the race time ± (10 s + 10 %).
+    pub walltime_start: u32,
+    pub walltime_end: u32,
+    pub race_settings: String,
+    /// The race-settings flags. **Three 3-bit fields must each be non-zero**
+    /// or the server refuses with "cannot validate scripted modes".
+    pub settings_flags: u32,
 }
+
+/// The lowest value that satisfies the validator's settings mask: one bit set
+/// in each of the three fields it tests (`0x1C`, `0xE0`, `0x700`).
+///
+/// Chosen as the MINIMAL passing value rather than "all bits on": every bit in
+/// there asserts something about the race, and asserting nine things to satisfy
+/// a test that asks for three is how a constant nobody can re-derive gets into
+/// a file.
+pub const SETTINGS_MINIMAL_VALID: u32 = 0x004 | 0x020 | 0x100;
 
 impl GhostMeta {
     /// A container for `map_uid` declaring nothing yet — the shape used for the
@@ -98,8 +149,33 @@ impl GhostMeta {
             validation_seed: 0,
             start_offset_ms: 0,
             format_version: 11,
+            input_chunk_version: 4,
             field0: 0,
+            game_version: 8,
+            exe_version: "date=2026-05-15_18_00".to_string(),
+            exe_checksum: 0,
+            os_kind: 0,
+            cpu_kind: 0,
+            // A zero-length race means a zero-length walltime, which satisfies
+            // the window trivially. `set_declared` moves both together so they
+            // can never drift apart.
+            walltime_start: 1_700_000_000,
+            walltime_end: 1_700_000_000,
+            race_settings: String::new(),
+            settings_flags: SETTINGS_MINIMAL_VALID,
         }
+    }
+
+    /// Declare a time, and move the walltime with it.
+    ///
+    /// These two are one fact and they are checked against each other, so they
+    /// are set by one call. Setting the declared time and forgetting the
+    /// walltime produces "unexcepted walltime", which reads as a container bug
+    /// rather than as the two-line arithmetic it is.
+    pub fn set_declared(&mut self, ms: u32, cps: Vec<i32>) {
+        self.declared_ms = ms;
+        self.declared_cps = cps;
+        self.walltime_end = self.walltime_start + (ms + 500) / 1000;
     }
 }
 
@@ -109,6 +185,43 @@ fn gbx_string(s: &str) -> Vec<u8> {
     v.extend_from_slice(&(s.len() as u32).to_le_bytes());
     v.extend_from_slice(s.as_bytes());
     v
+}
+
+/// How to encode the map uid, which the engine stores as an interned **Id**
+/// rather than as text.
+///
+/// A GBX `Id` (the "lookback string") is not a length-prefixed string: it is an
+/// index into a per-file table, and a *new* string is written as a flagged
+/// index followed by the text. The first `Id` in a file is preceded by a
+/// version word. Which of those the ghost chunk wants is a fact about this game
+/// build, so all of them are reachable and the server decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UidEnc {
+    /// `u32 len, bytes` — a plain string.
+    PlainString,
+    /// `u32 3, u32 0x40000000, u32 len, bytes` — a new Id, with the version
+    /// word that precedes the first Id in a file.
+    IdWithVersion,
+    /// `u32 0x40000000, u32 len, bytes` — a new Id, no version word.
+    IdNoVersion,
+}
+
+const ID_NEW: u32 = 0x4000_0000;
+
+impl UidEnc {
+    fn encode(self, s: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        match self {
+            UidEnc::PlainString => return gbx_string(s),
+            UidEnc::IdWithVersion => {
+                v.extend_from_slice(&3u32.to_le_bytes());
+                v.extend_from_slice(&ID_NEW.to_le_bytes());
+            }
+            UidEnc::IdNoVersion => v.extend_from_slice(&ID_NEW.to_le_bytes()),
+        }
+        v.extend_from_slice(&gbx_string(s));
+        v
+    }
 }
 
 /// `u32 id, "PIKS", u32 size, payload`.
@@ -177,7 +290,33 @@ pub fn inputs_payload(inputs: &[Input], meta: &GhostMeta) -> Vec<u8> {
         tail: Vec::new(),
         orig_bitstream: Vec::new(),
     };
-    GbxTape { chunk_version: 2, archives: vec![archive] }.to_payload(Encoding::Explicit)
+    GbxTape { chunk_version: meta.input_chunk_version, archives: vec![archive] }.to_payload(Encoding::Explicit)
+}
+
+/// The `0x0309202D` validation-block payload.
+///
+/// Field widths are not guessed: each was read off the engine's own reader
+/// calls in the chunk handler — three distinct 4-byte readers, a string reader,
+/// and one reader whose immediate is `0x20`, i.e. a 32-byte blob.
+fn validation_payload(meta: &GhostMeta) -> Vec<u8> {
+    let mut v = Vec::new();
+    // A non-zero leading flag makes the engine take an extra branch we have no
+    // reason to enter. Zero keeps the block to exactly the fields below.
+    v.extend_from_slice(&0u32.to_le_bytes());
+    v.extend_from_slice(&gbx_string(&meta.exe_version)); // -> +0x1C0
+    v.extend_from_slice(&meta.exe_checksum.to_le_bytes()); // -> +0x1D0
+    v.extend_from_slice(&meta.os_kind.to_le_bytes()); // -> +0x1D4
+    v.extend_from_slice(&meta.cpu_kind.to_le_bytes()); // -> +0x1D8
+    v.extend_from_slice(&meta.walltime_start.to_le_bytes()); // -> +0x1DC
+    v.extend_from_slice(&meta.walltime_end.to_le_bytes()); // -> +0x1E0
+    v.extend_from_slice(&gbx_string(&meta.race_settings)); // -> +0x1E8
+    v.extend_from_slice(&[0u8; 32]); // -> +0x200, a 32-byte blob
+    v.extend_from_slice(&meta.settings_flags.to_le_bytes()); // -> +0x220
+    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x224
+    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x228
+    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x22C
+    v.extend_from_slice(&gbx_string("")); // -> +0x230
+    v
 }
 
 /// The `0x0309202B` ghost-result payload.
@@ -208,6 +347,13 @@ pub struct ChunkSet {
     pub login: bool,
     pub validate_uid: bool,
     pub racetime: bool,
+    /// Chunk `0x03092014`, the ghost version. Without it the engine forces 6.
+    pub version_chunk: bool,
+    /// Chunk `0x0309202D`, the validation block (walltime + race settings).
+    pub validation: bool,
+    /// Emit the version and validation chunks with a `PIKS` marker and a size
+    /// word. Which form the engine wants is measured, not assumed.
+    pub new_chunks_skippable: bool,
     pub inputs: bool,
     pub result: bool,
     /// Emit `0x0309200F` / `0x03092010` with a `PIKS` marker and a size word,
@@ -215,6 +361,8 @@ pub struct ChunkSet {
     /// `ghost::ident` reports finding them in the wild; skippable is the form
     /// that cannot kill a parse. Which one this game build wants is measurable.
     pub identity_skippable: bool,
+    /// How the map uid is encoded. Measured against the server, not assumed.
+    pub uid_enc: UidEnc,
     /// The `num_nodes` word.
     pub num_nodes: u32,
 }
@@ -226,9 +374,13 @@ impl ChunkSet {
         login: true,
         validate_uid: true,
         racetime: true,
+        version_chunk: true,
+        validation: true,
+        new_chunks_skippable: true,
         inputs: true,
         result: true,
         identity_skippable: false,
+        uid_enc: UidEnc::IdWithVersion,
         num_nodes: 1,
     };
     /// The tape and nothing else.
@@ -237,9 +389,13 @@ impl ChunkSet {
         login: false,
         validate_uid: false,
         racetime: false,
+        version_chunk: true,
+        validation: true,
+        new_chunks_skippable: true,
         inputs: true,
         result: false,
         identity_skippable: false,
+        uid_enc: UidEnc::IdWithVersion,
         num_nodes: 1,
     };
 }
@@ -264,13 +420,22 @@ pub fn synthesize(inputs: &[Input], meta: &GhostMeta, set: &ChunkSet) -> Vec<u8>
         body.extend_from_slice(&ident(CHUNK_LOGIN, &gbx_string(&meta.login)));
     }
     if set.validate_uid {
-        body.extend_from_slice(&ident(CHUNK_VALIDATE_UID, &gbx_string(&meta.map_uid)));
+        body.extend_from_slice(&ident(CHUNK_VALIDATE_UID, &set.uid_enc.encode(&meta.map_uid)));
+    }
+    let newc = |id: u32, p: &[u8]| -> Vec<u8> {
+        if set.new_chunks_skippable { skippable(id, p) } else { inline(id, p) }
+    };
+    if set.version_chunk {
+        body.extend_from_slice(&newc(CHUNK_VERSION, &meta.game_version.to_le_bytes()));
     }
     if set.inputs {
         body.extend_from_slice(&skippable(CHUNK_INPUTS, &inputs_payload(inputs, meta)));
     }
     if set.result {
         body.extend_from_slice(&skippable(CHUNK_RESULT, &result_payload(meta)));
+    }
+    if set.validation {
+        body.extend_from_slice(&newc(CHUNK_VALIDATION, &validation_payload(meta)));
     }
     body.extend_from_slice(&FACADE.to_le_bytes());
 

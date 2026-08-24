@@ -43,6 +43,19 @@ pub struct Answer {
     pub game_build: String,
 }
 
+/// Reasons the server gives for DECLINING to simulate a file. Each was
+/// observed while establishing rung 0, and each is a container fault rather
+/// than a fact about anyone's driving.
+const REFUSAL_REASONS: &[&str] = &[
+    "cannot validate scripted modes",
+    "walltime not set",
+    "unexcepted walltime",
+    "known-flawed game exe",
+    "is not compatible with the current",
+    "no inputs available",
+    "can't load",
+];
+
 impl Answer {
     /// The verdict, or `None` when the server did not simulate this file at
     /// all.
@@ -66,16 +79,26 @@ impl Answer {
 
     /// Did the engine actually run this file?
     ///
-    /// The server distinguishes "the car did not finish" from "I would not
-    /// simulate this": the former reports checkpoint progress in its prose, the
-    /// latter says so. Anything we cannot place is reported as NOT simulated,
-    /// because the failure that costs is the one that reads as driving.
+    /// **This is read off the engine's own code, not guessed from the prose.**
+    /// The server writes `wrong simu` at the site that reports a simulated run
+    /// which collected too few checkpoints — the neighbouring branch is
+    /// `wrong simu, but reached some checkpoints (%d out of %d)`. So a bare
+    /// `wrong simu` means *simulated, reached zero checkpoints*: a DNF.
+    ///
+    /// A REFUSAL is different, and it looks different: the refusal reasons are
+    /// appended to the same description, so `wrong simu` followed by
+    /// `cannot validate scripted modes` or `walltime not set` is a file the
+    /// engine declined to run. Those are container faults and reporting them as
+    /// bad driving is how a broken container costs a week.
     pub fn simulated(&self) -> bool {
         if self.time_ms.is_some() {
             return true;
         }
         let d = self.desc.to_ascii_lowercase();
-        d.contains("checkpoint") || d.contains("did not finish") || d.contains("not finished")
+        if REFUSAL_REASONS.iter().any(|r| d.contains(r)) {
+            return false;
+        }
+        d.contains("wrong simu") || d.contains("checkpoint") || d.contains("did not finish")
     }
 
     pub fn eval(&self) -> Option<Eval> {

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use tmauto::oracle::{self, Maps};
-use tmauto::synth::{self, ChunkSet, GhostMeta};
+use tmauto::synth::{self, ChunkSet, GhostMeta, UidEnc};
 use tmauto::tape::Input;
 
 fn usage() -> ! {
@@ -48,6 +48,8 @@ fn main() {
     }
     let r = match (args[0].as_str(), args.get(1).map(|s| s.as_str())) {
         ("synth", Some("probe")) => cmd_synth_probe(&args[2..]),
+        ("synth", Some("respond")) => cmd_synth_respond(&args[2..]),
+        ("synth", Some("reachcp")) => cmd_synth_reachcp(&args[2..]),
         ("synth", Some("matrix")) => cmd_synth_matrix(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
         _ => usage(),
@@ -86,7 +88,16 @@ fn cmd_synth_probe(args: &[String]) -> Result<(), String> {
 
     let inputs = full_gas(ticks);
     let meta = GhostMeta::probe(&uid);
-    let bytes = synth::synthesize(&inputs, &meta, &ChunkSet::ALL);
+    let set = ChunkSet {
+        version_chunk: !flag(args, "--no-version"),
+        validation: !flag(args, "--no-validation"),
+        new_chunks_skippable: !flag(args, "--inline-new"),
+        result: !flag(args, "--no-result"),
+        racetime: !flag(args, "--no-racetime"),
+        login: !flag(args, "--no-login"),
+        ..ChunkSet::ALL
+    };
+    let bytes = synth::synthesize(&inputs, &meta, &set);
     let path = out.join("synth_probe.Ghost.Gbx");
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     println!("wrote    {} ({} bytes)", path.display(), bytes.len());
@@ -137,47 +148,226 @@ fn cmd_synth_matrix(args: &[String]) -> Result<(), String> {
 
     let base = ChunkSet::ALL;
     let ghost = synth::CLASS_CGAMECTNGHOST;
-    let replay = synth::CLASS_CGAMECTNREPLAYRECORD;
 
-    let variants: Vec<(&str, ChunkSet)> = vec![
-        ("ghost/all/inline-ident", base.clone()),
-        ("ghost/all/skip-ident", ChunkSet { identity_skippable: true, ..base.clone() }),
-        ("ghost/tape-only", ChunkSet { class_id: ghost, ..ChunkSet::TAPE_ONLY }),
-        (
-            "ghost/no-login",
-            ChunkSet { login: false, identity_skippable: true, ..base.clone() },
-        ),
-        (
-            "ghost/no-uid",
-            ChunkSet { validate_uid: false, identity_skippable: true, ..base.clone() },
-        ),
-        ("ghost/no-racetime", ChunkSet { racetime: false, identity_skippable: true, ..base.clone() }),
-        ("ghost/no-result", ChunkSet { result: false, identity_skippable: true, ..base.clone() }),
-        ("ghost/nodes-0", ChunkSet { num_nodes: 0, identity_skippable: true, ..base.clone() }),
-        ("replay/all/skip-ident", ChunkSet { class_id: replay, identity_skippable: true, ..base.clone() }),
-        ("replay/tape-only", ChunkSet { class_id: replay, ..ChunkSet::TAPE_ONLY }),
-    ];
+    // The observable is the count line. It became meaningful the moment the
+    // loader was shown to succeed: a file whose ghost loads but whose map uid
+    // stays unresolved is skipped SILENTLY, so 0 vs 1 here is exactly the uid
+    // question and nothing else.
+    let mut variants: Vec<(String, ChunkSet, GhostMeta)> = Vec::new();
+    let good = ChunkSet { class_id: ghost, uid_enc: UidEnc::IdWithVersion, ..base.clone() };
+    for cv in [4u32, 5, 6, 7, 8, 9, 10] {
+        for fv in [11u32] {
+            let mut m = meta.clone();
+            m.input_chunk_version = cv;
+            m.format_version = fv;
+            variants.push((format!("chunkver={} fmt={}", cv, fv), good.clone(), m));
+        }
+    }
 
-    println!("{:<28} {:>7}  {:>6}  {}", "variant", "bytes", "ghosts", "note");
-    println!("{}", "-".repeat(72));
-    for (name, set) in &variants {
-        let bytes = synth::synthesize(&inputs, &meta, set);
-        let p = dir.join(format!("{}.Ghost.Gbx", name.replace('/', "_")));
+    println!("{:<24} {:>7}  {:>6}  {}", "variant", "bytes", "ghosts", "note");
+    println!("{}", "-".repeat(66));
+    for (name, set, m) in &variants {
+        let bytes = synth::synthesize(&inputs, m, set);
+        let p = dir.join(format!("{}.Ghost.Gbx", name.replace(['/', ' ', '='], "_")));
         std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
         let b = oracle::validate_raw(&oracle::server_dir(), &[p], Maps::One(&map), "matrix")?;
         let n = b.ghosts_found();
         let note = if b.answers.is_empty() {
             String::new()
         } else {
-            format!("{} answer(s): {}", b.answers.len(), b.answers[0].desc)
+            format!("{:?} | {}", b.answers[0].time_ms, b.answers[0].desc)
         };
         println!(
-            "{:<28} {:>7}  {:>6}  {}",
+            "{:<24} {:>7}  {:>6}  {}",
             name,
             bytes.len(),
             n.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
             note
         );
+    }
+    Ok(())
+}
+
+/// **The control that a synthesized container actually carries our driving.**
+///
+/// Acceptance is not enough. A container the server reads, and then simulates
+/// something that has nothing to do with the tape inside it, would pass every
+/// "is the file valid?" check and be worthless — and this project has already
+/// been burned by an instrument that returned a real-looking answer about a run
+/// nobody asked for.
+///
+/// So the claim under test is not "the server accepts the file". It is:
+///
+/// > **different tapes in the same container shape produce different answers,
+/// > and the differences are the ones the inputs imply.**
+///
+/// The batch below is built so that a container ignoring its tape produces one
+/// repeated row, and a container conveying it cannot: the tapes differ in
+/// length, in throttle, and in steering direction. The engine's own `Inputs`
+/// echo is printed beside each verdict as a second, independent witness — it is
+/// the engine's rendering of the tape it decoded, so it discriminates "our
+/// bytes arrived" from "our bytes changed the physics" separately.
+fn cmd_synth_respond(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let uid = map_uid(&map)?;
+    let dir = PathBuf::from("/tmp/tmauto-respond");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let meta = GhostMeta::probe(&uid);
+
+    let steer = |n: usize, s: i8, gas: bool, brake: bool| -> Vec<Input> {
+        vec![Input { steer: s, gas, brake, respawn: false }; n]
+    };
+    let cases: Vec<(String, Vec<Input>)> = vec![
+        ("nothing-500".into(), vec![Input::NEUTRAL; 500]),
+        ("brake-500".into(), steer(500, 0, false, true)),
+        ("gas-100".into(), steer(100, 0, true, false)),
+        ("gas-500".into(), steer(500, 0, true, false)),
+        ("gas-1500".into(), steer(1500, 0, true, false)),
+        ("gas-3000".into(), steer(3000, 0, true, false)),
+        ("gas-6000".into(), steer(6000, 0, true, false)),
+        ("gas-left-3000".into(), steer(3000, -127, true, false)),
+        ("gas-right-3000".into(), steer(3000, 127, true, false)),
+    ];
+
+    let mut files = Vec::new();
+    for (name, inputs) in &cases {
+        let bytes = synth::synthesize(inputs, &meta, &ChunkSet::ALL);
+        let p = dir.join(format!("{}.Ghost.Gbx", name));
+        std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
+        files.push(p);
+    }
+    let b = oracle::validate_raw(&oracle::server_dir(), &files, Maps::One(&map), "respond")?;
+    println!("ghosts the server read: {:?} of {}", b.ghosts_found(), cases.len());
+    println!("\n{:<16} {:>6} {:>7}  {:<10} {}", "tape", "ticks", "inputs", "verdict", "server said");
+    println!("{}", "-".repeat(88));
+    let mut seen = std::collections::BTreeSet::new();
+    for ((name, inputs), f) in cases.iter().zip(&files) {
+        let a = b.by_name(f.file_name().unwrap().to_str().unwrap());
+        match a {
+            None => println!("{:<16} {:>6} {:>7}  {:<10} (the server never mentioned this file)", name, inputs.len(), "-", "-"),
+            Some(a) => {
+                seen.insert(format!("{}|{}", a.desc, a.inputs));
+                println!(
+                    "{:<16} {:>6} {:>7}  {:<10} {}",
+                    name,
+                    inputs.len(),
+                    a.inputs,
+                    a.verdict().map(|v| v.secs()).unwrap_or_else(|| "none".into()),
+                    a.desc
+                );
+            }
+        }
+    }
+    println!("\ndistinct (desc, input-echo) pairs: {} of {}", seen.len(), cases.len());
+    if seen.len() <= 1 {
+        println!(
+            "REFUTED: every tape produced the same answer. A container that answers \
+             identically for a 100-tick coast and a 6000-tick full-throttle run is not \
+             carrying its tape."
+        );
+    }
+    Ok(())
+}
+
+/// A tiny random search for a tape that reaches a checkpoint.
+///
+/// This is not the explorer — that is agent C's job and this is a hundred lines
+/// of nothing clever. It exists as **the physics half of rung 0's control**:
+/// the input echo already shows the engine decodes our tape, but an echo is
+/// about bytes, not about a car. A tape that collects a checkpoint shows the
+/// simulation is responding to our driving, and it does it with the server's
+/// own sentence — `reached some checkpoints (N out of M)`.
+///
+/// Macro tapes: hold one `(steer, gas, brake)` for `k` ticks, repeat. The
+/// alphabet is deliberately coarse.
+fn cmd_synth_reachcp(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let uid = map_uid(&map)?;
+    let rounds: usize =
+        arg(args, "--rounds").unwrap_or_else(|| "8".into()).parse().map_err(|_| "--rounds")?;
+    let batch: usize =
+        arg(args, "--batch").unwrap_or_else(|| "60".into()).parse().map_err(|_| "--batch")?;
+    let ticks: usize =
+        arg(args, "--ticks").unwrap_or_else(|| "2000".into()).parse().map_err(|_| "--ticks")?;
+    let macro_len: usize =
+        arg(args, "--macro").unwrap_or_else(|| "25".into()).parse().map_err(|_| "--macro")?;
+    let dir = PathBuf::from("/tmp/tmauto-reachcp");
+    let meta = GhostMeta::probe(&uid);
+
+    // A tiny deterministic PRNG, so a run that finds something can be repeated
+    // exactly from its seed. A search whose result cannot be re-derived is a
+    // result we are not allowed to keep.
+    let mut state: u64 = arg(args, "--seed").and_then(|s| s.parse().ok()).unwrap_or(0x5EED_1234);
+    let mut rng = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+
+    let steer_ladder: [i8; 9] = [-127, -96, -64, -32, 0, 32, 64, 96, 127];
+    let mut best: Option<(u32, String, Vec<Input>)> = None;
+
+    for round in 0..rounds {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut files = Vec::new();
+        let mut tapes = Vec::new();
+        for c in 0..batch {
+            let mut inputs = Vec::with_capacity(ticks);
+            while inputs.len() < ticks {
+                let r = rng();
+                let s = steer_ladder[(r % 9) as usize];
+                // Throttle is heavily biased on: a car that is not moving
+                // reaches nothing, and an unbiased alphabet spends most of its
+                // budget proving that.
+                let gas = (r >> 8) % 10 != 0;
+                let brake = (r >> 16) % 20 == 0;
+                let n = macro_len.min(ticks - inputs.len());
+                inputs.extend(std::iter::repeat(Input { steer: s, gas, brake, respawn: false }).take(n));
+            }
+            let bytes = synth::synthesize(&inputs, &meta, &ChunkSet::ALL);
+            let p = dir.join(format!("r{}c{}.Ghost.Gbx", round, c));
+            std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
+            files.push(p);
+            tapes.push(inputs);
+        }
+        let b = oracle::validate_raw(&oracle::server_dir(), &files, Maps::One(&map), "reachcp")?;
+        let mut round_best = 0u32;
+        for (t, f) in tapes.iter().zip(&files) {
+            let a = match b.by_name(f.file_name().unwrap().to_str().unwrap()) {
+                Some(a) => a,
+                None => continue,
+            };
+            let cps = match a.verdict() {
+                Some(v) => v.dnf_cps().unwrap_or(u32::MAX),
+                None => continue,
+            };
+            round_best = round_best.max(if cps == u32::MAX { 999 } else { cps });
+            if best.as_ref().map(|(c, _, _)| cps > *c).unwrap_or(true) {
+                best = Some((cps, a.desc.clone(), t.clone()));
+            }
+        }
+        println!(
+            "round {:>2}: {} candidates, {} read, best cps this round = {}",
+            round,
+            batch,
+            b.ghosts_found().unwrap_or(0),
+            round_best
+        );
+    }
+    match &best {
+        Some((cps, desc, t)) => {
+            println!("\nbest: cps={} over {} ticks\nserver said: {}", cps, t.len(), desc);
+            if *cps > 0 {
+                let bytes = synth::synthesize(t, &meta, &ChunkSet::ALL);
+                let out = PathBuf::from("/tmp/tmauto-reachcp-best.Ghost.Gbx");
+                std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+                println!("wrote {}", out.display());
+            }
+        }
+        None => println!("\nno candidate was simulated at all"),
     }
     Ok(())
 }
@@ -198,9 +388,17 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         login: !flag(args, "--no-login"),
         validate_uid: !flag(args, "--no-uid"),
         racetime: !flag(args, "--no-racetime"),
+        version_chunk: !flag(args, "--no-version"),
+        validation: !flag(args, "--no-validation"),
+        new_chunks_skippable: !flag(args, "--inline-new"),
         inputs: true,
         result: !flag(args, "--no-result"),
         identity_skippable: flag(args, "--skip-ident"),
+        uid_enc: match arg(args, "--uid-enc").as_deref() {
+            Some("plain") => UidEnc::PlainString,
+            Some("id") => UidEnc::IdNoVersion,
+            _ => UidEnc::IdWithVersion,
+        },
         class_id: if flag(args, "--replay") {
             synth::CLASS_CGAMECTNREPLAYRECORD
         } else {
