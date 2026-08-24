@@ -6,7 +6,7 @@
 > `LAP.md`) — **4.834 under the world record and 1.346 over the author time.**
 > It drives the fast pit of `CREST.md`, reaching the turbo pad at race 11.44
 > where the old lap reached it at 14.79, and re-drives the whole ending.
-> Everything below this banner, including the clip, is about the **superseded
+> Everything below this banner **except the clip** is about the **superseded
 > 21.022** lap and is kept because its account of the map is still the best one.
 > Read `CREST.md`, then `ENDING.md`, then `LAP.md`.
 
@@ -21,9 +21,22 @@ into a lap.
 > were the 21.022 lap's margins. The 18.234 landed on 2026-08-23 and the numbers
 > above are its; see the banner.
 
-**Impossible Mini Trial 2** — TAS **18.234** (+1.346) | AT 16.888 | WR 23.068 by Wirtual *(the clip below is the superseded 21.022 lap)*
+**Impossible Mini Trial 2** — TAS **18.234** (+1.346) | AT 16.888 | WR 23.068 by Wirtual
 
-https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
+https://github.com/user-attachments/assets/a2d144b7-36de-4f6d-970a-16cc0fe66c1b
+
+**Re-shot 2026-08-24, and the clip is the 18.234 now — the lap this page's
+banner is about, not the 21.022 it used to show.** Ours against Wirtual's world
+record, chase camera on our car, input overlay. `ghost verify` on the filmed
+file: kappa **1.000** (365 of 365 samples), the plain oracle re-simulating the
+WRITTEN file to **18.234**, telemetry 0.000 .. 18.200 in a span ending 18.234;
+trajectory worst **0.0006 m** against `replays/TAS_18234.Ghost.Gbx`. The clip is
+cut at **18.234**, our finish: Wirtual's car is still driving for another 4.8 s
+after it, and `clip overlay` refuses to draw a strip over ground the tape does
+not cover, which is the rule that keeps the input display honest.
+
+The paragraph below is about the 21.022 clip that this replaces, and its
+two-car separation figures are that lap's.
 
 **Ours against Wirtual's world record, and the clip runs past both finishes.**
 We cross at 21.022 and his car keeps driving for another two seconds — that gap

@@ -96,9 +96,9 @@ https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
 https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 
-**[Impossible Mini Trial 2](267460-impossible-mini-trial-2)** — author time `16.888` · ours **18.234** (+1.346 short, and 4.834 **under** the only human record) · best human 23.068 (WirtualTM) · 1 record · what is left is the endgame screen: an opening exists east of X=922 and the shortfall is ~4.4 m of diagonal displacement, priced at 0.115 m per km/h at the deck exit *(the clip is the superseded 21.022 lap)*
+**[Impossible Mini Trial 2](267460-impossible-mini-trial-2)** — author time `16.888` · ours **18.234** (+1.346 short, and 4.834 **under** the only human record) · best human 23.068 (WirtualTM) · 1 record · what is left is the endgame screen: an opening exists east of X=922 and the shortfall is ~4.4 m of diagonal displacement, priced at 0.115 m per km/h at the deck exit
 
-https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
+https://github.com/user-attachments/assets/a2d144b7-36de-4f6d-970a-16cc0fe66c1b
 
 **[finish is on the roof to your right](285885-finish-is-on-the-roof)** — author time `43.079` · ours **50.229** (+7.150 short, and 11.000 under the human record) · best human 61.229 (lasyoppwtf) · 3 records · the deficit is height, not line: the author time needs arrival at the foot of the final climb by 34.13 against an all-time earliest of 37.978 · *the published tape crashed the game client on import and carried another run's telemetry; the clip is shot from the repaired file — see the page*
 
@@ -106,7 +106,7 @@ https://github.com/user-attachments/assets/f753d31d-3469-416d-ac8a-1e1950a418f5
 
 **[KEKL- SAUSAGE ICE](134672-kekl-sausage-ice)** — author time `58.687` · ours **67.200** (+8.513 short) · best human 68.442 (Robbalobb, on a build the game still runs; the all-time 63.546 by Roevhaal was set on the 2022 build `113150` and does not re-simulate today) · 16 records · the author time is 4.8 s below the field's best-sector splice *and* below our own per-sector optima, and it was stamped by a car that corners better than the one we search with
 
-https://github.com/user-attachments/assets/68a1ee6d-9117-4c5a-a030-0c7c658e7b84
+https://github.com/user-attachments/assets/b1155422-3fbf-43a6-b265-a6740a02f24a
 
 **[YOU LOVE WATER](284238-you-love-water)** — author time `50.459` · ours **97.325** (+46.866 short, and 26.880 under the human record) · best human 124.205 (DarrahTM) · 2 records · a human's line on a byte-identical sibling map prices out at 47.4 — 3.0 inside the author time — but it needs a long flat run-up into each launch and only the first copy of the obstacle has one · *the clip is shot from a regenerated tape: the published one's recording was another run (kappa 0.499)*
 

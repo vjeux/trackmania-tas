@@ -2,7 +2,7 @@
 
 **KEKL- SAUSAGE ICE** — TAS **67.200** (+8.513) | AT 58.687 | WR 68.442 by Robbalobb
 
-https://github.com/user-attachments/assets/68a1ee6d-9117-4c5a-a030-0c7c658e7b84
+https://github.com/user-attachments/assets/b1155422-3fbf-43a6-b265-a6740a02f24a
 
 The TAS in magenta, Robbalobb's 68.442 as the opponent, chase camera on our car.
 Both cars are in one scene; he is behind for most of it and out of frame for
