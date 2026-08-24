@@ -22,7 +22,7 @@ metre tighter. That is the whole map — and it is enough to beat an author time
 > the live engine; it has fixed others in this corpus. This page will be
 > re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
+https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
 
 Both cars are on screen: eight milliseconds apart, but the two drivers take
 genuinely different lines and only converge at the finish, so both stay clearly

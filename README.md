@@ -46,9 +46,9 @@ https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 
 https://github.com/user-attachments/assets/fb64c1d0-5f92-404a-bf77-5271c57a7d8a
 
-**[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it)** — author time `6.343` · ours **6.322** (−0.021) · best human 6.346 (xeap-.-) · 57 records · the 6.342 is the world record's own tape with **one** input changed
+**[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it)** — author time `6.343` · ours **6.322** (−0.021) · best human 6.346 (xeap-.-) · 57 records · the 6.342 is the world record's own tape with **one** input changed — *and the clip below is that 6.342, not the 6.322, because that is what the map page is about*
 
-https://github.com/user-attachments/assets/e6832a47-e830-45a9-8e99-743ef00d7559
+https://github.com/user-attachments/assets/516fde7b-0b58-4745-b940-2973b527b5af
 
 **[Fall 2025 - 13 Reverse CP1 End](279209-fall-2025-13-reverse-cp1-end)** — author time `6.595` · ours **6.578** (−0.017) · best human 6.601 (uelen.) · 418 records
 
@@ -56,15 +56,15 @@ https://github.com/user-attachments/assets/d14b02ae-0b40-49ac-9198-e4df77635e2c
 
 **[surely my least cooked at](252289-surely-my-least-cooked-at)** — author time `3.851` · ours **3.836** (−0.015) · best human 3.867 (KevinMagPizza) · 851 records · 12 key actions reach 3.848, which is the record plus two presses
 
-https://github.com/user-attachments/assets/c480a0f5-83b0-44e9-b5a8-486c07dc91d9
+https://github.com/user-attachments/assets/119bf427-61cc-4615-9d03-35784bfff949
 
 **[bald turtle #35](267859-bald-turtle-35)** — author time `10.768` · ours **10.758** (−0.010) · best human 11.059 (Max_heyu) · 21 records · the 10.758 is the file this directory publishes; the 10.759 beside it is the one reproduced on three separately compiled binaries
 
-https://github.com/user-attachments/assets/749868b9-3c00-4946-972e-d551c6441add
+https://github.com/user-attachments/assets/f59172e4-9e8c-4f21-89a7-c10bf3bc9d32
 
 **[Training - 10 Long](191465-training-10-long)** — author time `13.080` · ours **13.071** (−0.009) · best human 13.081 (in-.-) · 1070 records
 
-https://github.com/user-attachments/assets/486d39eb-0222-4dee-a6a4-4854a5a4c3bb
+https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
 
 **[Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum)** — author time `49.282` · ours **49.275** (−0.007) · best human 49.291 (Ssnake01) · 180 records · the field's own best sectors sum to 48.733 and nobody has assembled that lap
 

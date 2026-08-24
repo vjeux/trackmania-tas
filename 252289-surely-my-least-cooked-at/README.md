@@ -5,7 +5,7 @@ last corner — and the author time falls.**
 
 **surely my least cooked at** — TAS **3.836** (−0.015) | AT 3.851 | WR 3.867 by KevinMagPizza
 
-https://github.com/user-attachments/assets/c480a0f5-83b0-44e9-b5a8-486c07dc91d9
+https://github.com/user-attachments/assets/119bf427-61cc-4615-9d03-35784bfff949
 
 **Our 3.836 and KevinMagPizza's world record, both in one camera.** They never
 separate by more than **0.86 m** (mean **0.12 m**), so for most of the clip the

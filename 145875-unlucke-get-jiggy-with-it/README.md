@@ -24,7 +24,38 @@ validates at 6.342 — one millisecond under the author time.**
 > `accel=1` on all 789 ticks of the tape. The check was calling a correct
 > constant a dead readout. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/e6832a47-e830-45a9-8e99-743ef00d7559
+https://github.com/user-attachments/assets/516fde7b-0b58-4745-b940-2973b527b5af
+
+> **Re-shot 2026-08-24, and the camera has moved to our car.** The clip above
+> this line used to be shot with the camera on **xeap-.-'s** record, with ours
+> as the magenta car beside it. That is the thing
+> [`FILMING.md`](../FILMING.md) rule 1 exists to forbid — the camera goes on
+> our car, always — and the current pipeline has no flag for the other thing,
+> so the re-shoot fixed it by construction. Same scene otherwise: two cars,
+> ours and the world record, and the input overlay.
+>
+> **The two cars are all but superimposed, and that is the result rather than a
+> defect in the shot.** This tape is the record's own tape with one input
+> changed, so the runs are a **mean 0.141 m apart over the whole lap**, with
+> **51 of 127 samples bit-identical** — the shared launch. They are visibly two
+> cars from about 5 s, and at 6.000 the record's nose is still overlapping our
+> rear wheel. If you want a clip where the two lines separate legibly, the run
+> to film is the **6.322**, which is a different lap and parts company much
+> earlier.
+>
+> `ghost verify` on the filmed file: kappa **1.000** (127 of 127 samples), the
+> plain oracle re-simulating the WRITTEN file to **6.342**, telemetry
+> 0.000 .. 6.300 inside a span ending 6.342. The trajectory did not move —
+> worst **0.0005 m** against the file it replaces.
+>
+> **This page and the front page disagree about which run is "ours", and
+> neither is wrong.** This page is about the 6.342: the world record's tape
+> with one input changed, one millisecond under the author time, thirteen
+> presses a human could make. The front page's line is about the fastest run
+> this project has validated here, which is the **6.322**. The clip is of the
+> 6.342, because that is what this page is about and what the clip it replaces
+> was. What is worth fixing is the front page carrying **6.322** in its text
+> directly above a video of a different lap.
 
 **Thirteen inputs. Nothing held for less than 80 ms. Three steering values, gas
 never released, brake never touched — and it beats the author time by a
