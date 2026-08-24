@@ -6,6 +6,24 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## The bridge skips a file whose md5 already matches, so reuse a name at your peril
+
+A push failed with `md5 mismatch after push: local 2237609f… remote bdc7fdf9…`,
+and `bdc7fdf9` was the PREVIOUS push's bundle. `wsx` sends nothing when the
+far side already holds a file of that md5, and the harness was writing every
+bundle to one fixed remote name, so a stale file could satisfy the check while
+holding the wrong commits. Each push now uses a unique name and deletes it
+afterwards. The general shape: an idempotence optimisation keyed on content is
+only safe if the NAME is unique per payload.
+
+## A map directory holds several maps, and hashing "the map" picks one at random
+
+`227654` holds the pristine map and a segment cut; `267460` holds four
+variants. A registry keyed by directory recorded whichever the scanner picked
+and the verifier compared whichever IT picked — two perfectly correct maps read
+CHANGED. Rows are keyed by id AND file name. A derived variant cannot be
+refetched from Nadeo; it is reproduced by re-running the surgery.
+
 ## A restarted supervisor counted its resume point as fresh work
 
 Twenty minutes after the first restart the budget read **582 evals for 308
@@ -86,14 +104,15 @@ anything checks. A verifier that fails on a healthy run gets ignored within a
 day. `tmhaul verify` now hashes `git show HEAD:<path>`, which is also the thing
 "banked" actually means, since a release destroys the working tree.
 
-## The map corpus is the one thing the repo does not carry
+## The map corpus is refetched, not carried — SUPERSEDED, and here is what replaced it
 
-`.Map.Gbx` files live in `~/persistent/private-30d/tm-unbeaten/<id>/` — a
-30-day store. Everything else a fresh box needs is either in the repo or a
-documented one-liner (`SETUP.md`). This is a real gap in the recovery story and
-it is stated rather than papered over: a box provisioned after that store
-expires can build and supervise, but the re-simulation sweep will report
-`UNMEASURED: no .Map.Gbx for <id>` for every map rather than silently passing.
+This entry used to say the corpus living only in a 30-day store was an open
+gap. Ruled 2026-08-24: Nadeo's map files do not go in a public repo, and the
+answer is `autopilot/config/maps.rec` — uid, name, the author time out of the
+map's own header, the documented GET route, an md5 and a byte count per FILE.
+Recovery is refetch-then-`tmresim maps verify`. What is still untested is the
+refetch itself: every map was already on the box when the registry was built,
+so no row's URL has yet been shown to return the bytes its hash names.
 
 ## `INFINITY` through a comparison makes every test false
 
