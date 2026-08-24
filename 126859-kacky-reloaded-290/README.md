@@ -18,7 +18,8 @@ https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
 | Human WR — zetos. | 24.342 | +0.280 | — | keyboard, 110 events |
 
 TMX map [126859](https://trackmania.exchange/maps/126859) · authors **Kacky**
-and **SuperrKuzco** · 22 recorded runs.
+and **SuperrKuzco** · **23 recorded runs** (board 2026-08-24; the field
+measurements on this page were taken over the 22 recorded then).
 
 Two things to say up front. **No keyboard run beats the author time here** — the
 best pure-keyboard tape is 24.164, which is 0.178 faster than the best keyboard

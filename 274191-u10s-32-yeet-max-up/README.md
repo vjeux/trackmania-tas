@@ -4,28 +4,66 @@
 tenths of road, because the moment the wheels leave, the steering does nothing
 for 1.2 seconds and your launch attitude is already decided.**
 
-| run | time | vs author time | vs human WR | inputs |
+> ### ⚠️ SUPERSEDED 2026-08-23 — a human is now 0.022 ahead of the run this page publishes
+>
+> **What this page said:** *"TAS 7.463 … −0.430 vs the human WR"*, against
+> Whatever8319's 7.893. That was true for as long as 7.893 was the record.
+>
+> **MEASURED — poruzu4's record of 7.441, set 2026-08-23 20:21:23 UTC**, board
+> fetched
+> 2026-08-24 03:32–03:37 UTC. It is **0.263 inside the author time and 0.022
+> inside our 7.463.** The replay was downloaded from Nadeo's own storage and
+> read with `ghost inspect`: it declares 7.441 in its own result chunk, on this
+> map's uid and the spawn we expect, with no respawn ticks. *Controls:*
+> Whatever8319's 7.893 — the number this page already printed — went down the
+> same path in the same batch and read back correctly, and TMX's mirror still
+> shows 7.893, which is why the file was fetched rather than trusted second
+> hand. Board now holds **4** records.
+>
+> **The author time is still beaten**: 7.463 against 7.704 is −0.241, and that
+> is what this page is for. **The human comparison is not ours any more.**
+> Everything below that reads "we are 0.430 ahead of the record" is about
+> 7.893 and is kept for that reason; against the board's record today we are
+> **0.022 behind**.
+>
+> **What it is not: a new route.** The new run finishes **3.3 m** from where
+> Whatever8319's finished, off the same spawn — MEASURED, from the two
+> downloaded replays. The same line, driven better. So the physics account
+> below stands unaltered; what has changed is who has driven it best.
+>
+> **UNKNOWN: whether the 0.022 is recoverable from this tape.** Nobody has
+> re-searched the climb against the new reference. This map needs a new run,
+> not a new page.
+
+| run | time | vs author time | vs Whatever8319's 7.893 | inputs |
 |---|---|---|---|---|
+| **poruzu4 — the board's record since 2026-08-23** | **7.441** | **−0.263** | −0.452 | human, pad |
 | **TAS** | **7.463** | **−0.241** | −0.430 | analog |
 | TAS, keyboard climb | 7.474 | −0.230 | −0.419 | 24 presses, 3 steering values |
 | **TAS, keyboard climb, 30 ms hold floor** | **7.476** | **−0.228** | −0.417 | **15 presses**, 3 values |
 | TAS, four-input climb | 7.514 | −0.190 | −0.379 | 4 inputs, 2 values — the fewest, and the hardest to hold |
 | Author time | 7.704 | — | −0.189 | — |
-| Human WR — Whatever8319 | 7.893 | +0.189 | — | — |
+| Whatever8319 — the record until 2026-08-23 | 7.893 | +0.189 | — | — |
+
+The fourth column is kept against 7.893 because that is what each of those
+margins was measured against; re-basing them on 7.441 would be arithmetic
+dressed as measurement. Against the record today, subtract 7.441.
 
 TMX map [274191](https://trackmania.exchange/maps/274191) · author
-**Everios96** · **3 recorded runs**.
+**Everios96** · **4 recorded runs** (board 2026-08-24; the measurements on this
+page were taken over the 3 that existed then).
 
 "Keyboard" here describes **the climb only**. Every run on this map, ours and
 the world record's alike, uses about 48 distinct steering values on the ground
 before the launch — restricting the ground phase to a keyboard alphabet does not
 finish at any resolution tried.
 
-**U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR 7.893 by Whatever8319
+**U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR **7.441** by poruzu4 *(the opponent in this clip is Whatever8319's 7.893, the record when it was shot — see the banner above)*
 
 https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
 
-**Our 7.463 and Whatever8319's world record, both in one camera, on our car.**
+**Our 7.463 and Whatever8319's 7.893, both in one camera, on our car.** (His was
+the world record when this was shot; poruzu4's 7.441 has since taken it.)
 On the ground the two are one car — the ground phase is not searched here, and
 all four of our tapes share it with the record, which is what the section above
 means by *"every run on this map, ours and the world record's alike, uses about
@@ -51,7 +89,8 @@ for live footage** and finds it immediately. Cut at the last live frame.
 
 *Gate.* `tmtrajcheck` **refuses** this tape at C10 — *"the flag claims 4.55 s of
 flight, over which the car changes height by 211.1 m; free fall demands
-−374.8 m."* It refuses the **downloaded human world record** the same way, at
+−374.8 m."* It refuses the **downloaded human record** — Whatever8319's 7.893 —
+the same way, at
 the same instant, with the same +211 m climb. This is a Reactor map: the car is
 thrust at ~4.5 g along its own −up axis, so C10's free-fall model is not this
 map's physics, and the check is measuring the map rather than the file. Filmed

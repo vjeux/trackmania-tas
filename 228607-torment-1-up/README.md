@@ -118,7 +118,9 @@ flag, his is still driving; that held frame *is* the 4.605 s.
 | Human WR — surms41 | 24.512 | +4.254 | — |
 
 TMX map [228607](https://trackmania.exchange/maps/228607) · author
-**Bernkastel_.**, the title crediting **Emelius.** · **27 recorded runs**.
+**Bernkastel_.**, the title crediting **Emelius.** · **30 recorded runs** (board
+2026-08-24; the field measurements on this page were taken over the 27 recorded
+then).
 
 > **These tapes are one family, not independent attacks.** Every pair of our runs
 > on this map agrees to within a millimetre for the **first 18.2 seconds of a

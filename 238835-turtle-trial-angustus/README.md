@@ -57,7 +57,8 @@ cost the author 197 seconds.**
 | The only human record (Quantiks) | 1964.933 | +1501.951 |
 
 TMX map [238835](https://trackmania.exchange/maps/238835) · author **Bald_tm** ·
-tags **Trial, Turtle** · 5 checkpoints · **1 recorded run**.
+tags **Trial, Turtle** · 5 checkpoints · **1 recorded run** (board 2026-08-24,
+unchanged).
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 

@@ -13,7 +13,9 @@ reach a finish that sits at the bottom of the lattice.**
 | Human record | *none — nobody has a time on this map* | — |
 
 TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
-**DugonGOD** · **0 recorded runs** · map uid `9wv8HirGqNFCJsFeVJg6ErKYH6b`.
+**DugonGOD** · **0 recorded runs** (board 2026-08-24, still empty — and the
+empty board is real, not a failed fetch: 36 other boards came back populated in
+the same 76-GET pass) · map uid `9wv8HirGqNFCJsFeVJg6ErKYH6b`.
 
 **untitled 01** — TAS **12.759** (−11.080) | AT 23.839 | no human has ever recorded a time here
 

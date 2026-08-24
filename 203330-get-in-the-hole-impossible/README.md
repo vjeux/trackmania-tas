@@ -31,7 +31,13 @@ equivalent; the picture says they are nothing alike.
 | Human WR — in-.- | 13.990 | −0.005 | — | 46 |
 
 TMX map [203330](https://trackmania.exchange/maps/203330) · author
-**EvenOliveTM.exe** · **only 5 recorded runs**.
+**EvenOliveTM.exe** · **5 recorded runs** (board 2026-08-24, unchanged since
+these measurements were taken).
+
+**A human is already under the author time here, and has been since before this
+page was written**: `in-.-`'s 13.990 is 0.005 inside the 13.995. This map is in
+the root page's "author time beaten" table on the strength of our 13.984, not
+on the strength of nobody else having done it.
 
 ## What the map is
 

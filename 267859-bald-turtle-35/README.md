@@ -19,8 +19,8 @@ https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|
-| **TAS 10.759 — the record** | **10.759** | **−0.009** | **−0.300** |
-| TAS 10.758 — fastest, not yet independently confirmed | 10.758 | −0.010 | −0.301 |
+| **TAS 10.758 — fastest, and the file this directory publishes** | **10.758** | **−0.010** | **−0.301** |
+| TAS 10.759 — reproduced on three separately compiled binaries | 10.759 | −0.009 | −0.300 |
 | TAS 10.768 | 10.768 | ±0 — *equals* the author time | −0.291 |
 | TAS 10.769 | 10.769 | +0.001 | −0.290 |
 | Keyboard 10.788 | 10.788 | +0.020 | −0.271 |
@@ -31,11 +31,20 @@ https://github.com/user-attachments/assets/71a7f89b-edfb-49e9-9d3c-ac8457e2935c
 | Human rank 2 | 11.189 | +0.421 | +0.130 |
 
 TMX map [267859](https://trackmania.exchange/maps/267859) · author **Bald_tm /
-BALDFROMSPB** · **19 recorded runs**.
+BALDFROMSPB** · **21 recorded runs** (board 2026-08-24; the field measurements
+on this page were taken over the 19 recorded then).
 
-Two numbers, and the slower one is the record: 10.759 has been rebuilt and
-re-run on three separately compiled binaries, while 10.758 has only ever run on
-one toolchain, so 10.759 is the figure this page cites.
+**Two numbers a millisecond apart, and they are cited for different reasons.**
+10.759 has been rebuilt and re-run on three separately compiled binaries;
+10.758 has only ever run on one toolchain. **This page cited the 10.759 for
+that reason until 2026-08-24 and now cites the 10.758**, because that is the
+one with a file: `replays/TAS_10758.Ghost.Gbx` states 10.758 in its own header,
+and `tmtraj corpus shipped` reads the 10.759 claim as `FRONT-PAGE-BEHIND`
+against it. A reader can download the 10.758 and check it; nobody can download
+a 10.759. The reproducibility caveat is not withdrawn — it is the reason both
+rows are still in the table — and **UNKNOWN: whether the 10.758 reproduces on a
+second toolchain.** Rebuilding it on one of the other two binaries settles it,
+and either answer is publishable.
 
 ## What the map is
 

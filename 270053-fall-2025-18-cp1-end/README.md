@@ -30,7 +30,8 @@ machine hunting the author medal and by the best human on the board.
 | Human WR (six players tied) | 4.495 | +0.003 | — |
 
 TMX map [270053](https://trackmania.exchange/maps/270053) · author **in-.-** ·
-1,052 recorded runs.
+**1,101 recorded runs** (board 2026-08-24; the field measurements on this page
+were taken over the 1,052 recorded then).
 
 The tape matches the author time exactly, which takes the author medal — the
 game awards it at or under the time. Nobody in 1,052 recorded attempts has managed

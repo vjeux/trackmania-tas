@@ -11,12 +11,17 @@
 > Read `CREST.md`, then `ENDING.md`, then `LAP.md`.
 
 This is **one of only two maps in this repo where we have not beaten the author
-time.** We are 2.046 under the human world record and still **4.134 over the
+time.** We are **4.834** under the human world record and still **1.346 over the
 author time**. This page is the best account anyone has of why — including a
 technique that saves five and a half seconds and that we still cannot convert
 into a lap.
 
-**Impossible Mini Trial 2** — TAS **21.022** (+4.134) | AT 16.888 | WR 23.068 by Wirtual
+> *Retracted, kept in place:* this paragraph read *"We are 2.046 under the human
+> world record and still 4.134 over the author time"* until 2026-08-24. Those
+> were the 21.022 lap's margins. The 18.234 landed on 2026-08-23 and the numbers
+> above are its; see the banner.
+
+**Impossible Mini Trial 2** — TAS **18.234** (+1.346) | AT 16.888 | WR 23.068 by Wirtual *(the clip below is the superseded 21.022 lap)*
 
 https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
 

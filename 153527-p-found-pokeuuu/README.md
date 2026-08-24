@@ -12,7 +12,7 @@ it.**
 
 TMX map [153527](https://trackmania.exchange/maps/153527) · author
 **PokeuuuTM** · RPG / Pathfinding · 44 388 blocks, 11 checkpoints and a goal ·
-**one recorded run**.
+**one recorded run** (board 2026-08-24, unchanged).
 
 No run has been driven on this map here, and no time is claimed. What follows is
 what the single recorded run shows about where the time is.

@@ -35,7 +35,9 @@ https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
 | Author time | 11.334 | — | −0.749 | — |
 | Human WR — ayti__ | 12.083 | +0.749 | — | — |
 
-TMX map [203072](https://trackmania.exchange/maps/203072) · **272 recorded runs**
+TMX map [203072](https://trackmania.exchange/maps/203072) · **301 recorded runs**
+(board 2026-08-24; the field measurements on this page were taken over the 272
+recorded then)
 · one checkpoint.
 
 This is an Altered Nadeo copy of **Fall 2024 - 04**, with geometry and surfaces

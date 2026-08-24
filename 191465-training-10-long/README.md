@@ -37,7 +37,8 @@ visible.
 | Human WR — in-.- | 13.081 | +0.001 | — |
 
 TMX map [191465](https://trackmania.exchange/maps/191465) · author **in-.-** ·
-**856 recorded runs**.
+**1070 recorded runs** (board 2026-08-24; the field measurements on this page
+were taken over the 856 recorded then).
 
 The author time is the author's own editor validation lap, and their best public
 attempt sits 0.001 behind it. Nobody has ever got past it.

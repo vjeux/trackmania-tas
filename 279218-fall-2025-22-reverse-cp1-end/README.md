@@ -60,7 +60,9 @@ start, same machinery and same seeds, stayed flat at 5.347 through ~930,000
 evaluations while the second-tick arm found 5.345 in three rounds.
 
 TMX map [279218](https://trackmania.exchange/maps/279218) · author **in-.-** ·
-339 recorded runs. It is a reversed copy of the official Fall 2025 - 22 layout.
+**474 recorded runs** (board 2026-08-24; the field measurements on this page were
+taken over the 339 recorded then). It is a reversed copy of the official Fall
+2025 - 22 layout.
 
 ## The map
 

@@ -56,7 +56,8 @@ https://github.com/user-attachments/assets/ae6e57c3-4f44-4bca-881f-361f573b1571
 | Human WR — xeap-.- | 6.346 | +0.003 | — | pad |
 
 TMX map [145875](https://trackmania.exchange/maps/145875) · author **InfTM** ·
-46 recorded runs.
+**57 recorded runs** (board 2026-08-24; the field measurements on this page were
+taken over the 46 recorded then).
 
 ## A version a person can actually press
 

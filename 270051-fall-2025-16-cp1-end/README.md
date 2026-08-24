@@ -54,7 +54,8 @@ against his 605 bytes of sparse keyboard, so the two tapes are not one tape.
 | Human WR — OriginalCJM | 4.834 | +0.003 | — | — |
 
 TMX map [270051](https://trackmania.exchange/maps/270051) · author **in-.-** ·
-903 recorded runs.
+**1026 recorded runs** (board 2026-08-24; the field measurements on this page
+were taken over the 903 recorded then).
 
 ## What the map is
 

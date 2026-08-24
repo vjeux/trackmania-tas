@@ -4,21 +4,56 @@
 lifts at 80–85° and the pads give them nothing, and lifting at 90–105° gives you
 25–35 km/h instead.**
 
-**impossible at for ssano** — TAS **14.289** (−0.359) | AT 14.648 | WR 15.039 by `in-.-`
+**impossible at for ssano** — TAS **14.289** (−0.359) | AT 14.648 | WR **14.529** by LeonesTM
+
+> ### ⚠️ SUPERSEDED 2026-08-24 — the author time is no longer unbeaten by a human
+>
+> **What this page said:** the table row *"Author time (never beaten by a
+> human) — 14.648"*, and *"Human WR — `in-.-`, rank 1 of 147 — 15.039"*. Both
+> stood until tonight and neither is deleted, because rule 4.
+>
+> **MEASURED — LeonesTM drove 14.529 on 2026-08-24 01:25:06 UTC**, board
+> fetched 2026-08-24 03:32–03:37 UTC: **0.119 inside the author time.** The
+> replay was downloaded from Nadeo's own storage and read with `ghost
+> inspect` — it declares 14.529 in its own result chunk, on this map's uid
+> and the spawn we expect, with no respawn ticks. *Controls:* two numbers our
+> pages already print went down the same path in the same batch and read back
+> correctly, and TMX's mirror still shows 14.909, which is why the file was
+> fetched rather than trusted second hand. Board now holds **185** records,
+> and **7 of the top 15 were set that same evening** — this map is under
+> active human attack.
+>
+> **We are still ahead: 14.289 against 14.529 is 0.240.** What has gone is the
+> claim that no human has taken this author medal.
+>
+> **Read every "world record" in the prose below as `in-.-`'s 15.039**, which
+> is the run all of the per-lift and per-swing measurements here were taken
+> against. Nobody has yet put LeonesTM's tape through the same treatment —
+> **UNKNOWN:** where his record finds its 0.510 over `in-.-`, and whether it
+> lifts at the attitude this page argues for. `fk trace` on the downloaded
+> replay against the lift table below would settle it, and it is the most
+> useful thing anyone could do to this map next.
 
 https://github.com/user-attachments/assets/308ba8de-8332-46c4-97d0-83745204e2af
 
-| run | time | vs author time | vs human WR | steering |
+| run | time | vs author time | vs `in-.-`'s 15.039 | steering |
 |---|---|---|---|---|
 | **TAS, keyboard** | **14.349** | **−0.299** | −0.690 | **3 values** |
 | TAS, analog | 14.289 | −0.359 | −0.750 | analog |
 | robust keyboard variant | 14.479 | −0.169 | −0.560 | 3 values |
+| **LeonesTM — the board's record since 2026-08-24** | **14.529** | **−0.119** | −0.510 | human |
 | 30-event variant | 14.608 | −0.040 | −0.431 | 3 values |
-| Author time (never beaten by a human) | 14.648 | — | −0.391 | — |
-| Human WR — `in-.-`, rank 1 of 147 | 15.039 | +0.391 | — | keyboard, 3 values |
+| Author time | 14.648 | — | −0.391 | — |
+| `in-.-` — the record until 2026-08-24, rank 1 of 147 at the time | 15.039 | +0.391 | — | keyboard, 3 values |
+
+The fourth column is kept against `in-.-`'s 15.039 because that is the run each
+of those margins was measured against; re-basing them on 14.529 would be
+arithmetic dressed as measurement.
 
 TMX map [249521](https://trackmania.exchange/maps/249521) · author **`in-.-`**,
-who also holds the human world record · **147 recorded runs**.
+who held the human world record until 2026-08-24 · **185 recorded runs** (board
+2026-08-24; the field measurements on this page were taken over the 147
+recorded then).
 
 **Not submitted to any Nadeo leaderboard, and it never will be.**
 

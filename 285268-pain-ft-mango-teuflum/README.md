@@ -53,7 +53,9 @@ is vacuous. The table above is measured from `sep`, which aligns on race time.
 | Ssnake01, his previous lap | 49.491 | +0.209 | +0.045 | **pure keyboard**, 57 steer changes |
 
 TMX map [285268](https://trackmania.exchange/maps/285268) · author **Slidelock**
-· Stadium Ice · 10 sectors, 49 seconds · **163 recorded runs**.
+· Stadium Ice · 10 sectors, 49 seconds · **180 recorded runs** (board
+2026-08-24; the field measurements on this page were taken over the 163
+recorded then).
 
 The keyboard tape is faster than all 72 keyboard runs on the leaderboard and
 would sit 3rd overall.

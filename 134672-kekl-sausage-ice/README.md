@@ -14,7 +14,12 @@ tape those are two different runs' worth of steering, and the fast one is ours.
 Its timing is measured rather than eyeballed: the two channels describe one run,
 so they agree at exactly one shift, and on this file that shift is 0 ms.
 
-TMX 134672 · uid `agH9XtjTZd8iZbuGp_KhC16jMO7` · author `Travis.TM` · 15 records
+TMX 134672 · uid `agH9XtjTZd8iZbuGp_KhC16jMO7` · author `Travis.TM` ·
+**16 records** (board 2026-08-24 03:32–03:37 UTC). Every "fifteen records"
+below is the field as it stood when it was measured; **the sixteenth has not
+been read** — UNKNOWN which build it was set on and whether it replays, which
+`ghost inspect` plus a plain-oracle run would settle. It is not a new record:
+the board's best is still Roevhaal's 63.546.
 Nothing here has been or will be submitted to a Nadeo leaderboard.
 
 > **On the world record — and on the author time.** Roevhaal's 63.546 was set on

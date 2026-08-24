@@ -14,7 +14,7 @@ gate and saves 10.5 s.**
 | Human WR — lasyoppwtf | 61.229 | — | +18.150 |
 
 TMX map [285885](https://trackmania.exchange/maps/285885) · author **lasyopp** ·
-**3 recorded runs**. The author time has not been beaten. The "world record" is
+**3 recorded runs** (board 2026-08-24, unchanged). The author time has not been beaten. The "world record" is
 the author's own alt account, 18.150 slower than the time they set themselves.
 
 ## The map's joke

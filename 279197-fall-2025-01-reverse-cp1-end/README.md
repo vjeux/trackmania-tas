@@ -15,7 +15,8 @@ everybody the same.**
 | Human WR — ShcrTM | 10.602 | +0.004 | — | pad |
 
 TMX map [279197](https://trackmania.exchange/maps/279197) · author **in-.-** ·
-**561 recorded runs**.
+**663 recorded runs** (board 2026-08-24; the field measurements on this page were
+taken over the 561 recorded then).
 
 ## The map
 

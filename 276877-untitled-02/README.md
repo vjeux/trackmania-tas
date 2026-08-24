@@ -13,7 +13,7 @@ is spent airborne, riding the lattice's own launches rather than driving it.**
 | Human record — Its_Cam. | 14.959 | −16.440 |
 
 TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
-**DugonGOD** · **1 recorded run** — the first human time on this map was set on 2026-08-20.
+**DugonGOD** · **1 recorded run** (board 2026-08-24, unchanged) — the first human time on this map was set on 2026-08-20.
 
 **untitled 02** — TAS **9.415** (−21.984) | AT 31.399 | WR 14.959 by Its_Cam.
 

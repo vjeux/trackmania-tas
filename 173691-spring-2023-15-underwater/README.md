@@ -6,13 +6,45 @@ car crosses the deck plane at z = 448.2 and comes to rest on the deck at
 y = 114.0, stationary, 0.6 km/h.**
 
 TMX map [173691](https://trackmania.exchange/maps/173691) by **Reddnox** ·
-3 checkpoints · author time **2672.290** · **0 online records**.
+3 checkpoints · author time **2672.290** · **1 online record — Maionez77,
+1571.209** (MEASURED, board fetched 2026-08-24 03:32–03:37 UTC; the same 76-GET
+pass re-read all 37 boards this repo tracks and 28 came back with exactly the
+record the page already printed, which is the control that it reads boards
+rather than manufacturing them).
 **This landing does not beat the map** — it stops on a deck 15.7 m below a
 finish that fires; see "not a win" and "which map this is" below. The map
-itself was beaten separately, on 2026-08-22, by a route that reaches the
-finish; that run is not this page's.
+itself was beaten separately, on 2026-08-22, by that record; that run is not
+this page's.
 
-**Spring 2023 - 15 (Underwater)** — TAS **36.049** (not a completion — a landing) | AT 2672.290 | WR — by nobody (0 online records)
+> ### ⚠️ SUPERSEDED 2026-08-24 — this board is no longer empty, and the author time is no longer unbeaten
+>
+> **What this page said, in two places:** *"**0 online records**"* and *"WR — by
+> nobody (0 online records)"*. Neither is deleted, because rule 4.
+>
+> **MEASURED:** **Maionez77 finished this map in 1571.209 on 2026-08-22
+> 20:05:09 UTC**, no respawns — **1101.081 under the author time.** It is the
+> only record on the board. A downloadable file by a human now contradicts the
+> central argument of the sections below, which is that the finish cannot be
+> reached: it plainly can, because somebody reached it.
+>
+> **And it disagrees with this page about the map itself.** That run passes
+> **four** intermediate gates where the header above says three checkpoints.
+> **UNKNOWN which is right.** The page's own block census (`ENDGAME-MEASURED.md`)
+> counted the `GateFinish` blocks, not the checkpoint set, so the two numbers
+> were never measured by the same instrument. Re-running the census over the
+> checkpoint blocks, and `ghost inspect` on the downloaded 1571.209, would
+> settle it in one pass.
+>
+> **What survives.** Everything below about *this jump* stands: the flight from
+> GothMommyTM's own lip really does land on the deck at y = 114.0, the deck
+> really is 15.7 m below the lowest firing finish gate, and the 456-block
+> census between the decks really did find no ramp. Those are measurements
+> about a route. **What does not survive is the inference drawn from them** —
+> that the finish is out of reach. It was out of reach *from this deck, along
+> this route*. Maionez77 did not come that way, and nobody here has yet looked
+> at how he did come.
+
+**Spring 2023 - 15 (Underwater)** — TAS **36.049** (not a completion — a landing) | AT 2672.290 | WR **1571.209** by Maionez77
 
 https://github.com/user-attachments/assets/301f3c33-ae38-4ffd-9c31-8f709bf257d0
 

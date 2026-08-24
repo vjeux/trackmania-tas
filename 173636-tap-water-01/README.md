@@ -49,7 +49,8 @@ life of this page; on 2026-08-20 Lukrecja666 took it by 0.027, pushing the
 author's own 23.638 down to third. Our 22.072 still leads the board by 1.226.
 
 TMX map [173636](https://trackmania.exchange/maps/173636) · author **Reddnox** ·
-**602 recorded runs** — one of the most hunted maps here.
+**655 recorded runs** (board 2026-08-24; the field measurements on this page
+were taken over the 602 recorded then) — one of the most hunted maps here.
 
 ## What the map is
 

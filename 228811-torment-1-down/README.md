@@ -49,7 +49,8 @@ seam.
 | Human WR — KappaRiley | 22.637 | +2.082 | — |
 
 TMX map [228811](https://trackmania.exchange/maps/228811) · by **Bernkastel_. /
-Emelius.** · **48 recorded runs**.
+Emelius.** · **68 recorded runs** (board 2026-08-24; the field measurements on
+this page were taken over the 48 recorded then).
 
 This is the same map as [Torment (1-UP)](../228607-torment-1-up) with the finish
 64 m lower.

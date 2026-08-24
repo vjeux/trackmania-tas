@@ -69,7 +69,8 @@ Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 Author time **355.181** — faster than the human world record, and set by the same
 person. unbeaten.at MapId 286279, uid `p0tVjdmb1DfkCVrDE_DfQN84kq8` · author
 **BALDFROMSPB / Bald_tm**, who also holds the world record · tags Trial, Turtle ·
-**5** recorded runs, all five analysed. Every time above was re-simulated against
+**5** recorded runs (board 2026-08-24, unchanged), all five analysed. Every time
+above was re-simulated against
 Nadeo's own map file with the world record as a control.
 
 ## The leaderboard ranks failures, not pace

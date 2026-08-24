@@ -55,9 +55,11 @@ author medal of 38.530 is still 0.438 short. What this map has is a lap 1.255
 under the fastest human.
 
 TMX map [146612](https://trackmania.exchange/maps/146612) · authors
-**AmpelJoe10** and **Wakawukwuk** · 181 recorded runs.
+**AmpelJoe10** and **Wakawukwuk** · **182 recorded runs** (board 2026-08-24; the
+field measurements on this page were taken over the 181 recorded then).
 
-**181 records does not mean the field is settled here.** Only five runs are
+**181 records did not mean the field was settled here, and 182 does not
+either.** Only five runs are
 within a second of the world record, and there is an 0.849 cliff between rank 2
 and rank 3. This is two players who duelled and 179 who did not, which is why a
 whole second was still lying on the floor.

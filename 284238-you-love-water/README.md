@@ -2,16 +2,43 @@
 
 **The whole map is one 71 m gap, jumped four times. Cross the lip at about
 300 km/h and you fly it; cross at 255 and you fall into the tube below and lose
-9–15 s. The only recorded human run misses it three times out of four.**
+9–15 s. brick555's run — the only one recorded when this page was written —
+misses it three times out of four.**
 
 | run | time | vs author time | note |
 |---|---|---|---|
 | **TAS** | **97.325** | +46.866 | one life, no respawns |
-| Human record — brick555 | 440.238 | +389.779 | contains 31 respawns |
+| **Human record — DarrahTM** | **124.205** | +73.746 | took the board 2026-08-21; we are 26.880 ahead of it |
+| Human rank 2 — brick555 | 440.238 | +389.779 | contains 31 respawns; the record until 2026-08-21 |
 | Author time | 50.459 | — | never beaten |
 
 TMX map [284238](https://trackmania.exchange/maps/284238) · author
-**Eating_My_Wings** · 4 checkpoints · **exactly one recorded run**.
+**Eating_My_Wings** · 4 checkpoints · **2 recorded runs**.
+
+> ### ⚠️ SUPERSEDED 2026-08-24 — brick555 is no longer the record here
+>
+> **What this page said:** *"Human record — brick555 — 440.238"*, and *"exactly
+> one recorded run"*. Kept, not deleted, because rule 4.
+>
+> **MEASURED — DarrahTM drove 124.205 on 2026-08-21 20:43:32 UTC**, board
+> fetched 2026-08-24 03:32–03:37 UTC in one 76-GET pass, all HTTP 200. The
+> board holds **2** records; brick555's 440.238 is rank 2. *Control:* the same
+> pass re-read all 37 boards this repo tracks and 28 came back with exactly
+> the record the page already printed, so the pass reads boards rather than
+> manufacturing them.
+>
+> **The author time is still unbeaten** — 124.205 is 73.746 over it — and our
+> 97.325 is still the fastest time recorded on this map, now by 26.880 rather
+> than by 342.913.
+>
+> **UNKNOWN: what DarrahTM's line does at the lip.** Every lip-speed table
+> below is measured on brick555's 440.238 and on our own tapes; nobody has
+> downloaded the 124.205. Since the whole page turns on a threshold
+> *bracketed between 255 and 302 km/h and never measured*, a second human run
+> — a third of the length, so it cannot be missing the gap three times out of
+> four — is the best evidence anyone has been offered for narrowing that
+> bracket. `fk trace` on the downloaded replay, reading speed at each of the
+> four lips, is the open task.
 
 The author time still stands. What follows is what the map is and where its time
 goes, not a route that beats it — **the sector-by-sector guide for this map is
@@ -43,7 +70,7 @@ climb back out.
 
 ## Where the time goes: the lip
 
-Across the 23 attempts inside the human record:
+Across the 23 attempts inside brick555's 440.238:
 
 | speed at the lip | attempts | outcome |
 |---|---|---|
@@ -54,7 +81,7 @@ The threshold is **bracketed between 255 and 302 km/h**, not measured. Missing
 the gap costs 9–15 s, and the record misses it in three of the four copies. That
 is the 40 s of the run right there, before any respawns.
 
-Lip speeds in that record, by copy: **305 km/h** (copy 0, cleared), then 240, 251
+Lip speeds in brick555's run, by copy: **305 km/h** (copy 0, cleared), then 240, 251
 and 210 km/h — all three fell in at 89–129 km/h.
 
 ## Why copies 1–3 are so much harder than copy 0

@@ -14,6 +14,9 @@ TMX map [203169](https://trackmania.exchange/maps/203169) · Ubisoft Nadeo ·
 "Map 12 of the Platform Discovery campaign" · uid `mA834Z8Nip9VGmiSn1I3mL2KAVa`
 · internal name `PlatformWaterHFCInsideShort` · TM_Platform, 9 checkpoints ·
 best replay uploaded to TMX **88.898** (Sapi, 8 respawns), 12 replays in all.
+Live Nadeo board, fetched 2026-08-24 03:32–03:37 UTC: **564 records, best
+98.857 by SmallPumpk1n** — nothing on this page is measured against it, and
+none of it is ours.
 
 ## The short version
 

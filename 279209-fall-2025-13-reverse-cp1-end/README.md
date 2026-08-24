@@ -41,7 +41,8 @@ start.
 | Best human keyboard run (rank 3) | 6.608 | +0.013 | +0.004 | 17 events, 3 values |
 
 TMX map [279209](https://trackmania.exchange/maps/279209) · author **in-.-** ·
-**334 recorded runs**.
+**418 recorded runs** (board 2026-08-24; the field measurements on this page were
+taken over the 334 recorded then).
 
 ## The map
 

@@ -52,7 +52,8 @@ their failed attempts each lasted longer than that.**
 | Author time (never beaten by a human) | 2540.641 | — |
 | Human WR — keby | 2575.154 | +34.513 |
 
-Map 186935 · author **Taxonomon** · **7 recorded runs** · 16 checkpoints and a
+Map 186935 · author **Taxonomon** · **7 recorded runs** (board 2026-08-24,
+unchanged) · 16 checkpoints and a
 finish.
 
 ## Where the time is

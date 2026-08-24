@@ -81,7 +81,7 @@ human recordings** — the historic donor plus the board's current ranks 1, 2 an
 | Human world record — banktm | 16.870 | +1.227 | set 2026-08-20; our tape leads it by 1.653 |
 | The board's previous human record | 8790.769 | — | 2 h 26 m — see below |
 
-TMX map [165922](https://trackmania.exchange/maps/165922) · **seven recorded runs** — for most of this page's life there was one, a 2 h 26 m crawl; banktm set a real time of **16.870** on 2026-08-20, and the board now also holds Miota.TM at 18.953 and Nanachi97 at 42.677.
+TMX map [165922](https://trackmania.exchange/maps/165922) · **11 recorded runs** (board 2026-08-24; there were seven when the paragraph below was written) — for most of this page's life there was one, a 2 h 26 m crawl; banktm set a real time of **16.870** on 2026-08-20, and the board also holds Miota.TM at 18.953 and Nanachi97 at 42.677. **UNKNOWN what the four runs added since are**; none of them took the record, which is still banktm's 16.870.
 
 ## The map in one paragraph
 

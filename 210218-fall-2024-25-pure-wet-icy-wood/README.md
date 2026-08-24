@@ -5,12 +5,51 @@
 world record in sector 11 alone. Arrive pointed where you are going and keep the
 wheel still.**
 
-**Fall 2024 - 25 (pure wet icy wood)** — TAS **95.575** (+1.098) | AT 94.477 | WR 96.281 by iambeeen
+**Fall 2024 - 25 (pure wet icy wood)** — TAS **UNKNOWN — 95.507, 95.575 or 96.068, see below** | AT 94.477 | WR 96.281 by iambeeen
+
+> ### ⚠️ UNKNOWN 2026-08-24 — this map is published with three different "our best" numbers and no file for two of them
+>
+> This is not a rounding disagreement. Three numbers are in print for the same
+> thing, none of them retracted, and **the honest state is that nobody here can
+> currently say which is this project's best validated lap on this map.**
+>
+> | number | where it is published | what backs it |
+> |---|---|---|
+> | **95.507** | the root [`../README.md`](../README.md), *"this TAS"* | **nothing in this directory.** `tmtraj corpus shipped` reads it `UNSHIPPED` |
+> | **95.575** | this page's own caption and table, below | **nothing in this directory** |
+> | **96.068** | `replays/TAS_96068.Ghost.Gbx` | its own header states it, and it is the tape the clip on this page was shot from |
+>
+> **MEASURED:** `tmtraj corpus shipped --root .` reads this directory's two
+> files and the fastest header among them is **96.068** — 0.561 slower than the
+> front page's claim and 0.493 slower than this page's. *Control:* the same
+> scan reads 26 other maps' claims as `BACKED` by a file that states the time,
+> so it is capable of finding a backing file when one exists.
+>
+> **What is NOT in doubt.** The author time is not beaten here on any of the
+> three numbers — 94.477 is under all of them — and 96.281 is the human world
+> record. Nothing in the rest of this page depends on which of 95.507 and
+> 95.575 is right: the sector analysis, the slip-angle result and the
+> spend-it-backward argument are all measured against the world record's lap
+> and against the field, not against our headline.
+>
+> **What would settle it, and it is a small job.** Re-simulate the search tape
+> through the plain oracle and read the time it returns; then either publish
+> the file it produces in `replays/` and print that number in both places, or —
+> if the tape cannot be found — retract both 95.507 and 95.575 in favour of the
+> 96.068 that has a file. Until one of those happens **the only number on this
+> map a reader can check for themselves is 96.068**, and that is the one to
+> quote if you need a defensible figure today.
+>
+> A note on how this happened, because it is the reusable part: a *search tape*
+> is a validated time before it is a renderable ghost, and this project has
+> published the time in one place, a refinement of it in another, and a file
+> for neither. `tmtraj corpus shipped` exists to catch exactly that, and it did.
 
 https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 
-*The clip is an earlier 96.068 tape — the same line, 0.493 slower than the
-95.575 this page describes; it has not been re-filmed yet.*
+*The clip is the 96.068 tape — the fastest run this directory publishes as a
+file, and 0.493 slower than the 95.575 the page below describes. See the UNKNOWN
+banner: it has not been re-filmed, and there is nothing here to re-film it from.*
 
 > ### The two files in `replays/` were suspected of sharing a recording. They do not — MEASURED, and the suspicion is retracted.
 >
@@ -50,19 +89,26 @@ https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 > `tmtraj adjudicate` prints the restricted statistic for that reason.
 
 TMX [210218](https://trackmania.exchange/maps/210218) · author time **94.477** ·
-world record **96.281** (iambeeen) · **36 recorded runs**
+world record **96.281** (iambeeen) · **42 recorded runs** (board 2026-08-24; the
+field measurements on this page were taken over the 36 recorded then)
 
 | | time | vs AT | vs WR |
 |---|---|---|---|
-| **our TAS** | **95.575** | **+1.098** | **−0.706** |
+| **our best lap — 95.507 or 95.575, UNKNOWN which** | **95.507 / 95.575** | **+1.030 / +1.098** | **−0.774 / −0.706** |
+| our fastest **published file**, `replays/TAS_96068.Ghost.Gbx` | 96.068 | +1.591 | −0.213 |
 | world record, iambeeen | 96.281 | +1.804 | — |
 | author time | 94.477 | — | −1.804 |
 
-**The author time is not beaten on this map.** Our best validated lap, 95.575,
-is 1.098 s **over** the author time and 0.706 s under the human world record —
-fastest ever driven here, and still short of the medal. The reason is unusual
-enough to be the subject of this page: on 210218 the time exists and cannot be
-spent.
+**The author time is not beaten on this map**, on any of those numbers. Our best
+validated lap is 1.030–1.098 s **over** the author time and 0.706–0.774 s under
+the human world record — fastest ever driven here, and still short of the medal.
+The reason is unusual enough to be the subject of this page: on 210218 the time
+exists and cannot be spent.
+
+> *Retracted, kept in place:* this table used to read *"our TAS — 95.575 —
+> +1.098 — −0.706"* as a single settled row. See the UNKNOWN banner at the top
+> of the page: the front page says 95.507, this page said 95.575, and there is
+> no file for either.
 
 ---
 

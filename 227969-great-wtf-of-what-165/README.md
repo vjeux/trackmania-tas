@@ -1,10 +1,35 @@
 # Great wtf of what #165
 
-**The author time is 8.127 and no human has beaten it. It falls on a keyboard,
-with the same three steering values and one more key press than the world
-record holder uses.**
+**The author time is 8.127 and it falls on a keyboard, with the same three
+steering values and one more key press than the world record holder uses.**
 
-**Great WTF of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR 8.197 by Titoch_tm
+**Great WTF of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR **8.127** by Tannuleet
+
+> ### ⚠️ SUPERSEDED 2026-08-23 — a human has now equalled the author time, which takes the medal
+>
+> **What this page said:** *"The author time is 8.127 and **no human has beaten
+> it**."* That sentence is now false and it is not deleted, because rule 4.
+>
+> **MEASURED — Tannuleet drove 8.127 on 2026-08-23 17:52:35 UTC**, board
+> fetched 2026-08-24 03:32–03:37 UTC: **equal to the author time to the
+> millisecond**, and matching the author time takes the medal, so the author
+> medal on this map is no longer unclaimed by a human. The replay was
+> downloaded from Nadeo's own storage and read with `ghost inspect` — it
+> declares 8.127 in its own result chunk, on this map's uid and the spawn we
+> expect, with no respawn ticks. *Control:* Titoch_tm's 8.197, the number this
+> page already printed, went down the same path in the same batch and read
+> back correctly. Board now holds **46** records.
+>
+> **What survives: the 7.998 is still the fastest time recorded on this map,
+> and it is still 0.129 under the author time.** What does not survive is the
+> "nobody has done it" framing — a human has now matched it, on a keyboard,
+> which is exactly what the rest of this page argues is possible.
+>
+> Because 8.127 is *both* the author time and the record, every "vs human WR"
+> figure below that was measured against 8.197 is now a figure against a
+> record that has moved; the column is labelled with the run it was measured
+> against, and against today's record the "vs human WR" column and the "vs
+> author time" column coincide.
 
 > ### ⚠️ The clip on this page is not this run — the TIME is sound, the FILM is not
 >
@@ -29,7 +54,7 @@ Single car: the **7.998**, our fastest run here, driven with analog steering and
 below is the 8.050, made of eight steering levels, which a keyboard with action
 keys can reach.
 
-**Great WTF of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR 8.197 by Titoch_tm
+**Great WTF of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR **8.127** by Tannuleet *(the opponent in this clip is Titoch_tm's 8.197, the record when it was shot)*
 
 https://github.com/user-attachments/assets/ce212204-01ef-437e-9f2b-631967f19249
 
@@ -39,16 +64,18 @@ gap opens where the run is decided rather than steadily: watch 4.4 s onward,
 where the two cars take visibly different lines through the grass section and
 ours arrives at the loop already ahead. We finish 0.147 in front.
 
-| run | time | vs author time | vs human WR | inputs |
+| run | time | vs author time | vs Titoch_tm's 8.197 | inputs |
 |---|---|---|---|---|
 | **TAS, keyboard only** | **8.075** | **−0.052** | **−0.122** | 14 changes, 12 of them steering |
 | TAS, 8-level action keys | 8.050 | −0.077 | −0.147 | — |
 | TAS, unconstrained | **7.998** | −0.129 | −0.199 | analog, 111 steering values |
 | Author time | 8.127 | — | −0.070 | — |
-| Human WR — Titoch_tm | 8.197 | +0.070 | — | keyboard, 11 steering events |
+| **Tannuleet — the board's record since 2026-08-23** | **8.127** | **±0 — equals the author time** | −0.070 | human, keyboard |
+| Titoch_tm — the record until 2026-08-23 | 8.197 | +0.070 | — | keyboard, 11 steering events |
 
 TMX map [227969](https://trackmania.exchange/maps/227969) · author
-**FrankTheHamster** · 42 recorded runs.
+**FrankTheHamster** · **46 recorded runs** (board 2026-08-24; the field
+measurements on this page were taken over the 42 recorded then).
 
 ## What the whole field is doing wrong
 
@@ -58,8 +85,9 @@ actually 0.010 behind the world record. **All of it is made in the last 1.4 s.**
 The map ends with the car thrown off a wall at 420 km/h, arcing along a curved
 wall, then kicked into a ballistic flight through the finish gate.
 
-**Every one of the 42 recorded runs holds full lock through that wall-ride.**
-Holding it rides the car up the curve and rolls it over: by the kicker the world
+**Every one of the 42 runs recorded when this was measured holds full lock
+through that wall-ride.** Holding it rides the car up the curve and rolls it
+over: by the kicker the world
 record is nose-up 57° and rolled almost onto its side. A tipped, crabbing car
 pays the kicker about a third of its speed.
 
@@ -169,7 +197,7 @@ launches steep and slow.
 **Check your run on the speedo** as you are thrown into the final flight
 (~7.4 s):
 
-* **221 km/h** — you drove it like the current world record (≈8.20)
+* **221 km/h** — you drove it like Titoch_tm's 8.197 (≈8.20)
 * **240 km/h** — about the author time
 * **252 km/h** — 8.075, the keyboard run
 * **263 km/h** — 7.998, the TAS floor

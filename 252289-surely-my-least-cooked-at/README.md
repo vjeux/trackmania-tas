@@ -27,7 +27,8 @@ car reached the line. Ours is the one in front when they get there.
 | Author time | 3.851 | — | −0.016 | — | — |
 
 TMX map [252289](https://trackmania.exchange/maps/252289) · author **in-.-** ·
-706 recorded runs.
+**851 recorded runs** (board 2026-08-24; the field measurements on this page were
+taken over the 706 recorded then).
 
 The record holder is himself on keyboard — exactly three steering values, eight
 input changes for the whole lap. This is not a machine out-precising a human; it

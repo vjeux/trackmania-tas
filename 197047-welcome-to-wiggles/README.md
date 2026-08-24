@@ -39,7 +39,9 @@ taken from the tape's certificate.
 | Human WR — Beagle.3 | 101.794 | +1.010 | — | 229 values, pad |
 
 TMX map [197047](https://trackmania.exchange/maps/197047) · author **CatBagasm**
-· tags **Endurance, Race, Educational** · **22 recorded runs**.
+· tags **Endurance, Race, Educational** · **27 recorded runs** (board
+2026-08-24; the field measurements on this page were taken over the 22 recorded
+then).
 
 ## What the map is
 

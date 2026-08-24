@@ -4,19 +4,57 @@
 run is one question: can you arrive in a state the upper row will accept? The
 author time is now beaten — 18.160 against 18.806.**
 
-**Miru's Hell 2** — TAS **18.160** (−0.646) | AT 18.806 | WR 21.105 by deeperjungle
+**Miru's Hell 2** — TAS **18.160** (−0.646) | AT 18.806 | WR **9.075** by AshenBeast1985
+
+> ### ⚠️ SUPERSEDED 2026-08-24 — a human is now 9.085 ahead of this run
+>
+> **What this page said, and what is left of it below.** Two claims here have
+> fallen and they are not deleted, because rule 4: *"2.945 inside the human
+> record"* (deeperjungle's 21.105) and *"18.160 is the fastest time anyone has
+> recorded on this map"*. Both were true when written, against a three-run
+> board topped by 21.105.
+>
+> **MEASURED — board fetched 2026-08-24 03:32–03:37 UTC**, one 76-GET pass,
+> all HTTP 200. **AshenBeast1985 finished this map in 9.075 on 2026-08-21
+> 20:44:52 UTC**, and the board now holds **4** records. *Control:* the same
+> pass re-read all 37 boards this repo tracks and **28 came back with exactly
+> the record the page here already printed** — so the pass reads boards
+> rather than manufacturing them. The nine that moved are named in
+> [`../LEADERBOARDS.md`](../LEADERBOARDS.md).
+>
+> **What survives, and it is the point of the page: the author time is still
+> beaten.** 18.160 against 18.806 is **−0.646**, and that margin is against
+> the map, not against the field. What does not survive is every comparison
+> on this page to *the human record*: we are **9.085 behind** the run now at
+> the top of this board, not 2.945 clear of it.
+>
+> **And there is still no file.** This directory has **no `replays/`
+> directory at all** — `tmtraj corpus shipped` calls it `NO-REPLAYS-DIR` —
+> so the 18.160 is a validated time with nothing here a reader can download.
+>
+> **UNKNOWN: what the 9.075 actually does.** Nobody here has downloaded or
+> re-simulated it, so which of this map's fifteen finish gates it crosses,
+> and whether its launch is reachable from the author's own mechanism, is
+> not known. `ghost inspect` on the downloaded replay plus a plain-oracle
+> re-simulation would settle it. That is the open task on this map, and it
+> is a more interesting one than the page's old ending suggested.
 
 https://github.com/user-attachments/assets/f6d9b714-2c3d-4ac8-a39d-6adea8eea3ee
 
-**The author time is beaten, by 0.646.** 18.160 is **0.646 under the 18.806** and
-**2.945 inside the human record** — deeperjungle's 21.105, set on 2026-08-20 and
-still standing when this board was re-pulled on 2026-08-21. This is the first
-author-time beat on this map. It is worth keeping the two margins apart: the
-human board has three runs on it and has not converged, so being 2.945 clear of
-it says little, and **the 0.646 against the author is the result.**
+**The author time is beaten, by 0.646.** 18.160 is **0.646 under the 18.806**.
+This is the first author-time beat on this map, and **the 0.646 against the
+author is the result.**
+
+> *Retracted, kept in place:* this paragraph used to continue *"and 2.945
+> inside the human record — deeperjungle's 21.105, set on 2026-08-20 and still
+> standing when this board was re-pulled on 2026-08-21… the human board has
+> three runs on it and has not converged, so being 2.945 clear of it says
+> little."* The hedge was right and the number is dead: on 2026-08-21 the
+> board gained a 9.075. See the banner above.
 
 **One camera, both cars.** Ours is the magenta car the camera follows;
-deeperjungle's 21.105 is in the same frame, not in a second pane. They are
+deeperjungle's 21.105 — the record when this was shot — is in the same frame,
+not in a second pane. They are
 within **25 m of each other for the first 15.5 s** — 232 of 364 paired samples
 sit in the band where two cars read as two cars — and then ours goes: **42 m
 apart at 16 s, 92 m at 17 s, 183 m at 18 s.** deeperjungle leaves the shot in the
@@ -42,7 +80,7 @@ The filmed file is the second reconstruction, `mh2_WATCHABLE_18160_v2`
 (md5 `0f63623a…`), which sits **2.5 mm** from the tape's own route dump where the
 first sat 0.865 m.
 
-**Miru's Hell 2** — TAS **19.427** (+0.621) | AT 18.806 | WR 21.105 by deeperjungle
+**Miru's Hell 2** — TAS **19.427** (+0.621) | AT 18.806 | WR **9.075** by AshenBeast1985 *(the opponent in this clip is deeperjungle's 21.105, the record when it was shot)*
 
 https://github.com/user-attachments/assets/d7f87580-9b89-4ae3-9eed-ea3f0b232053
 
@@ -53,22 +91,33 @@ by 12.6 s ours is a whole section ahead. It is two panes rather than one camera
 because *those* two runs finish **335 m apart at their widest** — a chase camera
 would lose the second car within seconds.
 
-| run | time | vs author time | vs the record |
+| run | time | vs author time | vs deeperjungle's 21.105 |
 |---|---|---|---|
+| **AshenBeast1985 — the board's record since 2026-08-21** | **9.075** | **−9.731** | −12.030 |
 | **TAS, the filmed one** | **18.160** | **−0.646** | **−2.945** |
 | TAS, previous best | 18.942 | +0.136 | −2.163 |
 | TAS, filmed earlier | 19.427 | +0.621 | −1.678 |
 | TAS, watchable earlier | 20.296 | +1.490 | −0.809 |
 | TAS, earlier still | 20.942 | +2.136 | −0.163 |
 | Author time | 18.806 | — | −2.299 |
-| **Record — deeperjungle** | **21.105** | +2.299 | — |
+| deeperjungle — the record until 2026-08-21 | 21.105 | +2.299 | — |
 | lqpzz | 23.689 | +4.883 | +2.584 |
 | Herrlille | 25.681 | +6.875 | +4.576 |
 
+The third column is kept against deeperjungle's 21.105 rather than re-based on
+the new record, because every one of those margins was measured against that
+run and re-basing them would be arithmetic dressed as measurement. Against the
+board's record today, subtract 9.075.
+
 The 18.942 held this page's headline until 18.160 validated and reconstructed;
-its clip has been withdrawn so the page shows one best. **18.160 is the fastest
-time anyone has recorded on this map**, and the first that reaches the author's
-own launch mechanism rather than merely getting near it.
+its clip has been withdrawn so the page shows one best.
+
+> *Retracted, kept in place:* this paragraph used to say **"18.160 is the
+> fastest time anyone has recorded on this map"**. It is not, and has not been
+> since 2026-08-21 20:44:52 UTC — AshenBeast1985's 9.075 is. What is still true
+> is the clause after it: 18.160 is the first run here that reaches the
+> author's own launch mechanism rather than merely getting near it, and it is
+> the first to take the author medal.
 
 ### What was checked before it was filmed
 
@@ -169,7 +218,11 @@ Herrlille's recording, and it announced itself to the game as `Ghost:Herrlille`
 until it was repaired — while passing a byte census of its declared time
 cleanly, because the patcher had fixed the time and nothing else.
 
-There is a pleasing detail in that. **Herrlille is now rank 3 on this board.**
-Without checking the live leaderboard before writing this page, we would have
-compared our run to a record that had already fallen, using a container borrowed
-from the man who lost it.
+There is a pleasing detail in that. **Herrlille was rank 3 on this board when
+this was written.** Without checking the live leaderboard before writing this
+page, we would have compared our run to a record that had already fallen, using
+a container borrowed from the man who lost it.
+
+**And the same thing has now happened to this page.** The board gained a 9.075
+on 2026-08-21 and nothing here noticed for three days — see the banner at the
+top. The lesson does not stop applying to the page that wrote it down.
