@@ -42,7 +42,7 @@ clip alignment <ghost.Gbx> [--span-ms N]
     one run, so they agree at exactly one shift -- which makes overlay timing a
     measurement rather than something to eyeball against a frame.
 
-clip frames <in.mp4> <outdir> [--at T,T,...] [-n N] [--prefix P]
+clip frames <in.mp4> <outdir> [--at T,T,...] [-n N] [--prefix P] [--stream]
     Still frames out of a finished clip, because FILMING.md rule 6 says look at
     what you made and there was no tool for it. --at names the instants (the
     ones the telemetry says something should be happening); -n N spreads N
@@ -139,6 +139,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 at,
                 count,
                 prefix: val("--prefix").cloned().unwrap_or_default(),
+                stream: args.iter().any(|a| a == "--stream"),
             };
             let ff = platform::from_env()?;
             frames::run(&ff, Path::new(&args[1]), Path::new(&args[2]), &o)

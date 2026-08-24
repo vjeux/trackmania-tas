@@ -96,20 +96,52 @@ pub struct Opts {
     pub at: Vec<f64>,
     pub count: Option<usize>,
     pub prefix: String,
+    /// Take the file as a STREAM: do not read a duration from it and do not
+    /// refuse a time past one.
+    ///
+    /// A render that is still being written has no duration in its container
+    /// header — `ffprobe` reports `0.001s` or nothing at all — so every
+    /// requested still reads as "past the end" and the whole command refuses.
+    /// That is right for a finished clip, where a time past the end is a
+    /// mistake worth stopping for, and useless for the case this exists for:
+    /// looking at a render IN PROGRESS. On a map whose author ghost is 2540 s
+    /// long, every render is 1h45m whatever the run is, and the first ninety
+    /// seconds of it are the only way to answer a question about the camera
+    /// without paying for the whole thing.
+    ///
+    /// The guard that matters does not go away: each still is still confirmed
+    /// to exist and to be non-empty afterwards, so a time genuinely past the
+    /// end fails on the still rather than on the probe.
+    pub stream: bool,
 }
 
 pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String> {
-    let dur = ff.probe_duration(input)?;
-    let times = if let Some(n) = o.count { spread(dur, n) } else { o.at.clone() };
+    let dur = if o.stream {
+        ff.probe_duration(input).unwrap_or(0.0)
+    } else {
+        ff.probe_duration(input)?
+    };
+    let times = if let Some(n) = o.count {
+        if o.stream && dur <= 0.0 {
+            return Err("-n N needs a duration; with --stream pass --at T,T,... instead".into());
+        }
+        spread(dur, n)
+    } else {
+        o.at.clone()
+    };
     if times.is_empty() {
         return Err("nothing to grab: pass --at T,T,... or -n N".into());
     }
     std::fs::create_dir_all(outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
 
-    println!("frames: {} of {}s", times.len(), secs(dur));
+    if o.stream {
+        println!("frames: {} as a STREAM (no duration read from the file)", times.len());
+    } else {
+        println!("frames: {} of {}s", times.len(), secs(dur));
+    }
     let mut made: Vec<PathBuf> = Vec::new();
     for &at in &times {
-        if at > dur {
+        if !o.stream && at > dur {
             return Err(format!(
                 "asked for a frame at {}s of a {}s clip",
                 secs(at),
