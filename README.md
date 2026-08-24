@@ -112,7 +112,7 @@ https://github.com/user-attachments/assets/b1155422-3fbf-43a6-b265-a6740a02f24a
 
 https://github.com/user-attachments/assets/bca97931-5f35-4965-bebf-c66c35e26751
 
-**[P-Found - Pokeuuu](153527-p-found-pokeuuu)** — author time `939.283` · ours — *nobody here has driven it and no time is claimed* · best human 5661.335 (AuwrahTM) · 1 record · **no clip** · the de-looping figure of 892.148 is **withdrawn**: with a minimum junction size, seven real loops give 941.588, which is 2.305 **over** the author time. The barrier is driving the map at all — 165.868 s of the route is under 20 km/h
+**[P-Found - Pokeuuu](153527-p-found-pokeuuu)** — author time `939.283` · ours — *nobody here has driven it and no time is claimed* · best human 5661.335 (AuwrahTM) · 1 record · **no clip** · two spliced study artefacts published: the human record with its 110 retries cut is **1214.545**, and with the seven closed loops cut too it is **941.395**, 2.112 **over** the author time. Neither is a lap. The de-looping figure of 892.148 is **withdrawn**. The barrier is driving the map at all — 165.868 s of the route is under 20 km/h
 
 ---
 

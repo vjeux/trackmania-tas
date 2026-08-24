@@ -58,6 +58,10 @@ fn pick_vehicle(rd: &RecordData) -> Option<usize> {
 
 pub fn cmd(a: &[String]) {
     match a.first().map(String::as_str) {
+        Some("chain") => {
+            let p = a.get(1).unwrap_or_else(|| die("ghost record chain FILE"));
+            crate::splice::print_chain(p);
+        }
         Some("rebuild") => rebuild(&a[1..]),
         Some("resegment") => {
             let inp = a.get(1).unwrap_or_else(|| die("ghost record resegment IN OUT --like DONOR"));

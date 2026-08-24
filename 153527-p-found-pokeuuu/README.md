@@ -18,11 +18,102 @@ No run has been driven on this map here, and no time is claimed. What follows is
 what the single recorded run shows about where the time is.
 
 > **"No clip" here is correct, and it is not a filming defect** (checked
-> 2026-08-24 while the other no-clip pages were being repaired). This directory
-> holds no `replays/` at all and the page claims no time: there is nothing to
-> film. The map itself is not the obstacle — it is a 1.8 MB Stadium map that
-> declares nothing unusual and would open like any other. A clip here needs a
-> **run**, not a render.
+> 2026-08-24 while the other no-clip pages were being repaired). The page claims
+> no time of ours, so there is nothing of ours to film. The map itself is not
+> the obstacle — it is a 1.8 MB Stadium map that declares nothing unusual and
+> would open like any other. A clip here needs a **run**, not a render.
+>
+> The two spliced files below are AuwrahTM's recording, not ours, and neither is
+> a lap; see what they are not.
+
+## The two spliced files, and what they are not
+
+| file | time | what it is |
+|---|---|---|
+| [`HUMAN_RECORD_retries_cut_1214545`](replays/HUMAN_RECORD_retries_cut_1214545.Ghost.Gbx) | **1214.545** | AuwrahTM's recording with every failed attempt deleted — one attempt per segment, the one that reached the checkpoint |
+| [`HUMAN_RECORD_retries_and_loops_cut_941395`](replays/HUMAN_RECORD_retries_and_loops_cut_941395.Ghost.Gbx) | **941.395** | the same, with the seven closed loops of the junction census also deleted — **2.112 over the author time** |
+
+**Neither is a lap and neither should be read as one.** They are AuwrahTM's own
+driving with material removed, published as his recording, the way
+`227654`'s `HUMAN_WR_retries_cut_64871` is. The car's state jumps at every
+junction, so the plain oracle re-simulating either of them returns **DNF** —
+and so does the *unmodified* record, which is the control: that recording has
+never re-simulated (`fst_RESULT_v1` traces the divergence to a step at two
+head-on wall contacts at 101.930 and 137.090). A splice cannot be validated by
+the oracle on this map, and nothing here claims it was.
+
+### The rule, so the files can be re-derived
+
+`ghost splice --rule retries`, in `tools/ghost/src/splice.rs`:
+
+> Let the recording declare crossings `s_1 < … < s_n` (its splits; `s_n` is the
+> finish), and let segment *k* hold the ticks with `s_{k-1} < t ≤ s_k`
+> (segment 1 also holds the countdown). Let `a_k` be the **last** tick of
+> segment *k* carrying a respawn press — bit 31 of the input packet's state
+> literal. For every segment that has one, delete that segment from its start
+> through `a_k` inclusive. Delete nothing else; shorten, reorder and edit
+> nothing that survives.
+
+Nine of the twelve segments contain a respawn; 444 679 ticks come out, and the
+new time is exactly `5661.335 − 4446.790`. The output carries **zero respawn
+ticks**, which the command asserts before it writes.
+
+```
+ghost splice rank00001_5661335.Ghost.Gbx HUMAN_RECORD_retries_cut_1214545.Ghost.Gbx \
+      --rule retries --driver-only
+ghost splice rank00001_5661335.Ghost.Gbx HUMAN_RECORD_retries_and_loops_cut_941395.Ghost.Gbx \
+      --rule retries --driver-only --drop \
+      296650..308742,786297..798155,2907920..3010780,4725505..4762959,\
+4763768..4778158,5093441..5169573,5181648..5200007
+```
+
+The seven `--drop` intervals are the seven junctions of the ≥ 5 s row of the
+minimum-junction census, quoted from it unchanged. The de-looped figure the
+census reports is **941.588**; deleted tick-exactly out of the file it is
+**941.395**, because the census works on a line resampled to 0.10 m and charges
+a junction fee (0.103 s of its total) and this deletes whole 10 ms ticks. Both
+are the same seven loops. **The older 892.148 de-loop figure is withdrawn and is
+not what these files are.** The retries-cut figure the census reports is
+**1214.465** against this file's **1214.545**; the difference is 0.080 s and it
+is which side of the respawn tick the boundary falls on, summed over nine
+junctions.
+
+### What the junctions cost, measured rather than asserted
+
+At a retry junction the car jumps by the respawn's own landing error — the
+checkpoint crossing on one side, the car as the game put it back on the other:
+
+```
+  junction        jump        junction        jump
+    69.770      25.78 m         929.550     32.84 m
+   224.490      17.20 m        3075.480     51.94 m
+   322.980       2.41 m        4851.390     15.02 m
+   504.230      19.30 m        5231.390     28.53 m
+   605.850      21.34 m
+```
+
+The seven loop junctions are an order of magnitude tighter — **0.44, 0.66, 1.72,
+1.77, 2.10, 3.23, 3.68 m** — which is the census's own claim (0.16–0.25 m on its
+resampled line) confirmed on the 50 ms sample grid. A loop cut closes; a retry
+cut does not, and cannot: the respawn moved the car.
+
+### Which car is in the file
+
+This recording holds **55 entities**, and the stock reader — take the
+`CSceneVehicleVis` with the most samples — returns **another player on the
+server**. The driver is **46 short entities** tiling the race at 10 ms, because
+his car is destroyed and recreated at every respawn. `ghost record chain`
+recovers him from the tiling and the path length (a spectator car parked at the
+spawn tiles perfectly for the whole race and travels zero metres): **46 lives,
+113 281 samples, 136 069 m**, which is the figure `route_RESULT_v1` reached
+independently by a checkpoint-cell referee. Both files are written
+`--driver-only`: the 46 lives merged into one entity, the other three cars
+dropped.
+
+That repair is visible in one number. On the unmodified record, tape/telemetry
+agreement is **κ = −0.004** (the reader is describing the wrong car). On both
+spliced files it is **κ = 0.995 / 0.994, lag 0, 99.7 % / 99.6 % of samples
+exact** — the recording in the file is the tape in the file.
 
 ## What the one recorded run is
 
@@ -76,7 +167,9 @@ run there is not much to compare against. The one thing worth knowing before you
 start: the checkpoints sit on Tech, **Dirt** and **Ice** platform blocks, and the
 segments that decide the map are the three after CP8.
 
-No replay is published for this map.
+Two files are published (above): **AuwrahTM's own driving with the retries cut,
+and with the retries and the seven loops cut.** Neither is a lap. No TAS replay
+exists for this map.
 
 ## The hill after CP2, and how the driver gets up it
 

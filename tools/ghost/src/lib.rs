@@ -33,6 +33,7 @@ pub mod regen;
 pub mod roundtrip;
 pub mod script;
 pub mod selftest;
+pub mod splice;
 pub mod trim;
 pub mod verify;
 

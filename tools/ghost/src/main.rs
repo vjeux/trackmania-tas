@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, trim, verify};
+use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -99,6 +99,36 @@ TRIM  (operation 5)
         hold the last recorded input -- room for the car to keep driving after
         the recording stopped. One command owns a run's length in both
         directions.
+
+RECORD
+  ghost record chain FILE
+        Which entity is the DRIVER, on a record that holds more than one car:
+        every tiling chain and the path each one drove. The stock reader takes
+        the `CSceneVehicleVis` entity with the MOST SAMPLES, which is right on a
+        solo ghost and wrong on a server recording -- there the driver's car is
+        destroyed and recreated at every respawn, so the driver is 46 short
+        entities tiling the race and the longest single entity is another
+        player. Path length is what separates them: a spectator car parked at
+        the spawn tiles perfectly for the whole race and travels zero metres.
+
+SPLICE  (operation 5b -- the MIDDLE of a run, where trim owns the two ends)
+  ghost splice IN OUT [--rule retries] [--drop A..B,...] [--keep-record]
+                      [--map MAP] [--server DIR]
+        Delete whole intervals out of the middle of a run and CLOSE THE GAP:
+        the tape, the telemetry, the splits and every copy of the declared time
+        are retimed together. `--rule retries` derives the intervals from the
+        file itself -- for every checkpoint segment that contains a respawn
+        press, delete that segment from its start through its LAST respawn
+        press, i.e. every failed attempt, keeping the one that reached the
+        checkpoint. Nothing else is cut and no surviving tick is edited, so the
+        new time is exactly `finish - 10 ms x deleted ticks` and the file
+        carries ZERO respawn ticks (the gate asserts it).
+        --drop deletes extra intervals given in the ORIGINAL file's race ms;
+        that is how a de-looped artefact is built, from a loop census the
+        caller has to state.
+        A SPLICE IS NOT A LAP. The car's state jumps at every junction; the
+        command measures each jump off the file's own recording and prints it,
+        and the oracle is not expected to return the declared time.
 
 DECLARE
   ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]
@@ -215,6 +245,7 @@ fn main() {
         "tape" => cmd_tape(rest),
         "map" => cmd_map(rest),
         "trim" => trim::cmd(rest),
+        "splice" => splice::cmd(rest),
         "declare" => declare::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
