@@ -66,7 +66,7 @@ No byte slice is copied from a recording.
 
 `evidence/summer01/record-ladder/` contains every generated `.Ghost.Gbx`, its manifest, `report.tsv`, and raw server stdout/stderr.
 
-The ladder adds, in order: no record; parent only; descriptor; empty car entity; first sample; deliberately corrupted first-sample x (+64 m). All six are parsed and simulated. With the 36.011 tape all six reproduce **36.011 / cps 4** on the stock map.
+The ladder adds, in order: no record; parent only; descriptor; empty car entity; first sample; a full 50 ms sample grid; deliberately corrupted first-sample x (+64 m). All seven are parsed and simulated. With the 36.011 tape all seven reproduce **36.011 / cps 4** on the stock map.
 
 The +64 m first-sample corruption also reproduces **36.011 / cps 4**. A stronger control edits only the first sample of an otherwise game-recorded 19.538 ghost by +64 m; both original and edited files simulate to **19.538 / cps 4**. Therefore `CPlugEntRecordData` is render telemetry, not the validator's initial-physics state. This is a causal negative with a positive control, not an inference from the synthetic file.
 
@@ -78,13 +78,14 @@ The complete record is structurally valid and independently parsed, but it has n
 
 ## Cross-map structural control
 
-Map 191465 (`Training - 10 Long`) is deliberately unlike Summer 2026 - 01:
+Summer 2026 - 01 matches its independent recording to **0.000136 m / 0.000000000 rad**. Map 191465 (`Training - 10 Long`) is deliberately unlike it:
 its `RoadTechStart` is waypoint 0 instead of waypoint 2 and has direction 1
 instead of direction 0. The map-only writer produces `(1520.000, 26.002,
 816.000)` and yaw −90°, versus `(1584.000, 18.002, 784.000)` and yaw 0° on
-Summer 2026 - 01. The 191465 position agrees within 0.01 m with an independent
-game-recorded tick-0 sample; that recording is used only as a test oracle, never
-as output input. `evidence/191465/` contains generated straight/left/right
-containers and their manifests. The plain server parses and simulates all three
+Summer 2026 - 01. The 191465 position/orientation agree with an independent
+game-recorded tick-0 sample to **0.000136 m / 0.000098826 rad**; that recording
+is used only as a test oracle, never as output input. `evidence/191465/`
+contains the two start checks and generated straight/left/right containers,
+manifests, ladder, and raw server transcript. The plain server parses and simulates all three
 (DNF/cps0 at the deliberately short 10.000 s horizon); signed response still
 awaits the authoritative live-state resolver.

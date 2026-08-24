@@ -1,0 +1,8 @@
+variant	record_mode	corrupt_x_m	classification	validated_ms	validated_cps	declared_ms	declared_cps	description
+00-no-record	none	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+01-parent	parent	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+02-descriptor	descriptor	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+03-entity	entity	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+04-first-sample	sample	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+05-full-grid	grid	0.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu
+06-corrupt-start-x-plus-64m	sample	64.000	accepted_dnf_start_unmeasured	-	-	10000	2	wrong simu

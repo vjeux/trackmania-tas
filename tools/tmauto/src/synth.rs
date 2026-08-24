@@ -379,6 +379,9 @@ pub enum RecordMode {
     Entity,
     /// The entity plus one 116-byte sample at t=0.
     Sample,
+    /// A 50 ms grid through the declared horizon, initially repeating t=0.
+    /// This is scaffolding for the authoritative validator-state recorder.
+    Grid,
 }
 
 impl RecordMode {
@@ -389,6 +392,7 @@ impl RecordMode {
             "descriptor" => RecordMode::Descriptor,
             "entity" => RecordMode::Entity,
             "sample" => RecordMode::Sample,
+            "grid" => RecordMode::Grid,
             _ => return None,
         })
     }
@@ -400,6 +404,7 @@ impl RecordMode {
             RecordMode::Descriptor => "descriptor",
             RecordMode::Entity => "entity",
             RecordMode::Sample => "sample",
+            RecordMode::Grid => "grid",
         }
     }
 }
@@ -524,16 +529,22 @@ fn from_scratch_record(
     let ents = if mode == RecordMode::Descriptor {
         Vec::new()
     } else {
-        let (times, raw, sample_size) = if mode == RecordMode::Sample {
-            (
-                vec![0],
-                first_vehicle_sample(
-                    initial,
-                    inputs.first().copied().unwrap_or(Input::NEUTRAL),
-                    corrupt_x_m,
-                ),
-                gbx::sample::SAMPLE_SIZE,
-            )
+        let (times, raw, sample_size) = if matches!(mode, RecordMode::Sample | RecordMode::Grid) {
+            let sample = first_vehicle_sample(
+                initial,
+                inputs.first().copied().unwrap_or(Input::NEUTRAL),
+                corrupt_x_m,
+            );
+            if mode == RecordMode::Grid {
+                let times: Vec<i32> = (0..=meta.declared_ms as i32).step_by(50).collect();
+                let mut raw = Vec::with_capacity(times.len() * sample.len());
+                for _ in &times {
+                    raw.extend_from_slice(&sample);
+                }
+                (times, raw, gbx::sample::SAMPLE_SIZE)
+            } else {
+                (vec![0], sample, gbx::sample::SAMPLE_SIZE)
+            }
         } else {
             (Vec::new(), Vec::new(), 0)
         };
@@ -631,7 +642,7 @@ pub fn synthesize_complete(
     }
     let record = match mode {
         RecordMode::None | RecordMode::Parent => None,
-        RecordMode::Descriptor | RecordMode::Entity | RecordMode::Sample => Some(
+        RecordMode::Descriptor | RecordMode::Entity | RecordMode::Sample | RecordMode::Grid => Some(
             from_scratch_record(inputs, meta, initial, mode, corrupt_x_m),
         ),
     };
@@ -948,6 +959,30 @@ mod tests {
         assert!((initial.pos[1] as f64 - first.y).abs() < 0.01);
         assert!((initial.pos[2] as f64 - first.z).abs() < 0.01);
         assert_eq!(initial.roadtech_dir, Some(0));
+    }
+
+    #[test]
+    fn grid_mode_creates_the_full_50ms_scaffold_without_a_donor() {
+        let mut m = meta();
+        m.set_declared(200, vec![200]);
+        let initial = InitialState {
+            pos: [1.0, 2.0, 3.0],
+            quat: [0.0, 0.0, 0.0, 1.0],
+            vel: [0.0; 3],
+            roadtech_dir: Some(0),
+        };
+        let bytes = synthesize_complete(
+            &[Input::FULL_GAS; 20],
+            &m,
+            &ChunkSet::ALL,
+            initial,
+            RecordMode::Grid,
+            0.0,
+        );
+        let d = gbx::record::decode_body(&gbx::Gbx::parse(&bytes).body, "grid").unwrap();
+        let times: Vec<i32> = d.samples.iter().map(|s| s.time_ms).collect();
+        assert_eq!(times, vec![0, 50, 100, 150, 200]);
+        assert!(d.raw_samples().all(|s| s == d.raw_sample(0).unwrap()));
     }
 
     #[test]

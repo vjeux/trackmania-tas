@@ -28,7 +28,7 @@ RUNG 0  (synthesizing a container with no human provenance)
                      [--declared MS] [--seed N] [--steer -127..127] [--record MODE]
                      [--corrupt-start-x METRES] [--no-CHUNK ...]
         Write one synthesized container. MODE is none, parent, descriptor,
-        entity, or sample (default); each rung adds one record feature.
+        entity, sample, or grid (default: sample); each rung adds one record feature.
   tmauto synth ladder --map MAP --out DIR [--tape T.tsv] [--ticks N]
                        [--declared MS] [--checkpoints N]
         Add parent, descriptor, entity and first sample one rung at a time;
@@ -36,6 +36,8 @@ RUNG 0  (synthesizing a container with no human provenance)
 
   tmauto synth starts --root MAP_CORPUS
         Inventory semantic RoadTechStart cells and directions without ghosts.
+  tmauto synth start-check --map MAP --recording GHOST
+        Compare map-derived position/yaw to one independent tick-0 sample.
 
 ORACLE
   tmauto verdict FILE... --map MAP.Map.Gbx
@@ -74,6 +76,7 @@ fn main() {
         ("synth", Some("matrix")) => cmd_synth_matrix(&args[2..]),
         ("synth", Some("ladder")) => ablate::run(&args[2..]),
         ("synth", Some("starts")) => startset::run(&args[2..]),
+        ("synth", Some("start-check")) => startset::check(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
         ("startprobe", _) => startprobe::run(&args[1..]),
         ("cpladder", _) => cpladder::run(&args[1..]),
@@ -592,7 +595,7 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     meta.set_declared(ms, cps);
     let record_mode = match arg(args, "--record") {
         Some(s) => RecordMode::parse(&s)
-            .ok_or_else(|| "--record wants none|parent|descriptor|entity|sample".to_string())?,
+            .ok_or_else(|| "--record wants none|parent|descriptor|entity|sample|grid".to_string())?,
         None => RecordMode::Sample,
     };
     let corrupt_x_m: f32 = arg(args, "--corrupt-start-x")

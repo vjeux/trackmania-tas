@@ -28,6 +28,49 @@ fn map_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
+pub fn check(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let ghost = arg(args, "--recording").ok_or("--recording FILE is required")?;
+    let expected = tmauto::synth::initial_state_for_map(&map)?;
+    let recorded = gbx::record::decode_ghost(&ghost)?;
+    let got = recorded
+        .samples
+        .first()
+        .ok_or("recording has no vehicle sample")?;
+    let dx = got.x - expected.pos[0] as f64;
+    let dy = got.y - expected.pos[1] as f64;
+    let dz = got.z - expected.pos[2] as f64;
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    let dot = (got.qx * expected.quat[0]
+        + got.qy * expected.quat[1]
+        + got.qz * expected.quat[2]
+        + got.qw * expected.quat[3])
+        .abs()
+        .clamp(-1.0, 1.0);
+    let angle = 2.0 * dot.acos();
+    println!(
+        "map-derived\t{:.6}\t{:.6}\t{:.6}\t{:.9}\t{:.9}\t{:.9}\t{:.9}\tdir={:?}",
+        expected.pos[0],
+        expected.pos[1],
+        expected.pos[2],
+        expected.quat[0],
+        expected.quat[1],
+        expected.quat[2],
+        expected.quat[3],
+        expected.roadtech_dir
+    );
+    println!(
+        "recorded-t0\t{:.6}\t{:.6}\t{:.6}\t{:.9}\t{:.9}\t{:.9}\t{:.9}",
+        got.x, got.y, got.z, got.qx, got.qy, got.qz, got.qw
+    );
+    println!("difference\tposition_m={dist:.6}\torientation_rad={angle:.9}");
+    if dist > 0.02 || angle > 0.001 {
+        return Err("map-derived start does not match the independent recording".into());
+    }
+    println!("PASS\tmap-derived RoadTechStart matches the independent tick-0 sample");
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let root = PathBuf::from(arg(args, "--root").ok_or("--root DIR is required")?);
     println!("path\tuid\tdecoration\twaypoint_order\tdir\tcx\tcy\tcz\tx\ty\tz\tstatus");

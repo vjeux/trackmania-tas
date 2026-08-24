@@ -53,7 +53,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ("02-descriptor", RecordMode::Descriptor, 0.0),
         ("03-entity", RecordMode::Entity, 0.0),
         ("04-first-sample", RecordMode::Sample, 0.0),
-        ("05-corrupt-start-x-plus-64m", RecordMode::Sample, 64.0),
+        ("05-full-grid", RecordMode::Grid, 0.0),
+        ("06-corrupt-start-x-plus-64m", RecordMode::Sample, 64.0),
     ];
     let mut files = Vec::new();
     for (name, mode, dx) in variants {
