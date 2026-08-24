@@ -124,3 +124,30 @@ pipeline cannot drive a car, which is why it has not been done.
 
 Until then this map is **not filmable by this pipeline**, which is a much
 narrower statement than the one this page used to make.
+
+## Two more doors, tried 2026-08-24 01:50, both shut
+
+**The game's own replay browser.** `CGameCtnMenus` carries it —
+`MenuReplay_CurPath`, `ReplayList`, `MenuReplay_OnSelectAll`,
+`MenuReplay_OnOk` — and that is the path a human takes to shoot a replay. Driven
+from the menu it reads its own folder list correctly (`_shoot146612`,
+`Autosaves`, `Downloaded`, `My Replays`, `v`) and then reports **0 replays** in
+all of them; `OnOk` on an empty selection raises `FrameMessage` and nothing
+opens. Those members belong to the ghost-import dialog *inside* an editor, not
+to the main-menu browser, and with no editor open there is nothing for them to
+drive. (Before the refresh, `MenuReplay_ReplaysCount` read **2 770 021 001** —
+uninitialised memory, which is its own warning against believing that field
+without a `FilterAndRedraw` first.)
+
+**What the dialog says.** The AskYesNo the no-zip variant raises still has no
+readable text: the frame's control tree contains one `CControlQuad`
+(`QuadBgMetalBar`) and no label at any depth the walker reaches, and
+`BasicDialogs.Message_LabelText` is empty for that frame kind. Polling hard from
+the instant of the call caught a **different** dialog instead —
+`FrameWaitMessage`, whose text is `Updating data… $<$> (???)`. That is the
+ordinary loading box: **the control raises the same one**, and its `(???)` is
+the game not naming what it is loading rather than a complaint about this map.
+
+So the editor's silence really is silent. There is no error text anywhere in
+this failure — not in `LatestResult`, not in `CustomResultData`, not in the
+dialog, not in `UGCErrorsLog.txt`, and not in Openplanet's log.
