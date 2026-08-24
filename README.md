@@ -1,7 +1,9 @@
 # trackmania-tas
 
-Tool-assisted runs on Trackmania 2020 maps whose **author time no human has ever
-beaten**, tracked by [unbeaten.at](https://unbeaten.at/).
+Tool-assisted runs on Trackmania 2020 maps tracked by
+[unbeaten.at](https://unbeaten.at/) — maps whose **author time no human had ever
+beaten** when the run was found. On eight of the 36 a human has since taken the
+medal, and those are group 3 below rather than quietly dropped.
 
 Every run here was found by search against the game's own physics — the headless
 `TrackmaniaServer` re-simulating input tapes — and re-validated against an
