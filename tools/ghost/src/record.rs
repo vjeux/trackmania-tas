@@ -129,7 +129,23 @@ pub fn cmd(a: &[String]) {
             });
             let donor = flag(a, "--from")
                 .unwrap_or_else(|| die("--from DONOR.Ghost.Gbx: the container the car was rebuilt out of"));
-            match graft_scene(inp, out, donor, crate::cli::has(a, "--car-deltas"), crate::cli::has(a, "--live-only")) {
+            match graft_scene(inp, out, donor, crate::cli::has(a, "--car-deltas")) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
+        Some("resample") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record resample IN OUT --from SRC.Ghost.Gbx")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record resample IN OUT --from SRC.Ghost.Gbx")
+            });
+            let src = flag(a, "--from").unwrap_or_else(|| {
+                die("ghost record resample needs --from SRC.Ghost.Gbx -- the file whose CAR \
+                     SAMPLES you want, written into IN's record")
+            });
+            match resample(inp, out, &src) {
                 Ok(m) => println!("{out}: {m}"),
                 Err(e) => die(e),
             }
@@ -1167,14 +1183,10 @@ pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
         // The donor's order: the scene records first, then the cars in time
         // order -- which is how the game writes them and how `rebuild_to`
         // learned to put the car first.
-        // THE CONTAINER'S OWN ORDER: this donor puts its scene records first and
-        // its cars after them, and 203072 is the map that proved order is not
-        // cosmetic -- a regenerated ghost there would not import until its
-        // entities were put back the way its container had them.
         let mut ents: Vec<Ent> = Vec::new();
         let ncut = cut.len();
-        ents.extend(rd.ents.drain(..));
         ents.append(&mut cut);
+        ents.extend(rd.ents.drain(..));
         rd.ents = ents;
         after = format!("{ncut} car segments [{}]", bounds.join(", "));
         Ok(())
@@ -1219,8 +1231,123 @@ pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
     Ok(format!("{before} -> {after}; all {} samples kept, byte for byte", a.len()))
 }
 
-pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool, live_only: bool) -> Result<String, String> {
-    let dbody = gbx::record::load_body(donor)?;
+/// `resample` — put OUR car's sample bytes into a record the client ACCEPTS.
+///
+/// **The experiment this exists for.** Three maps in this corpus produce a
+/// regenerated ghost that the game client refuses or dies on, while the
+/// container's own untouched record imports every time: 228811, 279209 and
+/// 227654 (24 variants, one variable each, on that last one). Every headless
+/// gate passes on the refused files — `ghost verify` V1–V11, kappa 1.000, the
+/// plain oracle exact — so the defect is invisible to everything except a real
+/// client. What has never been separated is:
+///
+///   * our SAMPLE BYTES — the 116-byte-per-instant car state we write, and
+///   * our RECORD — the container structure the rebuild emits around them.
+///
+/// `graft-scene` tests the second by putting a donor's scene back. This tests
+/// the first, from the other side: take a file that imports, and overwrite
+/// **only the car's sample bytes**, instant for instant, with ours. Nothing
+/// else in the file moves — not the entity list, not the deltas, not the
+/// spans, not the other entities, not a single header field.
+///
+/// If the result imports, our bytes are innocent and the rebuilt RECORD is the
+/// defect. If it dies, our bytes are the defect and the record is innocent.
+/// Either answer closes the question; that is what makes it worth a
+/// subcommand rather than a one-off.
+///
+/// **The guards, and why each one is here.** This writes one file's telemetry
+/// into another file's container, which is exactly the shape of every splice
+/// defect this project has published a retraction for. So it refuses unless
+/// the two files are already the same run:
+///
+///   * the same input tape, byte for byte — otherwise the result is a record
+///     of one run wearing another's inputs, which is the KAPPA.md defect;
+///   * the same declared time;
+///   * the same sample size;
+///   * and every instant it writes has to exist in both. Coverage is reported
+///     and a partial overwrite is refused, because a file that is our
+///     trajectory for 90 % of its length and somebody else's for the rest is
+///     worse than either.
+pub fn resample(inp: &str, out: &str, src: &str) -> Result<String, String> {
+    // 1. SAME RUN? Tape first: it is the cheapest and the most damning.
+    let ti = gbx::tape::Tape::from_file(inp)?;
+    let ts = gbx::tape::Tape::from_file(src)?;
+    let (pi, ps) = (ti.to_payload(gbx::tape::Encoding::Verbatim),
+                    ts.to_payload(gbx::tape::Encoding::Verbatim));
+    if pi != ps {
+        return Err(format!(
+            "{inp} and {src} do not carry the same input tape ({} vs {} ticks). resample writes \
+             one file's car into another's container; with different tapes the result is a record \
+             of one run wearing another's inputs, which is the defect KAPPA.md is about.",
+            ti.n(), ts.n()
+        ));
+    }
+    let di = gbx::record::decode_ghost(inp)?;
+    let ds = gbx::record::decode_ghost(src)?;
+    if di.race_time_ms != ds.race_time_ms {
+        return Err(format!(
+            "declared times differ: {:?} vs {:?}",
+            di.race_time_ms, ds.race_time_ms
+        ));
+    }
+    if di.sample_size != ds.sample_size {
+        return Err(format!(
+            "sample sizes differ: {} vs {}", di.sample_size, ds.sample_size
+        ));
+    }
+    // 2. THE SOURCE'S CAR, indexed by instant.
+    let ss = ds.sample_size;
+    let mut by_ms: std::collections::HashMap<i32, &[u8]> = std::collections::HashMap::new();
+    for (i, s) in ds.samples.iter().enumerate() {
+        let a = i * ss;
+        if a + ss <= ds.raw.len() {
+            by_ms.insert(s.time_ms, &ds.raw[a..a + ss]);
+        }
+    }
+    let mut wrote = 0usize;
+    let mut missed: Vec<i32> = Vec::new();
+    let mut note = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to resample")?;
+        let e = &mut rd.ents[vi];
+        if e.sample_size != ss {
+            return Err(format!(
+                "the target's car samples are {} B and the source's are {} B",
+                e.sample_size, ss
+            ));
+        }
+        for (k, t) in e.times.iter().enumerate() {
+            match by_ms.get(t) {
+                Some(b) => {
+                    let a = k * ss;
+                    if a + ss <= e.raw.len() {
+                        e.raw[a..a + ss].copy_from_slice(b);
+                        wrote += 1;
+                    }
+                }
+                None => missed.push(*t),
+            }
+        }
+        note = format!(
+            "car {} samples, {} overwritten from the source, {} with no source instant",
+            e.times.len(), wrote, missed.len()
+        );
+        Ok(())
+    })?;
+    if !missed.is_empty() {
+        let _ = std::fs::remove_file(out);
+        return Err(format!(
+            "{} of the target's car instants have no sample at the same time in {src} (first: \
+             {:?}). A partial overwrite would be our trajectory for part of the run and the \
+             target's for the rest, so nothing was written.",
+            missed.len(),
+            &missed[..missed.len().min(5)]
+        ));
+    }
+    Ok(note)
+}
+
+pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Result<String, String> {    let dbody = gbx::record::load_body(donor)?;
     let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
     let drd = gbx::record::parse_record_data(&dblob, dver)?;
     let dveh = pick_vehicle(&drd);
@@ -1236,13 +1363,7 @@ pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool, live_onl
         .enumerate()
         .filter(|(i, e)| {
             let cls = drd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
-            cls != gbx::record::CLASS_CSCENEVEHICLEVIS
-                && Some(*i) != dveh
-                // `--live-only`: leave the container's EMPTY entities out. A
-                // trim that emptied one crashed the game client on import
-                // (`ghost trim` refuses to write one for that reason), so a
-                // graft that puts one back is worth being able to not do.
-                && (!live_only || !e.times.is_empty())
+            cls != gbx::record::CLASS_CSCENEVEHICLEVIS && Some(*i) != dveh
         })
         .map(|(_, e)| e.clone())
         .collect();
