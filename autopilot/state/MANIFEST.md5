@@ -1,0 +1,10 @@
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/alarms/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/ledger/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/claimed/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/done/.gitkeep
+d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/pending/.gitkeep

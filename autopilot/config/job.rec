@@ -1,0 +1,43 @@
+# The long-haul job. The supervisor reads this out of the repo, so a
+# fresh box needs no instructions from anybody — change it here, commit, and
+# the next box picks it up.
+
+# What we are working on, for the status page a human reads.
+map_name = Summer 2026 - 01
+rung = 1 — reach CP1
+objective = furthest station on our own route
+
+# The work. Run with `sh -c` in worker_dir. It must append progress records to
+# progress_file: `<iso8601>\tprogress\tevals=<cumulative>\tbest=<objective>`.
+worker_cmd =
+worker_dir = /tmp/tmtas
+progress_file = /tmp/tmhaul/progress.rec
+
+# Cadences, in seconds.
+sample_s = 30
+bank_s = 900
+claim_ttl_s = 3600
+lease_bank_lead_s = 1800
+restart_max = 5
+restart_backoff_s = 60
+
+# Durability. mirror: paste|dir|none   push: auto|direct|whitestick|none
+mirror = paste
+push = auto
+branch = main
+
+# Alarms. Every one of these has a test that makes it fire: `tmhaul alarms selftest`.
+alarm_zero_window_s = 600
+alarm_collapse_recent_s = 600
+alarm_collapse_baseline_s = 3600
+alarm_collapse_frac = 0.25
+alarm_no_progress_evals = 2000000
+alarm_box_silence_s = 1800
+alarm_queue_window_s = 7200
+alarm_disk_min_free_mb = 5000
+alarm_bank_max_gap_s = 3600
+
+# The pre-committed switch condition (DESIGN.md 3.2). Productive seconds only:
+# a stall never spends this.
+budget_switch_evals = 8000000
+budget_switch_productive_s = 36000
