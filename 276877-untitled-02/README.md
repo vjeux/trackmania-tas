@@ -19,9 +19,11 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 With the inputs overlaid — **the strip is centred on the playhead**: three
 seconds of input behind `NOW` and three ahead, the future half drawn dimmer, so
-an input is on screen before the thing it causes.
+an input is on screen before the thing it causes. The strip **stops at the
+finish**: this ghost is a transplant onto a 48.480 carrier, and the ticks past
+9.415 are the carrier driver's, not this run's.
 
-https://github.com/user-attachments/assets/f9bc5e8f-fe9f-4584-b00f-50d131ccbad6
+https://github.com/user-attachments/assets/c1fda47d-51a5-47e6-88d1-4b52ecedea26
 
 The clip is the **9.415**, the earlier rung of the same lattice skip.
 **Re-shot 2026-08-23 from a ghost regenerated out of that tape**

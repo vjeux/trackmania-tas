@@ -19,9 +19,11 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid — **the strip is centred on the playhead**: three
 seconds of input behind `NOW` and three ahead, the future half drawn dimmer, so
-an input is on screen before the thing it causes.
+an input is on screen before the thing it causes. The strip **stops at the
+finish**: this ghost is a transplant onto a 48.480 carrier, and the ticks past
+12.759 are the carrier driver's, not this run's.
 
-https://github.com/user-attachments/assets/3e14059f-3a90-40ed-9cb6-7d78d14a9429
+https://github.com/user-attachments/assets/eca2534b-7acc-44b1-900f-b119444670bd
 
 **Re-shot 2026-08-23 from a ghost regenerated out of this page's own tape**
 (`replays/TAS_12759.Ghost.Gbx`). The tape was identified by simulation, not by
