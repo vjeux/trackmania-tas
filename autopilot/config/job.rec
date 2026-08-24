@@ -55,3 +55,12 @@ alarm_bank_max_gap_s = 5400
 # a stall never spends this.
 budget_switch_evals = 8000000
 budget_switch_productive_s = 36000
+
+# A run whose car starts further than this from the map's start line is not
+# driving the map anybody asked about. 32 m is one cell: a car sits on the
+# start block, offset from its centre — a real TAS tape measures 10.6 m.
+alarm_start_dev_max_m = 32.0
+
+# The most boxes this project may hold at once. The heartbeat provisions
+# replacements without a human; a bug in that logic must not run away.
+max_boxes = 2

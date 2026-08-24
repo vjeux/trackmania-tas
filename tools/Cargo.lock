@@ -95,6 +95,7 @@ dependencies = [
  "gbx",
  "ghost",
  "haul",
+ "tmmaps",
 ]
 
 [[package]]

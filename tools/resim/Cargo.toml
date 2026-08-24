@@ -8,6 +8,7 @@ edition = "2021"
 # parsing another program's stdout when the library is already a path
 # dependency is how `tmtraj corpus dup` came back clean on a corrupt corpus.
 ghost = { path = "../ghost" }
+tmmaps = { path = "../tmmaps" }
 gbx = { path = "../gbx" }
 haul = { path = "../haul" }
 

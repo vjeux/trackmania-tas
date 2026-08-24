@@ -1,2 +1,23 @@
 2026-08-24T19:19:37Z	worker_start	pid=389155	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=308	resume_best=100
 2026-08-24T19:19:37Z	run_start	node=117796	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-24T19:20:35Z	bank	why=run start	receipt=commit e363feedb654 · mirror P2474212079 · PUSH FAILED: /var/svcscm/bin/whitestick set -e; if [ ! -d ~/haul-push ]; then git clone -q github-tmtas:vjeux/trackmania-tas.git ~/haul-push; fi; cd ~/haul-push; git fetch ~/tmhaul-in.bundle +main:refs/heads/tmhaul-incoming; git push origin refs/heads/tmhaul-incoming:refs/heads/main; git rev-parse refs/heads/tmhaul-incoming exited 1: error: cannot lock ref 'refs/heads/tmhaul-incoming': is at 43c8a9b7ef5e0896b1e2690043324390791c40a0 but expected 4a600b11d6021dabc5c1b1097e69e56179570ec1\nFrom /home/vjeux/tmhaul-in.bundle\n ! 4a600b11d..43c8a9b7e  main       -> tmhaul-incoming  (unable to update local ref)
+2026-08-24T19:21:35Z	sample	evals=388	worker_alive=1	node=117796	best=66	disk_free_mb=1233334
+2026-08-24T19:22:35Z	sample	evals=417	worker_alive=1	node=117796	best=95	disk_free_mb=1233334
+2026-08-24T19:23:35Z	sample	evals=429	worker_alive=1	node=117796	best=7	disk_free_mb=1233266
+2026-08-24T19:24:35Z	sample	evals=475	worker_alive=1	node=117796	best=43	disk_free_mb=1233223
+2026-08-24T19:25:35Z	sample	evals=509	worker_alive=1	node=117796	best=73	disk_free_mb=1233223
+2026-08-24T19:26:35Z	sample	evals=531	worker_alive=1	node=117796	best=95	disk_free_mb=1233223
+2026-08-24T19:27:35Z	sample	evals=536	worker_alive=1	node=117796	best=100	disk_free_mb=1233221
+2026-08-24T19:28:35Z	sample	evals=465	worker_alive=1	node=117796	best=33	disk_free_mb=1233223
+2026-08-24T19:29:35Z	sample	evals=495	worker_alive=1	node=117796	best=59	disk_free_mb=1233222
+2026-08-24T19:30:35Z	sample	evals=517	worker_alive=1	node=117796	best=81	disk_free_mb=1233223
+2026-08-24T19:31:35Z	sample	evals=536	worker_alive=1	node=117796	best=100	disk_free_mb=1233219
+2026-08-24T19:32:35Z	sample	evals=576	worker_alive=1	node=117796	best=30	disk_free_mb=1233218
+2026-08-24T19:33:35Z	sample	evals=604	worker_alive=1	node=117796	best=54	disk_free_mb=1233213
+2026-08-24T19:34:35Z	sample	evals=633	worker_alive=1	node=117796	best=83	disk_free_mb=1233220
+2026-08-24T19:35:35Z	sample	evals=650	worker_alive=1	node=117796	best=100	disk_free_mb=1233205
+2026-08-24T19:36:35Z	sample	evals=543	worker_alive=1	node=117796	best=7	disk_free_mb=1233210
+2026-08-24T19:37:35Z	sample	evals=589	worker_alive=1	node=117796	best=43	disk_free_mb=1233204
+2026-08-24T19:38:35Z	sample	evals=623	worker_alive=1	node=117796	best=73	disk_free_mb=1233211
+2026-08-24T19:39:36Z	sample	evals=650	worker_alive=1	node=117796	best=100	disk_free_mb=1233211
+2026-08-24T19:40:36Z	sample	evals=667	worker_alive=1	node=117796	best=17	disk_free_mb=1233201

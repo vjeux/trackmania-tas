@@ -131,6 +131,34 @@ tmhaul alarms live-test   # fire alarms against real processes on this box
 | `queue_stalled` | pending work and nothing completing, or claims expired |
 | `disk_filling` | below the floor, **or** on trend to reach zero within six hours |
 | `unbanked_drift` | nothing banked off the box for 90 minutes |
+| `start_position` | the run's car started more than 32 m from the map's start line — **or has never said where it started** |
+| `fleet_over_cap` | more boxes registered active than `max_boxes` |
+
+### The start-position alarm, and what it does and does not establish
+
+Added after a run confirmed at `cps 3` turned out to begin at **checkpoint 3**,
+390 m from the start line, spanning 217 m of a 1900 m map. Two independent
+instruments found it four hours in; this makes it a first-minute check.
+
+The start line comes from `autopilot/config/maps.rec`. The comparison is
+**horizontal only**: a spawn read from a block gives its cell, and world `y`
+needs a per-map decoration offset that is *fitted* rather than read
+(`mapgeom::place::Yoff`), while `x` and `z` are exact at `32*c + 16`. A
+number with one made-up axis would be worse than two honest ones.
+
+The sweep's own position comes from the container's telemetry, and **a
+synthesised tape carries its template's telemetry** — so for a recording the
+engine made this is the run's own start, and for a tape our tooling wrote into
+a container it may be the template's. Every report labels it as
+telemetry-derived for that reason; the authoritative answer is a live
+re-simulation reading tick 0, which the explorer can report directly through
+the worker contract. The check is still worth having: it is nearly free, it
+runs standing over the whole corpus, and it catches the case above.
+
+Two-sided, measured 2026-08-24: at a tolerance of 0.001 m a real TAS tape
+fires and reports **10.6 m** — the offset of a car sitting on the start block
+from that block's centre, which is the magnitude you would predict; at the
+32 m tolerance it is silent.
 
 `selftest` is the standing answer to *"has anyone ever seen this fire?"* — it
 walks a table pairing each alarm with a state that must fire it, plus a healthy
@@ -189,8 +217,39 @@ is not a recovery:
 |---|---|
 | Rust | `rustup`, plus `~/.cargo/config.toml` with the proxy — `SETUP.md` §1. **cargo does not inherit the shell proxy** |
 | the dedicated server (385 MB) | `SETUP.md` §3, one `curl` |
-| the map corpus (`.Map.Gbx`) | `~/persistent/private-30d/tm-unbeaten/<id>/`. **This is a 30-day store and it is the one real gap in the recovery story** — see OPS-LOG |
+| the map corpus (`.Map.Gbx`) | **not in the repo, on purpose** — see below |
 | the bridge credential | `~/.navi/credentials.json` from devvm42752, for pushing |
+
+### The map corpus is refetched, never redistributed
+
+**Ruled 2026-08-24: Nadeo's map files do not go in this public repo.** They are
+not ours to redistribute. What is in the repo is
+`autopilot/config/maps.rec` — a registry carrying, per map file: its `uid`,
+name, **author time out of the map's own header**, the documented GET route
+that resolves to the bytes, an **md5 and a byte count**, the start line, and
+the checkpoint count.
+
+```bash
+tmresim maps scan     # rebuild the registry from a corpus on this box
+tmresim maps verify   # every map here, against the registry
+tmresim maps show     # what the registry knows, with the refetch URL
+```
+
+So recovery is: refetch by uid through the route in the row, then
+`tmresim maps verify`. The hash is doing two jobs — deterministic recovery,
+and *"the map I am driving is the map that result was measured on"*, which
+this project has been burned by not being able to say.
+
+Rows are keyed by **id and file name**, because a map directory routinely
+holds several `.Map.Gbx` files — the pristine map plus the segment, detector
+and wall-removed variants cut from it. A registry that named only the
+directory reported two maps CHANGED that were perfectly correct. A derived
+variant cannot be refetched from Nadeo; it is reproduced by re-running the
+surgery that made it, and that is a task for whoever needs it rather than a
+reason to ship the bytes.
+
+**If a map ever becomes unfetchable, that is a real gap and the right response
+is to report it, not to smuggle the bytes into the repo.**
 
 ---
 

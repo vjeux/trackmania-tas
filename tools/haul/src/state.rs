@@ -70,6 +70,15 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
         boxes,
         queue,
         last_bank: last_bank_rec.as_ref().map(|r| r.ts),
+        // The newest sample that carried one. It is a property of the RUN, not
+        // of the instant, so a worker that reports it once at startup is
+        // enough — but a run that never reports it at all is a firing state,
+        // not a silent one.
+        start_dev_m: journal
+            .iter()
+            .rev()
+            .filter(|r| r.kind == "sample" || r.kind == "run_start")
+            .find_map(|r| r.get_f64("start_dev_m")),
     };
 
     Ok(Reconstructed {

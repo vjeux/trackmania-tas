@@ -64,6 +64,9 @@ pub struct View {
     pub boxes: Vec<(String, BoxState)>,
     pub queue: QueueView,
     pub last_bank: Option<i64>,
+    /// Horizontal metres between where the run's car started and where the
+    /// map says the start line is. `None` means no sample has carried one.
+    pub start_dev_m: Option<f64>,
 }
 
 impl View {
@@ -76,6 +79,7 @@ impl View {
             boxes: Vec::new(),
             queue: QueueView::default(),
             last_bank: None,
+            start_dev_m: None,
         }
     }
 }
@@ -104,6 +108,12 @@ pub struct Config {
     pub disk_horizon_s: i64,
     /// Local work not pushed anywhere durable for this long is at risk.
     pub bank_max_gap_s: i64,
+    /// A run whose car starts further than this from the map's start line is
+    /// not driving the map anybody asked about.
+    pub start_dev_max_m: f64,
+    /// Most boxes this project may hold at once. A bug in the rotation logic
+    /// must not be able to provision without bound.
+    pub max_boxes: usize,
 }
 
 impl Default for Config {
@@ -120,6 +130,8 @@ impl Default for Config {
             disk_min_free_mb: 5_000,
             disk_horizon_s: 6 * 3600,
             bank_max_gap_s: 3_600,
+            start_dev_max_m: 32.0,
+            max_boxes: 2,
         }
     }
 }
@@ -433,6 +445,81 @@ pub fn unbanked_drift(v: &View, c: &Config) -> Option<Firing> {
     })
 }
 
+// ---------------------------------------------------------------- A9
+
+/// **The car is not starting at the start line.**
+///
+/// Added 2026-08-24, from a real finding: a run confirmed at `cps 3` had a
+/// trajectory beginning at (1359.5, 1103) on a map whose start line is at
+/// (1584, 784) — 390 m away, at checkpoint 3 — and spanning 217 m of a 1900 m
+/// map. Whatever that run was, it was not the map from the start, and it took
+/// four hours and two independent instruments to notice.
+///
+/// The check is **horizontal**. A spawn read from a block gives its cell, and
+/// world y needs a per-map decoration offset that is fitted rather than read
+/// (`mapgeom::place::Yoff`); x and z are exact. Saying so is better than a
+/// three-dimensional number with one made-up axis.
+///
+/// The second branch is the important one and it is the same shape as
+/// `zero_throughput`'s: **a run that never reports a start position fires
+/// too.** An alarm that can only fire when the worker volunteers the evidence
+/// is one the worker can switch off by saying nothing — which is precisely
+/// the bug class this project keeps paying for.
+pub fn start_position(v: &View, c: &Config) -> Option<Firing> {
+    if !v.run_active {
+        return None;
+    }
+    if let Some(started) = v.run_started {
+        if v.now - started < c.zero_window_s {
+            return None; // too new to have said anything
+        }
+    }
+    match v.start_dev_m {
+        None => Some(Firing {
+            id: "start_position",
+            severity: Severity::Warn,
+            detail: "the run has never reported where its car started, so nothing here can \
+                     tell whether it is driving the map from the start line"
+                .to_string(),
+        }),
+        Some(d) if d > c.start_dev_max_m => Some(Firing {
+            id: "start_position",
+            severity: Severity::Critical,
+            detail: format!(
+                "the car starts {d:.1} m from the map's start line (tolerance {:.0} m) — \
+                 this run is not driving the map from the beginning",
+                c.start_dev_max_m
+            ),
+        }),
+        Some(_) => None,
+    }
+}
+
+// ---------------------------------------------------------------- A10
+
+/// **More boxes than the ceiling allows.**
+///
+/// The heartbeat provisions replacement boxes without a human, which is what
+/// the brief asks for; a bug in that logic must not be able to provision
+/// without bound. Leases cost money and the failure would be silent.
+pub fn fleet_over_cap(v: &View, c: &Config) -> Option<Firing> {
+    let live: Vec<&String> = v.boxes.iter().filter(|(_, b)| b.active).map(|(n, _)| n).collect();
+    if live.len() <= c.max_boxes {
+        return None;
+    }
+    Some(Firing {
+        id: "fleet_over_cap",
+        severity: Severity::Critical,
+        detail: format!(
+            "{} boxes are registered active and the ceiling is {}: {}. Retire the extras \
+             (`tmhaul stop` on each) and release them",
+            live.len(),
+            c.max_boxes,
+            live.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    })
+}
+
 // ----------------------------------------------------------------
 
 pub type AlarmFn = fn(&View, &Config) -> Option<Firing>;
@@ -446,6 +533,8 @@ pub const ALL: &[(&str, AlarmFn)] = &[
     ("queue_stalled", queue_stalled),
     ("disk_filling", disk_filling),
     ("unbanked_drift", unbanked_drift),
+    ("start_position", start_position),
+    ("fleet_over_cap", fleet_over_cap),
 ];
 
 pub fn evaluate(v: &View, c: &Config) -> Vec<Firing> {
@@ -490,6 +579,7 @@ pub mod fixtures {
                 last_completion: Some(NOW - 300),
             },
             last_bank: Some(NOW - 300),
+            start_dev_m: Some(0.8),
         }
     }
 
@@ -598,6 +688,25 @@ pub mod fixtures {
         v
     }
 
+    /// A car that began its run 390 m from the start line, at checkpoint 3.
+    /// These are the real numbers from *Summer 2026 - 01* on 2026-08-24.
+    pub fn wrong_start() -> View {
+        View { start_dev_m: Some(390.0), ..healthy() }
+    }
+
+    /// A run that has never said where its car started.
+    pub fn start_unreported() -> View {
+        View { start_dev_m: None, ..healthy() }
+    }
+
+    pub fn too_many_boxes() -> View {
+        let mut v = healthy();
+        v.boxes = (0..4)
+            .map(|i| (format!("box{i}"), BoxState { last_seen: v.now - 30, active: true }))
+            .collect();
+        v
+    }
+
     /// Every alarm, paired with a state that must fire it. `tmhaul alarms
     /// selftest` walks this and refuses to pass unless each one does.
     pub fn firing_cases() -> Vec<(&'static str, &'static str, View)> {
@@ -614,6 +723,9 @@ pub mod fixtures {
             ("disk_filling", "on trend to full within the horizon", disk_slope()),
             ("unbanked_drift", "nothing ever banked", never_banked()),
             ("unbanked_drift", "no bank for nine hours", bank_drifted()),
+            ("start_position", "car starts 390 m away, at checkpoint 3", wrong_start()),
+            ("start_position", "run never reported a start position", start_unreported()),
+            ("fleet_over_cap", "four boxes against a ceiling of two", too_many_boxes()),
         ]
     }
 }
@@ -741,6 +853,49 @@ mod tests {
             s.disk_free_mb = Some(50_000);
         }
         assert!(disk_filling(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn a_car_on_the_start_line_does_not_fire_the_start_alarm() {
+        // The control for the start-position alarm, and the reason a tolerance
+        // exists at all: a car sits a metre or so from the exact centre of the
+        // start block, always.
+        assert!(start_position(&healthy(), &Config::default()).is_none());
+        let v = View { start_dev_m: Some(31.0), ..healthy() };
+        assert!(start_position(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn the_start_alarm_is_critical_for_a_wrong_start_and_a_warning_for_silence() {
+        // Different facts, different severities: "it is driving from the wrong
+        // place" is a result-invalidating certainty; "nobody said" is a gap.
+        let f = start_position(&wrong_start(), &Config::default()).unwrap();
+        assert_eq!(f.severity, Severity::Critical);
+        let f = start_position(&start_unreported(), &Config::default()).unwrap();
+        assert_eq!(f.severity, Severity::Warn);
+    }
+
+    #[test]
+    fn the_fleet_cap_permits_exactly_its_ceiling() {
+        let mut v = healthy();
+        v.boxes = (0..2)
+            .map(|i| (format!("box{i}"), BoxState { last_seen: v.now - 30, active: true }))
+            .collect();
+        assert!(fleet_over_cap(&v, &Config::default()).is_none(), "two boxes is the ceiling");
+        v.boxes.push(("box2".into(), BoxState { last_seen: v.now - 30, active: true }));
+        assert!(fleet_over_cap(&v, &Config::default()).is_some());
+    }
+
+    #[test]
+    fn retired_boxes_do_not_count_against_the_fleet_cap() {
+        // Over a month the registry accumulates dozens of retired boxes. If
+        // those counted, the alarm would fire permanently and be ignored.
+        let mut v = healthy();
+        v.boxes = (0..40)
+            .map(|i| (format!("old{i}"), BoxState { last_seen: v.now - 99_999, active: false }))
+            .collect();
+        v.boxes.push(("current".into(), BoxState { last_seen: v.now - 10, active: true }));
+        assert!(fleet_over_cap(&v, &Config::default()).is_none());
     }
 
     #[test]

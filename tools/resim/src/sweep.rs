@@ -15,6 +15,13 @@ pub enum Verdict {
     Dnf { cps: u32, published: Option<i64> },
     /// Simulated, but the name carries no number to check it against.
     Unpublished { ms: i64 },
+    /// Simulated, but its car did not start at the map's start line.
+    ///
+    /// A separate verdict from `Differs`, because it is a different kind of
+    /// wrong: the time may be exactly what the tape claims and the run still
+    /// not be a run of the map. The position is telemetry-derived — see
+    /// `maps::telemetry_start_xz` for what that does and does not establish.
+    StartedElsewhere { dev_m: f64, ms: Option<i64> },
     /// Not read, on purpose: a human drove it.
     RefusedHumanGhost,
     /// Could not be measured, with the reason. Never folded in with a pass.
@@ -28,6 +35,7 @@ impl Verdict {
             Verdict::Differs { .. } => "DIFFERS",
             Verdict::Dnf { .. } => "dnf",
             Verdict::Unpublished { .. } => "unpublished",
+            Verdict::StartedElsewhere { .. } => "STARTED-ELSEWHERE",
             Verdict::RefusedHumanGhost => "refused-human-ghost",
             Verdict::Unmeasured { .. } => "UNMEASURED",
         }
@@ -46,6 +54,10 @@ impl Verdict {
                 None => format!("DNF at cp{cps}"),
             },
             Verdict::Unpublished { ms } => format!("{} (no published number to check)", haul::time::ms_as_seconds(*ms)),
+            Verdict::StartedElsewhere { dev_m, ms } => format!(
+                "its telemetry starts {dev_m:.1} m from the map's start line{}",
+                ms.map(|m| format!(", simulating {}", haul::time::ms_as_seconds(m))).unwrap_or_default()
+            ),
             Verdict::RefusedHumanGhost => "a human drove it; not read".to_string(),
             Verdict::Unmeasured { why } => why.clone(),
         }
@@ -57,7 +69,9 @@ impl Verdict {
     pub fn is_clean(&self) -> Option<bool> {
         match self {
             Verdict::Holds { .. } | Verdict::Unpublished { .. } => Some(true),
-            Verdict::Differs { .. } | Verdict::Dnf { .. } => Some(false),
+            Verdict::Differs { .. } | Verdict::Dnf { .. } | Verdict::StartedElsewhere { .. } => {
+                Some(false)
+            }
             Verdict::RefusedHumanGhost | Verdict::Unmeasured { .. } => None,
         }
     }
@@ -89,6 +103,10 @@ pub struct Sweep {
     pub progress: Option<PathBuf>,
     pub results: Option<PathBuf>,
     pub only_map: Option<String>,
+    /// The map registry, for each map's start line. Absent means the check
+    /// cannot run — which is reported as UNKNOWN per tape, never skipped.
+    pub registry: Vec<crate::maps::MapRow>,
+    pub start_dev_max_m: f64,
 }
 
 impl Sweep {
@@ -202,12 +220,24 @@ impl Sweep {
             for g in &allowed {
                 let base = g.file_name().unwrap_or_default().to_string_lossy().to_string();
                 let found = sims.iter().find(|s| s.file == base || base.starts_with(&s.file));
-                let verdict = match found {
+                let mut verdict = match found {
                     None => Verdict::Unmeasured {
                         why: "the server never mentioned this file".to_string(),
                     },
                     Some(s) => judge(s.time_ms, s.cps, published_ms(&base)),
                 };
+                // A run that did not start at the start line is not a run of
+                // this map, whatever time it posts. Checked against the
+                // registry's spawn; only overrides a verdict that was
+                // otherwise clean, so a DIFFERS stays a DIFFERS.
+                if verdict.is_clean() == Some(true) {
+                    if let Some(dev) = self.start_dev(&id, g) {
+                        if dev > self.start_dev_max_m {
+                            let ms = found.and_then(|s| s.time_ms);
+                            verdict = Verdict::StartedElsewhere { dev_m: dev, ms };
+                        }
+                    }
+                }
                 evals += 1;
                 if verdict.is_clean() == Some(true) {
                     clean += 1;
@@ -238,6 +268,7 @@ pub fn summarise(rows: &[Row]) -> String {
     let mut dnf = 0;
     let mut unpublished = 0;
     let mut refused = 0;
+    let mut elsewhere = 0;
     let mut unmeasured = 0;
     for r in rows {
         match r.verdict {
@@ -245,13 +276,14 @@ pub fn summarise(rows: &[Row]) -> String {
             Verdict::Differs { .. } => differs += 1,
             Verdict::Dnf { .. } => dnf += 1,
             Verdict::Unpublished { .. } => unpublished += 1,
+            Verdict::StartedElsewhere { .. } => elsewhere += 1,
             Verdict::RefusedHumanGhost => refused += 1,
             Verdict::Unmeasured { .. } => unmeasured += 1,
         }
     }
     format!(
         "{holds} hold · {differs} differ · {dnf} DNF · {unpublished} unpublished · \
-         {refused} refused (human) · {unmeasured} UNMEASURED"
+         {elsewhere} STARTED-ELSEWHERE · {refused} refused (human) · {unmeasured} UNMEASURED"
     )
 }
 
@@ -310,5 +342,20 @@ mod tests {
         assert!(s.contains("1 hold"), "{s}");
         assert!(s.contains("1 refused"), "{s}");
         assert!(s.contains("1 UNMEASURED"), "{s}");
+    }
+}
+
+impl Sweep {
+    /// Metres between where this tape's telemetry starts and where the map's
+    /// registry row says the start line is. `None` when either half is
+    /// unavailable — an absent answer, not a passing one.
+    pub fn start_dev(&self, map_id: &str, ghost: &Path) -> Option<f64> {
+        let spawn = self
+            .registry
+            .iter()
+            .find(|r| r.id == map_id || r.uid == map_id)
+            .and_then(|r| r.spawn)?;
+        let start = crate::maps::telemetry_start_xz(ghost).ok()?;
+        Some(crate::maps::start_deviation_m(spawn, start))
     }
 }

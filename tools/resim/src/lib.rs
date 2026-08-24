@@ -27,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod maps;
 pub mod sweep;
 
 /// What a tape's name says about where it came from.
@@ -96,8 +97,19 @@ pub fn map_name(dirname: &str) -> String {
 }
 
 /// Find the `.Map.Gbx` for an id in one of the corpus roots.
+///
+/// Two layouts are in use and both are real: `tm-unbeaten` puts each map in a
+/// directory named for its id, and the cartographer's bank keeps them flat,
+/// named for the uid. A finder that knew only one would report half the
+/// corpus MISSING and send somebody refetching maps that are already here.
 pub fn find_map(corpus: &[PathBuf], id: &str) -> Option<PathBuf> {
     for root in corpus {
+        // flat: <root>/<id>.Map.Gbx
+        let flat = root.join(format!("{id}.Map.Gbx"));
+        if flat.exists() {
+            return Some(flat);
+        }
+        // per-map directory: <root>/<id>/*.Map.Gbx
         let direct = root.join(id).join(format!("{id}.map.Map.Gbx"));
         if direct.exists() {
             return Some(direct);
@@ -105,11 +117,14 @@ pub fn find_map(corpus: &[PathBuf], id: &str) -> Option<PathBuf> {
         let d = root.join(id);
         if d.is_dir() {
             if let Ok(rd) = std::fs::read_dir(&d) {
-                for e in rd.filter_map(|e| e.ok()) {
-                    let p = e.path();
-                    if p.to_string_lossy().ends_with(".Map.Gbx") {
-                        return Some(p);
-                    }
+                let mut hits: Vec<PathBuf> = rd
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.to_string_lossy().ends_with(".Map.Gbx"))
+                    .collect();
+                hits.sort();
+                if let Some(p) = hits.into_iter().next() {
+                    return Some(p);
                 }
             }
         }
@@ -181,5 +196,27 @@ mod tests {
         assert_eq!(map_name("276874-untitled-01"), "untitled 01");
         assert_eq!(map_id("tools"), None);
         assert_eq!(map_id("_staging"), None);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn both_corpus_layouts_are_found() {
+        // `tm-unbeaten` uses <root>/<id>/<id>.map.Map.Gbx; the cartographer's
+        // bank is flat, <root>/<uid>.Map.Gbx. A finder that knew only one
+        // reported 28 of 66 maps MISSING and would have sent somebody
+        // refetching maps that were already on the box.
+        let root = std::env::temp_dir().join(format!("resim-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("276874")).unwrap();
+        std::fs::write(root.join("276874/276874.map.Map.Gbx"), b"a").unwrap();
+        std::fs::write(root.join("buNzfsVlp2NF2oWtHM3729dEylg.Map.Gbx"), b"b").unwrap();
+
+        assert!(find_map(&[root.clone()], "276874").is_some(), "per-map directory");
+        assert!(find_map(&[root.clone()], "buNzfsVlp2NF2oWtHM3729dEylg").is_some(), "flat");
+        assert!(find_map(&[root], "nosuchmap").is_none(), "and it still says no");
     }
 }

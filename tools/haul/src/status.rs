@@ -291,7 +291,9 @@ mod tests {
         let l = layout("healthy");
         let log = Log::shard(&l.journal_dir(), "boxA", 1).unwrap();
         let now = 1_800_000_000;
-        log.append(&Rec::at(now - 7200, "run_start")).unwrap();
+        // A real worker reports where its car started; the harness alarms if it
+        // does not, so the fixture for a HEALTHY run has to carry one too.
+        log.append(&Rec::at(now - 7200, "run_start").f("start_dev_m", 0.9)).unwrap();
         for i in 0..=120 {
             log.append(
                 &Rec::at(now - 7200 + i * 60, "sample")

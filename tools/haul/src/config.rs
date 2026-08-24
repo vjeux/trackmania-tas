@@ -122,6 +122,14 @@ impl Job {
                     parse_i(&v, k, &mut errs, &mut j.alarms.disk_min_free_mb)
                 }
                 "alarm_bank_max_gap_s" => parse_i(&v, k, &mut errs, &mut j.alarms.bank_max_gap_s),
+                "alarm_start_dev_max_m" => match v.parse() {
+                    Ok(f) => j.alarms.start_dev_max_m = f,
+                    Err(_) => errs.push(format!("{k}: {v:?} is not a number")),
+                },
+                "max_boxes" => match v.parse() {
+                    Ok(n) => j.alarms.max_boxes = n,
+                    Err(_) => errs.push(format!("{k}: {v:?} is not a number")),
+                },
                 "budget_switch_evals" => match v.parse() {
                     Ok(n) => j.budget.switch_evals = n,
                     Err(_) => errs.push(format!("{k}: {v:?} is not a number")),
@@ -190,6 +198,11 @@ alarm_box_silence_s = {}
 alarm_queue_window_s = {}
 alarm_disk_min_free_mb = {}
 alarm_bank_max_gap_s = {}
+alarm_start_dev_max_m = {}
+
+# The most boxes this project may hold at once. The heartbeat provisions
+# replacements without a human; a bug in that logic must not run away.
+max_boxes = {}
 
 # The pre-committed switch condition (DESIGN.md 3.2). Productive seconds only:
 # a stall never spends this.
@@ -219,6 +232,8 @@ budget_switch_productive_s = {}
             d.alarms.queue_window_s,
             d.alarms.disk_min_free_mb,
             d.alarms.bank_max_gap_s,
+            d.alarms.start_dev_max_m,
+            d.alarms.max_boxes,
             d.budget.switch_evals,
             d.budget.switch_productive_s,
         )
