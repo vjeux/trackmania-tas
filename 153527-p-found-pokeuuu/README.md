@@ -206,16 +206,30 @@ Three checkpoints of eleven. The map is still not driven and the author time is
 not beaten. Details, controls and what is still open: `tools/pkz2`, and the
 arm's write-up in the store.
 
-## Past the third checkpoint: he does not drive there, he is thrown
+## Past the third checkpoint: he does not drive there, he is thrown — but the way up is an ordinary ramp
 
-The section from CP3 to CP4 is not more of the same driving. It is a **chain of
-two turbo gates**: a `GateSpecial8mTurbo` at (904, 153, 438) that takes him from
-135 to 188 km/h in a quarter of a second, and a `GateSpecial32mTurbo` at
-(880, 138, 481) that holds him at **215–238 km/h** down a 250 m corridor and
-throws him into the checkpoint's cell. Nothing on this map has driven at those
-speeds.
+The section from CP3 to CP4 is a **chain of two turbo gates**: a
+`GateSpecial8mTurbo` at (904, 153, 438) that takes the car from 94 to 174 km/h
+in 0.4 s, and a `GateSpecial32mTurbo` at (880, 138, 481) that holds it at
+**215–241 km/h** down a 250 m corridor and throws it towards the checkpoint's
+cell.
 
-So the objective for that section is the first gate, not the checkpoint — and
-the first gate sits **15 m above the deck the car is driving on**. Scoring on it
-takes our best approach from 57.5 m to 21.5 m immediately and then stops
-improving, which says the way up to it is a move we have not written yet.
+The earlier reading of this — *"the gate sits 15 m above the deck, so the
+missing move is probably vertical, and it is a new operator"* — is **corrected**.
+The gate is reached from a **y = 146 shelf**, and the shelf is reached by an
+ordinary ramp about 50 m east of it: the driver climbs y 138.2 → 146.1 over
+x 957 → 926 at z ≈ 420, at 39–86 km/h with the throttle held, then coasts west
+along the shelf into the gate. That is visible only in his own surviving line,
+which is what the spliced file above made readable.
+
+**And it has now been driven.** A fork search from the `cps=3` tape, scoring the
+car's state at boxes the incumbent already enters, puts a car on the shelf at
+**187.800** at 87–99 km/h, through the 8 m turbo, and into the +z corridor at
+**192.750 doing 225 km/h** — where the driver's own de-looped line arrives at
+231.4. **38.8 s inside his line, at the last place both have been.** CP4 is
+still not collected: the round aimed at it scored distance to a box the car had
+never entered, and that objective returned a car parked 84 m away rather than
+one driving. Four of twelve checkpoints remain the record.
+
+`ghost record chain`, `ghost splice`, `tmtraj route --segments/--pace`, and the
+write-ups in the store.

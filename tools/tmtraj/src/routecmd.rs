@@ -37,6 +37,15 @@ const USAGE: &str = "\
 usage: tmtraj route CSV|GHOST... [query...]
 
   --summary                     rows, span, bbox, path length, first and last
+                                -- of the SELECTION, so --where narrows it
+  --pace                        how the selection's TIME divides by speed band
+                                (<5, 5-20, 20-40, 40-80, 80-120, >=120 km/h),
+                                skipping any gap over 1 s so a splice junction
+                                is not counted as a duration
+  --segments A,B,C              the per-segment ledger in ONE invocation: split
+                                the selection at these millisecond boundaries
+                                and print seconds, metres, mean km/h and the
+                                seconds under 5 and under 20 km/h for each
   --near X,Y,Z [--top N]        the N samples closest to a point (default 5)
   --where 'COL OP VALUE'        filter; repeatable, ANDed. OP is < <= > >= == !=
   --first N / --last N          print the first / last N rows of the selection
@@ -293,7 +302,7 @@ fn worst_margin(t: &Table, row: &[f64], thresholds: &[(String, usize, f64)]) -> 
 }
 
 pub fn cmd(argv: &[String]) -> i32 {
-    let a = cli::parse("tmtraj route", argv, &["summary"]);
+    let a = cli::parse("tmtraj route", argv, &["summary", "pace"]);
     if a.positional.is_empty() {
         eprint!("{}", USAGE);
         return 2;
@@ -306,6 +315,8 @@ pub fn cmd(argv: &[String]) -> i32 {
     let every = a.one("every").map(|s| s.parse::<usize>().unwrap_or(1));
     let want_cols = a.one("cols").map(|s| s.to_string());
     let summary = a.has("summary");
+    let pace = a.has("pace");
+    let segments = a.one("segments").map(|s| s.to_string());
     let cross_specs: Vec<String> = a.repeated("cross");
     let margin_spec = a.one("margin").map(|s| s.to_string());
     let a = a.finish(USAGE);
@@ -328,7 +339,7 @@ pub fn cmd(argv: &[String]) -> i32 {
             println!();
         }
         match run_one(
-            p, &near, top, &wheres, firstn, lastn, every, &want_cols, summary, &cross_specs,
+            p, &near, top, &wheres, firstn, lastn, every, &want_cols, summary, pace, &segments, &cross_specs,
         ) {
             0 => {}
             1 => empty += 1,
@@ -355,6 +366,8 @@ fn run_one(
     every: Option<usize>,
     want_cols: &Option<String>,
     summary: bool,
+    pace: bool,
+    segments: &Option<String>,
     cross_specs: &[String],
 ) -> i32 {
     let path = path.to_string();
@@ -379,14 +392,28 @@ fn run_one(
 
     println!("{}  ({} rows, {} columns)", path, t.rows.len(), t.names.len());
 
+    // The row set every aggregate below is computed over. `--summary` used to
+    // ignore `--where` entirely and report the WHOLE file's path length under a
+    // command line that named a time window -- an answer that looks like the
+    // question you asked, which is the failure this crate exists to avoid.
+    let preds: Vec<Pred> = wheres.iter().map(|s| parse_pred(&t, s)).collect();
+    let sel_all: Vec<usize> = t
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| preds.iter().all(|p| holds(p, r)))
+        .map(|(i, _)| i)
+        .collect();
+
     if summary || (near.is_none() && wheres.is_empty() && firstn.is_none() && lastn.is_none()) {
         let mut len = 0.0;
         let (mut xmin, mut xmax) = (f64::MAX, f64::MIN);
         let (mut ymin, mut ymax) = (f64::MAX, f64::MIN);
         let (mut zmin, mut zmax) = (f64::MAX, f64::MIN);
-        for (i, r) in t.rows.iter().enumerate() {
-            if i > 0 {
-                let p = &t.rows[i - 1];
+        for (k, &i) in sel_all.iter().enumerate() {
+            let r = &t.rows[i];
+            if k > 0 {
+                let p = &t.rows[sel_all[k - 1]];
                 len += ((r[cx] - p[cx]).powi(2) + (r[cy] - p[cy]).powi(2) + (r[cz] - p[cz]).powi(2))
                     .sqrt();
             }
@@ -397,7 +424,11 @@ fn run_one(
             zmin = zmin.min(r[cz]);
             zmax = zmax.max(r[cz]);
         }
-        if let (Some(f), Some(l)) = (t.rows.first(), t.rows.last()) {
+        if !wheres.is_empty() {
+            println!("  filter {} ({} of {} rows)", preds.iter().map(|p| p.text.clone()).collect::<Vec<_>>().join(" AND "), sel_all.len(), t.rows.len());
+        }
+        if let (Some(&f0), Some(&l0)) = (sel_all.first(), sel_all.last()) {
+            let (f, l) = (&t.rows[f0], &t.rows[l0]);
             println!(
                 "  span   {} .. {}",
                 crate::fmt::secs(f[ct] as i64),
@@ -408,6 +439,100 @@ fn run_one(
         }
         println!("  bbox   x {:.1}..{:.1}  y {:.1}..{:.1}  z {:.1}..{:.1}", xmin, xmax, ymin, ymax, zmin, zmax);
         println!("  path   {:.1} m", len);
+    }
+
+    // `--pace`: how the selection's TIME is spent by speed band. On a map whose
+    // whole difficulty is the slow parts, "165.868 s of the route is under
+    // 20 km/h" is the load-bearing number and there was no tool that produced
+    // it -- every arm that quoted it wrote a one-off.
+    if pace {
+        if let Some(cs) = t.col("speed_kmh") {
+            let bands = [0.0f64, 5.0, 20.0, 40.0, 80.0, 120.0, f64::INFINITY];
+            let names = ["<5", "5-20", "20-40", "40-80", "80-120", ">=120"];
+            let mut secs_in = [0.0f64; 6];
+            let mut total = 0.0f64;
+            for (k, &i) in sel_all.iter().enumerate() {
+                if k == 0 {
+                    continue;
+                }
+                let dt = (t.rows[i][ct] - t.rows[sel_all[k - 1]][ct]) / 1000.0;
+                if dt <= 0.0 || dt > 1.0 {
+                    continue; // a splice junction is not a duration
+                }
+                let v = t.rows[i][cs];
+                for b in 0..6 {
+                    if v >= bands[b] && v < bands[b + 1] {
+                        secs_in[b] += dt;
+                        break;
+                    }
+                }
+                total += dt;
+            }
+            println!("  pace   over {:.3} s of the selection", total);
+            for b in 0..6 {
+                println!(
+                    "         {:>7} km/h  {:>9.3} s  {:>5.2} %",
+                    names[b],
+                    secs_in[b],
+                    if total > 0.0 { 100.0 * secs_in[b] / total } else { 0.0 }
+                );
+            }
+        }
+    }
+
+    // `--segments A,B,C`: the per-segment ledger, in one invocation. Every arm
+    // that wanted "seconds, metres and pace between consecutive checkpoints"
+    // has so far run the tool once per segment and reassembled the answer in a
+    // shell pipeline, which is how `--summary` ignoring `--where` went unnoticed
+    // for so long.
+    if let Some(spec) = segments.as_deref() {
+        let cs = t.col("speed_kmh");
+        let mut bounds: Vec<f64> = vec![f64::MIN];
+        for p in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            bounds.push(p.trim().parse::<f64>().unwrap_or_else(|_| die(&format!("--segments: {:?} is not a millisecond value", p))));
+        }
+        println!(
+            "\n{:>3} {:>10} {:>10} {:>9} {:>9} {:>8} {:>8} {:>8}",
+            "seg", "from", "to", "secs", "path_m", "km/h", "s<5", "s<20"
+        );
+        for w in bounds.windows(2) {
+            let (lo, hi) = (w[0], w[1]);
+            let sel: Vec<usize> = sel_all.iter().copied().filter(|&i| t.rows[i][ct] > lo && t.rows[i][ct] <= hi).collect();
+            let (mut len, mut u5, mut u20, mut tot) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for (k, &i) in sel.iter().enumerate() {
+                if k == 0 {
+                    continue;
+                }
+                let p = &t.rows[sel[k - 1]];
+                let r = &t.rows[i];
+                len += ((r[cx] - p[cx]).powi(2) + (r[cy] - p[cy]).powi(2) + (r[cz] - p[cz]).powi(2)).sqrt();
+                let dt = (r[ct] - p[ct]) / 1000.0;
+                if dt <= 0.0 || dt > 1.0 {
+                    continue;
+                }
+                tot += dt;
+                if let Some(c) = cs {
+                    if r[c] < 5.0 {
+                        u5 += dt;
+                    }
+                    if r[c] < 20.0 {
+                        u20 += dt;
+                    }
+                }
+            }
+            let span = if sel.len() > 1 { (t.rows[*sel.last().unwrap()][ct] - t.rows[sel[0]][ct]) / 1000.0 } else { 0.0 };
+            println!(
+                "{:>3} {:>10.3} {:>10.3} {:>9.3} {:>9.1} {:>8.1} {:>8.3} {:>8.3}",
+                bounds.iter().position(|v| *v == lo).unwrap_or(0),
+                if lo == f64::MIN { 0.0 } else { lo / 1000.0 },
+                hi / 1000.0,
+                span,
+                len,
+                if tot > 0.0 { 3.6 * len / tot } else { 0.0 },
+                u5,
+                u20
+            );
+        }
     }
 
     // --near: rank by distance to a point.
