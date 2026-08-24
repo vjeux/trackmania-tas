@@ -68,11 +68,11 @@ https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
 
 **[Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum)** — author time `49.282` · ours **49.275** (−0.007) · best human 49.291 (Ssnake01) · 180 records · the field's own best sectors sum to 48.733 and nobody has assembled that lap
 
-https://github.com/user-attachments/assets/d53ea01e-c3fb-45a6-b44c-7d182d59c7e1
+https://github.com/user-attachments/assets/094a8c03-d9f3-4938-b21f-caafff8fa280
 
-**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · the 5.345 file is **withdrawn** and named on the page; the fastest published here is 5.347
+**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · the 5.345 file is **withdrawn** and named on the page; the fastest published here is 5.347, and *the clip below is that 5.347*
 
-https://github.com/user-attachments/assets/bcb31623-8366-4924-9289-f268be4f7f35
+https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
 **[Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end)** — author time `10.598` · ours **10.594** (−0.004) · best human 10.602 (ShcrTM) · 663 records · the low-input ladder here is published as a negative: keyboard does not reach the author time on this map
 

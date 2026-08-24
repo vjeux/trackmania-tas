@@ -8,11 +8,28 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
-**Fall 2025 - 22 Reverse (CP1 end)** — TAS **5.352** (+0.002) | AT 5.350 | WR 5.355 by Matik_K
+**Fall 2025 - 22 Reverse (CP1 end)** — TAS **5.347** (−0.003) | AT 5.350 | WR 5.355 by Matik_K
 
-https://github.com/user-attachments/assets/bcb31623-8366-4924-9289-f268be4f7f35
+https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
 Single car: against the human 5.355 the two stay within 0.42 m for the whole run, so a side-by-side would show one car.
+
+> **Re-shot 2026-08-24, and the caption now names the run in the video.** The
+> clip is the **5.347**, `replays/best_pF_5347_32087.Ghost.Gbx` — the fastest
+> lap this directory actually publishes. It used to say 5.352, which is the
+> smallest keyboard tape rather than the fastest file here, and the **5.345 is
+> withdrawn** and was not a candidate. `ghost verify` on the filmed file:
+> kappa **1.000** (107 of 107 samples), the plain oracle re-simulating the
+> WRITTEN file to **5.347**, telemetry 0.000 .. 5.300 inside a span ending
+> 5.347. Trajectory worst **0.0265 m** against the file it replaces.
+>
+> **One cosmetic defect, recorded rather than hidden: the car in this clip is
+> the stock livery, not ours.** The file's skin field reads
+> `Skins\Models\CarSport\TAS.zip` exactly as every other file in this sweep
+> does, and the same pipeline rendered the magenta TAS car on Pain ft Mango &
+> Teuflum minutes earlier, so this is the game failing to load a skin on one
+> render rather than anything wrong with the ghost. It is worth a re-shoot and
+> it is not worth blocking on.
 
 | run | time | vs author time | vs human WR | inputs |
 |---|---|---|---|---|
