@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/56e64ae5-3b31-4361-85d5-9e9dbd45e6b5
 
 **[[Turtle Trial] Leto](286279-turtle-trial-leto)** — author time `355.181` · ours **218.812** (−136.369) · best human 441.002 (Bald_tm) · 5 records
 
-https://github.com/user-attachments/assets/ef4abed1-3897-44cc-8719-98458b015add
+https://github.com/user-attachments/assets/31063ee4-582f-452b-9ea3-e32bc73dc0b5
 
 **[Welcome to wiggles](197047-welcome-to-wiggles)** — author time `100.784` · ours **95.839** (−4.945) · best human 101.794 (beagle.3) · 27 records
 
@@ -26,11 +26,11 @@ https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
 
 **[YEET Fall 2024 - 04](203072-yeet-fall-2024-04)** — author time `11.334` · ours **10.640** (−0.694) · best human 12.083 (ayti__) · 301 records
 
-https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
+https://github.com/user-attachments/assets/6708045e-8ee0-4520-86bc-d72a58a2d05e
 
 **[Kacky Reloaded #290](126859-kacky-reloaded-290)** — author time `24.062` · ours **23.416** (−0.646) · best human 24.342 (zetos.) · 23 records
 
-https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
+https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
 
 **[idm ruinin ur day #460](165922-idm-ruinin-ur-day-460)** — author time `15.643` · ours **15.217** (−0.426) · best human 16.870 (banktm) · 11 records
 
@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
 **[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 
-https://github.com/user-attachments/assets/7a263da5-a1b2-41c7-b110-4e36c9f97a63
+https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 
 **[Torment (1-DOWN)](228811-torment-1-down)** — author time `20.555` · ours **20.237** (−0.318) · best human 22.637 (KappaRiley) · 68 records
 

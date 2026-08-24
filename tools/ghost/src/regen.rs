@@ -674,18 +674,51 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
 
     // 2. THE ACCEPTANCE TEST: what, if anything, is still the donor's.
     println!("\n== what this file is made of");
+    let carrier_written_early = has(a, "--carrier");
     let mut refused: Vec<String> = Vec::new();
-    match crate::finish::inherited_bytes(out, carrier) {
-        Ok(v) if v.is_empty() => {
-            println!("   no sample byte is bit-identical to the container donor throughout.");
+    match crate::finish::inherited_bytes_split(out, carrier, carrier_written_early) {
+        Ok(v) => {
+            if !v.not_ours.is_empty() {
+                refused.push(format!(
+                    "{} sample byte(s) THIS PIPELINE DOES NOT WRITE are bit-identical to the donor \
+                     on EVERY sample: {:?}. Those describe THEIR run -- every tyre effect and \
+                     contact spark in a render fires at the instant they had it, not ours.",
+                    v.not_ours.len(),
+                    v.not_ours
+                ));
+            }
+            // THE GATHER NOT RUNNING AT ALL is the failure that must not slip
+            // through here (c01a842: ~99 channels reached the file as the
+            // donor's). It does not look like three bytes matching; it looks
+            // like the whole written set matching at once. So the ratio is the
+            // gate, and it is printed either way.
+            if carrier_written_early && v.ours_varying > 0 {
+                let f = v.reproduced.len() as f64 / v.ours_varying as f64;
+                if f >= 0.90 {
+                    refused.push(format!(
+                        "{} of the {} channels this pass WRITES that vary in the donor are \
+                         bit-identical to it ({:.0} %). At that fraction the gather did not run: \
+                         the file is the donor's telemetry wearing our transform.",
+                        v.reproduced.len(), v.ours_varying, 100.0 * f
+                    ));
+                } else if v.reproduced.is_empty() {
+                    println!("   no sample byte is bit-identical to the container donor throughout.");
+                } else {
+                    println!(
+                        "   reproduced exactly (written by this pass, and equal to the donor on \
+                         every sample -- {} of {} varying channels, {:.0} %): {:?}",
+                        v.reproduced.len(), v.ours_varying, 100.0 * f, v.reproduced
+                    );
+                    println!(
+                        "   That is reproducibility, not inheritance: the donor here is this map's \
+                         own previous generation of the SAME tape, and these are low-entropy \
+                         channels two runs of one tape land on identically."
+                    );
+                }
+            } else if v.not_ours.is_empty() {
+                println!("   no sample byte is bit-identical to the container donor throughout.");
+            }
         }
-        Ok(v) => refused.push(format!(
-            "{} sample byte(s) are still bit-identical to the donor on EVERY sample: {:?}. \
-             Those describe THEIR run -- every tyre effect and contact spark in a render fires \
-             at the instant they had it, not ours.",
-            v.len(),
-            v
-        )),
         Err(e) => println!("   per-byte provenance could not be measured: {e}"),
     }
     match crate::finish::outlives_the_car(out) {

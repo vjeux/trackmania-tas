@@ -140,3 +140,34 @@ particular is a live browser session. Revoke, in order of how much they can do:
 the cookie still valid?*, that is what has happened: replace
 `~/.gh-upload/cookie` with a fresh `Cookie:` header from a logged-in browser.
 Nothing else in the pipeline needs renewing.
+
+## The MediaTracker's clip length is the MAP's, not the scene's — measured 2026-08-24
+
+**The render is as long as the map's own author/validation ghost, whatever you
+stage.** Not the longest ghost in the scene, which is what
+[`../286279-turtle-trial-leto`](286279-turtle-trial-leto) and
+[`FILMING.md`](FILMING.md) both say, and not the length of the clip you asked
+for. Two measurements, one of them expensive:
+
+| map | longest ghost STAGED | what the game did | the map's own AT ghost |
+|---|---|---|---|
+| [Turtle Trial] Leto | 219.000 s (WR trimmed) | rendered **441.000 s** | 441.002 s |
+| The Magnet Trial | 30.010 s (a trimmed slice) | dialog estimated **01:45:52** | 2540.641 s |
+
+Leto is the direct one: both staged ghosts end by 219.000 s and `clip cut`
+reported `441.000s -> 218.812s` on the file the game wrote. The Magnet Trial is
+the arithmetic: this box renders at about 2.5x realtime, and 2540.641 s of
+video at 2.5x is 6352 s, which is 01:45:52 to the second. Trimming the ghosts
+does not help, because they were never what set the length.
+
+**What it costs.** Every second past your run is rendered and then thrown away
+by `clip cut`. On Leto that is half the render. On The Magnet Trial it is the
+difference between a ~30 minute job and a ~1h45m one, and it is why a 30-second
+camera test on that map was still going after seven minutes and had to be
+killed. Budget a long map by its AUTHOR TIME, not by the run.
+
+**The route to fix it is `/clipend`** (`Camera.as`), which sets the clip's end
+directly. Anything that renders a map whose author time is much longer than the
+run should use it. Measure it on a short map with a known answer first: a clip
+whose length you can predict either way is the only way to tell "it worked"
+from "this map was going to be that length anyway".
