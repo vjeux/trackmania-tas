@@ -12,6 +12,7 @@ pub mod beat;
 pub mod budget;
 pub mod config;
 pub mod disk;
+pub mod gates;
 pub mod gitcmd;
 pub mod ledger;
 pub mod lease;

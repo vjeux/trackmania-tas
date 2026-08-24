@@ -146,6 +146,17 @@ needs a per-map decoration offset that is *fitted* rather than read
 (`mapgeom::place::Yoff`), while `x` and `z` are exact at `32*c + 16`. A
 number with one made-up axis would be worse than two honest ones.
 
+> **The start line has ONE source, not two.** It is the map's declared `Spawn`
+> waypoint. An earlier draft of this file claimed the lead's 3D render
+> corroborated it; that is wrong and is corrected here rather than dropped —
+> the render showed the route mesh and the suspect trajectory, and never
+> independently identified the start line. Establishing it independently means
+> reading tick 0 out of a live re-simulation, which depends on waypoint
+> semantics and server tick-0 behaviour that this project has not settled.
+> **Until it is settled, this check compares against a DECLARED spawn**, and
+> both the alarm text and the sweep's verdict say "the map's start line"
+> rather than claiming a measured one.
+
 The sweep's own position comes from the container's telemetry, and **a
 synthesised tape carries its template's telemetry** — so for a recording the
 engine made this is the run's own start, and for a tape our tooling wrote into
@@ -175,6 +186,39 @@ journal and the evaluator, which is a different claim from the predicates being
 right.
 
 ---
+
+## The acceptance gates — what makes a worker's output a *result*
+
+Set 2026-08-24, after an explorer produced five `confirmed` tapes that could
+not be reproduced: the run began at the wrong position (or its state locator
+tracked the wrong object), and the replay frame needed to re-derive them was
+never recorded. These gates are general — they are about every worker this
+harness will supervise, including ones nobody has written yet.
+
+`tmhaul claim` is the only route by which a worker's output becomes banked
+state. A refusal exits **4** and writes nothing to the frontier; the refusal
+itself is journalled, because *"a claim was refused, and why"* is a fact worth
+keeping.
+
+| gate | requires | because |
+|---|---|---|
+| **G1 reproducible** | `--frame-start-tick`, `--map-md5`, `--template-md5`, `--tape-md5`, and the prefix if branched | a tape nobody can re-derive is not a result. A search's tick 0 is the fork's **resume boundary**, not the file's — this project has already shipped a tape 153 ticks out of frame |
+| **G2 live tick 0** | `--tick0-x/y/z` from the **running engine** | a container's telemetry may be its *template's*, so reading the file can describe a run nobody made |
+| **G3 start control** | `--start-dev-m`, within tolerance | "not checked" is refused, never folded in with "checked and fine" |
+| **G4 transcript** | `--transcript-file`, non-trivial | a number in a report is a claim; the engine's own bytes are evidence, and they let a later reader re-judge without re-running |
+
+```bash
+tmhaul gates    # watch every gate refuse, here, now — plus a control that is accepted
+```
+
+An accepted claim banks a record carrying every hash, the frame, the prefix
+(or the word `root` — an omission and "from the root" must not render alike),
+the tick-0 state, and the transcript's own md5, with the transcript itself
+written to `state/frontier/transcripts/<md5>.txt`.
+
+`--no-drive` exempts a worker from G2 only. It does not exempt it from G1, G3
+or G4 — otherwise the flag would be a way to switch the gates off, and there
+is a test that says so.
 
 ## The worker contract
 
@@ -268,6 +312,10 @@ tmhaul watch [--detach] [--lease-expires ISO] [--note T] | stop
 tmhaul journal add|tail   ledger add|list   queue push|claim|complete|list|reap
 tmhaul budget show   lease   mirror latest|restore   config get KEY
 tmhaul alarms eval|selftest|live-test
+tmhaul claim --what T --tape-md5 H --map-md5 H --template-md5 H --frame-start-tick N
+             --tick0-x X --tick0-y Y --tick0-z Z --start-dev-m M --transcript-file F
+             [--prefix-tape-md5 H --prefix-at-tick N] [--no-drive]
+tmhaul gates                 watch every acceptance gate refuse
 tmhaul selftest-worker --mode normal|stall|slow|flat|silent|crash
 ```
 

@@ -43,6 +43,8 @@ DURABILITY
 
 ALARMS
   alarms eval                what is firing right now
+  claim                      submit a worker result through the acceptance gates
+  gates                      watch every gate refuse, here, now
   alarms selftest            fire every alarm from its fixture, here, now
   alarms live-test           fire alarms against real processes on this box
 "
@@ -407,6 +409,129 @@ fn real_main() -> Result<i32, String> {
                 .map_err(|e| e.to_string())?;
             println!("{}", r.summary());
             Ok(if r.mirror_error.is_some() || r.push_error.is_some() { 1 } else { 0 })
+        }
+
+        "claim" => {
+            // The acceptance gates, as the only route by which a worker's
+            // result becomes a banked result. A refusal exits non-zero and
+            // writes NOTHING to the frontier: the harness records that a
+            // claim was refused and why, which is itself a fact worth having.
+            let l = layout()?;
+            let c = gates::Claim {
+                what: a.s("what", ""),
+                tape_md5: a.s("tape-md5", ""),
+                frame_start_tick: a.flag("frame-start-tick").and_then(|v| v.parse().ok()),
+                prefix: match (a.flag("prefix-tape-md5"), a.flag("prefix-at-tick")) {
+                    (Some(m), Some(t)) => Some(gates::Prefix {
+                        tape_md5: m.to_string(),
+                        at_tick: t.parse().unwrap_or(-1),
+                    }),
+                    _ => None,
+                },
+                map_md5: a.s("map-md5", ""),
+                template_md5: a.s("template-md5", ""),
+                live_tick0: match (a.flag("tick0-x"), a.flag("tick0-y"), a.flag("tick0-z")) {
+                    (Some(x), Some(y), Some(z)) => Some(gates::Tick0 {
+                        x: x.parse().unwrap_or(f64::NAN),
+                        y: y.parse().unwrap_or(f64::NAN),
+                        z: z.parse().unwrap_or(f64::NAN),
+                        dev_from_spawn_m: a.flag("start-dev-m").and_then(|v| v.parse().ok()),
+                    }),
+                    _ => None,
+                },
+                drives: !a.on("no-drive"),
+                oracle_transcript: match a.flag("transcript-file") {
+                    Some(p) => Some(std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?),
+                    None => a.flag("transcript").map(|s| s.to_string()),
+                },
+            };
+            let refusals = gates::evaluate(&c, &gates::Policy::default());
+            let node = paths::node_id();
+            let lg = log::Log::shard(&l.journal_dir(), &node, now).map_err(|e| e.to_string())?;
+            if refusals.is_empty() {
+                let claims = log::Log::at(l.frontier().join(format!("claims-{node}.rec")));
+                claims.append(&gates::to_rec(&c)).map_err(|e| e.to_string())?;
+                if let Some(t) = &c.oracle_transcript {
+                    // The engine's own bytes, beside the claim, so a later
+                    // reader can re-judge it without re-running anything.
+                    let d = l.frontier().join("transcripts");
+                    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                    std::fs::write(d.join(format!("{}.txt", md5::md5_hex(t.as_bytes()))), t)
+                        .map_err(|e| e.to_string())?;
+                }
+                lg.append(&rec::Rec::new("claim_accepted").f("what", &c.what).f("tape_md5", &c.tape_md5))
+                    .map_err(|e| e.to_string())?;
+                println!("accepted: {}", c.what);
+                Ok(0)
+            } else {
+                for r in &refusals {
+                    println!("REFUSED [{}] {}", r.gate, r.why);
+                    lg.append(
+                        &rec::Rec::new("claim_refused")
+                            .f("what", &c.what)
+                            .f("gate", r.gate)
+                            .f("why", &r.why),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(4)
+            }
+        }
+
+        "gates" => {
+            // Watch every gate refuse, here, now — the same discipline the
+            // alarms get. A gate nobody has seen refuse is decoration.
+            let p = gates::Policy::default();
+            let good = gates::Claim {
+                what: "a complete claim".into(),
+                tape_md5: "a".repeat(32),
+                frame_start_tick: Some(0),
+                prefix: None,
+                map_md5: "b".repeat(32),
+                template_md5: "c".repeat(32),
+                live_tick0: Some(gates::Tick0 { x: 1584.2, y: 16.0, z: 783.4, dev_from_spawn_m: Some(0.9) }),
+                drives: true,
+                oracle_transcript: Some("TAS.Ghost.Gbx  IsValid=1  Time=23144  Checkpoints=3  Respawns=0".into()),
+            };
+            let cases: Vec<(&str, gates::Claim)> = vec![
+                ("no frame", gates::Claim { frame_start_tick: None, ..good.clone() }),
+                ("no map hash", gates::Claim { map_md5: String::new(), ..good.clone() }),
+                ("no live tick 0", gates::Claim { live_tick0: None, ..good.clone() }),
+                (
+                    "started at a checkpoint",
+                    gates::Claim {
+                        live_tick0: Some(gates::Tick0 { x: 1359.5, y: 10.0, z: 1103.0, dev_from_spawn_m: Some(390.0) }),
+                        ..good.clone()
+                    },
+                ),
+                (
+                    "no start control",
+                    gates::Claim {
+                        live_tick0: Some(gates::Tick0 { x: 0.0, y: 0.0, z: 0.0, dev_from_spawn_m: None }),
+                        ..good.clone()
+                    },
+                ),
+                ("no transcript", gates::Claim { oracle_transcript: None, ..good.clone() }),
+                ("an empty transcript", gates::Claim { oracle_transcript: Some(String::new()), ..good.clone() }),
+            ];
+            let mut broken = 0;
+            println!("{:<26} {}", "claim", "refused by");
+            for (name, c) in &cases {
+                let rs = gates::evaluate(c, &p);
+                if rs.is_empty() {
+                    broken += 1;
+                    println!("{name:<26} NOTHING  <-- BROKEN");
+                } else {
+                    println!("{name:<26} {}", rs.iter().map(|r| r.gate).collect::<Vec<_>>().join(", "));
+                }
+            }
+            let clean = gates::evaluate(&good, &p);
+            println!("{:<26} {}", "(control) a good claim", if clean.is_empty() { "accepted".into() } else { format!("REFUSED <-- BROKEN: {:?}", clean) });
+            if !clean.is_empty() {
+                broken += 1;
+            }
+            println!("\n{} gate(s), {broken} broken", gates::GATES.len());
+            Ok(if broken == 0 { 0 } else { 2 })
         }
 
         "verify" => {

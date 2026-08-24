@@ -310,10 +310,20 @@ mod tests {
 
     #[test]
     fn a_cell_becomes_the_centre_of_that_cell() {
-        // Control from two independent sources, both about *Summer 2026 - 01*:
-        // the map's Spawn block sits at cell (49, 7, 24), and the lead's own
-        // 3D render of the map put the start line at x 1584, z 784. They must
-        // agree, and they do.
+        // The arithmetic, and ONLY the arithmetic: cell (49, ., 24) is centred
+        // at (1584, 784) given `32*c + 16`.
+        //
+        // WHAT THIS DOES NOT ESTABLISH, stated because an earlier version of
+        // this comment claimed it did: that (1584, 784) is where the server
+        // actually places a car at tick 0. The map's Spawn waypoint is ONE
+        // source. The lead's 3D render showed the route mesh and the suspect
+        // trajectory; it did not independently identify the start line, so
+        // there is no second source and the two do not corroborate each other.
+        //
+        // Establishing the start line independently means reading tick 0 out
+        // of a live re-simulation, which is `waypoint semantics / server
+        // tick-0`, an open question. Until then the start-position check is a
+        // check against the map's DECLARED spawn, and its output says so.
         assert_eq!(cell_centre_xz(49, 24), (1584.0, 784.0));
     }
 
