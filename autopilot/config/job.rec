@@ -64,3 +64,11 @@ alarm_start_dev_max_m = 32.0
 # The most boxes this project may hold at once. The heartbeat provisions
 # replacements without a human; a bug in that logic must not run away.
 max_boxes = 2
+
+# Does this job's worker DRIVE a car? Today's worker is the re-simulation
+# sweep, which reads tapes that were already written and has no run-level start
+# position of its own — it reports a per-tape deviation instead, as a verdict.
+# Set this back to `yes` the moment worker_cmd points at the explorer: it
+# defaults to yes precisely so that a driving worker which says nothing about
+# where its car started sets off the alarm.
+worker_drives = no

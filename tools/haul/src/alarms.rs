@@ -114,6 +114,15 @@ pub struct Config {
     /// Most boxes this project may hold at once. A bug in the rotation logic
     /// must not be able to provision without bound.
     pub max_boxes: usize,
+    /// Does this job's worker DRIVE a car? A sweep over already-written tapes
+    /// does not, and has no run-level start position to report.
+    ///
+    /// It defaults to `true`, so the start-position alarm fires at a silent
+    /// worker unless the job SAYS IN THE CONFIG that the check does not
+    /// apply. A declaration a human wrote and committed is a different thing
+    /// from a worker quietly saying nothing, and only the first should be
+    /// able to switch a check off.
+    pub worker_drives: bool,
 }
 
 impl Default for Config {
@@ -132,6 +141,7 @@ impl Default for Config {
             bank_max_gap_s: 3_600,
             start_dev_max_m: 32.0,
             max_boxes: 2,
+            worker_drives: true,
         }
     }
 }
@@ -466,7 +476,7 @@ pub fn unbanked_drift(v: &View, c: &Config) -> Option<Firing> {
 /// is one the worker can switch off by saying nothing — which is precisely
 /// the bug class this project keeps paying for.
 pub fn start_position(v: &View, c: &Config) -> Option<Firing> {
-    if !v.run_active {
+    if !v.run_active || !c.worker_drives {
         return None;
     }
     if let Some(started) = v.run_started {
@@ -901,5 +911,35 @@ mod tests {
     #[test]
     fn recent_banking_is_not_drift() {
         assert!(unbanked_drift(&healthy(), &Config::default()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod drives_tests {
+    use super::fixtures::*;
+    use super::*;
+
+    #[test]
+    fn a_worker_that_does_not_drive_is_not_asked_where_its_car_started() {
+        let c = Config { worker_drives: false, ..Config::default() };
+        assert!(start_position(&start_unreported(), &c).is_none());
+    }
+
+    #[test]
+    fn but_only_the_config_can_say_so_and_it_defaults_to_asking() {
+        // The distinction that matters: a job DECLARING the check does not
+        // apply is a line a human wrote and committed. A worker saying nothing
+        // is not, and must still fire — otherwise any worker could switch the
+        // check off by omission, which is the whole bug class.
+        assert!(start_position(&start_unreported(), &Config::default()).is_some());
+        assert!(Config::default().worker_drives);
+    }
+
+    #[test]
+    fn a_non_driving_job_still_gets_every_other_alarm() {
+        // Switching off one check must not switch off the rest.
+        let c = Config { worker_drives: false, ..Config::default() };
+        assert!(zero_throughput(&stalled(), &c).is_some());
+        assert!(worker_died(&worker_dead(), &c).is_some());
     }
 }

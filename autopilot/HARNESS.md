@@ -160,6 +160,13 @@ fires and reports **10.6 m** — the offset of a car sitting on the start block
 from that block's centre, which is the magnitude you would predict; at the
 32 m tolerance it is silent.
 
+**A job whose worker does not drive** — today's sweep reads tapes that were
+already written — says so with `worker_drives = no` in `job.rec`, and the
+check stands down. The default is `yes`, so a DRIVING worker that says nothing
+about where its car started still fires: a line a human committed may switch a
+check off, a silent worker may not. **Set it back to `yes` the moment
+`worker_cmd` points at the explorer.**
+
 `selftest` is the standing answer to *"has anyone ever seen this fire?"* — it
 walks a table pairing each alarm with a state that must fire it, plus a healthy
 control that must fire nothing, and exits non-zero if any of that is untrue.

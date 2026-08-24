@@ -126,6 +126,12 @@ impl Job {
                     Ok(f) => j.alarms.start_dev_max_m = f,
                     Err(_) => errs.push(format!("{k}: {v:?} is not a number")),
                 },
+                "worker_drives" => {
+                    j.alarms.worker_drives = matches!(v.as_str(), "yes" | "true" | "1");
+                    if !matches!(v.as_str(), "yes" | "true" | "1" | "no" | "false" | "0") {
+                        errs.push(format!("{k}: {v:?} is not yes or no"));
+                    }
+                }
                 "max_boxes" => match v.parse() {
                     Ok(n) => j.alarms.max_boxes = n,
                     Err(_) => errs.push(format!("{k}: {v:?} is not a number")),
@@ -199,6 +205,12 @@ alarm_queue_window_s = {}
 alarm_disk_min_free_mb = {}
 alarm_bank_max_gap_s = {}
 alarm_start_dev_max_m = {}
+
+# Does this job's worker DRIVE a car? A sweep over already-written tapes does
+# not. Defaults to yes, so a worker that says nothing about where its car
+# started sets off the alarm — only a line a human committed can switch that
+# check off.
+worker_drives = yes
 
 # The most boxes this project may hold at once. The heartbeat provisions
 # replacements without a human; a bug in that logic must not run away.
