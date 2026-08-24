@@ -50,11 +50,53 @@ use gbx::container::secs;
 /// So the question is only ever asked about bytes the regeneration did not
 /// write: the transform (47..69) and the tape echo (14, 15, 18) are ours by
 /// construction, whatever they equal.
+/// What a `--carrier layout` pass writes, as a predicate. The authority is
+/// `gbx::sample::written_by_carrier`, derived from the three facts about the
+/// layout rather than listed a fourth time.
 fn written_by_us(o: usize) -> bool {
     (47..69).contains(&o) || o == 14 || o == 15 || o == 18
 }
 
-pub fn inherited_bytes(ghost: &str, carrier: &str) -> Result<Vec<usize>, String> {
+/// Bytes of `ghost` that are bit-identical to `carrier` on EVERY sample, split
+/// by whether this pipeline wrote them.
+///
+/// **The split is the whole content of this function, and it exists because
+/// the same measurement means two opposite things.**
+///
+/// `carrier` is whatever container the file was built in. When that is a
+/// stranger's recording, a byte reproducing it on every sample is *their* run
+/// showing through — the defect this check was built for (286279 carried
+/// Bald_tm's ground contact, gear and dirt on all 4359 samples).
+///
+/// But a RE-regeneration's carrier is the map's own previous file: the same
+/// run, off the same tape, through the same engine. There, a byte that comes
+/// out bit-identical is the pipeline being REPRODUCIBLE. Refusing it refused
+/// five correct files in this sweep — 279218 on bytes [1, 31, 91], 279197 on
+/// [1, 31, 89, 91], 145875 on [24, 26, 28, 30, 91], 126859 on [5, 21, 31, 90]
+/// — every one of them a byte `--carrier layout` had just written out of
+/// engine memory, and every one of them low-entropy (turbo, gear, ground
+/// contact, ground material) where two runs of one tape land on the same bytes.
+///
+/// So: a byte we did NOT write is inheritance and is refused. A byte we DID
+/// write and that matches anyway is reported with the ratio — and the ratio is
+/// the control, because the failure this cannot be allowed to miss (the gather
+/// silently not running, c01a842) inherits the WHOLE written set at once, not
+/// three bytes of it.
+pub struct Inherited {
+    /// Bytes we did not write that reproduce the carrier exactly. Refuse.
+    pub not_ours: Vec<usize>,
+    /// Bytes we did write that reproduce the carrier exactly. Report.
+    pub reproduced: Vec<usize>,
+    /// How many of the bytes we write actually vary in the carrier — the
+    /// denominator `reproduced` has to be read against.
+    pub ours_varying: usize,
+}
+
+pub fn inherited_bytes_split(
+    ghost: &str,
+    carrier: &str,
+    carrier_ran: bool,
+) -> Result<Inherited, String> {
     let a = gbx::record::decode_ghost(ghost)?;
     let b = gbx::record::decode_ghost(carrier)?;
     let ss = a.sample_size;
@@ -68,7 +110,11 @@ pub fn inherited_bytes(ghost: &str, carrier: &str) -> Result<Vec<usize>, String>
     if n < 20 {
         return Err(format!("only {n} comparable samples"));
     }
-    let mut out = Vec::new();
+    let wrote = gbx::sample::written_by_carrier();
+    let ours = |k: usize| -> bool {
+        written_by_us(k) || (carrier_ran && wrote.get(k).copied().unwrap_or(false))
+    };
+    let mut r = Inherited { not_ours: Vec::new(), reproduced: Vec::new(), ours_varying: 0 };
     for k in 0..ss {
         let mut same = 0usize;
         let mut varies = false;
@@ -80,11 +126,24 @@ pub fn inherited_bytes(ghost: &str, carrier: &str) -> Result<Vec<usize>, String>
                 varies = true;
             }
         }
-        if same == n && varies && !written_by_us(k) {
-            out.push(k);
+        if !varies {
+            continue;
+        }
+        if ours(k) {
+            r.ours_varying += 1;
+            if same == n {
+                r.reproduced.push(k);
+            }
+        } else if same == n {
+            r.not_ours.push(k);
         }
     }
-    Ok(out)
+    Ok(r)
+}
+
+/// The original signature, kept for callers that only want the refusable set.
+pub fn inherited_bytes(ghost: &str, carrier: &str) -> Result<Vec<usize>, String> {
+    Ok(inherited_bytes_split(ghost, carrier, false)?.not_ours)
 }
 
 /// Does anything in this file outlive the car?
@@ -166,7 +225,9 @@ pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<S
             continue;
         }
         if let (Some(t), Some(kind)) = (&tape, echoes(*o)) {
-            if let Some(varied) = kind.varied_in(t) {
+            // The window is the RECORD's own span: what the driver was doing
+            // outside it is not what these samples echo.
+            if let Some(varied) = kind.varied_in(t, d.start_ms as i64, d.end_ms as i64) {
                 if !varied {
                     // The run held this input for its whole length, so a
                     // constant echo of it is right. Not a defect.
@@ -194,14 +255,42 @@ impl Echoes {
     /// Did the driver vary this input over the run? `None` when the tape
     /// carries no ticks, which keeps the caller on the unconditional test
     /// rather than letting an unreadable tape excuse a dead channel.
-    pub fn varied_in(self, t: &gbx::tape::Tape) -> Option<bool> {
+    /// Did this input vary **inside a race window**?
+    ///
+    /// THE WINDOW IS THE WHOLE POINT, and leaving it out convicted honest
+    /// files. A tape runs from the countdown (`start_offset` is about
+    /// −1.52 s) to the last tick recorded, while the telemetry record samples
+    /// only the race. On any run that is flat out from the lights to the line
+    /// -- which is most sprints -- the tape's accel goes 0 during the
+    /// countdown and 1 for the entire race, so scanning the whole tape says
+    /// "this input varied" and the constant echo in the record then reads as a
+    /// dead channel. It is not: it is the truth about the race.
+    /// Measured on 279209 (6.578, gas 0xff on all 132 samples) and 197047
+    /// (95.839, gas 0xff on all 1917 samples); both were refused and both are
+    /// correct files.
+    pub fn varied_in(self, t: &gbx::tape::Tape, from_ms: i64, to_ms: i64) -> Option<bool> {
         let vals: Vec<i64> = match self {
             Echoes::Steer => t.steer_i8s().iter().map(|v| *v as i64).collect(),
             Echoes::Accel => t.accels().iter().map(|v| *v as i64).collect(),
             Echoes::Brake => t.brakes().iter().map(|v| *v as i64).collect(),
         };
-        let first = *vals.first()?;
-        Some(vals.iter().any(|v| *v != first))
+        let inside: Vec<i64> = vals
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let ms = t.race_ms(*i);
+                ms >= from_ms && ms <= to_ms
+            })
+            .map(|(_, v)| *v)
+            .collect();
+        // No tick inside the window is not "it did not vary" -- it is a
+        // question this control cannot answer, and None makes the caller fall
+        // through to reporting rather than to excusing.
+        if inside.is_empty() {
+            return None;
+        }
+        let first = *inside.first()?;
+        Some(inside.iter().any(|v| *v != first))
     }
 }
 

@@ -2,7 +2,7 @@
 
 **[Turtle Trial] Leto** — TAS **218.812** (−136.369) | AT 355.181 | WR 441.002 by Bald_tm
 
-https://github.com/user-attachments/assets/ef4abed1-3897-44cc-8719-98458b015add
+https://github.com/user-attachments/assets/31063ee4-582f-452b-9ea3-e32bc73dc0b5
 
 The TAS with Bald_tm's world record as the opponent, chase camera on our car,
 and this run's own inputs drawn along the bottom from the 10 ms input chunk —
@@ -53,8 +53,16 @@ Respawn the instant an attempt is dead, and the author time falls by 136.369.**
 > the camera drifted to the top of the map and stayed there for the second half.
 > Two symptoms, one inherited number. The file's span is now its own.
 >
-> **Still no video.** The render box became unavailable before this could be
-> re-filmed.
+> **Re-shot 2026-08-24 from a ghost regenerated on the current pipeline**, and
+> the line above about there being no video is retired: the clip at the top of
+> this page is that render. `ghost verify` end to end on the filmed file —
+> kappa **1.000** (4377 of 4377 samples), the plain oracle re-simulating the
+> WRITTEN file to **218.812**, telemetry 0.000 .. 218.800 inside a span that
+> ends at 218.812, and nothing in it outliving the car. The trajectory did not
+> move: measured against the file this replaces, worst separation **0.0005 m**
+> over the whole run (`tmtraj geom near --segments`, which compares a point to
+> the other run's polyline rather than to its nearest sample — the only form
+> that survives two recordings sampled on different 50 ms phases).
 
 | tape | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

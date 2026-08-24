@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/56e64ae5-3b31-4361-85d5-9e9dbd45e6b5
 
 **[[Turtle Trial] Leto](286279-turtle-trial-leto)** — author time `355.181` · ours **218.812** (−136.369) · best human 441.002 (Bald_tm) · 5 records
 
-https://github.com/user-attachments/assets/ef4abed1-3897-44cc-8719-98458b015add
+https://github.com/user-attachments/assets/31063ee4-582f-452b-9ea3-e32bc73dc0b5
 
 **[Welcome to wiggles](197047-welcome-to-wiggles)** — author time `100.784` · ours **95.839** (−4.945) · best human 101.794 (beagle.3) · 27 records
 

@@ -118,13 +118,17 @@ IDENTITY  (operation 6)
   ghost identity show FILE
   ghost identity set IN OUT [--name N] [--trigram XXX] [--skin PATH|default]
                             [--login L] [--zone Z] [--clubtag T] [--anonymise]
-                            [--pad-ids]
+                            [--pad-ids] [--allow-noop]
         Car skin, display name and 3-letter trigram. --anonymise also drops the
         account id and the storage locator URL, which are the two foreign
         identifiers a strip-list usually misses -- AND the driver block in the
         replay header and in body chunk 0x03093018, which are the two a
         body-only anonymiser misses. --pad-ids keeps the old behaviour of
         padding an unresizable id to `xxxx...` instead of removing it.
+        --allow-noop writes the output even when nothing in the body needed
+        changing, for a caller that wants the STATE (this file is anonymous)
+        rather than the EDIT. By hand that case is almost always the wrong
+        file, so without the flag it still refuses.
   ghost header show FILE
         The replay HEADER: its chunk table, the driver fields, the map's own
         attribution (which stays), and every copy of the race time the header
@@ -886,21 +890,60 @@ fn cmd_tape(a: &[String]) {
             };
             let a0 = &t.archives[0];
             let n = a0.packets.len();
+            // --from / --to WINDOW the counts to a race window, because the
+            // question that matters about an input is almost always "what did
+            // the driver do DURING THE RACE" and a tape starts about 1.52 s
+            // before it. Without a window, a run held flat out from the lights
+            // to the line reads as "the throttle varied" on the strength of the
+            // countdown alone -- which is exactly the reading that refused two
+            // correct regenerations (byte 15, the gas echo, on 279209 and
+            // 197047).
+            let from = flag(rest, "--from").and_then(|v| v.parse::<i64>().ok());
+            let to = flag(rest, "--to").and_then(|v| v.parse::<i64>().ok());
+            let inw = |i: usize| -> bool {
+                let ms = t.race_ms(i);
+                from.map(|f| ms >= f).unwrap_or(true) && to.map(|x| ms <= x).unwrap_or(true)
+            };
+            let idx: Vec<usize> = (0..n).filter(|i| inw(*i)).collect();
             let mut ev = 0;
-            for i in 1..n {
-                let (p, q) = (&a0.packets[i - 1], &a0.packets[i]);
+            for w in idx.windows(2) {
+                let (p, q) = (&a0.packets[w[0]], &a0.packets[w[1]]);
                 if p.steer != q.steer || p.accel != q.accel || p.brake != q.brake {
                     ev += 1;
                 }
             }
-            println!("ticks          {}", n);
+            if from.is_some() || to.is_some() {
+                println!("window         {} .. {}  ({} of {} ticks)",
+                    from.map(|v| secs(v)).unwrap_or_else(|| "start".into()),
+                    to.map(|v| secs(v)).unwrap_or_else(|| "end".into()),
+                    idx.len(), n);
+            }
+            println!("ticks          {}", idx.len());
             println!("tape span      {} .. {}", secs(a0.start_offset_ms as i64), secs(a0.start_offset_ms as i64 + 10 * n as i64));
             println!("input events   {}", ev);
-            println!("respawn ticks  {}", a0.packets.iter().filter(|p| p.respawn()).count());
-            println!("same-as-prev   {}", a0.packets.iter().filter(|p| p.vsame).count());
-            println!("accel on       {}", a0.packets.iter().filter(|p| p.accel != 0).count());
-            println!("brake on       {}", a0.packets.iter().filter(|p| p.brake != 0).count());
-            println!("mouse packets  {}", a0.packets.iter().filter(|p| p.mouse.is_some()).count());
+            println!("respawn ticks  {}", idx.iter().filter(|i| a0.packets[**i].respawn()).count());
+            println!("same-as-prev   {}", idx.iter().filter(|i| a0.packets[**i].vsame).count());
+            println!("accel on       {}", idx.iter().filter(|i| a0.packets[**i].accel != 0).count());
+            println!("brake on       {}", idx.iter().filter(|i| a0.packets[**i].brake != 0).count());
+            println!("mouse packets  {}", idx.iter().filter(|i| a0.packets[**i].mouse.is_some()).count());
+            // PER CHANNEL: constant or not, in this window. This is the fact
+            // `ghost regen`'s liveness check reads, printed so it can be
+            // checked by hand rather than taken on trust.
+            let steer: Vec<i64> = idx.iter().map(|i| a0.packets[*i].steer_i8() as i64).collect();
+            let accel: Vec<i64> = idx.iter().map(|i| a0.packets[*i].accel as i64).collect();
+            let brake: Vec<i64> = idx.iter().map(|i| a0.packets[*i].brake as i64).collect();
+            for (name, v) in [("steer", &steer), ("accel", &accel), ("brake", &brake)] {
+                match v.first() {
+                    None => println!("{name:<14} no tick in the window"),
+                    Some(f) if v.iter().all(|x| x == f) => {
+                        println!("{name:<14} CONSTANT at {f} for all {} ticks -- a constant echo of it in the record is CORRECT", v.len())
+                    }
+                    Some(_) => {
+                        let (lo, hi) = (v.iter().min().unwrap(), v.iter().max().unwrap());
+                        println!("{name:<14} varies, {lo} .. {hi}")
+                    }
+                }
+            }
         }
         "recinputs" => {
             let f = &rest[0];

@@ -39,6 +39,11 @@ tmtraj geom — the shape of a run, not its clock.
         [--top N]                   print the N best clusters              [40]
   geom near    A B                  closest approach of B to each sample of A
         [--stride N]                report every Nth sample                [20]
+        [--segments]                measure to B's POLYLINE, not to its nearest
+                                    SAMPLE -- the only form that can compare two
+                                    recordings sampled on different 50 ms phases
+                                    (sample-to-sample has a floor of half a
+                                    sample-step: 2.2 m at 320 km/h)
   geom pace    A B...               WHERE B is ahead of A, at matched DISTANCE
         [--bin M]                   arclength grain                        [50.0]
   geom at      FILE... --arc M,M    the whole state of each run at one place
@@ -282,8 +287,9 @@ fn cmd_selfcut(args: &[String]) -> i32 {
 }
 
 fn cmd_near(args: &[String]) -> i32 {
-    let a = cli::parse("tmtraj geom near", args, &[]);
+    let a = cli::parse("tmtraj geom near", args, &["segments"]);
     let stride: usize = a.num("stride", 20);
+    let segments = a.has("segments");
     let a = a.finish(USAGE);
     if a.positional.len() < 2 {
         print!("{}", USAGE);
@@ -298,23 +304,75 @@ fn cmd_near(args: &[String]) -> i32 {
         }
     };
     println!("A = {}   B = {}", la.name, lb.name);
+    if segments {
+        println!("(B as a POLYLINE: distance to the nearest point ON it, not to its nearest SAMPLE)");
+    }
     println!("{:>8} {:>10} {:>10} {:>10}", "t_A", "nearest_m", "t_B", "dt");
     let mut worst = (0.0f64, 0.0f64);
     for i in (0..la.p.len()).step_by(stride.max(1)) {
-        let mut b = (f64::MAX, 0usize);
-        for j in 0..lb.p.len() {
-            let d = dist(&la.p[i], &lb.p[j]);
-            if d < b.0 {
-                b = (d, j);
+        let b = if segments {
+            nearest_on_polyline(&la.p[i], &lb.p, &lb.t)
+        } else {
+            let mut b = (f64::MAX, 0.0f64);
+            for j in 0..lb.p.len() {
+                let d = dist(&la.p[i], &lb.p[j]);
+                if d < b.0 {
+                    b = (d, lb.t[j]);
+                }
             }
-        }
+            b
+        };
         if b.0 > worst.0 {
             worst = (b.0, la.t[i]);
         }
-        println!("{:>8.3} {:>10.2} {:>10.3} {:>+10.3}", la.t[i], b.0, lb.t[b.1], lb.t[b.1] - la.t[i]);
+        println!("{:>8.3} {:>10.4} {:>10.3} {:>+10.3}", la.t[i], b.0, b.1, b.1 - la.t[i]);
     }
-    println!("worst separation {:.2} m at t_A {:.3}", worst.0, worst.1);
+    println!("worst separation {:.4} m at t_A {:.3}", worst.0, worst.1);
     0
+}
+
+/// Distance from a point to the nearest point ON a polyline, with the time
+/// interpolated at that point.
+///
+/// WHY THIS EXISTS, and why sample-to-sample was not enough. Two recordings of
+/// the SAME path can be sampled on different 50 ms phases -- a regeneration
+/// lands its grid where the engine put it, and the published file's grid came
+/// from wherever the game started counting. Compared sample to sample, the
+/// nearest B sample to an A point is then up to half a sample-step away, which
+/// at 320 km/h is **2.2 m of pure sampling phase and no divergence at all**.
+/// On 228811 that read as a mean 1.78 m "shift" on a path that had not moved.
+///
+/// A point-to-SEGMENT distance has no such floor: it is zero wherever the two
+/// polylines coincide, whatever phase either was sampled on. Its own floor is
+/// the chord error of the sampling (a straight segment across a curve), which
+/// is a second-order term, not a first-order one.
+fn nearest_on_polyline(p: &[f64; 3], q: &[[f64; 3]], t: &[f64]) -> (f64, f64) {
+    let mut best = (f64::MAX, 0.0f64);
+    if q.is_empty() {
+        return (f64::MAX, 0.0);
+    }
+    if q.len() == 1 {
+        return (dist(p, &q[0]), t[0]);
+    }
+    for j in 0..q.len() - 1 {
+        let (a, b) = (&q[j], &q[j + 1]);
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+        let den = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        // A zero-length segment (a stationary car) degenerates to its endpoint
+        // rather than dividing by zero.
+        let f = if den > 0.0 {
+            ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / den).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let c = [a[0] + f * ab[0], a[1] + f * ab[1], a[2] + f * ab[2]];
+        let d = dist(p, &c);
+        if d < best.0 {
+            best = (d, t[j] + f * (t[j + 1] - t[j]));
+        }
+    }
+    best
 }
 
 /// Interpolate a run's race time and speed at a given arclength.

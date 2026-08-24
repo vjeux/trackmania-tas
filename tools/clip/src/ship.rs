@@ -314,6 +314,28 @@ pub fn run(
         file.display(),
         secs(local_dur)
     );
+    // GITHUB'S ATTACHMENT CAP, CHECKED BEFORE ANYTHING IS UPLOADED.
+    //
+    // The inline-player store refuses anything over 100 MB — with a 422 whose
+    // body is an HTML fragment, at step 3, AFTER the full-size original has
+    // already been pushed to the release. On a 145 MB clip that is a five
+    // minute upload spent to learn a number that was on disk the whole time.
+    // The fix is not a bigger clip, it is `--crf`: `clip overlay ... --crf 24`
+    // is the same 220 s at about 60 % of the bytes.
+    const ATTACHMENT_MAX: u64 = 100 * 1000 * 1000;
+    if bytes as u64 > ATTACHMENT_MAX {
+        return Err(format!(
+            "{} is {:.1} MB and GitHub's user-attachments store refuses anything over 100 MB, \
+             so this clip cannot be made public as an inline player.\n  \
+             Re-encode it smaller before shipping -- `clip overlay <ghost> <in.mp4> <out.mp4> \
+             --crf 24` (the default is 19; +5 is roughly -40 % of the bytes), or `clip cut \
+             --to` a shorter run.\n  \
+             Checked here rather than at the upload, because the upload only fails AFTER the \
+             release asset has gone up.",
+            file.display(),
+            bytes as f64 / 1e6
+        ));
+    }
 
     // --- 2. the stable download mirror -------------------------------------
     // Staged in a private directory, not /tmp/<asset-name>: the shell copied
