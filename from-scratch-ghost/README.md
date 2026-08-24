@@ -75,3 +75,16 @@ The validation seed *is* causal: the same 36.011 tape gives 36.011 at seed 0, DN
 ## Current boundary
 
 The complete record is structurally valid and independently parsed, but it has not yet produced a correct-start validator state. The authoritative validator-job → simulation → participant → vehicle → state resolver is required for the next rung. Until that reader is integrated, accepted rows remain classified `start_unmeasured`; no inference from `IsValid` or a finish is promoted to a start-coordinate claim.
+
+## Cross-map structural control
+
+Map 191465 (`Training - 10 Long`) is deliberately unlike Summer 2026 - 01:
+its `RoadTechStart` is waypoint 0 instead of waypoint 2 and has direction 1
+instead of direction 0. The map-only writer produces `(1520.000, 26.002,
+816.000)` and yaw −90°, versus `(1584.000, 18.002, 784.000)` and yaw 0° on
+Summer 2026 - 01. The 191465 position agrees within 0.01 m with an independent
+game-recorded tick-0 sample; that recording is used only as a test oracle, never
+as output input. `evidence/191465/` contains generated straight/left/right
+containers and their manifests. The plain server parses and simulates all three
+(DNF/cps0 at the deliberately short 10.000 s horizon); signed response still
+awaits the authoritative live-state resolver.

@@ -433,6 +433,7 @@ pub fn initial_state_for_map(map: &std::path::Path) -> Result<InitialState, Stri
         // TM2020 maps. These are decoration properties, not per-run values.
         "Day64" => -40.0,
         "Day" => -120.0,
+        "48x48Day" => -64.0,
         other => {
             return Err(format!(
                 "{}: RoadTechStart uses decoration {other:?}, whose vertical origin is not in the \n                 from-scratch writer's constant table. This is an unimplemented map constant, not \n                 evidence that the map has no start.",
@@ -920,6 +921,20 @@ mod tests {
         let min = synthesize(&[Input::FULL_GAS; 10], &meta(), &ChunkSet::TAPE_ONLY);
         assert!(min.len() < all.len());
         assert_eq!(gbx::Gbx::parse(&min).class_id, CLASS_CGAMECTNGHOST);
+    }
+
+    #[test]
+    fn map_derived_roadtech_start_matches_an_independent_game_recording() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let map = root.join("testdata/map2.Map.Gbx");
+        let ghost = root.join("testdata/human_22730.Ghost.Gbx");
+        let initial = initial_state_for_map(&map).expect("semantic start");
+        let recorded = gbx::record::decode_ghost(&ghost.to_string_lossy()).expect("recorded control");
+        let first = recorded.samples.first().expect("first sample");
+        assert!((initial.pos[0] as f64 - first.x).abs() < 0.01);
+        assert!((initial.pos[1] as f64 - first.y).abs() < 0.01);
+        assert!((initial.pos[2] as f64 - first.z).abs() < 0.01);
+        assert_eq!(initial.roadtech_dir, Some(0));
     }
 
     #[test]

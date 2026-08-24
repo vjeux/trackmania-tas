@@ -12,6 +12,7 @@ mod evalbug;
 mod optimize;
 mod pushgate;
 mod splits;
+mod startset;
 mod tailsearch;
 mod startprobe;
 
@@ -24,7 +25,7 @@ RUNG 0  (synthesizing a container with no human provenance)
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
-                     [--declared MS] [--seed N] [--record MODE]
+                     [--declared MS] [--seed N] [--steer -127..127] [--record MODE]
                      [--corrupt-start-x METRES] [--no-CHUNK ...]
         Write one synthesized container. MODE is none, parent, descriptor,
         entity, or sample (default); each rung adds one record feature.
@@ -32,6 +33,9 @@ RUNG 0  (synthesizing a container with no human provenance)
                        [--declared MS] [--checkpoints N]
         Add parent, descriptor, entity and first sample one rung at a time;
         preserve raw server stdout/stderr and a machine-readable manifest each.
+
+  tmauto synth starts --root MAP_CORPUS
+        Inventory semantic RoadTechStart cells and directions without ghosts.
 
 ORACLE
   tmauto verdict FILE... --map MAP.Map.Gbx
@@ -69,6 +73,7 @@ fn main() {
         ("bench", _) => cmd_bench(&args[1..]),
         ("synth", Some("matrix")) => cmd_synth_matrix(&args[2..]),
         ("synth", Some("ladder")) => ablate::run(&args[2..]),
+        ("synth", Some("starts")) => startset::run(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
         ("startprobe", _) => startprobe::run(&args[1..]),
         ("cpladder", _) => cpladder::run(&args[1..]),
@@ -532,9 +537,6 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     let ticks: usize = arg(args, "--ticks").unwrap_or_else(|| "600".into()).parse().map_err(|_| "--ticks")?;
     let uid = map_uid(&map)?;
     let mut meta = GhostMeta::probe(&uid);
-    if let Some(d) = arg(args, "--declared") {
-        meta.declared_ms = d.parse().map_err(|_| "--declared")?;
-    }
     if let Some(s) = arg(args, "--seed") {
         meta.validation_seed = s.parse().map_err(|_| "--seed")?;
     }
@@ -562,22 +564,32 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     };
     let inputs = match arg(args, "--tape") {
         Some(t) => tape_from_tsv(std::path::Path::new(&t))?,
-        None => full_gas(ticks),
+        None => {
+            let steer: i8 = arg(args, "--steer")
+                .unwrap_or_else(|| "0".into())
+                .parse()
+                .map_err(|_| "--steer wants -127..127")?;
+            if !(-127..=127).contains(&steer) {
+                return Err("--steer wants -127..127".into());
+            }
+            vec![Input::new(steer, true, false); ticks]
+        }
     };
     // The declared time governs how long the validator simulates -- not the
     // tape's length -- and `set_declared` is what also moves the walltime pair
     // with it. Setting `declared_ms` alone leaves a zero-length walltime and
     // the server refuses the file with "unexcepted walltime (0s)", which reads
     // as a bad drive rather than as a malformed container.
-    if arg(args, "--tape").is_some() {
-        let ms = match arg(args, "--declared") {
-            Some(d) => d.parse().map_err(|_| "--declared")?,
-            None => (inputs.len() as u32) * 10,
-        };
-        let ncp: i32 = arg(args, "--cps").and_then(|v| v.parse().ok()).unwrap_or(3);
-        let cps: Vec<i32> = (1..=ncp).map(|i| (ms as i32 / (ncp + 1)) * i).chain(std::iter::once(ms as i32)).collect();
-        meta.set_declared(ms, cps);
-    }
+    let ms = match arg(args, "--declared") {
+        Some(d) => d.parse().map_err(|_| "--declared")?,
+        None => (inputs.len() as u32) * 10,
+    };
+    let ncp: i32 = arg(args, "--cps").and_then(|v| v.parse().ok()).unwrap_or(3);
+    let cps: Vec<i32> = (1..=ncp)
+        .map(|i| (ms as i32 / (ncp + 1)) * i)
+        .chain(std::iter::once(ms as i32))
+        .collect();
+    meta.set_declared(ms, cps);
     let record_mode = match arg(args, "--record") {
         Some(s) => RecordMode::parse(&s)
             .ok_or_else(|| "--record wants none|parent|descriptor|entity|sample".to_string())?,
