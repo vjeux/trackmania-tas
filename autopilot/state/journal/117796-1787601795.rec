@@ -1,0 +1,1 @@
+2026-08-24T20:03:20Z	bank	why=the silent-fetch bug, and the proxy a detached supervisor never had	receipt=commit 01b82deceec7 · mirror P2474258014 · PUSH FAILED: the remote has commits we do not, and rebasing onto them conflicts — a human needs to look. git said: error: cannot rebase: You have unstaged changes.\nerror: Please commit or stash them.
