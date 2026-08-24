@@ -6,6 +6,24 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## Free disk is a property of a MACHINE; the run spans machines
+
+Minutes after the first rotation, `disk_filling` fired CRITICAL: *"380543 MB
+free, falling 7740.4 MB/min — empty in 49m"*. Nothing was filling. The old box
+had 1.23 TB free and its replacement has 380 GB, and the alarm had computed a
+slope across the two — it measured the rotation.
+
+Every other alarm is about the RUN, which legitimately spans boxes; disk is
+not. Samples now carry their writing node and the disk trend only compares
+within one. A second arm was needed too: a box's first minutes always fall
+steeply (385 MB of server download, then a release build), so a trend now
+needs a real window — projecting six hours off two minutes of bootstrap is
+arithmetic, not evidence.
+
+**A false critical on a routine event is how an alarm gets ignored**, so this
+rated a fix rather than a tolerance bump. The control is in the same test
+file: after both suppressions, a genuine slope on one box still fires.
+
 ## A box that VANISHES never retires itself, and nothing could retire it
 
 Found by the first unplanned rotation: `117796`'s lease was reclaimed with

@@ -26,6 +26,10 @@ use crate::rec::Rec;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub ts: i64,
+    /// Which box wrote this. Most alarms are about the RUN, which spans
+    /// boxes; disk is about a MACHINE, and comparing free space across two of
+    /// them measures the rotation rather than the disk.
+    pub node: u64,
     /// Cumulative eval counter, monotonic per run.
     pub evals: u64,
     /// The objective the search is climbing — furthest station on our own
@@ -106,6 +110,8 @@ pub struct Config {
     pub disk_min_free_mb: i64,
     /// Fire if the disk trend projects zero free within this horizon.
     pub disk_horizon_s: i64,
+    /// Shortest span of samples, from ONE box, that counts as a trend.
+    pub disk_trend_min_window_s: i64,
     /// Local work not pushed anywhere durable for this long is at risk.
     pub bank_max_gap_s: i64,
     /// A run whose car starts further than this from the map's start line is
@@ -138,6 +144,7 @@ impl Default for Config {
             queue_window_s: 7_200,
             disk_min_free_mb: 5_000,
             disk_horizon_s: 6 * 3600,
+            disk_trend_min_window_s: 1_800,
             bank_max_gap_s: 3_600,
             start_dev_max_m: 32.0,
             max_boxes: 2,
@@ -396,8 +403,20 @@ pub fn queue_stalled(v: &View, c: &Config) -> Option<Firing> {
 
 /// **Disk filling.** Both the cliff and the slope: a long-haul run dies of a
 /// full disk days before anyone would have looked.
+///
+/// **The trend is computed per BOX, and this is not a detail.** Free space is
+/// a property of a machine; the run spans machines. The first real rotation
+/// had a box with 1.23 TB free replaced by one with 380 GB, and comparing
+/// across them reported the disk "falling 7740 MB/min, empty in 49m" when
+/// nothing was filling at all — it had measured the rotation. A false critical
+/// on a routine event is how an alarm gets ignored.
 pub fn disk_filling(v: &View, c: &Config) -> Option<Firing> {
-    let with_disk: Vec<&Sample> = v.samples.iter().filter(|s| s.disk_free_mb.is_some()).collect();
+    let last_any = v.samples.iter().rev().find(|s| s.disk_free_mb.is_some())?;
+    let with_disk: Vec<&Sample> = v
+        .samples
+        .iter()
+        .filter(|s| s.disk_free_mb.is_some() && s.node == last_any.node)
+        .collect();
     let last = with_disk.last()?;
     let free = last.disk_free_mb?;
     if free < c.disk_min_free_mb {
@@ -409,7 +428,11 @@ pub fn disk_filling(v: &View, c: &Config) -> Option<Firing> {
     }
     let first = with_disk.first()?;
     let dt = (last.ts - first.ts) as f64;
-    if dt < 60.0 {
+    // A trend needs a window worth extrapolating from. A box's first minutes
+    // always show a steep fall — the oracle server is 385 MB and a release
+    // build is more — and projecting six hours off two minutes of bootstrap
+    // is arithmetic, not evidence.
+    if dt < c.disk_trend_min_window_s as f64 {
         return None;
     }
     let drop = (first.disk_free_mb? - free) as f64;
@@ -570,6 +593,7 @@ pub mod fixtures {
         for i in 0..=120 {
             samples.push(Sample {
                 ts: NOW - 7200 + i * 60,
+                node: 1,
                 evals: (i as u64) * 600,
                 best: Some(10.0 + i as f64),
                 disk_free_mb: Some(200_000),
@@ -634,6 +658,7 @@ pub mod fixtures {
         for i in 0..=600 {
             samples.push(Sample {
                 ts: NOW - 36_000 + i * 60,
+                node: 1,
                 evals: (i as u64) * 6_000, // 100/s
                 best: Some(25.0),          // never moves
                 disk_free_mb: Some(200_000),
@@ -684,6 +709,38 @@ pub mod fixtures {
         for (i, s) in v.samples.iter_mut().enumerate() {
             // 200 GB down to 20 GB over two hours: empty in well under six.
             s.disk_free_mb = Some(200_000 - (180_000 * i as i64 / n as i64));
+        }
+        v
+    }
+
+    /// A box replaced by one with less disk. Nothing is filling; the numbers
+    /// are simply from two different machines.
+    pub fn rotation_not_a_disk_fall() -> View {
+        let mut v = healthy();
+        for s in v.samples.iter_mut() {
+            s.disk_free_mb = Some(1_232_500);
+        }
+        let last = *v.samples.last().unwrap();
+        for i in 1..=2 {
+            v.samples.push(Sample {
+                ts: last.ts + i * 60,
+                node: 2,
+                disk_free_mb: Some(380_543),
+                ..last
+            });
+        }
+        v.now = last.ts + 120;
+        v
+    }
+
+    /// A box whose first minutes are its own bootstrap: a 385 MB server
+    /// download and a release build. Steep, brief, and not a trend.
+    pub fn fresh_box_bootstrap() -> View {
+        let mut v = healthy();
+        v.samples.retain(|s| s.ts >= v.now - 120);
+        for (i, s) in v.samples.iter_mut().enumerate() {
+            s.node = 2;
+            s.disk_free_mb = Some(400_000 - 9_000 * i as i64);
         }
         v
     }
@@ -854,6 +911,35 @@ mod tests {
         let mut v = healthy();
         v.queue = QueueView { pending: 0, claimed: 0, expired_claims: 0, last_completion: Some(v.now - 99_999) };
         assert!(queue_stalled(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn a_box_rotation_is_not_a_disk_filling_up() {
+        // The real false positive, in its real numbers: 1.23 TB free on the
+        // old box, 380 GB on its replacement, reported as "falling
+        // 7740 MB/min — empty in 49m" while nothing was filling at all.
+        // Free space is a property of a MACHINE; the run spans machines.
+        assert!(
+            disk_filling(&rotation_not_a_disk_fall(), &Config::default()).is_none(),
+            "comparing free space across two boxes measures the rotation, not the disk"
+        );
+    }
+
+    #[test]
+    fn a_fresh_boxs_bootstrap_is_not_a_trend() {
+        // Every box's first minutes fall steeply: a 385 MB server download and
+        // a release build. Projecting six hours from two minutes of that is
+        // arithmetic, not evidence.
+        assert!(disk_filling(&fresh_box_bootstrap(), &Config::default()).is_none());
+    }
+
+    #[test]
+    fn but_a_real_slope_on_one_box_still_fires() {
+        // The control that keeps the two tests above honest: after suppressing
+        // the rotation and the bootstrap, the alarm must still catch a disk
+        // that is genuinely filling.
+        assert!(disk_filling(&disk_slope(), &Config::default()).is_some());
+        assert!(disk_filling(&disk_cliff(), &Config::default()).is_some());
     }
 
     #[test]
