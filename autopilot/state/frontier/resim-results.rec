@@ -1607,3 +1607,52 @@
 2026-08-24T20:04:55Z	resim	map=spaghetti nights 2	file=TAS_39460.Ghost.Gbx	verdict=holds	detail=39.460
 2026-08-24T20:04:55Z	resim	map=spaghetti nights 2	file=TAS_39478.Ghost.Gbx	verdict=holds	detail=39.478
 2026-08-24T20:04:55Z	resim	map=spaghetti nights 2	file=TAS_39748.Ghost.Gbx	verdict=holds	detail=39.748
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=KEYBOARD_16276_tolerant.Ghost.Gbx	verdict=DIFFERS	detail=simulated 1.994 but published as 16.276
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15217_clean.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.217
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15224_analog.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.224
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15230_clean.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.230
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15240_clean.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.240
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15285_keyboard.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.285
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15290_lowinput.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.290
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15382_deep_landing.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.382
+2026-08-24T20:05:00Z	resim	map=idm ruinin ur day 460	file=TAS_15549_provenance.Ghost.Gbx	verdict=DIFFERS	detail=simulated 2.024 but published as 15.549
+2026-08-24T20:05:06Z	resim	map=tap water 01	file=DDMIN_747ev_23183.Ghost.Gbx	verdict=holds	detail=23.183
+2026-08-24T20:05:06Z	resim	map=tap water 01	file=GRAIN40MS_23125.Ghost.Gbx	verdict=holds	detail=23.125
+2026-08-24T20:05:06Z	resim	map=tap water 01	file=TAS_22072.Ghost.Gbx	verdict=holds	detail=22.072
+2026-08-24T20:05:06Z	resim	map=tap water 01	file=UNIFORM_2on1off_23335.Ghost.Gbx	verdict=holds	detail=23.335
+2026-08-24T20:05:21Z	resim	map=magnet trial	file=BEST_793893.Ghost.Gbx	verdict=holds	detail=793.893
+2026-08-24T20:05:21Z	resim	map=magnet trial	file=CUT_795034.Ghost.Gbx	verdict=holds	detail=795.034
+2026-08-24T20:05:21Z	resim	map=magnet trial	file=ONE_ATTEMPT_DELETED_2501894.Ghost.Gbx	verdict=holds	detail=2501.894
+2026-08-24T20:05:26Z	resim	map=training 10 long	file=TAS_13070_analog.Ghost.Gbx	verdict=holds	detail=13.070
+2026-08-24T20:05:26Z	resim	map=training 10 long	file=TAS_13071_analog.Ghost.Gbx	verdict=holds	detail=13.071
+2026-08-24T20:05:26Z	resim	map=training 10 long	file=TAS_13074_analog.Ghost.Gbx	verdict=holds	detail=13.074
+2026-08-24T20:05:31Z	resim	map=welcome to wiggles	file=KEYBOARD_96412_twokey.Ghost.Gbx	verdict=holds	detail=96.412
+2026-08-24T20:05:31Z	resim	map=welcome to wiggles	file=KEYBOARD_96759_metronome.Ghost.Gbx	verdict=holds	detail=96.759
+2026-08-24T20:05:31Z	resim	map=welcome to wiggles	file=TAS_95839_analog.Ghost.Gbx	verdict=holds	detail=95.839
+2026-08-24T20:05:31Z	resim	map=welcome to wiggles	file=TAS_96852_v1.Ghost.Gbx	verdict=holds	detail=96.852
+2026-08-24T20:05:31Z	resim	map=welcome to wiggles	file=gen_TAS_95839_analog.Ghost.Gbx	verdict=holds	detail=95.839
+2026-08-24T20:05:36Z	resim	map=yeet fall 2024 04	file=KEYBOARD_10743.Ghost.Gbx	verdict=holds	detail=10.743
+2026-08-24T20:05:36Z	resim	map=yeet fall 2024 04	file=TAS_10640.Ghost.Gbx	verdict=holds	detail=10.640
+2026-08-24T20:05:45Z	resim	map=mirus hell 2	file=TAS_18160.Ghost.Gbx	verdict=holds	detail=18.160
+2026-08-24T20:05:53Z	resim	map=fall 2024 25 pure wet icy wood	file=TAS_96068.Ghost.Gbx	verdict=holds	detail=96.068
+2026-08-24T20:05:53Z	resim	map=fall 2024 25 pure wet icy wood	file=TAS_96078_1minimal.Ghost.Gbx	verdict=holds	detail=96.078
+2026-08-24T20:05:58Z	resim	map=the blev special	file=TAS_57482.Ghost.Gbx	verdict=DIFFERS	detail=simulated 46.600 but published as 57.482
+2026-08-24T20:05:58Z	resim	map=the blev special	file=TAS_57518.Ghost.Gbx	verdict=DIFFERS	detail=simulated 46.600 but published as 57.518
+2026-08-24T20:05:58Z	resim	map=the blev special	file=TAS_57537.Ghost.Gbx	verdict=DIFFERS	detail=simulated 46.646 but published as 57.537
+2026-08-24T20:05:58Z	resim	map=the blev special	file=TAS_57577.Ghost.Gbx	verdict=DIFFERS	detail=simulated 46.646 but published as 57.577
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=LOWINPUT_20070_16values.Ghost.Gbx	verdict=holds	detail=20.070
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_19907.Ghost.Gbx	verdict=holds	detail=19.907
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_19910.Ghost.Gbx	verdict=holds	detail=19.910
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_19927.Ghost.Gbx	verdict=holds	detail=19.927
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_19936.Ghost.Gbx	verdict=holds	detail=19.936
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_20070.Ghost.Gbx	verdict=holds	detail=20.070
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_20083.Ghost.Gbx	verdict=holds	detail=20.083
+2026-08-24T20:06:03Z	resim	map=torment 1 up	file=TAS_20126.Ghost.Gbx	verdict=holds	detail=20.126
+2026-08-24T20:06:08Z	resim	map=torment 1 down	file=TAS_20237.Ghost.Gbx	verdict=holds	detail=20.237
+2026-08-24T20:06:14Z	resim	map=turtle trial angustus	file=TAS_239133.Ghost.Gbx	verdict=holds	detail=239.133
+2026-08-24T20:06:19Z	resim	map=impossible at for ssano	file=KEYBOARD_14349.Ghost.Gbx	verdict=holds	detail=14.349
+2026-08-24T20:06:19Z	resim	map=impossible at for ssano	file=ROBUST_KEYBOARD_14479.Ghost.Gbx	verdict=holds	detail=14.479
+2026-08-24T20:06:19Z	resim	map=impossible at for ssano	file=TAS_14289.Ghost.Gbx	verdict=holds	detail=14.289
+2026-08-24T20:06:24Z	resim	map=surely my least cooked at	file=tas_3836.Ghost.Gbx	verdict=holds	detail=3.836
+2026-08-24T20:06:24Z	resim	map=surely my least cooked at	file=tas_keyboard_3844.Ghost.Gbx	verdict=holds	detail=3.844
+2026-08-24T20:06:24Z	resim	map=surely my least cooked at	file=tas_twoinputs_3848.Ghost.Gbx	verdict=holds	detail=3.848

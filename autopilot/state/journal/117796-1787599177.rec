@@ -41,3 +41,6 @@
 2026-08-24T20:02:27Z	sample	evals=948	worker_alive=1	node=117796	best=56	disk_free_mb=1232501
 2026-08-24T20:03:27Z	sample	evals=980	worker_alive=1	node=117796	best=88	disk_free_mb=1232500
 2026-08-24T20:04:27Z	sample	evals=992	worker_alive=1	node=117796	best=100	disk_free_mb=1232437
+2026-08-24T20:05:27Z	sample	evals=1038	worker_alive=1	node=117796	best=36	disk_free_mb=1232489
+2026-08-24T20:06:27Z	sample	evals=1068	worker_alive=1	node=117796	best=62	disk_free_mb=1232434
+2026-08-24T20:06:27Z	run_stop	why=stop file	node=117796
