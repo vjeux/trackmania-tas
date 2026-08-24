@@ -491,18 +491,48 @@ mod tests {
         assert_eq!(a.verdict(), Some(Verdict::Dnf { cps: 2 }));
     }
 
-    /// A REFUSAL is not a DNF. This is the distinction that decides whether a
-    /// container problem looks like a container problem or like bad driving.
+    /// The distinction that decides whether a container fault looks like a
+    /// container fault or like bad driving — and it is two-sided on purpose.
+    ///
+    /// **This test previously asserted the opposite** and passed, because it
+    /// encoded a guess: that `wrong simu` meant the server refused. Reading the
+    /// engine showed `wrong simu` is written at the branch beside `wrong simu,
+    /// but reached some checkpoints (%d out of %d)` — it is a simulated run
+    /// that collected nothing. The refusals append their reason.
     #[test]
-    fn a_refusal_is_not_a_dnf() {
-        let text = r#"
- "ValidatedResult": null,
- "Desc": "wrong simu",
- "FileName": "cand.Ghost.Gbx"
-"#;
-        let a = &parse_many(text)[0];
-        assert!(!a.simulated());
-        assert_eq!(a.verdict(), None, "a file the server would not run has no verdict");
+    fn a_bare_wrong_simu_is_a_dnf_and_a_reasoned_one_is_a_refusal() {
+        let of = |desc: &str| {
+            let text = format!(
+                "\n \"ValidatedResult\": null,\n \"Desc\": \"{}\",\n \"FileName\": \"c.Ghost.Gbx\"\n",
+                desc
+            );
+            parse_many(&text).remove(0)
+        };
+
+        // POSITIVE half: the engine ran the tape and the car reached nothing.
+        let dnf = of("wrong simu");
+        assert!(dnf.simulated(), "a bare `wrong simu` is a simulated run");
+        assert_eq!(dnf.verdict(), Some(Verdict::Dnf { cps: 0 }));
+
+        let some = of("wrong simu, but reached some checkpoints (2 out of 5)");
+        assert!(some.simulated());
+        assert_eq!(some.verdict(), Some(Verdict::Dnf { cps: 2 }));
+
+        // NEGATIVE half: every refusal reason observed while establishing
+        // rung 0. Each of these is a container fault and has NO verdict.
+        for desc in [
+            "wrong simu\\ncannot validate scripted modes (settings: 1)\\n",
+            "wrong simu\\nwalltime not set\\n",
+            "wrong simu\\nusing known-flawed game exe ''\\n",
+            "unexcepted walltime (37s)",
+            "Replay version TMr.6\\nis not compatible with the current\\ngame version TMr.8.",
+            "No inputs available...",
+            "Can't load ghost: c.Ghost.Gbx",
+        ] {
+            let a = of(desc);
+            assert!(!a.simulated(), "must read as a REFUSAL: {}", desc);
+            assert_eq!(a.verdict(), None, "a refused file has no verdict: {}", desc);
+        }
     }
 
     #[test]
