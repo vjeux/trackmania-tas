@@ -216,3 +216,61 @@ build's class dump. The route and its implementation are both in HEAD
 gets a 200 with an error string in it rather than a shortened clip — the dialog
 still estimated 01:45:52 immediately afterwards. Not chased further; recorded so
 nobody re-treads it.
+
+## 2026-08-24: the box lost its launcher, and three things that misled me on the way
+
+**Trackmania will not start at all when Ubisoft Connect is unhealthy**, and the
+symptom points nowhere near the launcher: the game process appears and is gone
+within two seconds, `OpenplanetHook.log` does not grow by a byte, and
+`shootctl launch` reports *"Openplanet hung on the Nadeo login"* three times and
+gives up. The launcher had crash-looped (`upc.exe_169.6.13045_..._09-41-13.dmp`)
+behind a modal error dialog nobody could see.
+
+**The fastest instrument for "the game will not start" is a screenshot of the
+desktop.** Two modal dialogs — a Ubisoft Connect crash box and a Visual C++
+runtime error — explained an hour of log-reading in one image. Take the
+screenshot first next time.
+
+**The controls that mattered**, each of which killed a hypothesis:
+
+| hypothesis | control | verdict |
+|---|---|---|
+| Openplanet's `dinput8.dll` proxy kills the game | move it aside, launch again | still dies — **not Openplanet** |
+| the launch inherited `PreferSystem32=ON` | read the loaded module path | the process I measured was **my own stray shell launch**, not the Explorer one |
+| the session is locked (capture came back blank white) | capture with the game killed | **also white** — the game was holding the display; `LogonUI` absent, DWM up |
+
+### `shootctl`'s "Openplanet hung on the Nadeo login" can be a lie
+
+`openplanet_stage()` reads `Openplanet.log` and infers a login stall from
+"started but no Loop entry". When the game dies *before* Openplanet writes
+anything, that file is STALE — it still holds the last run's header — so the
+driver reports a login stall for a game that never got as far as loading the
+DLL. The honest signal is `OpenplanetHook.log` **growing**; if its byte count is
+unchanged after a launch, Openplanet never attached and the login has nothing to
+do with it. Worth fixing in the driver; recorded here so the next reader does
+not spend ten minutes where I did.
+
+### This desktop is at 150 % DPI and is really 3840x2160
+
+Any script that clicks, reads a window rect, or maps a screenshot coordinate to
+the screen **must** call `SetProcessDpiAwarenessContext(-4)` before anything
+else. Without it `GetWindowRect` and `MoveWindow` speak *logical* pixels while
+`CopyFromScreen` gives *physical* ones, everything is 1.5x out, and clicks land
+in empty space — the form fills silently do nothing and `^a` selects the page
+text instead of a field. Screenshot after every field so you see what landed;
+that is the only reason this was caught rather than becoming a mystery.
+
+### What is still broken as of 2026-08-24 19:00 UTC
+
+Ubisoft Connect accepts the credentials (`ConnectSecureStorage.dat` grew
+5151 -> 7228 B, `user.dat` rewritten, no 2FA, no captcha) and then fails at
+**`dolphin-034`**, deterministically, across three clean restarts and a cache
+clear. Installed build is **169.6.13045**; a **173.0.0.13316** installer was
+downloaded into the Trackmania folder at 03:55 that day and never applied — a
+mandatory update that failed, most likely because C: was at 99 %. Applying it
+needs a UAC prompt and that Windows session had gone non-interactive, so it
+cannot be done over the bridge. **A human has to run that installer.**
+
+`GW523-READ-ME-FIRST.txt` and `gw523_go.sh` in the box's home are the hand-off:
+Great Wtf of What #523's progress clip at 9.024 is staged, verified and one
+command away from being rendered.

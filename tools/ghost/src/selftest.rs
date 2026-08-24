@@ -380,6 +380,48 @@ fn pure_tier(s: &mut Suite) {
         );
     }
 
+    // --- the car's slot in the entity list ----------------------------------
+    // `--car-at N` exists because the container can want the car in the MIDDLE:
+    // Great Wtf of What #523's downloaded container has it at index 1 of 3, and
+    // first/last cannot say that. The mirror is the refusal — asking for the
+    // slot the car is already in must not write a file, or a later import
+    // result would be about nothing.
+    {
+        use crate::record::{car_index_of, set_ent_order, CarSlot};
+        let src = s.f(GHOSTS[0]);
+        let mid = std::env::temp_dir().join("ghost_selftest_entorder_mid.Ghost.Gbx");
+        let mp = mid.to_string_lossy().to_string();
+        let moved = set_ent_order(&src, &mp, CarSlot::At(1));
+        let landed = moved.is_ok() && car_index_of(&mp) == Ok(1);
+        let before = car_index_of(&src);
+        s.check(
+            "record.entorder.at",
+            before == Ok(0) && landed,
+            format!(
+                "car {} -> index 1 of 3, the slot a middle-car container wants ({})",
+                before.map_or("?".into(), |i| i.to_string()),
+                moved.as_deref().unwrap_or("did not write")
+            ),
+        );
+        // the mirror: a no-op reorder is REFUSED rather than written
+        let noop = std::env::temp_dir().join("ghost_selftest_entorder_noop.Ghost.Gbx");
+        let np = noop.to_string_lossy().to_string();
+        let refused = set_ent_order(&src, &np, CarSlot::First).is_err();
+        // and a slot that does not exist is refused rather than clamped
+        let over = std::env::temp_dir().join("ghost_selftest_entorder_over.Ghost.Gbx");
+        let op = over.to_string_lossy().to_string();
+        let clamped = set_ent_order(&src, &op, CarSlot::At(9));
+        s.check(
+            "record.entorder.refusals",
+            refused && clamped.is_err(),
+            "moving the car to the slot it already holds is refused, and --car-at past the end is \
+             refused rather than silently clamped to the last slot",
+        );
+        for p in [&mp, &np, &op] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
     // --- identity ------------------------------------------------------------
     {
         let c = Container::load(&s.f(GHOSTS[0])).unwrap();

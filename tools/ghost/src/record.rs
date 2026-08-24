@@ -241,19 +241,36 @@ pub fn cmd(a: &[String]) {
             }
         }
         Some("entorder") => {
-            let inp = a.get(1).unwrap_or_else(|| {
-                die("ghost record entorder IN OUT --car-first | --car-last")
-            });
-            let out = a.get(2).unwrap_or_else(|| {
-                die("ghost record entorder IN OUT --car-first | --car-last")
-            });
+            const USAGE: &str =
+                "ghost record entorder IN OUT --car-first | --car-last | --car-at N | --like DONOR";
+            let inp = a.get(1).unwrap_or_else(|| die(USAGE));
+            let out = a.get(2).unwrap_or_else(|| die(USAGE));
             let first = crate::cli::has(a, "--car-first");
             let last = crate::cli::has(a, "--car-last");
-            if first == last {
-                die("exactly one of --car-first or --car-last -- the two directions of the same \
-                     experiment, and a run that does neither, or both, measures nothing");
+            let at = num(a, "--car-at").map(|v| v as usize);
+            let like = flag(a, "--like");
+            let named = first as u8 + last as u8 + at.is_some() as u8 + like.is_some() as u8;
+            if named != 1 {
+                die("exactly one of --car-first, --car-last, --car-at N or --like DONOR -- they \
+                     are one experiment's directions, and a run that names none, or more than \
+                     one, measures nothing");
             }
-            match set_ent_order(inp, out, first) {
+            // `--like` reads the slot out of the donor rather than being told
+            // it: the thing that matters is the order the container HAD, and a
+            // hand-typed index is a place to get that wrong.
+            let want = if let Some(d) = like.as_deref() {
+                match car_index_of(d) {
+                    Ok(i) => CarSlot::At(i),
+                    Err(e) => die(e),
+                }
+            } else if first {
+                CarSlot::First
+            } else if last {
+                CarSlot::Last
+            } else {
+                CarSlot::At(at.unwrap())
+            };
+            match set_ent_order(inp, out, want) {
                 Ok(m) => println!("{out}: {m}"),
                 Err(e) => die(e),
             }
@@ -310,9 +327,13 @@ pub fn cmd(a: &[String]) {
              ghost record notices IN OUT --from DONOR | --strip\n\
              \x20                            -- restore or remove the record's notice lists:\n\
              \x20                               the two directions of one experiment\n\
-             ghost record entorder IN OUT --car-first | --car-last\n\
-             \x20                            -- move the car to the front or the back: in every\n\
-             \x20                               ghost the game wrote it is entity 0\n\
+             ghost record entorder IN OUT --car-first | --car-last | --car-at N | --like DONOR\n\
+             \x20                            -- move the car to a slot in the entity list. The\n\
+             \x20                               rule is not \"the car is entity 0\" -- it is the\n\
+             \x20                               order the file's OWN container had, which\n\
+             \x20                               `--like DONOR` reads out of the donor. 203072\n\
+             \x20                               wants it LAST; a 3-entity download can want it\n\
+             \x20                               in the MIDDLE, which first/last cannot say\n\
              ghost record ents IN OUT --keep LIST | --drop LIST | --dup LIST | --pad N\n\
              \x20                            -- keep, drop, duplicate or PAD the entity list and\n\
              \x20                               change nothing else. 227654's client needs 29 of\n\
@@ -958,7 +979,23 @@ pub fn car_index(path: &str) -> Result<(usize, usize), String> {
     Ok((vi, rd.ents.len()))
 }
 
-pub fn set_ent_order(inp: &str, out: &str, car_first: bool) -> Result<String, String> {
+/// Which slot the car should end up in. `First`/`Last` are the two original
+/// directions; `At` is the one that can name the MIDDLE, which is what a
+/// 3-entity download whose container puts the car at index 1 needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarSlot {
+    First,
+    Last,
+    At(usize),
+}
+
+/// The index of the vehicle entity in a file's record — what `--like DONOR`
+/// reads so that the slot is measured off the container rather than typed in.
+pub fn car_index_of(donor: &str) -> Result<usize, String> {
+    car_index(donor).map(|(i, _)| i)
+}
+
+pub fn set_ent_order(inp: &str, out: &str, want: CarSlot) -> Result<String, String> {
     let mut before = String::new();
     let mut after = String::new();
     rewrite_ghost(inp, out, |rd| {
@@ -969,21 +1006,31 @@ pub fn set_ent_order(inp: &str, out: &str, car_first: bool) -> Result<String, St
                 rd.ents.len()
             ));
         }
-        before = format!("car at index {} of {}", vi, rd.ents.len());
+        let n = rd.ents.len();
+        let target = match want {
+            CarSlot::First => 0,
+            CarSlot::Last => n - 1,
+            CarSlot::At(i) => {
+                if i >= n {
+                    return Err(format!(
+                        "--car-at {i} but this record has {n} entities (slots 0..{}): a slot that \
+                         does not exist would be silently clamped, and a clamped run measures a \
+                         different file than the one you asked for",
+                        n - 1
+                    ));
+                }
+                i
+            }
+        };
+        before = format!("car at index {vi} of {n}");
         let car = rd.ents.remove(vi);
-        if car_first {
-            rd.ents.insert(0, car);
-        } else {
-            rd.ents.push(car);
-        }
+        rd.ents.insert(target, car);
         let vj = pick_vehicle(rd).unwrap_or(usize::MAX);
-        after = format!("car at index {} of {}", vj, rd.ents.len());
+        after = format!("car at index {vj} of {}", rd.ents.len());
         if vi == vj {
             return Err(format!(
-                "the car is already {} ({}): writing this file would produce an import result \
-                 about nothing",
-                if car_first { "first" } else { "last" },
-                before
+                "the car is already at index {target} ({before}): writing this file would produce \
+                 an import result about nothing"
             ));
         }
         Ok(())

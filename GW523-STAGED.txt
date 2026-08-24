@@ -1,0 +1,65 @@
+Great Wtf of What #523 -- everything is staged, the box just needs its launcher back.
+Written 2026-08-24 by the render arm, for a person at this keyboard.
+
+WHAT IS WRONG
+  Ubisoft Connect is broken. Trackmania will not start without it, so no clip
+  can be rendered. The launcher is on build 169.6.13045 and there is a newer
+  installer already downloaded and never applied:
+
+      C:\Program Files (x86)\Steam\steamapps\common\Trackmania\UbisoftConnectInstaller.exe
+      (build 173.0.0.13316, downloaded 03:55 on 2026-08-24)
+
+  Logging in works -- the credentials were accepted at 10:58 and the token was
+  written -- and the client then fails with "Error dolphin-034" every time.
+  Restarting it and clearing its cache do not help. The update is the remaining
+  fix. It needs a UAC prompt, which is why it could not be done remotely.
+
+WHAT TO DO, IN ORDER
+  1. Double-click UbisoftConnectInstaller.exe above and let it finish.
+  2. Open Ubisoft Connect and make sure it reaches the normal signed-in screen
+     (not the dolphin-034 error).
+  3. Open a WSL terminal and run:
+
+         sh ~/gw523_go.sh
+
+     It takes a few minutes and does everything by itself: checks that the
+     world-record ghost still imports, reproduces the import refusal on the
+     unfixed file, imports the fixed file, renders both cars in one shot,
+     trims the video to our own finish, draws the input overlay, and writes
+     eight still frames.
+
+  4. LOOK AT THE STILLS in /tmp/gw523_frames before publishing anything.
+     If the video looks wrong, the run may be wrong -- say so, do not ship it.
+
+  5. To publish:
+
+         cd ~/trackmania-tas/tools
+         export GH_COOKIE="$(cat ~/.gh-upload/cookie)"
+         cargo run --release -p clip -- ship /tmp/gw523_final.mp4 <map-dir>
+
+     Never upload with ghvid.sh directly -- it skips the step that makes the
+     video visible to anyone who is not logged in.
+
+THE CAPTION (re-check the world record first, it moves)
+  **Great Wtf of What #523** -- TAS **9.024** (+0.297) | AT 8.727 | WR 10.439 by BilboHaggins96
+
+  This is a PROGRESS clip. 9.024 beats the world record by 1.415 and is still
+  0.297 SHORT of the author time, which nobody has beaten. It does not belong
+  in the "author time beaten" group on the front page.
+
+THE FILES (all already on this machine)
+  ~/gw523/                                     and  C:\Users\vjeux\rghosts\
+    TAS_9024.Ghost.Gbx            06673bbb5d675d8be116e72869c1ac49  our run, as rebuilt
+    TAS_9024_carat1.Ghost.Gbx     cc9e571826d767af71face0c3fba21a8  THE ONE TO FILM
+    TAS_9024_carlast.Ghost.Gbx    3c6fa6af8fc86bdfe6a920bb0e54c438  a control, not for filming
+    01_BilboHaggins96_10.439.Ghost.Gbx  70836b57e027ec9289fcd8246e45283e  the world record
+    map.Map.Gbx                   3cfa66144e2819eb2bbd23a9c276d838
+  C:\Users\vjeux\OneDrive\Documents\Trackmania\Maps\Downloaded\tas\297660.Map.Gbx  (same md5)
+
+WHY carat1 IS THE ONE TO FILM
+  The plain rebuild puts the car at entity 0 of 3; the container it came from
+  keeps the car at entity 1. The game client silently REFUSES that file -- the
+  ghost-block count never leaves 0 and it raises a FrameMessage. Moving the car
+  back to slot 1 is the whole fix. It is our own run either way: the file
+  re-simulates to 9.024 on the plain oracle and its recording matches its own
+  tape on all 181 samples.
