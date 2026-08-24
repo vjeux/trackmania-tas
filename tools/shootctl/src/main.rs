@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod host;
 use host::plugin_addrs;
+mod lock;
 
 use std::sync::OnceLock;
 static ADDR: OnceLock<String> = OnceLock::new();
@@ -861,11 +862,48 @@ fn main() {
              \n  shootctl launch [timeout_s]\
              \n  shootctl setup --map <map> <ghost...>\
              \n  shootctl shoot [timeout_s] --name <out>\
-             \n  shootctl run --map <map> --name <out> <tas> [opponent]   (all of the above)"
+             \n  shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
+             \n        one game, one driver -- take this before setup/shoot"
         );
         std::process::exit(2);
     }
     let code = match args[0].as_str() {
+        // ONE GAME, ONE DRIVER. See `lock.rs`: two concurrent renders do not
+        // fail, they produce two plausible clips of which one is of the wrong
+        // run. Every arm driving this box takes the lock first.
+        "lock" => {
+            let val = |k: &str| -> Option<String> {
+                args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
+            };
+            let owner = val("--owner").unwrap_or_else(|| {
+                std::env::var("SHOOTCTL_OWNER").unwrap_or_else(|_| format!("pid-{}", std::process::id()))
+            });
+            let num = |k: &str, d: u64| val(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+            let d = lock::lock_dir();
+            match args.get(1).map(|s| s.as_str()) {
+                Some("acquire") => match lock::acquire(&d, &owner, num("--wait", 0), num("--max-age", 0)) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                },
+                Some("release") => match lock::release(&d, &owner) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                },
+                Some("status") => lock::status(&d),
+                _ => {
+                    eprintln!(
+                        "shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]"
+                    );
+                    2
+                }
+            }
+        }
         "lint" => {
             if args.len() < 3 {
                 eprintln!("lint needs <api.json> and at least one .as");
