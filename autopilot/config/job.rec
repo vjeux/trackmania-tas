@@ -1,32 +1,46 @@
-# The long-haul job. The supervisor reads this out of the repo, so a
-# fresh box needs no instructions from anybody — change it here, commit, and
-# the next box picks it up.
+# The long-haul job. The supervisor reads this out of the repo, so a fresh box
+# needs no instructions from anybody — change it here, commit, and the next box
+# picks it up.
 
 # What we are working on, for the status page a human reads.
 map_name = Summer 2026 - 01
-rung = 1 — reach CP1
-objective = furthest station on our own route
+rung = 1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+objective = tapes confirmed by the plain oracle this pass
 
-# The work. Run with `sh -c` in worker_dir. It must append progress records to
-# progress_file: `<iso8601>\tprogress\tevals=<cumulative>\tbest=<objective>`.
-worker_cmd =
+# THE WORK.
+#
+# Today this is the standing re-simulation sweep: every banked result in the
+# repo, back through the plain oracle, forever. The project's rule is that a
+# result is re-simulated "standing, not a spot check", and until now nothing
+# made that true. It is real work with real throughput and real failure modes.
+#
+# When agent C's rung-1 explorer lands, THIS LINE IS THE WHOLE INTEGRATION:
+# point worker_cmd at it, commit, and the next supervisor pass runs it. The
+# contract a worker must honour is two lines long and is written in
+# tools/haul/src/worker.rs — append progress records to $TMHAUL_PROGRESS, and
+# resume from $TMHAUL_RESUME_EVALS.
+worker_cmd = TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300
 worker_dir = /tmp/tmtas
 progress_file = /tmp/tmhaul/progress.rec
 
-# Cadences, in seconds.
-sample_s = 30
-bank_s = 900
+# Cadences, in seconds. bank_s is the most work a vanishing box can cost:
+# everything older than the last bank is in the repo and in the mirror.
+sample_s = 60
+bank_s = 1800
 claim_ttl_s = 3600
 lease_bank_lead_s = 1800
-restart_max = 5
+restart_max = 20
 restart_backoff_s = 60
 
 # Durability. mirror: paste|dir|none   push: auto|direct|whitestick|none
+# `auto` on an on-demand box resolves to `whitestick`: no OD holds a GitHub
+# credential, and the render box has the repo-scoped deploy key.
 mirror = paste
 push = auto
 branch = main
 
-# Alarms. Every one of these has a test that makes it fire: `tmhaul alarms selftest`.
+# Alarms. Every one has a test that makes it fire: `tmhaul alarms selftest`
+# for the predicates, `tmhaul alarms live-test` against real processes.
 alarm_zero_window_s = 600
 alarm_collapse_recent_s = 600
 alarm_collapse_baseline_s = 3600
@@ -35,9 +49,9 @@ alarm_no_progress_evals = 2000000
 alarm_box_silence_s = 1800
 alarm_queue_window_s = 7200
 alarm_disk_min_free_mb = 5000
-alarm_bank_max_gap_s = 3600
+alarm_bank_max_gap_s = 5400
 
-# The pre-committed switch condition (DESIGN.md 3.2). Productive seconds only:
+# The pre-committed switch condition (DESIGN.md §3.2). Productive seconds only:
 # a stall never spends this.
 budget_switch_evals = 8000000
 budget_switch_productive_s = 36000

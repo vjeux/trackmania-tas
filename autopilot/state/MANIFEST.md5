@@ -1,9 +1,12 @@
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/alarms/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
+1abb9556821f601b31ed3cd47ef9de25  autopilot/state/boxes/117796.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
+b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
+b71b93d081b80eff67393040856d51b4  autopilot/state/journal/117796-1787596941.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/ledger/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/claimed/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/done/.gitkeep
