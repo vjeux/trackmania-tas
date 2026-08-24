@@ -67,9 +67,32 @@ fn cell_ms(tok: &str) -> Option<i64> {
     Some(a.parse::<i64>().ok()? * 1000 + f.parse::<i64>().ok()?)
 }
 
-/// One row of either root README table. Both tables put the same five things
-/// in the same five leading columns: map, records, author time, best human,
-/// this TAS.
+/// One entry of the root README. The front page used to be two tables and is
+/// now one line per map; both shapes are read, because a scan that only
+/// understands the current layout stops being a check the moment somebody
+/// reformats the page.
+///
+/// The **line** contract, which is what the front page uses today:
+///
+/// ```text
+/// **[Name](dir)** — author time `AT` · ours **TAS** (…) · best human WR (holder) · N records
+/// ```
+///
+/// * it is **one physical line** — a wrapped entry is invisible here;
+/// * `author time` is what marks a line as an entry at all, so prose that
+///   happens to open with a link (`**[▶ Drive one of them.](trainer/)**`) is
+///   not mistaken for a claim;
+/// * `ours` introduces this project's claim and **the time must be the first
+///   token after it**. That is not fussiness: Underwater's entry reads
+///   `ours — *no completion; the page's 36.049 is a landing, not a lap*`, and
+///   a parser that took the first time-shaped token anywhere in the field
+///   would publish 36.049 as a claim this repo does not make. It is the
+///   negative control in the tests below.
+/// * the human record is `best human …`, or in group 3
+///   `beaten by a human: …` / `equalled by a human: …`.
+///
+/// The **table** contract, kept for the older shape: map, records, author
+/// time, best human, this TAS in the first five columns.
 pub struct RootClaim {
     pub dir: String,
     pub name: String,
@@ -78,10 +101,57 @@ pub struct RootClaim {
     pub tas_ms: Option<i64>,
 }
 
+/// The first token of `rest`, as a time. Leading markdown and a leading colon
+/// are skipped; anything else that is not itself a time — `—`, `*none*`,
+/// `UNKNOWN` — reads as no claim, which is the point.
+fn lead_ms(rest: &str) -> Option<i64> {
+    let t = rest.trim_start_matches(|c| c == ' ' || c == '*' || c == '`' || c == ':');
+    cell_ms(t.split_whitespace().next()?)
+}
+
+/// `**[Name](dir)**` at the head of a line.
+fn link_at_head(l: &str) -> Option<(String, String)> {
+    let open = l.find('[')?;
+    let link = l.find("](")?;
+    if link < open {
+        return None;
+    }
+    let close = l[link + 2..].find(')')?;
+    Some((l[link + 2..link + 2 + close].to_string(), l[open + 1..link].to_string()))
+}
+
+fn line_claim(l: &str) -> Option<RootClaim> {
+    if !l.starts_with("**[") || !l.contains("author time") {
+        return None;
+    }
+    let (dir, name) = link_at_head(l)?;
+    let mut c = RootClaim { dir, name, at_ms: None, human_ms: None, tas_ms: None };
+    for field in l.split('\u{b7}') {
+        let f = field.trim();
+        if let Some(i) = f.find("author time") {
+            c.at_ms = c.at_ms.or_else(|| lead_ms(&f[i + "author time".len()..]));
+        }
+        if f.starts_with("ours") {
+            c.tas_ms = c.tas_ms.or_else(|| lead_ms(&f["ours".len()..]));
+        }
+        if let Some(i) = f.find("best human") {
+            c.human_ms = c.human_ms.or_else(|| lead_ms(&f[i + "best human".len()..]));
+        }
+        if let Some(i) = f.find("by a human:") {
+            c.human_ms = c.human_ms.or_else(|| lead_ms(&f[i + "by a human:".len()..]));
+        }
+    }
+    Some(c)
+}
+
 pub fn root_claims(readme: &str) -> Vec<RootClaim> {
     let mut out = Vec::new();
     for line in readme.lines() {
         let l = line.trim();
+        if let Some(c) = line_claim(l) {
+            out.push(c);
+            continue;
+        }
         if !l.starts_with("| [") {
             continue;
         }
@@ -126,11 +196,23 @@ pub fn shipped(maps: &[MapDir], root: &str) -> i32 {
     for c in &claims {
         let id = c.dir.split('-').next().unwrap_or(&c.dir).to_string();
         let Some(m) = maps.iter().find(|m| m.id == id) else {
+            // No `replays/` at all. That is only an unbacked CLAIM if the
+            // front page claims a time here: P-Found - Pokeuuu has no
+            // directory and claims nothing, and reading that as a failure was
+            // the scan calling an honest absence a defect.
+            let Some(t) = c.tas_ms else {
+                println!(
+                    "{}\t{}\t—\tNO-CLAIM\t—\t—\t0\tthe root README claims no time on this map, and it has no replays/ directory",
+                    id, c.dir
+                );
+                noclaim += 1;
+                continue;
+            };
             println!(
-                "{}\t{}\t{}\tNO-REPLAYS-DIR\t—\t—\t0\tthe root README names this map; it has no replays/ directory",
+                "{}\t{}\t{}\tNO-REPLAYS-DIR\t—\t—\t0\tthe root README claims this time; the map has no replays/ directory",
                 id,
                 c.dir,
-                c.tas_ms.map(secs).unwrap_or_else(|| "—".into())
+                secs(t)
             );
             unbacked += 1;
             continue;
@@ -294,6 +376,54 @@ pub fn shipped(maps: &[MapDir], root: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape the front page uses today: one line per map, three groups,
+    /// no tables. Three things are load-bearing and each has its own
+    /// assertion below.
+    #[test]
+    fn reads_the_one_line_front_page() {
+        let readme = "\
+**[▶ Drive one of them.](trainer/)** The 6.323 on unluckE is 23 steer events\n\
+\n\
+**[Tap water 01](173636-tap-water-01)** — author time `23.325` · **beaten by a human: 23.298 (Lukrecja666)** · ours **22.072** (−1.253) · 655 records\n\
+**[[Turtle Trial] Angustus](238835-turtle-trial-angustus)** — author time `462.982` · ours **239.133** (−223.849) · best human 1964.933 (Quantiks) · 1 record\n\
+**[untitled 01](276874-untitled-01)** — author time `23.839` · ours **12.759** (−11.080) · best human *none — the board is empty* · 0 records\n\
+**[Spring 2023 - 15 (Underwater)](173691-spring-2023-15-underwater)** — author time `2672.290` · **beaten by a human: 1571.209 (Maionez77)** · ours — *no completion; the page's 36.049 is a landing, not a lap* · 1 record\n\
+**[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** — **equalled, not beaten** (±0) · best human 4.495 (AffiTM, six players tied) · 1101 records\n";
+        let rows = root_claims(readme);
+
+        // The trainer link opens with `**[` and is not a claim. A line is an
+        // entry only if it states an author time.
+        assert_eq!(rows.len(), 5);
+
+        assert_eq!(rows[0].dir, "173636-tap-water-01");
+        assert_eq!(rows[0].name, "Tap water 01");
+        assert_eq!(rows[0].at_ms, Some(23325));
+        assert_eq!(rows[0].human_ms, Some(23298)); // "beaten by a human:"
+        assert_eq!(rows[0].tas_ms, Some(22072));
+
+        // A name with its own brackets must not truncate at the inner one.
+        assert_eq!(rows[1].name, "[Turtle Trial] Angustus");
+        assert_eq!(rows[1].dir, "238835-turtle-trial-angustus");
+        assert_eq!(rows[1].tas_ms, Some(239133));
+        assert_eq!(rows[1].human_ms, Some(1964933));
+
+        // An empty board is an absence, not a time.
+        assert_eq!(rows[2].human_ms, None);
+        assert_eq!(rows[2].tas_ms, Some(12759));
+
+        // THE NEGATIVE CONTROL. Underwater claims nothing, and its `ours`
+        // field mentions a 36.049 that is a landing rather than a lap. A
+        // parser that scanned the field for a time instead of reading the
+        // token after `ours` would publish a claim this repo does not make.
+        assert_eq!(rows[3].tas_ms, None);
+        assert_eq!(rows[3].human_ms, Some(1571209));
+        assert_eq!(rows[3].at_ms, Some(2672290));
+
+        // Equalling is a claim of the author time, not an absence of one.
+        assert_eq!(rows[4].tas_ms, Some(4492));
+        assert_eq!(rows[4].human_ms, Some(4495));
+    }
 
     /// The two real table shapes, and the negative control that matters: the
     /// `vs AT` column is full of signed deltas and a delta is not a time. The
