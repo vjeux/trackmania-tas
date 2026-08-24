@@ -285,13 +285,34 @@ fn replay_cmd(args: &[String]) -> Result<(), String> {
     let map_bytes = std::fs::read(&map).map_err(|e| format!("{}: {}", map.display(), e))?;
     let got = sha256_hex(&map_bytes);
     if got != h.map_sha256 {
-        return Err(format!(
-            "MAP MISMATCH: the artifact was produced against sha256 {} and this file is {}. \
-             A tape is only a run against a map; refusing.",
-            h.map_sha256, got
-        ));
+        // The default is a refusal and stays a refusal: a tape is only a run
+        // against a map, and replaying one against the wrong map silently is
+        // how a result becomes a riddle.
+        //
+        // The opt-out exists for one thing, and it is the thing the rules
+        // demand: a DELIBERATE two-map control. "Does moving this gate change
+        // the outcome?" cannot be answered without running one tape against two
+        // maps, and a detector with no yes-control certifies nothing. So the
+        // escape is explicit, it is named after what it is for, and it prints
+        // loudly enough that it can never be mistaken for a clean replay.
+        if !args.iter().any(|a| a == "--control-different-map") {
+            return Err(format!(
+                "MAP MISMATCH: the artifact was produced against sha256 {} and this file is {}. \
+                 A tape is only a run against a map; refusing. If this is a deliberate \
+                 two-map control, say so with --control-different-map.",
+                h.map_sha256, got
+            ));
+        }
+        println!(
+            "  *** CONTROL RUN AGAINST A DIFFERENT MAP ***\n  \
+             artifact map {}\n  this map     {}\n  \
+             This is NOT a replay and its result is not a time for this artifact.",
+            &h.map_sha256[..16],
+            &got[..16]
+        );
+    } else {
+        println!("  PASS  the map hashes to the value the artifact records");
     }
-    println!("  PASS  the map hashes to the value the artifact records");
 
     // ---- the body is what the header says it is ----
     let tape_sha = sha256_hex(&encode(&inputs));
