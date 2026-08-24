@@ -111,6 +111,9 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/cam")      return HttpResponse(200, DumpCameras());
     if (r == "/editmap")  return HttpResponse(200, EditMapFromFile());
     if (r == "/playmap")  return HttpResponse(200, PlayMapFromFile(QArg(qs, "mode")));
+    if (r == "/editmap2") return HttpResponse(200, EditMap2FromFile(QArg(qs, "dec")));
+    if (r == "/editghosts2") return HttpResponse(200, EditGhostsFromFile());
+    if (r == "/editmap3") return HttpResponse(200, EditMap3FromFile(QArg(qs, "adv") == "1"));
 
     auto api = MTApi();
     if (r == "/cantrack") {
@@ -317,6 +320,68 @@ string PlayMapFromFile(const string &in mode) {
     if (p == "") return "editmap.txt is empty";
     tc.PlayMap(p, mode, "");
     return "ok mode=\"" + mode + "\" " + p;
+}
+
+// The map path, from the same file EditMap reads. One reader, one trap avoided.
+string MapPathFromFile() {
+    if (!IO::FileExists(IO::FromStorageFolder("editmap.txt"))) return "";
+    IO::File f(IO::FromStorageFolder("editmap.txt"), IO::FileMode::Read);
+    string p = f.ReadToEnd().Trim();
+    f.Close();
+    return p;
+}
+
+// `EditMap2` — EditMap with the DECORATION named explicitly.
+//
+// 146612 hangs in EditMap (ctx 0 forever, IsReady false forever, LatestResult
+// Success, no dialog, 60 MB of memory and then nothing, while the same map
+// through PlayMap is in a playground in 6.2 s). The decoration is one of the
+// few things the editor entry resolves that the play entry does not have to,
+// and this map's is the unusual "Sunrise (no stadium)" — so: name it, and name
+// a different one, and see whether either changes the answer.
+string EditMap2FromFile(const string &in dec) {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    if (GetApp().Editor !is null) return "already in an editor - /back first";
+    auto tc = mp.ManiaTitleControlScriptAPI;
+    if (tc is null) return "no ManiaTitleControlScriptAPI";
+    string p = MapPathFromFile();
+    if (p == "") return "no editmap.txt";
+    tc.EditMap2(p, dec, "", "", "", "");
+    return "ok dec=\"" + dec + "\" " + p;
+}
+
+// `EditGhosts(Map)` — the title API's OTHER way into a map's MediaTracker, and
+// the one that matters here: it is not the track editor, so a map whose track
+// editor will not open may still be filmable through it. (MEASURED 2026-08-24:
+// it loads 146612 in 5.7 s — but into a PLAYGROUND, ctx 3, exactly like
+// PlayMap, so it is not a MediaTracker door after all.)
+string EditGhostsFromFile() {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    if (GetApp().Editor !is null) return "already in an editor - /back first";
+    auto tc = mp.ManiaTitleControlScriptAPI;
+    if (tc is null) return "no ManiaTitleControlScriptAPI";
+    string p = MapPathFromFile();
+    if (p == "") return "no editmap.txt";
+    tc.EditGhosts(p);
+    return "ok " + p;
+}
+
+// `EditMap3` — the same load with `UpgradeToAdvancedEditor` given explicitly.
+// TM2020 has a simple and an advanced track editor, and which one a map is
+// opened into is decided during the entry that hangs on 146612. If the choice
+// is the trigger, this says so in one call.
+string EditMap3FromFile(bool advanced) {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    if (GetApp().Editor !is null) return "already in an editor - /back first";
+    auto tc = mp.ManiaTitleControlScriptAPI;
+    if (tc is null) return "no ManiaTitleControlScriptAPI";
+    string p = MapPathFromFile();
+    if (p == "") return "no editmap.txt";
+    tc.EditMap3(p, "", "", "", "", "", advanced);
+    return "ok advanced=" + (advanced ? "1" : "0") + " " + p;
 }
 
 // Open the In Game MediaTracker sequence -- the call the "EDIT" button makes.

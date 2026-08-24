@@ -17,6 +17,13 @@ TMX map [153527](https://trackmania.exchange/maps/153527) · author
 No run has been driven on this map here, and no time is claimed. What follows is
 what the single recorded run shows about where the time is.
 
+> **"No clip" here is correct, and it is not a filming defect** (checked
+> 2026-08-24 while the other no-clip pages were being repaired). This directory
+> holds no `replays/` at all and the page claims no time: there is nothing to
+> film. The map itself is not the obstacle — it is a 1.8 MB Stadium map that
+> declares nothing unusual and would open like any other. A clip here needs a
+> **run**, not a render.
+
 ## What the one recorded run is
 
 It reads 1 h 34 m, but it is not a lap at that pace. It is 110 respawns spread

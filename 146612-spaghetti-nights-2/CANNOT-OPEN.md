@@ -1,98 +1,105 @@
 # 146612 "Spaghetti Nights 2" cannot be opened in the in-game editor
 
-**Status: the map file itself is the problem. Not the ghost, not accumulated
-state in the game, not a slow load, not a wrong path.** Nothing can be filmed on
-this map until someone works out why, and a regeneration for it is wasted effort
-until then.
+**Status, 2026-08-24: the CLIENT LOADS THIS MAP FINE. `PlayMap` has it in a
+playground in 6.2 s and `EditGhosts` in 5.7 s, both with the right uid. Only the
+TRACK EDITOR entry — `EditMap`, and every variant of it — hangs.** So this is
+not a map that cannot be read, and it is not a client that cannot load it: it is
+one door out of three, and the two that work do not lead to the MediaTracker.
 
-## The symptom
+Nothing has been filmed here yet, and the remaining route to a clip is named at
+the bottom.
 
-`ManiaTitleControlScriptAPI::EditMap()` accepts the path and returns `ok`, and
-the editor never opens. The plugin's `/ctx` stays at `0` (menu) indefinitely
-while `/ping` keeps answering and the game process stays alive and responsive.
-Every other map in the corpus opens in 6–25 seconds through exactly the same
-call.
+## The symptom, measured rather than described
 
-## What was ruled out, and how
+`ManiaTitleControlScriptAPI::EditMap()` accepts the path and returns. Then, for
+as long as anyone has waited (180 s):
+
+| what | 146612 | 285885, the control, same session |
+|---|---|---|
+| `ctx` | **0 forever** | 1 (track editor) at 6.1–8.6 s |
+| `IsReady` | **false forever** — the title never accepts another command; only a relaunch clears it | false while loading, editor open at the end |
+| `LatestResult` | **0 = Success** | 0 = Success |
+| `CustomResultType` / `Data` | empty / `[]` | empty / `[]` |
+| dialog | **none** | `FrameWaitMessage` while it loads |
+| process memory | **+60 MB, then flat** | **+940 MB** (1.52 → 2.46 GB) |
+| CPU across the wait | ~7 s per 20 s wall — the same rate as an idle client | the same rate, after it opened |
+
+Read together: the load **starts** (the title goes busy, 60 MB is taken) and
+then **stops**, without an error, without a dialog, and without doing the work
+an editor entry does. The game is not busy. It is not slow. It has given up
+silently, and it has taken the title API with it.
+
+`LatestResult` is the title API's own error channel and this page's first new
+instrument — `EditMap` returns `void`, so that enum is the only thing it can
+ever say about a map it declined. **It says Success.**
+
+## What opens it, and what does not
+
+Every row on a fresh game, every row with 285885 as the control in the same
+session (`shootctl probe --map M --how …`).
+
+| door | 146612 | control |
+|---|---|---|
+| `PlayMap(map, "", "")` | **playground in 6.2 s**, right uid | playground in 3.5 s |
+| `EditGhosts(map)` | **playground in 5.7 s**, right uid | playground in 2.9 s |
+| `EditMap(map, "", "")` | hangs, as above | editor in 6.1 s |
+| `EditMap2(map, "", …)` — decoration left empty | hangs identically | editor in 7.4 s |
+| `EditMap2(map, "48x48Day", …)` | rejected outright: `IsReady` stays **true**, nothing loads | — |
+| `EditMap3(…, UpgradeToAdvancedEditor)` | wired, not yet run | — |
+
+## What has been ruled out, and how
 
 | hypothesis | test | result |
 |---|---|---|
-| slow load, timeout too short | waited 90 s, then 120 s | never opens |
-| accumulated state in the game (`EditMap` stops working after ~40 loads) | relaunched the game, made 146612 the **very first** map loaded, zero prior loads | never opens |
-| wrong or mangled path | dumped the exact bytes handed to `EditMap` with `od -c` | correct |
-| path does not resolve on the Windows side | `powershell Test-Path '<abs path>'` | `True` |
-| file missing or truncated | `stat` = 3,824,673 bytes; GBX header intact (`GBX\6\0BUCR...`) | fine |
-| the map is too large | 285268 is 4.65 MB and films fine; 210218 is 10.0 MB | not size |
-| a stale copy of the map file | md5 `16e7220f2128587c0d0018626feacb0f`; **the shared store has a byte-identical second copy, and the engine loads and simulates the map** | **CLOSED 2026-08-22 — see below** |
+| slow load, timeout too short | 90 s, 120 s, 150 s, 180 s | never opens |
+| accumulated editor state | first map loaded on a fresh process | never opens |
+| wrong or mangled path | bytes dumped; `Test-Path` on the Windows side | correct |
+| file missing, truncated, corrupt | 3 824 673 B, header intact; **the dedicated server loads it and re-simulates 8 of 8 ghosts to their exact times**, with `SEGMENT_…_DO_NOT_PUBLISH` returning DNF as the negative control | not corrupt |
+| a stale copy | md5 `16e7220f2128587c0d0018626feacb0f` on the render box and on the shared store, **checked again 2026-08-24** | identical |
+| size | 285268 is 4.65 MB, 210218 is 10.0 MB; both open | not size |
+| **anything structural only this map has** | `tmmaps header --tsv` over all 36 corpus maps, 35 of which open — container version, class, header chunk table, external refs (0 everywhere), title, exever, exebuild, envir, mood, maptype, mapstyle, validated, lightmap version, ghost blocks, declared `<dep>` files, embedded zip, block/item counts, and every body chunk id | **nothing is unique to it.** Its exebuild is shared with 145875, its mood with 238835, its two embedded custom BLOCKS are dwarfed by 210218's 83, its 12 532 blocks by 208024's 35 538, and no body chunk id it carries is absent from every other map |
+| the container, i.e. how the bytes are stored | `tmmaps rewrite --reemit`: same content, whole body recompressed, 3 824 673 → 3 880 918 B, 0 content bytes changed | **hangs identically** — it is the content, not the container |
+| **this install's file-id cache** (`Config/User.FidCache.Gbx`) | moved aside, game relaunched, cache rebuilt from scratch | **hangs identically**, and the control opens on the same rebuilt cache |
+| the embedded object zip | chunk `0x03043054` replaced with an empty one from 227654 (383 889 B → 24 B), nothing else touched | **the failure CHANGES**: instead of silence, the editor raises `FrameAskYesNo` within 2 s. Answering yes dismisses it and returns to the menu; the editor still does not open |
 
-The accumulated-state hypothesis was the strongest candidate, because the editor
-genuinely does stop accepting maps after roughly forty loads — `/ping` answers,
-`/ctx` stays 0, and only a relaunch fixes it. **146612 fails identically on a
-completely fresh process**, which is what separates the two.
+That last row is the one lead with a live signal in it. The embedded objects are
+one custom item and **two custom blocks** (`Magnet_Blocks\M2PlatformTechSlopeBase.Block.Gbx`,
+`M2_PlatformTechSlope2End.Block.Gbx`); with them present the editor dies quietly,
+with them absent it asks a question and then declines. Both variants are on the
+render box beside the stock map, as `146612_reemit.Map.Gbx` and
+`146612_nozip.Map.Gbx`, so neither has to be rebuilt.
 
 ## A trap worth knowing, because it invalidated three earlier attempts
 
-Do **not** build a Windows path with `printf`:
+Do **not** build a Windows path with `printf`: `\v` is a vertical tab and
+**`\146` is an octal escape for `f`**, so `\tas\146612` was handed over as
+`\tasf612`. Use a quoted heredoc, which interprets nothing.
 
-```bash
-printf 'C:\\Users\\vjeux\\...\\tas\\146612.Map.Gbx'   # WRONG
-```
+## Why there is still no clip, and what would produce one
 
-`printf` interprets `\v` as a vertical tab and **`\146` as an octal escape for
-`f`**, so `\tas\146612` was silently handed over as `\tasf612` — a path to a file
-that does not exist. Three "diagnoses" of this map were made against that
-nonexistent path before the mangling was spotted in an echoed log line. Use a
-quoted heredoc, which interprets nothing:
+The render pipeline reaches the MediaTracker through the **track editor**
+(`ctx 1` → `CGameEditorPluginMap::EditMediatrackIngame()`), which is precisely
+the door this map does not have. The two doors that do open it land in a
+playground, and `DialogEditCutScenes_OnInGameEdit` (`/mtingame`) does nothing
+from a playground — **measured on the control as well**, so that is a fact about
+the call and not about this map.
 
-```bash
-cat > "$PS/editmap.txt" <<'EOF'
-C:\Users\vjeux\OneDrive\Documents\Trackmania\Maps\Downloaded\tas\146612.Map.Gbx
-EOF
-```
+The map's own tape is ready: `TAS_39183.Ghost.Gbx` carries another run's
+telemetry (kappa 0.476), and the regenerated
+`TAS_39183_carrier.Ghost.Gbx` — kappa 1.000, oracle 39.183, V1–V11 clean — is on
+the shared store at `tm-nomovie-20260824/146612/`. There is nothing wrong with
+what would be filmed.
 
-The render scripts were never affected — they use doubled backslashes — but every
-hand-probe was.
+**The one route left is `EditReplay2(ReplayList, EReplayEditType::Shoot)`** —
+the game's own "open this replay in the MediaTracker", which needs no track
+editor at all. It needs two things nobody has built:
 
-## What has not been tried
+1. a `.Replay.Gbx` wrapper around a pure ghost (`ghost map set` refuses: a pure
+   ghost carries no embedded map, and there is no `ghost replay wrap` yet);
+2. the AngelScript call itself, whose parameter is a `MwFastBuffer<wstring>` —
+   whether Openplanet lets a plugin construct one is unknown, and a compile
+   error there unloads the plugin and takes the render box down with it, so it
+   is a lock-held experiment with `shootctl install`'s rollback behind it.
 
-**Two of the three below have now been answered — 2026-08-22.**
-
-> ### The map file is not corrupt, and the second copy exists
->
-> The table above lists *"a stale copy of the map file … the repo ships no
-> `.Map.Gbx` to compare against"* as **unresolved**. There is a second copy: the
-> shared store carries `tm-unbeaten/146612/map.Map.Gbx`, and it is **byte-identical
-> to the staged file** — md5 `16e7220f2128587c0d0018626feacb0f`, 3 824 673 bytes,
-> the same figures this page already records.
->
-> And the stronger test, which needs no second copy at all: **the game's own
-> engine loads this map and simulates on it.** The dedicated server was pointed
-> at it and re-simulated every publishable ghost in the directory to exactly the
-> time in its name — eight of eight, with the `SEGMENT_…_DO_NOT_PUBLISH` file
-> returning DNF at cps 5 as its name says, which is the negative control:
->
-> ```
-> TAS_39183.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.183
-> TAS_39430.Ghost.Gbx   PASS V7   oracle re-simulated the written file: 39.430
-> ...
-> SEGMENT_cp5_32702_…   FAIL V7   oracle: DNF (cps Some(5))
-> ```
->
-> A file that parses, loads, spawns a car and runs 40 seconds of physics
-> **is not corrupt**. So *"the staged file is corrupt in a way that keeps the
-> header valid"* is **closed**, and with it the "re-download and diff" item.
->
-> **What this does not settle** is the actual symptom. `EditMap()` still returns
-> `ok` and never opens the editor, and that remains unexplained — but it is now
-> known to be a fault in the **editor path**, not in the map. The remaining
-> untried item below is the one that would localise it.
-
-- ~~Re-downloading the `.Map.Gbx` from TMX and comparing.~~ **Done differently
-  and closed**: the store copy is byte-identical, and the engine runs the map.
-- Opening the map through the game's own UI rather than the scripting API. If it
-  opens by hand, the fault is in `EditMap` for this file specifically; if it does
-  not, the file is bad in a way the editor rejects silently — **though the
-  oracle result above makes "the file is bad" much harder to sustain.**
-- Reading the game's own client log at load time for a rejected-path or parse
-  error. Openplanet's log shows nothing, but that is the plugin's log, not the
-  client's.
+Until then this map is **not filmable by this pipeline**, which is a much
+narrower statement than the one this page used to make.

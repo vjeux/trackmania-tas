@@ -203,6 +203,13 @@ pub struct MapHeader {
     pub mapstyle: String,
     pub validated: String,
     pub nblocks_declared: String,
+    /// `lightmap="N"` — the baked-lighting version the CLIENT must load. The
+    /// dedicated server never reads it, so it is exactly the kind of field that
+    /// can separate a map that simulates from a map that will not open.
+    pub lightmap: String,
+    /// `hasghostblocks="1"` — drive-through blocks.
+    pub ghostblocks: String,
+    pub displaycost: String,
     pub deps: Vec<String>,
     pub blocks_u: usize,
     pub blocks_b: usize,
@@ -256,6 +263,9 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
         mapstyle: get("desc", "mapstyle"),
         validated: get("desc", "validated"),
         nblocks_declared: get("desc", "nblocks"),
+        lightmap: get("header", "lightmap"),
+        ghostblocks: get("desc", "hasghostblocks"),
+        displaycost: get("desc", "displaycost"),
         deps: deps(&xml),
         blocks_u: m.blocks.len(),
         blocks_b: m.baked.len(),
@@ -327,14 +337,14 @@ pub fn cmd(args: &[String]) {
             }
         };
         println!(
-            "map\tbytes\tgbxver\tnodes\textrefs\thdrchunks\ttitle\texever\texebuild\tenvir\tmood\tmaptype\tmapstyle\tvalidated\tnblocks_decl\tblocks_u\tblocks_b\titems\tmodels\tdeps\tzip_bytes\tzip_files\tzip_blocks\tthumb"
+            "map\tbytes\tgbxver\tnodes\textrefs\thdrchunks\ttitle\texever\texebuild\tenvir\tmood\tmaptype\tmapstyle\tvalidated\tlightmap\tghostblocks\tdisplaycost\tblocks_u\tblocks_b\titems\tmodels\tdeps\tzip_bytes\tzip_files\tzip_blocks\tthumb"
         );
         for h in &hs {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 label(&h.path), h.bytes, h.gbxver, h.nodes, h.extrefs, h.chunks.len(),
                 h.title, h.exever, h.exebuild, h.envir, h.mood, h.maptype, h.mapstyle,
-                h.validated, h.nblocks_declared, h.blocks_u, h.blocks_b, h.items, h.models,
+                h.validated, h.lightmap, h.ghostblocks, h.displaycost, h.blocks_u, h.blocks_b, h.items, h.models,
                 h.deps.len(), h.zip_bytes, h.zip_entries.len(), h.zip_blocks(), h.thumb_bytes
             );
         }
@@ -359,6 +369,8 @@ pub fn cmd(args: &[String]) {
                 ("maptype", &|h: &MapHeader| h.maptype.clone()),
                 ("mapstyle", &|h: &MapHeader| h.mapstyle.clone()),
                 ("validated", &|h: &MapHeader| h.validated.clone()),
+                ("lightmap", &|h: &MapHeader| h.lightmap.clone()),
+                ("ghostblocks", &|h: &MapHeader| h.ghostblocks.clone()),
                 ("deps", &|h: &MapHeader| h.deps.len().to_string()),
                 ("zip_files", &|h: &MapHeader| h.zip_entries.len().to_string()),
                 ("zip_blocks", &|h: &MapHeader| h.zip_blocks().to_string()),

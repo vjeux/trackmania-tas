@@ -883,7 +883,7 @@ fn save_good(plugin_dir: &str, good_dir: &str) -> i32 {
 /// A negative needs a positive control: run this on a map that DOES open, in
 /// the same session, before believing anything it prints about one that does
 /// not.
-fn probe(map: &str, play: bool, mode: &str, timeout_s: u64) -> i32 {
+fn probe(map: &str, how: &str, mode: &str, timeout_s: u64) -> i32 {
     let gp = match game_path(map) {
         Ok(m) => m,
         Err(e) => { eprintln!("{e}"); return 2; }
@@ -896,7 +896,7 @@ fn probe(map: &str, play: bool, mode: &str, timeout_s: u64) -> i32 {
     }
     let wsl = gp.strip_prefix("C:/").map(|r| format!("/mnt/c/{r}")).unwrap_or_else(|| gp.clone());
     let want = map_uid(&wsl);
-    println!("probe {}", gp);
+    println!("probe {} [{}]", gp, how);
     println!("  file uid {}", want.clone().unwrap_or_else(|| "(unreadable)".into()));
 
     // Start from the menu and prove it, then prove the title will accept a
@@ -905,7 +905,22 @@ fn probe(map: &str, play: bool, mode: &str, timeout_s: u64) -> i32 {
     if let Err(e) = await_cond("ready", 60) { eprintln!("{e}"); return 1; }
     println!("  before: /ready {}", http_get("/ready", 10).unwrap_or_default().trim());
 
-    let call = if play { format!("/playmap?mode={mode}") } else { "/editmap".to_string() };
+    // WHICH DOOR. Every one of these is the same title API, the same path and
+    // the same file; they differ only in which loader the game runs. That is
+    // the whole point: 146612 hangs forever in `edit` and is in a playground in
+    // 6.2 s through `play`.
+    let call = match how {
+        "edit" => "/editmap".to_string(),
+        "play" => format!("/playmap?mode={mode}"),
+        "editmap2" => format!("/editmap2?dec={mode}"),
+        "editghosts" => "/editghosts2".to_string(),
+        "editmap3" => "/editmap3?adv=0".to_string(),
+        "editmap3adv" => "/editmap3?adv=1".to_string(),
+        other => {
+            eprintln!("probe: unknown --how `{other}` (edit | play | editmap2 | editghosts)");
+            return 2;
+        }
+    };
     let t0 = Instant::now();
     println!("  call {call}: {}", http_get(&call, 30).unwrap_or_default().trim());
 
@@ -924,8 +939,9 @@ fn probe(map: &str, play: bool, mode: &str, timeout_s: u64) -> i32 {
             println!("  [{:5.1}s] {line}", t0.elapsed().as_secs_f64());
             last = line;
         }
-        if !play && matches!(ctx_now, Some(1) | Some(2)) { settled = true; break; }
-        if play && ctx_now == Some(3) { settled = true; break; }
+        // Anywhere but the menu is a load that happened. Which context it is
+        // says which door opened, and the line above has already printed it.
+        if matches!(ctx_now, Some(n) if n != 0) { settled = true; break; }
     }
     println!("  [{:5.1}s] final /ctx   {}", t0.elapsed().as_secs_f64(),
              http_get("/ctx", 10).unwrap_or_default().trim());
@@ -956,11 +972,13 @@ fn main() {
              \n  shootctl setup --map <map> [--cam N] <ghost...>\n        --cam: 2 External (default), 1 Internal, 6 Ext2, 3 Helico\
              \n  shootctl shoot [timeout_s] --name <out>\
              \n  shootctl run --map <map> --name <out> [--cam N] <ghost...>\
-             \n  shootctl probe --map <map> [--play] [--mode M] [--timeout S]\
+             \n  shootctl probe --map <map> [--how edit|play|editmap2|editghosts] [--timeout S]\
              \n        load ONE map and print everything the game says while it does\
              \n        or does not: ctx, IsReady, LatestResult, CustomResult, dialogs.\
-             \n        --play uses PlayMap instead of EditMap -- the differential that\
-             \n        separates \"the editor rejects it\" from \"the client cannot load it\".\
+             \n        --how picks WHICH DOOR into the same file: EditMap (the track\
+             \n        editor), PlayMap, EditMap2 (--mode names the decoration), or\
+             \n        EditGhosts. 146612 hangs forever in the first and is in a\
+             \n        playground in 6.2 s through the second.\
              \n  shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
              \n        one game, one driver -- take this before setup/shoot"
         );
@@ -1042,13 +1060,16 @@ fn main() {
                 args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
             };
             let Some(map) = val("--map") else {
-                eprintln!("shootctl probe --map <path> [--play] [--mode M] [--timeout S]");
+                eprintln!("shootctl probe --map <path> [--how edit|play|editmap2|editghosts] [--mode M] [--timeout S]");
                 std::process::exit(2);
             };
-            let play = args.iter().any(|a| a == "--play");
+            // `--play` is kept as the spelling for `--how play`.
+            let how = val("--how").unwrap_or_else(|| {
+                if args.iter().any(|a| a == "--play") { "play".into() } else { "edit".into() }
+            });
             let mode = val("--mode").unwrap_or_default();
             let to = val("--timeout").and_then(|v| v.parse().ok()).unwrap_or(90);
-            probe(&map, play, &mode, to)
+            probe(&map, &how, &mode, to)
         }
         "run" => {
             // THE WHOLE THING: cold game to finished video, one command.
