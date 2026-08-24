@@ -128,10 +128,18 @@ impl Canvas {
     }
 }
 
-/// 5x7 glyphs for `0123456789.:-+ ` and the few letters the labels need.
-/// One `u8` per row, bit 4 is the leftmost pixel.
+/// 5x7 glyphs. One `u8` per row, bit 4 is the leftmost pixel.
+///
+/// **THE WHOLE ALPHABET, AND A VISIBLE BOX FOR ANYTHING ELSE.** This used to
+/// hold only the letters the labels of the day needed, with everything else
+/// falling through to seven zero rows — a blank. So a label containing a letter
+/// nobody had added rendered as a GAP, silently and correctly-looking: `NOW`
+/// came out as `N W` and `INPUTS` as `NP TS`, burned into published clips,
+/// because O, I and U were never in the table. A missing glyph now draws a
+/// filled box, which is impossible to mistake for a space.
 fn glyph(c: char) -> [u8; 7] {
     match c {
+        ' ' => [0; 7],
         '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
         '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
         '2' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
@@ -148,17 +156,31 @@ fn glyph(c: char) -> [u8; 7] {
         '+' => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],
         'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
         'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
         'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
         'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C],
         'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
         'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
         'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
         'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
         'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
         'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
         'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
         'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
-        _ => [0; 7],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        _ => [0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F],
     }
 }
 
@@ -183,13 +205,39 @@ const GREEN: [u8; 4] = [60, 220, 90, 240];
 const RED: [u8; 4] = [235, 70, 60, 240];
 const BLUE: [u8; 4] = [90, 170, 255, 240];
 const AMBER: [u8; 4] = [255, 190, 40, 245];
+/// THE FUTURE HALF OF THE STRIP, in the same hues at lower intensity.
+///
+/// Dimmer rather than a different colour on purpose: the eye reads "same thing,
+/// not yet" from brightness and "different thing" from hue, and these ARE the
+/// same channels. A distinct colour would say the future inputs are a
+/// prediction or a plan; they are the tape, already known and about to happen.
+const BLUE_DIM: [u8; 4] = [70, 120, 180, 170];
+const GREEN_DIM: [u8; 4] = [45, 150, 65, 170];
+const RED_DIM: [u8; 4] = [160, 55, 48, 170];
+const AMBER_DIM: [u8; 4] = [175, 130, 30, 175];
 const BG: [u8; 4] = [0, 0, 0, 150];
 
 /// One frame of the panel at race time `ms`.
 ///
-/// The history strip is the point of the thing: a single bar says what the
-/// driver is doing now, and a TAS is only legible as a shape over time.
-pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64) {
+/// The strip is the point of the thing: a single bar says what the driver is
+/// doing now, and a TAS is only legible as a shape over time.
+///
+/// **NOW IS IN THE MIDDLE.** The strip used to end at the playhead, so it was a
+/// picture of the past alone — you watched a car take a corner and only
+/// afterwards saw the input that took it. Reading a TAS means seeing the input
+/// arrive: the flick is placed BEFORE the thing it causes, and a viewer can
+/// only judge the timing if both sides of the instant are on screen. So `now`
+/// sits at a playhead in the middle, with `history_ms` behind it and
+/// `future_ms` ahead, and the future half is drawn dimmer so the two are never
+/// confused.
+///
+/// **Each pixel is an INTERVAL, not a sample.** With the window twice as wide
+/// one pixel can span more than one 10 ms tick, and the old point-sampling
+/// would then step straight over a single-tick flick — exactly the input most
+/// worth seeing on these tapes. Every pixel now takes the extreme steering and
+/// the OR of the pedals over the whole interval it covers, so a one-tick input
+/// is visible at any zoom.
+pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64, future_ms: i64) {
     cv.clear();
     cv.rect(0, 0, PANEL_W as i64, PANEL_H as i64, BG);
 
@@ -224,26 +272,65 @@ pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64) {
     text(cv, 20, 38, if now.steer < 0 { "L" } else { " " }, 1, DIM);
     text(cv, PANEL_W as i64 - 26, 38, if now.steer > 0 { "R" } else { " " }, 1, DIM);
 
-    // --- the history strip: steering over the last `history_ms`, with the
-    //     throttle and brake as a band underneath it.
+    // --- the strip: steering across the window, with the throttle and brake as
+    //     a band underneath it, and NOW at the playhead.
     let (sy, sh) = (58i64, 40i64);
     cv.rect(20, sy + sh / 2, PANEL_W as i64 - 40, 1, [90, 90, 90, 180]);
     let w = PANEL_W as i64 - 40;
+    let span_ms = (history_ms + future_ms).max(1);
+    // Where the playhead lands. Integer arithmetic throughout so the pixel the
+    // playhead is drawn on is the same pixel the loop calls "now" -- a rounding
+    // disagreement here puts the marker one pixel off the input it marks, which
+    // is a lie about the timing at exactly the moment being judged.
+    let ph = (history_ms * w) / span_ms;
     for px in 0..w {
-        let t = ms - history_ms + (px * history_ms) / w.max(1);
-        let i = at(t);
-        let y = sy + sh / 2 - (i.steer as i64 * (sh / 2)) / 127;
-        let c = if px == w - 1 { WHITE } else { BLUE };
-        cv.span(20 + px, 20 + px, y.min(sy + sh / 2), (y - (sy + sh / 2)).abs().max(1), c);
-        if i.gas {
-            cv.rect(20 + px, sy + sh + 2, 1, 4, GREEN);
+        // The interval THIS pixel covers, [t0, t1).
+        let t0 = ms - history_ms + (px * span_ms) / w;
+        let t1 = ms - history_ms + ((px + 1) * span_ms) / w;
+        let (mut steer, mut gas, mut brake, mut respawn) = (0i64, false, false, false);
+        let mut t = t0;
+        loop {
+            let i = at(t);
+            if (i.steer as i64).abs() > steer.abs() {
+                steer = i.steer as i64;
+            }
+            gas |= i.gas;
+            brake |= i.brake;
+            respawn |= i.respawn;
+            t += 10;
+            if t >= t1 {
+                break;
+            }
         }
-        if i.brake {
-            cv.rect(20 + px, sy + sh + 8, 1, 4, RED);
+        let future = px > ph;
+        let y = sy + sh / 2 - (steer * (sh / 2)) / 127;
+        let c = if px == ph {
+            WHITE
+        } else if future {
+            BLUE_DIM
+        } else {
+            BLUE
+        };
+        cv.span(20 + px, 20 + px, y.min(sy + sh / 2), (y - (sy + sh / 2)).abs().max(1), c);
+        if gas {
+            cv.rect(20 + px, sy + sh + 2, 1, 4, if future { GREEN_DIM } else { GREEN });
+        }
+        if brake {
+            cv.rect(20 + px, sy + sh + 8, 1, 4, if future { RED_DIM } else { RED });
+        }
+        if respawn {
+            cv.rect(20 + px, sy, 1, sh, if future { AMBER_DIM } else { AMBER });
         }
     }
+    // The playhead, the full height of the strip and over the pedal bands, so
+    // the instant is readable even where the steering is at zero. It STOPS
+    // above the label row: run through the text and it cuts "NOW" in half,
+    // which is what the first version of this did.
+    cv.rect(20 + ph, sy - 2, 1, sh + 6, WHITE);
     text(cv, 20, PANEL_H as i64 - 12, &format!("-{:.1}S", history_ms as f64 / 1000.0), 1, DIM);
-    text(cv, PANEL_W as i64 - 64, PANEL_H as i64 - 12, "INPUTS", 1, DIM);
+    text(cv, 20 + ph - 9, PANEL_H as i64 - 12, "NOW", 1, WHITE);
+    let right = format!("+{:.1}S", future_ms as f64 / 1000.0);
+    text(cv, PANEL_W as i64 - 20 - right.len() as i64 * 6, PANEL_H as i64 - 12, &right, 1, DIM);
 }
 
 pub struct Opts {
@@ -251,6 +338,10 @@ pub struct Opts {
     pub fps: f64,
     pub to: Option<f64>,
     pub history_ms: i64,
+    /// How far AHEAD of the playhead the strip reaches. The strip is centred on
+    /// `now`, so this is the half a viewer uses to see an input arrive before
+    /// the thing it causes.
+    pub future_ms: i64,
     pub margin: i64,
     /// x264 quality. 19 is the published clips' encode and is the default;
     /// **a long clip needs a higher number to fit.** GitHub refuses an asset
@@ -263,7 +354,7 @@ pub struct Opts {
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { offset_ms: 0, fps: 30.0, to: None, history_ms: 3000, margin: 24, crf: 19 }
+        Opts { offset_ms: 0, fps: 30.0, to: None, history_ms: 3000, future_ms: 3000, margin: 24, crf: 19 }
     }
 }
 
@@ -356,7 +447,7 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
         let n = (dur * o.fps).round() as i64;
         for f in 0..n {
             let ms = ((f as f64 / o.fps) * 1000.0).round() as i64 + o.offset_ms;
-            draw(&mut cv, &ins, ms, o.history_ms);
+            draw(&mut cv, &ins, ms, o.history_ms, o.future_ms);
             if w.write_all(&cv.px).is_err() {
                 // ffmpeg died; its stderr below says why, and that is a better
                 // message than a broken pipe.
@@ -387,6 +478,74 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
 // ---------------------------------------------------------------------------
 // Is the overlay in time?
 // ---------------------------------------------------------------------------
+
+/// One panel, at one race time, as a PNG — WITHOUT rendering a video.
+///
+/// FILMING.md §6 says look at what you made, and for the overlay itself that
+/// used to mean a full re-encode of a whole clip before you could see whether a
+/// change to the panel was right. `clip frames` closed that gap for the video;
+/// this closes it for the panel. It is also the only way to see the panel at a
+/// race time the clip does not reach, which is what checking the FUTURE half of
+/// the strip needs.
+///
+/// Through ffmpeg rather than a PNG encoder, because this crate deliberately
+/// has no third-party dependencies (it builds on the render box's WSL side with
+/// no network) and it already drives ffmpeg for everything else.
+pub fn panel_png(ff: &Ff, ghost: &Path, at_ms: i64, out: &Path, o: &Opts) -> Result<(), String> {
+    let ins = inputs_by_race_ms(&ghost.to_string_lossy())?;
+    let mut cv = Canvas::new(PANEL_W, PANEL_H);
+    draw(&mut cv, &ins, at_ms, o.history_ms, o.future_ms);
+    let args: Vec<String> = vec![
+        "-v".into(),
+        "error".into(),
+        "-y".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "-s".into(),
+        format!("{PANEL_W}x{PANEL_H}"),
+        "-i".into(),
+        "-".into(),
+        "-frames:v".into(),
+        "1".into(),
+        ff.arg_path(out)?,
+    ];
+    let mut child = Command::new(&ff.ffmpeg)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", ff.ffmpeg.display()))?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin on ffmpeg")?
+        .write_all(&cv.px)
+        .map_err(|e| e.to_string())?;
+    let outp = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !outp.status.success() {
+        return Err(format!(
+            "ffmpeg failed ({}): {}",
+            outp.status,
+            String::from_utf8_lossy(&outp.stderr).trim()
+        ));
+    }
+    // ffmpeg exits 0 having written nothing when its input is short; the file
+    // is the only evidence that it did the work.
+    let bytes = crate::proc::filesize(out)?;
+    let tape_end = (ins.len() as i64 - 1) * 10;
+    println!(
+        "panel at race {} (tape runs to {}), window -{:.1}s/+{:.1}s: {bytes} bytes -> {}",
+        secs(at_ms as f64 / 1000.0),
+        secs(tape_end as f64 / 1000.0),
+        o.history_ms as f64 / 1000.0,
+        o.future_ms as f64 / 1000.0,
+        out.display()
+    );
+    Ok(())
+}
 
 /// Fit the constant lag between the two steering channels a ghost carries.
 ///
@@ -460,7 +619,7 @@ mod tests {
     fn bar_extent(steer: i8) -> i64 {
         let ins = vec![Input { steer, gas: true, brake: false, respawn: false }];
         let mut cv = Canvas::new(PANEL_W, PANEL_H);
-        draw(&mut cv, &ins, 0, 3000);
+        draw(&mut cv, &ins, 0, 3000, 3000);
         let cx = (PANEL_W / 2) as i64;
         let row = 44 * PANEL_W * 4;
         let is_bar = |x: i64| {
@@ -500,5 +659,129 @@ mod tests {
         // `inputs_by_race_ms` indexes by RACE time, so a value at race 0 lands
         // at index 0 and the bar reads it at ms 0.
         assert!(bar_extent(100) > 100, "race 0 must read the first input");
+    }
+
+    /// Build a tape whose only input is one tick of full right lock at
+    /// `at_ms`, then report which strip pixels are painted.
+    fn strip_pixels(at_ms: i64, now_ms: i64, past: i64, future: i64) -> Vec<i64> {
+        let mut ins = vec![Input::default(); (at_ms / 10) as usize + 64];
+        ins[(at_ms / 10) as usize] = Input { steer: 127, gas: false, brake: false, respawn: false };
+        let mut cv = Canvas::new(PANEL_W, PANEL_H);
+        draw(&mut cv, &ins, now_ms, past, future);
+        // Only the STEERING TRACE counts, matched by its own two colours. A
+        // "not the background" test also catches the playhead, which is painted
+        // on every column of its own -- and then a test asking "did the future
+        // input draw" passes on the marker instead of on the input.
+        let row = (58 + 40 / 2 - 8) as usize * PANEL_W * 4;
+        (0..(PANEL_W as i64 - 40))
+            .filter(|px| {
+                let i = row + (20 + *px) as usize * 4;
+                cv.px[i..i + 4] == BLUE || cv.px[i..i + 4] == BLUE_DIM
+            })
+            .collect()
+    }
+
+    /// THE FUTURE HALF IS ACTUALLY DRAWN, AND ON THE RIGHT SIDE OF NOW.
+    ///
+    /// The strip used to end at the playhead: an input was invisible until
+    /// after the corner it caused. This is the whole point of centring it, so
+    /// it is asserted rather than eyeballed on a frame -- an input 1.5 s in
+    /// the FUTURE must paint pixels, and they must be right of the playhead.
+    #[test]
+    fn an_input_that_has_not_happened_yet_is_drawn_ahead_of_the_playhead() {
+        let w = PANEL_W as i64 - 40;
+        let ph = (3000 * w) / 6000;
+        let ahead = strip_pixels(4500, 3000, 3000, 3000);
+        assert!(!ahead.is_empty(), "an input 1.5 s ahead drew nothing -- the future is not rendered");
+        assert!(
+            ahead.iter().all(|px| *px > ph),
+            "a future input painted at or behind the playhead ({ph}): {ahead:?}"
+        );
+        // And the past still works, on the other side.
+        let behind = strip_pixels(1500, 3000, 3000, 3000);
+        assert!(!behind.is_empty(), "an input 1.5 s ago drew nothing");
+        assert!(
+            behind.iter().all(|px| *px < ph),
+            "a past input painted at or ahead of the playhead ({ph}): {behind:?}"
+        );
+    }
+
+    /// A ONE-TICK FLICK SURVIVES ANY ZOOM.
+    ///
+    /// Widening the window means a pixel can span more than one 10 ms tick,
+    /// and the old per-pixel POINT SAMPLE would step straight over a
+    /// single-tick input -- the input most worth seeing on these tapes, and a
+    /// loss that looks exactly like the driver never touching the wheel. The
+    /// strip aggregates over each pixel's interval instead, so this holds even
+    /// at a zoom where one pixel is several ticks.
+    #[test]
+    fn a_single_tick_input_is_visible_even_when_a_pixel_spans_many_ticks() {
+        for (past, future) in [(3000, 3000), (15000, 15000), (60000, 60000)] {
+            let span = past + future;
+            let ms_per_px = span / (PANEL_W as i64 - 40);
+            // 730 ms ahead of now: an odd offset, and deliberately NOT the
+            // playhead column, which is painted white by design.
+            let hit = strip_pixels(past + 730, past, past, future);
+            assert!(
+                !hit.is_empty(),
+                "a one-tick input vanished at {ms_per_px} ms/px (window -{past}/+{future})"
+            );
+        }
+    }
+
+    /// The playhead is where the arithmetic says it is. Drawn from one
+    /// expression and used by another; if they disagree the marker sits beside
+    /// the input it marks, which is a lie about timing at the one instant
+    /// being judged.
+    #[test]
+    fn the_playhead_sits_where_now_is_and_moves_with_an_asymmetric_window() {
+        let w = PANEL_W as i64 - 40;
+        for (past, future) in [(3000i64, 3000i64), (5000, 1000), (1000, 5000)] {
+            let ins = vec![Input::default(); 2000];
+            let mut cv = Canvas::new(PANEL_W, PANEL_H);
+            draw(&mut cv, &ins, 5000, past, future);
+            let ph = (past * w) / (past + future);
+            let row = (58 - 2) as usize * PANEL_W * 4;
+            let i = row + (20 + ph) as usize * 4;
+            assert_eq!(
+                cv.px[i..i + 4],
+                WHITE,
+                "no playhead at px {ph} for window -{past}/+{future}"
+            );
+        }
+    }
+
+    /// EVERY LETTER AND DIGIT DRAWS SOMETHING, AND AN UNKNOWN ONE IS VISIBLE.
+    ///
+    /// The table used to hold only the letters the labels of the day needed and
+    /// fall through to seven zero rows for the rest, so a label with an unlisted
+    /// letter rendered as a GAP and looked deliberate. `NOW` shipped as `N W`;
+    /// `INPUTS` shipped as `NP TS`. Both were burned into published clips and
+    /// read as a font quirk rather than as a missing glyph.
+    #[test]
+    fn no_letter_renders_as_a_silent_blank() {
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars() {
+            assert_ne!(glyph(c), [0u8; 7], "{c} draws nothing -- it would render as a space");
+        }
+        // A space is the ONE thing allowed to be blank.
+        assert_eq!(glyph(' '), [0u8; 7]);
+        // And anything unknown draws a box, so it cannot be mistaken for one.
+        assert_ne!(glyph('@'), [0u8; 7], "an unknown glyph must be visible");
+    }
+
+    /// The labels the panel actually draws, spelled out. A rendering test on the
+    /// real strings is what would have caught `NOW` -- the glyph table was
+    /// self-consistent, and only the LABEL was unrenderable.
+    #[test]
+    fn the_panels_own_labels_all_render() {
+        for s in ["NOW", "GAS", "BRAKE", "RESPAWN", "-3.0S", "+3.0S", "L", "R"] {
+            for c in s.chars() {
+                assert_ne!(
+                    glyph(c),
+                    [0u8; 7],
+                    "the label {s:?} contains {c:?}, which draws nothing"
+                );
+            }
+        }
     }
 }

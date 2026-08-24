@@ -20,11 +20,22 @@ clip cut   <in.webm> <out.mp4> [--to SECONDS]
     the ones already rendered. The output is probed, not assumed.
 
 clip overlay <ghost.Gbx> <in.mp4> <out.mp4> [--to S] [--offset-ms N] [--fps F] [--crf Q]
-    Draw a run's own inputs -- steering, throttle, brake, respawn, and a history
-    strip -- onto a finished clip. Reads the 10 ms input chunk (what the driver
+                                           [--history-ms N] [--future-ms N]
+    Draw a run's own inputs -- steering, throttle, brake, respawn, and a strip
+    of them over time -- onto a finished clip. NOW IS IN THE MIDDLE of that
+    strip: `--history-ms` behind the playhead and `--future-ms` ahead (3000 and
+    3000 by default), so an input is visible arriving BEFORE the thing it
+    causes, which is the only way the timing of a TAS is legible. The future
+    half is drawn dimmer. Reads the 10 ms input chunk (what the driver
     pressed), never the 50 ms telemetry echo (what the car had, and on a
     synthesised tape whoever drove the carrier). Draws its own glyphs, so it
     needs no drawtext and no font.
+
+clip panel <ghost.Gbx> <out.png> --at S [--history-ms N] [--future-ms N]
+    One overlay panel at one race time, as a PNG, with no video render. Looking
+    at a change to the panel used to mean re-encoding a whole clip first, so it
+    got skipped -- and it is the only way to see the panel at a race time the
+    clip does not reach.
 
 clip alignment <ghost.Gbx> [--span-ms N]
     Fit the constant lag between a ghost's two steering channels. They describe
@@ -132,6 +143,33 @@ fn go(args: &[String]) -> Result<(), String> {
             let ff = platform::from_env()?;
             frames::run(&ff, Path::new(&args[1]), Path::new(&args[2]), &o)
         }
+        "panel" => {
+            if args.len() < 3 {
+                return Err(format!("usage:\n{USAGE}"));
+            }
+            let num = |k: &str| -> Option<String> {
+                args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
+            };
+            let mut o = overlay::Opts::default();
+            if let Some(v) = num("--history-ms") {
+                o.history_ms = v.parse().map_err(|e| format!("--history-ms: {e}"))?;
+            }
+            if let Some(v) = num("--future-ms") {
+                o.future_ms = v.parse().map_err(|e| format!("--future-ms: {e}"))?;
+            }
+            let at: f64 = num("--at")
+                .ok_or("clip panel needs --at S (the race time to draw)")?
+                .parse()
+                .map_err(|e| format!("--at: {e}"))?;
+            let ff = platform::from_env()?;
+            overlay::panel_png(
+                &ff,
+                Path::new(&args[1]),
+                (at * 1000.0).round() as i64,
+                Path::new(&args[2]),
+                &o,
+            )
+        }
         "overlay" => {
             if args.len() < 4 {
                 return Err(format!("usage:\n{USAGE}"));
@@ -151,6 +189,9 @@ fn go(args: &[String]) -> Result<(), String> {
             }
             if let Some(v) = num("--history-ms") {
                 o.history_ms = v.parse().map_err(|e| format!("--history-ms: {e}"))?;
+            }
+            if let Some(v) = num("--future-ms") {
+                o.future_ms = v.parse().map_err(|e| format!("--future-ms: {e}"))?;
             }
             if let Some(v) = num("--crf") {
                 o.crf = v.parse().map_err(|e| format!("--crf: {e}"))?;
