@@ -5,3 +5,4 @@
 2026-08-24T20:37:31Z	box_alive	node=42504
 2026-08-24T20:38:31Z	box_alive	node=42504
 2026-08-24T20:39:18Z	box_retired	node=42504	why=stop file
+2026-08-24T20:41:16Z	box_start	node=42504	note=42504, fixed disk trend	lease_expires=1787646600
