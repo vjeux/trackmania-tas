@@ -31,6 +31,7 @@ pub(crate) mod provcmd;
 pub(crate) mod routecmd;
 pub(crate) mod selftest;
 pub(crate) mod serial;
+pub(crate) mod shippedcmd;
 pub mod stats;
 pub(crate) mod whlcmd;
 

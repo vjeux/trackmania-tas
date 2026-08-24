@@ -47,6 +47,8 @@ usage: tmtraj corpus <scan> --root DIR [flags]
   claims   does a map's page agree with the files in its own directory?
            a name that disagrees with its own header, a linked file that is
            not there, a file the page never names, a headline no file backs
+  shipped  does the ROOT README's `this TAS` column name a run that is
+           published? held-but-not-shipped is a different status from beaten
   bytes    which of the 116 sample bytes ever vary, across the whole corpus
   dup      two published files of one map carrying the SAME recorded motion
   audit    the splice test with the references named in a refs.tsv
@@ -89,6 +91,10 @@ pub fn cmd(argv: &[String]) -> i32 {
         // failure mode this catches is a headline no file supports -- see
         // claimscmd.rs.
         "claims" => crate::claimscmd::claims(&maps, &root),
+        // One level up from `claims`: does the ROOT README's `this TAS` column
+        // name a run that is actually in that map's replays/? "Held but not
+        // shipped" is a different status from "beaten" -- see shippedcmd.rs.
+        "shipped" => crate::shippedcmd::shipped(&maps, &root),
         "bytes" => bytes(&maps),
         // Cross-file: within each map, two published ghosts that carry the SAME
         // recorded motion although their tapes diverged long before. A class no
