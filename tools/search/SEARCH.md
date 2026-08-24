@@ -1153,6 +1153,99 @@ it.
 
 ---
 
+## 6. `--plane`: the sub-tick finish objective
+
+*Added 2026-08-24 on map 191465 `Training - 10 Long`, where the search had
+stalled at 13.071 for a session and a plain-millisecond run of 688 000
+evaluations moved it by nothing.*
+
+### The problem it solves
+
+The validator returns an INTEGER millisecond. On a fast map that is a very
+coarse ruler: this map's finish speed is 858 km/h, so **1 ms is 24 cm of road**
+and almost every mutation is invisible to the objective. The population then
+random-walks a plateau of tapes that all read the same number. Measured here,
+twice, on the same window and the same seed:
+
+| objective | evaluations | result |
+|---|---|---|
+| plain millisecond | 688 050 in 25 min on 84 workers | **no improvement at all** |
+| `--plane 28.90` | 285 000 in 5 min on 56 workers | 13.071 → **13.070**, confirmed by the plain oracle |
+
+The plain run was not a broken harness: its matched positive control — the same
+flags seeded from a tape 1 ms slower — recovered the millisecond in 9 000
+evaluations. The millisecond search works; there was simply nothing a
+millisecond wide to find, and everything under one was invisible to it.
+
+### What it does
+
+The child already streams the car's own position out of the paused simulation
+every tick, and `Eval::plane_x` / `Summary::cross_tick` / `cross_frac` (the
+plumbing has been in `forkoracle` and the shim all along) detect the tick where
+world-x crosses a plane going in −x and report the crossing interpolated INSIDE
+that tick. `--plane X` arms it and turns the crossing into the ordering key for
+finishers, in microseconds. No extra simulation, no extra oracle call: the same
+fork, read more finely.
+
+`Outcome::Finish` therefore carries `us: Option<i64>` beside `ms`. Two
+finishers with a crossing are ordered by the crossing; anything else is ordered
+by the millisecond exactly as before, so a plain search is bit-for-bit the
+search it always was, and a candidate nobody measured finely can never displace
+one that was. Metropolis reads `delta_us`, because on a plateau every
+`delta_ms` is zero and a millisecond temperature would accept every regression
+it can see and none it cannot.
+
+### What it is NOT allowed to do
+
+**It is not a result and it never becomes one.** The guard is unchanged: every
+banked candidate is re-simulated from the bytes on disk by the plain oracle, and
+what goes into the bank is the ORACLE's millisecond. The microsecond only
+orders candidates the oracle cannot tell apart. `§7` of this document used to
+say the search does not use the plane at all; that bullet is now this section,
+and the reason the change is safe is the sentence above.
+
+### The two ways it lies, and the two controls
+
+**1. A per-worker tick label.** The child's tick labelling moves by a whole tick
+between fork servers *and between workers of one run* — the same tape read
+13 080.95 ms on one worker and 13 070.95 on another, and 4 of 56 workers of one
+run disagreed with the other 52. A constant correction puts two scales 10 ms
+apart into one population, every candidate from an offset worker looks 10 ms
+better, and it takes over the global best.
+
+So each worker calibrates **against its own run of the incumbent**, whose
+millisecond the plain oracle has already measured: one extra evaluation at
+startup, the offset snapped to a whole tick (it can only be a whole tick), and a
+worker whose residual exceeds `PLANE_TOL_MS` refuses to join rather than
+scoring on a different scale.
+
+**2. The finish trigger is a BODY, not a plane through the car's centre.** A
+tape presenting a differently-oriented car crosses at a different centre-x, so
+the surrogate is only sound where the line is crossed with a repeatable
+attitude. On map 227969 — an airborne finish, roll varying over 1.5 rad — this
+same idea produced a confident 7.991 that validated at 8.004, *worse than its
+own seed*, while passing every internal consistency check.
+
+**Measure that before arming it.** `tmtraj splits` will do it: take several
+tapes of known validated time, find where each crosses one plane, and compare
+the crossing with the millisecond the oracle gave it. On 191465 the two ends of
+the range agree to a quarter of a millisecond (our 13.071 crosses x = 28.90 at
+13.070 75 and the human record's 13.081 at 13.080 75), and the residual the
+worker calibration prints is the same check, per worker, every run.
+
+The rule to carry: **plane error ≈ the spread of the crossing coordinate ÷
+speed.** If that is comparable to the gain you are chasing, do not arm it.
+
+### What it does not fix
+
+The plane orders finishers. It says nothing about a candidate that does not
+finish, it cannot see a checkpoint, and the mapping from crossing to reported
+millisecond is not exact — on this map two tapes 10 µs apart on the plane
+straddled the validator's boundary. That is expected and it is harmless,
+because the validator is the one that decides.
+
+---
+
 ## 7. What I deliberately did not touch
 
 * **The car locator (`forkoracle::blind`) and the shim's memory scanning.**
@@ -1163,10 +1256,12 @@ it.
   exception is `fk/src/cmd/watch.rs`, which had to follow the mutation
   operators when they moved into `forkoracle` — it builds, and the change is
   mechanical.
-* **The sub-tick timing plane.** It is a gradient, never a score, and the
-  search does not use it. The rule (`plane error ≈ spread of the crossing
-  coordinate / speed`; 0.98 ms grounded, ~19 ms airborne) belongs with whoever
-  arms it.
+* **The sub-tick timing plane.** *Superseded 2026-08-24: it is now `--plane`,
+  and §6 above is the whole of the reasoning. It is still never a score the
+  guard trusts — the plain oracle decides every banked number — and the rule
+  (`plane error ≈ spread of the crossing coordinate / speed`; 0.98 ms grounded,
+  ~19 ms airborne) is now a precondition the flag's own documentation states
+  and the per-worker calibration enforces.*
 * **`analyze`'s statistics.** Ported as-is: operator and tick-bucket tallies
   plus the best-of-k curve. The tallies are what retuned a stalled search from
   its own log once; I did not add anything nobody has used.

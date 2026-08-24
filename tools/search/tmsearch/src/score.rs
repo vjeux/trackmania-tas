@@ -174,7 +174,23 @@ pub fn gate_outcome(
 pub enum Outcome {
     /// The run finished. `ms` is the engine's own millisecond -- the only
     /// number this project calls a time.
-    Finish { ms: i64 },
+    ///
+    /// `us` is the SUB-TICK refinement, in microseconds of race time, and it
+    /// exists because on a fast map the millisecond is a thousand times too
+    /// coarse to search on: at 858 km/h one millisecond is 24 cm of road, so
+    /// almost every mutation is invisible to the validator and the population
+    /// random-walks a plateau. Measured on 191465: 170 workers, 240 000
+    /// evaluations, fifteen minutes -- the plateau value was reached in nine
+    /// seconds and never moved again.
+    ///
+    /// It is `Some` only when the search was armed with `--plane`, and then it
+    /// is the fork child's own interpolated crossing of that plane, calibrated
+    /// per worker against the plain oracle's millisecond for the incumbent.
+    /// **It never replaces `ms`**: the guard still requires the plain oracle to
+    /// reproduce the millisecond of the written file, and a bank still records
+    /// the oracle's own answer. The microsecond only ORDERS candidates the
+    /// oracle cannot tell apart.
+    Finish { ms: i64, us: Option<i64> },
     /// It did not finish, and this is what the state objective saw. Only ever
     /// produced by a search armed with `--gate`.
     Gate(GateState),
@@ -183,10 +199,23 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// A finisher with no sub-tick refinement -- the ordinary case.
+    pub fn fin(ms: i64) -> Outcome {
+        Outcome::Finish { ms, us: None }
+    }
+
     pub fn finish_ms(&self) -> Option<i64> {
         match self {
-            Outcome::Finish { ms } => Some(*ms),
+            Outcome::Finish { ms, .. } => Some(*ms),
             Outcome::Gate(GateState::Finished { ms }) => Some(*ms),
+            _ => None,
+        }
+    }
+
+    /// The sub-tick crossing in microseconds, when one was measured.
+    pub fn finish_us(&self) -> Option<i64> {
+        match self {
+            Outcome::Finish { us, .. } => *us,
             _ => None,
         }
     }
@@ -205,6 +234,19 @@ impl Outcome {
         match (self.finish_ms(), other.finish_ms()) {
             (Some(a), Some(b)) => Some(a - b),
             _ => None,
+        }
+    }
+
+    /// The same difference in MICROseconds, when both sides carry a sub-tick
+    /// measurement; otherwise the millisecond difference widened.
+    ///
+    /// Metropolis needs a real gradient, and with a plane armed the whole point
+    /// is that the millisecond difference is zero for every candidate worth
+    /// looking at.
+    pub fn delta_us(&self, other: &Outcome) -> Option<i64> {
+        match (self.finish_us(), other.finish_us()) {
+            (Some(a), Some(b)) => Some(a - b),
+            _ => self.delta_ms(other).map(|d| d * 1000),
         }
     }
 }
@@ -226,7 +268,14 @@ impl Ord for Outcome {
     fn cmp(&self, o: &Outcome) -> std::cmp::Ordering {
         use Outcome::*;
         match (self, o) {
-            (Finish { ms: a }, Finish { ms: b }) => b.cmp(a),
+            // Sooner wins. When BOTH sides carry a sub-tick crossing the
+            // microsecond decides, because that is the finer measurement of the
+            // same quantity; when either does not, the millisecond does, and a
+            // search never mixes the two regimes within one run.
+            (Finish { ms: a, us: ua }, Finish { ms: b, us: ub }) => match (ua, ub) {
+                (Some(x), Some(y)) => y.cmp(x),
+                _ => b.cmp(a),
+            },
             (Gate(a), Gate(b)) => {
                 let (ba, ka) = a.rank();
                 let (bb, kb) = b.rank();
@@ -265,7 +314,14 @@ impl Ord for Outcome {
 impl std::fmt::Display for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Outcome::Finish { ms } => write!(f, "{}", secs(*ms)),
+            Outcome::Finish { ms, us: None } => write!(f, "{}", secs(*ms)),
+            Outcome::Finish { ms, us: Some(u) } => write!(
+                f,
+                "{} (plane {}.{:06})",
+                secs(*ms),
+                *u / 1_000_000,
+                (*u % 1_000_000).unsigned_abs()
+            ),
             Outcome::Gate(GateState::Reached { key }) => write!(f, "GATE key {:+.4}", key),
             Outcome::Gate(GateState::Fired { after }) if !after.is_finite() => {
                 write!(f, "GATE FIRED, but the run ENDED on the firing tick (no after-window)")
@@ -291,7 +347,12 @@ impl std::fmt::Display for Outcome {
 /// replaced so it is still one path component: `36.049` -> `36_049`.
 pub fn tag(o: &Outcome) -> String {
     match o {
-        Outcome::Finish { ms } => secs(*ms).replace('.', "_"),
+        Outcome::Finish { ms, us: None } => secs(*ms).replace('.', "_"),
+        // Two candidates the oracle cannot tell apart must not overwrite each
+        // other in the bank, so the sub-tick value is part of the name.
+        Outcome::Finish { ms, us: Some(u) } => {
+            format!("{}_u{}", secs(*ms).replace('.', "_"), u)
+        }
         Outcome::Gate(GateState::Reached { key }) => format!("gate_{:.4}", key).replace(['.', '-'], "_"),
         Outcome::Gate(GateState::Fired { after }) if !after.is_finite() => "fired_noafter".into(),
         Outcome::Gate(GateState::Fired { after }) => format!("fired_{:.4}", after).replace(['.', '-'], "_"),
@@ -309,7 +370,10 @@ mod tests {
     use super::*;
 
     fn fin(ms: i64) -> Outcome {
-        Outcome::Finish { ms }
+        Outcome::fin(ms)
+    }
+    fn finu(ms: i64, us: i64) -> Outcome {
+        Outcome::Finish { ms, us: Some(us) }
     }
     fn cp(cps: u32, seg: Option<i64>) -> Outcome {
         Outcome::Dnf(Progress::Checkpoints { cps, seg_ms: seg })
@@ -366,6 +430,37 @@ mod tests {
         assert_eq!(fin(36049).to_string(), "36.049");
         assert_eq!(tag(&fin(36049)), "36_049");
         assert!(!fin(36049).to_string().contains("36049"));
+    }
+
+    /// THE SUB-TICK ORDERING, and the plateau it exists to cross.
+    ///
+    /// Two tapes the plain oracle reports as the same millisecond are the whole
+    /// problem on a fast map: 1 ms is 24 cm of road at 858 km/h, so the
+    /// validator cannot see the improvement and the search random-walks. With a
+    /// plane armed they are ordered by the crossing, and the millisecond is
+    /// still what gets banked and still what the oracle has to reproduce.
+    #[test]
+    fn the_microsecond_orders_two_tapes_the_millisecond_cannot() {
+        assert!(finu(13071, 13_070_100) > finu(13071, 13_070_700));
+        assert_eq!(finu(13071, 13_070_100).finish_ms(), Some(13071));
+        assert_eq!(finu(13071, 13_070_100).delta_us(&finu(13071, 13_070_700)), Some(-600));
+        // the millisecond still decides between a measured and an unmeasured
+        // one, so a plain evaluator's answer never loses to a plane's noise
+        assert!(fin(13070) > finu(13071, 13_070_100));
+        assert!(finu(13070, 13_069_900) > fin(13071));
+        // and a plain pair is ordered exactly as before
+        assert!(fin(13070) > fin(13071));
+        // two candidates the oracle calls the same do not collide in the bank
+        assert_ne!(tag(&finu(13071, 13_070_100)), tag(&finu(13071, 13_070_700)));
+        assert!(finu(13071, 13_070_697).to_string().contains("13.070697"), "{}", finu(13071, 13_070_697));
+    }
+
+    /// A finisher still outranks every failure whatever the sub-tick value is:
+    /// the refinement orders finishers and nothing else.
+    #[test]
+    fn a_sub_tick_finisher_is_still_a_finisher() {
+        assert!(finu(3_600_000, 3_600_000_000) > cp(63, Some(0)));
+        assert!(finu(13071, 13_070_100).is_finish());
     }
 
     fn reached(key: f64) -> Outcome {

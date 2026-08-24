@@ -67,6 +67,9 @@ WHAT DOES THE TRAJECTORY SAY (not the flag)
   route   CSV|GHOST... [--summary] [--near X,Y,Z --top N] [--where 'y>130'] [--first N]
           [--cross z=692] -- EVERY crossing of a plane, interpolated, not a row
           [--margin x=922,y=110] -- over all the files: the frontier at that plane
+  splits  REF OTHER... [--axis x] --from A --to B --step S [--stations LIST] [--csv F]
+          two runs differenced AS A FUNCTION OF DISTANCE: crossing time at each
+          station, the lead there, and what each segment alone was worth
 
 EVERY PUBLISHED FILE AT ONCE
   corpus  splice --root R [--refs F]   telemetry that is another driver's
@@ -133,6 +136,7 @@ pub fn run() {
         "wheels" => crate::whlcmd::cmd_wheels(rest),
         "facing" => crate::facingcmd::cmd(rest),
         "route" => crate::routecmd::cmd(rest),
+        "splits" => crate::splitscmd::cmd(rest),
         "blockdiff" => crate::blockdiffcmd::cmd(rest),
         "corpus" => crate::corpuscmd::cmd(rest),
         // Settle a corpus-dup UNRESOLVED pair against the engine.

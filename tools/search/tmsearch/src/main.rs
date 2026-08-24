@@ -71,6 +71,23 @@ FORK MODE (a gradient, never a result)
   --refghost G        the reference line from G's OWN telemetry, accepted only
                       if that telemetry can be shown to belong to G's tape
   --refcsv F          the reference line as a measured trajectory (fk btraj)
+  --plane X           SUB-TICK FINISH TIMING. Score finishers by the child's
+                      own interpolated crossing of the world-x plane X, in
+                      microseconds, instead of by the validator's integer
+                      millisecond. On a fast map 1 ms is 24 cm of road and
+                      almost every mutation is invisible to the validator: this
+                      is the difference between a search that moves and one
+                      that random-walks a plateau. Each worker calibrates the
+                      crossing against the plain oracle's own millisecond for
+                      the incumbent and REFUSES to join if it cannot.
+                      PRECONDITION: the game's finish trigger is a body, not a
+                      plane through the car's centre, so this is only valid
+                      where the line is crossed with a repeatable attitude.
+                      Measure that first (`tmtraj splits`, the spread of centre
+                      positions at each tape's own validated millisecond); on an
+                      airborne finish the same code produced a confident 7.991
+                      that validated at 8.004. The plain oracle still decides
+                      every banked number.
   --shim F            libforkshim.so
   --pred SPEC         watchdog condition (repeatable)
   --finishmargin M    disarm predicates within M metres of the finish
@@ -166,6 +183,7 @@ struct Args {
     fork: bool,
     forktick: i64,
     refcsv: String,
+    plane_x: f32,
     refghost: String,
     shim: String,
     preds: Vec<String>,
@@ -222,6 +240,7 @@ fn parse() -> Args {
         fork: false,
         forktick: 60,
         refcsv: String::new(),
+        plane_x: 0.0,
         refghost: String::new(),
         shim: String::new(),
         preds: Vec::new(),
@@ -277,6 +296,7 @@ fn parse() -> Args {
             "--fork" => a.fork = true,
             "--forktick" => a.forktick = num(&next(&mut i), k) as i64,
             "--refcsv" => a.refcsv = next(&mut i),
+            "--plane" => a.plane_x = num(&next(&mut i), k) as f32,
             "--refghost" => a.refghost = next(&mut i),
             "--shim" => a.shim = next(&mut i),
             "--pred" => a.preds.push(next(&mut i)),
@@ -352,7 +372,7 @@ fn measure(server: &Path, map: &Path, p: &Patcher, inputs: &Inputs, scratch: &Pa
                         );
                     }
                 }
-                Outcome::Finish { ms }
+                Outcome::fin(ms)
             }
             None => Outcome::Dnf(Progress::Checkpoints { cps: r.cps.unwrap_or(0), seg_ms: None }),
         },
@@ -695,6 +715,7 @@ fn run_fork(
     };
     let mut watch = forkoracle::pred::Watch::new();
     watch.corridor = a.corridor;
+    watch.plane_x = a.plane_x;
     watch.refline = refline;
     watch.finish_s = match plain_outcome.finish_ms() {
         Some(t) => {
@@ -746,6 +767,7 @@ fn run_fork(
         gate_min_key: gate_bar,
         gate_seed_pos: seed_gate_pos,
         start_offset_ms: p.start_offset_ms,
+        incumbent_ms: plain_outcome.finish_ms(),
     });
     let watch = Arc::new(watch);
     let rootp = root.path.clone();
@@ -884,7 +906,7 @@ fn cmd_dump(a: &Args) {
         }
         for (o, r) in ops.iter().zip(ev.evaluate(&cands)) {
             let (ms, cps) = match r {
-                Outcome::Finish { ms } => (format!("{}", ms), 0),
+                Outcome::Finish { ms, .. } => (format!("{}", ms), 0),
                 Outcome::Dnf(Progress::Checkpoints { cps, .. }) => ("null".into(), cps),
                 Outcome::Dnf(Progress::Metres { .. }) => ("null".into(), 0),
                 // `dump` is the plain evaluator only, which cannot produce one.

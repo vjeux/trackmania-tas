@@ -90,9 +90,9 @@ fn the_guard_banks_a_true_claim() {
     let d = scratch("guard-true");
     let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
     let b = bank
-        .offer(&p, &p.template, Outcome::Finish { ms: TRUTH_MS }, &nowhere())
+        .offer(&p, &p.template, Outcome::fin(TRUTH_MS), &nowhere())
         .expect("a true claim was refused");
-    assert_eq!(b.confirmed, Outcome::Finish { ms: TRUTH_MS });
+    assert_eq!(b.confirmed, Outcome::fin(TRUTH_MS));
     assert!(b.path.exists());
     assert_eq!(bank.phantoms, 0);
     let _ = std::fs::remove_dir_all(&d);
@@ -111,12 +111,12 @@ fn the_guard_refuses_a_time_the_tape_does_not_achieve() {
     let p = Patcher::build(GHOST).unwrap();
     let d = scratch("guard-phantom");
     let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
-    let lie = Outcome::Finish { ms: TRUTH_MS - 500 };
+    let lie = Outcome::fin(TRUTH_MS - 500);
     let err = bank
         .offer(&p, &p.template, lie, &nowhere())
         .expect_err("the guard banked a time the tape does not achieve");
     assert_eq!(err.claimed, lie);
-    assert_eq!(err.actual, Some(Outcome::Finish { ms: TRUTH_MS }));
+    assert_eq!(err.actual, Some(Outcome::fin(TRUTH_MS)));
     assert!(err.path.file_name().unwrap().to_string_lossy().starts_with("PHANTOM_"));
     assert_eq!(bank.phantoms, 1);
     assert_eq!(bank.confirmed, 0);
@@ -163,7 +163,7 @@ fn a_mutated_candidate_is_banked_only_under_the_time_it_actually_does() {
     std::fs::write(&f, p.file(&s)).unwrap();
     let truth = validate(&srv, &f, MapsMode::One(Path::new(MAP)), "mutated").unwrap();
     let claim = match truth.time_ms {
-        Some(ms) => Outcome::Finish { ms },
+        Some(ms) => Outcome::fin(ms),
         None => Outcome::Dnf(Progress::Checkpoints { cps: truth.cps.unwrap_or(0), seg_ms: None }),
     };
     let _ = std::fs::remove_file(&f);
@@ -205,7 +205,7 @@ fn the_guard_refuses_a_gate_finish_the_tape_does_not_achieve() {
     let err = bank
         .offer(&p, &p.template, lie, &with_gate())
         .expect_err("the guard banked a gate finish the tape does not achieve");
-    assert_eq!(err.actual, Some(Outcome::Finish { ms: TRUTH_MS }));
+    assert_eq!(err.actual, Some(Outcome::fin(TRUTH_MS)));
     assert_eq!(bank.phantoms, 1);
     assert_eq!(bank.confirmed, 0);
     let _ = std::fs::remove_dir_all(&d);

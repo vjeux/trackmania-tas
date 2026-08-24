@@ -111,6 +111,7 @@ fn synthetic(n: usize, bad_quat: bool, bad_vel: bool) -> Vec<Row> {
                 qx: 0.0,
                 qy: 0.0,
                 qz: 0.0,
+                wetness: 0.0,
             }
         })
         .collect()

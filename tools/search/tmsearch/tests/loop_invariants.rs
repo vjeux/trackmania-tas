@@ -29,7 +29,7 @@ impl Evaluator for Spy {
         }
         cands
             .iter()
-            .map(|c| Outcome::Finish { ms: 20000 + c.steer.iter().map(|&s| s as i64).sum::<i64>() })
+            .map(|c| Outcome::fin(20000 + c.steer.iter().map(|&s| s as i64).sum::<i64>()))
             .collect()
     }
     fn floor(&self) -> usize {
@@ -95,7 +95,7 @@ fn no_worker_ever_edits_below_the_highest_resume_tick() {
     tmsearch::search::run_with_sink(
         &cfg,
         start.clone(),
-        Outcome::Finish { ms: 20000 },
+        Outcome::fin(20000),
         move |o, _, _| {
             sink.lock().unwrap().push(o);
             Ok(o)
@@ -150,7 +150,7 @@ fn a_worker_that_fails_to_start_does_not_wedge_the_others() {
     tmsearch::search::run_with_sink(
         &cfg,
         start,
-        Outcome::Finish { ms: 20000 },
+        Outcome::fin(20000),
         |o, _, _| Ok(o),
         move |wi| {
             if wi == 1 {

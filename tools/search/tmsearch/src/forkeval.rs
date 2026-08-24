@@ -161,7 +161,35 @@ pub struct ForkEval {
     /// whole state travels with it into the bank. Indexed exactly as the batch
     /// was.
     last_gate: Vec<Option<GateRecord>>,
+    /// THE SUB-TICK TIMING PLANE, and the per-worker correction it cannot be
+    /// used without.
+    ///
+    /// `Some(off_ms)` when `--plane` is armed: the offset, a whole number of
+    /// ticks, from this worker's raw crossing label to race time. The child's
+    /// tick labelling moves by ONE WHOLE TICK between fork servers and between
+    /// workers of the same run -- measured on 191465, where the same tape read
+    /// 13 080.95 on one worker and 13 070.95 on another, and 4 of 56 workers of
+    /// one run disagreed with the other 52. A hardcoded correction therefore
+    /// puts two scales 10 ms apart into one population, every candidate from an
+    /// offset worker looks 10 ms better, and it takes over the global best.
+    ///
+    /// So each worker calibrates against its OWN run of the incumbent, whose
+    /// millisecond the plain oracle has already measured, and a worker whose
+    /// calibrated value is not within [`PLANE_TOL_MS`] of it removes itself.
+    plane_off_ms: Option<f64>,
+    start_offset_ms: i32,
 }
+
+/// How far a worker's own calibrated crossing of the plane may sit from the
+/// millisecond the plain oracle gave the incumbent before the worker is
+/// refused.
+///
+/// The crossing must land inside the incumbent's own millisecond bucket, so
+/// anything much over 1 ms means the plane is not measuring the finish this
+/// validator is reporting -- a differently-oriented car crossing a body-shaped
+/// trigger, which is the documented way this surrogate lies (map 227969: a
+/// confident 7 990.7 that validated at 8 004).
+const PLANE_TOL_MS: f64 = 2.0;
 
 pub struct ForkSetup {
     pub server: PathBuf,
@@ -178,6 +206,9 @@ pub struct ForkSetup {
     /// Where the seed's own state sat in the gate box, from its recording.
     pub gate_seed_pos: Option<[f32; 3]>,
     pub start_offset_ms: i32,
+    /// The incumbent's millisecond, as the PLAIN ORACLE measured it. The
+    /// sub-tick plane is calibrated against this and nothing else.
+    pub incumbent_ms: Option<i64>,
 }
 
 impl ForkEval {
@@ -221,6 +252,7 @@ impl ForkEval {
                 qy: 0.0,
                 qz: 0.0,
                 qw: 0.0,
+                wetness: 0.0,
             })
             .collect();
         let bounds = bounds_from(&rows, 200.0);
@@ -273,6 +305,45 @@ impl ForkEval {
             ));
         }
         let line_len = watch.refline.s_at_tick(usize::MAX);
+        // ---- THE PLANE'S PER-WORKER CALIBRATION ----
+        //
+        // One extra evaluation, of the UNMODIFIED incumbent, on this worker's
+        // own server. Its raw crossing label is compared with the millisecond
+        // the plain oracle already measured for that same tape; the difference
+        // can only be a whole number of ticks, so it is snapped to one, and a
+        // residual bigger than the bucket means this plane is not measuring
+        // this validator's finish and the worker refuses rather than joining
+        // the population on a different scale.
+        let plane_off_ms = if watch.plane_x != 0.0 {
+            let want = s
+                .incumbent_ms
+                .ok_or("--plane needs the incumbent's own oracle millisecond to calibrate against")?
+                as f64;
+            let recs: Vec<Rec> = tail_recs(&steer, &gas, &brake, from);
+            let (j, b) = srv.run_watched(from, &recs);
+            let o = outcome(&j, &b);
+            let raw_ticks = o.cross().ok_or_else(|| {
+                format!(
+                    "this worker's own run of the incumbent never crossed the timing plane at \
+                     x = {}. The plane is not on this run's path.",
+                    watch.plane_x
+                )
+            })?;
+            let raw = raw_ticks * 10.0 + s.start_offset_ms as f64;
+            let off = 10.0 * ((want - raw) / 10.0).round();
+            let residual = raw + off - want;
+            if residual.abs() > PLANE_TOL_MS {
+                return Err(format!(
+                    "the timing plane does not agree with the validator on this worker: the \
+                     incumbent crosses x = {} at {:.3} ms (offset {:+.0}) and the plain oracle \
+                     says {}. Residual {:.3} ms, tolerance {:.1}.",
+                    watch.plane_x, raw, off, want, residual, PLANE_TOL_MS
+                ));
+            }
+            Some(off)
+        } else {
+            None
+        };
         Ok(ForkEval {
             srv,
             from,
@@ -285,7 +356,26 @@ impl ForkEval {
             gate_box: watch.gate,
             gate_seed_pos: s.gate_seed_pos,
             last_gate: Vec::new(),
+            plane_off_ms,
+            start_offset_ms: s.start_offset_ms,
         })
+    }
+
+    /// A finisher, with the sub-tick crossing attached when a plane is armed.
+    ///
+    /// A finisher whose crossing the child did not see gets `None` and is
+    /// therefore ordered by its millisecond -- which puts it BELOW every
+    /// candidate with a measured crossing at the same millisecond. That is the
+    /// conservative direction: a candidate nobody measured finely never
+    /// displaces one that was.
+    fn finish_outcome(&self, ms: i64, o: &forkoracle::pred::Outcome) -> Outcome {
+        let us = match (self.plane_off_ms, o.cross()) {
+            (Some(off), Some(t)) => {
+                Some(((t * 10.0 + self.start_offset_ms as f64 + off) * 1000.0).round() as i64)
+            }
+            _ => None,
+        };
+        Outcome::Finish { ms, us }
     }
 }
 
@@ -305,7 +395,7 @@ impl Evaluator for ForkEval {
             let o = outcome(&j, &b);
             self.last_gate.push(o.gate());
             out.push(match (o.time, self.gate) {
-                (Some(ms), false) => Outcome::Finish { ms },
+                (Some(ms), false) => self.finish_outcome(ms, &o),
                 // THE STATE OBJECTIVE, three bands straight off the
                 // measurement. A record means the car was inside the box, no
                 // record means it was not, and there is no third case for a

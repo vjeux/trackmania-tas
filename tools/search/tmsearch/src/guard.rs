@@ -207,7 +207,7 @@ impl Bank {
 
         let actual = match validate(&self.server, &tmp, MapsMode::One(&self.map), &self.tag) {
             Ok(r) => match r.time_ms {
-                Some(ms) => Outcome::Finish { ms },
+                Some(ms) => Outcome::fin(ms),
                 None => Outcome::Dnf(crate::score::Progress::Checkpoints {
                     cps: r.cps.unwrap_or(0),
                     seg_ms: None,
@@ -231,14 +231,14 @@ impl Bank {
         };
 
         let agrees = match (claimed, actual) {
-            (Outcome::Finish { ms: a }, Outcome::Finish { ms: b }) => a == b,
+            (Outcome::Finish { ms: a, .. }, Outcome::Finish { ms: b, .. }) => a == b,
             // A DNF incumbent claims no time, so there is nothing for the
             // oracle to contradict -- but it must still not FINISH, or the
             // search is scoring on something unrelated to the file.
             (Outcome::Dnf(_), Outcome::Dnf(_)) => true,
             // THE STATE OBJECTIVE, band 2: it reached the gate AND finished,
             // so it is a time again and it is checked like any other time.
-            (Outcome::Gate(GateState::Finished { ms: a }), Outcome::Finish { ms: b }) => a == b,
+            (Outcome::Gate(GateState::Finished { ms: a }), Outcome::Finish { ms: b, .. }) => a == b,
             // Bands 0 and 1 are a STATE, not a time, and the oracle has no
             // state to offer. There is nothing here for it to contradict: a
             // candidate the watchdog aborted has no time by construction, and
@@ -289,11 +289,19 @@ impl Bank {
         // The guard's job here is done by the kind check above -- it did not
         // finish -- and the rank is the search's own measurement.
         let banked = match (claimed, actual) {
-            (Outcome::Finish { .. }, Outcome::Finish { ms }) => Outcome::Finish { ms },
+            // THE ORACLE'S MILLISECOND, THE SEARCH'S MICROSECOND. The bank
+            // records the time the plain oracle measured on the written bytes
+            // -- that has not changed. What it keeps from the claim is the
+            // sub-tick crossing, because the oracle has no such number to give
+            // and dropping it would put an incumbent with no sub-tick value
+            // back into a population that is ordered by one: every later
+            // candidate would then be compared on the millisecond, and the
+            // search would stall on the plateau it just left.
+            (Outcome::Finish { us, .. }, Outcome::Finish { ms, .. }) => Outcome::Finish { ms, us },
             // Band 2 stays on the gate's ladder -- one search, one objective --
             // but it takes the ORACLE's millisecond, like every other time
             // this bank writes. (They are equal: `agrees` above required it.)
-            (Outcome::Gate(GateState::Finished { .. }), Outcome::Finish { ms }) => {
+            (Outcome::Gate(GateState::Finished { .. }), Outcome::Finish { ms, .. }) => {
                 Outcome::Gate(GateState::Finished { ms })
             }
             _ => claimed,
@@ -301,7 +309,7 @@ impl Bank {
         // A band-0 or band-1 tape that turns out to FINISH is worth saying out
         // loud: the search ranked it at the bottom because it did not do the
         // thing, and a human reading the bank should still know it exists.
-        if let (Outcome::Gate(g), Outcome::Finish { ms }) = (claimed, actual) {
+        if let (Outcome::Gate(g), Outcome::Finish { ms, .. }) = (claimed, actual) {
             if !matches!(g, GateState::Finished { .. }) {
                 eprintln!(
                     "note: this tape does not reach the gate and the plain oracle says it \

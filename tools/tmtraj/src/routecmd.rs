@@ -63,13 +63,13 @@ fn die(msg: &str) -> ! {
     std::process::exit(2)
 }
 
-struct Table {
-    names: Vec<String>,
-    rows: Vec<Vec<f64>>,
+pub(crate) struct Table {
+    pub(crate) names: Vec<String>,
+    pub(crate) rows: Vec<Vec<f64>>,
 }
 
 impl Table {
-    fn col(&self, name: &str) -> Option<usize> {
+    pub(crate) fn col(&self, name: &str) -> Option<usize> {
         self.names.iter().position(|n| n == name)
     }
     /// Append `s`: cumulative path length in metres from the table's FIRST row.
@@ -108,7 +108,7 @@ impl Table {
         self.names.push("s".to_string());
     }
     /// Column index or a fatal error naming what the file does have.
-    fn need(&self, name: &str) -> usize {
+    pub(crate) fn need(&self, name: &str) -> usize {
         self.col(name).unwrap_or_else(|| {
             die(&format!(
                 "no column {:?} in this CSV; it has: {}",
@@ -119,7 +119,7 @@ impl Table {
     }
 }
 
-fn load(path: &str) -> Table {
+pub(crate) fn load(path: &str) -> Table {
     // A ghost or replay decodes into the same table. `tmtraj export --csv`
     // writes these columns from this decoder, so the two are the same data and
     // the query must not care which one it was handed.
@@ -234,13 +234,13 @@ fn fmt_row(t: &Table, row: &[f64], cols: &[usize], tcol: usize) -> String {
 }
 
 /// A plane to cross: which column, and at what value.
-struct Plane {
-    axis: String,
-    col: usize,
-    at: f64,
+pub(crate) struct Plane {
+    pub(crate) axis: String,
+    pub(crate) col: usize,
+    pub(crate) at: f64,
 }
 
-fn parse_plane(t: &Table, s: &str) -> Plane {
+pub(crate) fn parse_plane(t: &Table, s: &str) -> Plane {
     let Some((ax, v)) = s.split_once('=') else {
         die(&format!("--cross {:?}: wants AXIS=VALUE, e.g. z=692", s))
     };
@@ -256,7 +256,7 @@ fn parse_plane(t: &Table, s: &str) -> Plane {
 ///
 /// A sample sitting exactly ON the plane is one crossing at that sample, not
 /// two — otherwise a run that touches the plane and comes back reports twice.
-fn crossings(t: &Table, p: &Plane) -> Vec<(Vec<f64>, bool)> {
+pub(crate) fn crossings(t: &Table, p: &Plane) -> Vec<(Vec<f64>, bool)> {
     let mut out = Vec::new();
     for w in t.rows.windows(2) {
         let (a, b) = (&w[0], &w[1]);

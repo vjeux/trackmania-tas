@@ -62,7 +62,7 @@ https://github.com/user-attachments/assets/119bf427-61cc-4615-9d03-35784bfff949
 
 https://github.com/user-attachments/assets/f59172e4-9e8c-4f21-89a7-c10bf3bc9d32
 
-**[Training - 10 Long](191465-training-10-long)** — author time `13.080` · ours **13.071** (−0.009) · best human 13.081 (in-.-) · 1070 records
+**[Training - 10 Long](191465-training-10-long)** — author time `13.080` · ours **13.070** (−0.010) · best human 13.081 (in-.-) · 1070 records · the record’s only faster sector is the reset pad, and it pays nine milliseconds for it
 
 https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
 

@@ -403,8 +403,15 @@ where
                 let accept = if bo >= cur_out {
                     true
                 } else if temp_s > 0.0 {
-                    match bo.delta_ms(&cur_out) {
-                        Some(d) => rng.unit() < (d as f64 / (temp_s * 1000.0)).exp(),
+                    // In MICROseconds when both sides carry a sub-tick
+                    // crossing, which is the whole reason the plane exists: on
+                    // a plateau every `delta_ms` is 0, so a millisecond
+                    // temperature would accept every regression it can see and
+                    // none it cannot. `delta_us` falls back to the widened
+                    // millisecond when either side is unmeasured, so the
+                    // temperature stays in seconds either way.
+                    match bo.delta_us(&cur_out) {
+                        Some(d) => rng.unit() < (d as f64 / (temp_s * 1_000_000.0)).exp(),
                         None => false,
                     }
                 } else {

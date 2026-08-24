@@ -108,7 +108,7 @@ impl Evaluator for BatchEval {
                 continue;
             }
             match r.time_ms {
-                Some(ms) => out[i] = Outcome::Finish { ms },
+                Some(ms) => out[i] = Outcome::fin(ms),
                 None => {
                     let cps = r.cps.unwrap_or(0);
                     out[i] = Outcome::Dnf(Progress::Checkpoints { cps, seg_ms: None });

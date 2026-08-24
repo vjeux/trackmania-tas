@@ -8,6 +8,11 @@ The times are sound. The films show a different car.**
 the page states no headline time, or two replays carry it, or the directory has
 no replay in it at all. **An unreachable row is not a clean row.**
 
+> **2026-08-24, hand-edited row:** `Training 10 long` was repaired — its page now
+> publishes a regenerated 13.070 that reads kappa 1.000 — so the refused count
+> above is 4, not 5, until the command below is re-run and regenerates this
+> table. Nothing else in it has been touched by hand.
+
 Reproduce with `clip inventory --root . --verify [--markdown]`. It finds each
 page's headline replay by the milliseconds in its filename, runs `ghost verify`
 against the map on the shared store, and reports V6 (chance-corrected agreement
@@ -43,7 +48,7 @@ header, and the oracle finishes exactly one of them at the page's time.
 | Tap water 01 | 22.072 | 0.151 | 22.072 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
 | Spring 2023 - 15 (Underwater) | 36.049 | - | - | no map on the store at /var/svcscm/persistent/private-30d/tm-unbeaten/173691 |
 | The Magnet Trial | 793.893 | 1.000 | 793.893 | OK |
-| Training 10 long | 13.071 | 0.382 | 13.071 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
+| Training 10 long | 13.070 | 1.000 | 13.070 | OK — the published run is now `TAS_13070_analog`, regenerated; the 13.071 beside it still reads 0.382 and must not be filmed |
 | Welcome to wiggles | 95.839 | - | - | 2 replays carry 95839: TAS_95839_analog.Ghost.Gbx, gen_TAS_95839_analog.Ghost.Gbx |
 | YEET Fall 2024 - 04 | 10.640 | 0.427 | 10.640 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
 | Get in the hole (impossible) | 13.984 | - | - | 2 replays carry 13984: an330_13984.Ghost.Gbx, kb330_31ev_13984.Ghost.Gbx |
