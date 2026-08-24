@@ -1,0 +1,18 @@
+[package]
+name = "haul"
+version = "0.1.0"
+edition = "2021"
+
+# No third-party dependencies, on purpose: this crate is the thing a fresh box
+# builds FIRST, before anything else works, and every dependency is one more
+# way for that bootstrap to fail on a box with a broken proxy. md5, ISO-8601
+# time and the record codec are implemented here and tested against known
+# vectors.
+
+[lib]
+name = "haul"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmhaul"
+path = "src/main.rs"

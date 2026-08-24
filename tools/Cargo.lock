@@ -49,6 +49,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "haul"
+version = "0.1.0"
+
+[[package]]
 name = "mapgeom"
 version = "0.1.0"
 dependencies = [
