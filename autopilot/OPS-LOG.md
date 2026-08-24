@@ -6,6 +6,29 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## The repo has other authors, and a push that fails is silent about the *cause*
+
+Within an hour of the harness going live, an unrelated session pushed
+`entorder can put the car in the MIDDLE of the entity list` to `main`. Every
+subsequent bank recorded `PUSH FAILED … fetch first`. Nothing was lost — the
+paste mirror uses a different credential and a different service and kept
+working — but the repo, which is the state of record a human reads, went stale
+while the journal filled with rejections.
+
+A bank now fetches, rebases when the branch has diverged, and retries. The
+state files are append-only and sharded per writer, so a rebase is
+conflict-free by construction; it aborts and says so if that ever stops being
+true.
+
+**And the second-order trap, which cost the longer half of the time:** after a
+rebase our commits have new shas, so the render box's scratch ref
+`tmhaul-incoming` can no longer be fast-forwarded either. The fetch failed
+with `exited 1` and *no stderr at all*, because it was running under `-q`.
+Two lessons: force the scratch ref (`+main:refs/heads/tmhaul-incoming`) but
+**never** force `main`, so a real divergence still fails loudly; and do not
+run the remote half of a pipeline quietly, because the only thing you have when
+it breaks is what it printed.
+
 ## No on-demand box holds a GitHub credential — and the fix is a 161-byte file
 
 `git push` from an OD dies with `could not read Username for
