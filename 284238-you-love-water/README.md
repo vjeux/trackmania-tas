@@ -23,7 +23,7 @@ TMX map [284238](https://trackmania.exchange/maps/284238) · author
 > **MEASURED — DarrahTM drove 124.205 on 2026-08-21 20:43:32 UTC**, board
 > fetched 2026-08-24 03:32–03:37 UTC in one 76-GET pass, all HTTP 200. The
 > board holds **2** records; brick555's 440.238 is rank 2. *Control:* the same
-> pass re-read all 37 boards this repo tracks and 28 came back with exactly
+> pass re-read every board the repo tracked — 37 at the time — and 28 came back with exactly
 > the record the page already printed, so the pass reads boards rather than
 > manufacturing them.
 >

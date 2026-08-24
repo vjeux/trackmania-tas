@@ -18,14 +18,16 @@ it, and find out whether a person can drive a run no human has driven.
 **All times are seconds.** Boards fetched **2026-08-24 03:32–03:37 UTC**, one
 76-GET pass, all HTTP 200 — the same capture behind
 [`LEADERBOARDS.md`](LEADERBOARDS.md), which is the newer measurement wherever a
-page here disagrees with it. *Control on that capture:* it re-read all 37 boards
-this repo tracks and **28 came back with exactly the record the page already
-printed**, so it reads boards rather than manufacturing them; the nine that
-moved are named in `LEADERBOARDS.md`.
+page here disagrees with it. *Control on that capture:* it re-read every board
+the repo tracked — 37 at the time, the 36 here plus Cobalt Cove, which has
+since been removed as somebody else's work — and **28 came back with exactly
+the record the page already printed**, so it reads boards rather than
+manufacturing them; the nine that moved are named in `LEADERBOARDS.md`.
 
-**The three groups below are cut on one question: has a human beaten the author
-time?** Not on whether we have. That is the axis the project exists on, and on
-eight maps the answer changed under us — six of them in the last three days.
+**36 maps: 21 + 7 + 8.** The three groups below are cut on one question: has a
+human beaten the author time? Not on whether we have. That is the axis the
+project exists on, and on eight maps the answer changed under us — six of them
+in the last three days.
 
 **An exact tie is a beat**, on either side of that comparison: the game awards
 the author medal at or under the time, so a run level with it has taken it.
@@ -191,16 +193,6 @@ https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
 
 ---
 
-# Outside the three groups
-
-**[Cobalt Cove](203169-cobalt-cove)** — **a study of somebody else's run**, not a
-claim of ours: how much of WirtualTV's published tool-assisted **1:12.589** can
-be recovered as a tape a simulator accepts, given only the video. Live board
-98.857 (SmallPumpk1n), 564 records. **No clip** — the source is
-[Wirtual's own video](https://www.youtube.com/watch?v=F8tbqE2wV08).
-
----
-
 # How to read these lines
 
 **"Ours"** is the fastest run this project has validated on that map. It is not
@@ -234,7 +226,7 @@ inference stated), UNKNOWN (an open task, not a silence) or SUPERSEDED (pointing
 forward at what replaced it). That file also records what this project has
 already paid for getting it wrong, which is why it exists.
 
-Three scans run over all 37 directories at once and should be run before any
+Three scans run over all 36 directories at once and should be run before any
 page is edited:
 
 ```

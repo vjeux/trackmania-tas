@@ -8,7 +8,7 @@ y = 114.0, stationary, 0.6 km/h.**
 TMX map [173691](https://trackmania.exchange/maps/173691) by **Reddnox** ·
 3 checkpoints · author time **2672.290** · **1 online record — Maionez77,
 1571.209** (MEASURED, board fetched 2026-08-24 03:32–03:37 UTC; the same 76-GET
-pass re-read all 37 boards this repo tracks and 28 came back with exactly the
+pass re-read every board the repo tracked — 37 at the time — and 28 came back with exactly the
 record the page already printed, which is the control that it reads boards
 rather than manufacturing them).
 **This landing does not beat the map** — it stops on a deck 15.7 m below a

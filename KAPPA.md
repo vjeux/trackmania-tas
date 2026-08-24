@@ -46,7 +46,6 @@ header, and the oracle finishes exactly one of them at the page's time.
 | Training 10 long | 13.071 | 0.382 | 13.071 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
 | Welcome to wiggles | 95.839 | - | - | 2 replays carry 95839: TAS_95839_analog.Ghost.Gbx, gen_TAS_95839_analog.Ghost.Gbx |
 | YEET Fall 2024 - 04 | 10.640 | 0.427 | 10.640 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
-| Cobalt Cove — reconstructing somebody else's tool-assisted run from video | ? | - | - | the page states no headline time |
 | Get in the hole (impossible) | 13.984 | - | - | 2 replays carry 13984: an330_13984.Ghost.Gbx, kb330_31ev_13984.Ghost.Gbx |
 | Miru's Hell 2 | 18.160 | - | - | replays: No such file or directory (os error 2) |
 | Fall 2024 - 25 (pure wet icy wood) | 95.575 | - | - | no replay filename carries 95575 |

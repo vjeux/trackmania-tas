@@ -802,6 +802,14 @@ distinguishes *"the instrument works"* (99.6 % against a 43.7 % runner-up) from
 *"it declines when it should"* (no peak on earlier builds) and says outright
 that a second channel's meaning *"has not been established"*.
 
+> **`203169-cobalt-cove` was removed from the repo on 2026-08-24** — it was a
+> study of somebody else's tool-assisted run and never a claim of this
+> project's. This audit record is kept as written, because it is a record of
+> what was checked that night and rewriting it would falsify that. The
+> instruments that page's arm built are still here and still cite their
+> measurements on that map by name: `tools/vidread`, `tools/mapgeom`'s water
+> planes and placement work, and `fk`'s wetness column.
+
 ---
 
 ## Two entries added after the audit's node was released

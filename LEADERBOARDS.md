@@ -10,7 +10,9 @@ Sources: trackmania.io (`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the 
 
 **Author time no longer unbeaten**: Great wtf of what #165, impossible at for ssano, U10S_32 [Yeet] MAX-UP.
 
-**A human is now past our TAS**: U10S_32 [Yeet] MAX-UP.
+**A human is now past our TAS**: U10S_32 [Yeet] MAX-UP (new in this capture) — and Miru's Hell 2, which the row below shows was already past on the previous one.
+
+> **This capture covered 37 boards; the table below lists 36.** `203169-cobalt-cove` was removed from the repo on 2026-08-24 — it was a study of somebody else's tool-assisted run, never a claim of this project's — so its row and its bullets are gone from this file. Every "of 37" in the controls further down is about the fetch, which really did read 37 boards, and stays as measured.
 
 | map | our TAS | AT | WR then | WR now | holder now | records then | records now | verdict |
 |---|---|---|---|---|---|---|---|---|
@@ -26,7 +28,6 @@ Sources: trackmania.io (`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the 
 | [Training - 10 Long](191465-training-10-long) | 13.071 | 13.080 | 13.081 | 13.081 | in-.- | 856 | 1070 | records 856 → 1070 |
 | [Welcome to wiggles](197047-welcome-to-wiggles) | 95.839 | 100.784 | 101.794 | 101.794 | beagle.3 | 22 | 27 | records 22 → 27 |
 | [YEET Fall 2024 - 04](203072-yeet-fall-2024-04) | 10.640 | 11.334 | 12.083 | 12.083 | ayti__ | 272 | 301 | records 272 → 301 |
-| [Cobalt Cove](203169-cobalt-cove) | — | — | — | 98.857 | SmallPumpk1n | — | 564 | page cites no WR; live 98.857 |
 | [Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible) | 13.984 | 13.995 | 13.990 | 13.990 | in-.- | 5 | 5 | AT already beaten (1 of the top 5 at or under the AT) |
 | [Miru's Hell 2](208024-mirus-hell-2) | 18.160 | 18.806 | 21.105 | 9.075 | AshenBeast1985 | 3 | 4 | page is stale: 9.075 (page cites 21.105) — already on the previous capture, so the page quotes a different figure rather than the board's; holder deeperjungle → **AshenBeast1985**; AT already beaten (1 of the top 4 at or under the AT); human ahead of our TAS: 9.075 < 18.160; records 3 → 4 |
 | [Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood) | 95.507 | 94.477 | 96.281 | 96.281 | iambeeen | 36 | 42 | records 36 → 42 |
@@ -64,7 +65,6 @@ Sources: trackmania.io (`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the 
 - **Training - 10 Long** — records 856 → 1070
 - **Welcome to wiggles** — records 22 → 27
 - **YEET Fall 2024 - 04** — records 272 → 301
-- **Cobalt Cove** — page cites no WR; live 98.857
 - **Get in the Hole ( Impossible )** — AT already beaten (1 of the top 5 at or under the AT)
 - **Miru's Hell 2** — page is stale: 9.075 (page cites 21.105) — already on the previous capture, so the page quotes a different figure rather than the board's; holder deeperjungle → **AshenBeast1985**; AT already beaten (1 of the top 4 at or under the AT); human ahead of our TAS: 9.075 < 18.160; records 3 → 4
 - **Fall 2024 - 25 (Pure Wet Icy Wood)** — records 36 → 42
@@ -92,7 +92,6 @@ Sources: trackmania.io (`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the 
 - **Kacky Reloaded #290** — records 22 → 23
 - **Training - 10 Long** — records 1058 → 1070
 - **YEET Fall 2024 - 04** — records 295 → 301
-- **Cobalt Cove** — records 560 → 564
 - **Fall 2024 - 25 (Pure Wet Icy Wood)** — records 41 → 42
 - **Great wtf of what #165** — WR 8.197 → **8.127**, holder Titoch_tm → **Tannuleet**, records 45 → 46
 - **Torment (1-UP)** — records 29 → 30
@@ -113,7 +112,7 @@ Sources: trackmania.io (`/api/map/<uid>`, `/api/leaderboard/map/<uid>`) for the 
 - Empty boards (1): untitled 01.
 - Every request returned HTTP 200; no rate limit and no auth failure was hit.
 - **Second source**: TMX's own mirror agrees with the live board's WR on 35 of 37 maps. Disagreements: impossible at for ssano: TMX 14.909 vs live 14.529; U10S_32 [Yeet] MAX-UP: TMX 7.893 vs live 7.441.
-- **Record counts across the two sources**: TMX's count lags the live board on 19 map(s) — KEKL- SAUSAGE ICE: TMX 14 vs live 16; Spaghetti Nights 2: TMX 181 vs live 182; Tap water 01: TMX 654 vs live 655; The Magnet Trial: TMX 3 vs live 7; Training - 10 Long: TMX 1063 vs live 1070; YEET Fall 2024 - 04: TMX 298 vs live 301; Cobalt Cove: TMX 74 vs live 564; Fall 2024 - 25 (Pure Wet Icy Wood): TMX 41 vs live 42; Torment (1-UP): TMX 29 vs live 30; Torment (1-DOWN): TMX 64 vs live 68; impossible at for ssano: TMX 184 vs live 185; surely my least cooked at: TMX 841 vs live 851; Fall 2025 - 16 CP1 End: TMX 1007 vs live 1026; Fall 2025 - 18 CP1 End: TMX 1091 vs live 1101; U10S_32 [Yeet] MAX-UP: TMX 3 vs live 4; Fall 2025 - 01 Reverse CP1 End: TMX 658 vs live 663; Fall 2025 - 13 Reverse CP1 End: TMX 405 vs live 418; Fall 2025 - 22 Reverse CP1 End: TMX 469 vs live 474; Pain ft Mango & Teuflum: TMX 178 vs live 180. The live count is the one tabulated.
+- **Record counts across the two sources**: TMX's count lags the live board on 18 of the 36 maps listed here (19 of the 37 fetched, the extra being Cobalt Cove, since removed) — KEKL- SAUSAGE ICE: TMX 14 vs live 16; Spaghetti Nights 2: TMX 181 vs live 182; Tap water 01: TMX 654 vs live 655; The Magnet Trial: TMX 3 vs live 7; Training - 10 Long: TMX 1063 vs live 1070; YEET Fall 2024 - 04: TMX 298 vs live 301; Fall 2024 - 25 (Pure Wet Icy Wood): TMX 41 vs live 42; Torment (1-UP): TMX 29 vs live 30; Torment (1-DOWN): TMX 64 vs live 68; impossible at for ssano: TMX 184 vs live 185; surely my least cooked at: TMX 841 vs live 851; Fall 2025 - 16 CP1 End: TMX 1007 vs live 1026; Fall 2025 - 18 CP1 End: TMX 1091 vs live 1101; U10S_32 [Yeet] MAX-UP: TMX 3 vs live 4; Fall 2025 - 01 Reverse CP1 End: TMX 658 vs live 663; Fall 2025 - 13 Reverse CP1 End: TMX 405 vs live 418; Fall 2025 - 22 Reverse CP1 End: TMX 469 vs live 474; Pain ft Mango & Teuflum: TMX 178 vs live 180. The live count is the one tabulated.
 - Display-name spelling only, **not** a change of holder: The Magnet Trial (keby → keby..); Welcome to wiggles (Beagle.3 → beagle.3).
 - **Author times**: every page's author time matches the live one.
 
