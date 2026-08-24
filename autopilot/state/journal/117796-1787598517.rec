@@ -1,2 +1,3 @@
 2026-08-24T19:08:37Z	worker_start	pid=348155	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=194	resume_best=100
 2026-08-24T19:08:37Z	run_start	node=117796	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-24T19:09:33Z	bank	why=run start	receipt=commit d6811846ff33 · mirror P2474201005 · push whitestick→github d6811846ff33 (bundle md5 3eb0d309)

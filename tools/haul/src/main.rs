@@ -62,7 +62,8 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         let a = &argv[i];
-        if let Some(name) = a.strip_prefix("--") {
+        let short = a.len() == 2 && a.starts_with('-') && !a.starts_with("--");
+        if let Some(name) = a.strip_prefix("--").or(if short { a.strip_prefix('-') } else { None }) {
             let (k, v) = match name.split_once('=') {
                 Some((k, v)) => (k.to_string(), v.to_string()),
                 None => {
