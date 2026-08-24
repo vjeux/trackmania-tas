@@ -244,7 +244,9 @@ fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
                     parts.join("  ")
                 );
                 // the callee clobbers the argument registers
-                for r in ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "xmm0", "xmm1"] {
+                for r in [
+                    "rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "xmm0", "xmm1",
+                ] {
                     regs.remove(r);
                 }
             }
@@ -263,7 +265,7 @@ fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "asmdig fn|calls ASM ELF ADDR | asmdig xref ASM ADDR | asmdig consts ELF V,V,..";
+    let usage = "asmdig fn|calls ASM ELF ADDR | asmdig xref ASM ADDR | asmdig xrefs ASM ADDR... | asmdig jumptable ELF ADDR COUNT [TARGET] | asmdig consts ELF V,V,..";
     match a.first().map(|s| s.as_str()) {
         Some("fn") => {
             let insns = load_asm(&a[1]);
@@ -321,6 +323,25 @@ fn main() {
                 match want {
                     Some(w) if w != tgt => continue,
                     _ => println!("{:3}  0x{:x}  ->  {:x}", i, i, tgt),
+                }
+            }
+        }
+        Some("xrefs") => {
+            // Resolve several xrefs in one pass. A full server disassembly is
+            // hundreds of MB; re-parsing it once per validator string hid the
+            // call graph behind minutes of avoidable I/O.
+            let insns = load_asm(&a[1]);
+            let targets: Vec<u64> = a[2..].iter().map(|s| hex(s).expect("addr")).collect();
+            for ins in &insns {
+                let branch = if ins.mnem == "call" || ins.mnem.starts_with('j') {
+                    ins.ops.split_whitespace().next().and_then(hex)
+                } else {
+                    None
+                };
+                for &t in &targets {
+                    if ins.riptgt == Some(t) || branch == Some(t) {
+                        println!("{:x}\t{:x}\t{} {}", t, ins.addr, ins.mnem, ins.ops);
+                    }
                 }
             }
         }

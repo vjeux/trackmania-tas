@@ -1,0 +1,26 @@
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.centos.org/>
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+
+Program stopped.
+0x00007ffff7fe2f30 in _start () from /lib64/ld-linux-x86-64.so.2
+Breakpoint 1 at 0x55555668ede4
+Breakpoint 2 at 0x55555676cec7
+Catchpoint 3 (signal SIGSTOP)
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+[New Thread 0x7fffee324640 (LWP 370892)]
+Starting validation of 1 ghosts (in 1 maps)...
+Validating batch of g.Ghost.Gbx on map 'Summer 2026 - 01' (batch size = 1)...
+VALIDATOR_ROOT callsite=0x55555668ede4 job=0x5555584e2180 items=0x555559573090 count=1
+PARTICIPANT_BIND function=0x55555676cec7 sim=0x55555c5b0c40 participant=0x55555d3fcd20 controlled=0x55555d3f9bf0
+FKSHIM stop
+AUTHORITATIVE_CHAIN validator=0x5555584e2180 sim=0x55555c5b0c40 participant=0x55555d3fcd20 class=0x32e2000 vehicle=0x55555d334458
+STATE quat@12e0=0x55555d335738:	0.754728734	0.000249456876	0.656000972	0.00687598623
+STATE pos@12f0=0x55555d335748:	1370.5658	10.0254698	1098.21387
+STATE vel@12fc=0x55555d335754:	0.588650167	-0.252750039	0.220017999
+VIS_RECORDED pos@898=0x55555d334cf0:	1370.56604	10.0250006	1098.21411

@@ -6,8 +6,23 @@
 //! otherwise only be exercised by a search that takes an hour and cannot tell
 //! you which part broke.
 
-use forkoracle::forksrv::parse_result;
+use forkoracle::forksrv::{parse_ready_full, parse_result};
 use forkoracle::layout::{check_rows, sample_ms, tail_recs, Row};
+
+#[test]
+fn ready_carries_validator_callback_provenance() {
+    let r = parse_ready_full("READY 4096 36395 77 8192 12288").unwrap();
+    assert_eq!(r.base, 4096);
+    assert_eq!(r.clock, 36395);
+    assert_eq!(r.pid, Some(77));
+    assert_eq!(r.validator_controller, Some(8192));
+    assert_eq!(r.validation_sim, Some(12288));
+}
+
+#[test]
+fn ready_rejects_half_a_validator_capture() {
+    assert!(parse_ready_full("READY 4096 36395 77 8192").is_err());
+}
 
 /// THE ASYMMETRIC FIXTURE.
 ///
@@ -50,7 +65,11 @@ const DNF_WITH_A_DECLARED_TIME: &str = r#"
 #[test]
 fn the_fork_parser_reads_what_the_engine_did_not_what_the_file_claims() {
     let (t, _) = parse_result(FINISHED_BUT_STALE_HEADER);
-    assert_eq!(t, Some(23081), "took the file's declaration instead of the simulation");
+    assert_eq!(
+        t,
+        Some(23081),
+        "took the file's declaration instead of the simulation"
+    );
 }
 
 #[test]
@@ -88,7 +107,11 @@ fn exact_wrong_simu_with_declared_four_is_measured_as_zero() {
 }"#;
     let (time, cps) = parse_result(reply);
     assert_eq!(time, None);
-    assert_eq!(cps, Some(0), "DeclaredResult.NbCheckpoints must never become measured cps");
+    assert_eq!(
+        cps,
+        Some(0),
+        "DeclaredResult.NbCheckpoints must never become measured cps"
+    );
 }
 
 #[test]
@@ -97,9 +120,17 @@ fn tail_recs_starts_at_the_resume_tick_and_scales_steering() {
     let gas = vec![1u8; 10];
     let brake = vec![0u8; 10];
     let r = tail_recs(&steer, &gas, &brake, 4);
-    assert_eq!(r.len(), 6, "a resume must send only the ticks from `from` on");
+    assert_eq!(
+        r.len(),
+        6,
+        "a resume must send only the ticks from `from` on"
+    );
     // steer is i8 over 127; tick 4 of the ramp is 48
-    assert!((r[0].steer - 48.0 / 127.0).abs() < 1e-6, "steer scaling: {}", r[0].steer);
+    assert!(
+        (r[0].steer - 48.0 / 127.0).abs() < 1e-6,
+        "steer scaling: {}",
+        r[0].steer
+    );
     assert_eq!(r[0].gas, 1.0);
     assert_eq!(r[0].brake, 0.0);
 }
@@ -186,7 +217,10 @@ fn a_never_crossed_sentinel_is_not_a_finish() {
   "IsValid" : false
 }"#;
     let (time, cps) = parse_result(reply);
-    assert_eq!(time, None, "the never-crossed sentinel was read as a finish");
+    assert_eq!(
+        time, None,
+        "the never-crossed sentinel was read as a finish"
+    );
     assert_eq!(cps, Some(0));
 
     // and a real time still is one, either side of the bar

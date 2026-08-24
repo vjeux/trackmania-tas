@@ -10,7 +10,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-
 extern "C" {
     fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
     fn dup2(old: c_int, new: c_int) -> c_int;
@@ -129,7 +128,6 @@ pub fn parse_probe(s: &str) -> Result<usize, String> {
     Err(format!("probe failed: {:?}", s.trim()))
 }
 
-
 /// One tick of engine input, in the engine's own representation.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Rec {
@@ -190,6 +188,10 @@ pub struct ForkServer {
     res_r: std::fs::File,
     pub base: u64,
     pub clock: u64,
+    /// `this` captured at the validator's simulation-binding callback.
+    pub validator_controller: u64,
+    /// The simulation object passed in rcx at that same callback.
+    pub validation_sim: u64,
     pub dir: PathBuf,
 }
 
@@ -320,8 +322,19 @@ impl ForkServer {
         c.args(["/nodaemon", "/validatepath=."])
             .current_dir(dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(outf));
-        ForkServer::start_raw(dir, c, key, shim, ckpt)
+            .stdout(Stdio::from(outf))
+            // Enables the one-shot, build-checked hook at the validator's
+            // simulation-binding callback. `start_raw` deliberately does not
+            // set this: its shimhost tests do not contain that server code.
+            .env("FKSHIM_VALIDATOR_CAR", "1");
+        let srv = ForkServer::start_raw(dir, c, key, shim, ckpt)?;
+        if srv.validator_controller == 0 || srv.validation_sim == 0 {
+            return Err(
+                "validator simulation callback was not captured; refusing to locate a car by scan"
+                    .into(),
+            );
+        }
+        Ok(srv)
     }
 
     /// Launch an ARBITRARY command under the shim and complete the handshake.
@@ -352,12 +365,15 @@ impl ForkServer {
         // parked in `read()` for the rest of the run, which is what "the search
         // is alive but makes no progress" actually was.
         let logf = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
-        c.env("LD_PRELOAD", shim.canonicalize().map_err(|e| e.to_string())?)
-            .env("FKSHIM_CKPT", ckpt.to_string())
-            .env("FKSHIM_KEY", key.canonicalize().map_err(|e| e.to_string())?)
-            .env("FKSHIM_CMD_FD", "3")
-            .env("FKSHIM_RES_FD", "4")
-            .stderr(Stdio::from(logf));
+        c.env(
+            "LD_PRELOAD",
+            shim.canonicalize().map_err(|e| e.to_string())?,
+        )
+        .env("FKSHIM_CKPT", ckpt.to_string())
+        .env("FKSHIM_KEY", key.canonicalize().map_err(|e| e.to_string())?)
+        .env("FKSHIM_CMD_FD", "3")
+        .env("FKSHIM_RES_FD", "4")
+        .stderr(Stdio::from(logf));
         unsafe {
             c.pre_exec(move || {
                 dup2(cmd_r, 3);
@@ -385,6 +401,8 @@ impl ForkServer {
             res_r,
             base: 0,
             clock: 0,
+            validator_controller: 0,
+            validation_sim: 0,
             dir: dir.to_path_buf(),
         };
 
@@ -398,9 +416,11 @@ impl ForkServer {
             }
         };
         let s = String::from_utf8_lossy(&hello).into_owned();
-        let (base, clock, _) = parse_ready(&s)?;
-        srv.base = base;
-        srv.clock = clock;
+        let ready = parse_ready_full(&s)?;
+        srv.base = ready.base;
+        srv.clock = ready.clock;
+        srv.validator_controller = ready.validator_controller.unwrap_or(0);
+        srv.validation_sim = ready.validation_sim.unwrap_or(0);
         Ok(srv)
     }
 
@@ -533,7 +553,9 @@ impl ForkServer {
         p.extend_from_slice(&gate.0.to_le_bytes());
         p.extend_from_slice(&gate.1.to_le_bytes());
         p.extend_from_slice(&gate.2.to_le_bytes());
-        self.cmd_w.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
+        self.cmd_w
+            .write_all(&(p.len() as u32).to_le_bytes())
+            .unwrap();
         self.cmd_w.write_all(&p).unwrap();
         self.cmd_w.flush().unwrap();
         let json = match read_frame(&mut self.res_r) {
@@ -576,7 +598,9 @@ impl ForkServer {
             p.extend_from_slice(&a.to_le_bytes());
             p.extend_from_slice(&l.to_le_bytes());
         }
-        self.cmd_w.write_all(&(p.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        self.cmd_w
+            .write_all(&(p.len() as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
         self.cmd_w.write_all(&p).map_err(|e| e.to_string())?;
         self.cmd_w.flush().map_err(|e| e.to_string())?;
         match read_frame(&mut self.res_r) {
@@ -585,9 +609,10 @@ impl ForkServer {
             None => return Err("server closed before acknowledging G".into()),
         }
         let st = self.child.wait().map_err(|e| e.to_string())?;
-        Ok(std::fs::read_to_string(self.dir.join("stdout.log"))
-            .unwrap_or_default()
-            + &format!("\nEXIT {:?}", st.code()))
+        Ok(
+            std::fs::read_to_string(self.dir.join("stdout.log")).unwrap_or_default()
+                + &format!("\nEXIT {:?}", st.code()),
+        )
     }
 
     /// One contiguous window: the common case.
@@ -647,7 +672,9 @@ impl ForkServer {
     /// Fork a child that does nothing: isolates fork + child-startup cost.
     pub fn null_fork(&mut self) -> String {
         let p = b"N";
-        self.cmd_w.write_all(&(p.len() as u32).to_le_bytes()).unwrap();
+        self.cmd_w
+            .write_all(&(p.len() as u32).to_le_bytes())
+            .unwrap();
         self.cmd_w.write_all(p).unwrap();
         self.cmd_w.flush().unwrap();
         match read_frame(&mut self.res_r) {
@@ -757,11 +784,14 @@ fn wait_readable<R: std::os::unix::io::AsRawFd>(f: &R, ms: i32) -> bool {
     extern "C" {
         fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
     }
-    let mut p = PollFd { fd: f.as_raw_fd(), events: 1 /* POLLIN */, revents: 0 };
+    let mut p = PollFd {
+        fd: f.as_raw_fd(),
+        events: 1, /* POLLIN */
+        revents: 0,
+    };
     let r = unsafe { poll(&mut p, 1, ms) };
     r > 0
 }
-
 
 /// `BRANCHED <pid>`, parsed.
 pub fn parse_branched(s: &str) -> Result<i32, String> {
@@ -773,10 +803,20 @@ pub fn parse_branched(s: &str) -> Result<i32, String> {
     Err(format!("branch refused: {:?}", s.trim()))
 }
 
-/// `READY <base> <clock> [<pid>]`, parsed. The pid is present only from a
-/// branch node -- the root server's pid is the process the driver spawned, and
-/// a node's is not, so a node that did not name itself cannot be killed.
-pub fn parse_ready(s: &str) -> Result<(u64, u64, Option<i32>), String> {
+/// `READY <base> <clock> [<pid> [<validator-controller> <validation-sim>]]`.
+///
+/// The final pair is present for real Trackmania servers launched with the
+/// validator hook enabled. `shimhost` deliberately omits it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ready {
+    pub base: u64,
+    pub clock: u64,
+    pub pid: Option<i32>,
+    pub validator_controller: Option<u64>,
+    pub validation_sim: Option<u64>,
+}
+
+pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
     let mut it = s.split_whitespace();
     if it.next() != Some("READY") {
         return Err(format!("bad handshake: {}", s.trim()));
@@ -784,7 +824,28 @@ pub fn parse_ready(s: &str) -> Result<(u64, u64, Option<i32>), String> {
     let base = it.next().unwrap_or("0").parse().unwrap_or(0);
     let clock = it.next().unwrap_or("0").parse().unwrap_or(0);
     let pid = it.next().and_then(|v| v.parse().ok());
-    Ok((base, clock, pid))
+    let validator_controller = it.next().and_then(|v| v.parse().ok()).filter(|v| *v != 0);
+    let validation_sim = it.next().and_then(|v| v.parse().ok()).filter(|v| *v != 0);
+    if validator_controller.is_some() != validation_sim.is_some() {
+        return Err(format!(
+            "incomplete validator capture in handshake: {}",
+            s.trim()
+        ));
+    }
+    Ok(Ready {
+        base,
+        clock,
+        pid,
+        validator_controller,
+        validation_sim,
+    })
+}
+
+/// Compatibility parser for branch/shimhost protocol users that need only the
+/// original three fields. Extra validator provenance is parsed and ignored.
+pub fn parse_ready(s: &str) -> Result<(u64, u64, Option<i32>), String> {
+    let r = parse_ready_full(s)?;
+    Ok((r.base, r.clock, r.pid))
 }
 
 /// `(time_ms, checkpoints_reached)` from a validator JSON block.

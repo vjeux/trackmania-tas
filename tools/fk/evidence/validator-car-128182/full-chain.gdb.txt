@@ -1,0 +1,37 @@
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.centos.org/>
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+
+Program stopped.
+0x00007ffff7fe2f30 in _start () from /lib64/ld-linux-x86-64.so.2
+Breakpoint 1 at 0x55555668ede4
+Breakpoint 2 at 0x5555566e0170
+Breakpoint 3 at 0x555555f218c0
+Catchpoint 4 (signal SIGSTOP)
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+[New Thread 0x7fffee324640 (LWP 366479)]
+Starting validation of 1 ghosts (in 1 maps)...
+Validating batch of g.Ghost.Gbx on map 'Summer 2026 - 01' (batch size = 1)...
+VALIDATOR_ROOT callsite=0x55555668ede4 target=0x5555566d6b40 job=0x5555584e2180 items=0x555559573090 count=1
+SIM_BIND function=0x5555566e0170 controller=0x5555584e2180 copied_array=0x7fffffffcec8 copied_count=0 sim=0x55555c5b95f0
+VEHICLE_BIND function=0x555555f218c0 manager=0x55555994ebd0 array=0x55555c72e1e0 count=4 vehicle=0x55555d33ce08
+FKSHIM stop
+CHAIN validator_job=0x5555584e2180 -> controller=0x5555584e2180 +1a70 -> sim=0x55555c5b95f0 +18 -> playground=0x55555cd6cd70 -> accessor -> manager=0x55555994ebd0 +b0/count+b8 -> vehicle_array=0x55555c72e1e0 count=4
+VEHICLES v0=0x55555d33ce08 v1=0x55555d33b000 v2=0x55555d3391f8 v3=0x55555d3373f0
+v0 +46c=0x55555d33d2c4:	0	0	0
+v0 +848=0x55555d33d6a0:	1352.90002	10.7330008	1043.47607
+v1 +46c=0x55555d33b4bc:	0	0	0
+v1 +848=0x55555d33b898:	1360.00012	10	1108.80005
+v2 +46c=0x55555d3396b4:	0	0	0
+v2 +848=0x55555d339a90:	1360.00012	10	1108.80005
+v3 +46c=0x55555d3378ac:	0	0	0
+v3 +848=0x55555d337c88:	1360.00012	10	1108.80005
+v0 physics +12f0=0x55555d33e0f8:	1352.94788	10.7651567	1043.19067
+v1 physics +12f0=0x55555d33c2f0:	1360	10	1108.80005
+v2 physics +12f0=0x55555d33a4e8:	1360	10	1108.80005
+v3 physics +12f0=0x55555d3386e0:	1360	10	1108.80005

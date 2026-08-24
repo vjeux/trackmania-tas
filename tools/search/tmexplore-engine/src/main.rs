@@ -15,14 +15,14 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tmexplore::action::Alphabet;
+use tmexplore::action::Input;
 use tmexplore::archive::{Bands, Policy};
 use tmexplore::branch::{PlainOracle, Route};
 use tmexplore::explore::Cfg;
+use tmexplore::outcome::{Reached, Verdict};
 use tmexplore::parallel::{self, Counters, Shared};
 use tmexplore_engine::fork::{ForkBranch, ForkOpts};
 use tmexplore_engine::{BRoute, EngineOracle, MapPack};
-use tmexplore::action::Input;
-use tmexplore::outcome::{Reached, Verdict};
 
 struct Args(Vec<(String, String)>, Vec<String>);
 impl Args {
@@ -49,7 +49,11 @@ impl Args {
         Args(m, free)
     }
     fn get(&self, k: &str) -> Option<&str> {
-        self.0.iter().rev().find(|(a, _)| a == k).map(|(_, v)| v.as_str())
+        self.0
+            .iter()
+            .rev()
+            .find(|(a, _)| a == k)
+            .map(|(_, v)| v.as_str())
     }
     fn req(&self, k: &str) -> String {
         match self.get(k) {
@@ -90,8 +94,11 @@ fn main() {
     }
 
     let pack = MapPack::load(&PathBuf::from(a.req("pack"))).unwrap_or_else(die);
-    let route = BRoute::load(&PathBuf::from(a.req("route")), a.num("default-half", 8.0f32))
-        .unwrap_or_else(die);
+    let route = BRoute::load(
+        &PathBuf::from(a.req("route")),
+        a.num("default-half", 8.0f32),
+    )
+    .unwrap_or_else(die);
     let map = PathBuf::from(a.req("map"));
     let template = PathBuf::from(a.req("template"));
     let server = PathBuf::from(a.get("server").unwrap_or("/tmp/tmoracle/server"));
@@ -102,7 +109,10 @@ fn main() {
     let minutes: u64 = a.num("minutes", 0u64);
 
     println!("MAP   {}  ({})", pack.name, pack.uid);
-    println!("  author time {}   (a number in the map file, not anybody's run)", secs(pack.author_ms));
+    println!(
+        "  author time {}   (a number in the map file, not anybody's run)",
+        secs(pack.author_ms)
+    );
     println!(
         "  route {:.1} m, {} stations of {:.0} m, {} checkpoints; gates at s = {}",
         route.length(),
@@ -135,8 +145,8 @@ fn main() {
     }
 
     // ---- the plain oracle: the only thing that can produce a result ----
-    let oracle = EngineOracle::new(&template, &map, &server, &work.join("oracle"))
-        .unwrap_or_else(die);
+    let oracle =
+        EngineOracle::new(&template, &map, &server, &work.join("oracle")).unwrap_or_else(die);
     println!(
         "\nORACLE  container holds {} ticks ({} s of race). A tape longer than that is refused,\n        not truncated.",
         oracle.capacity(),
@@ -152,12 +162,22 @@ fn main() {
     let neutral = vec![tmexplore::action::Input::NEUTRAL; oracle.capacity()];
     let (v1, e1, uid1, d1) = oracle.confirm_echo(&neutral).unwrap_or_else(die);
     let full = vec![
-        tmexplore::action::Input { steer: 0, gas: true, brake: false };
+        tmexplore::action::Input {
+            steer: 0,
+            gas: true,
+            brake: false
+        };
         oracle.capacity()
     ];
     let (v2, e2, _uid2, _d2) = oracle.confirm_echo(&full).unwrap_or_else(die);
-    println!("CONTROL do-nothing tape            -> {:?}  echo {:?}  desc {:?}", v1, e1, d1);
-    println!("CONTROL full-throttle-straight     -> {:?}  echo {:?}", v2, e2);
+    println!(
+        "CONTROL do-nothing tape            -> {:?}  echo {:?}  desc {:?}",
+        v1, e1, d1
+    );
+    println!(
+        "CONTROL full-throttle-straight     -> {:?}  echo {:?}",
+        v2, e2
+    );
     // ASSERT IDENTITY, NOT CONTEXT. "the server answered" is not "the server
     // ran MY map": the first real run on this box answered about a file whose
     // container carried a different map's uid, and the echo check passed on it
@@ -169,7 +189,10 @@ fn main() {
         );
         std::process::exit(1);
     }
-    println!("        the server confirms it ran map uid {} -- the one we asked for.", uid1);
+    println!(
+        "        the server confirms it ran map uid {} -- the one we asked for.",
+        uid1
+    );
     if e1.is_empty() && e2.is_empty() {
         println!(
             "        UNMEASURED: this server build echoes no input tape, so the writer cannot be\n        checked this way. Do not read the verdicts below as evidence that input reached the car."
@@ -248,7 +271,12 @@ fn main() {
     for (i, (s, p)) in ladder.gates.iter().enumerate() {
         println!(
             "  gate {} at s = {:>8.1} m (station {:>3})  ({:.0}, {:.0}, {:.0})",
-            i, s, route.station_of(*s), p[0], p[1], p[2]
+            i,
+            s,
+            route.station_of(*s),
+            p[0],
+            p[1],
+            p[2]
         );
     }
     println!(
@@ -272,8 +300,16 @@ fn main() {
                 if f.len() < 4 {
                     continue;
                 }
-                let g = |i: usize| -> i64 { f[i].parse().unwrap_or_else(|_| die(format!("line {}: field {} is not a number", ln + 1, i))) };
-                seed.push(Input { steer: g(1) as i8, gas: g(2) != 0, brake: g(3) != 0 });
+                let g = |i: usize| -> i64 {
+                    f[i].parse().unwrap_or_else(|_| {
+                        die(format!("line {}: field {} is not a number", ln + 1, i))
+                    })
+                };
+                seed.push(Input {
+                    steer: g(1) as i8,
+                    gas: g(2) != 0,
+                    brake: g(3) != 0,
+                });
             }
             println!(
                 "\nSEEDED  from {} ({} ticks of our own confirmed output). The search extends it; it\n        does not re-explore it.",
@@ -311,7 +347,6 @@ fn main() {
         start_offset_ms: 0,
         route_points: route_pts.clone(),
         tail_margin: 200,
-        state_off: None,
         common_from: None,
     };
     // THE REFERENCE IS THE CONTAINER'S OWN TAPE, read out of the file rather
@@ -338,59 +373,6 @@ fn main() {
         }
     }
 
-    // ---- locate the car ONCE, honestly, and hand the offset to the fleet ----
-    let shared_off: Option<u64> = {
-        let r;
-        {
-        println!(
-            "\nLOCATE  sweeping for the car once, at half way through the tape (a standing start is\n        the worst place to ask: the locator's test is d(pos)/dt against stored velocity,\n        qualified against 2 % of the mean speed in the window)."
-        );
-        let t0 = std::time::Instant::now();
-        // A LADDER OF PROBE POINTS, because where you ask decides the answer.
-        // The locator qualifies d(pos)/dt against 2 % of the mean speed in the
-        // window, so a probe where the car is slow gets the TIGHTEST threshold
-        // and the largest residual. On the 90 s container the reference tape
-        // has driven off the track long before half way, and frac 0.5 refused
-        // at "mean speed 6.0" — a true statement about a wrecked car and not
-        // about the file. Every attempt still faces the unchanged acceptance
-        // test, so this widens where we look and not what we will believe.
-        let mut probed = None;
-        let mut last_err = String::new();
-        for f in [0.05f64, 0.1, 0.2, 0.35, 0.5] {
-            match tmexplore_engine::fork::probe_state_offset(&opts_for(9999), &reference, f) {
-                Ok(off) => {
-                    println!("        located at frac {:.2}", f);
-                    probed = Some(off);
-                    break;
-                }
-                Err(e) => {
-                    println!("        frac {:.2} refused: {}", f, e);
-                    last_err = e;
-                }
-            }
-        }
-        match probed.ok_or(last_err) {
-            Ok(off) => {
-                println!(
-                    "        found: the vehicle state sits at base-{} ({:.1} s). Handing it to every\n        worker, and each one still re-reads a trajectory and checks it -- a worker that\n        rejects it sweeps honestly for itself.",
-                    off,
-                    t0.elapsed().as_secs_f64()
-                );
-                r = Some(off);
-            }
-            Err(e) => {
-                println!(
-                    "        the honest locate FAILED after {:.1} s: {}\n        Every worker would now pay the same sweep and fail the same way. Stopping rather\n        than starting a fleet that cannot see the car.",
-                    t0.elapsed().as_secs_f64(),
-                    e
-                );
-                std::process::exit(1);
-            }
-        }
-        }
-        r
-    };
-
     // THE TICK FRAME. The search's tick 0 is the fork server's own probed
     // boundary, so the oracle must lay a candidate down from there. Probed from
     // a real worker rather than computed, because where a server stops is a
@@ -409,16 +391,14 @@ fn main() {
     // fix here: publish the MAXIMUM over the fleet and have everybody use it.
     let mut boundary = 0usize;
     for i in 0..3 {
-        let mut o = opts_for(9990 + i);
-        o.state_off = shared_off;
+        let o = opts_for(9990 + i);
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => boundary = boundary.max(b.from),
             Err(e) => println!("boundary probe {} failed: {}", i, e),
         }
     }
     {
-        let mut o = opts_for(9998);
-        o.state_off = shared_off;
+        let o = opts_for(9998);
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => {
                 boundary = boundary.max(b.from);
@@ -583,14 +563,11 @@ fn main() {
             budget,
             |wi| {
                 let mut o = opts_for(wi);
-                o.state_off = shared_off;
                 o.common_from = Some(boundary);
                 let mut b = ForkBranch::start(&o, reference.clone())?;
-                // EVERY WORKER RE-READS A TRAJECTORY AND CHECKS IT. This is
-                // what makes the shared FK_STATE_OFF safe: a wrong address
-                // holding float triples fails on the quaternion and on
-                // d(pos)/dt, and a car that never moved fails on distance --
-                // a stationary car passes a velocity check for free.
+                // Every worker resolves its own validator-owned chain. A stale
+                // callback offset or field hop fails closed; there is no shared
+                // state offset and no scanner fallback.
                 // WHERE DOES THE CAR START? Asked before anything else, because a
                 // run that begins in the wrong place passes every other check.
                 match b.start_position_control(pack.spawn, a.num("spawn-tol", 40.0f32)) {
@@ -599,32 +576,6 @@ fn main() {
                 }
                 match b.self_check() {
                     Ok(m) => println!("worker {:>3} ready: {}", wi, m),
-                    Err(e) if o.state_off.is_some() => {
-                        // The SHARED offset did not hold on this process. That
-                        // is a real thing about this server — its heap is
-                        // bimodal run to run — and it is why the self-check
-                        // exists. Do the honest sweep for this worker instead
-                        // of dying: ~70 s, once, and then it is a real worker.
-                        println!(
-                            "worker {:>3} rejected the shared offset ({}); sweeping honestly",
-                            wi, e
-                        );
-                        drop(b);
-                        o.state_off = None;
-                        let mut b2 = ForkBranch::start(&o, reference.clone())?;
-                        match b2.self_check() {
-                            Ok(m) => {
-                                println!("worker {:>3} ready after its own sweep: {}", wi, m);
-                                return Ok(b2);
-                            }
-                            Err(e2) => {
-                                return Err(format!(
-                                    "worker {} failed its self-check even after an honest sweep: {}",
-                                    wi, e2
-                                ))
-                            }
-                        }
-                    }
                     Err(e) => return Err(format!("worker {} self-check FAILED: {}", wi, e)),
                 }
                 Ok(b)
@@ -652,10 +603,17 @@ fn main() {
         let out = work.join("best.tape.tsv");
         let mut txt = String::from("tick\tsteer\tgas\tbrake\n");
         for (i, t) in tape.iter().enumerate() {
-            txt.push_str(&format!("{}\t{}\t{}\t{}\n", i, t.steer, t.gas as u8, t.brake as u8));
+            txt.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                i, t.steer, t.gas as u8, t.brake as u8
+            ));
         }
         let _ = std::fs::write(&out, txt);
-        println!("best confirmed outcome {} — its tape is at {}", r, out.display());
+        println!(
+            "best confirmed outcome {} — its tape is at {}",
+            r,
+            out.display()
+        );
     }
 }
 
@@ -711,7 +669,12 @@ fn make_template(a: &Args) {
         //
         // The steer pattern cycles all 25 values evenly, so its mean is zero
         // and the car goes essentially straight.
-        inputs.push(tmauto::tape::Input { steer: v, gas: true, brake: false, respawn: false });
+        inputs.push(tmauto::tape::Input {
+            steer: v,
+            gas: true,
+            brake: false,
+            respawn: false,
+        });
     }
     let distinct = {
         let mut s: Vec<i8> = inputs.iter().map(|i| i.steer).collect();
@@ -808,7 +771,10 @@ fn confirm_tape(a: &Args) {
     // back as something, and it must not come back as this tape's answer.
     let bare: Vec<Input> = Vec::new();
     match oracle.confirm_echo(&bare) {
-        Ok((v, e, uid, d)) => println!("control (container's own tape): {:?}  desc {:?}  uid {}  echo {:?}", v, d, uid, e),
+        Ok((v, e, uid, d)) => println!(
+            "control (container's own tape): {:?}  desc {:?}  uid {}  echo {:?}",
+            v, d, uid, e
+        ),
         Err(e) => println!("control UNMEASURED: {}", e),
     }
     for i in 0..reps {
