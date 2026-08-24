@@ -45,11 +45,22 @@ wheel still.**
 > published the time in one place, a refinement of it in another, and a file
 > for neither. `tmtraj corpus shipped` exists to catch exactly that, and it did.
 
-https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
+https://github.com/user-attachments/assets/1bb96a4c-7e9c-44d7-840a-0c3d1808c1da
 
 *The clip is the 96.068 tape — the fastest run this directory publishes as a
 file, and 0.493 slower than the 95.575 the page below describes. See the UNKNOWN
-banner: it has not been re-filmed, and there is nothing here to re-film it from.*
+banner: there is still nothing here to film the 95.575 from.*
+
+**Re-shot 2026-08-24 from a ghost regenerated on the current pipeline.** Same
+treatment as the clip it replaces — two cars, iambeeen's world record 96.281 as
+the opponent, chase camera on our car, input overlay. The page did not state
+its treatment, so it was measured rather than assumed: `clip inventory --probe`
+read the published clip as **96.300 s**, which is the opponent's 96.281 and not
+our 96.068. `ghost verify` on the filmed file: kappa **1.000** (1922 of 1922
+samples), the plain oracle re-simulating the WRITTEN file to **96.068**,
+telemetry 0.000 .. 96.050 in a span ending 96.068. Trajectory worst **0.0731 m**
+against the file it replaces, at the spawn sample and under 0.02 m for the rest
+of the lap.
 
 > ### The two files in `replays/` were suspected of sharing a recording. They do not — MEASURED, and the suspicion is retracted.
 >

@@ -94,7 +94,7 @@ https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
 **[Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood)** — author time `94.477` · ours **96.068** — the only one of our three numbers here with a file; **UNKNOWN whether our best lap is 95.507 or 95.575**, and neither is published ([see the page](210218-fall-2024-25-pure-wet-icy-wood)) · best human 96.281 (iambeeen) · 42 records · sector time here is abundant and unspendable: 947 ms at CP12 is worth 10 ms at the finish, so chain backward from the line
 
-https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
+https://github.com/user-attachments/assets/1bb96a4c-7e9c-44d7-840a-0c3d1808c1da
 
 **[Impossible Mini Trial 2](267460-impossible-mini-trial-2)** — author time `16.888` · ours **18.234** (+1.346 short, and 4.834 **under** the only human record) · best human 23.068 (WirtualTM) · 1 record · what is left is the endgame screen: an opening exists east of X=922 and the shortfall is ~4.4 m of diagonal displacement, priced at 0.115 m per km/h at the deck exit
 
