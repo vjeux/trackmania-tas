@@ -45,7 +45,7 @@ of 46.9 s and the author time falls.**
 > **Still no video, and the reason is now a measured one, not a missing
 > machine.** The game CLIENT cannot import any ghost of this map whose record
 > has been rebuilt: it dies on import, every time, in every variant tried.
-> Twelve of them, one variable each, are in the table at the bottom of this
+> Twenty of them, one variable each, are in the table at the bottom of this
 > page. The dedicated server does not care — it re-simulates the input chunk and
 > never reads the scene — so nothing headless can see it, and every check in
 > this project passes on a file the game will not open.
@@ -237,7 +237,8 @@ behind a fresh launch, all on 2026-08-24 on the render box:
 | the same container with our 57.482 tape in it | 29 entities | **imports** |
 | …with the declared time set to 64.871 | 29 entities | **imports** |
 | the human container with the declared time set to 57.482 | 29 entities | **imports** |
-| the carrier TRIMMED to 57.482 | 6 entities, donor telemetry, 23 emptied entities removed | CRASH |
+| the carrier trimmed to **140 / 100 / 80 / 68 / 61 / 60 s** | 29 entities, donor telemetry | **imports** |
+| the carrier trimmed to **59 / 58 / 57.482 s** | donor telemetry, the tail entities dropped | CRASH |
 | `TAS_57482` as published (before this regeneration) | 1 rebuilt entity | CRASH |
 | the new regeneration | 1 rebuilt entity | CRASH |
 | …with the container's scene records grafted back | 1 car + 2 scene | CRASH |
@@ -246,16 +247,24 @@ behind a fresh launch, all on 2026-08-24 on the render box:
 | …with the 82 notice lists stripped | 1 rebuilt entity | CRASH |
 | …with the car's `u01` set to the container's first segment's | 1 rebuilt entity | CRASH |
 | …extended to the container's own 147.030 span, car parked after the finish | 1 rebuilt entity | CRASH |
+| …extended to 59 / 62 / 65 s the same way | 1 rebuilt entity | CRASH |
 | a transform-only regeneration, nothing neutralised | 1 rebuilt entity | CRASH |
 | the run re-cut into the container's own five segment boundaries | 5 car entities | CRASH |
 | …with the notices stripped as well | 5 car entities | CRASH |
+| the 62 s version re-cut into seven segments, with and without the scene records | 7 car entities | CRASH |
 
 So it is not the neutralised bytes, not the skin, not the notices, not the
-declared time, not the record span, not `u01`, not the scene records, and not
-the number of car entities on its own — the trimmed carrier carries the DONOR's
-telemetry in the DONOR's entity shapes and still crashes. What every crashing
-file has in common is that its entity set was rewritten; what every importing
-file has in common is that it was not.
+declared time, not `u01`, not the scene records, not the span on its own and not
+the entity count on its own. **Two facts point somewhere.** The container
+survives being trimmed all the way down to 60.000 s and dies at 59.000 — so a
+record whose entity set has been edited is fine, and something about the last
+second and a half is not. And OUR record dies at every span we tried, 57.482
+through 147.030, in one entity or in seven. The variable those two leave
+standing is the one nothing here has isolated yet: the SAMPLE BYTES of a
+rebuilt entity against the ones the game wrote itself. The experiment is to
+take the file that imports (the carrier trimmed to 60.000) and overwrite its
+car samples with ours at the same instants — a `ghost record resample`, no new
+research, and it separates "our bytes" from "our record" in one run.
 
 **A trap worth knowing before repeating any of this**: after a crash the game
 must be relaunched, and the next import into the corpse fails as
