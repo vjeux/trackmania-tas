@@ -51,6 +51,77 @@ body (**this is the step that makes it public** — a pushed commit does not),
 then fetch it back under `env -i` with no credential at all and require 200 and
 playable bytes.
 
+## Working from an on-demand box, and the six traps that keep costing an hour
+
+Every trap below was hit and diagnosed by an agent, more than one of them by
+three separate agents on the same day. None is interesting; all are expensive,
+because a fresh box starts with none of this and the symptom never points at
+the cause. Read this section before touching the box.
+
+**1. `git clone` into `~/persistent` ALWAYS fails.** It dies with `premature end
+of pack file`, at a different byte count each time, which reads as a flaky
+network. It is not the proxy, `http.postBuffer`, HTTP/2, or `--filter`; three
+agents tuned all of those. **Clone into `/tmp`** — it works first time, in
+seconds — and copy artefacts to `~/persistent` afterwards. Work in `/tmp`, bank
+to persistent.
+
+**2. A fresh OD has no navi credential, so the bridge is dead.** `~/bin/whitestick`
+is already installed and fails with *read navi credentials … (is navi-node set
+up?)*. Copy the ~161-byte `~/.navi/credentials.json` from devvm42752 to
+`$HOME/.navi/credentials.json` on the OD and it answers **directly** — devvm is
+not a required hop, and one agent reinstalled the whole navi CLI before working
+that out. Test with `~/bin/whitestick 'echo hello'` before anything else.
+
+**3. The bridge cuts a command off at about 2 minutes.** A render or a slow
+editor probe run inline looks like it DIED. Detach anything long on the box and
+poll its log:
+
+```
+~/bin/whitestick 'nohup sh -c "<long thing>" > /tmp/x.log 2>&1 & echo started'
+~/bin/whitestick 'tail -20 /tmp/x.log'
+```
+
+**4. `$HOME` on an fbsource OD is `/var/svcscm`, not `/home/vjeux`.** So
+`~/persistent/...` is `/var/svcscm/persistent/...`. The map corpus
+(`~/persistent/private-30d/tm-unbeaten/`) lives on the OD and is **not** on
+devvm42752 — an agent planning to regenerate there finds an empty tree.
+
+**5. `~/bin/whitestick` is a 2.4 MB stripped binary, not a shell script.**
+`cat`ting it to see its interface dumps a megabyte into the transcript. Use
+`--help`.
+
+**6. Never build a Windows path with `printf`.** `printf` reads `\v` as a
+vertical tab and **`\146` as an octal escape for `f`**, so
+`\tas\146612.Map.Gbx` is silently handed over as `\tasf612.Map.Gbx` — a path to
+a file that does not exist. Three "diagnoses" of Spaghetti Nights 2 were made
+against that nonexistent path. Use a quoted heredoc, which interprets nothing.
+The game also cannot open a `/home/...` path at all: stage under `/mnt/c` and
+hand it the `C:/...` spelling.
+
+## One game, one driver
+
+The box runs a SINGLE Trackmania instance, and several agents drive it at once.
+Two concurrent drivers do not fail — they SUCCEED WRONGLY: one's `setup` lands
+its ghosts in the other's scene, and whichever `shoot` finishes second picks up
+the other's `.webm`. Two plausible clips, at least one of the wrong run, and
+nothing anywhere says so. It has already happened once, on 2026-08-24, and only
+`shootctl setup`'s uid gate turned it into lost time rather than a wrong clip.
+
+So take the mutex, every time, around the game-driving only:
+
+```
+shootctl lock acquire --owner <who> --wait 3600 --max-age 2700
+  ... launch / setup / shoot / editor probes ...
+shootctl lock release --owner <who>
+```
+
+Regenerate and verify OUTSIDE the lock — that is CPU on your own node and it is
+where the time goes. Take it, run one bounded experiment, release, think, take
+it again; never hold it while reading logs or editing code. `acquire` names the
+holder and its age when it refuses. `--max-age 2700` breaks a 45-minute-old
+lock, which means a dead agent, and says so loudly. Never delete the lock
+directory by hand.
+
 ## Credentials on this box, and their blast radius
 
 | what | scope | used for |
