@@ -63,3 +63,19 @@ WHY carat1 IS THE ONE TO FILM
   back to slot 1 is the whole fix. It is our own run either way: the file
   re-simulates to 9.024 on the plain oracle and its recording matches its own
   tape on all 181 samples.
+
+------------------------------------------------------------------------
+ADDENDUM, 2026-08-24 19:55 UTC -- a faster run exists and is NOT on this box
+
+The search reached 9.006 after the file staged here. It is banked as
+  297660-great-wtf-of-what-523/replays/TAS_9006.Ghost.Gbx
+on node 41970.od.fbinfra.net, which dropped before it could be copied, so it
+is NOT reachable and has NOT been verified on this side.
+
+SHOOT THE 9.024 -- it is the file that is staged, checked and known good.
+The caption must name the file you actually filmed. If 9.006 ever turns up and
+you film that instead, the caption line becomes:
+
+  **Great Wtf of What #523** -- TAS **9.006** (+0.279) | AT 8.727 | WR 10.439 by BilboHaggins96
+
+Full caption text and provenance: ~/gw523/CAPTION.md
