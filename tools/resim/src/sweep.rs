@@ -156,6 +156,23 @@ impl Sweep {
         let rlog = self.results.as_ref().map(Log::at);
         let mut clean = 0u64;
 
+        // Every verdict is written, including the ones that were never
+        // measured. An absent row is not a failure row and it is not a passing
+        // one either: a results log holding only the tapes that reached the
+        // oracle would read as a clean sweep of a corpus half of which was
+        // never looked at.
+        let record = |rlog: &Option<Log>, r: &Row| {
+            if let Some(rl) = rlog {
+                let _ = rl.append(
+                    &Rec::new("resim")
+                        .f("map", &r.map)
+                        .f("file", &r.file)
+                        .f("verdict", r.verdict.tag())
+                        .f("detail", r.verdict.detail()),
+                );
+            }
+        };
+
         for (dirname, ghosts) in self.inventory()? {
             let human_name = map_name(&dirname);
             let id = map_id(&dirname).unwrap_or_default();
@@ -166,16 +183,16 @@ impl Sweep {
                 let base = g.file_name().unwrap_or_default().to_string_lossy().to_string();
                 match provenance(&base) {
                     Ok(Provenance::Ours) => allowed.push(g.clone()),
-                    Ok(Provenance::Human) => rows.push(Row {
-                        map: human_name.clone(),
-                        file: base,
-                        verdict: Verdict::RefusedHumanGhost,
-                    }),
-                    Err(why) => rows.push(Row {
-                        map: human_name.clone(),
-                        file: base,
-                        verdict: Verdict::Unmeasured { why },
-                    }),
+                    Ok(Provenance::Human) => {
+                        let r = Row { map: human_name.clone(), file: base, verdict: Verdict::RefusedHumanGhost };
+                        record(&rlog, &r);
+                        rows.push(r);
+                    }
+                    Err(why) => {
+                        let r = Row { map: human_name.clone(), file: base, verdict: Verdict::Unmeasured { why } };
+                        record(&rlog, &r);
+                        rows.push(r);
+                    }
                 }
             }
             if allowed.is_empty() {
@@ -184,13 +201,15 @@ impl Sweep {
 
             let Some(mapfile) = find_map(&self.corpus, &id) else {
                 for g in &allowed {
-                    rows.push(Row {
+                    let r = Row {
                         map: human_name.clone(),
                         file: g.file_name().unwrap_or_default().to_string_lossy().to_string(),
                         verdict: Verdict::Unmeasured {
                             why: format!("no .Map.Gbx for {id} in the corpus roots given"),
                         },
-                    });
+                    };
+                    record(&rlog, &r);
+                    rows.push(r);
                 }
                 continue;
             };
@@ -207,11 +226,13 @@ impl Sweep {
                     // An oracle failure is UNMEASURED for every tape in the
                     // batch. It is never a pass and never a failure.
                     for g in &allowed {
-                        rows.push(Row {
+                        let r = Row {
                             map: human_name.clone(),
                             file: g.file_name().unwrap_or_default().to_string_lossy().to_string(),
                             verdict: Verdict::Unmeasured { why: format!("oracle: {e}") },
-                        });
+                        };
+                        record(&rlog, &r);
+                        rows.push(r);
                     }
                     continue;
                 }
@@ -242,20 +263,19 @@ impl Sweep {
                 if verdict.is_clean() == Some(true) {
                     clean += 1;
                 }
-                if let Some(rl) = &rlog {
-                    let _ = rl.append(
-                        &Rec::new("resim")
-                            .f("map", &human_name)
-                            .f("file", &base)
-                            .f("verdict", verdict.tag())
-                            .f("detail", verdict.detail()),
-                    );
-                }
+                let row = Row { map: human_name.clone(), file: base.clone(), verdict };
+                record(&rlog, &row);
                 if let Some(pl) = &plog {
                     let _ = pl.append(&Rec::new("progress").f("evals", evals).f("best", clean));
                 }
-                println!("{:<28} {:<48} {:<20} {}", human_name, base, verdict.tag(), verdict.detail());
-                rows.push(Row { map: human_name.clone(), file: base, verdict });
+                println!(
+                    "{:<28} {:<48} {:<20} {}",
+                    human_name,
+                    base,
+                    row.verdict.tag(),
+                    row.verdict.detail()
+                );
+                rows.push(row);
             }
         }
         Ok((rows, evals))
