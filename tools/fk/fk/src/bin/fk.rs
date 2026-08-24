@@ -16,6 +16,9 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk server probe    where a fork server actually stopped, and the safe resume tick
   fk server check    fork resume vs full validation on the same candidates  [THE CONTROL]
   fk server bench    throughput against the batched plain oracle
+  fk tree cost       what a savestate-tree branch costs, against every baseline  [Q1]
+  fk tree exact      forward-only fork exactness, with both controls and a depth sweep
+  fk tree scale      branch-evals per second with many servers side by side
   fk liveness        is this anchor the copy of the car that has the fields?
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
@@ -172,6 +175,62 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     hi: num(rest, "--hi").map(|v| v as usize),
                 },
             )
+        }
+        "tree" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let rest = &a[2.min(a.len())..];
+            let (engine, tape, at) = common(rest)?;
+            let ns = |name: &str, dflt: &str| -> Vec<u64> {
+                flag(rest, name)
+                    .unwrap_or(dflt)
+                    .split(',')
+                    .map(|v| v.parse().unwrap_or_else(|_| fk::die(format!("{} wants numbers, got {:?}", name, v))))
+                    .collect()
+            };
+            match verb {
+                "cost" => cmd::tree::cost(
+                    &engine,
+                    tape,
+                    at,
+                    cmd::tree::CostOpts {
+                        reps: num(rest, "--reps").unwrap_or(11) as usize,
+                        ks: ns("--ks", "1,5,10,20,50,200,1000"),
+                        depth: num(rest, "--depth").unwrap_or(50) as usize,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
+                        allow_load: has(rest, "--allow-load"),
+                        trace: has(rest, "--trace"),
+                    },
+                ),
+                "exact" => match cmd::tree::exact(
+                    &engine,
+                    tape,
+                    at,
+                    cmd::tree::ExactOpts {
+                        n: num(rest, "--n").unwrap_or(40) as usize,
+                        depths: ns("--depths", "1,2,5,10,25,50").iter().map(|v| *v as usize).collect(),
+                        k: num(rest, "--k").unwrap_or(10) as u64,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                    },
+                )? {
+                    true => Ok(()),
+                    false => Err("RUNG 0.5 DID NOT PASS -- see the table above".into()),
+                },
+                "scale" => cmd::tree::scale(
+                    &engine,
+                    tape,
+                    at,
+                    cmd::tree::ScaleOpts {
+                        servers: num(rest, "--servers").unwrap_or(16) as usize,
+                        secs: num(rest, "--secs").unwrap_or(30) as u64,
+                        k: num(rest, "--k").unwrap_or(10) as u64,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
+                        allow_load: has(rest, "--allow-load"),
+                    },
+                ),
+                _ => Err("fk tree <cost|exact|scale>".into()),
+            }
         }
         "watch" => cmd::watch::run(&a[1..]),
         "regen" => cmd::regen::run(&a[1..]),
