@@ -47,7 +47,7 @@ steering values and one more key press than the world record holder uses.**
 > the live engine; it has fixed others in this corpus. This page will be
 > re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
+https://github.com/user-attachments/assets/bc65e263-71d9-4ef4-b280-936318d43e65
 
 Single car: the **7.998**, our fastest run here, driven with analog steering and
 111 distinct steering values — a tape no human hand produces. The comparison

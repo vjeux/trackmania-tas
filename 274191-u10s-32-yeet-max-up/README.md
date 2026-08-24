@@ -60,7 +60,7 @@ finish at any resolution tried.
 
 **U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR **7.441** by poruzu4 *(the opponent in this clip is Whatever8319's 7.893, the record when it was shot — see the banner above)*
 
-https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
+https://github.com/user-attachments/assets/17dbb882-db05-4287-a635-8434e247e11f
 
 **Our 7.463 and Whatever8319's 7.893, both in one camera, on our car.** (His was
 the world record when this was shot; poruzu4's 7.441 has since taken it.)

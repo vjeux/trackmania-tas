@@ -6,7 +6,7 @@ what makes the faster corner exit pay.**
 
 **Fall 2025 - 18 (CP1 end)** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 (six players tied)
 
-https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
+https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
 Single car: the **4.492**, the tape that matches the author time.
 

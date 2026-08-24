@@ -76,15 +76,15 @@ https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
 **[Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end)** — author time `10.598` · ours **10.594** (−0.004) · best human 10.602 (ShcrTM) · 663 records · the low-input ladder here is published as a negative: keyboard does not reach the author time on this map
 
-https://github.com/user-attachments/assets/0d988786-a13a-448a-9591-22a0d2dad890
+https://github.com/user-attachments/assets/8c03c836-d321-4cc7-91b9-1cee4c275aed
 
 **[Fall 2025 - 16 CP1 End](270051-fall-2025-16-cp1-end)** — author time `4.831` · ours **4.830** (−0.001) · best human 4.834 (OriginalCJM) · 1026 records
 
-https://github.com/user-attachments/assets/7ba69df0-29bb-42d3-8cc3-daf6158360a2
+https://github.com/user-attachments/assets/f43d45fc-c855-4897-a324-7b41e957be21
 
 **[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** (±0 — an exact tie takes the medal, so this is beaten) · best human 4.495 (AffiTM, six players tied) · 1101 records · the true crossing is 4.49286, and 4.491 needs 7.8 cm more travel — a win with nothing behind it
 
-https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
+https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
 ---
 
@@ -136,7 +136,7 @@ https://github.com/user-attachments/assets/dbcfd0d7-352b-4a5c-9b87-9bcf67cf40c1
 
 **[impossible at for ssano](249521-impossible-at-for-ssano)** — author time `14.648` · **beaten by a human: 14.529 (LeonesTM, 2026-08-24 01:25 UTC)** · ours **14.289** (−0.359, and still 0.240 ahead of the board) · 185 records · 7 of the top 15 were set that same evening — this map is under active human attack
 
-https://github.com/user-attachments/assets/308ba8de-8332-46c4-97d0-83745204e2af
+https://github.com/user-attachments/assets/c9fd4a67-760c-43bd-9a71-ea4cd3a02821
 
 **[Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible)** — author time `13.995` · **beaten by a human: 13.990 (in-.-)** · ours **13.984** (−0.011) · 5 records · twelve inputs reach 13.986, where the record uses 46 and crashes into the last step
 
@@ -144,11 +144,11 @@ https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
 **[Great wtf of what #165](227969-great-wtf-of-what-165)** — author time `8.127` · **beaten by a human: 8.127 (Tannuleet, 2026-08-23)** — an exact tie to the millisecond, which takes the medal · ours **7.998** (−0.129) · 46 records · this page said "no human has beaten it"; that is [retracted there](227969-great-wtf-of-what-165), not deleted
 
-https://github.com/user-attachments/assets/7ee7a8cc-b5ed-449c-9906-95912809a5c5
+https://github.com/user-attachments/assets/bc65e263-71d9-4ef4-b280-936318d43e65
 
 **[U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up)** — author time `7.704` · **beaten by a human: 7.441 (poruzu4, 2026-08-23)** · ours **7.463** — **a human is now 0.022 ahead of the run this repo publishes.** We led this board by 0.430 and said so; that is [retracted on the page](274191-u10s-32-yeet-max-up), not deleted. The author-time margin of −0.241 stands · 4 records · his finish is 3.3 m from the old record's, off the same spawn: the same line driven better, not a new route
 
-https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
+https://github.com/user-attachments/assets/17dbb882-db05-4287-a635-8434e247e11f
 
 ---
 

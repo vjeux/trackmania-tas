@@ -34,7 +34,7 @@ lifts at 80–85° and the pads give them nothing, and lifting at 90–105° giv
 > replay against the lift table below would settle it, and it is the most
 > useful thing anyone could do to this map next.
 
-https://github.com/user-attachments/assets/308ba8de-8332-46c4-97d0-83745204e2af
+https://github.com/user-attachments/assets/c9fd4a67-760c-43bd-9a71-ea4cd3a02821
 
 | run | time | vs author time | vs `in-.-`'s 15.039 | steering |
 |---|---|---|---|---|
