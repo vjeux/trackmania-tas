@@ -74,6 +74,10 @@ fn secs(ms: i64) -> String {
 
 fn main() {
     let a = Args::parse();
+    if a.1.first().map(|s| s.as_str()) == Some("confirm") {
+        confirm_tape(&a);
+        return;
+    }
     if a.1.first().map(|s| s.as_str()) == Some("template") {
         make_template(&a);
         return;
@@ -260,7 +264,10 @@ fn main() {
         Some(p) => {
             let txt = std::fs::read_to_string(p).unwrap_or_else(die);
             let mut seed: Vec<Input> = Vec::new();
-            for (ln, line) in txt.lines().enumerate().skip(1) {
+            for (ln, line) in txt.lines().enumerate() {
+                if line.starts_with('#') || line.starts_with("tick") {
+                    continue;
+                }
                 let f: Vec<&str> = line.split_whitespace().collect();
                 if f.len() < 4 {
                     continue;
@@ -305,6 +312,7 @@ fn main() {
         route_points: route_pts.clone(),
         tail_margin: 200,
         state_off: None,
+        common_from: None,
     };
     // THE REFERENCE IS THE CONTAINER'S OWN TAPE, read out of the file rather
     // than assumed. Assuming it was neutral is what produced
@@ -387,15 +395,37 @@ fn main() {
     // boundary, so the oracle must lay a candidate down from there. Probed from
     // a real worker rather than computed, because where a server stops is a
     // property of that server and not of the fitted clock line.
+    // THE BOUNDARY IS NOT STABLE, SO IT IS MEASURED SEVERAL TIMES AND THE MAX
+    // IS TAKEN.
+    //
+    // Measured on this map, same container, same code: three runs probed 153,
+    // 153 and **152**. One tick. And a one-tick shift of the whole tape turned
+    // a tape confirmed at `cps 3` into `cps 0` — every checkpoint lost — which
+    // is not a rounding error, it is a different run.
+    //
+    // This is the same shape as the phantom the search layer already paid for:
+    // where a server stops is a property of THAT SERVER, so anything derived
+    // from one server's stop is per-server. The fix there was the same as the
+    // fix here: publish the MAXIMUM over the fleet and have everybody use it.
+    let mut boundary = 0usize;
+    for i in 0..3 {
+        let mut o = opts_for(9990 + i);
+        o.state_off = shared_off;
+        match ForkBranch::start(&o, reference.clone()) {
+            Ok(b) => boundary = boundary.max(b.from),
+            Err(e) => println!("boundary probe {} failed: {}", i, e),
+        }
+    }
     {
         let mut o = opts_for(9998);
         o.state_off = shared_off;
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => {
-                oracle.set_prefix_ticks(b.from as u64);
+                boundary = boundary.max(b.from);
+                oracle.set_prefix_ticks(boundary as u64);
                 println!(
-                    "\nTICK FRAME  the fork resumes at tick {}, so the search's tick 0 is file tick {}.\n            Every candidate is written into the container from there; below it the file keeps\n            the container's own inputs, which is what the engine already consumed.",
-                    b.from, b.from
+                    "\nTICK FRAME  boundary probed 4x, MAX = tick {} (this probe said {}). The search's tick 0\n            is file tick {}. The maximum is used because where a server stops is a property\n            of that server: probes here differ by a tick between runs, and a one-tick shift\n            of a whole tape turned a confirmed cps 3 into cps 0.",
+                    boundary, b.from, boundary
                 );
             }
             Err(e) => {
@@ -506,7 +536,11 @@ fn main() {
                                     },
                                     t
                                 ));
-                                let mut txt = String::from("tick\tsteer\tgas\tbrake\n");
+                                let mut txt = format!(
+                                    "# frame\t{}\n# map\t{}\ntick\tsteer\tgas\tbrake\n",
+                                    oracle.prefix_ticks(),
+                                    pack.uid
+                                );
                                 for (i, x) in tape.iter().enumerate() {
                                     txt.push_str(&format!(
                                         "{}\t{}\t{}\t{}\n",
@@ -550,12 +584,19 @@ fn main() {
             |wi| {
                 let mut o = opts_for(wi);
                 o.state_off = shared_off;
+                o.common_from = Some(boundary);
                 let mut b = ForkBranch::start(&o, reference.clone())?;
                 // EVERY WORKER RE-READS A TRAJECTORY AND CHECKS IT. This is
                 // what makes the shared FK_STATE_OFF safe: a wrong address
                 // holding float triples fails on the quaternion and on
                 // d(pos)/dt, and a car that never moved fails on distance --
                 // a stationary car passes a velocity check for free.
+                // WHERE DOES THE CAR START? Asked before anything else, because a
+                // run that begins in the wrong place passes every other check.
+                match b.start_position_control(pack.spawn, a.num("spawn-tol", 40.0f32)) {
+                    Ok(m) => println!("worker {:>3} start OK: {}", wi, m),
+                    Err(e) => return Err(format!("worker {}: {}", wi, e)),
+                }
                 match b.self_check() {
                     Ok(m) => println!("worker {:>3} ready: {}", wi, m),
                     Err(e) if o.state_off.is_some() => {
@@ -700,5 +741,87 @@ fn make_template(a: &Args) {
     );
     if distinct < 20 {
         println!("  WARNING: fewer than 20 distinct steer values; the locate may not lock on.");
+    }
+}
+
+/// Re-simulate a banked tape, from outside the search that produced it.
+///
+/// The search confirms its own results as it goes, but a claim checked only by
+/// the process that made it is checked by an instrument that shares every
+/// assumption with the thing under test. This is the same tape, a separate
+/// invocation, a fresh server, and the frame stated on the command line rather
+/// than inherited.
+fn confirm_tape(a: &Args) {
+    let map = PathBuf::from(a.req("map"));
+    let template = PathBuf::from(a.req("template"));
+    let server = PathBuf::from(a.get("server").unwrap_or("/tmp/tmoracle/server"));
+    let work = PathBuf::from(a.get("work").unwrap_or("/tmp/cconfirm"));
+    let prefix: u64 = a.num("prefix", 153u64);
+    let reps: usize = a.num("reps", 2usize);
+
+    let txt = std::fs::read_to_string(a.req("tape")).unwrap_or_else(die);
+    let mut tape: Vec<Input> = Vec::new();
+    // A TAPE IS ONLY MEANINGFUL WITH ITS FRAME. The file carries the boundary
+    // it was written from; `--prefix` overrides it, and a file with neither is
+    // refused rather than replayed against a guess.
+    let mut file_frame: Option<u64> = None;
+    for line in txt.lines() {
+        if let Some(r) = line.strip_prefix("# frame") {
+            file_frame = r.trim().parse().ok();
+        }
+        if line.starts_with('#') || line.starts_with("tick") {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 4 {
+            continue;
+        }
+        tape.push(Input {
+            steer: f[1].parse().unwrap_or(0),
+            gas: f[2] != "0",
+            brake: f[3] != "0",
+        });
+    }
+    let oracle = EngineOracle::new(&template, &map, &server, &work).unwrap_or_else(die);
+    let frame = match (a.get("prefix"), file_frame) {
+        (Some(_), _) => prefix,
+        (None, Some(f)) => {
+            println!("frame {} taken from the tape file", f);
+            f
+        }
+        (None, None) => {
+            eprintln!(
+                "this tape carries no frame and none was given. A tape replayed at the wrong\nboundary is a different run: one tick of shift turned a confirmed cps 3 into cps 0.\nPass --prefix N."
+            );
+            std::process::exit(2);
+        }
+    };
+    oracle.set_prefix_ticks(frame);
+    println!(
+        "tape {} ticks, written into a {}-tick container from file tick {}",
+        tape.len(),
+        oracle.capacity(),
+        prefix
+    );
+    // A CONTROL IN THE SAME BATCH, because a verdict with nothing beside it
+    // says nothing about the instrument: the container's own tape must come
+    // back as something, and it must not come back as this tape's answer.
+    let bare: Vec<Input> = Vec::new();
+    match oracle.confirm_echo(&bare) {
+        Ok((v, e, uid, d)) => println!("control (container's own tape): {:?}  desc {:?}  uid {}  echo {:?}", v, d, uid, e),
+        Err(e) => println!("control UNMEASURED: {}", e),
+    }
+    for i in 0..reps {
+        match oracle.confirm_echo(&tape) {
+            Ok((v, e, uid, d)) => println!(
+                "run {}: {:?}   desc {:?}   map {}   echo {:?}",
+                i + 1,
+                v,
+                d,
+                uid,
+                e
+            ),
+            Err(e) => println!("run {}: REFUSED -- {}", i + 1, e),
+        }
     }
 }

@@ -73,6 +73,11 @@ pub struct ForkOpts {
     /// address. `self_check` catches that; this field is what lets the worker
     /// then do the honest thing instead of dying.
     pub state_off: Option<u64>,
+    /// The fleet's agreed resume boundary. A worker whose own probe is ABOVE
+    /// it refuses: writing below its own probe is a SILENT NO-OP, and a worker
+    /// silently dropping the first ticks of every candidate scores exactly the
+    /// incumbent and contaminates the archive for free.
+    pub common_from: Option<usize>,
 }
 
 pub struct ForkBranch {
@@ -127,7 +132,18 @@ impl ForkBranch {
         // hard abort: a resume cannot be trusted without it, and a fallback
         // here is how the phantom got in.
         let probe = srv.probe_tick()?;
-        let from = probe + 1;
+        let mut from = probe + 1;
+        if let Some(c) = o.common_from {
+            if from > c {
+                return Err(format!(
+                    "this server stopped at tick {} but the fleet resumes at {}; ticks {}..{} would \
+                     be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a \
+                     clamp silently changes what you searched.",
+                    probe, c, c, from
+                ));
+            }
+            from = c;
+        }
 
         // IS THIS SERVER SIMULATING THE TAPE WE THINK IT IS? Two processes
         // sharing a work directory swap replays, and the result is a real,
@@ -494,5 +510,59 @@ impl ForkBranch {
             qerr,
             moved
         ))
+    }
+}
+
+impl ForkBranch {
+    /// **THE START-POSITION CONTROL. Where does the car begin?**
+    ///
+    /// This is one comparison and it would have saved four hours.
+    ///
+    /// On 2026-08-24 this search produced a tape the plain oracle confirmed at
+    /// `cps 3` on *Summer 2026 - 01*, and it was reported as "a car drives the
+    /// map from the map file alone". It was not. A freshly located trace put
+    /// the car's first sample at **(1360.0, 10.0, 1065.6) at race 2.410, doing
+    /// 114 km/h** — **359.9 m from the map's spawn at (1584, 16, 784)** and
+    /// 38 m from checkpoint 3. A car cannot be 360 m from the grid 2.4 s into
+    /// a race; the run was starting near the last checkpoint and driving the
+    /// final section.
+    ///
+    /// Every identity control in the system passed on that run. `verify_tape`
+    /// passed — the server was simulating our tape. The trajectory self-check
+    /// passed — the readout is a real rigid body whose velocity matches its
+    /// own displacement, and a hard-left tape traces completely differently,
+    /// so it *is* our car. The plain oracle passed — it really did report
+    /// three checkpoints. **None of them could see that the car was in the
+    /// wrong place, because none of them ever asked.**
+    ///
+    /// > **An objective function cannot tell you that its input is the wrong
+    /// > car.** `progress()` was answering honestly about a car that should
+    /// > not have been there.
+    ///
+    /// So the check is: the first sample of a freshly simulated trace must be
+    /// within `tol` of the map's own spawn. It fails loudly, and it is not
+    /// optional.
+    pub fn start_position_control(&mut self, spawn: [f32; 3], tol: f32) -> Result<String, String> {
+        let (states, _) = self.simulate(&[], 0).map_err(|e| e.to_string())?;
+        let first = states
+            .first()
+            .ok_or("the readout produced no state at all, so the start is UNMEASURED")?;
+        let d = ((first.pos[0] - spawn[0]).powi(2)
+            + (first.pos[1] - spawn[1]).powi(2)
+            + (first.pos[2] - spawn[2]).powi(2))
+        .sqrt();
+        let msg = format!(
+            "first sample at ({:.1}, {:.1}, {:.1}), map spawn ({:.1}, {:.1}, {:.1}), {:.1} m apart",
+            first.pos[0], first.pos[1], first.pos[2], spawn[0], spawn[1], spawn[2], d
+        );
+        if d > tol {
+            return Err(format!(
+                "THE RUN DOES NOT START AT THE SPAWN: {} (tolerance {:.1} m).\n\
+                 Everything downstream would be a real trajectory of a car in the wrong place — \
+                 a passing identity check and a progress measure that means nothing.",
+                msg, tol
+            ));
+        }
+        Ok(msg)
     }
 }
