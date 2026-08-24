@@ -26,6 +26,10 @@ use crate::rec::Rec;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub ts: i64,
+    /// Which box wrote this. Most alarms are about the RUN, which spans
+    /// boxes; disk is about a MACHINE, and comparing free space across two of
+    /// them measures the rotation rather than the disk.
+    pub node: u64,
     /// Cumulative eval counter, monotonic per run.
     pub evals: u64,
     /// The objective the search is climbing — furthest station on our own
@@ -67,6 +71,9 @@ pub struct View {
     /// Horizontal metres between where the run's car started and where the
     /// map says the start line is. `None` means no sample has carried one.
     pub start_dev_m: Option<f64>,
+    /// Can this box reach GitHub through the bridge? `None` means the check
+    /// was not run on this pass, which is different from "no".
+    pub credential: Option<bool>,
 }
 
 impl View {
@@ -80,6 +87,7 @@ impl View {
             queue: QueueView::default(),
             last_bank: None,
             start_dev_m: None,
+            credential: None,
         }
     }
 }
@@ -106,6 +114,8 @@ pub struct Config {
     pub disk_min_free_mb: i64,
     /// Fire if the disk trend projects zero free within this horizon.
     pub disk_horizon_s: i64,
+    /// Shortest span of samples, from ONE box, that counts as a trend.
+    pub disk_trend_min_window_s: i64,
     /// Local work not pushed anywhere durable for this long is at risk.
     pub bank_max_gap_s: i64,
     /// A run whose car starts further than this from the map's start line is
@@ -138,6 +148,7 @@ impl Default for Config {
             queue_window_s: 7_200,
             disk_min_free_mb: 5_000,
             disk_horizon_s: 6 * 3600,
+            disk_trend_min_window_s: 1_800,
             bank_max_gap_s: 3_600,
             start_dev_max_m: 32.0,
             max_boxes: 2,
@@ -396,8 +407,20 @@ pub fn queue_stalled(v: &View, c: &Config) -> Option<Firing> {
 
 /// **Disk filling.** Both the cliff and the slope: a long-haul run dies of a
 /// full disk days before anyone would have looked.
+///
+/// **The trend is computed per BOX, and this is not a detail.** Free space is
+/// a property of a machine; the run spans machines. The first real rotation
+/// had a box with 1.23 TB free replaced by one with 380 GB, and comparing
+/// across them reported the disk "falling 7740 MB/min, empty in 49m" when
+/// nothing was filling at all — it had measured the rotation. A false critical
+/// on a routine event is how an alarm gets ignored.
 pub fn disk_filling(v: &View, c: &Config) -> Option<Firing> {
-    let with_disk: Vec<&Sample> = v.samples.iter().filter(|s| s.disk_free_mb.is_some()).collect();
+    let last_any = v.samples.iter().rev().find(|s| s.disk_free_mb.is_some())?;
+    let with_disk: Vec<&Sample> = v
+        .samples
+        .iter()
+        .filter(|s| s.disk_free_mb.is_some() && s.node == last_any.node)
+        .collect();
     let last = with_disk.last()?;
     let free = last.disk_free_mb?;
     if free < c.disk_min_free_mb {
@@ -409,7 +432,11 @@ pub fn disk_filling(v: &View, c: &Config) -> Option<Firing> {
     }
     let first = with_disk.first()?;
     let dt = (last.ts - first.ts) as f64;
-    if dt < 60.0 {
+    // A trend needs a window worth extrapolating from. A box's first minutes
+    // always show a steep fall — the oracle server is 385 MB and a release
+    // build is more — and projecting six hours off two minutes of bootstrap
+    // is arithmetic, not evidence.
+    if dt < c.disk_trend_min_window_s as f64 {
         return None;
     }
     let drop = (first.disk_free_mb? - free) as f64;
@@ -505,6 +532,35 @@ pub fn start_position(v: &View, c: &Config) -> Option<Firing> {
     }
 }
 
+// ---------------------------------------------------------------- A11
+
+/// **GitHub banking is degraded.**
+///
+/// The paste mirror needs only an x509 cert and keeps working; the push to
+/// GitHub needs the bridge credential, which a fresh box does not have. So
+/// this failure loses no WORK — but the repo is the state of record a human
+/// reads, and it going stale while everything looks fine is exactly the
+/// silence this project keeps paying for.
+///
+/// It is a warning rather than a critical because nothing is lost and the
+/// credential server should heal it within its own cycle; `unbanked_drift`
+/// stays armed underneath and escalates if banking stops entirely.
+pub fn banking_degraded(v: &View, _c: &Config) -> Option<Firing> {
+    match &v.credential {
+        None => None, // not evaluated on this pass
+        Some(true) => None,
+        Some(false) => Some(Firing {
+            id: "banking_degraded",
+            severity: Severity::Warn,
+            detail: "the bridge credential is missing or the bridge does not answer, so pushes \
+                     to GitHub are failing. The paste mirror still works, so no work is at \
+                     risk — but the repo a human reads is going stale. `tmhaul credential \
+                     check`; the devserver's `tmhaul credential serve` should heal it"
+                .to_string(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------- A10
 
 /// **More boxes than the ceiling allows.**
@@ -545,6 +601,7 @@ pub const ALL: &[(&str, AlarmFn)] = &[
     ("unbanked_drift", unbanked_drift),
     ("start_position", start_position),
     ("fleet_over_cap", fleet_over_cap),
+    ("banking_degraded", banking_degraded),
 ];
 
 pub fn evaluate(v: &View, c: &Config) -> Vec<Firing> {
@@ -570,6 +627,7 @@ pub mod fixtures {
         for i in 0..=120 {
             samples.push(Sample {
                 ts: NOW - 7200 + i * 60,
+                node: 1,
                 evals: (i as u64) * 600,
                 best: Some(10.0 + i as f64),
                 disk_free_mb: Some(200_000),
@@ -590,6 +648,7 @@ pub mod fixtures {
             },
             last_bank: Some(NOW - 300),
             start_dev_m: Some(0.8),
+            credential: Some(true),
         }
     }
 
@@ -634,6 +693,7 @@ pub mod fixtures {
         for i in 0..=600 {
             samples.push(Sample {
                 ts: NOW - 36_000 + i * 60,
+                node: 1,
                 evals: (i as u64) * 6_000, // 100/s
                 best: Some(25.0),          // never moves
                 disk_free_mb: Some(200_000),
@@ -688,6 +748,38 @@ pub mod fixtures {
         v
     }
 
+    /// A box replaced by one with less disk. Nothing is filling; the numbers
+    /// are simply from two different machines.
+    pub fn rotation_not_a_disk_fall() -> View {
+        let mut v = healthy();
+        for s in v.samples.iter_mut() {
+            s.disk_free_mb = Some(1_232_500);
+        }
+        let last = *v.samples.last().unwrap();
+        for i in 1..=2 {
+            v.samples.push(Sample {
+                ts: last.ts + i * 60,
+                node: 2,
+                disk_free_mb: Some(380_543),
+                ..last
+            });
+        }
+        v.now = last.ts + 120;
+        v
+    }
+
+    /// A box whose first minutes are its own bootstrap: a 385 MB server
+    /// download and a release build. Steep, brief, and not a trend.
+    pub fn fresh_box_bootstrap() -> View {
+        let mut v = healthy();
+        v.samples.retain(|s| s.ts >= v.now - 120);
+        for (i, s) in v.samples.iter_mut().enumerate() {
+            s.node = 2;
+            s.disk_free_mb = Some(400_000 - 9_000 * i as i64);
+        }
+        v
+    }
+
     pub fn never_banked() -> View {
         View { last_bank: None, ..healthy() }
     }
@@ -707,6 +799,10 @@ pub mod fixtures {
     /// A run that has never said where its car started.
     pub fn start_unreported() -> View {
         View { start_dev_m: None, ..healthy() }
+    }
+
+    pub fn banking_degraded() -> View {
+        View { credential: Some(false), ..healthy() }
     }
 
     pub fn too_many_boxes() -> View {
@@ -736,6 +832,7 @@ pub mod fixtures {
             ("start_position", "car starts 390 m away, at checkpoint 3", wrong_start()),
             ("start_position", "run never reported a start position", start_unreported()),
             ("fleet_over_cap", "four boxes against a ceiling of two", too_many_boxes()),
+            ("banking_degraded", "no bridge credential on this box", banking_degraded()),
         ]
     }
 }
@@ -854,6 +951,35 @@ mod tests {
         let mut v = healthy();
         v.queue = QueueView { pending: 0, claimed: 0, expired_claims: 0, last_completion: Some(v.now - 99_999) };
         assert!(queue_stalled(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn a_box_rotation_is_not_a_disk_filling_up() {
+        // The real false positive, in its real numbers: 1.23 TB free on the
+        // old box, 380 GB on its replacement, reported as "falling
+        // 7740 MB/min — empty in 49m" while nothing was filling at all.
+        // Free space is a property of a MACHINE; the run spans machines.
+        assert!(
+            disk_filling(&rotation_not_a_disk_fall(), &Config::default()).is_none(),
+            "comparing free space across two boxes measures the rotation, not the disk"
+        );
+    }
+
+    #[test]
+    fn a_fresh_boxs_bootstrap_is_not_a_trend() {
+        // Every box's first minutes fall steeply: a 385 MB server download and
+        // a release build. Projecting six hours from two minutes of that is
+        // arithmetic, not evidence.
+        assert!(disk_filling(&fresh_box_bootstrap(), &Config::default()).is_none());
+    }
+
+    #[test]
+    fn but_a_real_slope_on_one_box_still_fires() {
+        // The control that keeps the two tests above honest: after suppressing
+        // the rotation and the bootstrap, the alarm must still catch a disk
+        // that is genuinely filling.
+        assert!(disk_filling(&disk_slope(), &Config::default()).is_some());
+        assert!(disk_filling(&disk_cliff(), &Config::default()).is_some());
     }
 
     #[test]

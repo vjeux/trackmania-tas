@@ -351,11 +351,18 @@ impl Supervisor {
 /// the bridge to the render box is. Deciding at run time, rather than baking a
 /// route into the config, is what lets a replacement box on different hardware
 /// come up and bank without anyone editing anything.
-pub fn resolve_push(setting: &str) -> String {
+/// `push = auto` picks the strongest route this box actually has.
+///
+/// Takes the home directory rather than reading `$HOME`, because its test
+/// used to point the variable at a nonexistent path — and `set_var` is
+/// process-global, so it leaked into every other test running in parallel and
+/// made unrelated ones fail with a story about credentials. A function that
+/// reads a global is a function whose test can only be written by mutating
+/// one.
+pub fn resolve_push_in(setting: &str, home: &str) -> String {
     if setting != "auto" {
         return setting.to_string();
     }
-    let home = std::env::var("HOME").unwrap_or_default();
     if Path::new(&format!("{home}/bin/whitestick")).exists()
         && Path::new(&format!("{home}/.navi/credentials.json")).exists()
     {
@@ -365,6 +372,10 @@ pub fn resolve_push(setting: &str) -> String {
         return "direct".into();
     }
     "none".into()
+}
+
+pub fn resolve_push(setting: &str) -> String {
+    resolve_push_in(setting, &std::env::var("HOME").unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -403,8 +414,9 @@ mod tests {
         assert_eq!(resolve_push("whitestick"), "whitestick");
         // `auto` on a box with neither route must say `none` rather than
         // pretending: a push that no-ops is worse than one that is off.
-        std::env::set_var("HOME", "/nonexistent-home-for-this-test");
-        assert_eq!(resolve_push("auto"), "none");
+        // Passed in, never set globally: this test used to mutate $HOME and
+        // break unrelated tests running beside it.
+        assert_eq!(resolve_push_in("auto", "/nonexistent-home-for-this-test"), "none");
     }
 }
 

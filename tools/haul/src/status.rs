@@ -92,6 +92,13 @@ pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
         r.run_started.map(|t| format!("{} ({} ago)", iso(t), dur(now - t))).unwrap_or_else(|| "—".into())
     ));
     s.push_str(&format!(
+        "| GitHub banking | {} |\n",
+        {
+            let h = crate::credential::health(&std::env::var("HOME").unwrap_or_default());
+            if h.ok() { "working".to_string() } else { format!("**DEGRADED** — {}", h.describe()) }
+        }
+    ));
+    s.push_str(&format!(
         "| last banked | {} |\n",
         v.last_bank
             .map(|t| format!("{} ago — {}", dur(now - t), r.last_bank_receipt.clone().unwrap_or_default()))

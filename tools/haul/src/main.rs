@@ -379,6 +379,30 @@ fn real_main() -> Result<i32, String> {
 
         "lease" => {
             let l = layout()?;
+            // Retiring a box that VANISHED. A clean stand-down retires itself;
+            // a box whose lease was reclaimed underneath it never got the
+            // chance, and would otherwise sit ACTIVE in the registry forever —
+            // firing box_vanished on every heartbeat and counting against the
+            // fleet ceiling. Found by the first real rotation.
+            if a.word(1) == "retire" {
+                let node = a.s("node", "");
+                if node.is_empty() {
+                    return Err("tmhaul lease retire --node NODE --why TEXT".into());
+                }
+                let known: Vec<String> = lease::all(&l)?.into_iter().map(|b| b.node).collect();
+                if !known.iter().any(|n| n == &node) {
+                    // Refuse a name the registry has never seen: a typo would
+                    // otherwise write a retirement for a box that never
+                    // existed and silently leave the real one active.
+                    return Err(format!(
+                        "no box named {node:?} in the registry. Known: {}",
+                        known.join(", ")
+                    ));
+                }
+                lease::retire(&l, &node, &a.s("why", "retired by hand"))?;
+                println!("retired {node}");
+                return Ok(0);
+            }
             for b in lease::all(&l)? {
                 println!(
                     "{}\t{}\tlease={}\tlast_seen={}\t{}",
@@ -532,6 +556,59 @@ fn real_main() -> Result<i32, String> {
             }
             println!("\n{} gate(s), {broken} broken", gates::GATES.len());
             Ok(if broken == 0 { 0 } else { 2 })
+        }
+
+        "credential" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/var/svcscm".into());
+            match a.word(1) {
+                "" | "check" => {
+                    let h = credential::health(&home);
+                    println!("{}", h.describe());
+                    Ok(if h.ok() { 0 } else { 1 })
+                }
+                // Run ON THE MACHINE THAT HOLDS THE CREDENTIAL (the devserver).
+                // An on-demand box cannot reach the devserver at all, so this
+                // cannot be a pull by the box that needs the file; it is a
+                // push by the one that has it, aimed by the box registry.
+                "serve" => {
+                    let l = layout()?;
+                    let me = paths::node_id();
+                    let once = a.on("once");
+                    let every = a.i("every-s", 300).max(30);
+                    loop {
+                        if let Err(e) = recover::pull(&l, &job(&l)?.branch) {
+                            eprintln!("tmhaul credential serve: cannot refresh the registry: {e}");
+                        }
+                        match credential::targets(&l, &me, time::now(), a.i("stale-after-s", 1800)) {
+                            Err(e) => eprintln!("tmhaul credential serve: {e}"),
+                            Ok(ts) => {
+                                for node in ts {
+                                    match credential::deliver(&node) {
+                                        credential::Delivery::AlreadyThere => {}
+                                        credential::Delivery::Installed => {
+                                            println!("{}  installed on {node}", time::iso(time::now()));
+                                        }
+                                        credential::Delivery::Failed(why) => {
+                                            println!("{}  {node}: {why}", time::iso(time::now()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if once {
+                            return Ok(0);
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(every as u64));
+                    }
+                }
+                "selftest" => {
+                    let (ok, report) = credential::selftest();
+                    print!("{report}");
+                    println!("\n{}", if ok { "every failure path refuses" } else { "A FAILURE PATH REPORTED SUCCESS" });
+                    Ok(if ok { 0 } else { 2 })
+                }
+                other => Err(format!("tmhaul credential check|serve|selftest, got {other:?}")),
+            }
         }
 
         "verify" => {

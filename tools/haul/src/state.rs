@@ -40,6 +40,13 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
         .filter(|r| r.kind == "sample")
         .map(|r| Sample {
             ts: r.ts,
+            // A stable numeric id for the writing box, hashed from its name:
+            // the alarms only ever compare nodes for equality, and carrying a
+            // String through a Copy struct would cost more than it says.
+            node: {
+                let n = r.get("node").unwrap_or("");
+                u64::from_str_radix(&crate::md5::md5_hex(n.as_bytes())[..8], 16).unwrap_or(0)
+            },
             evals: r.get_u64("evals").unwrap_or(0),
             best: r.get_f64("best"),
             disk_free_mb: r.get_i64("disk_free_mb"),
@@ -79,6 +86,15 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
             .rev()
             .filter(|r| r.kind == "sample" || r.kind == "run_start")
             .find_map(|r| r.get_f64("start_dev_m")),
+        // Judged from the FILE only, not from a bridge probe: `reconstruct` is
+        // called by `status`, `beat` and every supervisor pass, and an ssh
+        // round-trip on each of those would be a network call inside what is
+        // meant to be a read of committed state. The supervisor proves the
+        // bridge properly once per pass and records the answer.
+        credential: Some(matches!(
+            crate::credential::inspect(&crate::credential::credential_path()),
+            crate::credential::Health::PresentUnproven | crate::credential::Health::Working
+        )),
     };
 
     Ok(Reconstructed {

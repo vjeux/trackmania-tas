@@ -55,3 +55,9 @@
 2026-08-24T20:01:27Z	box_alive	node=117796
 2026-08-24T20:02:27Z	box_alive	node=117796
 2026-08-24T20:03:27Z	box_alive	node=117796
+2026-08-24T20:04:27Z	box_alive	node=117796
+2026-08-24T20:05:27Z	box_alive	node=117796
+2026-08-24T20:06:27Z	box_alive	node=117796
+2026-08-24T20:07:35Z	box_retired	node=117796	why=stop file
+2026-08-24T20:09:30Z	box_start	node=117796	note=proxy-independent supervisor	lease_expires=1787638680
+2026-08-24T20:32:21Z	box_retired	node=117796	why=lease reclaimed by the platform at 20:30Z; the box vanished without standing down

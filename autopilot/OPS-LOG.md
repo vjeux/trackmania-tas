@@ -6,6 +6,103 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## An on-demand box cannot ssh to a devserver; the reverse works
+
+Measured while automating the credential bootstrap: `ssh devvm42752…` from an
+OD times out at the connect, and `ssh <od>.od.fbinfra.net` from devvm succeeds
+first try. So anything that moves a file between them is a **push from the
+devserver**, never a pull by the OD — which is why `tmhaul credential serve`
+runs on the devserver and is aimed by the box registry rather than being asked
+for by the box that needs the file.
+
+## A test that mutates `$HOME` breaks every test running beside it
+
+`resolve_push` read `$HOME`, so its test set it to a nonexistent path — and
+`set_var` is process-global, so unrelated tests in the same binary started
+failing with a story about missing credentials. **A function that reads a
+global is a function whose test can only be written by mutating one.** It takes
+the home directory as an argument now (`resolve_push_in`).
+
+## A retirement stamped before the start it follows is history, not a retirement
+
+`lease::all` folds each box's log in TIMESTAMP order and `box_start` clears the
+retired flag — correctly, since a box that starts again is active again. So a
+caller whose clock disagrees with the records it writes can retire a box "in
+the past" and watch the retirement be ignored. `retire_at` exists for callers
+that must control the stamp, and the behaviour is pinned by a test rather than
+left to be rediscovered.
+
+## Free disk is a property of a MACHINE; the run spans machines
+
+Minutes after the first rotation, `disk_filling` fired CRITICAL: *"380543 MB
+free, falling 7740.4 MB/min — empty in 49m"*. Nothing was filling. The old box
+had 1.23 TB free and its replacement has 380 GB, and the alarm had computed a
+slope across the two — it measured the rotation.
+
+Every other alarm is about the RUN, which legitimately spans boxes; disk is
+not. Samples now carry their writing node and the disk trend only compares
+within one. A second arm was needed too: a box's first minutes always fall
+steeply (385 MB of server download, then a release build), so a trend now
+needs a real window — projecting six hours off two minutes of bootstrap is
+arithmetic, not evidence.
+
+**A false critical on a routine event is how an alarm gets ignored**, so this
+rated a fix rather than a tolerance bump. The control is in the same test
+file: after both suppressions, a genuine slope on one box still fires.
+
+## A box that VANISHES never retires itself, and nothing could retire it
+
+Found by the first unplanned rotation: `117796`'s lease was reclaimed with
+nine hours nominally left, so the supervisor never reached its stand-down and
+the registry kept the box `ACTIVE` forever — firing `box_vanished` on every
+heartbeat and counting against the fleet ceiling. There was no way to say "that
+box is gone" short of editing a state file by hand.
+
+`tmhaul lease retire --node N --why T`. It refuses a name the registry has
+never seen, because a typo would otherwise write a retirement for a box that
+does not exist and quietly leave the real one active.
+
+## A fresh box needs the bridge credential every time
+
+Each replacement box starts with no `~/.navi/credentials.json`, so `push =
+auto` resolves to `none` until it is copied from devvm42752 (161 bytes,
+`RENDER-BOX.md` §2). The mirror still works without it, so the failure is not
+loud — `unbanked_drift` is what would eventually say so. **This is the one
+manual step in an otherwise unattended rotation**, and it is a file, so it
+could be automated by any box that can read devvm.
+
+## A DETACHED supervisor has no proxy, and a silent fetch failure hid it
+
+The worst bug in the harness so far, and it is this project's signature shape:
+**a check that passes while doing nothing.**
+
+`sync_with_remote` treated a failed `git fetch` as `Ok(None)` — "no network,
+not fatal, the push will complain" — so on a box whose environment has no
+proxy the rebase never ran at all, the push was rejected, and the retry loop
+re-ran the same silent no-op three times before reporting *"the remote kept
+moving"*. It had not moved once.
+
+Two fixes, and the second is the general one:
+
+* **A fetch that failed means the remote is UNKNOWN**, and pushing on unknown
+  is exactly what this project forbids. It is now an error naming the proxy.
+* **The harness supplies the proxy itself** for every network git call
+  (`gitcmd::git_env`), rather than requiring whoever launches it to remember.
+  `tmhaul watch --detach` inherits NOTHING from the shell that started it, so
+  "export it first" is a rule that works interactively and fails every night
+  at 3am. An already-set value still wins.
+
+Proved by running a full bank under `env -u https_proxy -u http_proxy`: commit,
+mirror and push all succeed.
+
+## Rebase with `--autostash` when a supervisor is running
+
+The same bank then failed with *"cannot rebase: You have unstaged changes"*.
+Not a conflict: the worker appends to the journal continuously, so between the
+commit a moment earlier and the rebase, the working tree had moved again.
+`--autostash` is built for exactly this. Without it the harness reports a
+conflict that is not one, which is worse than the failure.
+
 ## Rebasing before a push is not enough: the remote moves DURING the push
 
 After the rebase fix, a push failed again the same way. It was not the same

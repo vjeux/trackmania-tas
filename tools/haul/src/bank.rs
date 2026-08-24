@@ -348,11 +348,26 @@ fn shell_quote(s: &str) -> String {
 /// that turns out not to be true, the rebase is aborted and the error says so
 /// rather than leaving a half-rebased checkout behind.
 pub fn sync_with_remote(l: &Layout, branch: &str) -> Result<Option<String>, String> {
-    let fetch = gitcmd::try_run(&l.repo, "git", &["fetch", "-q", "origin", branch])?;
+    let fetch = gitcmd::git_env(&l.repo, &["fetch", "-q", "origin", branch])?;
     if fetch.code != 0 {
-        // No network or no read access: not fatal here. The push will fail
-        // next and say so with its own error.
-        return Ok(None);
+        // A FAILED FETCH IS NOT "NOTHING TO DO".
+        //
+        // This returned `Ok(None)` — "no network, not fatal, carry on" — and
+        // the push then went ahead against a remote nobody had looked at. On a
+        // box with no proxy in its environment the fetch fails every time, so
+        // the rebase never ran, the push was rejected, and the retry loop
+        // re-ran the same silent no-op three times and reported that "the
+        // remote kept moving". It had not moved at all.
+        //
+        // A fetch we could not do means the remote's state is UNKNOWN, and
+        // pushing on unknown is precisely what this project forbids. Fail.
+        return Err(format!(
+            "cannot see the remote, so there is nothing safe to push onto: {}. \
+             On an on-demand box this is usually the proxy — git needs \
+             https_proxy=http://fwdproxy:8080, and a DETACHED supervisor does not \
+             inherit your shell's",
+            fetch.stderr.trim()
+        ));
     }
     let behind = gitcmd::try_run(
         &l.repo,
@@ -363,7 +378,12 @@ pub fn sync_with_remote(l: &Layout, branch: &str) -> Result<Option<String>, Stri
         return Ok(None); // already a fast-forward
     }
     let before = gitcmd::head_sha(&l.repo)?;
-    let rebase = gitcmd::try_run(&l.repo, "git", &["rebase", "FETCH_HEAD"])?;
+    // `--autostash`, because a supervisor is usually running while this
+    // happens: the worker appends to the journal continuously, so between the
+    // commit a moment ago and this rebase the working tree has almost
+    // certainly moved again. Without it the rebase refuses with "you have
+    // unstaged changes" and the harness reports a conflict that is not one.
+    let rebase = gitcmd::try_run(&l.repo, "git", &["rebase", "--autostash", "FETCH_HEAD"])?;
     if rebase.code != 0 {
         let _ = gitcmd::try_run(&l.repo, "git", &["rebase", "--abort"]);
         return Err(format!(
@@ -488,7 +508,7 @@ pub fn push_direct(l: &Layout, branch: &str) -> Result<String, String> {
     let mut last = String::new();
     for _ in 0..3 {
         let rebased = sync_with_remote(l, branch)?;
-        let o = gitcmd::try_run(&l.repo, "git", &["push", "origin", &format!("HEAD:{branch}")])?;
+        let o = gitcmd::git_env(&l.repo, &["push", "origin", &format!("HEAD:{branch}")])?;
         if o.code == 0 {
             return Ok(format!(
                 "direct→github {}{}",

@@ -11,6 +11,7 @@ pub mod bank;
 pub mod beat;
 pub mod budget;
 pub mod config;
+pub mod credential;
 pub mod disk;
 pub mod gates;
 pub mod gitcmd;
