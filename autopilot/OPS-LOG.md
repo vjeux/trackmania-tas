@@ -6,6 +6,32 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## An on-demand box cannot ssh to a devserver; the reverse works
+
+Measured while automating the credential bootstrap: `ssh devvm42752…` from an
+OD times out at the connect, and `ssh <od>.od.fbinfra.net` from devvm succeeds
+first try. So anything that moves a file between them is a **push from the
+devserver**, never a pull by the OD — which is why `tmhaul credential serve`
+runs on the devserver and is aimed by the box registry rather than being asked
+for by the box that needs the file.
+
+## A test that mutates `$HOME` breaks every test running beside it
+
+`resolve_push` read `$HOME`, so its test set it to a nonexistent path — and
+`set_var` is process-global, so unrelated tests in the same binary started
+failing with a story about missing credentials. **A function that reads a
+global is a function whose test can only be written by mutating one.** It takes
+the home directory as an argument now (`resolve_push_in`).
+
+## A retirement stamped before the start it follows is history, not a retirement
+
+`lease::all` folds each box's log in TIMESTAMP order and `box_start` clears the
+retired flag — correctly, since a box that starts again is active again. So a
+caller whose clock disagrees with the records it writes can retire a box "in
+the past" and watch the retirement be ignored. `retire_at` exists for callers
+that must control the stamp, and the behaviour is pinned by a test rather than
+left to be rediscovered.
+
 ## Free disk is a property of a MACHINE; the run spans machines
 
 Minutes after the first rotation, `disk_filling` fired CRITICAL: *"380543 MB

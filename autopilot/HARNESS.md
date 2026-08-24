@@ -87,6 +87,49 @@ that silently did nothing is the failure shape this project keeps paying for.
    never half-restored.
 3. **Push** to GitHub — the state of record a human reads.
 
+### The bridge credential bootstraps itself
+
+A fresh box has no `~/.navi/credentials.json`, so it cannot push. That used to
+be the one manual step in an otherwise unattended rotation, and an otherwise
+autonomous rotation with a manual step in it is not autonomous.
+
+**The direction is forced and it is not the obvious one.** An on-demand box
+cannot reach the devserver at all — `ssh` to it times out — while the devserver
+reaches the on-demand box fine. So this cannot be a *pull* by the box that
+needs the file. It is a **push from the machine that already has it**, aimed by
+the box registry the repo already publishes:
+
+```
+devserver (holds the credential, long-lived, runs `tmhaul credential serve`)
+  └── pulls the repo, reads autopilot/state/boxes/
+  └── for each ACTIVE box that lacks the file: ssh, umask 077, content on
+      stdin, chmod 600
+on-demand box (needs it, cannot ask for it)
+```
+
+Hostnames are not secrets. **The credential never touches the repo, a log, a
+paste, or a journal entry** — the content is never read into a report, hashed
+into an artifact, or echoed in an error, and every failure reason is a fixed
+category string rather than a transport body (there is a test for that).
+What is checked and reported is existence, mode 600, ownership, a plausible
+size band, and the only check that means anything: **does a real bridge
+operation succeed**.
+
+```bash
+tmhaul credential check      # on any box
+tmhaul credential selftest   # prove a FAILED bootstrap cannot report success
+tmhaul credential serve      # on the devserver; --once for one pass
+```
+
+On the devserver it is `~/tmhaul/serve.sh`, started by cron `` and
+re-run every 15 minutes so a crash heals without waiting for a reboot; a lock
+directory keeps that to one instance.
+
+**It fails closed and says so.** With no credential the paste mirror still
+works (different credential, different service), so no work is at risk — but
+the repo a human reads goes stale, so `banking_degraded` fires and the status
+page carries a **DEGRADED** line, with `unbanked_drift` armed underneath.
+
 ### The push route, because it is not obvious
 
 **No on-demand box holds a GitHub credential.** `git push` from one dies with
