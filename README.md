@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
 
 https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
-**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 147.031 (ailiei., eleven respawns; 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 2 records · **filmed at last, 2026-08-24: the client was dying because the record held fewer than 29 entities, not because of anything in our samples. [The page names the crash at its address](227654-the-blev-special).**
+**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 86.338 (Zane_TM, set 2026-08-24; the ghost in the clip is ailiei.'s 147.031, rank 1 until that morning — 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 3 records · **filmed at last, 2026-08-24: the client was dying because the record held fewer than 29 entities, not because of anything in our samples. [The page names the crash at its address](227654-the-blev-special).**
 
 https://github.com/user-attachments/assets/237e84af-68b2-4701-9cc1-7cb27c9671b8
 

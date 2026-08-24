@@ -1,11 +1,18 @@
 # The Blev Special
 
-**Nothing on this map is won in the final flight: the world record's eleven
-respawns cost it 82 seconds, and the seven that are left are all in the
-nine-second crawl into the corner at 47 s — get wedged there by 40.0 s instead
-of 46.9 s and the author time falls.**
+**Nothing on this map is won in the final flight: the 147.031 that stood as the
+world record for two weeks lost 82 seconds to eleven respawns, and the seven
+that are left are all in the nine-second crawl into the corner at 47 s — get
+wedged there by 40.0 s instead of 46.9 s and the author time falls.**
 
-**The Blev Special** — TAS **57.482** (−0.371) | AT 57.853 | WR 147.031 by ailiei.
+**The Blev Special** — TAS **57.482** (−0.371) | AT 57.853 | WR 86.338 by Zane_TM
+
+> **The board moved on the morning this was filmed.** `Zane_TM` set **86.338**
+> at 06:36 UTC on 2026-08-24, two hours before the render, and ailiei.'s
+> **147.031** — the record this page is written around, and the ghost in the
+> clip — is now rank 2. Re-pulled with `tmsite refresh` + `tmsite records`
+> before the caption was written, which is FILMING.md rule 4. Nothing here was
+> submitted to any leaderboard.
 
 > ### The clip exists now — 2026-08-24, and the cause is named
 >
@@ -40,7 +47,9 @@ https://github.com/user-attachments/assets/237e84af-68b2-4701-9cc1-7cb27c9671b8
 nothing else touched. Two cars, chase camera on ours, ailiei.'s own driving with
 his eleven retries spliced out (64.871) as the opponent, our inputs drawn from
 our own 10 ms tape. The margin on this map is read against that 64.871, not
-against the 147.031 the leaderboard shows.*
+against the 147.031 he is on the board with — and not against Zane_TM's 86.338,
+which landed two hours before the render and this project has not looked at.*
+
 
 > ### The recording is fixed. `TAS_57482` carries its own run.
 >
@@ -97,20 +106,25 @@ against the 147.031 the leaderboard shows.*
 | `TAS_57493` *(no file)* | 57.493 | −0.360 | the same idea, 11 ms slower |
 | `TAS_57573` *(no file)* | 57.573 | −0.280 | the first tape to beat the author time here |
 | `TAS_59912` *(no file)* | 59.912 | +2.059 | the best keyboard-only run |
-| [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the world record with its eleven respawns spliced out** |
+| [`HUMAN_WR_retries_cut_64871`](replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx) | 64.871 | +7.018 | **the 147.031 with its eleven respawns spliced out** — rank 1 until 2026-08-24 |
 | Author time | 57.853 | — | — |
-| Human WR, as recorded | 147.031 | +89.178 | contains 11 respawns |
-| Human #2 | 676.640 | — | — |
+| Human WR, live | 86.338 | +28.485 | Zane_TM, set 2026-08-24 06:36 UTC — after everything else on this page |
+| ailiei.'s 147.031, as recorded | 147.031 | +89.178 | rank 1 until that morning; contains 11 respawns; the ghost in the clip |
+| Human #3 | 676.640 | — | FrankTheHamster |
 
 TMX map [227654](https://trackmania.exchange/maps/227654) · author **Blev..** ·
-**2 recorded runs** · DesertCar / SnowCar / Bobsleigh.
+**3 recorded runs** (2 when this page was written; Zane_TM's 86.338 landed
+2026-08-24) · DesertCar / SnowCar / Bobsleigh.
 
 ## Read the gap correctly: 7 seconds, not 89
 
-The leaderboard makes this look like a joke map — an 89-second gap between the
-author time and the world record. It is not. The world record contains **eleven
+The leaderboard made this look like a joke map — an 89-second gap between the
+author time and the world record. It is not. That 147.031 contains **eleven
 respawns**. Take them out and the same human's own driving is **64.871**. That
 is the number this map should be read against, and the real gap was **7.018**.
+*(Since 2026-08-24 the board's rank 1 is Zane_TM's 86.338 and the joke is
+smaller, but the point stands and the file we filmed against is still the
+147.031.)*
 
 Eleven retries is not a sign of a bad driver, either. It is a sign of what the
 end of this map asks for, which is the second half of this page.
@@ -192,7 +206,7 @@ touch the input that decides it.
 
 | file | what |
 |---|---|
-| `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed — published as his recording, which is what it is |
+| `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | ailiei.'s own driving with the eleven respawns removed — published as his recording, which is what it is |
 | `replays/TAS_57482.Ghost.Gbx` | **the fastest run on this map, and the only tape here whose recording is its own** — regenerated from engine state, span 0.000 → 57.482, one car in the file, and since 2026-08-24 its per-sample telemetry (wheels, suspension, rpm, gear, contact, reactor) is this run's too |
 | `replays/TAS_57518.Ghost.Gbx` | the family's next tape — its telemetry is still the carrier's |
 | `replays/TAS_57537.Ghost.Gbx`, `replays/TAS_57577.Ghost.Gbx` | the rest of the family — **one trajectory, not two runs** |
