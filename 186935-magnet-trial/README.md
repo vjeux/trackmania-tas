@@ -2,7 +2,7 @@
 
 **The Magnet Trial** — TAS **793.893** (−1746.748) | AT 2540.641 | WR 2575.154 by keby
 
-https://github.com/user-attachments/assets/5d483f7b-f29c-41b7-ba94-72dd76b0d378
+https://github.com/user-attachments/assets/2c4e4a87-fd37-471d-b709-084e9aa2422c
 
 Thirteen minutes and fourteen seconds, and the whole run is in it. The panel is
 this run's own inputs from the 10 ms input chunk.
@@ -41,8 +41,42 @@ their failed attempts each lasted longer than that.**
 > speed are this run's; the tyre and contact effects are absent rather than
 > somebody else's.
 >
-> **Still no video.** At 793.893 s this is the longest run in the project and
-> the render box became unavailable before it could be filmed.
+> **Re-shot 2026-08-24, and the line above about there being no video is
+> retired** — the clip at the top of this page is that render, and it is the
+> longest in the project at 793.900 s.
+>
+> **It is shot on the COCKPIT camera (`shootctl --cam 1`), and that is part of
+> this map's treatment: reuse it.** This is a magnet map, so the car spends
+> most of the run on walls and ceilings, and the stock chase camera (`--cam 2`)
+> keeps the WORLD's up-vector — you watch an upside-down car in a level world
+> and cannot read what it is doing. The cockpit camera rolls WITH the car, so
+> ceiling-driving reads as driving.
+>
+> **Picked by looking, not by argument.** Three partial renders, same three
+> instants, `clip frames --stream`:
+>
+> | | race 4.000 | race 8.000 |
+> |---|---|---|
+> | `--cam 2` External, the old default | car visible but small and far, reads as a car glued sideways to a pillar | **no car in frame at all** |
+> | `--cam 6` Ext2 | the best single image on this map — closer, livery legible, wall-driving obvious | **no car in frame at all** |
+> | **`--cam 1` Internal** | nose and front wheels, road ahead legible, world rolled with the car | **car and road both in frame** |
+>
+> Cam 6 takes the prettiest frame here and it is not the one to use: at race
+> 8.000 **both** external cameras lose the subject entirely, which is this map
+> rather than the mode. The cockpit never does. The trade is that you do not see
+> the car's own body — on a magnet map the information is the attitude and the
+> line, and neither external camera can hold either.
+>
+> `ghost verify` on the filmed file: kappa **1.000** (15878 of 15878 samples),
+> the plain oracle re-simulating the WRITTEN file to **793.893**, telemetry
+> 0.000 .. 793.850 inside a span ending 793.893. Trajectory worst **0.0462 m**
+> against the file it replaces, over 10.9 km of driving.
+>
+> Encoded at **crf 32**: GitHub's attachment store refuses anything over 100 MB
+> and 794 s at the default crf 19 does not come close to fitting. The render
+> itself took about forty minutes and came out **793.866 s** — its own length,
+> not the map's 2540.641 author ghost, which corrects a claim this project's
+> `RENDER-BOX.md` briefly carried.
 
 | run | time | vs author time |
 |---|---|---|

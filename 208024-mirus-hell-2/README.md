@@ -72,7 +72,7 @@ author time is now beaten — 18.160 against 18.806.**
 > re-simulation would settle it. That is the open task on this map, and it
 > is a more interesting one than the page's old ending suggested.
 
-https://github.com/user-attachments/assets/f6d9b714-2c3d-4ac8-a39d-6adea8eea3ee
+https://github.com/user-attachments/assets/6df66b41-5469-4008-ac02-e8a1b5566c91
 
 **The author time is beaten, by 0.646.** 18.160 is **0.646 under the 18.806**.
 This is the first author-time beat on this map, and **the 0.646 against the
@@ -84,6 +84,22 @@ author is the result.**
 > three runs on it and has not converged, so being 2.945 clear of it says
 > little."* The hedge was right and the number is dead: on 2026-08-21 the
 > board gained a 9.075. See the banner above.
+
+**Re-shot 2026-08-24 from the newly published `replays/TAS_18160.Ghost.Gbx`.**
+Same treatment — one camera, both cars, chase on our car, input overlay — but
+**the opponent is not the same driver.** The clip this replaces was shot against
+deeperjungle's 21.105, the record at the time; **that ghost is not in the store
+and cannot be re-downloaded**, so the second car here is the rank-1 human file
+this project does hold, `ghosts/hl_rank00001_23689_lqpzz`, at 23.689. It is
+neither the old opponent nor the current record holder (AshenBeast1985, 9.075),
+and saying so is better than letting the substitution pass as if nothing
+changed. The paragraph below describes the deeperjungle pairing and its
+separation figures are that pairing's.
+
+One thing measured on the substitute while checking it: it re-simulates to
+**23.665** on the plain oracle while declaring 23.689, a 24 ms disagreement.
+That is a property of the downloaded file, not of our run, and it is why it is
+in the frame rather than in a claim.
 
 **One camera, both cars.** Ours is the magenta car the camera follows;
 deeperjungle's 21.105 — the record when this was shot — is in the same frame,

@@ -23,7 +23,7 @@ glide.**
 > the live engine; it has fixed others in this corpus. This page will be
 > re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/dbcfd0d7-352b-4a5c-9b87-9bcf67cf40c1
+https://github.com/user-attachments/assets/bba81598-8f61-4b55-9a4c-bea09fae3e88
 
 **Our run and the world record in one camera, and the whole race is over by
 4.7 s.** Ours is the magenta car the camera follows; Lukrecja666's 23.298 is

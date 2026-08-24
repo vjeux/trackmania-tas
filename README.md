@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/eca2534b-7acc-44b1-900f-b119444670bd
 
 **[The Magnet Trial](186935-magnet-trial)** — author time `2540.641` · ours **793.893** (−1746.748) · best human 2575.154 (keby..) · 7 records
 
-https://github.com/user-attachments/assets/5d483f7b-f29c-41b7-ba94-72dd76b0d378
+https://github.com/user-attachments/assets/2c4e4a87-fd37-471d-b709-084e9aa2422c
 
 **[[Turtle Trial] Angustus](238835-turtle-trial-angustus)** — author time `462.982` · ours **239.133** (−223.849) · best human 1964.933 (Quantiks) · 1 record
 
@@ -128,11 +128,11 @@ https://github.com/user-attachments/assets/c1fda47d-51a5-47e6-88d1-4b52ecedea26
 
 **[Miru's Hell 2](208024-mirus-hell-2)** — author time `18.806` · **beaten by a human: 9.075 (AshenBeast1985, 2026-08-21)** · ours **18.160** — **a human is now 9.085 ahead of the run this repo publishes.** We led this board by 2.945 and said so; that boast is [retracted on the page](208024-mirus-hell-2), not deleted. The author-time margin of −0.646 stands · 4 records · **the 18.160 is now published there** as `replays/TAS_18160.Ghost.Gbx`, regenerated from its own tape and verified end to end
 
-https://github.com/user-attachments/assets/f6d9b714-2c3d-4ac8-a39d-6adea8eea3ee
+https://github.com/user-attachments/assets/6df66b41-5469-4008-ac02-e8a1b5566c91
 
 **[Tap water 01](173636-tap-water-01)** — author time `23.325` · **beaten by a human: 23.298 (Lukrecja666)** · ours **22.072** (−1.253) · 655 records · one of the most hunted maps here
 
-https://github.com/user-attachments/assets/dbcfd0d7-352b-4a5c-9b87-9bcf67cf40c1
+https://github.com/user-attachments/assets/bba81598-8f61-4b55-9a4c-bea09fae3e88
 
 **[impossible at for ssano](249521-impossible-at-for-ssano)** — author time `14.648` · **beaten by a human: 14.529 (LeonesTM, 2026-08-24 01:25 UTC)** · ours **14.289** (−0.359, and still 0.240 ahead of the board) · 185 records · 7 of the top 15 were set that same evening — this map is under active human attack
 
