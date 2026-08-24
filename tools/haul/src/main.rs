@@ -379,6 +379,30 @@ fn real_main() -> Result<i32, String> {
 
         "lease" => {
             let l = layout()?;
+            // Retiring a box that VANISHED. A clean stand-down retires itself;
+            // a box whose lease was reclaimed underneath it never got the
+            // chance, and would otherwise sit ACTIVE in the registry forever —
+            // firing box_vanished on every heartbeat and counting against the
+            // fleet ceiling. Found by the first real rotation.
+            if a.word(1) == "retire" {
+                let node = a.s("node", "");
+                if node.is_empty() {
+                    return Err("tmhaul lease retire --node NODE --why TEXT".into());
+                }
+                let known: Vec<String> = lease::all(&l)?.into_iter().map(|b| b.node).collect();
+                if !known.iter().any(|n| n == &node) {
+                    // Refuse a name the registry has never seen: a typo would
+                    // otherwise write a retirement for a box that never
+                    // existed and silently leave the real one active.
+                    return Err(format!(
+                        "no box named {node:?} in the registry. Known: {}",
+                        known.join(", ")
+                    ));
+                }
+                lease::retire(&l, &node, &a.s("why", "retired by hand"))?;
+                println!("retired {node}");
+                return Ok(0);
+            }
             for b in lease::all(&l)? {
                 println!(
                     "{}\t{}\tlease={}\tlast_seen={}\t{}",

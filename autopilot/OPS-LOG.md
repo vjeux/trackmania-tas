@@ -6,6 +6,27 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A box that VANISHES never retires itself, and nothing could retire it
+
+Found by the first unplanned rotation: `117796`'s lease was reclaimed with
+nine hours nominally left, so the supervisor never reached its stand-down and
+the registry kept the box `ACTIVE` forever — firing `box_vanished` on every
+heartbeat and counting against the fleet ceiling. There was no way to say "that
+box is gone" short of editing a state file by hand.
+
+`tmhaul lease retire --node N --why T`. It refuses a name the registry has
+never seen, because a typo would otherwise write a retirement for a box that
+does not exist and quietly leave the real one active.
+
+## A fresh box needs the bridge credential every time
+
+Each replacement box starts with no `~/.navi/credentials.json`, so `push =
+auto` resolves to `none` until it is copied from devvm42752 (161 bytes,
+`RENDER-BOX.md` §2). The mirror still works without it, so the failure is not
+loud — `unbanked_drift` is what would eventually say so. **This is the one
+manual step in an otherwise unattended rotation**, and it is a file, so it
+could be automated by any box that can read devvm.
+
 ## A DETACHED supervisor has no proxy, and a silent fetch failure hid it
 
 The worst bug in the harness so far, and it is this project's signature shape:
