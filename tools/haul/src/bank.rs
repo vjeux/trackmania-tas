@@ -333,6 +333,53 @@ fn shell_quote(s: &str) -> String {
 
 // ------------------------------------------------------------------ push
 
+/// Make our branch a fast-forward of the remote, rebasing if somebody else
+/// pushed while we were working.
+///
+/// **This is not a rare case and it is not the harness's own fault.** The repo
+/// has other authors: on the first afternoon this ran, an unrelated session
+/// pushed `entorder can put the car in the MIDDLE of the entity list` between
+/// two banks, and the next push was rejected as a non-fast-forward. A
+/// long-haul system that stops banking the moment a colleague commits is not a
+/// long-haul system.
+///
+/// A rebase is safe here by construction: every state file is append-only and
+/// sharded by writer, so our commits and theirs touch disjoint paths. When
+/// that turns out not to be true, the rebase is aborted and the error says so
+/// rather than leaving a half-rebased checkout behind.
+pub fn sync_with_remote(l: &Layout, branch: &str) -> Result<Option<String>, String> {
+    let fetch = gitcmd::try_run(&l.repo, "git", &["fetch", "-q", "origin", branch])?;
+    if fetch.code != 0 {
+        // No network or no read access: not fatal here. The push will fail
+        // next and say so with its own error.
+        return Ok(None);
+    }
+    let behind = gitcmd::try_run(
+        &l.repo,
+        "git",
+        &["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+    )?;
+    if behind.code == 0 {
+        return Ok(None); // already a fast-forward
+    }
+    let before = gitcmd::head_sha(&l.repo)?;
+    let rebase = gitcmd::try_run(&l.repo, "git", &["rebase", "FETCH_HEAD"])?;
+    if rebase.code != 0 {
+        let _ = gitcmd::try_run(&l.repo, "git", &["rebase", "--abort"]);
+        return Err(format!(
+            "the remote has commits we do not, and rebasing onto them conflicts — \
+             a human needs to look. git said: {}",
+            rebase.stderr.trim()
+        ));
+    }
+    let after = gitcmd::head_sha(&l.repo)?;
+    Ok(Some(format!(
+        "rebased {} onto the remote, now {}",
+        &before[..8.min(before.len())],
+        &after[..8.min(after.len())]
+    )))
+}
+
 /// Push through the render-box bridge: bundle the new commits, copy them over
 /// with `wsx` (which md5-checks both ends), and let the box — which holds the
 /// repo-scoped deploy key — do the push.
@@ -341,6 +388,7 @@ fn shell_quote(s: &str) -> String {
 /// `~/trackmania-tas` checkout, because that one is in the middle of somebody
 /// else's render.
 pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
+    let rebased = sync_with_remote(l, branch)?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/var/svcscm".into());
     let ws = format!("{home}/bin/whitestick");
     let wsx = format!("{home}/bin/wsx");
@@ -372,12 +420,22 @@ pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
         ));
     }
     let _ = std::fs::remove_file(&bundle);
-    Ok(format!("whitestick→github {} (bundle md5 {})", &local_sha[..12], &local_md5[..8]))
+    Ok(format!(
+        "whitestick→github {} (bundle md5 {}){}",
+        &local_sha[..12],
+        &local_md5[..8],
+        rebased.map(|r| format!(" [{r}]")).unwrap_or_default()
+    ))
 }
 
 pub fn push_direct(l: &Layout, branch: &str) -> Result<String, String> {
+    let rebased = sync_with_remote(l, branch)?;
     git(&l.repo, &["push", "origin", &format!("HEAD:{branch}")])?;
-    Ok(format!("direct→github {}", &gitcmd::head_sha(&l.repo)?[..12]))
+    Ok(format!(
+        "direct→github {}{}",
+        &gitcmd::head_sha(&l.repo)?[..12],
+        rebased.map(|r| format!(" [{r}]")).unwrap_or_default()
+    ))
 }
 
 // ------------------------------------------------------------------ bank
@@ -492,6 +550,66 @@ mod tests {
         .unwrap();
         std::fs::write(d.join("STATUS.md"), "# status\n\nrung 1, 23.144 to beat\n").unwrap();
         assert_eq!(scan_for_secrets(&d).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_push_survives_somebody_else_committing_to_the_repo() {
+        // The real event, on the first afternoon: an unrelated session pushed
+        // between two banks and the next push was rejected. A long-haul system
+        // that stops banking when a colleague commits is not one.
+        let root = tmp("rebase");
+        let origin = root.join("origin.git");
+        let mine = root.join("mine");
+        let theirs = root.join("theirs");
+        let g = |d: &std::path::Path, args: &[&str]| gitcmd::git(d, args).unwrap();
+
+        gitcmd::run(&root, "git", &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        for (dir, who) in [(&mine, "mine"), (&theirs, "theirs")] {
+            gitcmd::run(
+                &root,
+                "git",
+                &["clone", "-q", &origin.to_string_lossy(), &dir.to_string_lossy()],
+            )
+            .unwrap();
+            g(dir, &["config", "user.email", "t@t"]);
+            g(dir, &["config", "user.name", who]);
+        }
+        // A first commit so both clones share a root.
+        std::fs::write(mine.join("README.md"), "x").unwrap();
+        g(&mine, &["add", "-A"]);
+        g(&mine, &["commit", "-q", "-m", "root"]);
+        g(&mine, &["push", "-q", "origin", "main"]);
+        g(&theirs, &["pull", "-q", "origin", "main"]);
+
+        // They push something of their own.
+        std::fs::write(theirs.join("their-file.md"), "their work").unwrap();
+        g(&theirs, &["add", "-A"]);
+        g(&theirs, &["commit", "-q", "-m", "their work"]);
+        g(&theirs, &["push", "-q", "origin", "main"]);
+
+        // We commit ours, not knowing.
+        let l = Layout::new(&mine);
+        for d in l.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(l.journal_dir().join("boxA-1.rec"), "2026-08-24T00:00:00Z\tsample\n").unwrap();
+        g(&mine, &["add", "-A"]);
+        g(&mine, &["commit", "-q", "-m", "our bank"]);
+
+        let before = gitcmd::head_sha(&mine).unwrap();
+        let note = sync_with_remote(&l, "main").unwrap();
+        assert!(note.is_some(), "a diverged branch must be rebased");
+        assert_ne!(gitcmd::head_sha(&mine).unwrap(), before);
+
+        // Now the push is a fast-forward, and both pieces of work survive.
+        g(&mine, &["push", "-q", "origin", "main"]);
+        assert!(mine.join("their-file.md").exists(), "their commit must still be there");
+        assert!(l.journal_dir().join("boxA-1.rec").exists(), "and so must ours");
+
+        // Control: with nothing new upstream, sync must do nothing at all.
+        let steady = gitcmd::head_sha(&mine).unwrap();
+        assert_eq!(sync_with_remote(&l, "main").unwrap(), None);
+        assert_eq!(gitcmd::head_sha(&mine).unwrap(), steady);
     }
 
     #[test]

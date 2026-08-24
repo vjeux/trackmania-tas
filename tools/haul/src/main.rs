@@ -398,14 +398,29 @@ fn real_main() -> Result<i32, String> {
 
         "verify" => {
             let l = layout()?;
-            let bad = bank::verify_manifest(&l)?;
+            // "Banked" means the bytes git has. The working tree legitimately
+            // runs ahead while a supervisor is running — the journal gains a
+            // record the instant banking finishes — so checking it would fail
+            // on a healthy run and teach everyone to ignore this command.
+            let src = if a.on("working-tree") { bank::Source::WorkingTree } else { bank::Source::Committed };
+            let bad = bank::verify(&l, src)?;
             if bad.is_empty() {
                 let n = std::fs::read_to_string(l.manifest()).map_err(|e| e.to_string())?.lines().count();
-                println!("{n} file(s) verified against MANIFEST.md5");
+                println!(
+                    "{n} file(s) verified against MANIFEST.md5 ({})",
+                    if src == bank::Source::Committed { "as committed" } else { "working tree" }
+                );
                 Ok(0)
             } else {
                 for b in &bad {
                     println!("MISMATCH {b}");
+                }
+                if src == bank::Source::WorkingTree && beat::watch_pid().is_some() {
+                    println!(
+                        "\nA supervisor is running on this box, so the working tree is EXPECTED to be\n\
+                         ahead of the manifest. Run `tmhaul verify` without --working-tree, or\n\
+                         `tmhaul stop` first."
+                    );
                 }
                 Ok(2)
             }
