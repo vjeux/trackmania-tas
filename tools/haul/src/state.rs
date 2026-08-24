@@ -65,6 +65,7 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
     let view = View {
         now,
         run_active,
+        run_started: if run_active { last_start } else { None },
         samples,
         boxes,
         queue,

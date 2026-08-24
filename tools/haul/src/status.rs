@@ -45,6 +45,16 @@ pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
     s.push_str("## Right now\n\n");
     let headline = if !v.run_active {
         "**Nothing is running.** No run is marked active in the journal.".to_string()
+    } else if r.run_started.map(|t| now - t < job.alarms.zero_window_s).unwrap_or(false)
+        && !v.samples.iter().any(|s| Some(s.ts) > r.run_started)
+    {
+        // A run that has only just started has not had a chance to say
+        // anything. Saying "not reporting" here would put a scary sentence at
+        // the top of the page after every routine restart.
+        format!(
+            "**Just started**, {} ago, and has not reported yet.",
+            dur(now - r.run_started.unwrap_or(now))
+        )
     } else if !reporting {
         format!(
             "**A run is marked active but it is not reporting.** Last progress sample {}{}.",
@@ -315,7 +325,10 @@ mod tests {
         log.append(&Rec::at(now - 30, "run_start")).unwrap();
         log.append(&Rec::at(now - 30, "sample").f("evals", 12).f("worker_alive", 1)).unwrap();
         let page = render(&l, &Job::default(), now).unwrap();
-        assert!(page.contains("too new to have a rate"), "{page}");
+        assert!(
+            page.contains("too new to have a rate") || page.contains("Just started"),
+            "{page}"
+        );
         assert!(!page.contains("0.0 evals/s"), "{page}");
     }
 

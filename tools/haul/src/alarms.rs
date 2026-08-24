@@ -56,6 +56,10 @@ pub struct QueueView {
 pub struct View {
     pub now: i64,
     pub run_active: bool,
+    /// When the current run started. A run that began inside the alarm window
+    /// has not yet had a chance to say anything, and firing at it would make
+    /// every restart look like a stall — which is how an alarm gets ignored.
+    pub run_started: Option<i64>,
     pub samples: Vec<Sample>,
     pub boxes: Vec<(String, BoxState)>,
     pub queue: QueueView,
@@ -67,6 +71,7 @@ impl View {
         View {
             now,
             run_active: false,
+            run_started: None,
             samples: Vec::new(),
             boxes: Vec::new(),
             queue: QueueView::default(),
@@ -170,6 +175,15 @@ fn rate_over(v: &View, from: i64, to: i64) -> Option<f64> {
 pub fn zero_throughput(v: &View, c: &Config) -> Option<Firing> {
     if !v.run_active {
         return None;
+    }
+    // A run that started inside the window has not had a full window to speak
+    // in. Firing here would make every restart and every box rotation look
+    // like a stall, and an alarm that cries at routine events is one nobody
+    // reads. The grace period is the window itself, not a separate knob.
+    if let Some(started) = v.run_started {
+        if v.now - started < c.zero_window_s {
+            return None;
+        }
     }
     let since = v.now - c.zero_window_s;
     let w = samples_in(v, since);
@@ -466,6 +480,7 @@ pub mod fixtures {
         View {
             now: NOW,
             run_active: true,
+            run_started: Some(NOW - 7200),
             samples,
             boxes: vec![("boxA".into(), BoxState { last_seen: NOW - 30, active: true })],
             queue: QueueView {
@@ -493,7 +508,7 @@ pub mod fixtures {
     /// The nastier half of the same failure: the run is active and the worker
     /// has not said anything at all.
     pub fn silent() -> View {
-        View { run_active: true, ..View::empty(NOW) }
+        View { run_active: true, run_started: Some(NOW - 86_400), ..View::empty(NOW) }
     }
 
     pub fn collapsed() -> View {
@@ -651,6 +666,21 @@ mod tests {
             no_progress(&v, &Config::default()).is_none(),
             "no_progress must NOT be the thing that catches a stall — that is the bug"
         );
+    }
+
+    #[test]
+    fn a_run_that_has_only_just_started_is_not_a_stall() {
+        // Every restart and every box rotation begins with a run that has said
+        // nothing yet. Firing at those would put a CRITICAL on the board
+        // several times a day for a healthy system, and the alarm would be
+        // ignored within a week.
+        let v = View { run_started: Some(NOW - 30), ..silent() };
+        assert!(zero_throughput(&v, &Config::default()).is_none());
+
+        // The control, and it is the same fixture: once the window has passed
+        // with nothing said, it must fire.
+        let v = View { run_started: Some(NOW - 3600), ..silent() };
+        assert!(zero_throughput(&v, &Config::default()).is_some());
     }
 
     #[test]
