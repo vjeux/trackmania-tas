@@ -9,3 +9,4 @@
 2026-08-24T19:14:33Z	run_stop	why=stop file	node=117796
 2026-08-24T19:15:27Z	bank	why=stand down	receipt=commit 81b58ce9d8aa · mirror P2474206720 · push whitestick→github 81b58ce9d8aa (bundle md5 30eed94c)
 2026-08-24T19:15:27Z	verified	result=every banked file matches its md5 in the commit
+2026-08-24T19:16:24Z	bank	why=retire	receipt=commit d9d17c01b2f2 · mirror P2474207406 · push whitestick→github 4a600b11d602 (bundle md5 87c75497)

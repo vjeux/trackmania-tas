@@ -6,6 +6,30 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A restarted supervisor counted its resume point as fresh work
+
+Twenty minutes after the first restart the budget read **582 evals for 308
+actually done**. The supervisor's eval baseline started at zero, so the first
+sample after every restart recorded the whole cumulative counter as a delta.
+On a system whose *normal* mode of operation is "box dies, replacement
+resumes", that inflates the one number the pre-committed switch condition
+turns on — and it inflates it in the direction of switching too early, for a
+reason nobody would find months later.
+
+The baseline is now seeded from the repo before the first sample. The
+miscount itself was corrected the only way an append-only log allows:
+`tmhaul budget correct --evals 274 --why …`, which records the subtraction and
+its reason as a new line rather than editing history.
+
+## Starting a second supervisor deletes the STOP flag the first was reading
+
+`tmhaul watch` clears the stop file at startup, so starting a new supervisor
+while the old one is standing down — which takes up to a minute, because a
+bank includes a push — removes the flag before the old one reads it. Both then
+run. `watch` now refuses to start when another supervisor is alive on the box
+(`--force` overrides), which is the right answer regardless: two supervisors
+on one box is not a configuration anybody wants.
+
 ## The repo has other authors, and a push that fails is silent about the *cause*
 
 Within an hour of the harness going live, an unrelated session pushed

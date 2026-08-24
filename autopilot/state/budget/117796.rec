@@ -10,3 +10,4 @@
 2026-08-24T19:12:33Z	budget_interval	delta_evals=7	dt_s=60	productive=1
 2026-08-24T19:13:33Z	budget_interval	delta_evals=0	dt_s=60	productive=0
 2026-08-24T19:14:33Z	budget_interval	delta_evals=0	dt_s=60	productive=0
+2026-08-24T19:19:19Z	budget_correction	evals=274	productive_s=0	why=two supervisor restarts each counted their resume point (80 and 194) as fresh work, before the eval baseline was seeded from the repo

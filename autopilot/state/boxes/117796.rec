@@ -16,3 +16,4 @@
 2026-08-24T19:14:33Z	box_alive	node=117796
 2026-08-24T19:15:27Z	box_retired	node=117796	why=stop file
 2026-08-24T19:15:30Z	box_start	node=117796	note=seeded-baseline supervisor	lease_expires=1787638680
+2026-08-24T19:19:37Z	box_start	node=117796	note=final supervisor for this session	lease_expires=1787638680
