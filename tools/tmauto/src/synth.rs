@@ -924,6 +924,19 @@ mod tests {
     }
 
     #[test]
+    fn validation_seed_and_settings_reach_the_named_validation_fields() {
+        let mut m = meta();
+        m.validation_seed = 32_611_514;
+        m.race_settings = "from-scratch-control".into();
+        let bytes = synthesize(&[Input::FULL_GAS; 10], &m, &ChunkSet::ALL);
+        let g = gbx::Gbx::parse(&bytes);
+        let v = gbx::manifest::validation_manifest(&g.body).expect("validation chunk");
+        assert!(v.contains("\"validation_seed\":32611514"));
+        assert!(v.contains("\"race_settings\":\"from-scratch-control\""));
+        assert!(v.contains("\"title_id\":\"\""));
+    }
+
+    #[test]
     fn map_derived_roadtech_start_matches_an_independent_game_recording() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let map = root.join("testdata/map2.Map.Gbx");
