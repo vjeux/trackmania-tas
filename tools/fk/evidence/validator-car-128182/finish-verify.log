@@ -1,0 +1,13 @@
+verifying /tmp/tmvalidator-finish-71196-regenerated.Ghost.Gbx
+PASS V1   codec identity: a verbatim re-encode of all 12156 ticks reproduces the file's own bitstream
+PASS V2   declared-time census: 1 copies (1 in the body, 0 in the header), all 71.196
+PASS V3   container identity: no account id, locator, badge or zone in the body (this container has no replay header to carry one)
+PASS V4   no embedded map: --map is real for this file
+PASS V10  the record's span ends at 71.196 and the car's last sample is at 71.150 -- nothing in this file outlives the run
+PASS V11  the container's live non-vehicle record(s) are present (0x2D001000 x390)
+PASS V5   telemetry: 1424 samples, 0.000 .. 71.150, span 0.000 .. 71.196
+PASS V6   tape/record agreement: kappa 1.000 (100.0% of 1424 samples exact, best lag 0 ms)
+PASS V7   oracle re-simulated the written file: 71.196 == the declared time
+PASS V10  raw-bytes backstop: nothing that looks like another person's identity or another run's time, outside the embedded map's own 0 B
+
+OK

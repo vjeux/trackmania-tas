@@ -256,6 +256,23 @@ impl EngineOracle {
         self.prefix_ticks.load(Ordering::Relaxed)
     }
 
+    /// Write a self-contained candidate file using the same generated prefix and
+    /// tick frame the fork workers used.
+    pub fn write_candidate(&self, tape: &[Input], out: &Path) -> Result<(), String> {
+        let off = self.prefix_ticks.load(Ordering::Relaxed) as usize;
+        if tape.len() + off > self.patcher.n() {
+            return Err(format!(
+                "candidate has {} ticks after prefix {}, beyond container capacity {}",
+                tape.len(),
+                off,
+                self.patcher.n()
+            ));
+        }
+        let mut buf = self.patcher.base.clone();
+        self.patcher.apply(&mut buf, &self.to_inputs(tape));
+        std::fs::write(out, buf).map_err(|e| format!("{}: {}", out.display(), e))
+    }
+
     /// Confirm one tape and also return **the engine's own echo of the input
     /// tape it decoded**.
     ///

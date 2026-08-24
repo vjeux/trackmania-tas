@@ -615,18 +615,24 @@ fn main() {
     );
     if let Some((r, tape)) = &s.best {
         let out = work.join("best.tape.tsv");
-        let mut txt = String::from("tick\tsteer\tgas\tbrake\n");
+        let mut txt = format!(
+            "# frame\t{}\n# map\t{}\ntick\tsteer\tgas\tbrake\n",
+            boundary, pack.uid
+        );
         for (i, t) in tape.iter().enumerate() {
             txt.push_str(&format!(
                 "{}\t{}\t{}\t{}\n",
                 i, t.steer, t.gas as u8, t.brake as u8
             ));
         }
-        let _ = std::fs::write(&out, txt);
+        std::fs::write(&out, txt).unwrap_or_else(|e| die(e));
+        let ghost = work.join("best.Ghost.Gbx");
+        oracle.write_candidate(tape, &ghost).unwrap_or_else(die);
         println!(
-            "best confirmed outcome {} — its tape is at {}",
+            "best confirmed outcome {} — tape {} — replayable container {}",
             r,
-            out.display()
+            out.display(),
+            ghost.display()
         );
     }
 }
@@ -694,11 +700,16 @@ fn confirm_tape(a: &Args) {
         }
     };
     oracle.set_prefix_ticks(frame).unwrap_or_else(die);
+    if let Some(out) = a.get("out") {
+        let path = PathBuf::from(out);
+        oracle.write_candidate(&tape, &path).unwrap_or_else(die);
+        println!("wrote replayable candidate {}", path.display());
+    }
     println!(
         "tape {} ticks, written into a {}-tick container from file tick {}",
         tape.len(),
         oracle.capacity(),
-        prefix
+        frame
     );
     // A CONTROL IN THE SAME BATCH, because a verdict with nothing beside it
     // says nothing about the instrument: the container's own tape must come

@@ -98,6 +98,23 @@ See `recorded-container-start-control.txt` for the startup measurements and
 packet comparison; `plain-oracle-generated-container.txt` and
 `generated-container-trace.*` are the independent replay evidence.
 
+## Summer 2026 - 01 acceptance result
+
+A six-minute, 16-worker run from the semantic start evaluated 20,624 candidates.
+The plain oracle confirmed a **71.196 s finish**; a finish necessarily traverses
+all three checkpoints, so CP1 and the full course were reached. A second plain
+oracle invocation reproduced 71.196 twice from the self-contained tape at frame
+307. An independent `fk trace` then read 6,943 validator-owned states over
+2.380..71.800 s and measured a 1,991.0 m path. The regenerated final ghost
+passes every `ghost verify` gate, including exact tape/telemetry agreement
+(kappa 1.000) and a fresh 71.196 oracle replay.
+
+Banked result:
+
+- `summer01-finish-71.196.tape.tsv` — generated inputs plus `# frame 307`
+- `summer01-finish-71.196-regenerated.Ghost.Gbx` — SHA-256
+  `b06fbe7dd54764e19b1ef9213bc6950e0b755ad639f8f5b831cf5e48aa3a9a5a`
+
 ## Evidence
 
 - `evidence/validator-car-128182/static-disassembly.txt`
@@ -114,3 +131,7 @@ packet comparison; `plain-oracle-generated-container.txt` and
 - `evidence/validator-car-128182/generated-container-trace.log`
 - `evidence/validator-car-128182/generated-container-trace.csv`
 - `evidence/validator-car-128182/generated-tape-confirm.log`
+- `evidence/validator-car-128182/finish-search.log`
+- `evidence/validator-car-128182/finish-trace.log`
+- `evidence/validator-car-128182/finish-trace.csv`
+- `evidence/validator-car-128182/finish-verify.log`
