@@ -5,6 +5,15 @@
 9–15 s. brick555's run — the only one recorded when this page was written —
 misses it three times out of four.**
 
+**YOU LOVE WATER** — TAS **97.325** (+46.866) | AT 50.459 | WR 124.205 by DarrahTM
+
+https://github.com/user-attachments/assets/bca97931-5f35-4965-bebf-c66c35e26751
+
+**Both cars**, the camera on ours; DarrahTM's 124.205 — the record as of
+2026-08-24 — is the opponent. Ours finishes at 97.325 and the clip ends there,
+so the last thing you see is the run this page is about crossing the line while
+the record is still on the map.
+
 | run | time | vs author time | note |
 |---|---|---|---|
 | **TAS** | **97.325** | +46.866 | one life, no respawns |
@@ -435,11 +444,29 @@ clean driving plus every failed attempt. Take the human's own last, successful
 attempt in each sector and his clean driving is **93.914**. Our 97.325 is that
 driving with the retries cut.
 
+## Why this page had no clip, and what fixed it
+
+**The tape imports fine — its recording is not its own run.** `ghost verify` V6
+on `replays/TAS_97325.Ghost.Gbx`: **kappa 0.499**, 57.6 % of 1947 samples exact.
+The time is sound (the plain oracle re-simulates that tape to 97.325), but the
+trajectory stored beside it belongs to another run, so a film of it would have
+shown a different car — the defect Training 10 Long's clip has.
+
+Repaired 2026-08-24 with `ghost regen … --carrier layout` on the live engine:
+**kappa 1.000, oracle 97.325, and no sample byte left from the donor** — the
+per-sample channels (rpm, gear, wheels, suspension, surface) come out of engine
+memory rather than being inherited. The clip is shot from that file.
+
+The opponent in the clip is **DarrahTM's 124.205**, the record as of the board
+re-pulled 2026-08-24 — not the brick555 440.238 most of this page is measured
+against.
+
 ## Files
 
 | file | what |
 |---|---|
-| `replays/TAS_97325.Ghost.Gbx` | the best validated run — one life, no respawns |
+| `replays/TAS_97325.Ghost.Gbx` | the best validated run — one life, no respawns. **Its recording is not this tape's run** (kappa 0.499): do not render it |
+| `replays/TAS_97325_carrier.Ghost.Gbx` | **the same run, regenerated and filmable** — kappa 1.000, oracle 97.325, no donor bytes. This is the file the clip was shot from |
 
 Not in the repo (too large, and none of them is a lap): the two post-fix tapes
 `wtr_fx1_…_DNF_cps2_state17m.Ghost.Gbx` and `wtr_fx2_…_DNF_cps2_wall_plus_cp.Ghost.Gbx`,

@@ -20,7 +20,7 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, dropscan, gbx, map, oracle, rotate, secs, segments, splice, selftest};
+use tmmaps::{census, controls, dropscan, gbx, header, map, oracle, rotate, secs, segments, splice, selftest};
 
 use std::path::{Path, PathBuf};
 
@@ -1073,6 +1073,7 @@ fn main() {
         }
         "origin" => controls::cmd_origin(&args),
         "census" => census::cmd_census(&args),
+        "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
         "chunks" => {
             // Every skippable chunk in the body, with its size. Needed to
@@ -1114,6 +1115,15 @@ READING A MAP
         STRUCTURE, NOT A BLOCK: run this before and after any move.
   tmmaps chunks MAP
         every skippable body chunk with its size
+  tmmaps header MAP [MAP ...] [--tsv] [--xml]
+        what the file DECLARES about itself before any block is read: container
+        version, node count, EXTERNAL references, the header chunk table, the
+        community XML (title, exever/exebuild, envir, maptype, validated), the
+        declared `<dep>` files, the embedded-objects zip and its entries, and
+        the block/item counts to set them against. `--tsv` is the corpus form —
+        one row per map plus the distinct value of every column, because a
+        difference only one map has is a lead and one several share is not.
+        Written for 146612, which the engine loads and the editor will not open.
 
 CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume changes
   tmmaps move MAP --out F --move SPEC [--move SPEC ...]

@@ -30,6 +30,7 @@ pub mod controls;
 pub mod dropscan;
 pub mod gbx;
 pub mod ghost;
+pub mod header;
 pub mod map;
 pub mod oracle;
 pub mod rotate;

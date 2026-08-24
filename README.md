@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/56e64ae5-3b31-4361-85d5-9e9dbd45e6b5
 
 **[[Turtle Trial] Leto](286279-turtle-trial-leto)** — author time `355.181` · ours **218.812** (−136.369) · best human 441.002 (Bald_tm) · 5 records
 
-https://github.com/user-attachments/assets/31063ee4-582f-452b-9ea3-e32bc73dc0b5
+https://github.com/user-attachments/assets/ef4abed1-3897-44cc-8719-98458b015add
 
 **[Welcome to wiggles](197047-welcome-to-wiggles)** — author time `100.784` · ours **95.839** (−4.945) · best human 101.794 (beagle.3) · 27 records
 
@@ -26,11 +26,11 @@ https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
 
 **[YEET Fall 2024 - 04](203072-yeet-fall-2024-04)** — author time `11.334` · ours **10.640** (−0.694) · best human 12.083 (ayti__) · 301 records
 
-https://github.com/user-attachments/assets/6708045e-8ee0-4520-86bc-d72a58a2d05e
+https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
 
 **[Kacky Reloaded #290](126859-kacky-reloaded-290)** — author time `24.062` · ours **23.416** (−0.646) · best human 24.342 (zetos.) · 23 records
 
-https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
+https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
 
 **[idm ruinin ur day #460](165922-idm-ruinin-ur-day-460)** — author time `15.643` · ours **15.217** (−0.426) · best human 16.870 (banktm) · 11 records
 
@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
 **[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 
-https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
+https://github.com/user-attachments/assets/7a263da5-a1b2-41c7-b110-4e36c9f97a63
 
 **[Torment (1-DOWN)](228811-torment-1-down)** — author time `20.555` · ours **20.237** (−0.318) · best human 22.637 (KappaRiley) · 68 records
 
@@ -100,13 +100,17 @@ https://github.com/user-attachments/assets/5a22e94e-20ee-44eb-b8a1-f76042d0dc56
 
 https://github.com/user-attachments/assets/dfc7c1cd-f2fa-4ed1-ada0-3f38c5be8f64
 
-**[finish is on the roof to your right](285885-finish-is-on-the-roof)** — author time `43.079` · ours **50.229** (+7.150 short, and 11.000 under the human record) · best human 61.229 (lasyoppwtf) · 3 records · **no clip** · the deficit is height, not line: the author time needs arrival at the foot of the final climb by 34.13 against an all-time earliest of 37.978
+**[finish is on the roof to your right](285885-finish-is-on-the-roof)** — author time `43.079` · ours **50.229** (+7.150 short, and 11.000 under the human record) · best human 61.229 (lasyoppwtf) · 3 records · the deficit is height, not line: the author time needs arrival at the foot of the final climb by 34.13 against an all-time earliest of 37.978 · *the published tape crashed the game client on import and carried another run's telemetry; the clip is shot from the repaired file — see the page*
+
+https://github.com/user-attachments/assets/f753d31d-3469-416d-ac8a-1e1950a418f5
 
 **[KEKL- SAUSAGE ICE](134672-kekl-sausage-ice)** — author time `58.687` · ours **67.200** (+8.513 short) · best human 68.442 (Robbalobb, on a build the game still runs; the all-time 63.546 by Roevhaal was set on the 2022 build `113150` and does not re-simulate today) · 16 records · the author time is 4.8 s below the field's best-sector splice *and* below our own per-sector optima, and it was stamped by a car that corners better than the one we search with
 
 https://github.com/user-attachments/assets/68a1ee6d-9117-4c5a-a030-0c7c658e7b84
 
-**[YOU LOVE WATER](284238-you-love-water)** — author time `50.459` · ours **97.325** (+46.866 short, and 26.880 under the human record) · best human 124.205 (DarrahTM) · 2 records · **no clip** · a human's line on a byte-identical sibling map prices out at 47.4 — 3.0 inside the author time — but it needs a long flat run-up into each launch and only the first copy of the obstacle has one
+**[YOU LOVE WATER](284238-you-love-water)** — author time `50.459` · ours **97.325** (+46.866 short, and 26.880 under the human record) · best human 124.205 (DarrahTM) · 2 records · a human's line on a byte-identical sibling map prices out at 47.4 — 3.0 inside the author time — but it needs a long flat run-up into each launch and only the first copy of the obstacle has one · *the clip is shot from a regenerated tape: the published one's recording was another run (kappa 0.499)*
+
+https://github.com/user-attachments/assets/bca97931-5f35-4965-bebf-c66c35e26751
 
 **[P-Found - Pokeuuu](153527-p-found-pokeuuu)** — author time `939.283` · ours — *nobody here has driven it and no time is claimed* · best human 5661.335 (AuwrahTM) · 1 record · **no clip** · the de-looping figure of 892.148 is **withdrawn**: with a minimum junction size, seven real loops give 941.588, which is 2.305 **over** the author time. The barrier is driving the map at all — 165.868 s of the route is under 20 km/h
 

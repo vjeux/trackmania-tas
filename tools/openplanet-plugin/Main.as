@@ -110,6 +110,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/mtingame") return HttpResponse(200, OpenMTInGame());
     if (r == "/cam")      return HttpResponse(200, DumpCameras());
     if (r == "/editmap")  return HttpResponse(200, EditMapFromFile());
+    if (r == "/playmap")  return HttpResponse(200, PlayMapFromFile(QArg(qs, "mode")));
 
     auto api = MTApi();
     if (r == "/cantrack") {
@@ -290,6 +291,34 @@ string EditMapFromFile() {
     return "ok " + p;
 }
 
+// Load the same map the same way, but into PLAY instead of the editor.
+//
+// WHY THIS EXISTS. 146612 ("Spaghetti Nights 2") is loaded and simulated by the
+// dedicated server and never opens in this client's editor: EditMap returns and
+// `ctx` sits at 0 forever. That is two different claims -- "the editor rejects
+// this map" and "this CLIENT cannot load this map at all" -- and EditMap alone
+// cannot tell them apart. PlayMap is the same title API, the same path, the
+// same file, and a different loader; whichever way it comes out is a fact about
+// where the fault lives.
+//
+// `mode` is the query argument because it is plain ascii; the PATH still comes
+// from editmap.txt, for the reason above it. An empty mode is what the game
+// uses for the map's own declared mode.
+string PlayMapFromFile(const string &in mode) {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    if (GetApp().Editor !is null) return "already in an editor - /back first";
+    auto tc = mp.ManiaTitleControlScriptAPI;
+    if (tc is null) return "no ManiaTitleControlScriptAPI";
+    if (!IO::FileExists(IO::FromStorageFolder("editmap.txt"))) return "no editmap.txt";
+    IO::File f(IO::FromStorageFolder("editmap.txt"), IO::FileMode::Read);
+    string p = f.ReadToEnd().Trim();
+    f.Close();
+    if (p == "") return "editmap.txt is empty";
+    tc.PlayMap(p, mode, "");
+    return "ok mode=\"" + mode + "\" " + p;
+}
+
 // Open the In Game MediaTracker sequence -- the call the "EDIT" button makes.
 string OpenMTInGame() {
     auto mp = MP();
@@ -376,6 +405,20 @@ string TitleReady() {
     if (tc is null) return "{\"err\":\"no ManiaTitleControlScriptAPI\"}";
     string j = "{\"isReady\":" + (tc.IsReady ? "true" : "false");
     j += ",\"latestResult\":" + int(tc.LatestResult);
+    // THE TITLE API'S OWN ERROR CHANNEL. EditMap returns void, so the only
+    // thing it can ever say about a map it declined is here: LatestResult is
+    // the EResult enum (0 Success, 1 Error_Internal, 2 Error_DataMgr, ...) and
+    // CustomResultType/Data is what a title script fills in when it refuses.
+    // A map that never opens with LatestResult 0 and an empty custom result is
+    // a different fact from one that comes back Error_DataMgr, and until this
+    // was printed nobody could tell which 146612 was.
+    j += ",\"customResultType\":\"" + tc.CustomResultType + "\"";
+    j += ",\"customResultData\":[";
+    for (uint i = 0; i < tc.CustomResultData.Length; i++) {
+        if (i > 0) j += ",";
+        j += "\"" + tc.CustomResultData[i] + "\"";
+    }
+    j += "]";
     auto menus = mp.MenuManager;
     j += ",\"menuManager\":" + (menus is null ? "null" : "\"present\"");
     j += ",\"loadedTitle\":" + (mp.LoadedManiaTitle is null ? "null" : "\"present\"");

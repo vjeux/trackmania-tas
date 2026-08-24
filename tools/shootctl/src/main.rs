@@ -853,6 +853,99 @@ fn save_good(plugin_dir: &str, good_dir: &str) -> i32 {
     0
 }
 
+/// `shootctl probe` — ask the game to load ONE map and record everything it
+/// says while it does or does not.
+///
+/// # Why this exists
+///
+/// 146612 ("Spaghetti Nights 2") is loaded and re-simulated by the dedicated
+/// server and has never opened in this client's editor: `EditMap` returns,
+/// `ctx` stays 0, `/ping` keeps answering. Every diagnosis of it so far has
+/// been made from those two facts alone, because nothing printed the rest of
+/// what the game knows:
+///
+/// * `CGameManiaTitleControlScriptAPI::LatestResult` — the title API's own
+///   error channel. `EditMap` returns `void`; this enum is the only thing it
+///   can ever say about a map it declined.
+/// * `CustomResultType` / `CustomResultData` — what a title script fills in
+///   when IT is the one refusing.
+/// * whether a modal is up (a map that raises a dialog nobody dismisses looks
+///   exactly like a map that silently did nothing).
+/// * `PlayMap` instead of `EditMap` (`--play`): the same title API, the same
+///   path, the same file, a DIFFERENT loader. It separates "the editor rejects
+///   this map" from "this client cannot load this map at all", which is the
+///   distinction the whole investigation turns on.
+///
+/// Every line is a sample of the live game with the elapsed time on it, so a
+/// map that fails instantly and one that works for 40 s and gives up are
+/// distinguishable — they are not, from `ctx` alone.
+///
+/// A negative needs a positive control: run this on a map that DOES open, in
+/// the same session, before believing anything it prints about one that does
+/// not.
+fn probe(map: &str, play: bool, mode: &str, timeout_s: u64) -> i32 {
+    let gp = match game_path(map) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("{e}"); return 2; }
+    };
+    let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+    let _ = std::fs::create_dir_all(store);
+    if std::fs::write(format!("{store}/editmap.txt"), &gp).is_err() {
+        eprintln!("could not write editmap.txt");
+        return 2;
+    }
+    let wsl = gp.strip_prefix("C:/").map(|r| format!("/mnt/c/{r}")).unwrap_or_else(|| gp.clone());
+    let want = map_uid(&wsl);
+    println!("probe {}", gp);
+    println!("  file uid {}", want.clone().unwrap_or_else(|| "(unreadable)".into()));
+
+    // Start from the menu and prove it, then prove the title will accept a
+    // command. Both of these have been the real cause of a "map did not open".
+    if let Err(e) = to_menu() { eprintln!("{e}"); return 1; }
+    if let Err(e) = await_cond("ready", 60) { eprintln!("{e}"); return 1; }
+    println!("  before: /ready {}", http_get("/ready", 10).unwrap_or_default().trim());
+
+    let call = if play { format!("/playmap?mode={mode}") } else { "/editmap".to_string() };
+    let t0 = Instant::now();
+    println!("  call {call}: {}", http_get(&call, 30).unwrap_or_default().trim());
+
+    // Sample the game once a second. Not a sleep dressed up as a wait: this is
+    // a RECORDING, and the interesting case is the one where nothing ever
+    // happens, which no /await condition can describe.
+    let mut last = String::new();
+    let mut settled = false;
+    while t0.elapsed().as_secs() < timeout_s {
+        std::thread::sleep(Duration::from_millis(1000));
+        let c = http_get("/ctx", 10).unwrap_or_default();
+        let ctx_now = ctx();
+        let ready = http_get("/ready", 10).unwrap_or_default();
+        let line = format!("{} | {}", c.trim(), ready.trim());
+        if line != last {
+            println!("  [{:5.1}s] {line}", t0.elapsed().as_secs_f64());
+            last = line;
+        }
+        if !play && matches!(ctx_now, Some(1) | Some(2)) { settled = true; break; }
+        if play && ctx_now == Some(3) { settled = true; break; }
+    }
+    println!("  [{:5.1}s] final /ctx   {}", t0.elapsed().as_secs_f64(),
+             http_get("/ctx", 10).unwrap_or_default().trim());
+    println!("           final /ready {}", http_get("/ready", 10).unwrap_or_default().trim());
+    println!("           dialog text  {}", http_get("/dlgtext", 10).unwrap_or_default().trim());
+    if settled {
+        let have = loaded_uid();
+        println!("           loaded uid   {}", have.clone().unwrap_or_else(|| "none".into()));
+        match (&want, &have) {
+            (Some(w), Some(h)) if w == h => println!("OPENED — and it is the map we asked for"),
+            (Some(w), Some(h)) => println!("OPENED SOMETHING ELSE — asked {w}, got {h}"),
+            _ => println!("OPENED — uid unavailable"),
+        }
+        0
+    } else {
+        println!("DID NOT OPEN in {timeout_s}s — ctx never left the menu");
+        1
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -862,6 +955,12 @@ fn main() {
              \n  shootctl launch [timeout_s]\
              \n  shootctl setup --map <map> [--cam N] <ghost...>\n        --cam: 2 External (default), 1 Internal, 6 Ext2, 3 Helico\
              \n  shootctl shoot [timeout_s] --name <out>\
+             \n  shootctl run --map <map> --name <out> [--cam N] <ghost...>\
+             \n  shootctl probe --map <map> [--play] [--mode M] [--timeout S]\
+             \n        load ONE map and print everything the game says while it does\
+             \n        or does not: ctx, IsReady, LatestResult, CustomResult, dialogs.\
+             \n        --play uses PlayMap instead of EditMap -- the differential that\
+             \n        separates \"the editor rejects it\" from \"the client cannot load it\".\
              \n  shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
              \n        one game, one driver -- take this before setup/shoot"
         );
@@ -936,6 +1035,20 @@ fn main() {
             let force = args.iter().any(|a| a == "--force");
             let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);
             launch(to, force)
+        }
+        // ONE MAP, EVERYTHING THE GAME SAYS WHILE IT LOADS IT (or does not).
+        "probe" => {
+            let val = |k: &str| -> Option<String> {
+                args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
+            };
+            let Some(map) = val("--map") else {
+                eprintln!("shootctl probe --map <path> [--play] [--mode M] [--timeout S]");
+                std::process::exit(2);
+            };
+            let play = args.iter().any(|a| a == "--play");
+            let mode = val("--mode").unwrap_or_default();
+            let to = val("--timeout").and_then(|v| v.parse().ok()).unwrap_or(90);
+            probe(&map, play, &mode, to)
         }
         "run" => {
             // THE WHOLE THING: cold game to finished video, one command.

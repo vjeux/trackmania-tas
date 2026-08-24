@@ -5,6 +5,17 @@ world record drives straight over it without finishing and has to come back.
 Arrive at the patch and *stop turning right* — almost anything else fires the
 gate and saves 10.5 s.**
 
+**finish is on the roof to your right** — TAS **50.229** (+7.150) | AT 43.079 | WR 61.229 by lasyoppwtf
+
+https://github.com/user-attachments/assets/f753d31d-3469-416d-ac8a-1e1950a418f5
+
+**Both cars.** Ours is the magenta car the camera is bolted to; lasyoppwtf's
+61.229 world record is the opponent. They drive the corridor together, and the
+run ends where the record's does not: at 46 s ours is **upside down on the
+stadium roof**, sliding at the sunken gate on the finish's own plane, and it
+fires it at 50.229. The record is still driving — it goes over the same gate
+without finishing, turns round, and comes back 11.0 s later.
+
 | run | time | vs human WR | vs author time |
 |---|---|---|---|
 | **TAS** | **50.229** | **−11.000** | +7.150 |
@@ -300,10 +311,53 @@ have an intercept.
 
 Never quote a scalar `g` here without the `v_y` it was measured at.
 
+## Why this page had no clip, and what fixed it
+
+**Every one of this page's three tapes killed the game client on import, and
+none of them carried its own run's telemetry.** That is why nothing was ever
+filmed here — not the map, and not that nobody tried.
+
+Measured 2026-08-24 on the render box, each probe with a control in the same
+session:
+
+| import into the MediaTracker | result |
+|---|---|
+| 285885 + the human record's own 61.229 | imports, scene ready |
+| 267859 + its own published tape (a map with a clip) | imports, scene ready |
+| 284238 + its own published tape | imports, scene ready |
+| **285885 + `TAS_50229`** | **the game process is GONE** |
+| **285885 + `POKE_1input_50659`** | **the game process is GONE** |
+| **285885 + `TRIGGERPOKE_50469`** | **the game process is GONE** |
+
+The map opens in the editor in 4.7–8.6 s every time; the crash is the ghost, not
+the map. It is the shape `ghost verify` V11 warns about — no live non-vehicle
+record in the file — and `GHOSTS.md` already names the repair.
+
+And `ghost verify` V6 refuses all three files for a second, independent reason:
+
+| file | kappa | meaning |
+|---|---|---|
+| `TAS_50229` | 0.342 | the recording in it is **not this tape's run** |
+| `POKE_1input_50659` | 0.343 | as above |
+| `TRIGGERPOKE_50469` | 0.346 | as above |
+
+The times are sound — the plain oracle re-simulates each tape to the time in its
+name — but a film of those files would have shown a different car, which is the
+defect Training 10 Long's published clip has (kappa 0.382).
+
+**The repair, both halves, is in `replays/TAS_50229_shootable.Ghost.Gbx`:**
+`ghost regen` on the live engine (kappa 1.000, oracle 50.229), then
+`ghost record graft-scene --from` the human record for the non-vehicle entity.
+It verifies V1–V11 clean and it imports — the clip below was shot from it.
+
+The other two tapes are **left as they are and must not be rendered**: same
+repair, not yet applied.
+
 ## Files
 
 | file | what |
 |---|---|
-| `replays/TAS_50229.Ghost.Gbx` | the fastest validated run — 11.0 faster than any human |
-| `replays/POKE_1input_50659.Ghost.Gbx` | **the world record with one steering change** — 61.229 → 50.659 |
-| `replays/TRIGGERPOKE_50469.Ghost.Gbx` | the same idea, refined |
+| `replays/TAS_50229.Ghost.Gbx` | the fastest validated run — 11.0 faster than any human. **Do not import this file into the game: it kills the client.** Its recording is also not its own tape's run (kappa 0.342) |
+| `replays/TAS_50229_shootable.Ghost.Gbx` | **the same run, repaired and filmable** — regenerated (kappa 1.000, oracle 50.229) with the scene record grafted back; V1–V11 clean. This is the file the clip was shot from |
+| `replays/POKE_1input_50659.Ghost.Gbx` | **the world record with one steering change** — 61.229 → 50.659. Crashes the client on import; kappa 0.343 |
+| `replays/TRIGGERPOKE_50469.Ghost.Gbx` | the same idea, refined. Crashes the client on import; kappa 0.346 |

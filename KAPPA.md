@@ -82,3 +82,28 @@ the wrong file would give a confident answer about a file nobody publishes.
 `replays: No such file` is a page with no replays directory at all. None of
 those rows is evidence that anything is wrong — they are pages this check
 cannot reach, and each one needs a human to name the file.
+
+## The three rows this check could not reach, measured by hand (2026-08-24)
+
+`finish is on the roof to your right`, `YOU LOVE WATER` and `The Blev Special`
+read *"the page states no headline time"* above, because their pages had no clip
+and no headline line for the parser to find. Run `ghost verify` on the file each
+page publishes and they are not blank rows at all:
+
+| map | file | kappa (V6) | oracle (V7) | verdict |
+|---|---|---|---|---|
+| finish is on the roof to your right | `TAS_50229` | **0.342** | 50.229 | **carries another run** — and it kills the game client on import |
+| finish is on the roof to your right | `POKE_1input_50659` | **0.343** | 50.659 | as above |
+| finish is on the roof to your right | `TRIGGERPOKE_50469` | **0.346** | 50.469 | as above |
+| YOU LOVE WATER | `TAS_97325` | **0.499** | 97.325 | **carries another run**; imports fine |
+| The Blev Special | `TAS_57482` | 1.000 | 57.482 | OK |
+
+Both pages now publish a repaired file beside the original and their clips are
+shot from it: `285885/replays/TAS_50229_shootable.Ghost.Gbx` (regenerated, then
+`graft-scene` for the import crash) and
+`284238/replays/TAS_97325_carrier.Ghost.Gbx` (regenerated with `--carrier
+layout`). Both verify V1–V11 clean at kappa 1.000.
+
+**So five of the "not checkable" rows were hiding four more foreign
+recordings.** A page with no headline time is not a page with nothing to check —
+it is a page this tool cannot find the file for, and the files were there.
