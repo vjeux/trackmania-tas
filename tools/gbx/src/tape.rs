@@ -90,6 +90,16 @@ impl Packet {
     }
 }
 
+/// `unpack_word`, for code that BUILDS a packet rather than decoding one.
+///
+/// A synthesizer choosing a state literal needs the `word0`/`flags` the decoder
+/// will derive from it, and it must be the same arithmetic — a second
+/// implementation of this unpacking is how the two halves drift apart and a
+/// tape reads back as a mode nobody wrote.
+pub fn unpack_word_pub(n: u64) -> (u32, u32) {
+    unpack_word(n)
+}
+
 /// `unpack_word`: literal (33/34-bit int) -> (word0, flags).
 fn unpack_word(n: u64) -> (u32, u32) {
     let lo = (n & 0xFFFF_FFFF) as u32;
