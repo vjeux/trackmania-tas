@@ -51,7 +51,7 @@ body (**this is the step that makes it public** — a pushed commit does not),
 then fetch it back under `env -i` with no credential at all and require 200 and
 playable bytes.
 
-## Working from an on-demand box, and the seven traps that keep costing an hour
+## Working from an on-demand box, and the six traps that keep costing an hour
 
 Every trap below was hit and diagnosed by an agent, more than one of them by
 three separate agents on the same day. None is interesting; all are expensive,
@@ -98,20 +98,6 @@ against that nonexistent path. Use a quoted heredoc, which interprets nothing.
 The game also cannot open a `/home/...` path at all: stage under `/mnt/c` and
 hand it the `C:/...` spelling.
 
-**7. `wsx push` OVERWRITES A WHOLE FILE, and this checkout is shared.**
-`~/trackmania-tas` on the box is one working copy that every arm pushes into. A
-top-level page pushed from a clone taken twenty minutes ago silently reverts
-every line another arm landed in the meantime — measured 2026-08-24, when a
-front-page push put back the **old asset URLs for five clips** that had just
-been re-shot, and again ten minutes later on this very file, which came back
-114 lines shorter. Nothing warns you: the push says OK and the commit is clean.
-
-So for any file more than one arm touches — `README.md`, `KAPPA.md`,
-`GHOSTS.md`, `LEADERBOARDS.md`, `FILMING.md`, this one — either **edit it in
-place on the box**, or **`git checkout --` it, re-apply your change there, and
-read `git diff` back before committing**. A per-map page or a source file only
-you are working on is safe to push whole.
-
 ## One game, one driver
 
 The box runs a SINGLE Trackmania instance, and several agents drive it at once.
@@ -155,33 +141,52 @@ the cookie still valid?*, that is what has happened: replace
 `~/.gh-upload/cookie` with a fresh `Cookie:` header from a logged-in browser.
 Nothing else in the pipeline needs renewing.
 
-## The MediaTracker's clip length is the MAP's, not the scene's — measured 2026-08-24
+## The render can be longer than everything you staged — and I got the reason wrong once
 
-**The render is as long as the map's own author/validation ghost, whatever you
-stage.** Not the longest ghost in the scene, which is what
-[`../286279-turtle-trial-leto`](286279-turtle-trial-leto) and
-[`FILMING.md`](FILMING.md) both say, and not the length of the clip you asked
-for. Two measurements, one of them expensive:
+**RETRACTED, and kept in place. The section here previously read "the
+MediaTracker's clip length is the MAP's author ghost, not the scene's" and gave
+The Magnet Trial as half its evidence. The Magnet Trial has since been rendered
+in full and it disproves that half.** What is left is smaller, still real, and
+worth the same care.
 
-| map | longest ghost STAGED | what the game did | the map's own AT ghost |
+### What is measured
+
+| map | longest ghost STAGED | what the game actually wrote | the map's own author ghost |
 |---|---|---|---|
-| [Turtle Trial] Leto | 219.000 s (WR trimmed) | rendered **441.000 s** | 441.002 s |
-| The Magnet Trial | 30.010 s (a trimmed slice) | dialog estimated **01:45:52** | 2540.641 s |
+| [Turtle Trial] Leto | 219.000 s (two ghosts, WR trimmed) | **441.000 s** | 441.002 s |
+| The Magnet Trial | 793.893 s (one ghost) | **793.866 s** | 2540.641 s |
 
-Leto is the direct one: both staged ghosts end by 219.000 s and `clip cut`
-reported `441.000s -> 218.812s` on the file the game wrote. The Magnet Trial is
-the arithmetic: this box renders at about 2.5x realtime, and 2540.641 s of
-video at 2.5x is 6352 s, which is 01:45:52 to the second. Trimming the ghosts
-does not help, because they were never what set the length.
+Leto is the finding: `clip cut` read the file the game wrote as
+`441.000s -> 218.812s`, with both staged ghosts ending by 219.000. **A render
+can be twice as long as anything in the scene, and everything past your run is
+rendered and then thrown away.** Budget for it, and cut afterwards.
 
-**What it costs.** Every second past your run is rendered and then thrown away
-by `clip cut`. On Leto that is half the render. On The Magnet Trial it is the
-difference between a ~30 minute job and a ~1h45m one, and it is why a 30-second
-camera test on that map was still going after seven minutes and had to be
-killed. Budget a long map by its AUTHOR TIME, not by the run.
+The Magnet Trial is the retraction. Its author ghost is 2540.641 s, its shoot
+dialog estimated **01:45:52** for a thirty-second slice, and 2540.641 s of video
+at the ~2.5x realtime this box renders at is 6352 s, which is 01:45:52 to the
+second. That arithmetic is exact and the conclusion drawn from it was still
+wrong: rendered in full at `--cam 1`, the map produced **793.866 s** — its own
+run's length — in about forty minutes.
 
-**The route to fix it is `/clipend`** (`Camera.as`), which sets the clip's end
-directly. Anything that renders a map whose author time is much longer than the
-run should use it. Measure it on a short map with a known answer first: a clip
-whose length you can predict either way is the only way to tell "it worked"
-from "this map was going to be that length anyway".
+### The lesson, which is not about MediaTracker at all
+
+**The shoot dialog's `estimated` is not a measurement of the clip's length, and
+I treated it as one.** No slice render was ever allowed to finish; every one was
+killed early, so the only number behind "2540 s" was an estimate that happens to
+divide neatly. An arithmetic coincidence that lands on the second is *more*
+persuasive than a rough one and no more evidential. The one number that came
+from a finished file — Leto's 441.000 — is the only part that survived.
+
+If you need the length of a render before paying for it, the honest instruments
+are a finished file, or `clip frames --stream` on a partial one, which is what
+the camera comparison on this map used.
+
+### `/clipend` does not work on this build
+
+`shootctl get /clipend?ms=N` answers **`could not resolve
+CGameCtnMediaBlock::End`**: `MemberOffset` does not find that member in this
+build's class dump. The route and its implementation are both in HEAD
+(`Main.as`, `Camera.as:79`), and the member lookup is what fails, so a caller
+gets a 200 with an error string in it rather than a shortened clip — the dialog
+still estimated 01:45:52 immediately afterwards. Not chased further; recorded so
+nobody re-treads it.
