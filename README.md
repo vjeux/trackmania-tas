@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
 
 **[YEET Fall 2024 - 04](203072-yeet-fall-2024-04)** — author time `11.334` · ours **10.640** (−0.694) · best human 12.083 (ayti__) · 301 records
 
-https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
+https://github.com/user-attachments/assets/6708045e-8ee0-4520-86bc-d72a58a2d05e
 
 **[Kacky Reloaded #290](126859-kacky-reloaded-290)** — author time `24.062` · ours **23.416** (−0.646) · best human 24.342 (zetos.) · 23 records
 

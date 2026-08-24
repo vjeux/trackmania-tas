@@ -25,7 +25,7 @@ presses, the one worth learning.
 > the live engine; it has fixed others in this corpus. This page will be
 > re-shot from a repaired file. Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/8e71313f-29aa-46d7-aca4-f6dc2600bc4f
+https://github.com/user-attachments/assets/6708045e-8ee0-4520-86bc-d72a58a2d05e
 
 | run | time | vs author time | vs human WR | steering |
 |---|---|---|---|---|

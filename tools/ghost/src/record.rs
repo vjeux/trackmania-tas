@@ -823,6 +823,23 @@ pub fn rebuild_to(
 /// re-simulates the input chunk and never reads the entity list, so both
 /// outputs re-simulate to the same time as their input. The car itself is
 /// required to come through untouched.
+/// Where the car sits among the record's entities, as (index, count).
+///
+/// The game client is not indifferent to this. `ghost regen` rebuilds the
+/// record and puts the car at index 0; on 203072, whose container has the car
+/// LAST of three, the rebuilt file then fails to import — the ghost-block
+/// count never rises and the game raises a `FrameMessage`, four attempts
+/// running. Its own published file, same map, same scene, imports first time.
+/// Nothing headless sees this: that file passes `ghost verify` V1–V11 with
+/// kappa 1.000 and the oracle exact.
+pub fn car_index(path: &str) -> Result<(usize, usize), String> {
+    let body = gbx::record::load_body(path)?;
+    let (v, blob) = gbx::record::find_entrecord_blob(&body)?;
+    let rd = gbx::record::parse_record_data(&blob, v)?;
+    let vi = pick_vehicle(&rd).ok_or("no vehicle entity")?;
+    Ok((vi, rd.ents.len()))
+}
+
 pub fn set_ent_order(inp: &str, out: &str, car_first: bool) -> Result<String, String> {
     let mut before = String::new();
     let mut after = String::new();

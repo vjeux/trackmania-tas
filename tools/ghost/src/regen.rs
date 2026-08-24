@@ -635,6 +635,43 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
     crate::ident::cmd(&i);
     let _ = std::fs::rename(&tmp, out);
 
+    // 1b. THE ENTITY ORDER, RESTORED TO THE CONTAINER'S.
+    //
+    // The rebuild puts the car at index 0. The game client is not indifferent
+    // to that: 203072's container has the car LAST of three entities, and the
+    // regenerated file with the car first would not import at all -- the
+    // ghost-block count stayed 0 through four attempts and the game raised a
+    // FrameMessage each time, while its own published file imported first try
+    // in the same scene, on the same map, seconds apart. That file passed
+    // `ghost verify` V1-V11 with kappa 1.000 and the oracle exact, so nothing
+    // headless could see it; the only symptom is a render that never starts.
+    //
+    // The rule is NOT "car first" (`entorder`'s help says every ghost the game
+    // wrote has the car at 0, and on this container that is simply false). The
+    // rule is: give the file back the order its container had.
+    match (crate::record::car_index(carrier), crate::record::car_index(out)) {
+        (Ok((ci, cn)), Ok((oi, on))) if cn > 1 && on > 1 && ci != oi => {
+            let want_first = ci == 0;
+            if want_first || ci == cn - 1 {
+                let tmp2 = format!("{out}.ord");
+                match crate::record::set_ent_order(out, &tmp2, want_first) {
+                    Ok(m) => {
+                        let _ = std::fs::rename(&tmp2, out);
+                        println!("   entity order restored to the container's: {m}");
+                    }
+                    Err(e) => println!("   entity order could not be restored: {e}"),
+                }
+            } else {
+                println!(
+                    "   NOTE: the container has the car at index {ci} of {cn} and this file has \
+                     it at {oi} of {on}; only first and last can be restored, so the order is \
+                     left as rebuilt. If the client refuses the import, that is where to look."
+                );
+            }
+        }
+        _ => {}
+    }
+
     // 2. THE ACCEPTANCE TEST: what, if anything, is still the donor's.
     println!("\n== what this file is made of");
     let mut refused: Vec<String> = Vec::new();
