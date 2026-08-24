@@ -1,6 +1,6 @@
 # trackmania-tas
 
-Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beaten** — 36 maps, all times in seconds, boards fetched 2026-08-24. Watch:
+Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beaten**. All times in seconds. Watch:
 
 # 1 · Author time unbeaten by any human — and this TAS takes it
 
@@ -151,11 +151,10 @@ https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
 # How to read these lines
 
 **The three groups are cut on one question: has a HUMAN beaten the author time?**
-Not on whether we have. That is the axis this project exists on. 36 maps,
-21 + 7 + 8 — and on eight of them the answer changed under us, six in the last
-three days. Group 3 is where they went; nothing is deleted, and the retraction
-lives on each map's page (rule 4). On two of those eight a human is now ahead of
-the run this repo publishes, and those lines say so.
+Not on whether we have. That is the axis this project exists on, and the answer
+keeps changing under us — group 3 is where a map goes when it does. Nothing is
+deleted when one moves: the retraction lives on that map's page (rule 4), and
+where a human is now ahead of the run this repo publishes, the line says so.
 
 **An exact tie is a beat**, on either side of that comparison: the game awards
 the author medal at or under the time, so a run level with it has taken it.
@@ -181,22 +180,17 @@ MAX-UP, 19 on Fall 2025 - 13 — and *fewest is not easiest*: on several maps th
 sparsest tape is the least forgiving of mistimings. Each map's page names the
 run actually worth practising.
 
-**[▶ Drive one of them.](trainer/)** The 6.323 on
-[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) is 23 steer
-events on three values and one brake tap, so
-[`trainer/index.html`](trainer/index.html) turns its real input tape into a
-falling-note rhythm game in the browser. Save it, double-click it, and find out
-whether a person can drive a run no human has driven.
-
 # Validation
 
-**The capture behind every number above.** Boards fetched **2026-08-24
-03:32–03:37 UTC**, one 76-GET pass, all HTTP 200 — the same capture behind
-[`LEADERBOARDS.md`](LEADERBOARDS.md), which is the newer measurement wherever a
-page here disagrees with it. *Control:* it re-read every board the repo tracked
-and **28 came back with exactly the record the page already printed**, so it
-reads boards rather than manufacturing them; the nine that moved are named in
-`LEADERBOARDS.md`.
+**The capture behind the numbers above** is the one recorded in
+[`LEADERBOARDS.md`](LEADERBOARDS.md) — that file carries its own fetch
+timestamp and is the newer measurement wherever a page here disagrees with it.
+It is a dated artefact on purpose: a leaderboard number is only ever true as of
+a capture, and the honest way to say so is to date the capture rather than to
+date the page. *Control on the most recent one:* it re-read every board the
+repo tracks, and most came back with exactly the record the page already
+printed — so it reads boards rather than manufacturing them. The ones that
+moved are named there.
 
 Every published replay was re-simulated by the dedicated server against a
 pristine copy of the map, in a fresh process, with a downloaded human ghost in
@@ -209,7 +203,7 @@ inference stated), UNKNOWN (an open task, not a silence) or SUPERSEDED (pointing
 forward at what replaced it). That file also records what this project has
 already paid for getting it wrong, which is why it exists.
 
-Three scans run over all 36 directories at once and should be run before any
+Three scans run over every map directory at once and should be run before any
 page is edited:
 
 ```
