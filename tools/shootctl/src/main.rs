@@ -860,7 +860,7 @@ fn main() {
             "usage:\n  shootctl lint <api.json> <file.as ...>\n  shootctl stamp <Main.as> <STAMP>\
              \n  shootctl get <route>\n  shootctl wait --ctx N [--timeout S]\n  shootctl drive --map <path>\
              \n  shootctl launch [timeout_s]\
-             \n  shootctl setup --map <map> <ghost...>\
+             \n  shootctl setup --map <map> [--cam N] <ghost...>\n        --cam: 2 External (default), 1 Internal, 6 Ext2, 3 Helico\
              \n  shootctl shoot [timeout_s] --name <out>\
              \n  shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
              \n        one game, one driver -- take this before setup/shoot"
@@ -943,11 +943,19 @@ fn main() {
             let mut name = String::new();
             let mut gs: Vec<String> = Vec::new();
             let mut bad = String::new();
+            let mut cam: u8 = 2;
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
                     "--map"  => { map  = args[i + 1].clone(); i += 2; }
                     "--name" => { name = args[i + 1].clone(); i += 2; }
+                    "--cam" => {
+                        match args.get(i + 1).and_then(|v| v.parse::<u8>().ok()) {
+                            Some(c) if c <= 6 => cam = c,
+                            _ => { bad = "--cam (takes 0..6)".into(); }
+                        }
+                        i += 2;
+                    }
                     "--force" => { i += 1; }   // handled below; not a ghost
                     other if other.starts_with("--") => {
                         // An unknown flag silently became a GHOST PATH and the
@@ -961,13 +969,13 @@ fn main() {
             if !bad.is_empty() { eprintln!("unknown option: {bad}"); }
             if !bad.is_empty() { 2 }
             else if map.is_empty() || gs.is_empty() || name.is_empty() {
-                eprintln!("run [--force] --map <map> --name <out> <tas.Ghost.Gbx> [opponent.Ghost.Gbx]");
+                eprintln!("run [--force] --map <map> --name <out> [--cam N] <tas.Ghost.Gbx> [opponent.Ghost.Gbx]");
                 2
             } else {
                 let rc = launch(180, args.iter().any(|a| a == "--force"));
                 if rc != 0 { rc }
                 else {
-                    let rc = setup(&map, &gs);
+                    let rc = setup(&map, &gs, cam);
                     if rc != 0 { rc } else { shoot(3600, &name) }
                 }
             }
@@ -990,13 +998,23 @@ fn main() {
         "setup" => {
             let mut map = String::new();
             let mut gs: Vec<String> = Vec::new();
+            let mut cam: u8 = 2;
+            let mut badcam = false;
             let mut i = 1;
             while i < args.len() {
                 if args[i] == "--map" { map = args[i + 1].clone(); i += 2; }
+                else if args[i] == "--cam" {
+                    match args.get(i + 1).and_then(|v| v.parse::<u8>().ok()) {
+                        Some(c) if c <= 6 => cam = c,
+                        _ => badcam = true,
+                    }
+                    i += 2;
+                }
                 else { gs.push(args[i].clone()); i += 1; }
             }
-            if map.is_empty() || gs.is_empty() { eprintln!("setup --map <path> <ghost> [ghost]"); 2 }
-            else { setup(&map, &gs) }
+            if badcam { eprintln!("--cam takes 0..6 (2 External, 1 Internal, 6 Ext2, 3 Helico)"); 2 }
+            else if map.is_empty() || gs.is_empty() { eprintln!("setup --map <path> [--cam N] <ghost> [ghost]"); 2 }
+            else { setup(&map, &gs, cam) }
         }
         "import" => {
             if args.len() < 2 { 2 } else { stage_and_import(&args[1..]) }
@@ -1267,7 +1285,33 @@ fn loaded_uid() -> Option<String> {
 ///
 /// Every step is checked against the object graph before the next one runs, so
 /// a failure names the step instead of surfacing later as a black video.
-fn setup(map: &str, ghosts: &[String]) -> i32 {
+/// The game's camera modes, from the plugin's own enum. Named so a log line and
+/// a `--cam` argument can both say what was actually filmed instead of a digit.
+///
+/// Which one suits a map is a property of the MAP:
+///   * **2 External** — the stock chase, and the right default. It keeps the
+///     WORLD's up-vector, which is what makes a normal run readable.
+///   * **1 Internal** — cockpit. Rolls WITH the car, so a magnet map's
+///     ceiling-driving reads as driving rather than as a car stuck to the sky.
+///   * **6 Ext2** — the alternate external, framed closer and car-relative.
+///   * **3 Helico** — overhead. Good for a route, useless for car attitude.
+///   * **0 Default / 4 Free / 5 Spectator** — not aimed at our entity in a
+///     useful way here; listed because the plugin accepts them and a typo
+///     should say what it asked for.
+pub fn cam_name(cam: u8) -> &'static str {
+    match cam {
+        0 => "Default",
+        1 => "Internal (cockpit)",
+        2 => "External (stock chase)",
+        3 => "Helico (overhead)",
+        4 => "Free",
+        5 => "Spectator",
+        6 => "Ext2",
+        _ => "unknown",
+    }
+}
+
+fn setup(map: &str, ghosts: &[String], cam: u8) -> i32 {
     let map = &match game_path(map) {
         Ok(m) => m,
         Err(e) => { eprintln!("{e}"); return 2; }
@@ -1346,10 +1390,21 @@ fn setup(map: &str, ghosts: &[String]) -> i32 {
     // ent=1 is the FIRST imported ghost -- our car, always. cam=2 is External,
     // the stock chase. A fresh block targets entity 0 (nobody) and renders
     // black, which used to pass every size and duration check we had.
-    let set = http_get("/camset?ent=1&cam=2", 20).unwrap_or_default();
-    println!("  camera: {}", set.trim());
+    // ent=1 is the FIRST imported ghost -- our car, always. `cam` is the game
+    // camera: 2 (External, the stock chase) is the default and what every clip
+    // in the repo before 2026-08-24 used. A fresh block targets entity 0
+    // (nobody) and renders black, which used to pass every size and duration
+    // check we had.
+    //
+    // WHY THIS IS A FLAG NOW. External holds the WORLD's up-vector, so on a
+    // magnet map -- where the car drives on ceilings and walls -- the shot is
+    // of an upside-down car in a frame that never rolls with it, and you cannot
+    // see what the run is doing. The camera is a property of the MAP, not of
+    // the pipeline, and it was hardcoded.
+    let set = http_get(&format!("/camset?ent=1&cam={cam}"), 20).unwrap_or_default();
+    println!("  camera: {} ({})", set.trim(), cam_name(cam));
     let st = http_get("/camstate", 20).unwrap_or_default();
-    if st.contains("\"entid\":0") || !st.contains("\"gamecam\":2") {
+    if st.contains("\"entid\":0") || !st.contains(&format!("\"gamecam\":{cam}")) {
         eprintln!("camera did not take: {st}");
         return 1;
     }
