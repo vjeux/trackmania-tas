@@ -34,7 +34,7 @@
 //!                                        stdout (the validator's JSON block)
 
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 #[path = "../../forkoracle/src/pred_core.rs"]
 pub mod pred_core;
@@ -71,6 +71,7 @@ struct PollFd {
     revents: i16,
 }
 
+const SIGTRAP: c_int = 5;
 const SIGSTOP: c_int = 19;
 const SIGKILL: c_int = 9;
 const SIGCHLD: c_int = 17;
@@ -120,6 +121,37 @@ static REAL_LROUNDF: AtomicUsize = AtomicUsize::new(0);
 static REAL_WRITE: AtomicUsize = AtomicUsize::new(0);
 static CMD_FD: AtomicI32 = AtomicI32::new(-1);
 static RES_FD: AtomicI32 = AtomicI32::new(-1);
+/// Load address of the main executable, captured before any signal handler runs.
+static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
+
+// The validator's simulation-binding callback on build 128182. It is reached
+// from the /validatepath virtual method before the first simulation tick:
+//
+//     0x113ade4  call [validator.vtable + 0x238]
+//       -> 0x1182b40 validation state machine
+//       -> 0x11818aa call 0x118c170
+//
+// At 0x118c170, rdi is the validation controller and rcx is its simulation
+// object. The function itself stores rcx at [rdi + 0x1a70]. Capturing these
+// arguments gives the driver a validator-owned root; no memory search chooses a
+// car. The build-specific prologue is verified before the one-byte breakpoint is
+// installed. That breakpoint is restored before the original instruction is
+// re-executed, so the hook is one-shot and behavior-preserving.
+const VALIDATOR_SIM_BIND_OFF: usize = 0x118c170;
+// Full build-128182 prologue through the controller.sim store. Checking only
+// `push rbp` would turn an unsupported server build into a trap at an arbitrary
+// function that happened to begin with the same byte.
+const VALIDATOR_SIM_BIND_SIGNATURE: [u8; 33] = [
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50, 0x48, 0x89,
+    0xcb, 0x41, 0x89, 0xd7, 0x49, 0x89, 0xf6, 0x49, 0x89, 0xfc, 0x48, 0x89, 0x8f, 0x70, 0x1a, 0x00,
+    0x00,
+];
+static VALIDATOR_TRAP_ADDR: AtomicUsize = AtomicUsize::new(0);
+static VALIDATOR_TRAP_BYTE: AtomicU8 = AtomicU8::new(0);
+static VALIDATOR_CONTROLLER: AtomicUsize = AtomicUsize::new(0);
+static VALIDATOR_SIM: AtomicUsize = AtomicUsize::new(0);
+static VALIDATOR_PARTICIPANTS_ARG: AtomicUsize = AtomicUsize::new(0);
+static VALIDATOR_PARTICIPANT_COUNT_ARG: AtomicUsize = AtomicUsize::new(0);
 
 // --------------------------------------------------------------- the BRANCH
 //
@@ -188,12 +220,24 @@ static SAMPLE_LEN: AtomicUsize = AtomicUsize::new(0);
 const MAX_SEG: usize = 8;
 static SEG_N: AtomicUsize = AtomicUsize::new(0);
 static SEG_ADDR: [AtomicUsize; MAX_SEG] = [
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
 ];
 static SEG_LEN: [AtomicUsize; MAX_SEG] = [
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
 ];
 static SAMPLE_FD: AtomicI32 = AtomicI32::new(-1);
 static SAMPLE_STRIDE: AtomicU64 = AtomicU64::new(0);
@@ -489,7 +533,10 @@ unsafe fn watch_gather(rec: *mut u8) {
 ///   checks the two paths field by field.
 #[inline(never)]
 unsafe fn do_watch(clock: u64) {
-    SAMPLE_NEXT.store(clock + SAMPLE_STRIDE.load(Ordering::Relaxed), Ordering::Relaxed);
+    SAMPLE_NEXT.store(
+        clock + SAMPLE_STRIDE.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
     let cfg = &*core::ptr::addr_of!(WCFG);
     let rec = core::ptr::addr_of_mut!(WREC) as *mut u8;
     let prev = core::ptr::addr_of_mut!(WPREV) as *mut u8;
@@ -520,7 +567,8 @@ unsafe fn do_watch(clock: u64) {
     WPREV_VALID.store(1, Ordering::Relaxed);
 }
 
-type WriteFn = unsafe extern "C" fn(c_int, *const c_void, usize) -> isize;type ReadFn = unsafe extern "C" fn(c_int, *mut c_void, usize) -> isize;
+type WriteFn = unsafe extern "C" fn(c_int, *const c_void, usize) -> isize;
+type ReadFn = unsafe extern "C" fn(c_int, *mut c_void, usize) -> isize;
 
 unsafe fn real_write() -> WriteFn {
     let mut p = REAL_WRITE.load(Ordering::Relaxed);
@@ -594,10 +642,102 @@ unsafe fn env_str(name: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(std::slice::from_raw_parts(e as *const u8, n)).into_owned())
 }
 
+fn main_module_base() -> usize {
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return 0,
+    };
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    maps.lines()
+        .filter(|line| line.split_whitespace().nth(5) == Some(exe.as_str()))
+        .filter_map(|line| {
+            let range = line.split_whitespace().next()?;
+            usize::from_str_radix(range.split_once('-')?.0, 16).ok()
+        })
+        .min()
+        .unwrap_or(0)
+}
+
+/// Install the one-shot validator callback trap before `main` starts. Gating it
+/// keeps `forkshim` usable with `shimhost`, whose text obviously has no server
+/// instruction at this offset.
+unsafe extern "C" fn install_validator_trace() {
+    if std::env::var_os("FKSHIM_VALIDATOR_CAR").is_none() {
+        return;
+    }
+    let base = main_module_base();
+    MODULE_BASE.store(base, Ordering::SeqCst);
+    if base == 0 {
+        return;
+    }
+    let at = base + VALIDATOR_SIM_BIND_OFF;
+    let got = std::slice::from_raw_parts(at as *const u8, VALIDATOR_SIM_BIND_SIGNATURE.len());
+    if got != VALIDATOR_SIM_BIND_SIGNATURE {
+        return;
+    }
+    let original = got[0];
+    let ps = getpagesize() as usize;
+    if mprotect((at / ps * ps) as *mut c_void, ps, 7) != 0 {
+        return;
+    }
+    let act = SigactionT {
+        handler: validator_trap_handler as *const () as usize,
+        mask: [0; 16],
+        flags: SA_SIGINFO,
+        restorer: 0,
+    };
+    if sigaction(SIGTRAP, &act, &raw mut VALIDATOR_OLD_SIGTRAP) != 0 {
+        mprotect((at / ps * ps) as *mut c_void, ps, PROT_READ_EXEC);
+        return;
+    }
+    VALIDATOR_TRAP_ADDR.store(at, Ordering::SeqCst);
+    VALIDATOR_TRAP_BYTE.store(original, Ordering::SeqCst);
+    std::ptr::write_volatile(at as *mut u8, 0xcc);
+}
+
+#[used]
+#[cfg_attr(target_os = "linux", link_section = ".init_array")]
+static VALIDATOR_TRACE_INIT: unsafe extern "C" fn() = install_validator_trace;
+
+unsafe extern "C" fn validator_trap_handler(_sig: c_int, _info: *const u8, ctx: *mut c_void) {
+    let at = VALIDATOR_TRAP_ADDR.load(Ordering::Relaxed);
+    if at == 0 || ctx.is_null() {
+        _exit(94)
+    }
+    // Linux x86-64 ucontext_t: mcontext starts at byte 40 and gregs[REG_RIP]
+    // is slot 16. rdi/rsi/rdx/rcx are slots 8/9/12/14.
+    let g = (ctx as *mut usize).add(5);
+    let rip = *g.add(16);
+    if rip != at + 1 {
+        _exit(94)
+    }
+    VALIDATOR_CONTROLLER.store(*g.add(8), Ordering::SeqCst);
+    VALIDATOR_PARTICIPANTS_ARG.store(*g.add(9), Ordering::SeqCst);
+    VALIDATOR_PARTICIPANT_COUNT_ARG.store(*g.add(12), Ordering::SeqCst);
+    VALIDATOR_SIM.store(*g.add(14), Ordering::SeqCst);
+    std::ptr::write_volatile(at as *mut u8, VALIDATOR_TRAP_BYTE.load(Ordering::Relaxed));
+    let ps = getpagesize() as usize;
+    if mprotect((at / ps * ps) as *mut c_void, ps, PROT_READ_EXEC) != 0
+        || sigaction(
+            SIGTRAP,
+            &raw const VALIDATOR_OLD_SIGTRAP,
+            std::ptr::null_mut(),
+        ) != 0
+    {
+        _exit(94)
+    }
+    VALIDATOR_TRAP_ADDR.store(0, Ordering::SeqCst);
+    *g.add(16) = at;
+}
+
 unsafe fn init() {
     if INIT.swap(1, Ordering::SeqCst) != 0 {
         return;
     }
+    MODULE_BASE.store(main_module_base(), Ordering::SeqCst);
     if let Some(v) = env_i64(b"FKSHIM_STOP_LROUNDF\0") {
         if v > 0 {
             STOP_AT.store(v as u64, Ordering::SeqCst);
@@ -676,7 +816,8 @@ unsafe fn read_key(path: &str) -> Option<Key> {
 }
 
 /// Scan our own address space for the decoded input array.
-unsafe fn locate(key: &Key) -> Option<usize> {    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+unsafe fn locate(key: &Key) -> Option<usize> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
     let want: Vec<[u8; 4]> = key.steer.iter().map(|v| v.to_le_bytes()).collect();
     let hs = Horspool::new(want[key.t0]);
     let n = key.steer.len();
@@ -816,16 +957,24 @@ struct SigactionT {
     restorer: usize,
 }
 
+static mut VALIDATOR_OLD_SIGTRAP: SigactionT = SigactionT {
+    handler: 0,
+    mask: [0; 16],
+    flags: 0,
+    restorer: 0,
+};
+
 const SA_SIGINFO: c_int = 4;
 const SIGSEGV: c_int = 11;
 const PROT_NONE: c_int = 0;
 const PROT_READ_WRITE: c_int = 3;
+const PROT_READ_EXEC: c_int = 5;
 
 static PROBE_FD: AtomicI32 = AtomicI32::new(-1);
 static PROBE_BASE: AtomicUsize = AtomicUsize::new(0);
 static PROBE_END: AtomicUsize = AtomicUsize::new(0);
 
-unsafe extern "C" fn segv_handler(_sig: c_int, info: *const u8, _ctx: *mut c_void) {
+unsafe extern "C" fn segv_handler(_sig: c_int, info: *const u8, ctx: *mut c_void) {
     let addr = *(info.add(16) as *const usize);
     let base = PROBE_BASE.load(Ordering::Relaxed);
     let end = PROBE_END.load(Ordering::Relaxed);
@@ -837,6 +986,65 @@ unsafe extern "C" fn segv_handler(_sig: c_int, info: *const u8, _ctx: *mut c_voi
         let ps = getpagesize() as usize;
         mprotect((addr / ps * ps) as *mut c_void, ps, PROT_READ_WRITE);
         return;
+    }
+    // Linux x86-64 ucontext_t stores mcontext.gregs at byte 40. Record the
+    // faulting instruction and register arguments before exiting the disposable
+    // probe child. This makes the decoded-input reader a concrete static entry
+    // into the validator call graph rather than another inferred clock marker.
+    // The driver still receives the unchanged `TICK n` reply on its pipe; this
+    // evidence goes only to the server's stderr log.
+    #[cfg(target_arch = "x86_64")]
+    if !ctx.is_null() {
+        let g = (ctx as *const usize).add(5);
+        for (name, index) in [
+            (b" rip " as &[u8], 16usize),
+            (b" rdi ", 8),
+            (b" rsi ", 9),
+            (b" rdx ", 12),
+            (b" rcx ", 14),
+            (b" r8 ", 0),
+            (b" r9 ", 1),
+            (b" rax ", 13),
+            (b" rbx ", 11),
+            (b" r12 ", 4),
+            (b" r13 ", 5),
+            (b" r14 ", 6),
+            (b" r15 ", 7),
+            (b" rbp ", 10),
+            (b" rsp ", 15),
+        ] {
+            let mut line = Vec::with_capacity(48);
+            line.extend_from_slice(b"FKSHIM input_fault");
+            line.extend_from_slice(name);
+            utoa(*g.add(index) as u64, &mut line);
+            line.push(b'\n');
+            log(&line);
+        }
+        logn(
+            b"FKSHIM input_fault module_base ",
+            MODULE_BASE.load(Ordering::Relaxed) as u64,
+        );
+        let sp = *g.add(15);
+        let mut fp = *g.add(10) as *const usize;
+        for depth in 0..12u64 {
+            let at = fp as usize;
+            if at < sp || at.saturating_sub(sp) > (1 << 20) || at & 7 != 0 {
+                break;
+            }
+            let next = *fp;
+            let ret = *fp.add(1);
+            let mut line = Vec::with_capacity(64);
+            line.extend_from_slice(b"FKSHIM input_fault frame ");
+            utoa(depth, &mut line);
+            line.push(b' ');
+            utoa(ret as u64, &mut line);
+            line.push(b'\n');
+            log(&line);
+            if next <= at {
+                break;
+            }
+            fp = next as *const usize;
+        }
     }
     let mut o = Vec::with_capacity(64);
     o.extend_from_slice(b"TICK ");
@@ -874,7 +1082,11 @@ unsafe fn arm_probe(base: usize, n: usize, fd: c_int) {
 unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
     let mut got = 0usize;
     while got < buf.len() {
-        let r = real_read()(fd, buf.as_mut_ptr().add(got) as *mut c_void, buf.len() - got);
+        let r = real_read()(
+            fd,
+            buf.as_mut_ptr().add(got) as *mut c_void,
+            buf.len() - got,
+        );
         if r <= 0 {
             return false;
         }
@@ -886,7 +1098,11 @@ unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
 unsafe fn write_all(fd: c_int, buf: &[u8]) -> bool {
     let mut sent = 0usize;
     while sent < buf.len() {
-        let r = real_write()(fd, buf.as_ptr().add(sent) as *const c_void, buf.len() - sent);
+        let r = real_write()(
+            fd,
+            buf.as_ptr().add(sent) as *const c_void,
+            buf.len() - sent,
+        );
         if r <= 0 {
             return false;
         }
@@ -978,7 +1194,14 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
             s.push(f32::from_bits(g4(o + 4 * i)));
         }
         o += 4 * nref;
-        cfg.rl = RefLine { n: nref, xyz: xyz.as_ptr(), s: s.as_ptr(), corridor, ahead, back };
+        cfg.rl = RefLine {
+            n: nref,
+            xyz: xyz.as_ptr(),
+            s: s.as_ptr(),
+            corridor,
+            ahead,
+            back,
+        };
         // leaked on purpose: every child must see it at the same address, and
         // it is written once per server
         std::mem::forget(xyz);
@@ -986,7 +1209,11 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
     } else {
         cfg.rl = RefLine::NONE;
     }
-    cfg.plane_x = if payload.len() >= o + 4 { f32::from_bits(g4(o)) } else { 0.0 };
+    cfg.plane_x = if payload.len() >= o + 4 {
+        f32::from_bits(g4(o))
+    } else {
+        0.0
+    };
     o += 4;
     let mut nk = 0usize;
     if payload.len() >= o + 8 {
@@ -1183,6 +1410,16 @@ unsafe fn forkserver() {
     // space, and a beam of them is how a box dies.
     hello.push(b' ');
     utoa(getpid() as u64, &mut hello);
+    // The validator-owned root captured at 0x118c170. Both values are sent so
+    // the driver can prove the callback argument agrees with the object's own
+    // +0x1a70 field before following the rest of the chain.
+    hello.push(b' ');
+    utoa(
+        VALIDATOR_CONTROLLER.load(Ordering::SeqCst) as u64,
+        &mut hello,
+    );
+    hello.push(b' ');
+    utoa(VALIDATOR_SIM.load(Ordering::SeqCst) as u64, &mut hello);
     send_frame(res, &hello);
 
     loop {
@@ -1318,8 +1555,8 @@ unsafe fn forkserver() {
             let mut tracep: Vec<u8> = payload[o..o + tlen].to_vec();
             tracep.push(0);
             o += tlen;
-            let nseg = (u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize)
-                .min(MAX_SEG);
+            let nseg =
+                (u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize).min(MAX_SEG);
             o += 4;
             let mut segs = [(0usize, 0usize); MAX_SEG];
             let mut sblen = 0usize;
@@ -1408,7 +1645,9 @@ unsafe fn forkserver() {
             // process entering the fork server twice, and `BRANCH_ARMED` is the
             // one-use licence that lets THIS child past the `IS_CHILD` guard.
             CKPT_AT.store(
-                N_LROUNDF.load(Ordering::Relaxed).saturating_add(stop_after.max(1)),
+                N_LROUNDF
+                    .load(Ordering::Relaxed)
+                    .saturating_add(stop_after.max(1)),
                 Ordering::SeqCst,
             );
             ARMED.store(0, Ordering::SeqCst);
@@ -1549,8 +1788,16 @@ unsafe fn forkserver() {
             let mut t_first = 0u64;
             loop {
                 let mut pfds = [
-                    PollFd { fd: if json_done { -1 } else { fds[0] }, events: POLLIN, revents: 0 },
-                    PollFd { fd: if samples_eof { -1 } else { sfds[0] }, events: POLLIN, revents: 0 },
+                    PollFd {
+                        fd: if json_done { -1 } else { fds[0] },
+                        events: POLLIN,
+                        revents: 0,
+                    },
+                    PollFd {
+                        fd: if samples_eof { -1 } else { sfds[0] },
+                        events: POLLIN,
+                        revents: 0,
+                    },
                 ];
                 if json_done && samples_eof {
                     break;
@@ -1590,7 +1837,11 @@ unsafe fn forkserver() {
             if !samples_eof {
                 // drain whatever the pipe still holds
                 loop {
-                    let mut pfd = PollFd { fd: sfds[0], events: POLLIN, revents: 0 };
+                    let mut pfd = PollFd {
+                        fd: sfds[0],
+                        events: POLLIN,
+                        revents: 0,
+                    };
                     if poll(&mut pfd, 1, 200) <= 0 {
                         break;
                     }
@@ -1869,7 +2120,9 @@ unsafe fn forkserver() {
             if r <= 0 {
                 break;
             }
-            if t_first == 0 { t_first = now_us(); }
+            if t_first == 0 {
+                t_first = now_us();
+            }
             out.extend_from_slice(&buf[..r as usize]);
             // everything we need is in ValidatedResult/Desc, which precede IsValid;
             // stopping here skips the DeclaredResult block and the Inputs RLE
@@ -1990,7 +2243,9 @@ mod tests {
         w.fast = 1;
         w.plane_x = 123.5;
         w.refline = RefLineData::from_points(
-            &(0..64).map(|i| [i as f64 * 1.5, 2.0, -i as f64]).collect::<Vec<_>>(),
+            &(0..64)
+                .map(|i| [i as f64 * 1.5, 2.0, -i as f64])
+                .collect::<Vec<_>>(),
         );
         for s in [
             "crash:speeddrop:frac=0.5,win=50,minpeak=15,after=200",
@@ -2052,10 +2307,18 @@ mod tests {
             let x = unsafe { *cfg.rl.xyz.add(3 * i) };
             let y = unsafe { *cfg.rl.xyz.add(3 * i + 1) };
             let z = unsafe { *cfg.rl.xyz.add(3 * i + 2) };
-            assert_eq!((x, y, z), (i as f32 * 1.5, 2.0, -(i as f32)), "reference point {}", i);
+            assert_eq!(
+                (x, y, z),
+                (i as f32 * 1.5, 2.0, -(i as f32)),
+                "reference point {}",
+                i
+            );
         }
         let last = unsafe { *cfg.rl.s.add(63) };
-        assert!((last - w.refline.s[63]).abs() < 1e-3, "arclength did not survive");
+        assert!(
+            (last - w.refline.s[63]).abs() < 1e-3,
+            "arclength did not survive"
+        );
 
         // THE GATE, box and program, byte for byte
         assert!(cfg.gate.armed, "the gate did not survive the pipe");
@@ -2070,15 +2333,24 @@ mod tests {
         // THE EVENT, box and both programs
         assert!(cfg.fire.armed, "the event clause did not survive the pipe");
         assert_eq!(cfg.fire.at, w.fire.at);
-        assert_eq!(cfg.fire.need, w.fire.need, "the event's need count did not cross the pipe");
-        assert_eq!(cfg.fire.after_ticks, w.fire.after_ticks, "the after window did not cross");
+        assert_eq!(
+            cfg.fire.need, w.fire.need,
+            "the event's need count did not cross the pipe"
+        );
+        assert_eq!(
+            cfg.fire.after_ticks, w.fire.after_ticks,
+            "the after window did not cross"
+        );
         assert_eq!(
             cfg.fire.after_from_end, w.fire.after_from_end,
             "which end the after window opens at did not cross the pipe"
         );
         assert!(cfg.fire.where_box.armed);
         assert_eq!(cfg.fire.where_box.bounds, w.fire.where_box.bounds);
-        for (a, b) in [(&cfg.fire.cond, &w.fire.cond), (&cfg.fire.after, &w.fire.after)] {
+        for (a, b) in [
+            (&cfg.fire.cond, &w.fire.cond),
+            (&cfg.fire.after, &w.fire.after),
+        ] {
             for i in 0..forkoracle::pred::prog_len(b) {
                 let (mut x, mut y) = ([0u8; KEYOP_BYTES], [0u8; KEYOP_BYTES]);
                 a[i].encode(&mut x);
@@ -2087,7 +2359,11 @@ mod tests {
             }
         }
         // and it computes the same number on both sides of the wire
-        let (p, v, q) = ([70.2, 50.4, 708.9], [-60.0, -20.0, -80.0], [0.7, 0.1, 0.7, 0.05]);
+        let (p, v, q) = (
+            [70.2, 50.4, 708.9],
+            [-60.0, -20.0, -80.0],
+            [0.7, 0.1, 0.7, 0.05],
+        );
         assert_eq!(
             pred_core::key_eval(&cfg.gate.prog, pred_core::St::at(p, v, q)),
             forkoracle::pred_core::key_eval(&w.gate.prog, forkoracle::pred_core::St::at(p, v, q))
@@ -2114,25 +2390,49 @@ mod tests {
         let full = w.arm_payload(0, 0, 4, 20, 32, 44, &[(0x1000, 4)]);
 
         // 1. cut before the EVENT block: gate armed, event not.
-        let fire_bytes = 4 + 4 + 4 + 4 + 4 + 4 + 24
-            + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.cond)
-            + 4 + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.after);
+        let fire_bytes = 4
+            + 4
+            + 4
+            + 4
+            + 4
+            + 4
+            + 24
+            + 4
+            + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.cond)
+            + 4
+            + KEYOP_BYTES * forkoracle::pred::prog_len(&w.fire.after);
         let cut = full.len() - fire_bytes;
         let (np, nref, nk) = unsafe { parse_arm(&full[..cut]) };
         assert_eq!((np, nref), (2, 64));
-        assert_eq!(nk, w.gate_kops(), "the gate's own key did not survive the cut");
+        assert_eq!(
+            nk,
+            w.gate_kops(),
+            "the gate's own key did not survive the cut"
+        );
         let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
         assert!(cfg.gate.armed, "the gate was lost by a cut that is past it");
-        assert!(!cfg.fire.armed, "a missing event clause must read as disarmed");
+        assert!(
+            !cfg.fire.armed,
+            "a missing event clause must read as disarmed"
+        );
 
         // 2. cut before the GATE block too: both disarmed, reference intact.
         let cut = cut - 4 - 8 - 24 - 4 - 4 - KEYOP_BYTES * w.gate_kops();
         let (np, nref, nk) = unsafe { parse_arm(&full[..cut]) };
         assert_eq!((np, nref, nk), (2, 64, 0));
         let cfg = unsafe { &*core::ptr::addr_of!(WCFG) };
-        assert_eq!(cfg.plane_x, 0.0, "a missing timing plane must read as disabled");
+        assert_eq!(
+            cfg.plane_x, 0.0,
+            "a missing timing plane must read as disabled"
+        );
         assert!(!cfg.gate.armed, "a missing gate must read as disarmed");
-        assert!(!cfg.fire.armed, "a missing event clause must read as disarmed");
-        assert_eq!(cfg.rl.n, 64, "the reference line was damaged by the short read");
+        assert!(
+            !cfg.fire.armed,
+            "a missing event clause must read as disarmed"
+        );
+        assert_eq!(
+            cfg.rl.n, 64,
+            "the reference line was damaged by the short read"
+        );
     }
 }

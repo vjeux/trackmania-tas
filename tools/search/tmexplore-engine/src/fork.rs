@@ -31,11 +31,12 @@
 //!   explorer only keeps the last `k`. That is this backend's cost, not the
 //!   engine's, and `Forest` removes it.
 
+use fk::validator::ValidatorCar;
 use forkoracle::blind::bounds_from;
 use forkoracle::forksrv::{parse_result, write_key, ForkServer, Rec};
 use forkoracle::inputs::Inputs;
-use forkoracle::layout::{decode_rows, segments, tail_recs, Layout, Row, REC_LEN};
-use std::path::{Path, PathBuf};
+use forkoracle::layout::{decode_rows, segments, tail_recs, Row, REC_LEN};
+use std::path::PathBuf;
 use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
 use tmexplore::outcome::Verdict;
@@ -62,17 +63,6 @@ pub struct ForkOpts {
     /// Extra ticks a candidate is allowed past its own end, so the child does
     /// not stop the instant the macro does.
     pub tail_margin: u32,
-    /// The vehicle state's offset below the server's own base, from an
-    /// EARLIER HONEST LOCATE. `None` sweeps for it (~70 s).
-    ///
-    /// Passed explicitly rather than through `FK_STATE_OFF`, because the
-    /// env var is process-global and a worker that needs to fall back to a
-    /// real sweep cannot unset it without racing every other worker. The
-    /// offset does NOT always hold: this server's heap is bimodal run to run,
-    /// and 7 of 12 workers took the shared offset and read a stationary
-    /// address. `self_check` catches that; this field is what lets the worker
-    /// then do the honest thing instead of dying.
-    pub state_off: Option<u64>,
     /// The fleet's agreed resume boundary. A worker whose own probe is ABOVE
     /// it refuses: writing below its own probe is a SILENT NO-OP, and a worker
     /// silently dropping the first ticks of every candidate scores exactly the
@@ -85,7 +75,7 @@ pub struct ForkBranch {
     /// The server's own probed boundary + 1: the first tick this worker may
     /// write. The explorer's tick 0.
     pub from: usize,
-    layout: Layout,
+    car: ValidatorCar,
     segs: Vec<(u64, u32)>,
     /// The reference tape, full length, as the container holds it.
     reference: Inputs,
@@ -106,11 +96,18 @@ impl ForkBranch {
         // deleted before the server is told to canonicalize it -- which
         // presents as a bare "No such file or directory" from the launcher and
         // says nothing about which file.
-        let keydir = o.work.parent().unwrap_or(std::path::Path::new("/tmp")).join("keys");
+        let keydir = o
+            .work
+            .parent()
+            .unwrap_or(std::path::Path::new("/tmp"))
+            .join("keys");
         std::fs::create_dir_all(&keydir).map_err(|e| format!("{}: {}", keydir.display(), e))?;
         let key = keydir.join(format!(
             "{}.key.bin",
-            o.work.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or("w".into())
+            o.work
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or("w".into())
         ));
         // The shim is keyed on the tape the server is actually simulating. Key
         // it on the reference and not on anything else: keying it on a
@@ -178,51 +175,25 @@ impl ForkBranch {
             })
             .collect();
         let bounds = bounds_from(&rows, 300.0);
-        // THE CLOCK-FIRST LOCATOR, not the reference-free one.
-        //
-        // `forkoracle::blind::locate_blind` is what `tmsearch --fork` uses and
-        // it did not return here: three runs, **0 evaluations in 440 s, zero
-        // errors**, at a load average of 1.8 — nothing failing and nothing
-        // attempted. `fk::locate::locate_v2` finds the clock first by its
-        // unforgeable +10 signature and then sweeps for the state near it, and
-        // it located this exact container on this exact map in 69.3 s at a
-        // velocity residual of 0.0482 m/s.
-        //
-        // 69 s per worker is still most of a fleet start, so `probe_state_off`
-        // pays it ONCE and every worker takes the offset through
-        // `FK_STATE_OFF`. That is an override taken from a real locate, never a
-        // guess — and `self_check` re-reads the trajectory afterwards, so a
-        // wrong address is caught by the data.
+        // The race clock is located by its exact +10-per-tick signature. Car
+        // identity is not: it comes only from the validator-owned pointer chain.
         let verbose = std::env::var("TMEX_VERBOSE_LOCATE").is_ok();
-        let layout = match o.state_off {
-            Some(off) => {
-                // Take the offset, but still find the CLOCK honestly — it is
-                // cheap (0.1 s) and it is what every tick is labelled from.
-                let ck = fk::locate::find_clock2(&mut srv, from, &lrecs, o.start_offset_ms, 2000, verbose)?;
-                let pos = srv
-                    .base
-                    .checked_sub(off)
-                    .ok_or("the state offset is past the server's base")?;
-                Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 }
-            }
-            None => fk::locate::locate_v2(
+        let car = ValidatorCar::locate(
             &mut srv,
             from,
             &lrecs,
             o.start_offset_ms,
             bounds,
-                2000,
-                4000,
-                verbose,
-            )
-            .map_err(|e| format!("the car's state was not located: {}", e))?,
-        };
-        let segs = segments(&layout);
+            2000,
+            verbose,
+        )
+        .map_err(|e| format!("the validator-owned car did not resolve: {}", e))?;
+        let segs = segments(car.layout());
         let capacity = reference.len();
         Ok(ForkBranch {
             srv,
             from,
-            layout,
+            car,
             segs,
             reference,
             capacity,
@@ -239,7 +210,11 @@ impl ForkBranch {
 
     /// Run `tape` (search ticks, i.e. from the boundary) for `want` ticks and
     /// return every sampled state.
-    fn simulate(&mut self, tape: &[Input], want: usize) -> Result<(Vec<CarState>, Option<Verdict>), String> {
+    fn simulate(
+        &mut self,
+        tape: &[Input],
+        want: usize,
+    ) -> Result<(Vec<CarState>, Option<Verdict>), String> {
         let n = tape.len().min(self.writable_ticks());
         let recs: Vec<Rec> = (0..n)
             .map(|i| Rec {
@@ -262,7 +237,7 @@ impl ForkBranch {
             budget,
         );
         self.sim_ticks += n as u64;
-        let (rows, _) = decode_rows(&blob, &self.layout, 0);
+        let (rows, _) = decode_rows(&blob, self.car.layout(), 0);
         let states: Vec<CarState> = rows
             .iter()
             .enumerate()
@@ -294,8 +269,8 @@ impl ForkBranch {
     pub fn reference(&self) -> &Inputs {
         &self.reference
     }
-    pub fn layout(&self) -> &Layout {
-        &self.layout
+    pub fn car(&self) -> &ValidatorCar {
+        &self.car
     }
     pub fn record_len(&self) -> usize {
         REC_LEN
@@ -321,7 +296,10 @@ impl Branch for ForkBranch {
     ) -> Result<Advance, BranchErr> {
         let prefix = self.parked.remove(&h).ok_or(BranchErr::Stale)?;
         if (from_tick as usize) < prefix.len() {
-            return Err(BranchErr::BelowBoundary { asked: from_tick, boundary: prefix.len() as u32 });
+            return Err(BranchErr::BelowBoundary {
+                asked: from_tick,
+                boundary: prefix.len() as u32,
+            });
         }
         let mut tape = prefix;
         tape.extend_from_slice(inputs);
@@ -340,9 +318,16 @@ impl Branch for ForkBranch {
         let trace: Vec<CarState> = all[all.len() - keep..]
             .iter()
             .enumerate()
-            .map(|(i, s)| CarState { tick: from_tick + i as u32 + 1, ..*s })
+            .map(|(i, s)| CarState {
+                tick: from_tick + i as u32 + 1,
+                ..*s
+            })
             .collect();
-        Ok(Advance { trace, handle: None, ended })
+        Ok(Advance {
+            trace,
+            handle: None,
+            ended,
+        })
     }
 
     fn close(&mut self, h: Handle) {
@@ -351,11 +336,13 @@ impl Branch for ForkBranch {
 
     fn initial_state(&mut self) -> Result<CarState, BranchErr> {
         let (s, _) = self.simulate(&[], 1).map_err(BranchErr::Other)?;
-        s.first().copied().map(|mut c| {
-            c.tick = 0;
-            c
-        })
-        .ok_or_else(|| BranchErr::Other("the server returned no state at the boundary".into()))
+        s.first()
+            .copied()
+            .map(|mut c| {
+                c.tick = 0;
+                c
+            })
+            .ok_or_else(|| BranchErr::Other("the server returned no state at the boundary".into()))
     }
 
     fn tick_limit(&self) -> u32 {
@@ -368,80 +355,15 @@ impl Branch for ForkBranch {
 /// It is not a driver and it is not a seed. It is the bit layout the candidate
 /// writer patches and the inputs the engine consumes below the fork boundary.
 pub fn neutral_reference(n: usize) -> Inputs {
-    Inputs { steer: vec![0; n], gas: vec![false; n], brake: vec![false; n] }
-}
-
-
-/// Locate the car ONCE, honestly, and return the state slot's offset from the
-/// server's own base.
-///
-/// The sweep costs ~70 s. The slot sits at a fixed offset from the base for a
-/// given build, so paying it once and handing the offset to every worker turns
-/// a fleet start from 70 s per worker into 70 s total. It is an override taken
-/// from a real locate, never a guess — and every worker still runs
-/// [`ForkBranch::self_check`] on what it reads back, so a wrong offset is
-/// caught by the data rather than assumed away.
-///
-/// It locates at a checkpoint HALFWAY THROUGH THE TAPE, not at the search's own
-/// early boundary, and that is not a detail. `locate_v2`'s discriminator is
-/// `d(pos)/dt` against the stored velocity, qualified against 2 % of the mean
-/// speed in the window — so a probe where the car is slow gets the tightest
-/// threshold and the largest residual, and the same tape on the same map
-/// locates or refuses purely on where the checkpoint fell. A standing start is
-/// the worst possible place to ask.
-pub fn probe_state_offset(o: &ForkOpts, reference: &Inputs, frac: f64) -> Result<u64, String> {
-    let work = o.work.parent().unwrap_or(std::path::Path::new("/tmp")).join("locate-probe");
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let keydir = work.join("keys");
-    std::fs::create_dir_all(&keydir).map_err(|e| e.to_string())?;
-    let key = keydir.join("probe.key.bin");
-    write_key(&key, &reference.steer_u8());
-
-    let n = reference.len();
-    let ckpt = crate::clock_for_tick_public((n as f64 * frac) as i64, o.start_offset_ms);
-    let mut srv = ForkServer::start(
-        &work.join("srv"),
-        &o.server,
-        &o.map,
-        &o.reference_ghost,
-        &key,
-        &o.shim,
-        ckpt,
-    )?;
-    let probe = srv.probe_tick()?;
-    let gas: Vec<u8> = reference.gas.iter().map(|&v| v as u8).collect();
-    let brake: Vec<u8> = reference.brake.iter().map(|&v| v as u8).collect();
-    let lrecs = tail_recs(&reference.steer_u8(), &gas, &brake, probe);
-    let rows: Vec<Row> = o
-        .route_points
-        .iter()
-        .map(|p| Row {
-            time_ms: 0,
-            x: p[0] as f64,
-            y: p[1] as f64,
-            z: p[2] as f64,
-            vx: 0.0,
-            vy: 0.0,
-            vz: 0.0,
-            qx: 0.0,
-            qy: 0.0,
-            qz: 0.0,
-            qw: 0.0,
-            wetness: 0.0,
-        })
-        .collect();
-    let bounds = bounds_from(&rows, 400.0);
-    let l = fk::locate::locate_v2(&mut srv, probe, &lrecs, o.start_offset_ms, bounds, 2000, 4000, true)?;
-    let off = srv
-        .base
-        .checked_sub(l.pos)
-        .ok_or("the located state is ABOVE the input array; that is not the layout this expects")?;
-    Ok(off)
+    Inputs {
+        steer: vec![0; n],
+        gas: vec![false; n],
+        brake: vec![false; n],
+    }
 }
 
 impl ForkBranch {
-    /// **The guard on `FK_STATE_OFF`.** Read a short trajectory back and
+    /// **The guard on the validator-owned identity path.** Read a short trajectory back and
     /// require it to be a car: the quaternion normalised, and the position
     /// derivative agreeing with the stored velocity.
     ///
@@ -454,7 +376,14 @@ impl ForkBranch {
         // mean anything, and an empty tape samples nothing (my first version
         // asked for zero ticks and got four states, then reported UNMEASURED —
         // which was the right word for it).
-        let tape: Vec<Input> = vec![Input { steer: 0, gas: true, brake: false }; 200];
+        let tape: Vec<Input> = vec![
+            Input {
+                steer: 0,
+                gas: true,
+                brake: false
+            };
+            200
+        ];
         let (states, _) = self.simulate(&tape, 200)?;
         if states.len() < 20 {
             return Err(format!(
@@ -474,8 +403,9 @@ impl ForkBranch {
                 (b.pos[1] - a.pos[1]) * 100.0,
                 (b.pos[2] - a.pos[2]) * 100.0,
             ];
-            let e = ((d[0] - a.vel[0]).powi(2) + (d[1] - a.vel[1]).powi(2) + (d[2] - a.vel[2]).powi(2))
-                .sqrt() as f64;
+            let e =
+                ((d[0] - a.vel[0]).powi(2) + (d[1] - a.vel[1]).powi(2) + (d[2] - a.vel[2]).powi(2))
+                    .sqrt() as f64;
             verrs.push(e);
         }
         verrs.sort_by(|a, b| a.partial_cmp(b).unwrap());

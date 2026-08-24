@@ -1,0 +1,235 @@
+=== /validatepath virtual dispatch and validator job ===
+113ad6b	mov rax,QWORD PTR [r14]
+113ad6e	mov QWORD PTR [rax+0x10],0x0
+113ad76	mov rcx,QWORD PTR [r14]
+113ad79	lea rsi,[rcx+0x10]
+113ad7d	mov rax,QWORD PTR [rcx+0x10]
+113ad81	xor ebx,ebx
+113ad83	lea rdx,[rax+0x1]
+113ad87	cmp rdx,0x2
+113ad8b	jb 113ad96 <getenv@plt-0xa6ed8a>
+113ad8d	xor ebx,ebx
+113ad8f	cmp DWORD PTR [rax+0x8],0xffffffff
+113ad93	sete bl
+113ad96	mov rdi,QWORD PTR [r15+0x930]
+113ad9d	mov r10,QWORD PTR [rcx+0x4870]
+113ada4	mov eax,DWORD PTR [r10+0x368]
+113adab	mov rdx,QWORD PTR [r10+0x360]
+113adb2	mov r8d,DWORD PTR [rcx+0x416c]
+113adb9	mov r9d,DWORD PTR [rcx+0x4878]
+113adc0	mov ecx,DWORD PTR [r10]
+113adc3	add r10,0x8
+113adc7	mov QWORD PTR [rbp-0x198],r10
+113adce	mov DWORD PTR [rbp-0x190],ecx
+113add4	mov r10,QWORD PTR [rdi]
+113add7	movups xmm0,XMMWORD PTR [rbp-0x198]
+113adde	movups XMMWORD PTR [rsp],xmm0
+113ade2	mov ecx,eax
+113ade4	call QWORD PTR [r10+0x238]
+113adeb	test ebx,ebx
+113aded	jne 113bfcc <getenv@plt-0xa6db54>
+113adf3	mov r15,QWORD PTR [r14]
+
+=== simulation object bound at controller+0x1a70 (0x118c170) ===
+118c170	push rbp
+118c171	mov rbp,rsp
+118c174	push r15
+118c176	push r14
+118c178	push r13
+118c17a	push r12
+118c17c	push rbx
+118c17d	push rax
+118c17e	mov rbx,rcx
+118c181	mov r15d,edx
+118c184	mov r14,rsi
+118c187	mov r12,rdi
+118c18a	mov QWORD PTR [rdi+0x1a70],rcx
+118c191	lea r13,[rdi+0x1a78]
+118c198	mov DWORD PTR [rdi+0x1a80],0x0
+118c1a2	cmp DWORD PTR [rdi+0x1a84],edx
+118c1a8	jae 118c1bf <getenv@plt-0xa1d961>
+118c1aa	mov rdi,r13
+118c1ad	mov esi,r15d
+118c1b0	call 1192390 <getenv@plt-0xa17790>
+118c1b5	mov DWORD PTR [r12+0x1a80],r15d
+118c1bd	jmp 118c1cc <getenv@plt-0xa1d954>
+118c1bf	mov DWORD PTR [r12+0x1a80],r15d
+118c1c7	test r15d,r15d
+118c1ca	je 118c1e0 <getenv@plt-0xa1d940>
+118c1cc	mov rdi,QWORD PTR [r13+0x0]
+118c1d0	lea edx,[r15*8+0x0]
+118c1d8	mov rsi,r14
+118c1db	call 1ba9c40 <memcpy@plt>
+118c1e0	lea rsi,[rip+0x189]   = -81037310000000000000000
+118c1e7	mov rdi,r12
+118c1ea	xor edx,edx
+118c1ec	mov ecx,0x7
+118c1f1	xor r8d,r8d
+118c1f4	call 19a2ef0 <getenv@plt-0x206c30>
+
+=== sim+0x18 playground and player vector +0x660/+0x668 (0x1218db0) ===
+1218e2d	mov DWORD PTR [rbp-0x30],eax
+1218e30	jmp 1218e39 <getenv@plt-0x990ce7>
+1218e32	mov DWORD PTR [rbp-0x30],0x1
+1218e39	mov QWORD PTR [rbp-0x48],r14
+1218e3d	mov rax,QWORD PTR [r14+0x18]
+1218e41	mov ebx,DWORD PTR [rax+0x668]
+1218e47	mov rax,QWORD PTR [rax+0x660]
+1218e4e	mov QWORD PTR [rbp-0x70],rax
+1218e52	test rbx,rbx
+1218e55	mov QWORD PTR [rbp-0x68],rbx
+1218e59	je 1218f15 <getenv@plt-0x990c0b>
+1218e5f	xor r15d,r15d
+1218e62	lea r14,[rbp-0x110]
+1218e69	jmp 1218e91 <getenv@plt-0x990c8f>
+1218e6b	mov eax,DWORD PTR [r13+0x230]
+1218e72	mov DWORD PTR [rbx+0x1170],eax
+1218e78	nop DWORD PTR [rax+rax*1+0x0]
+1218e80	add r15,0x1
+1218e84	mov rbx,QWORD PTR [rbp-0x68]
+1218e88	cmp rbx,r15
+1218e8b	je 1218f15 <getenv@plt-0x990c0b>
+1218e91	mov rax,QWORD PTR [rbp-0x70]
+1218e95	mov rbx,QWORD PTR [rax+r15*8]
+1218e99	mov rdi,rbx
+1218e9c	call 121ced0 <getenv@plt-0x98cc50>
+1218ea1	test eax,eax
+1218ea3	jne 1218e80 <getenv@plt-0x990ca0>
+1218ea5	mov rdi,QWORD PTR [rbx+0x18]
+1218ea9	mov rsi,r12
+1218eac	xor edx,edx
+1218eae	call d8c880 <getenv@plt-0xe1d2a0>
+1218eb3	test eax,eax
+1218eb5	je 1218e80 <getenv@plt-0x990ca0>
+1218eb7	movzx eax,BYTE PTR [rbx+0x1d8]
+1218ebe	mov rcx,QWORD PTR [rbp-0x50]
+1218ec2	mov r13,QWORD PTR [rcx+rax*8+0x28]
+1218ec7	test r13,r13
+1218eca	je 1218e80 <getenv@plt-0x990ca0>
+1218ecc	mov rax,QWORD PTR [rbx+0x18]
+1218ed0	cmp DWORD PTR [rax+0x2ac],0x1
+1218ed7	jne 1218e6b <getenv@plt-0x990cb5>
+1218ed9	mov eax,DWORD PTR [rax+0x288]
+1218edf	mov DWORD PTR [r13+0x230],eax
+1218ee6	mov eax,DWORD PTR [rbp-0x40]
+1218ee9	mov DWORD PTR [r13+0x21c],eax
+1218ef0	mov rax,QWORD PTR [rbx]
+1218ef3	mov rdi,rbx
+1218ef6	mov rsi,r14
+1218ef9	call QWORD PTR [rax+0x110]
+1218eff	mov DWORD PTR [r13+0x20f4],eax
+1218f06	mov eax,DWORD PTR [rbx+0x20]
+1218f09	mov DWORD PTR [r13+0x20f0],eax
+1218f10	jmp 1218e6b <getenv@plt-0x990cb5>
+1218f15	cmp QWORD PTR [rip+0xa9523b],0x0   = 0
+1218f1d	je 1218f24 <getenv@plt-0x990bfc>
+1218f1f	call 1ba9cc0 <_ZTH16g_FrameAllocator@plt>
+
+=== decoded input read into participant+0x188 (0x1219f3b..0x1219f8e) ===
+1219f24	mov rax,QWORD PTR [rdi+0x968]
+1219f2b	add rax,0x30
+1219f2f	mov QWORD PTR [rbp-0x80],rax
+1219f33	xor r15d,r15d
+1219f36	jmp 1219fcf <getenv@plt-0x98fb51>
+1219f3b	mov rcx,QWORD PTR [r14+0x20d8]
+1219f42	mov QWORD PTR [rbp-0x78],rcx
+1219f46	mov ecx,DWORD PTR [r14+0x20e8]
+1219f4d	mov DWORD PTR [rbp-0x58],ecx
+1219f50	lea rdi,[r13+0x1dc]
+1219f57	mov rsi,QWORD PTR [rbp-0x80]
+1219f5b	mov DWORD PTR [rbp-0x88],eax
+1219f61	call 121cf50 <getenv@plt-0x98cbd0>
+1219f66	lea rcx,[r13+0x188]
+1219f6d	mov QWORD PTR [rsp],rcx
+1219f71	mov ebx,DWORD PTR [rbp-0x30]
+1219f74	mov edi,ebx
+1219f76	mov esi,eax
+1219f78	mov rdx,QWORD PTR [rbp-0x78]
+1219f7c	mov ecx,DWORD PTR [rbp-0x88]
+1219f82	mov r8d,DWORD PTR [rbp-0x58]
+1219f86	xor r9d,r9d
+1219f89	call 119f0f0 <getenv@plt-0xa0aa30>
+1219f8e	mov DWORD PTR [r13+0x374],0x0
+1219f99	mov eax,DWORD PTR [r14+0x22c]
+1219fa0	cmp eax,0xffffffff
+
+=== primary CGameVehiclePhy pointer stored at participant+0x1118 ===
+11a9a8a	mov QWORD PTR [rbx+0x1158],0x0
+11a9a95	mov QWORD PTR [rbx+0x1160],r15
+11a9a9c	mov QWORD PTR [rbx+0x1168],0x0
+11a9aa7	mov esi,DWORD PTR [rbx+0x278]
+11a9aad	cmp esi,0xff00000
+11a9ab3	je 11a9c20 <getenv@plt-0x9fff00>
+11a9ab9	mov rdi,QWORD PTR [rbp-0x58]
+11a9abd	call a48730 <getenv@plt-0x11613f0>
+11a9ac2	mov r12,rax
+11a9ac5	add eax,0x1
+11a9ac8	cmp eax,0x2
+11a9acb	jb 11a9c20 <getenv@plt-0x9fff00>
+11a9ad1	mov QWORD PTR [rbp-0x38],rdx
+11a9ad5	call a0c2f0 <getenv@plt-0x119d830>
+11a9ada	mov edi,r12d
+11a9add	mov esi,eax
+11a9adf	call 19a9f20 <getenv@plt-0x1ffc00>
+11a9ae4	test eax,eax
+11a9ae6	je 11a9aff <getenv@plt-0xa00021>
+11a9ae8	mov QWORD PTR [rbx+0x1100],r12
+11a9aef	mov rax,QWORD PTR [rbp-0x38]
+11a9af3	mov QWORD PTR [rbx+0x1108],rax
+11a9afa	jmp 11a9c20 <getenv@plt-0x9fff00>
+11a9aff	call 9c3170 <getenv@plt-0x11e69b0>
+11a9b04	mov edi,r12d
+11a9b07	mov esi,eax
+11a9b09	call 19a9f20 <getenv@plt-0x1ffc00>
+11a9b0e	test eax,eax
+11a9b10	je 11a9c03 <getenv@plt-0x9fff1d>
+11a9b16	mov QWORD PTR [rbx+0x1110],r12
+11a9b1d	mov rax,QWORD PTR [rbp-0x38]
+11a9b21	mov QWORD PTR [rbx+0x1118],rax
+11a9b28	cmp QWORD PTR [rip+0xb04628],0x0   = 0
+11a9b30	je 11a9b37 <getenv@plt-0x9fffe9>
+11a9b32	call 1ba9cc0 <_ZTH16g_FrameAllocator@plt>
+11a9b37	lea rdi,[rbp-0x348]
+11a9b3e	mov rsi,QWORD PTR [rbp-0x328]
+11a9b45	call 1b24530 <getenv@plt-0x855f0>
+11a9b4a	mov rdi,QWORD PTR [rbp-0x348]
+11a9b51	mov esi,0x50
+11a9b56	mov edx,0x8
+
+=== CGameVehiclePhy class registration ===
+### function c3b600..c3b645
+c3b62f  call  1930290  rdi=0x32e2000(53354496)  rsi="CGameVehiclePhy"  rdx=0x0(0)  rcx=0x1(1)  r8=0xa020000(167903232)  r9="CGameVehiclePhy"
+c3b634  call  1932440
+
+=== state writes: quaternion +0x12e0, position +0x12f0 ===
+11f38d3	unpcklps xmm0,xmm3
+11f38d6	mulps xmm0,xmm4
+11f38d9	addps xmm0,xmm2
+11f38dc	movsd xmm2,QWORD PTR [rbp-0x1cc]
+11f38e4	addps xmm2,xmm0
+11f38e7	movlps QWORD PTR [rbp-0x1cc],xmm2
+11f38ee	addss xmm1,DWORD PTR [rbp-0x1c4]
+11f38f6	movss DWORD PTR [rbp-0x1c4],xmm1
+11f38fe	lea rdi,[r13+0x12e0]
+11f3905	movlps QWORD PTR [r13+0x12f0],xmm2
+11f390d	movss DWORD PTR [r13+0x12f8],xmm1
+11f3916	mov rsi,r15
+11f3919	call 1af5f40 <getenv@plt-0xb3be0>
+11f391e	mov eax,DWORD PTR [rbx+0x128c]
+11f3924	mov ecx,0x1c0
+11f3929	and eax,ecx
+11f392b	mov ecx,DWORD PTR [r13+0x128c]
+11f3932	mov edx,0xfffffe3f
+11f3937	and ecx,edx
+11f3939	or ecx,eax
+11f393b	mov DWORD PTR [r13+0x128c],ecx
+11f3942	mov DWORD PTR [r13+0x12d4],0x2
+11f394d	mov QWORD PTR [r13+0x12c8],0x0
+11f3958	mov eax,DWORD PTR [rbp+r14*1-0x188]
+11f3960	mov DWORD PTR [r13+0x1284],eax
+11f3967	mov rbx,QWORD PTR [rbp+r14*1-0x190]
+11f396f	mov eax,DWORD PTR [rbx]
+11f3971	lea ecx,[rax+0x1]
+11f3974	cmp ecx,0x2
+11f3977	jb 11f35e0 <getenv@plt-0x9b6540>
+11f397d	mov edi,eax

@@ -11,9 +11,11 @@
 //!    count calls and halt at an exact point. `fork()` from that halted state is
 //!    a complete simulator that costs ~11 ms instead of a from-scratch run.
 //!    See [`server`].
-//! 2. **Read the car's own state out of the running engine.** Position,
-//!    orientation and velocity, per 10 ms tick, located by value at every server
-//!    start because the heap layout is bimodal run to run. See [`locate`].
+//! 2. **Read the validator-controlled car's own state out of the running
+//!    engine.** Identity comes from a one-shot hook on the validator's
+//!    simulation-binding callback and a fixed ownership chain to its sole
+//!    participant and `CGameVehiclePhy`; no state-shaped records are ranked.
+//!    See [`validator`].
 //! 3. **Watch a run tick by tick inside the fork child and abort it early.**
 //!    See [`predicate`].
 //!
@@ -63,10 +65,11 @@ pub mod cmd;
 pub mod locate;
 pub mod oracle;
 pub mod ptr;
-pub mod session;
 pub mod record;
+pub mod session;
 pub mod tape;
 pub mod traj;
+pub mod validator;
 pub mod vislayout;
 
 /// Print a fatal error and exit 2. Reserved for a caller's mistake (a missing
