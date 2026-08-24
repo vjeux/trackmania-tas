@@ -1,12 +1,14 @@
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/alarms/.gitkeep
+7f638325dcca835064da714b0e566056  autopilot/state/alarms/42504-1787603555.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
 35eeb260a1dd48e2974b87d4941e419e  autopilot/state/boxes/117796.rec
-be5515bc0d8d8678876a74d1b9084749  autopilot/state/boxes/42504.rec
+95cba78d5bba5530c079a95a87a554ce  autopilot/state/boxes/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
+de06d5fed652dd4a134aa2debe58a802  autopilot/state/budget/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-417c6c53bd88611fa04cc676a70ded5e  autopilot/state/frontier/resim-results.rec
+409f685538020e87714c0d64c615fd31  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -32,7 +34,8 @@ e354573628ec5c81988d04273837b12e  autopilot/state/journal/117796-1787601436.rec
 88f3271ee7e8accc32e8d99ce5c114cc  autopilot/state/journal/117796-1787601817.rec
 bfac6ede2c496ec64e381ce901165e3b  autopilot/state/journal/117796-1787601900.rec
 ef5740da669b58705acf7126bf290843  autopilot/state/journal/117796-1787602170.rec
-5e91177dd6fe843419fa10d952bd2579  autopilot/state/journal/42504-1787603555.rec
+680972d82937407cbe34e1752703bf41  autopilot/state/journal/42504-1787603555.rec
+853a4d98015f9d8ef9eb05db81f31960  autopilot/state/journal/42504-1787603665.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/ledger/.gitkeep
 6a1911d4cd942461d56629a90f40b13a  autopilot/state/ledger/117796-1787597073.rec
 877d9d1d9626546b7e7d9645a6a64f8c  autopilot/state/ledger/117796-1787598064.rec
@@ -44,6 +47,7 @@ c5f5f3f0f3b896ed859eecd6ad6f347e  autopilot/state/ledger/117796-1787600887.rec
 d4e2d92c8ac081f05b7ffeb014240c89  autopilot/state/ledger/117796-1787601564.rec
 43fd2b00d082e5e0c7f47f08d135fe5b  autopilot/state/ledger/117796-1787601900.rec
 e8c4ef375fc90ca344c509817608dfb8  autopilot/state/ledger/42504-1787603665.rec
+73ee7b8ea5d3c23638c5a3ee646935b5  autopilot/state/ledger/42504-1787603810.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/claimed/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/done/.gitkeep
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/queue/pending/.gitkeep
