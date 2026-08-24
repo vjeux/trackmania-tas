@@ -332,6 +332,59 @@ fn result_payload(meta: &GhostMeta) -> Vec<u8> {
     r.encode()
 }
 
+/// Read a map's uid out of the map file and build a container spec for it.
+///
+/// This is the entry point a consumer should use: it means a caller never
+/// handles a uid, and a uid is the one field whose silent absence makes the
+/// server skip the file with no output at all.
+pub fn meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
+    let data = std::fs::read(map).map_err(|e| format!("{}: {}", map.display(), e))?;
+    let uid = gbx::map_uid_of(&data).ok_or_else(|| {
+        format!(
+            "{}: no map uid found. That is a harness limit -- this reader did not find \
+             where the uid lives in this file -- not a statement that the file has none.",
+            map.display()
+        )
+    })?;
+    Ok(GhostMeta::probe(&uid))
+}
+
+/// Lengthen a tape so the archive outlives the run.
+///
+/// **The validator only simulates while the input archive lasts.** A tape
+/// shorter than the run it is trying to produce stops early and the server
+/// reports a DNF — which reads as *"the car did not finish"* when the truth is
+/// *"the container ran out of tape"*. Those two are indistinguishable in the
+/// verdict, so the length is not something to discover from a result.
+///
+/// Padding repeats the LAST input. That is not a neutral choice and it is the
+/// right one: a car already past the finish line is not steered by anything,
+/// and a neutral pad would lift the throttle before the line on any tape whose
+/// length was underestimated.
+pub fn pad_to(inputs: &[Input], ticks: usize) -> Vec<Input> {
+    let mut v = inputs.to_vec();
+    let last = v.last().copied().unwrap_or(Input::NEUTRAL);
+    while v.len() < ticks {
+        v.push(last);
+    }
+    v
+}
+
+/// Write a container for `tape` on `map`, padded to at least `min_ticks`.
+///
+/// The one-call form. Returns the bytes written.
+pub fn write_for(
+    map: &std::path::Path,
+    inputs: &[Input],
+    min_ticks: usize,
+    out: &std::path::Path,
+) -> Result<Vec<u8>, String> {
+    let meta = meta_for_map(map)?;
+    let bytes = synthesize(&pad_to(inputs, min_ticks), &meta, &ChunkSet::ALL);
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {}", out.display(), e))?;
+    Ok(bytes)
+}
+
 /// Which chunks to emit, and how. The synthesizer grows a container by varying
 /// this set and asking the server what it thinks, so it is a parameter rather
 /// than a constant — the shape of the experiment, not an implementation detail.

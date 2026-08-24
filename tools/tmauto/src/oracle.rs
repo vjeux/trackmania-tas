@@ -236,6 +236,126 @@ pub fn validate_gated(
     validate_raw(server, files, maps, tag)
 }
 
+/// **The tape → verdict service.** This is what agents C and D call.
+///
+/// Hand it tapes; get back one [`Eval`] per tape, in the same order. It
+/// synthesizes the containers, pools the dedicated server across this box's
+/// cores, and re-associates every answer with the tape that produced it.
+///
+/// # Why the answers are `Option`
+///
+/// A tape whose file the server declined to run has **no verdict**, and this
+/// function says so rather than inventing `Dnf { cps: 0 }`. Those two look
+/// identical to a caller and they mean opposite things: one is a car that drove
+/// badly, the other is a container fault. A search that treats a refusal as a
+/// deep DNF will happily optimise toward broken containers.
+///
+/// # Batch size
+///
+/// Throughput peaks near 30 candidates per server launch and collapses well
+/// beyond it (measured previously at 30/worker → 172 val/s, 100/worker →
+/// 32 val/s). So this spawns MORE short-lived processes rather than longer
+/// batches.
+pub fn evaluate(
+    map: &Path,
+    tapes: &[Vec<crate::tape::Input>],
+    min_ticks: usize,
+    jobs: usize,
+    workdir: &Path,
+) -> Result<Vec<Option<Eval>>, String> {
+    evaluate_tuned(map, tapes, min_ticks, jobs, DEFAULT_PER_LAUNCH, workdir)
+}
+
+/// How many candidates ride in one server launch.
+///
+/// **600, and the inherited value was 30.** The earlier rig recorded that
+/// throughput "peaks at roughly 30 per invocation and collapses well beyond
+/// that" (30/worker -> 172 val/s, 100/worker -> 32 val/s). That does not
+/// reproduce here and it is not a small difference: on this box, going from 30
+/// to 600 per launch takes 173 evals/s to 2192 evals/s.
+///
+/// The reason is visible once startup and per-eval are measured apart, which
+/// the single-server sweep in `tmauto bench` does: a server launch costs
+/// **2.68 s** and a marginal eval costs **~4.3 ms** on a 2000-tick tape. At 30
+/// per launch you pay 2.68 s to do 130 ms of work. Nothing about that is
+/// tuning; it is amortisation, and bigger is better until memory says stop.
+///
+/// `tmauto bench` re-measures it on THIS box, because a constant carried over
+/// from another machine is a constant nobody re-derived -- which is exactly how
+/// the 30 survived.
+pub const DEFAULT_PER_LAUNCH: usize = 600;
+
+/// [`evaluate`] with the batch size exposed, for the benchmark.
+pub fn evaluate_tuned(
+    map: &Path,
+    tapes: &[Vec<crate::tape::Input>],
+    min_ticks: usize,
+    jobs: usize,
+    per_launch: usize,
+    workdir: &Path,
+) -> Result<Vec<Option<Eval>>, String> {
+    if tapes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let meta = crate::synth::meta_for_map(map)?;
+    let _ = std::fs::create_dir_all(workdir);
+    // Write every candidate first: a name per index, so an answer can never be
+    // matched to the wrong tape.
+    let mut files = Vec::with_capacity(tapes.len());
+    for (i, t) in tapes.iter().enumerate() {
+        let bytes = crate::synth::synthesize(
+            &crate::synth::pad_to(t, min_ticks),
+            &meta,
+            &crate::synth::ChunkSet::ALL,
+        );
+        let p = workdir.join(format!("cand{:07}.Ghost.Gbx", i));
+        std::fs::write(&p, &bytes).map_err(|e| format!("{}: {}", p.display(), e))?;
+        files.push(p);
+    }
+
+    let batches: Vec<Vec<PathBuf>> =
+        files.chunks(per_launch.max(1)).map(|c| c.to_vec()).collect();
+    let jobs = jobs.max(1).min(batches.len().max(1));
+    let next = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let results: std::sync::Arc<std::sync::Mutex<Vec<(String, Answer)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = server_dir();
+
+    std::thread::scope(|s| {
+        for w in 0..jobs {
+            let next = next.clone();
+            let results = results.clone();
+            let batches = &batches;
+            let server = &server;
+            s.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= batches.len() {
+                    return;
+                }
+                if let Ok(b) =
+                    validate_raw(server, &batches[i], Maps::One(map), &format!("eval{}", w))
+                {
+                    let mut g = results.lock().unwrap();
+                    for a in b.answers {
+                        g.push((a.file.clone(), a));
+                    }
+                }
+            });
+        }
+    });
+
+    let got = results.lock().unwrap();
+    let by_name: std::collections::HashMap<&str, &Answer> =
+        got.iter().map(|(n, a)| (n.as_str(), a)).collect();
+    Ok(files
+        .iter()
+        .map(|p| {
+            let name = p.file_name().unwrap().to_str().unwrap();
+            by_name.get(name).and_then(|a| a.eval())
+        })
+        .collect())
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum Block {
     None,

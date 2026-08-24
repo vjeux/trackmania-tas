@@ -50,6 +50,7 @@ fn main() {
         ("synth", Some("probe")) => cmd_synth_probe(&args[2..]),
         ("synth", Some("respond")) => cmd_synth_respond(&args[2..]),
         ("synth", Some("reachcp")) => cmd_synth_reachcp(&args[2..]),
+        ("bench", _) => cmd_bench(&args[1..]),
         ("synth", Some("matrix")) => cmd_synth_matrix(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
         _ => usage(),
@@ -368,6 +369,82 @@ fn cmd_synth_reachcp(args: &[String]) -> Result<(), String> {
             }
         }
         None => println!("\nno candidate was simulated at all"),
+    }
+    Ok(())
+}
+
+/// Measure the plain oracle's throughput on THIS box.
+///
+/// Reports evals/s and the per-eval cost broken into the two parts a caller can
+/// actually act on: what a server launch costs regardless of how many
+/// candidates ride in it, and what each extra candidate adds. Those two are
+/// separated by measuring the same work at several batch sizes — a single
+/// evals/s figure hides which one you are paying.
+///
+/// Load conditions are printed with the number, because a throughput measured
+/// on a busy box is a number about the box.
+fn cmd_bench(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let n: usize = arg(args, "--n").unwrap_or_else(|| "600".into()).parse().map_err(|_| "--n")?;
+    let ticks: usize =
+        arg(args, "--ticks").unwrap_or_else(|| "2000".into()).parse().map_err(|_| "--ticks")?;
+    let dir = PathBuf::from("/tmp/tmauto-bench");
+
+    println!("box: {} cpus", std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0));
+    if let Ok(l) = std::fs::read_to_string("/proc/loadavg") {
+        println!("loadavg at start: {}", l.trim());
+    }
+    println!("map: {}   candidates: {}   tape: {} ticks ({} s of race)", map.display(), n, ticks, ticks / 100);
+
+    // Distinct tapes, so nothing can be served from a cache keyed on content.
+    let tapes: Vec<Vec<Input>> = (0..n)
+        .map(|i| {
+            let mut t = vec![Input::FULL_GAS; ticks];
+            t[i % ticks].steer = (i % 251) as i8;
+            t
+        })
+        .collect();
+
+    let jobs_list: Vec<usize> = match arg(args, "--jobs") {
+        Some(s) => s.split(',').filter_map(|v| v.parse().ok()).collect(),
+        None => vec![20, 40, 80, 120],
+    };
+    let per_list: Vec<usize> = match arg(args, "--per-launch") {
+        Some(s) => s.split(',').filter_map(|v| v.parse().ok()).collect(),
+        None => vec![1, 5, 15, 30, 60],
+    };
+
+    println!("\n{:>6} {:>11} {:>10} {:>11} {:>9} {:>9}", "jobs", "per-launch", "wall s", "evals/s", "ms/eval", "answered");
+    println!("{}", "-".repeat(64));
+    let mut best = (0.0f64, 0usize, 0usize);
+    for &jobs in &jobs_list {
+        for &per in &per_list {
+            let _ = std::fs::remove_dir_all(&dir);
+            let t0 = std::time::Instant::now();
+            let out = oracle::evaluate_tuned(&map, &tapes, ticks, jobs, per, &dir)?;
+            let dt = t0.elapsed().as_secs_f64();
+            let answered = out.iter().filter(|e| e.is_some()).count();
+            let eps = n as f64 / dt;
+            println!(
+                "{:>6} {:>11} {:>10.2} {:>11.1} {:>9.2} {:>9}",
+                jobs, per, dt, eps, 1000.0 * dt / n as f64, answered
+            );
+            // An answered count below n means the server dropped candidates.
+            // A throughput measured over dropped work is not a throughput.
+            if answered < n {
+                println!("        ^ WARNING: {} of {} candidates went unanswered; this row is NOT a throughput", n - answered, n);
+            } else if eps > best.0 {
+                best = (eps, jobs, per);
+            }
+        }
+    }
+    if best.0 > 0.0 {
+        println!("\nbest fully-answered: {:.1} evals/s at jobs={} per-launch={}", best.0, best.1, best.2);
+    } else {
+        println!("\nNO row answered every candidate -- UNMEASURED.");
+    }
+    if let Ok(l) = std::fs::read_to_string("/proc/loadavg") {
+        println!("loadavg at end: {}", l.trim());
     }
     Ok(())
 }
