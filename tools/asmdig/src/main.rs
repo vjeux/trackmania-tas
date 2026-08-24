@@ -293,6 +293,37 @@ fn main() {
             println!("### function {:x}..{:x}", insns[s].addr, insns[e].addr);
             trace_calls(&insns, &elf, s, e);
         }
+        Some("jumptable") => {
+            // A stripped switch compiles to a table of 32-bit offsets RELATIVE
+            // TO THE TABLE'S OWN ADDRESS, indexed by the switch value. Reading
+            // it by hand is a pile of shell arithmetic over `od` output, which
+            // is exactly the kind of one-liner that gets an index wrong by one
+            // and sends someone down the wrong handler for an hour.
+            //
+            //   asmdig jumptable ELF <table-vaddr> <count> [<target-vaddr>]
+            //
+            // With a target, it prints only the indices that dispatch there —
+            // the "which case reaches this code?" question.
+            let elf = Elf::open(&a[1]);
+            let base = hex(&a[2]).expect("table vaddr");
+            let n: u64 = a[3].parse().expect("count");
+            let want = a.get(4).and_then(|s| hex(s));
+            for i in 0..n {
+                let b = match elf.at(base + 4 * i) {
+                    Some(b) if b.len() >= 4 => b,
+                    _ => {
+                        println!("{:3}  <outside any mapped section>", i);
+                        continue;
+                    }
+                };
+                let off = i32::from_le_bytes(b[..4].try_into().unwrap());
+                let tgt = (base as i64 + off as i64) as u64;
+                match want {
+                    Some(w) if w != tgt => continue,
+                    _ => println!("{:3}  0x{:x}  ->  {:x}", i, i, tgt),
+                }
+            }
+        }
         Some("xref") => {
             let insns = load_asm(&a[1]);
             let t = hex(&a[2]).expect("addr");

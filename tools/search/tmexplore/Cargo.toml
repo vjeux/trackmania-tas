@@ -1,0 +1,23 @@
+[package]
+name = "tmexplore"
+version = "1.0.0"
+edition = "2021"
+
+# NO DEPENDENCIES, ON PURPOSE.
+#
+# The archive, the bin key, the macro alphabet and the selection policy are
+# pure logic over an interface. Keeping them dependency-free means `cargo test
+# -p tmexplore` runs on a box with no game server, no engine and no network,
+# and it means the two real backends (agent D's fork server, agent A's oracle)
+# plug in as *implementations of a trait* rather than as compile-time coupling.
+#
+# The adapters that do depend on the engine live in `tmexplore-engine`, added
+# when D's `Branch` and A's `Verdict` land.
+
+[lib]
+name = "tmexplore"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmexplore"
+path = "src/main.rs"

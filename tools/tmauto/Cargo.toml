@@ -1,0 +1,16 @@
+[package]
+name = "tmauto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tmauto"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmauto"
+path = "src/main.rs"
+
+[dependencies]
+gbx = { path = "../gbx" }
+ghost = { path = "../ghost" }

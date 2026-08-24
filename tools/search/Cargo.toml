@@ -10,7 +10,7 @@
 # `#[path]`-includes `forkoracle/src/pred_core.rs`, so a predicate means exactly
 # one thing in the driver that arms it and in the fork child that evaluates it.
 [workspace]
-members = ["forkoracle", "forkshim", "tmsearch"]
+members = ["forkoracle", "forkshim", "tmsearch", "branch", "tmexplore", "tmexplore-engine"]
 resolver = "2"
 
 [profile.release]
