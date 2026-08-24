@@ -11,15 +11,17 @@ of 46.9 s and the author time falls.**
 >
 > This page said for a day that the game client dies importing any ghost of
 > this map whose record has been rebuilt, 24 variants deep, and that nothing
-> headless could see why. **It is measured now, and it is not our sample
-> bytes.**
+> headless could see why. **It is measured now, and it is not our sample bytes.
+> It is a COUNT.**
 >
-> **The client dies when the record has had an ENTITY REMOVED from it.** Take
-> the container's own 29-entity record and drop exactly one — the last car, or
-> the placeholder that has no samples at all — and the game is gone, mid-import,
-> `read: Connection reset by peer`. Re-encode all 29 through the same writer and
-> it imports every time. **Write our own 1150 samples into all of them and it
-> imports too**, which is what the clip above is shot from.
+> **The client dies unless the record holds at least 29 entities — and which
+> entities they are does not matter in the slightest.** Our own published
+> `TAS_57482` has one; padded to 28 copies of it the game dies, padded to 29 it
+> imports, and the clip above is that file. From the other side: take the
+> container's own 29-entity record, drop one, and the game dies — put the count
+> back with a duplicate of another entity and it imports again, still missing
+> the one that was dropped. Samples, spans, coverage, classes and order are all
+> irrelevant to it.
 >
 > Read the crash rather than guessing at it: Windows logged every one.
 > `0xc0000005`, fault offset `+0xd3788a`, and the dump says the faulting
@@ -27,13 +29,18 @@ of 46.9 s and the author time falls.**
 > function never checked, in the routine that formats `"Ghost:%1"` and adds one
 > MediaTracker ghost block per element. It null-checks the field at `+0x2f0`
 > and dereferences the array at `+0x2f8`.
+>
+> **Where the number 29 comes from is not established** and the page says so
+> below rather than inventing a reason.
 
-https://github.com/user-attachments/assets/fb6dd5bd-9666-4f45-8d8c-f7dd0b6c7c86
+https://github.com/user-attachments/assets/237e84af-68b2-4701-9cc1-7cb27c9671b8
 
-*Two cars, chase camera on ours, ailiei.'s own driving with his eleven retries
-spliced out (64.871) as the opponent, our inputs drawn from
-`replays/TAS_57482.Ghost.Gbx`'s own 10 ms tape. The margin on this map is read
-against that 64.871, not against the 147.031 the leaderboard shows.*
+*Shot from `replays/TAS_57482.Ghost.Gbx` itself — its own tape, its own declared
+57.482, its own 1150 samples, with its single record entity duplicated to 29 and
+nothing else touched. Two cars, chase camera on ours, ailiei.'s own driving with
+his eleven retries spliced out (64.871) as the opponent, our inputs drawn from
+our own 10 ms tape. The margin on this map is read against that 64.871, not
+against the 147.031 the leaderboard shows.*
 
 > ### The recording is fixed. `TAS_57482` carries its own run.
 >
@@ -258,12 +265,13 @@ What the file now carries, measured on the written file:
 oracle re-simulates the written file to **57.482**, and the engine's own run of
 the tape matches the recording to 0.0005 m mean / 0.0009 m worst.
 
-## Why the client would not import it: one entity missing, and a null it never checks
+## Why the client would not import it: a count, and a null it never checks
 
-**An entity removed from this record kills the game client on import. That is
-the whole defect.** Not the sample bytes, not the neutralised channels, not the
-skin, the notices, `u01`, the scene records, the declared time, the span, or the
-entity order — every one of those was tested and none of them is it.
+**The client dies unless this record holds at least 29 entities. That is the
+whole defect.** Not the sample bytes, not the neutralised channels, not the
+skin, the notices, `u01`, the scene records, the declared time, the span, the
+coverage or the entity order — every one of those was tested and none of them is
+it.
 
 ### The crash, read rather than inferred
 
@@ -324,6 +332,48 @@ each row one variable, and each row ran behind its own `launch --force`.
 | `ents --keep 3` / `--keep 2` — one car | 1 | CRASH |
 | **the container with OUR 1150 samples written into every car entity** | **29** | **IMPORTS** |
 
+### It is the COUNT, not the removal — and our own file passes it
+
+The rows above all read as "a removal is fatal". They are not: put the count
+back and the file that was missing an entity imports again.
+
+| file | entities | import |
+|---|---|---|
+| the container with entity 27 duplicated (`ents --dup 27`) | 30 | **imports** |
+| the container with entity 28 dropped | 28 | CRASH |
+| …the same 28, with entity 27 duplicated back | **29** | **imports** |
+| **`TAS_57482` (ours, 1 entity) padded to 28 copies of it** | 28 | CRASH |
+| **`TAS_57482` padded to 29 copies** | **29** | **IMPORTS — this is the clip** |
+| `TAS_57482` padded to 30 copies | 30 | **imports** |
+
+So the threshold is exactly 29 for this file, it does not care which entities
+make up the 29, and **our own published record needs nothing but padding**:
+
+```
+ghost record ents replays/TAS_57482.Ghost.Gbx SHOT.Ghost.Gbx --pad 29
+```
+
+That file is our tape, our declared 57.482, our 1150 samples, our identity, and
+28 duplicate copies of the one record entity we wrote. It is what the clip at
+the top was rendered from.
+
+### Where 29 comes from, and what would settle it
+
+Not established, and worth saying plainly rather than dressing up:
+
+* **The file does not write it down.** `ghost chunks --find-u32 29` finds the
+  value nowhere in either file's body except two string-length prefixes.
+* **It is not a sample total.** The container imports with 2982 samples; our
+  28-copy pad crashes with 32200.
+* **It does not generalise.** On 279209 — the same signature, container 3
+  entities, our rebuild 1 — dropping an entity to leave **2 imports**, controls
+  either side. So the number is a property of this file or this map, and it is
+  not "the container's own count" (that would predict 3 there).
+
+The experiment that would settle it is cheap now that `--pad` exists: find the
+threshold on several maps and see whether it tracks the container's entity
+count, the map, or the number of players in the replay the container came from.
+
 **The control that makes this table mean anything**: one session ran
 control · noop · control · drop-1 (CRASH) · control · drop-28 (CRASH) · control,
 and **every control imported, including the two after a crash**. So
@@ -355,8 +405,22 @@ offline scans and one import say the bytes are fine:
 
 ### So this is how the map is filmed
 
-Do not rebuild the record here. Put our car into the record the client already
-accepts:
+Do not rebuild the record here, and do not trim it. Two things work, and the
+first is what shipped:
+
+**1. Pad our own file** — nothing of ours changes, 28 duplicate entities are
+appended, and the client is satisfied:
+
+```
+ghost record ents replays/TAS_57482.Ghost.Gbx SHOT.Ghost.Gbx --pad 29
+```
+
+The duplicates are coincident with the original in every frame, so the render
+shows one car; it was checked on stills at 2, 13, 40 and 57.3 s.
+
+**2. Put our car into the container the client already accepts** — the first
+thing that worked, and the general technique for a record that cannot reach its
+own threshold:
 
 ```
 ghost record resample replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx OUT.Ghost.Gbx \
@@ -365,24 +429,22 @@ ghost identity set OUT.Ghost.Gbx SHOT.Ghost.Gbx \
     --name TAS --trigram TAS --skin 'Skins\Models\CarSport\TAS.zip' --anonymise
 ```
 
-* `--all-cars` because this record is one car split across 27 entities.
+* `--all-cars` because that record is one car split across 27 entities.
 * `--mixed-run` because the container and the source are different runs: the
   result is a **shooting artefact and never a recording**, and the flag exists
-  so that nobody produces one by accident. It is not in `replays/` for the same
-  reason — the two lines above rebuild it exactly from two files that are.
+  so nobody produces one by accident. Neither file is in `replays/` for the same
+  reason — the commands above rebuild them exactly from files that are.
 * `--fill-tol 25`: the container restarts its 50 ms grid after every entity
-  boundary, so **6 of its 1156 in-span instants are 10–20 ms off ours**. Those
-  six take our own nearest sample. The two source samples bracketing the worst
-  of them are **7.533 m** apart, so the substitution is worth up to a few metres
-  for one frame, six times in 57 seconds. Keeping the human's position at those
-  instants was the alternative and it is strictly worse.
+  boundary, so **6 of its 1156 in-span instants are 10–20 ms off ours** and take
+  our own nearest sample; the worst bracket is **7.533 m**. Route 1 has no such
+  substitution, which is why it is the one that shipped.
 * `--hold-last` parks our car where it finished instead of letting the human's
   90 s tail drive on inside our ghost.
 * A read-back gate re-reads the written file and requires all **1150** exact
   instants to carry the source's own bytes. It passed.
 
-The scene is still 147 s long, so the render is ~6 minutes and `clip cut` takes
-it down to the run.
+Either way the opponent ghost is the container, so the scene is 147 s long, the
+render is ~6 minutes and `clip cut` takes it down to the run.
 
 ### The 24 variants, kept
 

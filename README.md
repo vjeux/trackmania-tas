@@ -36,9 +36,9 @@ https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
 
 https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
-**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 147.031 (ailiei., eleven respawns; 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 2 records · **filmed at last, 2026-08-24: the client was dying because the record had an ENTITY REMOVED from it, not because of anything in our samples. [The page names the crash at its address](227654-the-blev-special).**
+**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 147.031 (ailiei., eleven respawns; 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 2 records · **filmed at last, 2026-08-24: the client was dying because the record held fewer than 29 entities, not because of anything in our samples. [The page names the crash at its address](227654-the-blev-special).**
 
-https://github.com/user-attachments/assets/fb6dd5bd-9666-4f45-8d8c-f7dd0b6c7c86
+https://github.com/user-attachments/assets/237e84af-68b2-4701-9cc1-7cb27c9671b8
 
 **[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 

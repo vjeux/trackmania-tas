@@ -275,6 +275,31 @@ fn cmd_chunks(a: &[String]) {
     for (cid, off, poff, sz) in c.chunks() {
         println!("  0x{:08X} at {:>9} payload {:>9} size {:>9}", cid, off, poff, sz);
     }
+    // `--find-u32 N` -- every little-endian u32 in the body equal to N, with the
+    // chunk it falls in. 227654's client threshold is an entity COUNT the file
+    // must reach, and a count the record no longer matches has to be written
+    // down somewhere; this is how you look for it without a hex editor.
+    if let Some(i) = a.iter().position(|x| x == "--find-u32") {
+        let want: u32 = a[i + 1].parse().unwrap_or_else(|_| die("--find-u32 N"));
+        let b = c.body();
+        let chunks = c.chunks();
+        let mut n = 0;
+        println!("body offsets holding the u32 {want}:");
+        for o in 0..b.len().saturating_sub(3) {
+            if u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) != want {
+                continue;
+            }
+            let owner = chunks
+                .iter()
+                .filter(|(_, coff, _, sz)| o >= *coff && o < coff + sz + 12)
+                .map(|(cid, _, poff, _)| format!("0x{cid:08X} +{}", o as i64 - *poff as i64))
+                .next()
+                .unwrap_or_else(|| "(outside every skippable chunk)".into());
+            println!("  {o:>9}  {owner}");
+            n += 1;
+        }
+        println!("{n} occurrence(s)");
+    }
 }
 
 fn cmd_inspect(a: &[String]) {

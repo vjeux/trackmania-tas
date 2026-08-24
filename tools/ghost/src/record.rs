@@ -150,8 +150,10 @@ pub fn cmd(a: &[String]) {
                 .unwrap_or_else(|| die("ghost record ents IN OUT --keep LIST | --drop LIST"));
             let keep = flag(a, "--keep").map(|s| parse_byte_ranges(&s));
             let drop = flag(a, "--drop").map(|s| parse_byte_ranges(&s));
-            if keep.is_some() == drop.is_some() {
-                die("ghost record ents needs exactly one of --keep LIST / --drop LIST \
+            let dup = flag(a, "--dup").map(|s| parse_byte_ranges(&s));
+            let pad: Option<usize> = flag(a, "--pad").map(|s| s.parse().expect("--pad N"));
+            if keep.is_some() == drop.is_some() && dup.is_none() && pad.is_none() {
+                die("ghost record ents needs --keep LIST, --drop LIST or --dup LIST \
                      (indices as `ghost record show` prints them, e.g. 2,3 or 2..29)");
             }
             let mut note = String::new();
@@ -160,7 +162,7 @@ pub fn cmd(a: &[String]) {
                 let survive: Vec<usize> = match (&keep, &drop) {
                     (Some(k), _) => k.iter().copied().filter(|i| *i < n).collect(),
                     (_, Some(d)) => (0..n).filter(|i| !d.contains(i)).collect(),
-                    _ => unreachable!(),
+                    _ => (0..n).collect(),
                 };
                 if survive.is_empty() {
                     return Err("that would leave the record with no entity at all".into());
@@ -168,12 +170,29 @@ pub fn cmd(a: &[String]) {
                 let mut kept = Vec::new();
                 for i in &survive {
                     kept.push(rd.ents[*i].clone());
+                    // --dup puts a second copy of an entity right after it, so
+                    // that "the count changed" can be tested in the direction
+                    // that removes nothing.
+                    if dup.as_ref().is_some_and(|d| d.contains(i)) {
+                        kept.push(rd.ents[*i].clone());
+                    }
+                }
+                // --pad N appends copies of the last entity until the record
+                // holds N of them. On 227654 the client's threshold is a COUNT:
+                // 28 entities crashes and 29 imports, whichever 29 they are.
+                if let Some(p) = pad {
+                    while kept.len() < p {
+                        kept.push(kept[kept.len() - 1].clone());
+                    }
                 }
                 note = format!(
-                    "{} of {} entities kept: {:?}",
+                    "{} of {} entities kept: {:?}{}",
                     kept.len(),
                     n,
-                    survive
+                    survive,
+                    dup.as_ref()
+                        .map(|d| format!(", duplicated {d:?}"))
+                        .unwrap_or_default()
                 );
                 rd.ents = kept;
                 Ok(())
@@ -294,11 +313,11 @@ pub fn cmd(a: &[String]) {
              ghost record entorder IN OUT --car-first | --car-last\n\
              \x20                            -- move the car to the front or the back: in every\n\
              \x20                               ghost the game wrote it is entity 0\n\
-             ghost record ents IN OUT --keep LIST | --drop LIST\n\
-             \x20                            -- keep or drop whole entities and change nothing\n\
-             \x20                               else. On 227654 removing ANY entity -- even one\n\
-             \x20                               with no samples -- kills the client on import,\n\
-             \x20                               and re-encoding all 29 does not\n\
+             ghost record ents IN OUT --keep LIST | --drop LIST | --dup LIST | --pad N\n\
+             \x20                            -- keep, drop, duplicate or PAD the entity list and\n\
+             \x20                               change nothing else. 227654's client needs 29 of\n\
+             \x20                               them and does not care which: our own 1-entity\n\
+             \x20                               record imports at `--pad 29` and dies at 28\n\
              ghost record resample IN OUT --from SRC [--all-cars] [--mixed-run]\n\
              \x20                         [--fill-tol MS] [--hold-last] [--bytes LIST] [--report]\n\
              \x20                            -- put SRC's car samples into IN's record, instant\n\

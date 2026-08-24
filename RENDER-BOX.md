@@ -122,17 +122,20 @@ holder and its age when it refuses. `--max-age 2700` breaks a 45-minute-old
 lock, which means a dead agent, and says so loudly. Never delete the lock
 directory by hand.
 
-## A record with an entity REMOVED kills the client on import
+## A record with too FEW entities kills the client on import
 
-Measured on 227654 on 2026-08-24, six sessions, the unedited container importing
+Measured on 227654 on 2026-08-24, ten sessions, the unedited container importing
 as a control before and after every reading:
 
-* Re-encode a ghost's `CPlugEntRecordData` with every entity intact — even
-  overwriting every car sample byte — and it **imports**.
-* Remove **one** entity and the game is gone mid-import, `read: Connection
-  reset by peer`. Any entity: a tail car, the scene record, or a placeholder
-  that never had a sample. `ghost trim` does this whenever its window empties an
-  entity, and its output then crashes the client.
+* That file's record must hold **at least 29 entities**. 28 crashes the game
+  mid-import (`read: Connection reset by peer`); 29 imports. **Which entities
+  they are does not matter** — 29 copies of one entity of ours does it, and the
+  container with one entity dropped and another duplicated back to 29 imports
+  while still missing the one that was dropped.
+* So a rebuilt record (1 entity) dies, and so does anything `ghost trim` leaves
+  when its window empties entities.
+* **The number is per-file or per-map, not a constant**: on 279209 the same
+  container survives being cut to 2 entities.
 
 The crash is a null-pointer read at `Trackmania.exe+0xd3788a`, in the
 MediaTracker routine that formats `"Ghost:%1"` and makes one ghost block per
@@ -140,10 +143,10 @@ element of an array it never null-checks. `tools/wincrash` reads the WER
 minidump and the PE; the Application event log has the fault offset for free
 (`powershell.exe -Command "Get-WinEvent ..."`).
 
-**To film a run whose own record the client refuses**, do not trim and do not
-rebuild: write the samples into the container the client already accepts, with
-`ghost record resample --all-cars --mixed-run`. That changes no entity, and it
-is how The Blev Special was finally shot.
+**To film a run whose own record the client refuses**: `ghost record ents IN OUT
+--pad N` appends duplicate entities until the count is N and changes nothing
+else, and `ghost record resample --all-cars --mixed-run` puts our samples into a
+container that already passes. The Blev Special was finally shot with the first.
 
 ## Credentials on this box, and their blast radius
 

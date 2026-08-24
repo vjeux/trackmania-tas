@@ -190,7 +190,7 @@ pub fn cmd(a: &[String]) {
             rd.start_ms = first.unwrap_or(0).max(if lo_ms == i32::MIN { 0 } else { lo_ms });
             rd.end_ms = last.unwrap_or(declared as i32).min(if hi_ms == i32::MAX { i32::MAX } else { hi_ms });
             // AN EMPTIED ENTITY IS NOT AN ENTITY — AND ON A MULTI-ENTITY
-            // CONTAINER, REMOVING IT IS ITSELF FATAL TO THE CLIENT.
+            // CONTAINER, DROPPING BELOW THE CLIENT'S ENTITY COUNT IS FATAL.
             //
             // Trimming a multi-entity record can cut every sample of an entity
             // whose whole life is outside the window -- which on 227654's
@@ -200,20 +200,21 @@ pub fn cmd(a: &[String]) {
             // it, the span is right, the declared time is right, `ghost verify`
             // passes. The game client CRASHED on importing that.
             //
-            // So an emptied entity is REMOVED here. **That is not a fix on a
-            // container whose record the client is fussy about.** Measured on
-            // 227654 on 2026-08-24, with the unedited container importing as a
-            // control before and after: removing ANY entity from that record --
-            // a tail car, the scene record, or the placeholder that never had a
-            // sample -- kills the client on import, and `ghost trim --to 60000`
-            // (6 entities left) dies exactly like the 0-sample version did.
+            // So an emptied entity is REMOVED here. **That is not a fix.**
+            // Measured on 227654 on 2026-08-24, the unedited container importing
+            // as a control before and after every reading: that file's record
+            // must hold at least 29 entities or the client dies on import, and
+            // it does not care WHICH -- 28 of the container's own crashes, and
+            // the same 28 with one duplicated back to 29 imports. `ghost trim
+            // --to 60000` leaves 6 and dies exactly as the 0-sample version did.
             // Both shapes crash; this one at least cannot be mistaken for a
             // record with a live entity in it.
             //
             // If you need to FILM a run whose record would have to lose
-            // entities, do not trim it: put the samples into the container the
-            // client already accepts with `ghost record resample --all-cars`,
-            // which changes no entity at all. 227654's clip is shot that way.
+            // entities: `ghost record ents --pad N` appends duplicate entities
+            // until the count is back and changes nothing else, and `ghost
+            // record resample --all-cars` puts the samples into a container that
+            // already passes. 227654's clip is the first of those.
             let before_ents = rd.ents.len();
             rd.ents.retain(|e| !e.times.is_empty() && e.sample_size > 0);
             pruned = before_ents - rd.ents.len();
@@ -312,11 +313,11 @@ pub fn cmd(a: &[String]) {
             println!(
                 "  entities        {} emptied by the trim and REMOVED -- and BEWARE: on a \n\
                  \x20                 multi-entity container the game CLIENT dies importing a \n\
-                 \x20                 record any entity has been removed from (measured on \n\
-                 \x20                 227654, controls either side). The file reads back \n\
+                 \x20                 record with too FEW entities in it -- 227654 needs 29 \n\
+                 \x20                 and dies at 28, whichever 28 they are. The file reads back \n\
                  \x20                 perfectly and the dedicated server does not care. To FILM \n\
-                 \x20                 such a run use `ghost record resample --all-cars` instead, \n\
-                 \x20                 which changes no entity.",
+                 \x20                 such a run use `ghost record ents --pad N`, which appends \n\
+                 \x20                 duplicates and changes nothing else.",
                 pruned
             );
         }
