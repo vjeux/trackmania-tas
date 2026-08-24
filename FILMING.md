@@ -86,4 +86,14 @@ then delete the asset, then confirm the 404 twice about 30 s apart.
 ## 6. Watch what you made
 
 A clip nobody has looked at is not a clip. Pull frames back out of the finished
-file and look at them.
+file and look at them:
+
+```
+clip frames <clip.mp4> <outdir> --at 1.5,5.0,8.0        # or -n 8 to spread them
+```
+
+Grab the SAME instants out of the clip you are replacing and put the two side by
+side. That is what showed the 2026-08-23 carrier re-shoot had worked — flat
+black tyres at 5.000 before, lit hubs and sparks after — and it is also what
+showed that untitled 02's published clip carried an input overlay its page never
+mentioned, which the re-render had left off.

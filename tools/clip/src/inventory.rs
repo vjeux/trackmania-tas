@@ -390,11 +390,12 @@ pub fn read_root(root: &Path) -> Result<Vec<MapPage>, String> {
     dirs.iter().map(|d| read_page(d)).collect()
 }
 
-/// `clip inventory [--root D] [--tsv] [--probe]`
+/// `clip inventory [--root D] [--tsv] [--probe] [--probe-all]`
 pub fn main(args: &[String]) -> Result<(), String> {
     let mut root = ".".to_string();
     let mut tsv = false;
     let mut probe = false;
+    let mut probe_all = false;
     let mut verify = false;
     let mut markdown = false;
     let mut store = std::env::var("TM_STORE")
@@ -412,6 +413,20 @@ pub fn main(args: &[String]) -> Result<(), String> {
             }
             "--probe" => {
                 probe = true;
+                i += 1;
+            }
+            // MEASURE THE PAGES THE PROSE ALREADY ANSWERED. A page's own words
+            // are normally the better witness, but they describe whatever the
+            // page has ever said about video -- 276877 says "the split screen
+            // ... came down with it", which is prose about a WITHDRAWN clip,
+            // and the phrase match read the surviving 16:9 single-car clip as a
+            // split. Re-shooting that map to the page's word would have
+            // composed a side-by-side out of one car. This measures every
+            // published clip and prints both verdicts, marking a disagreement
+            // instead of silently picking a winner.
+            "--probe-all" => {
+                probe = true;
+                probe_all = true;
                 i += 1;
             }
             "--verify" => {
@@ -459,10 +474,16 @@ pub fn main(args: &[String]) -> Result<(), String> {
         // THE PROBE ONLY RUNS WHERE THE PAGE IS SILENT. A page that says what
         // it filmed is the better witness -- it was written by whoever filmed
         // it -- and re-measuring it would only invite a disagreement nobody
-        // needs to adjudicate.
-        if let (true, Some(v), Treatment::Unknown, Some(ff), Some(dir)) =
-            (probe, v, treatment, ff.as_ref(), scratch.as_ref())
-        {
+        // needs to adjudicate. `--probe-all` measures it anyway, for the case
+        // where the prose is about a clip that is no longer on the page.
+        if let (true, Some(v), true, Some(ff), Some(dir)) = (
+            probe,
+            v,
+            probe_all || treatment == Treatment::Unknown,
+            ff.as_ref(),
+            scratch.as_ref(),
+        ) {
+            let stated = treatment;
             let file = dir.join("probe.mp4");
             match crate::ship::gate(&cfg, &v.url, &file, |f| ff.probe_duration(f)) {
                 Ok(passed) => match ff.probe_dims(&file) {
@@ -474,8 +495,21 @@ pub fn main(args: &[String]) -> Result<(), String> {
                             p.headline.as_ref().and_then(|c| secs_of(&c.tas)),
                             p.headline.as_ref().and_then(|c| secs_of(&c.wr)),
                         );
-                        treatment = t;
-                        why = note;
+                        // The page keeps the last word where it HAS one; the
+                        // measurement is reported next to it either way, and a
+                        // contradiction is shouted rather than resolved here.
+                        why = if stated == Treatment::Unknown {
+                            treatment = t;
+                            note
+                        } else if t == stated {
+                            format!("measured {} -- agrees with the page: {note}", t.label())
+                        } else {
+                            format!(
+                                "DISAGREES: the page reads {}, the clip measures {} -- {note}",
+                                stated.label(),
+                                t.label()
+                            )
+                        };
                     }
                     Err(e) => why = format!("probed the length but not the picture: {e}"),
                 },

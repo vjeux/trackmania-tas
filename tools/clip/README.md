@@ -10,8 +10,28 @@ cd tools && cargo build --release      # -> target/release/{clip,playtest}
 | | replaces | catches |
 |---|---|---|
 | `clip ship <file.mp4> <map-dir> [asset-name]` | `tools/ship-clip.sh` | *a clip that plays for you and 404s for everyone else* |
+| `clip frames <in.mp4> <outdir> --at T,T,... \| -n N` | a hand-written ffmpeg line | *a re-shoot nobody looked at* |
 | `clip split <l.mp4> <r.mp4> <l-label> <r-label> <out.mp4>` | `tools/splitscreen.sh` | *a "comparison" that is one car and a caption that lies* |
 | `playtest [--trainer <dir>] [--chrome <path>]` | `trainer/playtest.sh` | *a trainer page that a stub DOM says is fine* |
+
+## frames
+
+FILMING.md §6 is "watch what you made", and it had no tool: every look was a
+hand-written ffmpeg line, which on the render box means remembering that the
+Windows binary cannot open a WSL path. So it got skipped. `--at` names the
+instants the telemetry says something should be happening; `-n N` spreads N
+stills over the clip. `-ss` goes before `-i` (a seek, not a decode from zero)
+and the frame's real timestamp is read back afterwards, because a seek is not a
+promise; a time past the end makes ffmpeg write nothing and exit 0, so every
+still is confirmed to exist and to be non-empty.
+
+## inventory
+
+`--probe` measures the pages that do not say what they filmed. `--probe-all`
+measures the ones that do say, as well, and prints `DISAGREES` where the clip
+contradicts the prose — which is what a page describing a WITHDRAWN clip looks
+like: 276877's note about a side-by-side is about a video that came down, and
+the phrase match read its surviving 16:9 single-car clip as a split.
 
 ## ship
 

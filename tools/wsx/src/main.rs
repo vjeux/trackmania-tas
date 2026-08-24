@@ -200,6 +200,70 @@ fn shell_safe(path: &str) -> &str {
     path
 }
 
+/// A LEADING `~` IS NOT A DIRECTORY, AND THE MD5 CHECK CANNOT TELL YOU SO.
+///
+/// Remote paths go into the command single-quoted, which is what keeps a space
+/// or a `$` in a filename harmless -- and which also stops the remote shell
+/// expanding `~`. `wsx push f '~/repo/f'` therefore did `mkdir -p '~/repo'`
+/// and wrote a real file into a directory literally named `~` under the
+/// bridge's cwd. **Both md5s matched**, because both were the file wsx had
+/// just written, so the push printed `OK` and the source tree it was meant to
+/// update was untouched: a build afterwards compiled the old code and said
+/// `Finished in 0.00s`, which is the only symptom there was.
+///
+/// So expand it here instead, once, against the box's own `$HOME`, rather than
+/// dropping the quoting (which would hand every other metacharacter to the
+/// shell) or refusing (`~/...` is how every note in this project spells a path
+/// over there).
+fn expand_home(path: &str) -> String {
+    if !path.starts_with('~') {
+        return path.to_string();
+    }
+    let home = remote("printf %s \"$HOME\"");
+    if home.trim_end_matches('/').is_empty() {
+        die("the box reported an empty $HOME, so ~ cannot be expanded");
+    }
+    apply_home(path, &home)
+}
+
+/// The pure half of [`expand_home`], so the rule is testable without a bridge.
+fn apply_home(path: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    match path {
+        "~" => home.to_string(),
+        p => match p.strip_prefix("~/") {
+            Some(rest) => format!("{home}/{rest}"),
+            // `~user/...` is a different expansion and wsx does not do it.
+            None if p.starts_with('~') => die(format!(
+                "remote path {p:?} starts with ~ but is not ~ or ~/...; \
+                 wsx does not expand ~user -- spell it out"
+            )),
+            None => p.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_home;
+
+    #[test]
+    fn a_tilde_becomes_the_boxs_home() {
+        assert_eq!(apply_home("~/trackmania-tas/x.rs", "/home/vjeux"), "/home/vjeux/trackmania-tas/x.rs");
+        assert_eq!(apply_home("~", "/home/vjeux"), "/home/vjeux");
+        // A trailing slash on $HOME must not double up.
+        assert_eq!(apply_home("~/a", "/home/vjeux/"), "/home/vjeux/a");
+    }
+
+    #[test]
+    fn everything_else_is_left_exactly_as_written() {
+        assert_eq!(apply_home("/abs/path", "/home/vjeux"), "/abs/path");
+        assert_eq!(apply_home("rel/path", "/home/vjeux"), "rel/path");
+        // A tilde that is not the FIRST character was never an expansion.
+        assert_eq!(apply_home("a/~/b", "/home/vjeux"), "a/~/b");
+    }
+}
+
 fn local_md5(path: &str) -> String {
     let out = Command::new("md5sum")
         .arg(path)
@@ -308,7 +372,8 @@ fn each_chunk(parts: usize, jobs: usize, work: impl Fn(usize) + Sync) {
 }
 
 fn push(local: &str, remote_path: &str, chunk: usize, jobs: usize) {
-    let remote_path = shell_safe(remote_path);
+    let remote_path = expand_home(shell_safe(remote_path));
+    let remote_path = remote_path.as_str();
     let data = std::fs::read(local).unwrap_or_else(|e| die(format!("{local}: {e}")));
     let want = local_md5(local);
 
@@ -383,7 +448,8 @@ fn push(local: &str, remote_path: &str, chunk: usize, jobs: usize) {
 }
 
 fn pull(remote_path: &str, local: &str, jobs: usize) {
-    let remote_path = shell_safe(remote_path);
+    let remote_path = expand_home(shell_safe(remote_path));
+    let remote_path = remote_path.as_str();
     let have_local = Path::new(local).exists();
 
     // When there is nothing here to compare against, there is no reason to ask
@@ -495,6 +561,9 @@ fn main() {
                  \x20           must be a multiple of 4; the box drops a command over\n\
                  \x20           ~800000 bytes)\n\
                  --jobs N    chunks in flight at once (default {DEFAULT_JOBS})\n\
+                 \n\
+                 A leading ~ in a REMOTE path is expanded against the box's $HOME; every\n\
+                 other character is passed through single-quoted, unexpanded.\n\
                  \n\
                  A push whose md5 already matches on the box sends nothing; a pull whose\n\
                  md5 already matches here fetches nothing."

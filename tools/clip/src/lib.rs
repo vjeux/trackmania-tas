@@ -12,6 +12,7 @@
 pub mod audit;
 pub mod cut;
 pub mod fmt;
+pub mod frames;
 pub mod inventory;
 pub mod overlay;
 pub mod platform;

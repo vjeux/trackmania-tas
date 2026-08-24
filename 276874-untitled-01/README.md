@@ -19,7 +19,7 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 With the inputs overlaid:
 
-https://github.com/user-attachments/assets/e569cb32-9c05-41b7-8595-f4d8c18b94b5
+https://github.com/user-attachments/assets/fb3c2cbf-f2f0-4d8c-b36b-cb1125d8c2c1
 
 **Re-shot 2026-08-23 from a ghost regenerated out of this page's own tape**
 (`replays/TAS_12759.Ghost.Gbx`). The tape was identified by simulation, not by
@@ -35,17 +35,41 @@ a second stored file also finishes at 12.759 and its tape differs in the last
 oracle re-simulates the WRITTEN file to **12.759**, and its trajectory is
 bit-identical — 0.000000 m over 256 samples, metres away one sample either side
 — to the file the previous clip was shot from. Nothing per-run in it is the
-container donor's: login `TAS`, no account id, our own livery. The channels the
-state readout does not reach — rpm, gear, per-wheel ice and dirt, and the
-ground-contact flag — are written as **zero and named** rather than inherited,
-so the dirt and spark effects are absent rather than somebody else's.
+container donor's: login `TAS`, no account id, our own livery.
 
-One byte in the sample is not written as zero, and it is the reason this clip
-exists twice: **byte 32 is written as the constant 128.** The game's chase
-camera reads that byte; a regeneration that left it at zero filmed the sibling
-map with the camera **under the track** for the last second of the run. It was
-bisected byte by byte on renders — see `GHOSTS.md`, "The camera reads a byte the
-gate cannot see".
+**Re-shot again on 2026-08-23 with the carrier bytes actually written, and this
+is the version above.** The gather had been reading ~99 of the 116 per-sample
+telemetry bytes out of engine memory and reporting them, while the binding that
+supplies them was gated on an unrelated flag — so every one of them reached the
+file as the donor container's constant, and the clip had no wheel or reactor
+effects in it at all. What is live in the filmed file now, by `tmtraj bytes`:
+the four wheel rotations (6/8/10/12), side speed (14/15/18), rpm (4/5), the four
+suspension travels (23/25/27/29), turbo (31), byte 76 `is_top_contact`, byte 89
+`is_ground_contact`, byte 91 gear, and byte 90 `booster_air_control` — the
+reactor member the wheel effects read, which is a bit-field packed across bytes
+and which no per-byte fit could ever have written. Byte 89 moves through
+0 · 1 · 40 · 41 · 48 across the run and holds its lift-column values from
+**4.050 to 11.450**, which is exactly the stretch where the effects show.
+
+Per-wheel **ice (81–84) and dirt (93–99) are still absent** — written as zero
+and named, not inherited — so those two effects, and only those, are missing
+rather than somebody else's.
+
+Byte 32 is worth its own note, because it is why this clip existed twice before:
+the game's chase camera reads it, a regeneration that left it at zero filmed the
+sibling map with the camera **under the track** for the last second, and the fix
+was to write the plain constant 128. It is no longer a constant — the gather
+reaches it and it is live, four distinct values across the run. See `GHOSTS.md`,
+"The camera reads a byte the gate cannot see".
+
+**What the frames show, old against new**, same instants, both clips pulled back
+anonymously (`clip frames`): at **5.000** and **8.000** the old clip's car has
+flat black wheels and the new one's hubs are lit orange-white with sparks coming
+off them; at **6.000** the whole underside of the car is throwing light. The
+camera framing moves a little between the two — the chase camera reads the
+visual state and that state is no longer constant — and the run passes through
+the lattice into the Goal at speed, so both clips go dark for a tenth of a
+second around 12.400, the new one ~0.1 s longer than the old.
 
 ## What kind of result this is
 

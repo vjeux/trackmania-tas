@@ -17,7 +17,7 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 **untitled 02** — TAS **9.415** (−21.984) | AT 31.399 | WR 14.959 by Its_Cam.
 
-https://github.com/user-attachments/assets/2b2e60ea-bd4f-4b68-ac8a-1f99957dfef4
+https://github.com/user-attachments/assets/92fec497-7e8a-4088-8845-145a888ae26b
 
 The clip is the **9.415**, the earlier rung of the same lattice skip.
 **Re-shot 2026-08-23 from a ghost regenerated out of that tape**
@@ -28,10 +28,25 @@ written file at **9.415**. `ghost verify` is clean end to end: **kappa 1.000**
 (189 of 189 samples: the recording is this tape's own run, where the file the
 previous clip came from read 0.305), and the trajectory is bit-identical to that
 file, 0.000000 m over 189 samples. Nothing per-run in it is the container
-donor's — login `TAS`, no account id, our own livery — and the channels the
-state readout does not reach (rpm, gear, per-wheel ice and dirt, the
-ground-contact flag) are written as **zero and named**, so the dirt and spark
-effects are absent rather than somebody else's.
+donor's — login `TAS`, no account id, our own livery.
+
+**Re-shot again on 2026-08-23 with the carrier bytes actually written, and that
+is the clip above.** The gather had been reading ~99 of the 116 per-sample
+telemetry bytes out of engine memory and reporting them while the binding that
+supplies them was gated on an unrelated flag, so all of them reached the file as
+the donor container's constants and the clip had no wheel effects in it. Live in
+the filmed file now: the four wheel rotations (6/8/10/12), side speed, rpm, the
+four suspension travels, turbo, byte 76 `is_top_contact`, byte 89
+`is_ground_contact` and byte 91 gear. **Byte 90 `booster_air_control` is
+constant 80 on this tape** — that is what the engine held, not a gap — so this
+map gains wheel and spark effects but not the reactor glow its sibling gets.
+Per-wheel ice (81–84) and dirt (93–99) remain absent, written as zero and named.
+
+**Old against new, same instants** (`clip frames`, both fetched anonymously): at
+**1.500** and **2.500** — the descent, where byte 89 carries its contact bits —
+the old clip's tyres are flat black and the new one throws yellow sparks off all
+four wheels with the rims lit red. Later in the run, from about 3.300 on, byte
+89 drops to plain airborne/contact and the two clips look alike.
 
 Watching it, the middle of the run looks as though it leaves the track entirely;
 it does not — see below.
@@ -46,8 +61,11 @@ the game's camera reads; writing the constant **128** there is enough, and needs
 nothing from any other run. `GHOSTS.md`, "The camera reads a byte the gate
 cannot see", has the ladder and the controls.
 
-The split screen against Its_Cam.'s record was filmed from the 8.898 and came
-down with it. It returns when that tape is rebuilt.
+The comparison against Its_Cam.'s record, composed from two clips, was filmed
+from the 8.898 and came down with it. It returns when that tape is rebuilt.
+*(That sentence used to say "the split screen", which `clip inventory` read as a
+claim about the clip that is on the page now — it is single-car, 1280x720, and
+`clip inventory --probe-all` measures it as such.)*
 
 **Somebody finally drove this map.** Its_Cam. set the first human time here on
 20 August 2026 — **14.959** — and took the same shortcut we did, reaching the

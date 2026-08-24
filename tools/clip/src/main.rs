@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clip::{cut, inventory, overlay, platform, ship, split};
+use clip::{cut, frames, inventory, overlay, platform, ship, split};
 
 const USAGE: &str = "\
 clip ship  <file.mp4> <map-dir> [release-asset-name]
@@ -31,16 +31,27 @@ clip alignment <ghost.Gbx> [--span-ms N]
     one run, so they agree at exactly one shift -- which makes overlay timing a
     measurement rather than something to eyeball against a frame.
 
+clip frames <in.mp4> <outdir> [--at T,T,...] [-n N] [--prefix P]
+    Still frames out of a finished clip, because FILMING.md rule 6 says look at
+    what you made and there was no tool for it. --at names the instants (the
+    ones the telemetry says something should be happening); -n N spreads N
+    stills across the whole clip. Each still is confirmed non-empty and its real
+    timestamp read back, since a seek past the end writes nothing and exits 0.
+
 clip split <left.mp4> <right.mp4> <left-label> <right-label> <out.mp4>
     Two runs side by side, for maps where a chase camera provably cannot hold
     both cars. The shorter run holds its final frame so the gap reads as time.
 
-clip inventory [--root D] [--tsv] [--probe] [--verify [--store D] [--markdown]]
+clip inventory [--root D] [--tsv] [--probe] [--probe-all] [--verify [--store D] [--markdown]]
     What is published, per map, read off the pages: the map's NAME, its headline
     caption, how many videos it carries, and WHICH TREATMENT its clip used --
     two-car, single-car or split. A map with no video plans two-car. Nothing is
     estimated: a page that does not say what its scene contained reads UNKNOWN,
     which is a page to read rather than a default to apply.
+    --probe measures the clips the page is silent about; --probe-all measures
+    every published clip, including the ones the prose answers, and shouts a
+    DISAGREES where the two do not match (prose about a withdrawn clip reads as
+    the surviving one's treatment).
 
 Environment:
     CLIP_PLATFORM   native | wsl          (default: native if ffmpeg is on PATH)
@@ -91,6 +102,35 @@ fn go(args: &[String]) -> Result<(), String> {
                 .transpose()?;
             let ff = platform::from_env()?;
             cut::run(&ff, Path::new(&args[1]), Path::new(&args[2]), to)
+        }
+        "frames" => {
+            if args.len() < 3 {
+                return Err(format!("usage:\n{USAGE}"));
+            }
+            let val = |k: &str| -> Option<&String> {
+                args.iter().position(|a| a == k).and_then(|i| args.get(i + 1))
+            };
+            let at = match val("--at") {
+                Some(s) => frames::parse_times(s)?,
+                None => Vec::new(),
+            };
+            let count = match val("-n").or_else(|| val("--count")) {
+                Some(s) => Some(s.parse::<usize>().map_err(|e| format!("-n: {e}"))?),
+                None => None,
+            };
+            if at.is_empty() && count.is_none() {
+                return Err("frames: pass --at T,T,... or -n N".into());
+            }
+            if !at.is_empty() && count.is_some() {
+                return Err("frames: --at and -n both name the instants; pass one".into());
+            }
+            let o = frames::Opts {
+                at,
+                count,
+                prefix: val("--prefix").cloned().unwrap_or_default(),
+            };
+            let ff = platform::from_env()?;
+            frames::run(&ff, Path::new(&args[1]), Path::new(&args[2]), &o)
         }
         "overlay" => {
             if args.len() < 4 {
