@@ -1808,43 +1808,67 @@ pub fn gather_fields(
         !layout_mode || (o >= p && o - p + sz <= reclen)
     };
     let mut cands: Vec<(f64, usize, Write)> = Vec::new();
+    // PROBE AT SEVERAL INSTANTS, NOT ONE.
+    //
+    // A candidate had to sit on the car at ONE instant, the midpoint, and the
+    // set it produced was therefore the set of objects that are the car THERE.
+    // On a map that changes the vehicle under you -- 227654 is
+    // DesertCar / SnowCar / Bobsleigh -- the car's live state is a different
+    // object in each phase, so a midpoint probe can only ever see the middle
+    // one and the other two are not candidates at all. Probing across the run
+    // costs one pass of arithmetic per probe over a record already in memory,
+    // and it is what makes the phases visible.
+    let probes: Vec<usize> = {
+        let mut v: Vec<usize> = (1..=15).map(|k| (n * k) / 16).collect();
+        v.push(n / 2);
+        v.sort_unstable();
+        v.dedup();
+        v.retain(|p| *p < n);
+        v
+    };
+    let mut seen: std::collections::HashSet<(usize, u8)> = Default::default();
     for wr in [Write::Car, Write::Other] {
-        let b = match wr {
-            Write::Car => &recs[idx[probe]].1,
-            Write::Other => &recs[idx[probe]].2,
-        };
-        for o in (4..hi).step_by(4) {
-            if !covered(o) {
-                continue;
-            }
-            let mut d = 0.0;
-            for k in 0..3 {
-                let e = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap()) as f64;
-                d += (e - want[probe][k]).powi(2);
-            }
-            // `!(d < eps)`, not `d >= eps`. A NaN fails BOTH comparisons, so
-            // the `>=` form lets every offset in the window through as a
-            // candidate -- measured here as "1395 copies of the car" and a
-            // median error printed as NaN. A float filter has three outcomes.
-            if !(d < 1e-6) {
-                continue;
-            }
-            let mut e: Vec<f64> = Vec::with_capacity(n);
-            for i in 0..n {
-                let b = match wr {
-                    Write::Car => &recs[idx[i]].1,
-                    Write::Other => &recs[idx[i]].2,
-                };
+        for &probe in &probes {
+            let b = match wr {
+                Write::Car => &recs[idx[probe]].1,
+                Write::Other => &recs[idx[probe]].2,
+            };
+            for o in (4..hi).step_by(4) {
+                if !covered(o) || seen.contains(&(o, wr as u8)) {
+                    continue;
+                }
                 let mut d = 0.0;
                 for k in 0..3 {
-                    let v =
-                        f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap()) as f64;
-                    d += (v - want[i][k]).powi(2);
+                    let e = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap())
+                        as f64;
+                    d += (e - want[probe][k]).powi(2);
                 }
-                e.push(d.sqrt());
+                // `!(d < eps)`, not `d >= eps`. A NaN fails BOTH comparisons, so
+                // the `>=` form lets every offset in the window through as a
+                // candidate -- measured here as "1395 copies of the car" and a
+                // median error printed as NaN. A float filter has three outcomes.
+                if !(d < 1e-6) {
+                    continue;
+                }
+                seen.insert((o, wr as u8));
+                let mut e: Vec<f64> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let b = match wr {
+                        Write::Car => &recs[idx[i]].1,
+                        Write::Other => &recs[idx[i]].2,
+                    };
+                    let mut d = 0.0;
+                    for k in 0..3 {
+                        let v = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap())
+                            as f64;
+                        d += (v - want[i][k]).powi(2);
+                    }
+                    e.push(d.sqrt());
+                }
+                let mut s = e.clone();
+                s.sort_by(|a, b| a.total_cmp(b));
+                cands.push((s[s.len() / 2], o, wr));
             }
-            e.sort_by(|a, b| a.total_cmp(b));
-            cands.push((e[e.len() / 2], o, wr));
         }
     }
     if cands.is_empty() {
@@ -1948,7 +1972,136 @@ pub fn gather_fields(
     let mut ranked: Vec<(usize, (f64, usize, Write))> =
         cands.iter().take(64).map(|c| (live(c.1, c.2), *c)).collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1 .0.total_cmp(&b.1 .0)));
-    let (nlive, (err, po, wr)) = ranked[0];
+    // THE TABLE, NOT JUST THE WINNER.
+    //
+    // The chooser ranks by live wheel slots first and distance second, and it
+    // printed one line: the winner. On 227654 that line said `112.588863 m`
+    // twenty-four times over -- and the one question it could not answer was
+    // whether a copy at 0.000x m had been ranked BELOW it, which is the
+    // difference between "the ranking is wrong" and "no copy here is the car".
+    // A refusal that cannot be diagnosed from its own output costs a fork every
+    // time somebody asks.
+    let table = |head: &str| {
+        println!("  {head}");
+        println!("    {:>4}  {:>9}  {:>5}  {:>14}  {}", "rank", "record+", "wheel", "vs clean run", "write");
+        for (i, (nl, (e, o, w))) in ranked.iter().take(10).enumerate() {
+            println!(
+                "    {:>4}  {:>9}  {:>3}/4  {:>12.6} m  {}",
+                i, o, nl, e, w.name()
+            );
+        }
+        if ranked.len() > 10 {
+            println!("    ... {} more copies", ranked.len() - 10);
+        }
+    };
+    if verbose {
+        table("candidate copies, best first:");
+        // WHAT THE DISTANCE IS MADE OF, for the copy that will be chosen.
+        //
+        // A median says how far; it cannot say what KIND of far, and the three
+        // kinds want three different responses. A CONSTANT delta vector is one
+        // object held in another frame (the fields on it are still this car's).
+        // A delta whose size tracks speed is the same car read at another
+        // instant. A delta that wanders is a different object. On 227654 the
+        // copy that holds the live wheel slots sits 112.588863 m from the car
+        // and the copies at 0.000000 m have no wheels at all, so which of the
+        // three this is decides whether the run is recoverable or not.
+        let (_, (_, po0, wr0)) = ranked[0];
+        let mut dv: Vec<[f64; 3]> = Vec::with_capacity(n);
+        for i in 0..n {
+            let b = match wr0 {
+                Write::Car => &recs[idx[i]].1,
+                Write::Other => &recs[idx[i]].2,
+            };
+            let mut d = [0.0f64; 3];
+            for k in 0..3 {
+                d[k] = f32::from_le_bytes(b[po0 + k * 4..po0 + k * 4 + 4].try_into().unwrap())
+                    as f64
+                    - want[i][k];
+            }
+            dv.push(d);
+        }
+        let mut mag: Vec<f64> = dv
+            .iter()
+            .map(|d| (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt())
+            .collect();
+        mag.sort_by(|a, b| a.total_cmp(b));
+        let mean = |k: usize| dv.iter().map(|d| d[k]).sum::<f64>() / n as f64;
+        let sd = |k: usize| {
+            let m = mean(k);
+            (dv.iter().map(|d| (d[k] - m).powi(2)).sum::<f64>() / n as f64).sqrt()
+        };
+        println!(
+            "  the chosen copy's offset from the car, per instant: p0 {:.3} p10 {:.3} p50 {:.3} \
+             p90 {:.3} p100 {:.3} m",
+            mag[0],
+            mag[n / 10],
+            mag[n / 2],
+            mag[(n * 9) / 10],
+            mag[n - 1]
+        );
+        println!(
+            "  as a vector: mean ({:.3}, {:.3}, {:.3}) sd ({:.3}, {:.3}, {:.3}) -- a constant \
+             offset has sd ~0, a time offset does not",
+            mean(0),
+            mean(1),
+            mean(2),
+            sd(0),
+            sd(1),
+            sd(2)
+        );
+        // WHEN IS EACH COPY THE CAR?
+        //
+        // The whole gather assumes ONE copy holds the car for the WHOLE run, and
+        // scores candidates by a median over all instants. If instead the car's
+        // state moves between objects part-way through -- which is what a map
+        // that changes the vehicle would do -- then no single copy has a small
+        // median and the ranking is choosing between two halves of one run.
+        // The intervals say which world this is: copies whose "on the car"
+        // windows TILE the run are one car in several objects; copies that are
+        // never on the car are other objects.
+        println!("  when each copy is ON the car (within 1 mm), by race time:");
+        for (nl, (_, o, w)) in ranked.iter().take(8) {
+            let mut first: Option<i64> = None;
+            let mut last: Option<i64> = None;
+            let mut on = 0usize;
+            for i in 0..n {
+                let b = match w {
+                    Write::Car => &recs[idx[i]].1,
+                    Write::Other => &recs[idx[i]].2,
+                };
+                let mut d = 0.0;
+                for k in 0..3 {
+                    let v = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap())
+                        as f64;
+                    d += (v - want[i][k]).powi(2);
+                }
+                if d.sqrt() < 1e-3 {
+                    on += 1;
+                    first.get_or_insert(ms[i]);
+                    last = Some(ms[i]);
+                }
+            }
+            println!(
+                "    record+{:<9} {}/4 wheels  on the car at {} of {} instants{}",
+                o,
+                nl,
+                on,
+                n,
+                match (first, last) {
+                    (Some(a), Some(b)) => format!("  ({:.3} .. {:.3} s)", a as f64 / 1000.0, b as f64 / 1000.0),
+                    _ => String::new(),
+                }
+            );
+        }
+    }
+    let (mut nlive, (mut err, mut po, mut wr)) = ranked[0];
+    // Which copy each instant's fields come from. One entry per instant so the
+    // extraction below can be per-instant; on every map where one copy is the
+    // car for the whole run, every entry is that copy and the file is
+    // byte-for-byte what it was before this existed.
+    let mut pick: Vec<(usize, Write)> = vec![(po, wr); n];
+    let mut stitched = 0usize;
     println!(
         "field gather: the car is at record +{} on the {} write, {:.6} m from the clean run's \
          own measured path over {} instants, {} of 4 wheel slots live ({} copies)",
@@ -1986,7 +2139,159 @@ pub fn gather_fields(
             err, err
         );
     }
-    if nlive < 4 {
+    if nlive < 4 || !(err < 1e-3) {
+        // THE CAR IS NOT ALWAYS ONE OBJECT, AND ON SOME MAPS IT IS THREE.
+        //
+        // Everything above asks "which copy is the car" once, for the whole
+        // run. On 227654 there is no such copy: every copy with four live wheel
+        // slots is EXACT (0.000000 m) for 337 of 1159 instants and hundreds of
+        // metres away for the rest, and every copy that holds the position for
+        // the whole run has no wheels at all. The map is
+        // DesertCar / SnowCar / Bobsleigh: it changes the vehicle under you,
+        // each vehicle is its own `CSceneVehicleVisState`, and the boundaries
+        // are the MAP's -- 19.500 and 36.300 s, the same instants where the
+        // container's own recording breaks its entities, on a tape with no
+        // respawn in it.
+        //
+        // So: choose per instant instead of per run. Each phase must clear the
+        // SAME two bars inside its own window -- sub-millimetre against the
+        // clean run, four live wheel slots -- and the phases must TILE the run,
+        // because a gap here is a hole in the telemetry and an unnoticed hole
+        // is a confident zero.
+        //
+        // It runs ONLY where the single-copy answer was refused, so a map that
+        // regenerates today produces the same bytes tomorrow: the control is a
+        // single-vehicle map re-run before and after, and it must be identical.
+        let mask_of = |o: usize, w: Write| -> Vec<bool> {
+            (0..n)
+                .map(|i| {
+                    let b = match w {
+                        Write::Car => &recs[idx[i]].1,
+                        Write::Other => &recs[idx[i]].2,
+                    };
+                    let mut d = 0.0;
+                    for k in 0..3 {
+                        let v = f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap())
+                            as f64;
+                        d += (v - want[i][k]).powi(2);
+                    }
+                    d.sqrt() < 1e-3
+                })
+                .collect()
+        };
+        // Liveness INSIDE the window, not over the run: a wheel that turns for
+        // the seventeen seconds this copy is the car is alive, and the same
+        // slot read over the whole run is dominated by the instants where this
+        // object is not the car at all.
+        let live_in = |o: usize, w: Write, mask: &[bool]| -> usize {
+            wheel_rels
+                .iter()
+                .filter(|rel| {
+                    let q = o as i64 + **rel;
+                    if q < 0 || q as usize + 4 > reclen {
+                        return false;
+                    }
+                    let q = q as usize;
+                    let g = |i: usize| {
+                        let b = match w {
+                            Write::Car => &recs[idx[i]].1,
+                            Write::Other => &recs[idx[i]].2,
+                        };
+                        f32::from_le_bytes(b[q..q + 4].try_into().unwrap())
+                    };
+                    let on: Vec<usize> = (0..n).filter(|i| mask[*i]).collect();
+                    match on.first() {
+                        None => false,
+                        Some(f) => {
+                            let v0 = g(*f);
+                            v0.is_finite() && on.iter().any(|i| g(*i) != v0 && g(*i).is_finite())
+                        }
+                    }
+                })
+                .count()
+        };
+        let mut phases: Vec<(usize, Write, Vec<bool>)> = Vec::new();
+        let mut got = vec![false; n];
+        loop {
+            let mut best: Option<(usize, usize, Write, Vec<bool>)> = None;
+            for (_, (_, o, w)) in ranked.iter() {
+                if phases.iter().any(|(po2, w2, _)| po2 == o && w2 == w) {
+                    continue;
+                }
+                let m = mask_of(*o, *w);
+                if live_in(*o, *w, &m) < 4 {
+                    continue;
+                }
+                let gain = (0..n).filter(|i| m[*i] && !got[*i]).count();
+                if gain > best.as_ref().map(|b| b.0).unwrap_or(0) {
+                    best = Some((gain, *o, *w, m));
+                }
+            }
+            match best {
+                Some((_, o, w, m)) => {
+                    for i in 0..n {
+                        if m[i] {
+                            got[i] = true;
+                        }
+                    }
+                    phases.push((o, w, m));
+                }
+                None => break,
+            }
+        }
+        let holes: Vec<usize> = (0..n).filter(|i| !got[*i]).collect();
+        if !phases.is_empty() {
+            println!(
+                "  the car is {} object(s) over this run -- per-instant selection:",
+                phases.len()
+            );
+            for (o, w, m) in &phases {
+                let on: Vec<usize> = (0..n).filter(|i| m[*i]).collect();
+                println!(
+                    "    record+{:<9} {} write  {} instants  {:.3} .. {:.3} s",
+                    o,
+                    w.name(),
+                    on.len(),
+                    ms[*on.first().unwrap()] as f64 / 1000.0,
+                    ms[*on.last().unwrap()] as f64 / 1000.0
+                );
+            }
+        }
+        if phases.len() > 1 && holes.is_empty() {
+            // Each instant is taken from the FIRST phase that holds it: the
+            // phases are added largest-gain first, so an instant two of them
+            // both hold goes to the one that holds more of the run. An overlap
+            // is a choice and it is made here, in the open, rather than by the
+            // order of a hash map.
+            for i in 0..n {
+                for (o, w, m) in &phases {
+                    if m[i] {
+                        pick[i] = (*o, *w);
+                        break;
+                    }
+                }
+            }
+            let (o0, w0, _) = phases[0];
+            po = o0;
+            wr = w0;
+            nlive = 4;
+            err = 0.0;
+            stitched = phases.len();
+        } else if !holes.is_empty() && !phases.is_empty() {
+            println!(
+                "  the phases do not tile the run: {} of {} instants are held by no copy with \
+                 live wheels, the first at {:.3} s. A gap is a hole in the telemetry, so this \
+                 is refused rather than filled.",
+                holes.len(),
+                n,
+                ms[holes[0]] as f64 / 1000.0
+            );
+        }
+    }
+    if stitched == 0 && nlive < 4 {
+        if !verbose {
+            table("candidate copies, best first:");
+        }
         return Err(format!(
             "no copy in the field window has all four wheel slots live (best {} of 4, at +{}) \
              -- these are bare position copies and every field read from one would be dead \
@@ -1994,7 +2299,10 @@ pub fn gather_fields(
             nlive, po
         ));
     }
-    if !(err < 1e-3) {
+    if stitched == 0 && !(err < 1e-3) {
+        if !verbose {
+            table("candidate copies, best first:");
+        }
         return Err(format!("the chosen copy is {:.6} m from the clean run's own path", err));
     }
 
@@ -2028,7 +2336,14 @@ pub fn gather_fields(
     // do not depend on it (they are read at `car + rel`), and
     // `--transform-from-fields`, which does, is REFUSED with a pointer window
     // by `fk regen` rather than served with a guess.
-    let (qoff, qk, qsign) = if car.is_some() {
+    let (qoff, qk, qsign) = if car.is_some() || (layout_mode && stitched > 0) {
+        // NO ORIENTATION HUNT ON A STITCHED RUN, and the reason is the same as
+        // the pointer window's: the hunt scores ONE copy's quaternion over the
+        // WHOLE run, and on a stitched run no copy is the car for the whole
+        // run -- outside its own phase it would be scoring a stranger, and the
+        // answer-key veto would then refuse a correct gather. Nothing is lost:
+        // in layout mode the orientation bytes are `UNPREDICTED` and are not
+        // written from here at all (`fk regen` owns the transform).
         (0usize, anchors.quat_kind, 1.0f64)
     } else {
         let vo = (po as i64 + anchors.vel_off) as usize;
@@ -2217,6 +2532,9 @@ pub fn gather_fields(
     };
     let _ = (qoff, qsign);
     for i in 0..n {
+        // The copy this instant's fields come from: `pick` is uniform unless
+        // the stitch above found the car in more than one object.
+        let (po, wr) = pick[i];
         let b = match wr {
             Write::Car => &recs[idx[i]].1,
             Write::Other => &recs[idx[i]].2,

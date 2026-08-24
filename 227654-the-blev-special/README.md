@@ -17,17 +17,38 @@ of 46.9 s and the author time falls.**
 > *the vehicle entity with the most samples* and call that the recording — which
 > on this file reads "365 samples spanning 1.310 → 19.480 s" for a 57.482 s run,
 > so 38 seconds of the race looked unrecordable. **The record is not truncated.
-> It is one car split into 27 entities, one per respawn, tiling 0 → 147.000 s end
-> to end.** The repair lays down a single fresh entity on its own 50 ms grid —
-> which also stops a render drawing the other 26 people's cars.
+> It is one car split into 27 entities tiling 0 → 147.000 s end to end.** The
+> repair lays down a single fresh entity on its own 50 ms grid — which also
+> stops a render drawing the other 26 people's cars.
+>
+> *(Those entity boundaries were called "one per respawn" here. They are not,
+> or not only: the engine moves this run's own car state between objects at
+> **19.500 and 36.300 s**, on a tape with no respawn in it at all, and the
+> container breaks its entities at 19.490 and 36.300. Two different runs, the
+> same boundaries — so they are the MAP's. See below.)*
 >
 > The times were never in doubt: the oracle reads the input archive, and every
 > tape re-simulates to the millisecond in its name. What was wrong was the
 > recording. `HUMAN_WR_retries_cut_64871` stays as it is — it is published AS the
 > human's lap with the respawns removed, so carrying his trajectory is the point.
 >
-> **Still no video.** The render box became unavailable before this could be
-> filmed.
+> **And now the telemetry is its own as well** (2026-08-24). The file was
+> regenerated again on the fixed carrier pipeline: wheel rotation, suspension
+> travel, rpm, gear, ground contact and the packed reactor field are read out of
+> engine memory per sample instead of being the donor container's constants —
+> 112 of the 116 sample bytes are this run's, no byte is bit-identical to the
+> donor throughout, and the trajectory did not move (0.000495 m mean against the
+> file it replaces, which is the client-vs-server shadow floor). What it took is
+> below: **this map changes the car under you, so the engine keeps the vehicle
+> state in more than one object and the gather had to be taught to say so.**
+>
+> **Still no video, and the reason is now a measured one, not a missing
+> machine.** The game CLIENT cannot import any ghost of this map whose record
+> has been rebuilt: it dies on import, every time, in every variant tried.
+> Twelve of them, one variable each, are in the table at the bottom of this
+> page. The dedicated server does not care — it re-simulates the input chunk and
+> never reads the scene — so nothing headless can see it, and every check in
+> this project passes on a file the game will not open.
 
 | run | time | vs author time | what it is |
 |---|---|---|---|
@@ -131,6 +152,114 @@ touch the input that decides it.
 | file | what |
 |---|---|
 | `replays/HUMAN_WR_retries_cut_64871.Ghost.Gbx` | the world record's own driving with the eleven respawns removed — published as his recording, which is what it is |
-| `replays/TAS_57482.Ghost.Gbx` | **the fastest run on this map, and the only tape here whose recording is its own** — regenerated from engine state, span 0.000 → 57.482, one car in the file |
+| `replays/TAS_57482.Ghost.Gbx` | **the fastest run on this map, and the only tape here whose recording is its own** — regenerated from engine state, span 0.000 → 57.482, one car in the file, and since 2026-08-24 its per-sample telemetry (wheels, suspension, rpm, gear, contact, reactor) is this run's too |
 | `replays/TAS_57518.Ghost.Gbx` | the family's next tape — its telemetry is still the carrier's |
 | `replays/TAS_57537.Ghost.Gbx`, `replays/TAS_57577.Ghost.Gbx` | the rest of the family — **one trajectory, not two runs** |
+
+## The car is three objects, and that is why the telemetry took four attempts
+
+`ghost regen … --carrier layout` reads the per-sample telemetry out of engine
+memory by finding the copy of the vehicle state that IS the car — a copy whose
+position matches the clean run's own measured path — and requiring its four
+wheel-rotation slots to be alive. On every other map in this repo one copy is
+the car for the whole run. Here there is no such copy, and the refusal said so
+in a number that was bit-identical across twenty-nine attempts:
+
+```
+the chosen copy is 112.588863 m from the clean run's own path
+```
+
+Printing the whole distribution instead of the median is what broke it open:
+
+```
+offset per instant: p0 0.000  p10 0.000  p50 112.589  p90 868.794  p100 887.536 m
+
+record+283472    4/4 wheels  on the car at  337 of 1159 instants  (19.500 .. 36.300 s)
+record+287176    3/4 wheels  on the car at   17 of 1159 instants  (19.800 .. 35.800 s)
+record+286120    1/4 wheels  on the car at  337 of 1159 instants  (19.500 .. 36.300 s)
+record+1049556   0/4 wheels  on the car at 1159 of 1159 instants  (-0.150 .. 57.750 s)
+```
+
+The chosen copy is not *near* the car and not lagging it — it **is** the car,
+exactly, for 337 instants, and then it stops being the car. Every copy with
+live wheels tracks 19.500 → 36.300 s; every copy that holds the position for
+the whole run has no wheel data at all. The map is **DesertCar / SnowCar /
+Bobsleigh**: it changes the vehicle under you, each vehicle is its own
+`CSceneVehicleVisState`, and 19.500 / 36.300 are the changes. They are the same
+instants the container breaks its recorded entities at, on a tape with no
+respawn in it — which is how we know the boundaries belong to the map.
+
+Two fixes came out of it, both in the tools:
+
+* **`ghost regen`'s step 0 was throwing the answer key away.** The grid rebuild
+  stamped every sample with a copy of the car's FIRST sample, so a container
+  that already held 1150 correct positions went to the engine as 1150 copies of
+  the spawn point. Downstream, the locate's chooser abstains ("a constant
+  trajectory identifies nothing"), the orientation veto reports "the container's
+  own recording is NOT this run" — which reads as a transplant and here meant
+  the recording had been deleted — and the field gather ranks copies of the car
+  with nothing to rank them against. A rebuild now KEEPS the car's own samples
+  when the car already covers the grid.
+* **The field gather probes across the run and can stitch.** The candidate scan
+  used one probe instant, so on a three-vehicle map it could only ever see the
+  middle vehicle. It now probes at sixteen instants, prints every candidate with
+  its live-wheel count and its "on the car" window, and — only where the
+  single-copy answer is refused — selects the copy per instant, requiring the
+  phases to tile the run and each phase to clear the same sub-millimetre and
+  four-live-wheel bars inside its own window. A single-vehicle map is unaffected
+  and the control for that is byte-identical output on the fixture.
+
+What the file now carries, measured on the written file:
+
+| channel | |
+|---|---|
+| wheel rotation 6 / 8 / 10 / 12 | LIVE (253–256 distinct values, changing on ~99.7 % of steps) |
+| suspension travel 23 / 25 / 27 / 29 | LIVE (30–33 distinct, ~35 % of steps) |
+| byte 89 ground contact | LIVE (4 distinct) |
+| byte 90 reactor / booster air control | LIVE (3 distinct) — this map does have a reactor gate |
+| byte 91 gear | LIVE (5 distinct) |
+| unwritten, left as the container's | 11 channels: 19, 20, 34 and the four dirt slots (all read identically zero in the dedicated server), and 108–111, the countdown |
+
+`ghost verify --engine`: V1–V10 pass, kappa **1.000** on 1150 samples, the
+oracle re-simulates the written file to **57.482**, and the engine's own run of
+the tape matches the recording to 0.0005 m mean / 0.0009 m worst.
+
+## Why there is still no clip: the client will not import a rebuilt record here
+
+The game client crashes — process gone, mid-import — on every ghost of this map
+whose record has been rebuilt or re-cut, and imports the container's own
+untouched 29-entity record every time. Each row below is one variable, each run
+behind a fresh launch, all on 2026-08-24 on the render box:
+
+| file | record | import |
+|---|---|---|
+| `HUMAN_WR_retries_cut_64871` | the container's own 29 entities | **imports** |
+| the same container with our 57.482 tape in it | 29 entities | **imports** |
+| …with the declared time set to 64.871 | 29 entities | **imports** |
+| the human container with the declared time set to 57.482 | 29 entities | **imports** |
+| the carrier TRIMMED to 57.482 | 6 entities, donor telemetry, 23 emptied entities removed | CRASH |
+| `TAS_57482` as published (before this regeneration) | 1 rebuilt entity | CRASH |
+| the new regeneration | 1 rebuilt entity | CRASH |
+| …with the container's scene records grafted back | 1 car + 2 scene | CRASH |
+| …also with the car's 35 `delta2` blocks restored | 1 car + 2 scene | CRASH |
+| …with the skin set to the container's `Stadium.zip` | 1 rebuilt entity | CRASH |
+| …with the 82 notice lists stripped | 1 rebuilt entity | CRASH |
+| …with the car's `u01` set to the container's first segment's | 1 rebuilt entity | CRASH |
+| …extended to the container's own 147.030 span, car parked after the finish | 1 rebuilt entity | CRASH |
+| a transform-only regeneration, nothing neutralised | 1 rebuilt entity | CRASH |
+| the run re-cut into the container's own five segment boundaries | 5 car entities | CRASH |
+| …with the notices stripped as well | 5 car entities | CRASH |
+
+So it is not the neutralised bytes, not the skin, not the notices, not the
+declared time, not the record span, not `u01`, not the scene records, and not
+the number of car entities on its own — the trimmed carrier carries the DONOR's
+telemetry in the DONOR's entity shapes and still crashes. What every crashing
+file has in common is that its entity set was rewritten; what every importing
+file has in common is that it was not.
+
+**A trap worth knowing before repeating any of this**: after a crash the game
+must be relaunched, and the next import into the corpse fails as
+`{"err":"not in the MediaTracker"}` — a silent refusal, not a crash. Two of the
+readings above read as "refused" first time and as "crash" once each was run
+behind its own `launch --force`. A bisect that does not relaunch between rows
+measures the previous row.

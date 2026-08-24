@@ -422,6 +422,26 @@ pub fn cmd(a: &[String]) {
                 }
             }
             if edits.is_empty() {
+                // A NO-OP IS A RESULT, AND IT WAS KILLING THE CALLER.
+                //
+                // `die` here is right for a person at a terminal: they asked
+                // for a change and there is none to make. It is wrong for
+                // `ghost regen`, whose finishing pass calls this IN PROCESS to
+                // anonymise what it just wrote -- on a file that is already
+                // anonymous (every re-regeneration of a published ghost is)
+                // this exited the whole command, silently, between "the gate
+                // passed" and every acceptance check that comes after it: the
+                // donor-byte provenance, the channel liveness, the carrier
+                // read-back. The regeneration then LEFT A FILE BEHIND that
+                // nothing had checked, and on 227654 that file was a decoy the
+                // checks would have refused. Measured 2026-08-24; the log's
+                // tell is that it ends at "the finishing pass".
+                if has(rest, "--allow-noop") {
+                    println!("  identity: nothing to change -- this file is already anonymous");
+                    std::fs::copy(inp, out)
+                        .unwrap_or_else(|e| die(format!("copying {inp} to {out}: {e}")));
+                    return;
+                }
                 die("nothing to change (`ghost identity show` lists what is there)");
             }
             edits.sort_by_key(|e| e.0);

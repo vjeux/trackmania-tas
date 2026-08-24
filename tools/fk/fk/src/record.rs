@@ -1027,16 +1027,36 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             let reference: Option<Vec<(i64, [f64; 3])>> = if std::env::var("FK_NO_CHOOSER").is_ok() {
                 None
             } else { (|| {
-                let (times, raws) = crate::record::targets_from_ghost(&c.template).ok()?;
+                // SAY WHY IT ABSTAINED. Every `return None` here silently
+                // restores the leader-along-velocity rule, and the two look
+                // identical from outside: on 227654 the chooser was abstaining
+                // and the fallback was picking an object kilometres from the
+                // car, with nothing in the log between "11 candidate copies"
+                // and a `truth` that is not this run. An identifying test that
+                // declines to run has to say so.
+                let say = |why: &str| {
+                    if verbose {
+                        println!("chooser: ABSTAINS -- {why}; the live-copy rule decides instead");
+                    }
+                };
+                let (times, raws) = match crate::record::targets_from_ghost(&c.template) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        say(&format!("the template's recording could not be read ({e})"));
+                        return None;
+                    }
+                };
                 let mut out = Vec::new();
                 for (i, t) in times.iter().enumerate() {
                     let (p, _, _, _) = gbx::record::read_transform_pub(&raws[i], 47);
                     if !p.iter().all(|v| v.is_finite()) {
+                        say("the template's recorded position is not finite");
                         return None;
                     }
                     out.push((*t, p));
                 }
                 if out.len() < 20 {
+                    say(&format!("the template's recording has only {} samples", out.len()));
                     return None;
                 }
                 // a constant trajectory identifies nothing
@@ -1047,6 +1067,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                     })
                     .sum::<f64>();
                 if moved < 5.0 {
+                    say(&format!("the template's recorded path moves only {:.3} m", moved));
                     return None;
                 }
                 Some(out)
@@ -1055,6 +1076,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                 let by_ms: std::collections::HashMap<i64, [f64; 3]> =
                     refr.iter().map(|(t, p)| (*t, *p)).collect();
                 let mut scored: Vec<(f64, usize)> = Vec::new();
+                let mut shared = 0usize;
                 for cd in &cands {
                     let mut e: Vec<f64> = Vec::new();
                     for r in recs.iter() {
@@ -1070,10 +1092,20 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                     if e.len() < 10 {
                         continue;
                     }
+                    shared = shared.max(e.len());
                     e.sort_by(|a, b| a.total_cmp(b));
                     scored.push((e[e.len() / 2], *cd));
                 }
                 scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+                if scored.is_empty() && verbose {
+                    println!(
+                        "chooser: ABSTAINS -- no candidate shares 10 instants with the \
+                         template's recording (best {} shared of {} candidates); the live-copy \
+                         rule decides instead",
+                        shared,
+                        cands.len()
+                    );
+                }
                 if let Some((err, cd)) = scored.first().copied() {
                     // 5 cm: far above the 0.5 mm client-vs-server floor and far
                     // below the 0.09 m nearest stale copy ever measured.

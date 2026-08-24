@@ -564,6 +564,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 (*clk as i64 - bias, [g(0), g(1), g(2)])
             })
             .collect();
+        // THE REFERENCE PATH, ON DISK, WHEN ASKED FOR.
+        //
+        // `truth` is the only thing the field gather identifies the car
+        // against, and until now the single number it produced -- a median
+        // distance -- was the whole of what could be known about it. A median
+        // cannot tell a decoy's path from this run's read at the wrong instant.
+        // The path itself can: two CSVs and `tmtraj csvdiff` settle it.
+        if let Some(p) = flag("--dump-truth") {
+            let mut ks: Vec<i64> = truth.keys().copied().collect();
+            ks.sort_unstable();
+            let mut s = String::from("race_ms,x,y,z\n");
+            for k in ks {
+                let v = truth[&k];
+                s.push_str(&format!("{},{:.6},{:.6},{:.6}\n", k, v[0], v[1], v[2]));
+            }
+            match std::fs::write(&p, s) {
+                Ok(()) => println!("--dump-truth: the clean run's reference path -> {p}"),
+                Err(e) => println!("--dump-truth: could not write {p}: {e}"),
+            }
+        }
         // The recording's own orientation, when the container carries this
         // run's. Reported against, never chosen by -- see `gather_fields`.
         //
@@ -584,26 +604,82 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let key_is_ours = {
             let mut n = 0usize;
             let mut off = 0usize;
+            // SAY HOW FAR, NOT JUST HOW MANY.
+            //
+            // This printed a COUNT ("1142 of 1150 instants more than 1 m") and
+            // went on. A count cannot tell the three things that produce it
+            // apart: a transplanted container (metres to hundreds of metres,
+            // another route), a clock offset (the same route, paired at the
+            // wrong instant), and OUR OWN clean run having anchored on a decoy
+            // (the container is right and the reference is wrong). On 227654
+            // the third is what happened, and the count read exactly like the
+            // first -- so the veto was disabled and the field gather went on
+            // scoring against a path that is not this run's.
+            let mut ds: Vec<f64> = Vec::new();
+            let dist = |r: [f64; 3], p: &[f64; 3]| {
+                ((r[0] - p[0]).powi(2) + (r[1] - p[1]).powi(2) + (r[2] - p[2]).powi(2)).sqrt()
+            };
             for (i, t) in times.iter().enumerate() {
                 let Some(p) = truth.get(t) else { continue };
                 let r = gbx::record::read_transform_pub(&raws[i], 47).0;
-                let d = ((r[0] - p[0]).powi(2) + (r[1] - p[1]).powi(2) + (r[2] - p[2]).powi(2))
-                    .sqrt();
+                let d = dist(r, p);
+                ds.push(d);
                 n += 1;
                 if d > 1.0 {
                     off += 1;
                 }
             }
             let ours = n >= 20 && (off as f64) < 0.1 * n as f64;
-            if !ours {
+            if !ours && n > 0 {
+                let mut s = ds.clone();
+                s.sort_by(|a, b| a.total_cmp(b));
+                // IS IT A TIME OFFSET? The same route paired at the wrong
+                // instant collapses at some shift; a different route does not.
+                // The sweep is over WHOLE SAMPLES of the container's own grid,
+                // which is what a pairing error moves by.
+                let step = if times.len() > 1 { times[1] - times[0] } else { 50 };
+                let mut best = (0i64, s[s.len() / 2]);
+                for k in -40i64..=40 {
+                    let mut e: Vec<f64> = Vec::new();
+                    for (i, t) in times.iter().enumerate() {
+                        let Some(p) = truth.get(&(t + k * step)) else { continue };
+                        e.push(dist(gbx::record::read_transform_pub(&raws[i], 47).0, p));
+                    }
+                    if e.len() < 20 {
+                        continue;
+                    }
+                    e.sort_by(|a, b| a.total_cmp(b));
+                    if e[e.len() / 2] < best.1 {
+                        best = (k, e[e.len() / 2]);
+                    }
+                }
                 println!(
                     "--carrier: the container's own recording is NOT this run ({} of {} \
-                     instants more than 1 m from the path the engine just drove), so its \
+                     instants more than 1 m from the path the engine just drove: median {:.3} m, \
+                     p99 {:.3} m, worst {:.3} m, {:.3} m at the first shared instant; best \
+                     pairing shift {}{} samples at median {:.3} m), so its \
                      orientation is not an answer key and the veto is disabled. The \
                      reference-free ranking decides alone, as it must on the transplanted \
                      containers this exists for.",
-                    off, n
+                    off,
+                    n,
+                    s[s.len() / 2],
+                    s[(s.len() * 99) / 100],
+                    s[s.len() - 1],
+                    ds[0],
+                    if best.0 > 0 { "+" } else { "" },
+                    best.0,
+                    best.1
                 );
+                if best.0 == 0 {
+                    println!(
+                        "  NO SHIFT HELPS: this is not a pairing error. Either the container \
+                         carries another run (a transplant, which is normal here) or the clean \
+                         run anchored on a decoy and `truth` is not this run's path -- and those \
+                         two are told apart by whether the container's recording belongs to its \
+                         own tape (`ghost verify --engine`)."
+                    );
+                }
             }
             ours
         };

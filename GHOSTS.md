@@ -299,6 +299,17 @@ record is visible before anything is concluded from one entity's length.
 The single-entity assumption is still baked into `decode_ghost` and everything
 downstream of it; `record show` is the thing that tells you when it is wrong.
 
+**AND ON SOME MAPS THE BOUNDARIES ARE THE MAP'S, NOT THE DRIVER'S** (2026-08-24,
+227654). Those 27 entities were read as "one per respawn". They are not only
+that: running OUR tape, which has **no respawn in it**, the engine moves the
+car's own live state between objects at **19.500 and 36.300 s** — the same
+instants the container breaks its entities at (19.490, 36.300). The map is
+DesertCar / SnowCar / Bobsleigh and it changes the vehicle under you; each
+vehicle is its own `CSceneVehicleVisState`. `fk regen --carrier layout
+--verbose` prints each candidate copy's "on the car" window, which is how a
+three-vehicle map is told from a bad locate: on a bad locate no copy is exact,
+here several are exact and each for one stretch.
+
 **A zeroed slot is not a missing entity, and the difference is one command.**
 186935's `BEST_793893` was published as carrying "no `CSceneVehicleVis` entity
 at all". It has one — 15533 samples over 0.000 → 793.850 — and every position
@@ -365,9 +376,39 @@ out of the file in front of it or out of the plain oracle.
 **Never report a harness limit as a physics limit.**
 → `ghost regen` writes the 22 transform bytes from engine memory **and bytes
 14 / 15 / 18 from the tape**, and then prints exactly which of the 116 bytes are
-ours and which are still the carrier's. The remaining 91 (rpm, gear, wheel
-rotation, suspension, surface effects) are in engine memory too; nothing here
-has read them yet, and that is a task, not a conclusion.
+ours and which are still the carrier's. The other 91 (rpm, gear, wheel
+rotation, suspension, surface effects) are in engine memory too — and
+`--carrier layout` now reads them, so on a file regenerated that way 112 of 116
+are ours and the 11 left are named and argued for, not shrugged at.
+
+**A REBUILD THAT DESTROYS THE ANSWER KEY, AND THREE CHECKS THAT THEN CANNOT SAY
+SO** (2026-08-24, 227654). `ghost regen`'s step 0 laid the record on a fresh
+grid by stamping every sample with a copy of the car's FIRST sample — so a
+container that already carried 1150 correct positions reached the engine as
+1150 copies of the spawn point. Nothing failed; three things went quiet at
+once. The locate's chooser, which identifies the car by the template's own
+recorded trajectory, abstained (a constant identifies nothing) and the
+leader-along-velocity fallback picked whatever. `fk regen`'s orientation veto
+reported *the container's own recording is NOT this run*, which reads as a
+transplanted container and here meant the recording had been deleted a step
+earlier. And `--carrier`'s field gather was left ranking copies of the car
+against a reference nobody had checked.
+→ `rebuild_to` KEEPS the car's own samples when the car already covers the
+grid, and says which happened; the chooser SAYS WHY it abstains; the veto
+prints the median, the p99, the worst, the distance at the first shared instant
+and the best pairing shift, so "a transplant", "a clock offset" and "our own
+reference is wrong" are three different readings instead of one count.
+
+**A NO-OP THAT KILLED EVERY CHECK AFTER IT** (2026-08-24, same run).
+`ghost regen`'s finishing pass calls `ghost identity set --anonymise` in
+process, and that command `die`s when there is nothing to change — which is the
+right answer for a person at a terminal and fatal here, because a file that is
+already anonymous is exactly what every re-regeneration of a published ghost
+is. The regeneration exited silently between "the gate passed" and the
+donor-byte provenance, the channel liveness and the carrier read-back, LEAVING
+THE FILE BEHIND. On 227654 the file left behind was a decoy the checks would
+have refused. The log's only tell was that it ended at "the finishing pass".
+→ `--allow-noop` says so and copies the file through; the regen passes it.
 
 **A container can be ours and the file still somebody else's.**
 → `ghost identity show` lists every identity string with its offset, including

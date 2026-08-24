@@ -362,7 +362,7 @@ pub fn cmd(a: &[String]) {
                 // so in as many words, and it caught this staging name on the
                 // first run.
                 let staged = format!("{}.grid.Ghost.Gbx", out.trim_end_matches(".Ghost.Gbx"));
-                match crate::record::rebuild_to(inp, &staged, ms, None, 50) {
+                match crate::record::rebuild_to(inp, &staged, ms, None, 50, false) {
                     Ok(msg) => println!("== step 0: the record grid is ours\n   {msg}"),
                     Err(e) => die(format!("could not rebuild the record grid: {e}")),
                 }
@@ -626,6 +626,7 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
     //    still found by the same scan.
     let tmp = format!("{out}.fin");
     let mut i: Vec<String> = vec!["set".into(), out.to_string(), tmp.clone(), "--anonymise".into(),
+                                  "--allow-noop".into(),
                                   "--map".into(), map.to_string()];
     if let Some(s) = flag(a, "--server") {
         i.push("--server".into());

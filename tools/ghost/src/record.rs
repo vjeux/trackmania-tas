@@ -41,7 +41,7 @@
 use gbx::container::secs;
 use gbx::record::{Ent, RecordData};
 use gbx::recwrite::rewrite_ghost;
-use crate::cli::{die, flag, num};
+use crate::cli::{has, die, flag, num};
 
 /// The vehicle entity to rebuild from: the one with the most samples among
 /// those whose samples are big enough to be a `CSceneVehicleVis` (>= 100 B).
@@ -59,6 +59,16 @@ fn pick_vehicle(rd: &RecordData) -> Option<usize> {
 pub fn cmd(a: &[String]) {
     match a.first().map(String::as_str) {
         Some("rebuild") => rebuild(&a[1..]),
+        Some("resegment") => {
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record resegment IN OUT --like DONOR"));
+            let out = a.get(2).unwrap_or_else(|| die("ghost record resegment IN OUT --like DONOR"));
+            let donor = flag(a, "--like")
+                .unwrap_or_else(|| die("--like DONOR.Ghost.Gbx: the container whose segment boundaries to copy"));
+            match resegment(inp, out, &donor) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("shorten") => {
             let inp = a.get(1).unwrap_or_else(|| die("ghost record shorten IN OUT"));
             let out = a.get(2).unwrap_or_else(|| die("ghost record shorten IN OUT"));
@@ -175,7 +185,15 @@ pub fn cmd(a: &[String]) {
             }
         }
         _ => die(
-            "ghost record rebuild IN OUT --span MS [--period MS] [--template N]\n\
+            "ghost record rebuild IN OUT --span MS [--period MS] [--template N] [--hold-last]\n\
+             \x20                            -- --hold-last extends a record the car already\n\
+             \x20                               holds by repeating its last sample: the car\n\
+             \x20                               parked where it finished\n\
+             ghost record resegment IN OUT --like DONOR\n\
+             \x20                            -- re-cut ONE rebuilt car entity into the segment\n\
+             \x20                               boundaries a donor container uses, keeping every\n\
+             \x20                               sample byte. Some maps change the vehicle and\n\
+             \x20                               record one entity per segment\n\
              ghost record shorten IN OUT   -- make the scene end when the car does,\n\
              \x20                                without touching the car's samples\n\
              ghost record entfields IN OUT [--u01 N] [--u02 N] [--u04 N]\n\
@@ -484,6 +502,7 @@ pub fn rebuild_to(
     span_ms: i64,
     template_from: Option<&str>,
     period: i64,
+    hold_last: bool,
 ) -> Result<String, String> {
     if period <= 0 || span_ms <= 0 {
         return Err("a rebuilt record needs a positive span and period".into());
@@ -530,12 +549,114 @@ pub fn rebuild_to(
             secs(vi.and_then(|i| rd.ents[i].times.last().copied()).unwrap_or(0) as i64),
         );
         let ss = template.len();
+        // A REBUILD THAT ALREADY HAS THE RUN KEEPS IT.
+        //
+        // Every sample used to be a copy of the car's FIRST sample, which makes
+        // the rebuilt car's recorded path ONE CONSTANT POINT. That is right for
+        // the case this was written for -- a carrier whose grid does not cover
+        // the run, where the samples that do exist are the DONOR's and keeping
+        // them would hand the regenerator a stranger's path as an answer key.
+        //
+        // It is wrong for the case that turns up the moment a file has been
+        // repaired once: a container whose car already covers the whole span on
+        // this exact grid. There the rebuild changes no shape at all and
+        // destroys the only thing in the file that can IDENTIFY the car --
+        // 227654's `TAS_57482` came in with 1150 correct positions and went to
+        // the engine as 1150 copies of the spawn point. Downstream, three
+        // things then have no reference and none of them says so plainly: the
+        // locate's chooser abstains ("a constant trajectory identifies
+        // nothing"), `fk regen`'s orientation veto reports "the container's own
+        // recording is NOT this run" -- which reads as a transplant and here
+        // means the recording was thrown away -- and `--carrier`'s field gather
+        // is left ranking copies of the car with no answer key. On this map
+        // that is fatal: twenty-nine regeneration attempts refused, every one
+        // of them for a reason two layers from the cause.
+        //
+        // So: carry a sample over when the grid instant is one the car already
+        // recorded, and only stamp the neutral template on instants it does
+        // not have. Gated on FULL cover -- if a single grid instant is missing,
+        // the old all-constant behaviour stands, because a partly-carried grid
+        // is exactly the donor-path answer key this must not create.
+        let (have, cover): (std::collections::HashMap<i32, &[u8]>, bool) = match vi {
+            Some(i) => {
+                let e = &rd.ents[i];
+                let m: std::collections::HashMap<i32, &[u8]> = e
+                    .times
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| (k + 1) * e.sample_size <= e.raw.len())
+                    .map(|(k, t)| (*t, &e.raw[k * e.sample_size..(k + 1) * e.sample_size]))
+                    .collect();
+                // `hold_last` extends a record the car DOES hold, by repeating
+                // its last sample past the end of the run -- the car parked
+                // where it finished. It is opt-in and it is only honest on a
+                // file whose record is already its own run: on a transplanted
+                // container it would hold the DONOR's last state. The caller
+                // says so; the default is unchanged.
+                let full = e.sample_size == ss
+                    && ((0..n).all(|k| m.contains_key(&((k as i64 * period) as i32)))
+                        || (hold_last
+                            && !m.is_empty()
+                            && (0..n)
+                                .take_while(|k| {
+                                    (*k as i64 * period) as i32 <= *e.times.last().unwrap()
+                                })
+                                .all(|k| m.contains_key(&((k as i64 * period) as i32)))));
+                (m, full)
+            }
+            None => (Default::default(), false),
+        };
+        let last_sample: Option<&[u8]> = match vi {
+            Some(i) if hold_last => {
+                let e = &rd.ents[i];
+                let k = e.times.len().saturating_sub(1);
+                if (k + 1) * e.sample_size <= e.raw.len() && e.sample_size == ss {
+                    Some(&e.raw[k * e.sample_size..(k + 1) * e.sample_size])
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let mut raw = Vec::with_capacity(n * ss);
         let mut times = Vec::with_capacity(n);
+        let mut carried = 0usize;
+        let mut held = 0usize;
         for k in 0..n {
-            times.push((k as i64 * period) as i32);
-            raw.extend_from_slice(&template);
+            let t = (k as i64 * period) as i32;
+            times.push(t);
+            match if cover { have.get(&t) } else { None } {
+                Some(s) => {
+                    raw.extend_from_slice(s);
+                    carried += 1;
+                }
+                None => match if cover { last_sample } else { None } {
+                    // Past the car's own last sample, on a `--hold-last`
+                    // rebuild: the car stands where it finished. Counted
+                    // separately, because "held" is not "recorded".
+                    Some(s) => {
+                        raw.extend_from_slice(s);
+                        held += 1;
+                    }
+                    None => raw.extend_from_slice(&template),
+                },
+            }
         }
+        note = if carried > 0 {
+            format!(
+                " -- the car already covered this grid, so its own {carried} samples were KEPT \
+                 (nothing was replaced by the neutral template){}",
+                if held > 0 {
+                    format!(", and {held} more HOLD its last sample: the car stands where it \
+                             finished, which is a state it was never in")
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            String::new()
+        };
+        let carried_note = note.clone();
         // ONE CAR, AND EVERY NON-VEHICLE RECORD THE CONTAINER HAD.
         //
         // The vehicle entities go: on 227654 the carrier holds 29 of them and
@@ -651,8 +772,8 @@ pub fn rebuild_to(
         rd.start_ms = 0;
         rd.end_ms = span_ms as i32;
         note = format!(
-            ", kept {} non-vehicle record(s) of which {} live",
-            n_kept, live
+            ", kept {} non-vehicle record(s) of which {} live{}",
+            n_kept, live, carried_note
         );
         Ok(())
     })?;
@@ -902,8 +1023,182 @@ pub fn set_ent_fields(
 /// per sample of somebody else's session state, not a trajectory. Run
 /// `ghost verify` afterwards and read V3 and the raw-bytes backstop before
 /// publishing anything built this way.
-pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Result<String, String> {
+/// Re-cut ONE car entity into the segment structure a donor container uses.
+///
+/// THE RECORD IS ONE ENTITY PER SEGMENT, AND ON SOME MAPS THAT IS NOT OPTIONAL.
+///
+/// `rebuild_to` lays the whole run down as ONE `CSceneVehicleVis` entity, which
+/// is what the game writes on an ordinary map and what every published
+/// regeneration in this project is. On 227654 it is what the game CLIENT
+/// refuses: the single-entity file kills the process on ghost import (measured
+/// on the render box, four variants, each behind a same-session control — the
+/// container's own 29-entity file imports on the same map in the same session,
+/// with our tape in it and our declared time on it).
+///
+/// The boundaries are not the driver's. That container's vehicle entities break
+/// at 1.300 / 19.480 / 36.300 / 54.330 s, and the engine — running OUR tape,
+/// which has no respawn in it at all — moves the car's live state between
+/// objects at **19.500 and 36.300 s** (`fk regen --carrier --verbose` prints
+/// the windows). Two different runs, the same boundaries: they are the map's,
+/// not the run's. This map is `DesertCar / SnowCar / Bobsleigh` and it changes
+/// the vehicle under you; each vehicle is its own entity, in the recording and
+/// in engine memory both.
+///
+/// So: keep our samples exactly as they are, and hand them to the segments the
+/// donor declares, with each segment's own `u01`. Sample bytes are never
+/// touched — the read-back below requires every one of them back, in order.
+pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
     let dbody = gbx::record::load_body(donor)?;
+    let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
+    let drd = gbx::record::parse_record_data(&dblob, dver)?;
+    // The donor's vehicle entities, in time order: (first, last, u01, u04).
+    let mut segs: Vec<(i32, i32, i32, i32)> = drd
+        .ents
+        .iter()
+        .filter(|e| {
+            drd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0)
+                == gbx::record::CLASS_CSCENEVEHICLEVIS
+                && !e.times.is_empty()
+        })
+        .map(|e| (*e.times.first().unwrap(), *e.times.last().unwrap(), e.u01, e.u04))
+        .collect();
+    segs.sort_by_key(|s| s.0);
+    if segs.len() < 2 {
+        return Err(format!(
+            "{donor} has {} vehicle segment(s) -- there is nothing to copy the shape of",
+            segs.len()
+        ));
+    }
+    let mut before = String::new();
+    let mut after = String::new();
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to re-cut")?;
+        let nveh = {
+            let veh: Vec<usize> = (0..rd.ents.len())
+                .filter(|i| {
+                    rd.descs.get(rd.ents[*i].type_ as usize).map(|d| d.class_id).unwrap_or(0)
+                        == gbx::record::CLASS_CSCENEVEHICLEVIS
+                })
+                .collect();
+            veh.len()
+        };
+        if nveh != 1 {
+            return Err(format!(
+                "this file has {nveh} vehicle entities -- resegment re-cuts a rebuilt car, of \
+                 which there must be exactly one"
+            ));
+        }
+        let car = rd.ents.remove(vi);
+        let ss = car.sample_size;
+        if ss == 0 || car.times.is_empty() {
+            return Err("the car entity has no samples".into());
+        }
+        before = format!(
+            "1 car entity, {} samples spanning {} .. {}",
+            car.times.len(),
+            secs(*car.times.first().unwrap() as i64),
+            secs(*car.times.last().unwrap() as i64)
+        );
+        let span = rd.end_ms;
+        let mut cut: Vec<Ent> = Vec::new();
+        let mut used = 0usize;
+        let mut bounds: Vec<String> = Vec::new();
+        for (i, (s, e, u01, u04)) in segs.iter().enumerate() {
+            if *s > span {
+                continue;
+            }
+            // The last segment inside the span carries the run to its end: the
+            // donor's own last boundary is ITS run's, and ours finishes sooner.
+            let hi = if segs.get(i + 1).map(|n| n.0 > span).unwrap_or(true) { span } else { *e };
+            let mut times = Vec::new();
+            let mut raw = Vec::new();
+            for (k, t) in car.times.iter().enumerate() {
+                if *t >= *s && *t <= hi && (k + 1) * ss <= car.raw.len() {
+                    times.push(*t);
+                    raw.extend_from_slice(&car.raw[k * ss..(k + 1) * ss]);
+                }
+            }
+            if times.is_empty() {
+                continue;
+            }
+            used += times.len();
+            bounds.push(format!(
+                "{}..{} x{}",
+                secs(*times.first().unwrap() as i64),
+                secs(*times.last().unwrap() as i64),
+                times.len()
+            ));
+            cut.push(Ent {
+                type_: car.type_,
+                u01: *u01,
+                u02: *times.first().unwrap(),
+                u03: *times.last().unwrap(),
+                u04: *u04,
+                times,
+                raw,
+                sample_size: ss,
+                deltas2: Vec::new(),
+            });
+        }
+        if used != car.times.len() {
+            return Err(format!(
+                "the donor's segments cover {used} of the car's {} samples -- a re-cut that \
+                 drops or duplicates a sample is not a re-cut",
+                car.times.len()
+            ));
+        }
+        // The donor's order: the scene records first, then the cars in time
+        // order -- which is how the game writes them and how `rebuild_to`
+        // learned to put the car first.
+        let mut ents: Vec<Ent> = Vec::new();
+        let ncut = cut.len();
+        ents.append(&mut cut);
+        ents.extend(rd.ents.drain(..));
+        rd.ents = ents;
+        after = format!("{ncut} car segments [{}]", bounds.join(", "));
+        Ok(())
+    })?;
+    // READ IT BACK: every sample, in order, byte for byte. A re-cut that moves
+    // a byte is a different recording wearing this one's name.
+    //
+    // NOT through `decode_ghost`: that takes the entity with the most samples
+    // and calls it the record, which on a re-cut file is one segment (363 of
+    // 1150). The check has to walk every vehicle entity, which is also the
+    // shape of what this file now is.
+    let all = |p: &str| -> Result<Vec<(i32, Vec<u8>)>, String> {
+        let body = gbx::record::load_body(p)?;
+        let (v, blob) = gbx::record::find_entrecord_blob(&body)?;
+        let rd = gbx::record::parse_record_data(&blob, v)?;
+        let mut out: Vec<(i32, Vec<u8>)> = Vec::new();
+        for e in &rd.ents {
+            if rd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0)
+                != gbx::record::CLASS_CSCENEVEHICLEVIS
+            {
+                continue;
+            }
+            for (k, t) in e.times.iter().enumerate() {
+                if (k + 1) * e.sample_size <= e.raw.len() {
+                    out.push((*t, e.raw[k * e.sample_size..(k + 1) * e.sample_size].to_vec()));
+                }
+            }
+        }
+        out.sort_by_key(|s| s.0);
+        Ok(out)
+    };
+    let a = all(inp)?;
+    let b = all(out)?;
+    if a != b {
+        return Err(format!(
+            "the car's samples did not come back: {} in, {} out{}",
+            a.len(),
+            b.len(),
+            if a.len() == b.len() { " (same count, different bytes or times)" } else { "" }
+        ));
+    }
+    Ok(format!("{before} -> {after}; all {} samples kept, byte for byte", a.len()))
+}
+
+pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Result<String, String> {    let dbody = gbx::record::load_body(donor)?;
     let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
     let drd = gbx::record::parse_record_data(&dblob, dver)?;
     let dveh = pick_vehicle(&drd);
@@ -999,7 +1294,12 @@ fn rebuild(a: &[String]) {
         num(a, "--span").unwrap_or_else(|| die("--span MS: how far the record must reach"));
     let period: i64 = num(a, "--period").unwrap_or(50);
     let tf = flag(a, "--template-from");
-    match rebuild_to(inp, out, span, tf, period) {
+    match rebuild_to(inp, out, span, tf, period, has(a, "--hold-last")) {
+        // The second line is only true of a grid that WAS stamped from one
+        // template sample. When the car already covered the grid its own
+        // samples are kept, and telling the operator the file is not a run
+        // would be false -- `rebuild_to` says which happened.
+        Ok(msg) if msg.contains("were KEPT") => println!("{out}: {msg}"),
         Ok(msg) => println!(
             "{out}: {msg}\nThis file is NOT yet a run -- every sample is a copy of the template. \
              `ghost regen` is what makes it one, and it does this step itself."
