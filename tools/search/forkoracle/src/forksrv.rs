@@ -24,6 +24,112 @@ const SIGKILL: c_int = 9;
 
 pub const STRIDE: usize = 32;
 
+// ---------------------------------------------------------------------------
+// THE WIRE, BUILT IN ONE PLACE
+//
+// Every command the shim understands is encoded by exactly one function here.
+// The root fork server and a savestate-tree node are two TRANSPORTS (two
+// inherited pipes vs one unix socket) and they must never become two protocol
+// implementations -- `tmtraj corpus dup` in this project shelled out to a
+// command that did not exist and reported the whole corpus clean, and the
+// standing rule from it is that one format gets one encoder.
+
+/// `'R'`: fork, rewrite ticks `from..` with `recs`, run to the finish.
+pub fn payload_run(from: usize, recs: &[Rec]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5 + recs.len() * 16);
+    p.push(b'R');
+    p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
+    for (i, r) in recs.iter().enumerate() {
+        p.extend_from_slice(&((from + i) as u32).to_le_bytes());
+        p.extend_from_slice(&r.steer.to_le_bytes());
+        p.extend_from_slice(&r.gas.to_le_bytes());
+        p.extend_from_slice(&r.brake.to_le_bytes());
+    }
+    p
+}
+
+/// `'P'`: ask the engine which input record it is about to consume.
+pub fn payload_probe() -> Vec<u8> {
+    b"P".to_vec()
+}
+
+/// `'N'`: fork a child that does nothing. The floor under every other cost.
+pub fn payload_null_fork() -> Vec<u8> {
+    b"N".to_vec()
+}
+
+/// How a branch child is told to stop and become a node.
+#[derive(Clone, Debug)]
+pub struct BranchReq<'a> {
+    /// Ticks to rewrite before resuming. **Forward-only**: the caller is
+    /// responsible for every index being strictly past the parent's probed
+    /// boundary, and `tree::Node::branch` refuses otherwise.
+    pub from: usize,
+    pub recs: &'a [Rec],
+    /// How many more `lroundf` calls the child simulates before it re-enters
+    /// the fork server. ~255 to the tick.
+    pub stop_after_lroundf: u64,
+    /// The driver's listening unix socket. The node connects to it and serves
+    /// the same protocol down it.
+    pub sock: &'a str,
+    /// Where the child writes its per-tick state trace, or `""` for none.
+    pub trace_path: &'a str,
+    /// Memory to gather per sample: the vehicle state and the race clock.
+    pub segs: &'a [(u64, u32)],
+    pub sample_stride: u64,
+    pub sample_max: u32,
+    /// Dedup key `(offset, length)` inside the gathered record.
+    pub key: (u32, u32),
+}
+
+/// `'B'`: the branch. See the shim's handler for the field order.
+pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
+    let mut p = Vec::with_capacity(64 + b.sock.len() + b.recs.len() * 16);
+    p.push(b'B');
+    p.extend_from_slice(&(b.recs.len() as u32).to_le_bytes());
+    p.extend_from_slice(&b.stop_after_lroundf.to_le_bytes());
+    p.extend_from_slice(&(b.sock.len() as u32).to_le_bytes());
+    p.extend_from_slice(b.sock.as_bytes());
+    p.extend_from_slice(&(b.trace_path.len() as u32).to_le_bytes());
+    p.extend_from_slice(b.trace_path.as_bytes());
+    p.extend_from_slice(&(b.segs.len() as u32).to_le_bytes());
+    for (a, l) in b.segs {
+        p.extend_from_slice(&a.to_le_bytes());
+        p.extend_from_slice(&l.to_le_bytes());
+    }
+    p.extend_from_slice(&b.sample_stride.to_le_bytes());
+    p.extend_from_slice(&b.sample_max.to_le_bytes());
+    p.extend_from_slice(&b.key.1.to_le_bytes());
+    p.extend_from_slice(&b.key.0.to_le_bytes());
+    for (i, r) in b.recs.iter().enumerate() {
+        p.extend_from_slice(&((b.from + i) as u32).to_le_bytes());
+        p.extend_from_slice(&r.steer.to_le_bytes());
+        p.extend_from_slice(&r.gas.to_le_bytes());
+        p.extend_from_slice(&r.brake.to_le_bytes());
+    }
+    p
+}
+
+/// Write one length-prefixed frame.
+pub fn write_frame<W: Write>(w: &mut W, p: &[u8]) -> std::io::Result<()> {
+    w.write_all(&(p.len() as u32).to_le_bytes())?;
+    w.write_all(p)?;
+    w.flush()
+}
+
+/// The reply to `'P'`, parsed. `Err` is a HARD ABORT for every caller: a resume
+/// that rewrites an already-consumed record is a silent no-op that scores
+/// exactly the incumbent's score.
+pub fn parse_probe(s: &str) -> Result<usize, String> {
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("TICK ") {
+            return rest.trim().parse::<usize>().map_err(|e| e.to_string());
+        }
+    }
+    Err(format!("probe failed: {:?}", s.trim()))
+}
+
+
 /// One tick of engine input, in the engine's own representation.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Rec {
@@ -205,16 +311,6 @@ impl ForkServer {
         )?;
         std::fs::copy(ref_ghost, replays.join("g.Ghost.Gbx")).map_err(|e| e.to_string())?;
 
-        let (cmd_r, cmd_w) = mk_pipe();
-        let (res_r, res_w) = mk_pipe();
-
-        // The server's stderr goes to a FILE in its own directory, never to an
-        // inherited pipe. Inheriting means a server that outlives its driver
-        // holds that pipe open for ever, and a parent doing `Command::output()`
-        // on the driver then never sees EOF -- the search's aggregation loop
-        // parked in `read()` for the rest of the run, which is what "the search
-        // is alive but makes no progress" actually was.
-        let logf = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
         // The validator's own stdout (`ValidatedResult`, the finish time) goes
         // to a file rather than /dev/null: the clean-run sampler ('G') lets the
         // PARENT run to completion, and its printed time is the re-verification
@@ -223,13 +319,44 @@ impl ForkServer {
         let mut c = Command::new("./TrackmaniaServer");
         c.args(["/nodaemon", "/validatepath=."])
             .current_dir(dir)
-            .env("LD_PRELOAD", shim.canonicalize().unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(outf));
+        ForkServer::start_raw(dir, c, key, shim, ckpt)
+    }
+
+    /// Launch an ARBITRARY command under the shim and complete the handshake.
+    ///
+    /// [`ForkServer::start`] is this plus the dedicated server's own directory
+    /// layout. It is split out so the savestate tree can be exercised against a
+    /// stand-in host (`shimhost`) with no game, no map and no `.Ghost.Gbx` —
+    /// the fork/probe/branch machinery is process mechanics and one array in
+    /// memory, and testing it should not require either an engine or a human
+    /// recording. One launcher, so the two cannot drift.
+    ///
+    /// `dir` must already exist and be claimed by the caller. `c` must already
+    /// carry its program, arguments, working directory and stdout.
+    pub fn start_raw(
+        dir: &Path,
+        mut c: Command,
+        key: &Path,
+        shim: &Path,
+        ckpt: u64,
+    ) -> Result<ForkServer, String> {
+        let (cmd_r, cmd_w) = mk_pipe();
+        let (res_r, res_w) = mk_pipe();
+
+        // The child's stderr goes to a FILE in its own directory, never to an
+        // inherited pipe. Inheriting means a server that outlives its driver
+        // holds that pipe open for ever, and a parent doing `Command::output()`
+        // on the driver then never sees EOF -- the search's aggregation loop
+        // parked in `read()` for the rest of the run, which is what "the search
+        // is alive but makes no progress" actually was.
+        let logf = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
+        c.env("LD_PRELOAD", shim.canonicalize().map_err(|e| e.to_string())?)
             .env("FKSHIM_CKPT", ckpt.to_string())
             .env("FKSHIM_KEY", key.canonicalize().map_err(|e| e.to_string())?)
             .env("FKSHIM_CMD_FD", "3")
             .env("FKSHIM_RES_FD", "4")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(outf))
             .stderr(Stdio::from(logf));
         unsafe {
             c.pre_exec(move || {
@@ -249,7 +376,7 @@ impl ForkServer {
         let cmd_w = unsafe { std::fs::File::from_raw_fd(cmd_w) };
         let res_r = unsafe { std::fs::File::from_raw_fd(res_r) };
 
-        // From here on the server is OURS: every exit must take it with us, or
+        // From here on the child is OURS: every exit must take it with us, or
         // it becomes an orphan holding inherited descriptors open. `Drop` does
         // that, so an early `return Err` is now safe.
         let mut srv = ForkServer {
@@ -271,36 +398,37 @@ impl ForkServer {
             }
         };
         let s = String::from_utf8_lossy(&hello).into_owned();
-        let mut it = s.split_whitespace();
-        if it.next() != Some("READY") {
-            return Err(format!("bad handshake: {}", s));
-        }
-        srv.base = it.next().unwrap_or("0").parse().unwrap_or(0);
-        srv.clock = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let (base, clock, _) = parse_ready(&s)?;
+        srv.base = base;
+        srv.clock = clock;
         Ok(srv)
     }
 
     /// Fork a child from the checkpoint, rewrite ticks `from..` with `recs`,
     /// run it to the finish, and return the validator's JSON block.
     pub fn run(&mut self, from: usize, recs: &[Rec]) -> String {
-        let mut p = Vec::with_capacity(5 + recs.len() * 16);
-        p.push(b'R');
-        p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
-        for (i, r) in recs.iter().enumerate() {
-            p.extend_from_slice(&((from + i) as u32).to_le_bytes());
-            p.extend_from_slice(&r.steer.to_le_bytes());
-            p.extend_from_slice(&r.gas.to_le_bytes());
-            p.extend_from_slice(&r.brake.to_le_bytes());
-        }
-        self.cmd_w
-            .write_all(&(p.len() as u32).to_le_bytes())
-            .unwrap();
-        self.cmd_w.write_all(&p).unwrap();
-        self.cmd_w.flush().unwrap();
+        let p = payload_run(from, recs);
+        write_frame(&mut self.cmd_w, &p).unwrap();
         match read_frame(&mut self.res_r) {
             Some(v) => String::from_utf8_lossy(&v).into_owned(),
             None => String::new(),
         }
+    }
+
+    /// THE BRANCH: fork a child that appends `req.recs`, consumes
+    /// `req.stop_after_lroundf` more calls, and then re-enters the fork server
+    /// on `req.sock` as a node of its own. Returns the node's pid.
+    ///
+    /// This call does NOT wait for the node. The server answers `BRANCHED
+    /// <pid>` as soon as the fork returns and goes back to serving; the node
+    /// announces itself down the socket when it gets there, which is what
+    /// `tree::Tree::accept` picks up. Keeping the two apart is what lets a
+    /// driver have many branches in flight at once on one server.
+    pub fn branch(&mut self, req: &BranchReq) -> Result<i32, String> {
+        let p = payload_branch(req);
+        write_frame(&mut self.cmd_w, &p).map_err(|e| e.to_string())?;
+        let v = read_frame(&mut self.res_r).ok_or("branch: no reply")?;
+        parse_branched(&String::from_utf8_lossy(&v))
     }
 
     /// Like `run`, but the child also gathers `segs` -- a list of
@@ -531,20 +659,9 @@ impl ForkServer {
     /// Ask the engine which tick it is about to consume: the first tick that is
     /// safe to rewrite at this checkpoint.
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        let p = b"P";
-        self.cmd_w
-            .write_all(&(p.len() as u32).to_le_bytes())
-            .unwrap();
-        self.cmd_w.write_all(p).unwrap();
-        self.cmd_w.flush().unwrap();
+        write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
         let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
-        let s = String::from_utf8_lossy(&v).into_owned();
-        for line in s.lines() {
-            if let Some(rest) = line.strip_prefix("TICK ") {
-                return rest.trim().parse::<usize>().map_err(|e| e.to_string());
-            }
-        }
-        Err(format!("probe failed: {:?}", s.trim()))
+        parse_probe(&String::from_utf8_lossy(&v))
     }
 
     pub fn pid(&self) -> i32 {
@@ -587,11 +704,18 @@ impl ForkServer {
 /// on a corpse. The timeout is generous (a legitimate deep-checkpoint start
 /// takes a few seconds) because a false timeout costs a restart, while too
 /// short a one would thrash.
-fn read_frame(f: &mut std::fs::File) -> Option<Vec<u8>> {
+///
+/// GENERIC OVER THE TRANSPORT on purpose. The root fork server talks over two
+/// inherited pipes; a **tree node** (`tree::Node`) talks over one unix socket,
+/// because a branch child that served its parent's pipe would race the parent
+/// for every command byte. Those are two transports and they must not become
+/// two protocols: this project's own history has a rule about two
+/// implementations of one wire format, so both go through this function and the
+/// `payload_*` builders below.
+pub fn read_frame<R: Read + std::os::unix::io::AsRawFd>(f: &mut R) -> Option<Vec<u8>> {
     let ms = frame_timeout_ms();
     let t0 = std::time::Instant::now();
     if !wait_readable(f, ms) {
-        use std::os::unix::io::AsRawFd;
         eprintln!(
             "FKDRV STALL: no frame within {} ms on fd {} (waited {:.1}s) -- treating the fork server as dead",
             ms,
@@ -623,8 +747,7 @@ pub fn frame_timeout_ms() -> i32 {
 
 pub const FRAME_TIMEOUT_MS: i32 = 120_000;
 
-fn wait_readable(f: &std::fs::File, ms: i32) -> bool {
-    use std::os::unix::io::AsRawFd;
+fn wait_readable<R: std::os::unix::io::AsRawFd>(f: &R, ms: i32) -> bool {
     #[repr(C)]
     struct PollFd {
         fd: i32,
@@ -639,6 +762,30 @@ fn wait_readable(f: &std::fs::File, ms: i32) -> bool {
     r > 0
 }
 
+
+/// `BRANCHED <pid>`, parsed.
+pub fn parse_branched(s: &str) -> Result<i32, String> {
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("BRANCHED ") {
+            return rest.trim().parse::<i32>().map_err(|e| e.to_string());
+        }
+    }
+    Err(format!("branch refused: {:?}", s.trim()))
+}
+
+/// `READY <base> <clock> [<pid>]`, parsed. The pid is present only from a
+/// branch node -- the root server's pid is the process the driver spawned, and
+/// a node's is not, so a node that did not name itself cannot be killed.
+pub fn parse_ready(s: &str) -> Result<(u64, u64, Option<i32>), String> {
+    let mut it = s.split_whitespace();
+    if it.next() != Some("READY") {
+        return Err(format!("bad handshake: {}", s.trim()));
+    }
+    let base = it.next().unwrap_or("0").parse().unwrap_or(0);
+    let clock = it.next().unwrap_or("0").parse().unwrap_or(0);
+    let pid = it.next().and_then(|v| v.parse().ok());
+    Ok((base, clock, pid))
+}
 
 /// `(time_ms, checkpoints_reached)` from a validator JSON block.
 /// The server's "never crossed the line" sentinel, as it appears in a time

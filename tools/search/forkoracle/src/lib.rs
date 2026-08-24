@@ -18,6 +18,7 @@
 
 pub mod pred_core;
 pub mod forksrv;
+pub mod tree;
 pub mod pred;
 pub mod layout;
 pub mod blind;

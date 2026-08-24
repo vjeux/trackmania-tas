@@ -649,19 +649,12 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
     // The rule is NOT "car first" (`entorder`'s help says every ghost the game
     // wrote has the car at 0, and on this container that is simply false). The
     // rule is: give the file back the order its container had.
-    //
-    // That used to be attempted only when the container's slot was first or
-    // last, and the middle case was printed as a NOTE and left alone. On
-    // 2026-08-24 Great Wtf of What #523 hit exactly that gap -- its downloaded
-    // container has the car at index 1 of 3 -- and the render died at the
-    // import, block count 0 -> 0 with a FrameMessage, which is the 203072
-    // symptom to the letter. `entorder --car-at N` closes it: any slot the
-    // container had can now be restored, so the NOTE has no cases left.
     match (crate::record::car_index(carrier), crate::record::car_index(out)) {
         (Ok((ci, cn)), Ok((oi, on))) if cn > 1 && on > 1 && ci != oi => {
-            if ci < on {
+            let want_first = ci == 0;
+            if want_first || ci == cn - 1 {
                 let tmp2 = format!("{out}.ord");
-                match crate::record::set_ent_order(out, &tmp2, crate::record::CarSlot::At(ci)) {
+                match crate::record::set_ent_order(out, &tmp2, want_first) {
                     Ok(m) => {
                         let _ = std::fs::rename(&tmp2, out);
                         println!("   entity order restored to the container's: {m}");
@@ -671,8 +664,8 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
             } else {
                 println!(
                     "   NOTE: the container has the car at index {ci} of {cn} and this file has \
-                     only {on} entities, so that slot does not exist here and the order is left \
-                     as rebuilt. If the client refuses the import, that is where to look."
+                     it at {oi} of {on}; only first and last can be restored, so the order is \
+                     left as rebuilt. If the client refuses the import, that is where to look."
                 );
             }
         }

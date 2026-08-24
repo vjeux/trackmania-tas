@@ -10,4 +10,5 @@ pub mod regen;
 pub mod resync;
 pub mod server;
 pub mod trace;
+pub mod tree;
 pub mod watch;

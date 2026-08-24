@@ -49,10 +49,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "haul"
-version = "0.1.0"
-
-[[package]]
 name = "mapgeom"
 version = "0.1.0"
 dependencies = [
@@ -86,16 +82,6 @@ name = "rend"
 version = "0.1.0"
 dependencies = [
  "mapgeom",
-]
-
-[[package]]
-name = "resim"
-version = "0.1.0"
-dependencies = [
- "gbx",
- "ghost",
- "haul",
- "tmmaps",
 ]
 
 [[package]]
