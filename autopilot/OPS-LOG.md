@@ -6,6 +6,21 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## Rebasing before a push is not enough: the remote moves DURING the push
+
+After the rebase fix, a push failed again the same way. It was not the same
+bug: `sync_with_remote` had rebased onto the remote as it was a moment
+earlier, and between that fetch and the push an unrelated session landed
+`GW523 staging note`. A single-shot sync-then-push is a
+time-of-check-to-time-of-use race, and on a repo with other active authors it
+fires regularly rather than rarely — twice in this harness's first hour.
+
+Both push routes now retry up to three times, re-syncing each round, and give
+up rather than looping. Giving up costs freshness of the repo and never work,
+because the paste mirror has already succeeded by then. **A retry loop is the
+only correct answer to a shared ref; there is no amount of checking beforehand
+that closes the window.**
+
 ## The bridge skips a file whose md5 already matches, so reuse a name at your peril
 
 A push failed with `md5 mismatch after push: local 2237609f… remote bdc7fdf9…`,

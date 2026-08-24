@@ -387,7 +387,48 @@ pub fn sync_with_remote(l: &Layout, branch: &str) -> Result<Option<String>, Stri
 /// It uses its own clone at `~/haul-push` rather than the shared
 /// `~/trackmania-tas` checkout, because that one is in the middle of somebody
 /// else's render.
+/// Push through the render-box bridge, retrying if the remote moves under us.
+///
+/// **The race is real and it is not ours to prevent.** `sync_with_remote`
+/// rebases onto the remote as it was a moment ago; between that fetch and the
+/// push, another session can land a commit — which happened twice in the first
+/// hour, both times from unrelated work in the same repo. A single-shot
+/// sync-then-push is a time-of-check-to-time-of-use bug, and on a system that
+/// banks every thirty minutes for months it would fire regularly.
+///
+/// So: bounded retry, re-syncing each time. It gives up rather than looping,
+/// and the mirror layer has already succeeded by the time this runs, so a
+/// give-up costs freshness of the repo and never work.
 pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 1..=3 {
+        match push_via_whitestick_once(l, branch) {
+            Ok(s) => {
+                return Ok(if attempt == 1 {
+                    s
+                } else {
+                    format!("{s} [after {attempt} attempts: the remote moved under us]")
+                })
+            }
+            Err(e) => {
+                let racy = e.contains("fetch first")
+                    || e.contains("non-fast-forward")
+                    || e.contains("rejected");
+                last = e;
+                if !racy {
+                    return Err(last);
+                }
+                // Someone else landed a commit. Rebase onto it and try again.
+                if let Err(sync_err) = sync_with_remote(l, branch) {
+                    return Err(format!("{last} — and re-syncing failed: {sync_err}"));
+                }
+            }
+        }
+    }
+    Err(format!("{last} (gave up after 3 attempts; the remote kept moving)"))
+}
+
+fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> {
     let rebased = sync_with_remote(l, branch)?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/var/svcscm".into());
     let ws = format!("{home}/bin/whitestick");
@@ -441,7 +482,30 @@ pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
     ))
 }
 
+/// Same bounded retry as the bridge route: the race is the remote moving, not
+/// the transport.
 pub fn push_direct(l: &Layout, branch: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for _ in 0..3 {
+        let rebased = sync_with_remote(l, branch)?;
+        let o = gitcmd::try_run(&l.repo, "git", &["push", "origin", &format!("HEAD:{branch}")])?;
+        if o.code == 0 {
+            return Ok(format!(
+                "direct→github {}{}",
+                &gitcmd::head_sha(&l.repo)?[..12],
+                rebased.map(|r| format!(" [{r}]")).unwrap_or_default()
+            ));
+        }
+        last = o.stderr.trim().to_string();
+        if !(last.contains("fetch first") || last.contains("non-fast-forward") || last.contains("rejected")) {
+            return Err(last);
+        }
+    }
+    Err(format!("{last} (gave up after 3 attempts; the remote kept moving)"))
+}
+
+#[allow(dead_code)]
+fn push_direct_unused(l: &Layout, branch: &str) -> Result<String, String> {
     let rebased = sync_with_remote(l, branch)?;
     git(&l.repo, &["push", "origin", &format!("HEAD:{branch}")])?;
     Ok(format!(
@@ -623,6 +687,49 @@ mod tests {
         let steady = gitcmd::head_sha(&mine).unwrap();
         assert_eq!(sync_with_remote(&l, "main").unwrap(), None);
         assert_eq!(gitcmd::head_sha(&mine).unwrap(), steady);
+    }
+
+    #[test]
+    fn a_push_retries_when_the_remote_moves_between_the_fetch_and_the_push() {
+        // The TOCTOU race, reproduced: sync, then let somebody else land a
+        // commit, then push. A single-shot sync-then-push fails here, and it
+        // failed twice in this harness's first hour from unrelated work in
+        // the same repo.
+        let root = tmp("race");
+        let origin = root.join("origin.git");
+        let mine = root.join("mine");
+        let theirs = root.join("theirs");
+        let g = |d: &std::path::Path, args: &[&str]| gitcmd::git(d, args).unwrap();
+        gitcmd::run(&root, "git", &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        for (dir, who) in [(&mine, "mine"), (&theirs, "theirs")] {
+            gitcmd::run(&root, "git", &["clone", "-q", &origin.to_string_lossy(), &dir.to_string_lossy()]).unwrap();
+            g(dir, &["config", "user.email", "t@t"]);
+            g(dir, &["config", "user.name", who]);
+        }
+        std::fs::write(mine.join("README.md"), "x").unwrap();
+        g(&mine, &["add", "-A"]);
+        g(&mine, &["commit", "-q", "-m", "root"]);
+        g(&mine, &["push", "-q", "origin", "main"]);
+        g(&theirs, &["pull", "-q", "origin", "main"]);
+
+        let l = Layout::new(&mine);
+        std::fs::write(mine.join("ours.md"), "our bank").unwrap();
+        g(&mine, &["add", "-A"]);
+        g(&mine, &["commit", "-q", "-m", "our bank"]);
+
+        // We sync against the remote as it is NOW...
+        sync_with_remote(&l, "main").unwrap();
+        // ...and only then does somebody else land theirs.
+        std::fs::write(theirs.join("theirs.md"), "their work").unwrap();
+        g(&theirs, &["add", "-A"]);
+        g(&theirs, &["commit", "-q", "-m", "their work"]);
+        g(&theirs, &["push", "-q", "origin", "main"]);
+
+        // A single-shot push would be rejected here. The retrying one wins.
+        let out = push_direct(&l, "main").unwrap();
+        assert!(out.starts_with("direct→github"), "{out}");
+        assert!(mine.join("theirs.md").exists(), "their commit must survive");
+        assert!(mine.join("ours.md").exists(), "and so must ours");
     }
 
     #[test]
