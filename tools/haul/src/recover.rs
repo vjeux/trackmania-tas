@@ -113,7 +113,7 @@ pub fn recover(l: &Layout) -> Result<Report, String> {
 /// credential, which is the point: a fresh box can get the state of record
 /// before it can push anything.
 pub fn pull(l: &Layout, branch: &str) -> Result<String, String> {
-    let o = crate::gitcmd::try_run(&l.repo, "git", &["pull", "--ff-only", "origin", branch])?;
+    let o = crate::gitcmd::git_env(&l.repo, &["pull", "--ff-only", "origin", branch])?;
     if o.code != 0 {
         return Err(format!("git pull failed: {}", o.stderr.trim()));
     }

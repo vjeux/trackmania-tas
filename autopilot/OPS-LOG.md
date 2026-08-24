@@ -6,6 +6,38 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A DETACHED supervisor has no proxy, and a silent fetch failure hid it
+
+The worst bug in the harness so far, and it is this project's signature shape:
+**a check that passes while doing nothing.**
+
+`sync_with_remote` treated a failed `git fetch` as `Ok(None)` — "no network,
+not fatal, the push will complain" — so on a box whose environment has no
+proxy the rebase never ran at all, the push was rejected, and the retry loop
+re-ran the same silent no-op three times before reporting *"the remote kept
+moving"*. It had not moved once.
+
+Two fixes, and the second is the general one:
+
+* **A fetch that failed means the remote is UNKNOWN**, and pushing on unknown
+  is exactly what this project forbids. It is now an error naming the proxy.
+* **The harness supplies the proxy itself** for every network git call
+  (`gitcmd::git_env`), rather than requiring whoever launches it to remember.
+  `tmhaul watch --detach` inherits NOTHING from the shell that started it, so
+  "export it first" is a rule that works interactively and fails every night
+  at 3am. An already-set value still wins.
+
+Proved by running a full bank under `env -u https_proxy -u http_proxy`: commit,
+mirror and push all succeed.
+
+## Rebase with `--autostash` when a supervisor is running
+
+The same bank then failed with *"cannot rebase: You have unstaged changes"*.
+Not a conflict: the worker appends to the journal continuously, so between the
+commit a moment earlier and the rebase, the working tree had moved again.
+`--autostash` is built for exactly this. Without it the harness reports a
+conflict that is not one, which is worse than the failure.
+
 ## Rebasing before a push is not enough: the remote moves DURING the push
 
 After the rebase fix, a push failed again the same way. It was not the same
