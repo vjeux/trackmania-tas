@@ -7,19 +7,23 @@ less.**
 
 **Training 10 long** — TAS **13.070** (−0.010) | AT 13.080 | WR 13.081 by in-.-
 
-> ### ⚠️ The clip on this page is an older, slower run, and its film was already bad
+> ### The clip is the 13.070 now — re-shot 2026-08-24
 >
-> The published clip was shot from the 13.071 file, whose recorded trajectory is
-> **not its own tape's run** (tape and recording agree on kappa 0.382, where a
-> file whose recording is its own reads 1.000). The page's run is now the
-> **13.070**, which is a different tape, and its recording *is* its own —
-> `ghost regen` rebuilt it from the tape on the live engine and it reads
-> **kappa 1.000**, 100.0 % of 262 samples exact. So the clip is wrong twice over
-> and a re-shoot is owed. The result is unaffected: the plain dedicated server
-> re-simulates the published file to 13.070 in five cold passes.
-> Corpus-wide table: [`KAPPA.md`](../KAPPA.md).
+> **Both things this banner used to warn about are fixed.** It read: *"The
+> published clip is an older, slower run, and its film was already bad — shot
+> from the 13.071 file, whose recorded trajectory is not its own tape's run
+> (kappa 0.382)."* The clip above is now the **13.070**,
+> `replays/TAS_13070_analog.Ghost.Gbx`, and that file's recording IS its own
+> run: **kappa 1.000**, 262 of 262 samples exact, with the plain oracle
+> re-simulating the WRITTEN file to **13.070**. Same treatment as before — two
+> cars, in-.-'s world record 13.081 as the opponent, chase camera on our car,
+> input overlay.
+>
+> The clip shipped earlier the same day was of the **13.071** and was itself
+> already superseded by the time it went up; this replaces it. Corpus-wide
+> table: [`KAPPA.md`](../KAPPA.md).
 
-https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
+https://github.com/user-attachments/assets/0f1e45fd-bd17-40b7-b265-17240ea68e13
 
 | run | time | vs author time | vs human WR |
 |---|---|---|---|

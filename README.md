@@ -64,7 +64,7 @@ https://github.com/user-attachments/assets/f59172e4-9e8c-4f21-89a7-c10bf3bc9d32
 
 **[Training - 10 Long](191465-training-10-long)** — author time `13.080` · ours **13.070** (−0.010) · best human 13.081 (in-.-) · 1070 records · the record’s only faster sector is the reset pad, and it pays nine milliseconds for it
 
-https://github.com/user-attachments/assets/8e34d882-1b95-4a96-8f9d-6084ed929f0e
+https://github.com/user-attachments/assets/0f1e45fd-bd17-40b7-b265-17240ea68e13
 
 **[Pain ft Mango & Teuflum](285268-pain-ft-mango-teuflum)** — author time `49.282` · ours **49.275** (−0.007) · best human 49.291 (Ssnake01) · 180 records · the field's own best sectors sum to 48.733 and nobody has assembled that lap
 
