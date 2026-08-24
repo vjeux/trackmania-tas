@@ -126,7 +126,7 @@ https://github.com/user-attachments/assets/301f3c33-ae38-4ffd-9c31-8f709bf257d0
 
 https://github.com/user-attachments/assets/c1fda47d-51a5-47e6-88d1-4b52ecedea26
 
-**[Miru's Hell 2](208024-mirus-hell-2)** — author time `18.806` · **beaten by a human: 9.075 (AshenBeast1985, 2026-08-21)** · ours **18.160** — **a human is now 9.085 ahead of the run this repo publishes.** We led this board by 2.945 and said so; that boast is [retracted on the page](208024-mirus-hell-2), not deleted. The author-time margin of −0.646 stands · 4 records · this directory has **no `replays/` at all**, so there is no file here to download
+**[Miru's Hell 2](208024-mirus-hell-2)** — author time `18.806` · **beaten by a human: 9.075 (AshenBeast1985, 2026-08-21)** · ours **18.160** — **a human is now 9.085 ahead of the run this repo publishes.** We led this board by 2.945 and said so; that boast is [retracted on the page](208024-mirus-hell-2), not deleted. The author-time margin of −0.646 stands · 4 records · **the 18.160 is now published there** as `replays/TAS_18160.Ghost.Gbx`, regenerated from its own tape and verified end to end
 
 https://github.com/user-attachments/assets/f6d9b714-2c3d-4ac8-a39d-6adea8eea3ee
 

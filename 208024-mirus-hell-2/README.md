@@ -6,6 +6,39 @@ author time is now beaten — 18.160 against 18.806.**
 
 **Miru's Hell 2** — TAS **18.160** (−0.646) | AT 18.806 | WR **9.075** by AshenBeast1985
 
+> ### The 18.160 is published here now — `replays/TAS_18160.Ghost.Gbx`
+>
+> **This directory had no `replays/` at all until 2026-08-24, so the number at
+> the top of this page named a run nobody could download.** That was a
+> publishing gap, not a missing run: the tape has been in the store since
+> 2026-08-21 and the plain dedicated server has always re-simulated it to
+> 18.160.
+>
+> What was in the store was a TAPE IN SOMEBODY ELSE'S CONTAINER. It declared
+> **25.681** — the carrier's time, not this run's — and carried a stranger's
+> storage locator and account id (`Herrlille`), and the recording beside the
+> tape was the carrier's rather than this run's (kappa 0.976 against a 25.681
+> record). None of that is publishable, and none of it was the run's fault.
+>
+> The file here is that tape regenerated on the live engine with
+> `--inputs --carrier layout`, and it verifies end to end:
+>
+> | | |
+> |---|---|
+> | declared time | **18.160**, one copy, and the ghost-result chunk agrees |
+> | kappa (tape vs its own recording) | **1.000**, 364 of 364 samples |
+> | plain oracle on the WRITTEN file | **18.160** |
+> | identity | login `TAS`, our own livery, no account id, no locator |
+> | span | telemetry 0.000 .. 18.150 inside a record ending 18.160 |
+>
+> *Read before trusting the store directory:* it also holds
+> `hl_ATREC_208024_18806.Ghost.Gbx`, which is a **different run** at 18.806, and
+> four `*_WITHDRAWN_doubled` files that a de-skinning bug doubled in size. The
+> 18.160's tape and its two watchable variants are not among the withdrawn
+> ones — they were made after that bug was found, and they are the newest
+> entries in the store's own manifest. The `RETRACTION` note in the same
+> directory is about a claim on the map's reachable set, not about this run.
+
 > ### ⚠️ SUPERSEDED 2026-08-24 — a human is now 9.085 ahead of this run
 >
 > **What this page said, and what is left of it below.** Two claims here have
