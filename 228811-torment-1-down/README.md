@@ -8,6 +8,33 @@ ten metres later with the car turned across its own direction of travel.**
 
 https://github.com/user-attachments/assets/fb64c1d0-5f92-404a-bf77-5271c57a7d8a
 
+> ### NOT re-shot in the 2026-08-24 sweep — the game client dies on the regenerated file
+>
+> Twenty-four maps were re-shot that day from ghosts regenerated on the current
+> pipeline. This is one of two that could not be, and the clip above is
+> therefore still shot from the older generation of
+> `replays/TAS_20237.Ghost.Gbx`.
+>
+> The regenerated file passes everything headless: `ghost verify` V1–V11 clean,
+> kappa **1.000** over 405 samples, the plain oracle re-simulating the WRITTEN
+> file to **20.237**, and a trajectory **0.0078 m** from the published one. The
+> game then **dies** on importing it — `read: Connection reset by peer` mid
+> import, taking the process with it, four times. The published file imports
+> first try in the same scene seconds later, so it is the file and not the box.
+>
+> What was tried and did not fix it: `ghost record graft-scene --from` a
+> downloaded human recording of this map (KappaRiley's 22.637) — still dies.
+> What could not be tried: `ghost record resample`, which puts our car's samples
+> into the importing container and leaves everything else alone. **It refuses on
+> this map**, correctly: the published file samples at 20, 70, 120 ms and the
+> regeneration samples at 0, 50, 100, so there is no shared instant to write
+> into, and a 20 ms shift here is 1.78 m of error at this map's speed.
+>
+> On the sister map 279209 that same experiment DID run, and its answer applies
+> here: with only the car's sample bytes replaced, the client still dies. **The
+> defect is in the sample bytes we write, not in the record structure around
+> them.** See `227654-the-blev-special` for the fullest account.
+
 **Our 20.237 and KappaRiley's world record, both in one camera, shot on our
 car.** For the first 13.5 s there is visibly one car, because there is
 effectively one car — see the note below. From the landing at 14.720 they part,

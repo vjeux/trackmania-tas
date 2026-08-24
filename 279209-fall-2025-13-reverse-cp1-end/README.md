@@ -9,6 +9,34 @@ field of 334 does it.**
 
 https://github.com/user-attachments/assets/d14b02ae-0b40-49ac-9198-e4df77635e2c
 
+> ### NOT re-shot in the 2026-08-24 sweep — and this map is where the reason was pinned down
+>
+> The clip above is still from the older generation of
+> `replays/BEST_6578_ratcheted.Ghost.Gbx`. The regenerated file passes
+> everything headless — `ghost verify` V1–V11 clean, kappa **1.000** over 132
+> samples, the plain oracle at **6.578**, trajectory **0.0006 m** from the
+> published one — and the game client will not take it.
+>
+> **This map settled the question of what is wrong, and the answer is our sample
+> bytes.** `ghost record resample` (written for this) takes the file that
+> imports and overwrites *only* the car's 132 × 116 sample bytes with the
+> regenerated ones, leaving the entity list, the deltas, the spans, the header,
+> the tape and the declared time exactly as they were. **That file still kills
+> the game.**
+>
+> The control is what makes it a fact rather than a claim: `resample X --from X`
+> — the same file as its own source — produces a file **byte-identical to X**
+> (md5 `4721d922c2e31b6b275b315ef030170a` both sides), so the read/modify/write
+> round-trip is a provable no-op and those bytes really are the only difference.
+>
+> Also tried, also negative: `graft-scene --from` a downloaded human recording
+> of this map. It changed the failure — the game stopped dying and started
+> refusing the import instead (ghost-block count 0 → 0, a `FrameMessage` each
+> attempt) — which is a different failure, not a fix.
+>
+> Three maps are in this state: this one, `228811-torment-1-down`, and
+> `227654-the-blev-special`, which has the fullest account.
+
 **Our 6.578 and uelen.'s world record, both in one camera, shot on our car.**
 They start together on the ice, run inside one another down the straight, and
 separate through the sweeper: **1.57 m at their widest**, mean **0.81 m**, so
