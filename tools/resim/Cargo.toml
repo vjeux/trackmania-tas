@@ -1,0 +1,20 @@
+[package]
+name = "resim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The plain oracle, in process. `tmsearch validate` prints these same rows;
+# parsing another program's stdout when the library is already a path
+# dependency is how `tmtraj corpus dup` came back clean on a corrupt corpus.
+ghost = { path = "../ghost" }
+gbx = { path = "../gbx" }
+haul = { path = "../haul" }
+
+[lib]
+name = "resim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmresim"
+path = "src/main.rs"

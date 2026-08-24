@@ -6,6 +6,48 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## No on-demand box holds a GitHub credential — and the fix is a 161-byte file
+
+`git push` from an OD dies with `could not read Username for
+'https://github.com'`. There is no `gh`, no `~/.git-credentials`, no deploy key.
+It reads like "this box cannot push", which is a claim about the world and is
+false: the render box has a repo-scoped deploy key, and the bridge to it needs
+exactly one file the OD is missing — `~/.navi/credentials.json`, 161 bytes, on
+devvm42752 (`RENDER-BOX.md` §2). Copy it and `~/bin/whitestick 'echo hello'`
+answers immediately; devvm is not a hop, only the source of the file.
+
+**The general shape, which is worth more than the instance: a credential that
+lives on machine A is not a property of machine A. Ask what the thing actually
+needs and whether that is a FILE.** `tmhaul bank` does the rest — bundle, `wsx`
+push (md5 both ends), fetch and push on the far side, and it refuses to report
+success unless the sha the box pushed equals our HEAD.
+
+## `persistent/private-90d` is a 30-day store despite its name
+
+The TTL is 30 days **from last modification**, on both aliases. Anything meant
+to outlive a month either lives in the repo or gets
+`persistent-storage mark --no-user-data`. Do not plan a months-long project
+around either mount.
+
+## Verify the bytes git HAS, not the bytes on the disk you are about to destroy
+
+The first `tmhaul` stand-down reported `VERIFY FAILED` on a healthy run every
+single time. Cause: the manifest is written, then the state is committed, and
+then the journal gains the `bank` record recording that it happened — so the
+working tree is *legitimately* one record ahead of the manifest by the time
+anything checks. A verifier that fails on a healthy run gets ignored within a
+day. `tmhaul verify` now hashes `git show HEAD:<path>`, which is also the thing
+"banked" actually means, since a release destroys the working tree.
+
+## The map corpus is the one thing the repo does not carry
+
+`.Map.Gbx` files live in `~/persistent/private-30d/tm-unbeaten/<id>/` — a
+30-day store. Everything else a fresh box needs is either in the repo or a
+documented one-liner (`SETUP.md`). This is a real gap in the recovery story and
+it is stated rather than papered over: a box provisioned after that store
+expires can build and supervise, but the re-simulation sweep will report
+`UNMEASURED: no .Map.Gbx for <id>` for every map rather than silently passing.
+
 ## `INFINITY` through a comparison makes every test false
 
 A comparison against `INFINITY` is false in both directions, so a filter built

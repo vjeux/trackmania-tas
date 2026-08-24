@@ -52,8 +52,19 @@ pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
             newest_sample.map(|t| format!(" (at {})", iso(t))).unwrap_or_default()
         )
     } else {
-        let rate = state::recent_rate(v, job.alarms.collapse_recent_s).unwrap_or(0.0);
-        format!("**Running.** {rate:.1} evals/s over the last {}.", dur(job.alarms.collapse_recent_s))
+        match state::recent_rate(v, job.alarms.collapse_recent_s) {
+            Some(rate) => format!(
+                "**Running.** {rate:.1} evals/s over the last {}.",
+                dur(job.alarms.collapse_recent_s)
+            ),
+            // Never print `0.0 evals/s` for "not enough samples to divide by".
+            // A zero that means "unmeasured" is the exact shape of the bug
+            // this project keeps paying for.
+            None => format!(
+                "**Running**, and too new to have a rate yet — {} sample(s) so far.",
+                v.samples.len()
+            ),
+        }
     };
     s.push_str(&headline);
     s.push_str("\n\n");
@@ -291,6 +302,21 @@ mod tests {
         assert!(page.contains("None firing"), "{page}");
         assert!(page.contains("72,000"), "the eval count must be readable: {page}");
         assert!(page.contains("2h 0m of 10h 0m"), "{page}");
+    }
+
+    #[test]
+    fn a_brand_new_run_says_so_rather_than_printing_zero_evals_per_second() {
+        // One sample cannot yield a rate. Printing `0.0 evals/s` for that
+        // would be a number that looks measured and is not — and it would sit
+        // right next to the word Running, which is the worst place for it.
+        let l = layout("newborn");
+        let log = Log::shard(&l.journal_dir(), "boxA", 1).unwrap();
+        let now = 1_800_000_000;
+        log.append(&Rec::at(now - 30, "run_start")).unwrap();
+        log.append(&Rec::at(now - 30, "sample").f("evals", 12).f("worker_alive", 1)).unwrap();
+        let page = render(&l, &Job::default(), now).unwrap();
+        assert!(page.contains("too new to have a rate"), "{page}");
+        assert!(!page.contains("0.0 evals/s"), "{page}");
     }
 
     #[test]

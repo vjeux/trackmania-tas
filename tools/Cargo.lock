@@ -89,6 +89,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "resim"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "ghost",
+ "haul",
+]
+
+[[package]]
 name = "shootctl"
 version = "0.1.0"
 
