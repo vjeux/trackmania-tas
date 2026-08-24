@@ -17,8 +17,8 @@
 //! whose telemetry was recorded.
 
 use crate::session::{clock_for_tick, start_server_on_file, tail_recs, Ctx};
-use crate::locate::locate_v2;
 use crate::tape::Tape as Factory;
+use crate::validator::ValidatorCar;
 
 /// One gathered instant: the race clock and the raw bytes of every segment.
 pub struct Rec {
@@ -187,10 +187,16 @@ pub struct Anchors {
 /// the sampled window is.
 
 pub fn win_back() -> i64 {
-    std::env::var("FK_WIN_BACK").ok().and_then(|v| v.parse().ok()).unwrap_or(192)
+    std::env::var("FK_WIN_BACK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(192)
 }
 pub fn win_len() -> u32 {
-    std::env::var("FK_WIN_LEN").ok().and_then(|v| v.parse().ok()).unwrap_or(448)
+    std::env::var("FK_WIN_LEN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(448)
 }
 /// Extra gathered segments, RELATIVE TO THE POSITION ANCHOR, on top of the
 /// production window — the ground a field search looks over.
@@ -202,313 +208,89 @@ pub fn win_len() -> u32 {
 /// measurement — it is 9.8 GB of disk and a locate that walks off the car.
 pub type ExtraSegs = Vec<(i64, u32)>;
 
-
 /// Convert a 3x3 rotation matrix (row-major, world = M * body) to (x, y, z, w).
 pub fn mat_to_quat(m: &[f64; 9]) -> [f64; 4] {
     let tr = m[0] + m[4] + m[8];
     if tr > 0.0 {
         let s = (tr + 1.0).sqrt() * 2.0;
-        [(m[7] - m[5]) / s, (m[2] - m[6]) / s, (m[3] - m[1]) / s, 0.25 * s]
+        [
+            (m[7] - m[5]) / s,
+            (m[2] - m[6]) / s,
+            (m[3] - m[1]) / s,
+            0.25 * s,
+        ]
     } else if m[0] > m[4] && m[0] > m[8] {
         let s = (1.0 + m[0] - m[4] - m[8]).sqrt() * 2.0;
-        [0.25 * s, (m[1] + m[3]) / s, (m[2] + m[6]) / s, (m[7] - m[5]) / s]
+        [
+            0.25 * s,
+            (m[1] + m[3]) / s,
+            (m[2] + m[6]) / s,
+            (m[7] - m[5]) / s,
+        ]
     } else if m[4] > m[8] {
         let s = (1.0 + m[4] - m[0] - m[8]).sqrt() * 2.0;
-        [(m[1] + m[3]) / s, 0.25 * s, (m[5] + m[7]) / s, (m[2] - m[6]) / s]
+        [
+            (m[1] + m[3]) / s,
+            0.25 * s,
+            (m[5] + m[7]) / s,
+            (m[2] - m[6]) / s,
+        ]
     } else {
         let s = (1.0 + m[8] - m[0] - m[4]).sqrt() * 2.0;
-        [(m[2] + m[6]) / s, (m[5] + m[7]) / s, 0.25 * s, (m[3] - m[1]) / s]
+        [
+            (m[2] + m[6]) / s,
+            (m[5] + m[7]) / s,
+            0.25 * s,
+            (m[3] - m[1]) / s,
+        ]
     }
 }
 
-fn quat_fwd(q: [f64; 4]) -> [f64; 3] {
-    let [x, y, z, w] = q;
-    // rotate (0,0,1)
-    [
-        2.0 * (x * z + w * y),
-        2.0 * (y * z - w * x),
-        1.0 - 2.0 * (x * x + y * y),
-    ]
-}
-
-fn wrap(a: f64) -> f64 {
-    let mut a = a;
-    while a > std::f64::consts::PI {
-        a -= 2.0 * std::f64::consts::PI;
-    }
-    while a < -std::f64::consts::PI {
-        a += 2.0 * std::f64::consts::PI;
-    }
-    a
-}
-
-/// Find the quaternion and the velocity RELATIVE TO THE POSITION, by
-/// measurement.
-///
-/// `-16` and `+12` are true of the copy the 208024 work landed on and false of
-/// the copy the locator lands on elsewhere: on 267859 the reference-matched
-/// locator finds the car to 6 mm and that same slot has `|q|-1 = 2.2e-2` at -16
-/// and `|d(pos)/dt - v| = 13.2 m/s` at +12.
-///
-/// THE ORIENTATION NEEDS MORE THAN `|q| = 1`. A first version took the nearest
-/// unit quaternion and passed every structural self-check -- and the control
-/// against 267859's own human ghost came back with a **142.7 degree** median
-/// orientation error, because a unit quaternion belonging to something else is
-/// still a unit quaternion. So a candidate must also point roughly where the
-/// car is going: the spread of (body heading - velocity heading) over the whole
-/// window has to be small. A car can drift, so the test allows a wide constant
-/// offset and only rejects on SPREAD.
-fn discover_layout(
-    srv: &mut forkoracle::forksrv::ForkServer,
-    probe: usize,
-    recs: &[forkoracle::forksrv::Rec],
-    clock: u64,
-    pos: u64,
-) -> Option<(i64, u8, i64, f64)> {
-    let segs = [(clock, 4u32), ((pos as i64 - win_back()) as u64, win_len())];
-    let ts = crate::locate::gather_ticks(srv, probe, recs, &segs, 200, 1600, (0, 4 + win_len()));
-    if ts.len() < 40 {
-        return None;
-    }
-    let g = |t: &crate::locate::Tick, o: usize| -> f64 {
-        f32::from_le_bytes(t.rec[o..o + 4].try_into().unwrap()) as f64
-    };
-    let p0 = 4 + win_back() as usize;
-    let mut best_v: Option<(f64, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 12)).step_by(4) {
-        let mut ds: Vec<f64> = Vec::new();
-        for w in ts.windows(2) {
-            let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-            if dt <= 0.0 {
-                continue;
-            }
-            let mut d = 0.0;
-            for k in 0..3 {
-                let dv = (g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt - g(&w[0], o + k * 4);
-                d += dv * dv;
-            }
-            ds.push(d.sqrt());
-        }
-        if ds.is_empty() {
-            continue;
-        }
-        ds.sort_by(|a, b| a.total_cmp(b));
-        let med = ds[ds.len() / 2];
-        if med.is_finite() && best_v.map_or(true, |b: (f64, i64)| med < b.0) {
-            best_v = Some((med, o as i64 - p0 as i64));
-        }
-    }
-    let mut speeds: Vec<f64> = Vec::new();
-    for w in ts.windows(2) {
-        let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-        if dt > 0.0 {
-            let s: f64 = (0..3)
-                .map(|k| ((g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            speeds.push(s);
-        }
-    }
-    speeds.sort_by(|a, b| a.total_cmp(b));
-    let speed = if speeds.is_empty() { 0.0 } else { speeds[speeds.len() / 2] };
-    let (verr, voff) = best_v?;
-    if verr > (0.15 * speed).max(1.0) {
-        return None;
-    }
-    // ---- orientation: a unit quaternion OR an orthonormal 3x3, and it must
-    //      point roughly where the car is going.
-    let vyaw: Vec<Option<f64>> = ts
-        .iter()
-        .map(|t| {
-            let vx = g(t, (p0 as i64 + voff) as usize);
-            let vz = g(t, (p0 as i64 + voff) as usize + 8);
-            if (vx * vx + vz * vz).sqrt() > 3.0 {
-                Some(vz.atan2(vx))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let heading_spread = |qs: &[Option<[f64; 4]>]| -> Option<f64> {
-        let mut d: Vec<f64> = Vec::new();
-        for (i, q) in qs.iter().enumerate() {
-            let (Some(q), Some(vy)) = (q, vyaw[i]) else { continue };
-            let f = quat_fwd(*q);
-            if (f[0] * f[0] + f[2] * f[2]).sqrt() < 0.2 {
-                continue;
-            }
-            d.push(wrap(f[2].atan2(f[0]) - vy));
-        }
-        if d.len() < 20 {
-            return None;
-        }
-        // circular median, then the spread about it
-        let mut s: Vec<f64> = d.clone();
-        s.sort_by(|a, b| a.total_cmp(b));
-        let med = s[s.len() / 2];
-        let mut dev: Vec<f64> = d.iter().map(|x| wrap(x - med).abs()).collect();
-        dev.sort_by(|a, b| a.total_cmp(b));
-        Some(dev[(dev.len() as f64 * 0.9) as usize])
-    };
-    let mut best_o: Option<(f64, u8, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 16)).step_by(4) {
-        // quaternion candidate
-        let mut ok = true;
-        let mut varies = false;
-        let qs: Vec<Option<[f64; 4]>> = ts
-            .iter()
-            .map(|t| {
-                let q = [g(t, o), g(t, o + 4), g(t, o + 8), g(t, o + 12)];
-                let n: f64 = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-                if !n.is_finite() || (n - 1.0).abs() > 1e-4 {
-                    ok = false;
-                }
-                if q[0] != g(&ts[0], o) {
-                    varies = true;
-                }
-                // the record's convention is (x, y, z, w)
-                Some([q[0], q[1], q[2], q[3]])
-            })
-            .collect();
-        if ok && varies {
-            for order in 0..2 {
-                let qq: Vec<Option<[f64; 4]>> = qs
-                    .iter()
-                    .map(|q| {
-                        q.map(|q| {
-                            if order == 0 {
-                                q
-                            } else {
-                                [q[1], q[2], q[3], q[0]] // engine (w,x,y,z)
-                            }
-                        })
-                    })
-                    .collect();
-                if let Some(sp) = heading_spread(&qq) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, order, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-        // orthonormal 3x3 candidate
-        if o + 36 <= 4 + win_len() as usize {
-            let mut good = true;
-            let ms: Vec<Option<[f64; 4]>> = ts
-                .iter()
-                .map(|t| {
-                    let mut m = [0.0f64; 9];
-                    for k in 0..9 {
-                        m[k] = g(t, o + k * 4);
-                    }
-                    let row = |i: usize| [m[i * 3], m[i * 3 + 1], m[i * 3 + 2]];
-                    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    for i in 0..3 {
-                        let r = row(i);
-                        if (dot(r, r).sqrt() - 1.0).abs() > 1e-3 {
-                            good = false;
-                        }
-                    }
-                    if dot(row(0), row(1)).abs() > 1e-3
-                        || dot(row(0), row(2)).abs() > 1e-3
-                        || dot(row(1), row(2)).abs() > 1e-3
-                    {
-                        good = false;
-                    }
-                    Some(mat_to_quat(&m))
-                })
-                .collect();
-            if good {
-                if let Some(sp) = heading_spread(&ms) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, 2, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-    }
-    let (spread, kind, ooff) = best_o?;
-    if std::env::var("FKDBG").is_ok() {
-        println!(
-            "    orientation: kind {} at {:+}, heading spread p90 {:.1} deg",
-            kind,
-            ooff,
-            spread.to_degrees()
-        );
-    }
-    Some((ooff, kind, voff, speed))
-}
-
-/// Every plausible anchor, fastest candidate first, each with its own measured
-/// (position, quaternion, velocity) layout.
-pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
-
+/// Resolve the validator-owned state and express its fixed layout in the
+/// historical `Anchors` form used by the carrier field gather. This function
+/// deliberately returns one entry: identity came from the validator's sole
+/// participant, never from a ranked list of state-shaped records.
+pub fn measure_anchors(
+    c: &Ctx,
+    f: &Factory,
+    tick: i64,
+    verbose: bool,
+) -> Result<Vec<Anchors>, String> {
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-anch", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
-    let mut srv =
-        start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    // NO INPUT PATCH for the locate probes. The staged ghost is the original
-    // file, so the child already has the right tape; patching it with the
-    // Factory's decoded values is at best a no-op and at worst wrong -- on
-    // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
-    // nothing but decoys. Observing costs nothing and assumes nothing.
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
-    let mut cands = crate::locate::locate_candidates(
-        &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-    );
-    if cands.is_empty() {
-        cands = crate::locate::locate_positions_loose(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-        );
-        if verbose {
-            println!("loose position candidates: {}", cands.len());
-        }
-    }
-    let base = srv.base;
-    let mut out: Vec<Anchors> = Vec::new();
-    for h in &cands {
-        let Some((qoff, qkind, voff, speed)) = discover_layout(&mut srv, probe, &lrecs, ck.addr, h.pos)
-        else {
-            continue;
-        };
-        if verbose {
-            println!(
-                "  layout at base{:+}: orient kind {} {:+}, vel {:+}, speed {:.1} m/s",
-                h.pos as i64 - base as i64,
-                qkind,
-                qoff,
-                voff,
-                speed
-            );
-        }
-        out.push(Anchors {
-            bias: ck.bias,
-            pos_delta: h.pos as i64 - base as i64,
-            clock_delta: ck.addr as i64 - base as i64,
-            speed,
-            quat_off: qoff,
-            quat_kind: qkind,
-            vel_off: voff,
-        });
-    }
+    let car = ValidatorCar::locate(
+        &mut srv,
+        probe,
+        &lrecs,
+        f.start_offset_ms,
+        bounds,
+        100000,
+        verbose,
+    )?;
+    let l = car.layout();
+    let out = Anchors {
+        bias: l.clock_bias,
+        pos_delta: l.pos as i64 - srv.base as i64,
+        clock_delta: l.clock as i64 - srv.base as i64,
+        speed: 0.0,
+        quat_off: -16,
+        quat_kind: 1,
+        vel_off: 12,
+    };
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    if out.is_empty() {
-        return Err("no candidate with a discoverable (position, quaternion, velocity) layout".into());
-    }
-    out.sort_by(|a, b| b.speed.total_cmp(&a.speed));
-    Ok(out)
+    Ok(vec![out])
 }
 
 /// The engine clock's offset against race time, read at a checkpoint far enough
 /// in for the page-fault probe to be exact.
 pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i64, String> {
-
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-bias", c.work));
     let _ = std::fs::create_dir_all(&work);
@@ -522,7 +304,8 @@ pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i6
     // nothing but decoys. Observing costs nothing and assumes nothing.
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let hit = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let hit =
+        crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
     Ok(hit.bias)
@@ -546,13 +329,6 @@ pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i6
 ///   going. Keying the dedup on the production window alone restores the
 ///   production semantics (one record per distinct vehicle state) and the extra
 ///   ground rides along for free.
-/// * **`choose_copy`** decides whether the gathered record is searched for the
-///   live copy of the car. That search is right when the window is 452 bytes of
-///   vehicle state and catastrophic when it is 320 KB of anything: on the first
-///   wide run it walked off the car and the self-check reported
-///   `|q|-1 p99.5 = 1.34e-1`. A caller that has ALREADY chosen the car — by
-///   running a narrow gather first and taking [`CleanOut::pos`] — must be able
-///   to say so.
 pub struct GatherOpts<'a> {
     /// Segments to gather, relative to the located position. Ignored when
     /// `anchors` is given, which uses the production window plus
@@ -569,56 +345,9 @@ pub struct GatherOpts<'a> {
     /// Dedup key inside the gathered record, `(offset, len)`. `None` = the
     /// whole record, which is only affordable for a narrow gather.
     pub dedup: Option<(u32, u32)>,
-    /// Search the gathered record for the live copy of the car.
-    pub choose_copy: bool,
-    /// Ground to gather BESIDE the production window, relative to the position
-    /// anchor. Empty for production.
+    /// Ground to gather beside the validator-owned vehicle's production window,
+    /// relative to its position anchor. Empty for production.
     pub extra: ExtraSegs,
-    /// How far into the gathered record the LIVE-COPY SEARCH may look.
-    ///
-    /// `None` = the whole record, which is what a bare gather wants. A caller
-    /// that gathers extra ground **only to read fields out of it** must cap
-    /// this at the production window, because the copy search ranges over
-    /// whatever was gathered and every extra byte is another candidate — so
-    /// widening the window to reach a field would silently change which copy of
-    /// the car the transform is written from. Capping keeps the choice
-    /// bit-identical to a run with no extra ground at all.
-    pub copy_scan_hi: Option<usize>,
-    /// Offsets, relative to the position triple, that a candidate copy must
-    /// hold a LIVE f32 at — one that takes more than one value over the run.
-    ///
-    /// This is the reference-free signature of the vehicle struct, and it is
-    /// the only thing that separates it from a BARE POSITION COPY: a copy with
-    /// the right position and dead memory around it, which passes every
-    /// structural test there is (its position is the car's, so its velocity is
-    /// consistent and its quaternion is a unit quaternion) and reads zero for
-    /// every field. A regeneration anchored on one writes zeroed wheels and
-    /// gear into a file that then passes the whole acceptance gate, because
-    /// none of those bytes affects the simulation.
-    ///
-    /// Pass the wheel-rotation offsets. Four live floats at stride 44 is a car;
-    /// four constants is not.
-    pub require_live: Vec<i64>,
-    /// WHERE THE CAR IS, from something that already knows.
-    ///
-    /// Called with `(pid, base)` of the started server while it is halted at
-    /// the handover, and its answer REPLACES the located position anchor. This
-    /// is how a pointer chain (`fk::ptr`) removes the search: the engine's own
-    /// pointer to the vehicle state is dereferenced in the live process and the
-    /// gather is centred on the answer.
-    ///
-    /// It changes where the window is and NOTHING about what happens to it —
-    /// every guard downstream (the wheel-liveness rule, the path-length test,
-    /// the self-check, the caller's comparison against a recording) runs
-    /// exactly as it does on a located anchor, so a stale pointer FAILS rather
-    /// than producing a file.
-    /// Returns `(the position anchor, extra segments relative to it)`. The
-    /// second half is what makes a POOL usable: the engine owns four vehicle
-    /// objects and which of them is live varies by process, so the resolver
-    /// hands back the anchor plus a window on each sibling and the copy rule
-    /// downstream chooses between them — the same rule, on four candidates
-    /// instead of 300,000.
-    pub pos_from: Option<&'a dyn Fn(i32, u64) -> Result<(u64, Vec<(i64, u32)>), String>>,
     /// Look at the live server, halted, just before the run starts.
     ///
     /// Called with `(pid, the position anchor, the segments about to be
@@ -651,11 +380,7 @@ impl<'a> GatherOpts<'a> {
             dump,
             verbose: false,
             dedup: None,
-            choose_copy: true,
             extra: Vec::new(),
-            copy_scan_hi: None,
-            require_live: Vec::new(),
-            pos_from: None,
             before_go: None,
             self_check: true,
         }
@@ -672,33 +397,13 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         dump,
         verbose,
         dedup,
-        choose_copy,
         extra,
-        copy_scan_hi,
-        require_live,
-        pos_from,
         before_go,
         self_check,
     } = o;
     let (segs_rel, bias_override, anchors) = (*segs_rel, *bias_override, *anchors);
     let (period, phase_ms, dump, verbose) = (*period, *phase_ms, *dump, *verbose);
-    let (dedup, choose_copy, self_check) = (*dedup, *choose_copy, *self_check);
-    let copy_scan_hi = *copy_scan_hi;
-    // Does the candidate at record offset `p` hold a live float at every
-    // offset the caller named? See `GatherOpts::require_live`.
-    let wheels_live = |recs: &[Rec], p: usize, reclen: usize| -> bool {
-        require_live.iter().all(|rel| {
-            let q = p as i64 + rel;
-            if q < 0 || q as usize + 4 > reclen {
-                return false;
-            }
-            let q = q as usize;
-            let g = |r: &Rec| f32::from_le_bytes(r.bytes[q..q + 4].try_into().unwrap());
-            let first = g(&recs[0]);
-            first.is_finite() && recs.iter().any(|r| g(r) != first && g(r).is_finite())
-        })
-    };
-
+    let (dedup, self_check) = (*dedup, *self_check);
     use std::path::PathBuf;
     let work = PathBuf::from(&c.work);
     let _ = std::fs::create_dir_all(&work);
@@ -714,7 +419,9 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let ladder: Vec<u64> = if c.ckpt > 0 {
         vec![c.ckpt]
     } else {
-        vec![600, 1000, 1600, 2600, 4200, 7000, 12000, 20000, 34000, 56000]
+        vec![
+            600, 1000, 1600, 2600, 4200, 7000, 12000, 20000, 34000, 56000,
+        ]
     };
     let mut srv = None;
     let mut used = 0u64;
@@ -738,7 +445,10 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let probe_ms = forkoracle::layout::sample_ms(probe, 0, f.start_offset_ms);
     if verbose {
-        println!("handover at lroundf {} -> probe tick {} (race {} ms)", used, probe, probe_ms);
+        println!(
+            "handover at lroundf {} -> probe tick {} (race {} ms)",
+            used, probe, probe_ms
+        );
     }
     // NO INPUT PATCH for the locate probes. The staged ghost is the original
     // file, so the child already has the right tape; patching it with the
@@ -748,54 +458,19 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
     let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let mut layout = match anchors {
-        // The POSITION comes from a checkpoint where the car was moving (the
-        // early handover cannot locate it: a stationary car fails both the
-        // "moving triple" filter and the velocity test). The CLOCK is located
-        // here, in this process, because its address does NOT transfer -- on
-        // 252289 the transferred clock address read 0 in the clean process, the
-        // grid gate then matched every call, and the whole run collapsed to a
-        // single deduplicated instant.
-        Some(a) => {
-            let ck = crate::locate::find_clock2(
-                &mut srv,
-                probe,
-                &lrecs,
-                f.start_offset_ms,
-                100000,
-                verbose,
-            )
-            .map_err(|e| format!("clock: {}", e))?;
-            forkoracle::layout::Layout {
-                pos: (srv.base as i64 + a.pos_delta) as u64,
-                clock: ck.addr,
-                clock_bias: a.bias,
-                rms: 0.0,
-                max_dev: 0.0,
-            }
-        }
-        None => locate_v2(&mut srv, probe, &lrecs, f.start_offset_ms, bounds, 2000, 4000, verbose)
-            .map_err(|e| format!("locate {}", e))?,
-    };
+    let car = ValidatorCar::locate(
+        &mut srv,
+        probe,
+        &lrecs,
+        f.start_offset_ms,
+        bounds,
+        100000,
+        verbose,
+    )
+    .map_err(|e| format!("validator car: {}", e))?;
+    let mut layout = car.layout().clone();
     if let Some(b) = bias_override {
         layout.clock_bias = b;
-    }
-    // THE POINTER, IF THE CALLER HAS ONE. See `GatherOpts::pos_from`. It
-    // replaces the anchor and nothing else: every test below is unchanged, so
-    // a chain that has gone stale fails the same way a bad anchor does.
-    let mut pool_segs: Vec<(i64, u32)> = Vec::new();
-    if let Some(f) = pos_from {
-        let (p, ex) = f(srv.pid(), srv.base)?;
-        pool_segs = ex;
-        if verbose {
-            println!(
-                "pointer: the car is at {:#x} (the anchor would have said {:#x}, {:+} bytes)",
-                p,
-                layout.pos,
-                p as i64 - layout.pos as i64
-            );
-        }
-        layout.pos = p;
     }
     let gate_phase = if period == 10 {
         // every tick: let the shim take the phase from its own clock
@@ -803,49 +478,46 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     } else {
         (((phase_ms + layout.clock_bias) % period) + period) % period
     };
-    // The record's own layout. With anchors, one window around the position
-    // covers the quaternion and the velocity wherever they were MEASURED to be;
-    // without them, the in-process locator guarantees the classic -16 / +12.
-    let (segs, pos_off, quat_off, quat_kind, vel_off): (Vec<(u64, u32)>, usize, usize, u8, usize) = match anchors {
-        Some(a) => (
-            {
-                // arm `whl`: the production window is unchanged, and EXTRA
-                // segments are appended AFTER it. The surface and wheel fields
-                // do not live inside 448 bytes, but widening the production
-                // window itself changes which copy of the car the leader rule
-                // picks -- measured on 267460, a 16 KB window chose an object
-                // 1091 m from the answer key's own recorded path. So the
-                // window that decides the copy stays 448 bytes and the extra
-                // ground is carried alongside it.
-                let mut s: Vec<(u64, u32)> = vec![
-                    (layout.clock, 4),
-                    ((layout.pos as i64 - win_back()) as u64, win_len()),
-                ];
-                for (o, l) in extra.iter().copied().chain(pool_segs.iter().copied()) {
-                    s.push(((layout.pos as i64 + o) as u64, l));
+    // The record's own layout. The validator-owned CGameVehiclePhy has a fixed
+    // quaternion at -16 and velocity at +12 relative to position. `anchors`
+    // only selects the historical wider carrier window; it never changes which
+    // object is sampled.
+    let (segs, pos_off, quat_off, quat_kind, vel_off): (Vec<(u64, u32)>, usize, usize, u8, usize) =
+        match anchors {
+            Some(_a) => (
+                {
+                    // The production window stays narrow; extra field ranges
+                    // are carried as separate segments so wide diagnostic reads
+                    // cannot alter the validator-owned anchor.
+                    let mut s: Vec<(u64, u32)> = vec![
+                        (layout.clock, 4),
+                        ((layout.pos as i64 - win_back()) as u64, win_len()),
+                    ];
+                    for (o, l) in extra.iter().copied() {
+                        s.push(((layout.pos as i64 + o) as u64, l));
+                    }
+                    s
+                },
+                4 + win_back() as usize,
+                (4 + win_back() - 16) as usize,
+                1,
+                (4 + win_back() + 12) as usize,
+            ),
+            None => {
+                let mut s: Vec<(u64, u32)> = vec![(layout.clock, 4)];
+                for (o, l) in segs_rel {
+                    s.push(((layout.pos as i64 + *o) as u64, *l));
                 }
-                s
-            },
-            4 + win_back() as usize,
-            (4 + win_back() + a.quat_off) as usize,
-            a.quat_kind,
-            (4 + win_back() + a.vel_off) as usize,
-        ),
-        None => {
-            let mut s: Vec<(u64, u32)> = vec![(layout.clock, 4)];
-            for (o, l) in segs_rel {
-                s.push(((layout.pos as i64 + *o) as u64, *l));
+                // The position's offset in the record follows from where the first
+                // segment starts, and it was the constant 20 -- correct for the
+                // default `-16:40` and wrong for every other width. A caller that
+                // widens `--segs` to give the copy search room would otherwise get
+                // a quaternion read 8 KB from the car and a self-check failure that
+                // reads like a bad locate.
+                let po = 4 + segs_rel.first().map_or(16, |(o, _)| -*o) as usize;
+                (s, po, po - 16, 1, po + 12)
             }
-            // The position's offset in the record follows from where the first
-            // segment starts, and it was the constant 20 -- correct for the
-            // default `-16:40` and wrong for every other width. A caller that
-            // widens `--segs` to give the copy search room would otherwise get
-            // a quaternion read 8 KB from the car and a self-check failure that
-            // reads like a bad locate.
-            let po = 4 + segs_rel.first().map_or(16, |(o, _)| -*o) as usize;
-            (s, po, po - 16, 1, po + 12)
-        }
-    };
+        };
     // THE BOUND ON A WIDE READ, taken while the server is still alive: `go`
     // waits for the child, so /proc/<pid>/maps is gone by the time this
     // function returns. See `CleanOut::pos_region`.
@@ -896,356 +568,8 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         )
         .map_err(|e| format!("go {}", e))?;
     let recs = read_samples(dump, reclen);
-    // WHICH COPY? The anchor's byte offset does not always transfer: the state
-    // is double-buffered and on 252289 the clean process's live copy sat 32
-    // bytes from where the anchor process's did. Both copies are
-    // self-consistent -- same shape, unit quaternion, matching velocity -- so
-    // the structural self-check cannot tell them apart, and the stale one is
-    // 84.6 mm off the recorded path where the live one is 0.52 mm.
-    //
-    // The discriminator needs no reference: among copies that are all valid
-    // states of the same car, the LIVE one is the one that is furthest along
-    // the direction of travel at the same clock value. Project the difference
-    // onto the velocity and take the leader.
-    let mut return_choice: Option<usize> = None;
-    // The in-process locate hands back FIXED offsets and never searches, which
-    // is right when nothing depends on the fields around the position and wrong
-    // the moment something does: on this fixture it lands on a bare position
-    // copy every time, and with `require_live` set that is a silent write of
-    // zeroed wheels. When the caller has named a signature, that path searches
-    // too -- its quaternion and velocity offsets relative to the position are
-    // the same -16 / +12 the anchored path uses.
-    let (pos_off, quat_off, vel_off) = if choose_copy && anchors.is_some() && recs.len() > 20 {
-        let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
-        let step = 4usize;
-        let mut cands: Vec<usize> = Vec::new();
-        let qrel = quat_off as i64 - pos_off as i64;
-        let vrel = vel_off as i64 - pos_off as i64;
-        // arm `whl`, CORRECTED. This was "only the PRODUCTION window may supply
-        // a copy", and that single line cost 90 gathers of 91.
-        //
-        // Measured, on three maps independently: the car the recording itself
-        // records sits EXACTLY 864 BYTES past the copy this rule was allowed to
-        // choose from -- 0.000001 m from the recording's own path on 191465,
-        // 0.000000 m on 285885, 0.000004 m on 267460, against the 0.930 m,
-        // 0.461 m and 0.376 m the restricted scan settled for. The copies are
-        // an ARRAY at stride 864 (the same 864 the wheel-block twin rule uses),
-        // the locate lands on an arbitrary member, and capping the scan at the
-        // 448-byte production window put every other member out of reach. The
-        // leader-along-velocity rule was working perfectly on a set of one.
-        //
-        // The extra segments are still never SEARCHED blindly: the scan runs
-        // over whatever was gathered, and the qualifying tests below (velocity
-        // self-consistency, unit quaternion, then leader along the direction of
-        // travel) are unchanged.
-        let copy_hi = copy_scan_hi.unwrap_or(reclen).min(reclen).saturating_sub(12);
-        for p in (4..copy_hi).step_by(step) {
-            let q = p as i64 + qrel;
-            let v = p as i64 + vrel;
-            if q < 4 || v < 4 || q as usize + 16 > reclen || v as usize + 12 > reclen {
-                continue;
-            }
-            let (q, v) = (q as usize, v as usize);
-            let mut ok = true;
-            let mut ds: Vec<f64> = Vec::new();
-            let mut sps: Vec<f64> = Vec::new();
-            for w in recs.windows(2).step_by((recs.len() / 200).max(1)) {
-                let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-                if dt <= 0.0 {
-                    continue;
-                }
-                let mut d = 0.0;
-                let mut sp = 0.0;
-                for k in 0..3 {
-                    let a = g(&w[0], p + k * 4);
-                    let b = g(&w[1], p + k * 4);
-                    let vv = g(&w[0], v + k * 4);
-                    if !a.is_finite() || !b.is_finite() || !vv.is_finite() {
-                        ok = false;
-                    }
-                    d += ((b - a) / dt - vv).powi(2);
-                    sp += vv * vv;
-                }
-                ds.push(d.sqrt());
-                sps.push(sp.sqrt());
-            }
-            if !ok || ds.len() < 10 {
-                continue;
-            }
-            let qn: f64 = if quat_kind == 2 {
-                (0..3).map(|k| g(&recs[recs.len() / 2], q + k * 4).powi(2)).sum::<f64>().sqrt()
-            } else {
-                (0..4).map(|k| g(&recs[recs.len() / 2], q + k * 4).powi(2)).sum::<f64>().sqrt()
-            };
-            if (qn - 1.0).abs() > 1e-3 {
-                continue;
-            }
-            ds.sort_by(|a, b| a.total_cmp(b));
-            sps.sort_by(|a, b| a.total_cmp(b));
-            let sp = sps[sps.len() / 2];
-            if sp < 1.0 || ds[ds.len() / 2] > (0.15 * sp).max(1.0) {
-                continue;
-            }
-            cands.push(p);
-        }
-        if cands.len() > 1 {
-            // WHICH CANDIDATE IS OUR CAR?
-            //
-            // The leader-along-velocity rule below is correct and stays, but it
-            // answers a narrower question than it was being asked: among
-            // COPIES OF ONE OBJECT, which is the live one. On 249521 the
-            // candidates are not copies -- they are different objects 1080 m
-            // apart -- and projecting those onto a velocity and taking the
-            // leader is meaningless. It picked an object 1080 m from the car
-            // while the car sat in the same window at 0.000000 m.
-            //
-            // So ask the identifying question FIRST, and only then the
-            // live-copy question, which is the ordering the standing fleet
-            // notice already prescribes: any test that can IDENTIFY the answer
-            // must run before any test that merely ranks survivors.
-            //
-            // The identifying reference costs nothing and is already in hand:
-            // THE TEMPLATE GHOST'S OWN RECORDED TRAJECTORY. Every file this
-            // runs on carries one -- a downloaded recording carries the game's,
-            // a published ghost carries its own validated positions. It is not
-            // a threshold and not a heuristic: it is the run itself.
-            //
-            // Guarded, because the one class of file that cannot supply it is
-            // exactly the class this pipeline was built to repair: a ghost
-            // whose position is non-finite or constant. When the reference is
-            // unusable the rule abstains and the old behaviour stands.
-            // DISABLED BY DEFAULT ON A CONTAMINATED TEMPLATE. FK_NO_CHOOSER=1.
-            //
-            // Measured on 227654, and predicted in this arm's own addendum §4:
-            // the chooser grades candidates against THE TEMPLATE'S OWN recorded
-            // positions, so when that record is the DONOR's -- which is exactly
-            // the case for every file worth regenerating -- it faithfully picks
-            // the object matching the DONOR's path. Four 227654 files with
-            // demonstrably different inputs inside the recorded window came out
-            // with bit-identical telemetry, 0.000000 m, because all five share
-            // one donor record. The guard I wrote was a comment; it is now code.
-            let reference: Option<Vec<(i64, [f64; 3])>> = if std::env::var("FK_NO_CHOOSER").is_ok() {
-                None
-            } else { (|| {
-                // SAY WHY IT ABSTAINED. Every `return None` here silently
-                // restores the leader-along-velocity rule, and the two look
-                // identical from outside: on 227654 the chooser was abstaining
-                // and the fallback was picking an object kilometres from the
-                // car, with nothing in the log between "11 candidate copies"
-                // and a `truth` that is not this run. An identifying test that
-                // declines to run has to say so.
-                let say = |why: &str| {
-                    if verbose {
-                        println!("chooser: ABSTAINS -- {why}; the live-copy rule decides instead");
-                    }
-                };
-                let (times, raws) = match crate::record::targets_from_ghost(&c.template) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        say(&format!("the template's recording could not be read ({e})"));
-                        return None;
-                    }
-                };
-                let mut out = Vec::new();
-                for (i, t) in times.iter().enumerate() {
-                    let (p, _, _, _) = gbx::record::read_transform_pub(&raws[i], 47);
-                    if !p.iter().all(|v| v.is_finite()) {
-                        say("the template's recorded position is not finite");
-                        return None;
-                    }
-                    out.push((*t, p));
-                }
-                if out.len() < 20 {
-                    say(&format!("the template's recording has only {} samples", out.len()));
-                    return None;
-                }
-                // a constant trajectory identifies nothing
-                let moved = out
-                    .windows(2)
-                    .map(|w| {
-                        (0..3).map(|k| (w[1].1[k] - w[0].1[k]).powi(2)).sum::<f64>().sqrt()
-                    })
-                    .sum::<f64>();
-                if moved < 5.0 {
-                    say(&format!("the template's recorded path moves only {:.3} m", moved));
-                    return None;
-                }
-                Some(out)
-            })() };
-            if let Some(refr) = reference {
-                let by_ms: std::collections::HashMap<i64, [f64; 3]> =
-                    refr.iter().map(|(t, p)| (*t, *p)).collect();
-                let mut scored: Vec<(f64, usize)> = Vec::new();
-                let mut shared = 0usize;
-                for cd in &cands {
-                    let mut e: Vec<f64> = Vec::new();
-                    for r in recs.iter() {
-                        let ms = r.clock as i64 - layout.clock_bias;
-                        let Some(tp) = by_ms.get(&ms) else { continue };
-                        let mut d = 0.0;
-                        for k in 0..3 {
-                            let v = g(r, cd + k * 4) - tp[k];
-                            d += v * v;
-                        }
-                        e.push(d.sqrt());
-                    }
-                    if e.len() < 10 {
-                        continue;
-                    }
-                    shared = shared.max(e.len());
-                    e.sort_by(|a, b| a.total_cmp(b));
-                    scored.push((e[e.len() / 2], *cd));
-                }
-                scored.sort_by(|a, b| a.0.total_cmp(&b.0));
-                if scored.is_empty() && verbose {
-                    println!(
-                        "chooser: ABSTAINS -- no candidate shares 10 instants with the \
-                         template's recording (best {} shared of {} candidates); the live-copy \
-                         rule decides instead",
-                        shared,
-                        cands.len()
-                    );
-                }
-                if let Some((err, cd)) = scored.first().copied() {
-                    // 5 cm: far above the 0.5 mm client-vs-server floor and far
-                    // below the 0.09 m nearest stale copy ever measured.
-                    if err < 0.05 {
-                        if verbose {
-                            println!(
-                                "chooser: record +{} is the car -- {:.6} m from the file's OWN recorded path ({} candidates, runner-up {:.4} m)",
-                                cd,
-                                err,
-                                cands.len(),
-                                scored.get(1).map(|s| s.0).unwrap_or(f64::NAN)
-                            );
-                        }
-                        return_choice = Some(cd);
-                    } else if verbose {
-                        println!(
-                            "chooser: no candidate is within 5 cm of the file's own path (best {:.4} m of {}) -- falling back to the live-copy rule",
-                            err,
-                            cands.len()
-                        );
-                    }
-                }
-            }
-            // leader along the direction of travel
-            let mut best = cands[0];
-            let mut bestp = f64::MIN;
-            for c in &cands {
-                let mut proj: Vec<f64> = Vec::new();
-                for r in recs.iter().step_by((recs.len() / 200).max(1)) {
-                    let vv: Vec<f64> = (0..3)
-                        .map(|k| g(r, (*c as i64 + vrel) as usize + k * 4))
-                        .collect();
-                    let n = (vv[0] * vv[0] + vv[1] * vv[1] + vv[2] * vv[2]).sqrt();
-                    if n < 1.0 {
-                        continue;
-                    }
-                    let mut s = 0.0;
-                    for k in 0..3 {
-                        s += (g(r, c + k * 4) - g(r, cands[0] + k * 4)) * vv[k] / n;
-                    }
-                    proj.push(s);
-                }
-                if proj.is_empty() {
-                    continue;
-                }
-                proj.sort_by(|a, b| a.total_cmp(b));
-                let m = proj[proj.len() / 2];
-                if m > bestp {
-                    bestp = m;
-                    best = *c;
-                }
-            }
-            if verbose {
-                println!(
-                    "live copy: position at record +{} (anchor said +{}), {} candidate copies",
-                    best,
-                    pos_off,
-                    cands.len()
-                );
-            }
-            let best = return_choice.unwrap_or(best);
-            (best, (best as i64 + qrel) as usize, (best as i64 + vrel) as usize)
-        } else if cands.len() == 1 && cands[0] != pos_off {
-            (
-                cands[0],
-                (cands[0] as i64 + qrel) as usize,
-                (cands[0] as i64 + vrel) as usize,
-            )
-        } else {
-            (pos_off, quat_off, vel_off)
-        }
-    } else {
-        (pos_off, quat_off, vel_off)
-    };
-    // THE COPY WITH A CAR IN IT.
-    //
-    // Everything above finds A COPY of the vehicle state: the tests are the
-    // position moving, the velocity equalling its derivative and the quaternion
-    // being a unit one, and a BARE POSITION COPY passes all three -- it holds
-    // the car's own position, so its velocity is consistent and the four floats
-    // 16 bytes below it are a valid rotation. What it does not hold is any of
-    // the FIELDS. Measured on this fixture: the in-process locate lands on one
-    // every time, and a regeneration from it writes zeroed wheel rotations,
-    // zeroed gear and zeroed suspension into a file that then passes the whole
-    // acceptance gate, because none of those bytes affects the simulation.
-    //
-    // So when a caller has named a signature (`require_live`), step sideways to
-    // the copy that has it. A COPY is defined by the thing that makes it one:
-    // its position triple equals the located one at every instant. That needs
-    // no answer key, no reference and no threshold anyone chose -- the copies
-    // are bit-identical on position and everything else in memory is not.
-    let (pos_off, quat_off, vel_off) = if !require_live.is_empty() && recs.len() > 20 {
-        let sample: Vec<&Rec> = recs.iter().step_by((recs.len() / 40).max(1)).collect();
-        let get = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap());
-        let same = |p: usize| -> bool {
-            sample.iter().all(|r| {
-                (0..3).all(|k| {
-                    let (a, b) = (get(r, pos_off + k * 4), get(r, p + k * 4));
-                    a == b || (a - b).abs() < 1e-3
-                })
-            })
-        };
-        let hi = reclen.saturating_sub(12);
-        let mut best: Option<usize> = None;
-        for p in (4..hi).step_by(4) {
-            if p as i64 - 16 < 4 || !same(p) || !wheels_live(&recs, p, reclen) {
-                continue;
-            }
-            // Nearest to where the locate already was, so a run does not skip
-            // over an equally good copy for a further one.
-            if best.map_or(true, |b| {
-                (p as i64 - pos_off as i64).abs() < (b as i64 - pos_off as i64).abs()
-            }) {
-                best = Some(p);
-            }
-        }
-        match best {
-            Some(p) if p != pos_off => {
-                println!(
-                    "the copy at record +{} has the named fields; the locate was on +{} \
-                     ({:+} bytes), which holds the same position and dead memory",
-                    p,
-                    pos_off,
-                    p as i64 - pos_off as i64
-                );
-                (p, (p as i64 + quat_off as i64 - pos_off as i64) as usize,
-                    (p as i64 + vel_off as i64 - pos_off as i64) as usize)
-            }
-            Some(_) => (pos_off, quat_off, vel_off),
-            None => {
-                return Err(format!(
-                    "no copy of the located car holds a live value at every named offset {:?} -- \
-                     the fields this run was asked to write are not in the gathered window",
-                    require_live
-                ))
-            }
-        }
-    } else {
-        (pos_off, quat_off, vel_off)
-    };
+    // The validator-owned position is used directly. Structural checks below
+    // may reject stale bytes, but no sampled copy can replace its identity.
     // A run that produced almost no instants is a failed run, not a short one.
     if recs.len() < 8 {
         return Err(format!(
@@ -1295,7 +619,8 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let qerr: f64;
     let verr: f64;
     if self_check && reclen >= 44 && recs.len() > 4 {
-        let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
+        let g =
+            |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
         let mut qs: Vec<f64> = Vec::new();
         let mut vs: Vec<f64> = Vec::new();
         let mut speeds: Vec<f64> = Vec::new();
@@ -1307,15 +632,20 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             // A 3x3 rotation matrix is checked by orthonormality of its first
             // row rather than by a 4-vector norm.
             let q: f64 = if quat_kind == 2 {
-                (0..3).map(|k| g(&w[0], quat_off + k * 4) * g(&w[0], quat_off + k * 4)).sum()
+                (0..3)
+                    .map(|k| g(&w[0], quat_off + k * 4) * g(&w[0], quat_off + k * 4))
+                    .sum()
             } else {
-                (0..4).map(|k| g(&w[0], quat_off + k * 4) * g(&w[0], quat_off + k * 4)).sum()
+                (0..4)
+                    .map(|k| g(&w[0], quat_off + k * 4) * g(&w[0], quat_off + k * 4))
+                    .sum()
             };
             qs.push((q.sqrt() - 1.0).abs());
             let mut d = 0.0;
             let mut sp = 0.0;
             for k in 0..3 {
-                let dv = (g(&w[1], pos_off + k * 4) - g(&w[0], pos_off + k * 4)) / dt - g(&w[0], vel_off + k * 4);
+                let dv = (g(&w[1], pos_off + k * 4) - g(&w[0], pos_off + k * 4)) / dt
+                    - g(&w[0], vel_off + k * 4);
                 d += dv * dv;
                 sp += g(&w[0], vel_off + k * 4).powi(2);
             }
@@ -1379,8 +709,14 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         reclen,
         sim_time,
         instants: recs.len(),
-        first_ms: recs.first().map(|r| r.clock as i64 - layout.clock_bias).unwrap_or(-1),
-        last_ms: recs.last().map(|r| r.clock as i64 - layout.clock_bias).unwrap_or(-1),
+        first_ms: recs
+            .first()
+            .map(|r| r.clock as i64 - layout.clock_bias)
+            .unwrap_or(-1),
+        last_ms: recs
+            .last()
+            .map(|r| r.clock as i64 - layout.clock_bias)
+            .unwrap_or(-1),
         probe_ms,
         // arm `whl`: the address the CHOSEN car sits at, not the address the
         // locate proposed. A second gather can then be centred on the car
@@ -1442,7 +778,6 @@ pub fn grid_of(times: &[i64]) -> (i64, i64) {
     let period = if d.is_empty() { 50 } else { d[d.len() / 2] };
     (period.max(10), times.first().copied().unwrap_or(0))
 }
-
 
 /// The record's OWN sample instants and raw bytes.
 ///
@@ -1588,11 +923,17 @@ pub fn car_path_len(dump: &str, reclen: usize, pos_off: usize) -> Result<f64, St
 /// expressible here. `tests/suite.rs::oracle_dnf_does_not_report_the_declared_time`
 /// pins it against a captured DNF from the real server.
 pub fn sim_time_of(out: &str) -> Option<i64> {
-    ghost::oracle::parse_many(out).first().and_then(|r| r.time_ms)
+    ghost::oracle::parse_many(out)
+        .first()
+        .and_then(|r| r.time_ms)
 }
 
 /// A file's base name without its `.Ghost.Gbx` suffix — the label a key goes
 /// into a table under.
 pub fn name_of(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).replace(".Ghost.Gbx", "").replace(".Replay.Gbx", "")
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .replace(".Ghost.Gbx", "")
+        .replace(".Replay.Gbx", "")
 }

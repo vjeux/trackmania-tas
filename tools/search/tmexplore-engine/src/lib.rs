@@ -14,8 +14,13 @@
 //!
 //! One thing, and this is the whole of the dependency:
 //!
-//! > **A container with no human provenance, whose input archive is at least
-//! > `N` ticks long and every one of those ticks individually patchable.**
+//! > **An opaque game-recorded container plus an independently generated input
+//! > tape of exactly the same length.**
+//!
+//! The container contributes only file structure and startup state. Before any
+//! search code receives it, every input-bearing packet is replaced with the
+//! generated tape and read back. Donor inputs and trajectory never enter the
+//! `Branch`, `PlainOracle`, policy, route, or reward APIs.
 //!
 //! The length matters and it is easy to miss. `tmsearch::tape::Patcher` writes
 //! a candidate by patching bit positions in a base image, so a tape can only
@@ -49,7 +54,7 @@ pub fn clock_for_tick_public(tick: i64, start_offset_ms: i32) -> u64 {
     tmsearch::forkeval::clock_for_tick(tick, start_offset_ms)
 }
 pub use fork::{ForkBranch, ForkOpts};
-pub use oracle::EngineOracle;
+pub use oracle::{ContainerTemplate, EngineOracle, GeneratedTape, PreparedContainer};
 pub use route::{BRoute, MapPack};
 
 /// A route as a tab-separated file, until agent B's own format lands.
@@ -91,10 +96,14 @@ impl TsvRoute {
                 let mut it = rest.split_whitespace();
                 match (it.next(), it.next()) {
                     (Some("spacing"), Some(v)) => {
-                        spacing = v.parse().map_err(|_| format!("line {}: bad spacing", ln + 1))?
+                        spacing = v
+                            .parse()
+                            .map_err(|_| format!("line {}: bad spacing", ln + 1))?
                     }
                     (Some("checkpoints"), Some(v)) => {
-                        n_cp = v.parse().map_err(|_| format!("line {}: bad checkpoints", ln + 1))?
+                        n_cp = v
+                            .parse()
+                            .map_err(|_| format!("line {}: bad checkpoints", ln + 1))?
                     }
                     _ => {}
                 }
@@ -107,14 +116,18 @@ impl TsvRoute {
                 return Err(format!("line {}: want 5 fields, got {}", ln + 1, f.len()));
             }
             let n = |i: usize| -> Result<f32, String> {
-                f[i].parse().map_err(|_| format!("line {}: field {} is not a number", ln + 1, i))
+                f[i].parse()
+                    .map_err(|_| format!("line {}: field {} is not a number", ln + 1, i))
             };
             cum.push(n(0)?);
             pts.push([n(1)?, n(2)?, n(3)?]);
             half.push(n(4)?);
         }
         if pts.len() < 2 {
-            return Err(format!("{}: a route needs at least two vertices", p.display()));
+            return Err(format!(
+                "{}: a route needs at least two vertices",
+                p.display()
+            ));
         }
         let cell = 16.0;
         let mut grid: std::collections::HashMap<(i32, i32), Vec<u32>> = Default::default();
@@ -123,7 +136,15 @@ impl TsvRoute {
                 .or_default()
                 .push(i as u32);
         }
-        Ok(TsvRoute { pts, cum, half, spacing, n_cp, grid, cell })
+        Ok(TsvRoute {
+            pts,
+            cum,
+            half,
+            spacing,
+            n_cp,
+            grid,
+            cell,
+        })
     }
 }
 
@@ -159,11 +180,23 @@ impl Route for TsvRoute {
         }
         let i = best.1;
         let j = (i + 1).min(self.pts.len() - 1);
-        let (tx, tz) = (self.pts[j][0] - self.pts[i][0], self.pts[j][2] - self.pts[i][2]);
+        let (tx, tz) = (
+            self.pts[j][0] - self.pts[i][0],
+            self.pts[j][2] - self.pts[i][2],
+        );
         let (dx, dz) = (pos[0] - self.pts[i][0], pos[2] - self.pts[i][2]);
-        let lat_abs = ((pos[0] - self.pts[i][0]).powi(2) + (pos[2] - self.pts[i][2]).powi(2)).sqrt();
-        let lateral = if tx * dz - tz * dx < 0.0 { lat_abs } else { -lat_abs };
-        Progress { s: self.cum[i], lateral, on_route: lat_abs <= self.half[i] }
+        let lat_abs =
+            ((pos[0] - self.pts[i][0]).powi(2) + (pos[2] - self.pts[i][2]).powi(2)).sqrt();
+        let lateral = if tx * dz - tz * dx < 0.0 {
+            lat_abs
+        } else {
+            -lat_abs
+        };
+        Progress {
+            s: self.cum[i],
+            lateral,
+            on_route: lat_abs <= self.half[i],
+        }
     }
     fn length(&self) -> f32 {
         *self.cum.last().unwrap()
@@ -217,7 +250,10 @@ pub fn verdict_of(r: &ghost::oracle::SimResult) -> Result<Verdict, String> {
         if ms >= 0 && ms < 4_000_000_000 {
             return Ok(Verdict::Finish { ms });
         }
-        return Err(format!("the server reported the never-crossed sentinel {}", ms));
+        return Err(format!(
+            "the server reported the never-crossed sentinel {}",
+            ms
+        ));
     }
     let d = r.desc.to_ascii_lowercase();
     let simulated = d.starts_with("wrong simu")
@@ -225,7 +261,9 @@ pub fn verdict_of(r: &ghost::oracle::SimResult) -> Result<Verdict, String> {
         || d.contains("race finished")
         || d.contains("time is worse");
     if simulated {
-        Ok(Verdict::Dnf { cps: r.cps.unwrap_or(0) })
+        Ok(Verdict::Dnf {
+            cps: r.cps.unwrap_or(0),
+        })
     } else {
         Err(format!(
             "the server DECLINED this file ({:?}); that is a container fault, not a DNF",

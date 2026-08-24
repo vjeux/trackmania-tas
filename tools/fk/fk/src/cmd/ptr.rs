@@ -1,14 +1,12 @@
-//! `fk ptr` — find the engine's own pointer to the vehicle state, and use it.
+//! `fk ptr` — historical pointer-chain discovery for offline diagnostics.
 //!
 //! ```text
-//! fk ptr find   one engine run: snapshot memory, find the car, walk backwards
-//! fk ptr check  resolve a chain in a fresh run and grade what it lands on
+//! fk ptr find   one engine run: snapshot memory and walk backwards from a
+//!               recorded trajectory match
 //! ```
 //!
-//! `find` produces a MODULE-RELATIVE chain spec; `check` is the acceptance
-//! test, and it is the same acceptance the field gather already applies: the
-//! state the chain lands on must reproduce the recording's own path and must
-//! have all four wheel-rotation slots live. Neither command writes a ghost.
+//! Production controlled-car identity does not use this module; it comes only
+//! from [`crate::validator::ValidatorCar`]. This command never writes a ghost.
 
 use crate::ptr::{Kind, Snapshot};
 use crate::record::{self, GatherOpts};
@@ -36,14 +34,11 @@ const USAGE: &str = "\
 fk ptr -- the pointer that owns the vehicle state.
 
   fk ptr find  --template FILE --map FILE [--depth N] [--maxoff N] [--out TSV]
-  fk ptr check --template FILE --map FILE --chain SPEC
 
 find   one engine run. Snapshots every writable mapping while the engine is
-       halted, identifies the car against the template's OWN recorded path,
+       halted, identifies a recorded trajectory match for offline diagnosis,
        then walks the snapshot backwards to every chain of pointers that
        reaches it from the game binary's static data.
-check  resolves a chain in a fresh server and grades the state it lands on
-       against the template's recorded path and the four wheel slots.
 
   --depth N    how many pointers deep to walk          [4]
   --maxoff N   how far into an object a pointer may land, bytes  [0x400]
@@ -53,7 +48,6 @@ check  resolves a chain in a fresh server and grades the state it lands on
 pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()).unwrap_or("") {
         "find" => find(&args[1..]),
-        "check" => check(&args[1..]),
         "--help" | "-h" => {
             print!("{}", USAGE);
             Ok(())
@@ -63,7 +57,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn flag(a: &[String], n: &str) -> Option<String> {
-    a.iter().position(|x| x == n).and_then(|i| a.get(i + 1)).cloned()
+    a.iter()
+        .position(|x| x == n)
+        .and_then(|i| a.get(i + 1))
+        .cloned()
 }
 
 fn num(a: &[String], n: &str, d: u64) -> u64 {
@@ -172,42 +169,6 @@ fn car_offsets(
 /// The pointer says where the state is, so this grades THERE and nowhere else.
 /// Taking the best offset in the window instead would grade a neighbour and
 /// call the pointer right.
-fn grade_at(
-    recs: &[(u32, Vec<u8>, Vec<u8>)],
-    truth: &HashMap<i64, [f64; 3]>,
-    bias: i64,
-    off: usize,
-) -> (Vec<f64>, usize) {    let mut e: Vec<f64> = Vec::new();
-    for (c, first, _) in recs {
-        let Some(p) = truth.get(&(*c as i64 - bias)) else { continue };
-        let g = |k: usize| -> f64 {
-            f32::from_le_bytes(first[off + k * 4..off + k * 4 + 4].try_into().unwrap()) as f64
-        };
-        let d: f64 = (0..3).map(|k| (g(k) - p[k]).powi(2)).sum();
-        if d.is_finite() {
-            e.push(d.sqrt());
-        }
-    }
-    e.sort_by(|a, b| a.total_cmp(b));
-    let live = wheel_rel()
-        .iter()
-        .filter(|rel| {
-            let q = off as i64 + **rel;
-            if q < 0 || q as usize + 4 > recs[0].1.len() {
-                return false;
-            }
-            let q = q as usize;
-            let f = |r: &(u32, Vec<u8>, Vec<u8>)| {
-                f32::from_le_bytes(r.1[q..q + 4].try_into().unwrap())
-            };
-            let a = f(&recs[0]);
-            a.is_finite() && recs.iter().any(|r| f(r) != a && f(r).is_finite())
-        })
-        .count();
-    (e, live)
-}
-
-/// The bias and the anchor candidates, from the same ladder `fk regen` uses.
 fn bias_and_anchors(
     c: &Ctx,
     f: &crate::tape::Tape,
@@ -250,8 +211,11 @@ fn bias_and_anchors(
 fn ctx_of(a: &[String]) -> Result<Ctx, String> {
     let template = flag(a, "--template").ok_or("--template FILE is required")?;
     let map = flag(a, "--map").ok_or("--map FILE is required")?;
-    let work = flag(a, "--work")
-        .unwrap_or_else(|| crate::session::Engine::default_work().to_string_lossy().into());
+    let work = flag(a, "--work").unwrap_or_else(|| {
+        crate::session::Engine::default_work()
+            .to_string_lossy()
+            .into()
+    });
     let shim = flag(a, "--shim")
         .or_else(|| std::env::var("FK_SHIM").ok())
         .or_else(|| crate::session::default_shim().map(|p| p.to_string_lossy().into()))
@@ -276,7 +240,8 @@ fn find(a: &[String]) -> Result<(), String> {
     let verbose = a.iter().any(|x| x == "--verbose");
     let depth = num(a, "--depth", 4) as usize;
     let maxoff = num(a, "--maxoff", 0x400);
-    let dump = flag(a, "--dump").unwrap_or_else(|| format!("/tmp/fkptr-{}.bin", std::process::id()));
+    let dump =
+        flag(a, "--dump").unwrap_or_else(|| format!("/tmp/fkptr-{}.bin", std::process::id()));
     let (mut truth, gp, gph) = truth_of(&c.template)?;
     let f = crate::tape::Tape::load(&c.template)?;
     let (bias, anchors) = bias_and_anchors(&c, &f, verbose)?;
@@ -310,7 +275,9 @@ fn find(a: &[String]) -> Result<(), String> {
             .map(|(clk, fst, _)| {
                 let g = |k: usize| {
                     f32::from_le_bytes(
-                        fst[cl.pos_off + k * 4..cl.pos_off + k * 4 + 4].try_into().unwrap(),
+                        fst[cl.pos_off + k * 4..cl.pos_off + k * 4 + 4]
+                            .try_into()
+                            .unwrap(),
                     ) as f64
                 };
                 (*clk as i64 - cl.bias, [g(0), g(1), g(2)])
@@ -320,13 +287,19 @@ fn find(a: &[String]) -> Result<(), String> {
         // that has the fields (`CARRIER.md` §6), so the bar against ITS path is
         // the millimetre `gather_fields` uses, not the micron a recording gets.
         bar = 1e-3;
-        println!("truth: the engine's own clean run, {} instants", truth.len());
+        println!(
+            "truth: the engine's own clean run, {} instants",
+            truth.len()
+        );
     }
 
     // The window is the blind one this command exists to replace: 1 MB behind
     // the anchor and 256 KB ahead, which is where the field gather looks today.
     // It is used ONCE here, to learn the pointer.
-    let (back, fwd) = (num(a, "--back", 1_048_576) as i64, num(a, "--fwd", 262_144) as i64);
+    let (back, fwd) = (
+        num(a, "--back", 1_048_576) as i64,
+        num(a, "--fwd", 262_144) as i64,
+    );
     let mut extra: record::ExtraSegs = Vec::new();
     let each = ((back + fwd) as u32).div_ceil(6);
     let mut o = -back;
@@ -363,7 +336,6 @@ fn find(a: &[String]) -> Result<(), String> {
         phase_ms: gph,
         verbose,
         dedup: Some((0, 4 + record::win_len())),
-        choose_copy: false,
         self_check: false,
         extra,
         before_go: Some(&take),
@@ -411,7 +383,9 @@ fn find(a: &[String]) -> Result<(), String> {
         state,
         state + STATE_SIZE,
         STATE_SIZE,
-        snap.kind_of(state).map(|k| k.name()).unwrap_or("NOT IN THE SNAPSHOT"),
+        snap.kind_of(state)
+            .map(|k| k.name())
+            .unwrap_or("NOT IN THE SNAPSHOT"),
         match snap.class_of(state) {
             Some((vt, n)) => format!(", vtable mod{} = {}", crate::ptr::hexoff(vt), n),
             None => String::new(),
@@ -421,7 +395,10 @@ fn find(a: &[String]) -> Result<(), String> {
     // THE CONTROL, before the result. A scan that cannot see a pointer that is
     // there would report "no pointer" in exactly the same words.
     let (ok, n) = snap.recall_control(2000);
-    println!("recall control: {} of {} planted pointers found by the same scan", ok, n);
+    println!(
+        "recall control: {} of {} planted pointers found by the same scan",
+        ok, n
+    );
     if ok != n || n == 0 {
         return Err(format!(
             "the scan recovered {} of {} pointers it was shown -- it cannot be trusted to \
@@ -440,7 +417,10 @@ fn find(a: &[String]) -> Result<(), String> {
         }
     }
     copies.sort_by_key(|c| c.0);
-    println!("{} copies of this car in the gathered window:", copies.len());
+    println!(
+        "{} copies of this car in the gathered window:",
+        copies.len()
+    );
     for (ad, e, l) in &copies {
         println!(
             "  {:#x}  car{}  {:.6} m  {} of 4 wheels live{}",
@@ -485,7 +465,10 @@ fn find(a: &[String]) -> Result<(), String> {
             slot,
             kind.name(),
             if kind == &Kind::Static {
-                format!(" mod{}", crate::ptr::hexoff(*slot as i64 - snap.module as i64))
+                format!(
+                    " mod{}",
+                    crate::ptr::hexoff(*slot as i64 - snap.module as i64)
+                )
             } else {
                 String::new()
             },
@@ -521,7 +504,11 @@ fn find(a: &[String]) -> Result<(), String> {
             "  state{}  held by {} slots{}",
             crate::ptr::hexoff(*ad as i64 - state as i64),
             n,
-            if *ad == state { "   (the state itself)" } else { "" }
+            if *ad == state {
+                "   (the state itself)"
+            } else {
+                ""
+            }
         );
     }
     // A SIBLING ARRAY, if there is one: consecutive 8-byte slots each holding a
@@ -538,7 +525,9 @@ fn find(a: &[String]) -> Result<(), String> {
             _ => runs.push((*slot, vec![*value])),
         }
     }
-    runs.retain(|(_, v)| v.len() > 1 && v.iter().collect::<std::collections::HashSet<_>>().len() > 1);
+    runs.retain(|(_, v)| {
+        v.len() > 1 && v.iter().collect::<std::collections::HashSet<_>>().len() > 1
+    });
     for (st, v) in runs.iter().take(8) {
         println!(
             "  ARRAY at {:#x} [{}]: {} consecutive slots holding {} distinct objects -- {}",
@@ -601,7 +590,12 @@ fn find(a: &[String]) -> Result<(), String> {
                 );
             }
         }
-        rows.push(format!("{}\t{}\t{}", ch.depth(), ch.root_kind.name(), ch.spec()));
+        rows.push(format!(
+            "{}\t{}\t{}",
+            ch.depth(),
+            ch.root_kind.name(),
+            ch.spec()
+        ));
     }
     if chains.is_empty() {
         println!(
@@ -624,157 +618,3 @@ fn find(a: &[String]) -> Result<(), String> {
 }
 
 // ===========================================================================
-
-fn check(a: &[String]) -> Result<(), String> {
-    let c = ctx_of(a)?;
-    let verbose = a.iter().any(|x| x == "--verbose");
-    let spec = flag(a, "--chain").ok_or("--chain SPEC is required")?;
-    let dump = flag(a, "--dump").unwrap_or_else(|| format!("/tmp/fkptrc-{}.bin", std::process::id()));
-    let (truth, _, _) = truth_of(&c.template)?;
-    let f = crate::tape::Tape::load(&c.template)?;
-    let (bias, anchors) = bias_and_anchors(&c, &f, verbose)?;
-
-    // THE DEREFERENCE. One `pread` per step, in the live halted engine, and
-    // the window that follows is the struct itself.
-    let spec2 = spec.clone();
-    let landed: RefCell<Vec<u64>> = RefCell::new(Vec::new());
-    let resolve = |pid: i32, _base: u64| -> Result<(u64, Vec<(i64, u32)>), String> {
-        let (m, _) = crate::ptr::module_base(pid).ok_or("no module base for the live server")?;
-        let states = crate::ptr::resolve_pool(pid, m, &spec2)?;
-        *landed.borrow_mut() = states.clone();
-        // The anchor is the first member; every other member is gathered
-        // beside it, so the copy rule can choose between them.
-        let anchor = states[0] + POS_IN_STATE;
-        let ex: Vec<(i64, u32)> = states[1..]
-            .iter()
-            .map(|s| (*s as i64 - anchor as i64, (STATE_SIZE + 8) as u32))
-            .collect();
-        Ok((anchor, ex))
-    };
-    // The production window puts the position at record +196 and reaches
-    // car+256; the rest of the 864-byte struct is gathered right after it, so
-    // every member `VEHICLEVISSTATE.md` names is in the record.
-    let g = GatherOpts {
-        bias_override: Some(bias),
-        anchors: Some(&anchors[0]),
-        period: num(a, "--period", 10) as i64,
-        phase_ms: 0,
-        verbose,
-        // The same dedup key production uses: one record per distinct vehicle
-        // state rather than one per `lroundf` call that touched anything in the
-        // window. Measured here: 60.8 MB against 2.6 MB for the same 1399
-        // instants.
-        dedup: Some((0, 4 + record::win_len())),
-        choose_copy: false,
-        self_check: false,
-        extra: vec![(256, (STATE_SIZE - POS_IN_STATE - 256) as u32 + 8)],
-        pos_from: Some(&resolve),
-        ..GatherOpts::production(&dump)
-    };
-    let t0 = std::time::Instant::now();
-    let out = record::run_clean_anch(&c, &g)?;
-    let recs = record::read_samples_pair(&dump, out.reclen);
-    let bytes = std::fs::metadata(&dump).map(|m| m.len()).unwrap_or(0);
-    let _ = std::fs::remove_file(&dump);
-    // Grade EVERY member of the pool the chain named, at the offset that
-    // member's own window starts at, and take the best. One member of an array
-    // of four is the live car and the others are not, and which one it is
-    // varies by process -- so a spec names the array and the acceptance picks.
-    if out.reclen < out.pos_off + 12 || recs.is_empty() {
-        return Err(format!(
-            "the chain resolved but the gather came back {} bytes wide in {} instants -- there \
-             is nothing to grade",
-            out.reclen,
-            recs.len()
-        ));
-    }
-    // Where each member of the pool landed in the record. Derived from the
-    // segment list the gather actually used, not from the order they were
-    // asked for: the clipper drops and truncates segments and an assumed
-    // offset would grade the wrong bytes.
-    let states = landed.borrow().clone();
-    let offs: Vec<(usize, u64)> = states
-        .iter()
-        .filter_map(|s| out.off_of(s + POS_IN_STATE).map(|o| (o, *s)))
-        .collect();
-    if offs.is_empty() {
-        return Err("no member of the pool was gathered -- every segment was clipped".into());
-    }
-    let mut graded: Vec<(Vec<f64>, usize, usize, u64)> = offs
-        .iter()
-        .filter(|(o, _)| o + 12 <= out.reclen)
-        .map(|(o, st)| {
-            let (e, l) = grade_at(&recs, &truth, out.bias, *o);
-            (e, l, *o, *st)
-        })
-        .collect();
-    graded.sort_by(|a, b| {
-        b.1.cmp(&a.1).then(
-            a.0.get(a.0.len() / 2)
-                .unwrap_or(&f64::MAX)
-                .total_cmp(b.0.get(b.0.len() / 2).unwrap_or(&f64::MAX)),
-        )
-    });
-    for (e, l, _, st) in graded.iter() {
-        println!(
-            "  member {:#x}: {} of 4 wheels live, {:.6} m median over {} paired instants",
-            st,
-            l,
-            e.get(e.len() / 2).copied().unwrap_or(f64::NAN),
-            e.len()
-        );
-    }
-    let (e, live, at, state_at) = graded.remove(0);
-    let _ = at;
-    println!(
-        "{} instants, {} B per record in {} segments, {} B gathered, {:.1} s",
-        recs.len(),
-        out.reclen,
-        out.segs_abs.len(),
-        bytes,
-        t0.elapsed().as_secs_f64()
-    );
-    if verbose {
-        for (a, l) in &out.segs_abs {
-            println!("  segment {:#x} + {}", a, l);
-        }
-    }
-    if e.len() < 20 {
-        return Err(format!(
-            "the chain resolved and the run gathered {} instants, but only {} of them pair with \
-             a recorded instant -- there is nothing to grade the pointer against",
-            recs.len(),
-            e.len()
-        ));
-    }
-    let (med, p90, worst) = (e[e.len() / 2], e[(e.len() as f64 * 0.9) as usize], e[e.len() - 1]);
-    println!(
-        "CHAIN {} -> state {:#x}: {:.6} m median from the recording's own path (p90 {:.6}, worst \
-         {:.6}) over {} paired instants, {} of 4 wheel slots live",
-        spec,
-        state_at,
-        med,
-        p90,
-        worst,
-        e.len(),
-        live
-    );
-    // The two guards `gather_fields` already applies, and for the same reasons:
-    // a wrong copy reads dead memory, and dead memory written into a ghost
-    // passes every downstream test there is.
-    if live < 4 || !(med < 1e-3) {
-        // What the window DOES hold, so a failure says which of the two
-        // failures it is: the chain landed somewhere else, or the run did.
-        let alt = car_offsets(&recs, &truth, out.bias, out.reclen);
-        return Err(format!(
-            "the chain landed on a state {:.6} m from the recording with {} of 4 wheel slots \
-             live -- REFUSED. The best offset anywhere in the gathered window is {:?}",
-            med,
-            live,
-            alt.first().map(|(d, o, l)| (*d, *o as i64 - at as i64, *l))
-        ));
-    }
-    println!("ACCEPTED");
-    Ok(())
-}
-

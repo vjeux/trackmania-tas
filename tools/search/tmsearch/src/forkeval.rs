@@ -35,14 +35,16 @@
 //! can never displace a live one. Measured 2000/2000, zero violations.
 
 use crate::guard::Provenance;
-use forkoracle::inputs::Inputs;
 use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
-use std::path::{Path, PathBuf};
+use fk::validator::ValidatorCar;
 use forkoracle::forksrv::{ForkServer, Rec};
-use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
-use forkoracle::blind::{bounds_from, locate_blind as locate};
+use forkoracle::inputs::Inputs;
+use forkoracle::layout::{
+    bounds_from, segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL,
+};
 use forkoracle::pred::{outcome, GateRecord, Watch};
+use std::path::{Path, PathBuf};
 
 /// The clock value the checkpoint should stop at, from the fitted relation
 /// `clock = 36141 + 25.483 * race_ms`.
@@ -103,7 +105,8 @@ pub fn calibrate_boundary(
         }
     }
     let files: Vec<&Path> = rows.iter().map(|r| r.1.as_path()).collect();
-    let truth = ghost::oracle::validate_many(server, &files, ghost::oracle::MapsMode::One(map), "cal")?;
+    let truth =
+        ghost::oracle::validate_many(server, &files, ghost::oracle::MapsMode::One(map), "cal")?;
     let mut by_name = std::collections::HashMap::new();
     for r in &truth {
         by_name.insert(r.file.clone(), r.time_ms);
@@ -273,11 +276,20 @@ impl ForkEval {
         forkoracle::layout::verify_tape(srv.pid(), srv.base, &refsteer, &gas, &brake)
             .map_err(|e| format!("this server is not simulating the tape we asked for: {}", e))?;
 
-        // Addresses are re-derived in THIS process, every time: the server is
-        // PIE and its heap is bimodal, so five consecutive runs give five
-        // different addresses. A failure is an abort, never a guess.
-        let layout = locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
-            .map_err(|e| format!("the car's state was not located: {}", e))?;
+        // The race clock is located by its exact +10-per-tick signature. Car
+        // identity comes only from this process's validator-owned pointer chain;
+        // a stale callback or field offset is a hard failure, never a scan.
+        let car = ValidatorCar::locate(
+            &mut srv,
+            from,
+            &lrecs,
+            s.start_offset_ms,
+            bounds,
+            2000,
+            false,
+        )
+        .map_err(|e| format!("the validator-owned car did not resolve: {}", e))?;
+        let layout = car.layout();
 
         let ack = srv.arm(&watch.arm_payload(
             layout.clock_bias + s.start_offset_ms as i64,
@@ -286,7 +298,7 @@ impl ForkEval {
             R_POS as u32,
             R_VEL as u32,
             REC_LEN as u32,
-            &segments(&layout),
+            &segments(layout),
         ));
         if !ack.starts_with("ARMED") {
             return Err(format!("arming the watchdog failed: {}", ack));
@@ -315,10 +327,9 @@ impl ForkEval {
         // this validator's finish and the worker refuses rather than joining
         // the population on a different scale.
         let plane_off_ms = if watch.plane_x != 0.0 {
-            let want = s
-                .incumbent_ms
-                .ok_or("--plane needs the incumbent's own oracle millisecond to calibrate against")?
-                as f64;
+            let want = s.incumbent_ms.ok_or(
+                "--plane needs the incumbent's own oracle millisecond to calibrate against",
+            )? as f64;
             let recs: Vec<Rec> = tail_recs(&steer, &gas, &brake, from);
             let (j, b) = srv.run_watched(from, &recs);
             let o = outcome(&j, &b);
@@ -352,7 +363,8 @@ impl ForkEval {
             gate: watch.gate.armed,
             gate_min_key: s.gate_min_key,
             fire_armed: watch.fire.armed,
-            after_key_armed: watch.fire.armed && watch.fire.after[0].op != forkoracle::pred_core::KOP_END,
+            after_key_armed: watch.fire.armed
+                && watch.fire.after[0].op != forkoracle::pred_core::KOP_END,
             gate_box: watch.gate,
             gate_seed_pos: s.gate_seed_pos,
             last_gate: Vec::new(),
@@ -409,9 +421,10 @@ impl Evaluator for ForkEval {
                     self.gate_min_key as f64,
                     o.event(self.fire_armed, self.after_key_armed),
                 ),
-                (None, false) => {
-                    Outcome::Dnf(Progress::Metres { m: o.progress(), of: self.line_len })
-                }
+                (None, false) => Outcome::Dnf(Progress::Metres {
+                    m: o.progress(),
+                    of: self.line_len,
+                }),
             });
         }
         out

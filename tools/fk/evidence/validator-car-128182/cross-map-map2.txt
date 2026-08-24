@@ -1,0 +1,12 @@
+Cross-map live control, tools/testdata/map2.Map.Gbx + human_23013.Ghost.Gbx
+2026-08-24
+
+checkpoint lroundf #320889 -> probe tick 1327 (race 11.760), tape 2453 ticks
+clock scan: 155 mapped windows of 1024 KB, nearest to the input array first
+clock scan: 10 slots step by a multiple of 10 across 2 windows (0.5s)
+CLOCK 0x55c865a53a24 (base-1343728) bias +2200 ms, confirmed over 559 ticks
+VALIDATOR CAR controller 0x55c8602f8250 -> sim 0x55c8648ed520 -> playground 0x55c8656f73e0 -> player 0x55c865b076a0 -> CGameVehiclePhy 0x55c865a52328 -> state 0x55c865a53618; verr 0.1724 m/s, |q|-1 1.11e-7
+trajectory: 1207 ticks in 0.1s (11.750 .. 23.810)
+self-check ok: 1207 rows, |q|-1 p99.5 1.24e-7, |d(pos)/dt - v| median 0.172 m/s, 0 clock gaps, mean speed 82.3 m/s
+
+This uses the same callback root and field offsets as Summer 2026 - 01. All heap addresses differ.

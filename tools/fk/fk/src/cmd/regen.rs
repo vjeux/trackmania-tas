@@ -67,15 +67,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let carrier = flag("--carrier")
         .map(|t| crate::carrier::read_table(&t).unwrap_or_else(|e| crate::die(e)))
         .unwrap_or_default();
-    // Extra ground for the carrier fields, and the cap that keeps it inert.
-    //
-    // The production window is `car-192 .. car+256` and the table reaches
-    // `car+344`, so one more segment is gathered right after it — contiguous in
-    // memory, so a record offset stays `car_off + rel` with no per-segment
-    // arithmetic. `copy_scan_hi` then holds the LIVE-COPY SEARCH to the
-    // production window, so the copy the transform comes from is chosen from
-    // exactly the candidates it is chosen from today. Extra ground must not
-    // move the transform, and this is what makes that true rather than hoped.
+    // Extra ground for the carrier fields. The transform remains anchored to
+    // the validator-owned vehicle regardless of how wide this read becomes.
     let segs_rel = crate::record::parse_segs(&flag("--segs").unwrap_or_else(|| "-16:40".into()));
     let dump = flag("--dump").unwrap_or_else(|| format!("/tmp/fkregen-{}.bin", std::process::id()));
     let outp = flag("--out").expect("--out");

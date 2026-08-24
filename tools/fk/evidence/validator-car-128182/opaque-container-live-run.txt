@@ -1,0 +1,50 @@
+MAP   Summer 2026 - 01  (buNzfsVlp2NF2oWtHM3729dEylg)
+  author time 23.144   (a number in the map file, not anybody's run)
+  route 1900.3 m, 97 stations of 20 m, 3 checkpoints; gates at s = 512, 1115, 1483, 1900
+  NOTE: 88 of 111 route vertices arrived with no measured corridor width; 8 m substituted. The corridor is that much weaker a prune there.
+  RUNG 1 is the gate at s = 512 m, which is station 25 of 97.
+
+ORACLE  opaque container sanitized with 12156 generated ticks (121 s of race). A tape longer than that is refused,
+        not truncated.
+CONTROL do-nothing tape            -> Dnf { cps: 0 }  echo "12156_"  desc "wrong simu"
+CONTROL full-throttle-straight     -> Dnf { cps: 0 }  echo "12156C"
+        the server confirms it ran map uid buNzfsVlp2NF2oWtHM3729dEylg -- the one we asked for.
+        PASS, two-sided: the tapes differ, the engine's decoded echo differs, and the
+        map is ours. (A verdict comparison could not have said this: both are Dnf { cps: 0 }.)
+
+SEARCH  alphabet ThreeGas (3 actions), macro 12 ticks, rollout <= 40, 1 threads, budget 1 evals
+        bins: CRUDE (station, lateral, height, speed, checkpoints)
+
+GATE LADDER  4 required gates in tour order, collected within 8 m:
+  gate 0 at s =    511.6 m (station  25)  (1232, 8, 976)
+  gate 1 at s =   1114.5 m (station  55)  (1154, 10, 1328)
+  gate 2 at s =   1483.1 m (station  74)  (1360, 8, 1104)
+  gate 3 at s =   1900.3 m (station  95)  (1360, 8, 688)
+  progress SATURATES at the station of the first uncollected gate: a car that cuts a
+  corner cannot score past the gate it skipped, however far it flies.
+
+FORK    checkpoint at tick 60 -> lroundf clock 51430 (fitted line, per map; the boundary
+        the server actually stops at is PROBED and is what ticks are labelled from)
+
+REFERENCE  generated baseline: 12156 ticks, 25 distinct steer values.
+
+TICK FRAME  boundary probed 4x, MAX = tick 307 (this probe said 307). The search's tick 0
+            is file tick 307. The maximum is used because where a server stops is a property
+            of that server: probes here differ by a tick between runs, and a one-tick shift
+            of a whole tape turned a confirmed cps 3 into cps 0.
+worker   0 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   0 distance OK: generated full-throttle trace reached 185.2 m from the real start over 340 states
+worker   0 ready: 196 states, |d(pos)/dt - v| median 0.1936 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+*** PLAIN ORACLE: stopped at station 1 (cps 0, 0.240 elapsed)   (station 1 of 97, 2 evals)
+
+================ REPORT ================
+furthest station reached: 1 of 97 (20 m of 1900 m)
+archive: 3 bins, 5 offers, 2 kept
+best CONFIRMED by the plain oracle: stopped at station 1 (cps 0, 0.240 elapsed)
+the fork has reported no finish
+plain-oracle answers: 1
+  cps 0: 1 tapes
+best speed WE have ever reached at a station (m/s) -- self-referential, every 20 stations:
+  st    0    24.4
+2 evals in 41 s, 1 plain-oracle answers, 0 errors
+best confirmed outcome stopped at station 1 (cps 0, 0.240 elapsed) — its tape is at /tmp/tmvalidator-recorded-120s-anon/best.tape.tsv

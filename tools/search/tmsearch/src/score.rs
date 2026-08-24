@@ -276,6 +276,8 @@ impl Ord for Outcome {
                 (Some(x), Some(y)) => y.cmp(x),
                 _ => b.cmp(a),
             },
+            (Finish { .. }, _) => std::cmp::Ordering::Greater,
+            (_, Finish { .. }) => std::cmp::Ordering::Less,
             (Gate(a), Gate(b)) => {
                 let (ba, ka) = a.rank();
                 let (bb, kb) = b.rank();

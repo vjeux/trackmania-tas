@@ -1,0 +1,13 @@
+verifying /tmp/tmvalidator-anon2/generated-container.Ghost.Gbx
+PASS V1   codec identity: a verbatim re-encode of all 12156 ticks reproduces the file's own bitstream
+PASS V2   declared-time census: 1 copies (1 in the body, 0 in the header), all 19.538
+PASS V3   container identity: no account id, locator, badge or zone in the body (this container has no replay header to carry one)
+PASS V4   no embedded map: --map is real for this file
+PASS V10  the record's span ends at 19.530 and the car's last sample is at 19.500 -- nothing in this file outlives the run
+PASS V11  the container's live non-vehicle record(s) are present (0x2D001000 x390)
+PASS V5   telemetry: 391 samples, 0.000 .. 19.500, span 0.000 .. 19.530
+FAIL V6   tape/record agreement: kappa 0.003 (10.2% of 391 samples exact, best of 21 lags at 10 ms). Chance-corrected agreement this low means the recording in this file is NOT this tape's run -- it is carrying another run. Rebuild it with `ghost regen`, or name the file so that nobody renders it.
+PASS V7   oracle on the written file: DNF at cps None, as expected for a partial run
+PASS V10  raw-bytes backstop: nothing that looks like another person's identity or another run's time, outside the embedded map's own 0 B
+
+REFUSED: 1 check(s) failed

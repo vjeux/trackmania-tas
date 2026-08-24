@@ -64,14 +64,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tmauto"
-version = "0.1.0"
-dependencies = [
- "gbx",
- "ghost",
-]
-
-[[package]]
 name = "tmexplore"
 version = "1.0.0"
 
@@ -82,7 +74,6 @@ dependencies = [
  "fk",
  "forkoracle",
  "ghost",
- "tmauto",
  "tmexplore",
  "tmsearch",
  "tmtraj",
@@ -92,6 +83,7 @@ dependencies = [
 name = "tmsearch"
 version = "1.0.0"
 dependencies = [
+ "fk",
  "forkoracle",
  "gbx",
  "ghost",

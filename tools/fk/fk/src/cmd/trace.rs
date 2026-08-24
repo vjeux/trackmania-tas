@@ -27,10 +27,11 @@
 //! value. Five consecutive runs gave five different addresses and
 //! byte-identical CSVs.
 
-use crate::locate::{locate_v2, trajectory};
+use crate::locate::trajectory;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
+use crate::validator::ValidatorCar;
 use std::path::Path;
 
 pub struct TraceOpts {
@@ -68,44 +69,20 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
         s.tape.n()
     );
 
-    let recs = s.tape.tail_records(probe);
     let t0 = std::time::Instant::now();
-    // THE LOCATE IS JUDGED WHERE THE CAR IS, SO WHERE IT IS JUDGED MATTERS.
-    //
-    // `locate_v2`'s discriminator is d(pos)/dt against the stored velocity,
-    // qualified over the ticks after the probe against a threshold of 2 % of
-    // the mean speed in that window. A probe where the car is slow gets the
-    // TIGHTEST threshold and the LARGEST real residual -- so the same tape, the
-    // same map and the same engine locate or refuse purely on where the
-    // checkpoint fell. Measured on 276874 (a 12.759 lap), one command each:
-    //
-    //     frac 0.30   REFUSED   1.00 m/s residual at mean speed 17.2
-    //     frac 0.50   ok        0.247 m/s          at mean speed 60.3
-    //     frac 0.70   ok        0.191 m/s          at mean speed 66.7
-    //     frac 0.85   REFUSED   1.12 m/s           at mean speed  1.7
-    //
-    // The car is real at all four; only the middle two are anywhere the test
-    // can see it. `fk regen` has walked a ladder of checkpoints for exactly
-    // this reason since the day it was written ("a trial map is barely moving
-    // at tick 200, a short map has no tick 200 at all"), and `fk trace` took
-    // the first checkpoint and reported its refusal as if it were a property of
-    // the file. That is how a working tape reads as an unlocatable one.
-    //
-    // So trace walks the same ladder. The default probe is tried first, then
-    // fractions through the middle of the run where the car is fastest. Every
-    // attempt still faces the unchanged acceptance test, so this widens where
-    // we look and not what we will believe.
+    // The structural guard is judged over samples after the probe, so where it
+    // is judged still matters even though identity no longer does. A standing
+    // car provides no derivative check; trace therefore walks a checkpoint
+    // ladder until the fixed validator-owned object has a useful motion window.
     let layout = {
         let mut found = None;
         let mut first_err = None;
         let mut tried: Vec<String> = Vec::new();
-        for (label, cp) in std::iter::once(("the given checkpoint".to_string(), at))
-            .chain(
-                [0.5f64, 0.6, 0.4, 0.7, 0.3]
-                    .iter()
-                    .map(|f| (format!("frac:{f}"), Checkpoint::Fraction(*f))),
-            )
-        {
+        for (label, cp) in std::iter::once(("the given checkpoint".to_string(), at)).chain(
+            [0.5f64, 0.6, 0.4, 0.7, 0.3]
+                .iter()
+                .map(|f| (format!("frac:{f}"), Checkpoint::Fraction(*f))),
+        ) {
             if !tried.is_empty() {
                 // A fresh session: the fork server is at a checkpoint and
                 // moving the probe means re-forking, not rewinding.
@@ -113,22 +90,18 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
             }
             let probe = s.probe_tick()?;
             let recs = s.tape.tail_records(probe);
-            match locate_v2(
+            match ValidatorCar::locate(
                 &mut s.srv,
                 probe,
                 &recs,
                 s.tape.start_offset_ms,
                 bounds,
                 2000,
-                4000,
                 true,
             ) {
                 Ok(l) => {
                     if !tried.is_empty() {
-                        println!(
-                            "locate: the given checkpoint refused; {} located it",
-                            label
-                        );
+                        println!("locate: the given checkpoint refused; {} located it", label);
                     }
                     found = Some((l, probe, recs));
                     break;
@@ -161,7 +134,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
         &mut s.srv,
         probe,
         &recs,
-        &layout,
+        layout.layout(),
         (s.tape.n() - probe + 200) as u32,
     );
     println!(

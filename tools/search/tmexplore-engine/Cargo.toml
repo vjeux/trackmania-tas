@@ -11,7 +11,6 @@ tmsearch = { path = "../tmsearch" }
 forkoracle = { path = "../forkoracle" }
 ghost = { path = "../../ghost" }
 tmtraj = { path = "../../tmtraj" }
-tmauto = { path = "../../tmauto" }
 fk = { path = "../../fk/fk" }
 
 [lib]

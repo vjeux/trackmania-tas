@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! tmexplore-real run --pack B/<uid>.pack.json --route B/<uid>.route.json \
-//!                    --map <uid>.Map.Gbx --template <synthesized>.Ghost.Gbx \
+//!                    --map <uid>.Map.Gbx --template <recorded-opaque>.Ghost.Gbx \
 //!                    --server /tmp/tmoracle/server --shim libforkshim.so \
 //!                    --work /tmp/cwork --threads 40 --budget 2000000
 //! ```
@@ -22,7 +22,7 @@ use tmexplore::explore::Cfg;
 use tmexplore::outcome::{Reached, Verdict};
 use tmexplore::parallel::{self, Counters, Shared};
 use tmexplore_engine::fork::{ForkBranch, ForkOpts};
-use tmexplore_engine::{BRoute, EngineOracle, MapPack};
+use tmexplore_engine::{BRoute, ContainerTemplate, EngineOracle, GeneratedTape, MapPack};
 
 struct Args(Vec<(String, String)>, Vec<String>);
 impl Args {
@@ -76,14 +76,25 @@ fn secs(ms: i64) -> String {
     format!("{}.{:03}", ms / 1000, (ms % 1000).abs())
 }
 
+fn prepare_oracle(
+    source: &std::path::Path,
+    map: &std::path::Path,
+    server: &std::path::Path,
+    work: &std::path::Path,
+) -> Result<(EngineOracle, PathBuf, forkoracle::inputs::Inputs), String> {
+    let container = ContainerTemplate::load(source)?;
+    let generated = GeneratedTape::plumbing(container.capacity());
+    let reference = generated.inputs().clone();
+    let prepared = container.prepare(generated, &work.join("generated-container.Ghost.Gbx"))?;
+    let path = prepared.path().to_path_buf();
+    let oracle = EngineOracle::new(prepared, map, server, &work.join("oracle"))?;
+    Ok((oracle, path, reference))
+}
+
 fn main() {
     let a = Args::parse();
     if a.1.first().map(|s| s.as_str()) == Some("confirm") {
         confirm_tape(&a);
-        return;
-    }
-    if a.1.first().map(|s| s.as_str()) == Some("template") {
-        make_template(&a);
         return;
     }
     if a.1.first().map(|s| s.as_str()) != Some("run") {
@@ -100,7 +111,7 @@ fn main() {
     )
     .unwrap_or_else(die);
     let map = PathBuf::from(a.req("map"));
-    let template = PathBuf::from(a.req("template"));
+    let template_source = PathBuf::from(a.req("template"));
     let server = PathBuf::from(a.get("server").unwrap_or("/tmp/tmoracle/server"));
     let shim = PathBuf::from(a.req("shim"));
     let work = PathBuf::from(a.get("work").unwrap_or("/tmp/cwork"));
@@ -144,11 +155,13 @@ fn main() {
         );
     }
 
-    // ---- the plain oracle: the only thing that can produce a result ----
-    let oracle =
-        EngineOracle::new(&template, &map, &server, &work.join("oracle")).unwrap_or_else(die);
+    // ---- opaque container + generated baseline ----------------------------
+    // The game-recorded file contributes structure only. Its complete input
+    // archive is replaced before the oracle or fork workers receive a path.
+    let (oracle, template, reference) =
+        prepare_oracle(&template_source, &map, &server, &work).unwrap_or_else(die);
     println!(
-        "\nORACLE  container holds {} ticks ({} s of race). A tape longer than that is refused,\n        not truncated.",
+        "\nORACLE  opaque container sanitized with {} generated ticks ({} s of race). A tape longer than that is refused,\n        not truncated.",
         oracle.capacity(),
         oracle.capacity() / 100
     );
@@ -349,11 +362,8 @@ fn main() {
         tail_margin: 200,
         common_from: None,
     };
-    // THE REFERENCE IS THE CONTAINER'S OWN TAPE, read out of the file rather
-    // than assumed. Assuming it was neutral is what produced
-    // "TAPE MISMATCH: 12000 of 12000 ticks differ" on the first run with a
-    // varied steer channel — the control doing exactly its job.
-    let reference = oracle.template_inputs();
+    // The fork prefix and every candidate are derived from our generated tape;
+    // the opaque container's original input archive is unreachable here.
     {
         let d = {
             let mut s = reference.steer.clone();
@@ -362,7 +372,7 @@ fn main() {
             s.len()
         };
         println!(
-            "\nREFERENCE  the container's own tape: {} ticks, {} distinct steer values.",
+            "\nREFERENCE  generated baseline: {} ticks, {} distinct steer values.",
             reference.len(),
             d
         );
@@ -402,7 +412,7 @@ fn main() {
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => {
                 boundary = boundary.max(b.from);
-                oracle.set_prefix_ticks(boundary as u64);
+                oracle.set_prefix_ticks(boundary as u64).unwrap_or_else(die);
                 println!(
                     "\nTICK FRAME  boundary probed 4x, MAX = tick {} (this probe said {}). The search's tick 0\n            is file tick {}. The maximum is used because where a server stops is a property\n            of that server: probes here differ by a tick between runs, and a one-tick shift\n            of a whole tape turned a confirmed cps 3 into cps 0.",
                     boundary, b.from, boundary
@@ -574,6 +584,10 @@ fn main() {
                     Ok(m) => println!("worker {:>3} start OK: {}", wi, m),
                     Err(e) => return Err(format!("worker {}: {}", wi, e)),
                 }
+                match b.real_start_distance_control(pack.spawn, 100.0) {
+                    Ok(m) => println!("worker {:>3} distance OK: {}", wi, m),
+                    Err(e) => return Err(format!("worker {}: {}", wi, e)),
+                }
                 match b.self_check() {
                     Ok(m) => println!("worker {:>3} ready: {}", wi, m),
                     Err(e) => return Err(format!("worker {} self-check FAILED: {}", wi, e)),
@@ -626,87 +640,6 @@ fn die<T, E: std::fmt::Display>(e: E) -> T {
     std::process::exit(1)
 }
 
-/// Build a container this search can actually use.
-///
-/// Two properties that A's rung-0 container does not have, both measured by
-/// agent D, and both of which fail in ways that read as something else:
-///
-/// 1. **The validator simulates until the DECLARED TIME, not until the tape
-///    ends.** Same map, same generator, one field changed: declared 0 stops at
-///    race 2.500; declared 30.000 runs to race 29.500. A 600-tick and a
-///    3000-tick tape at declared 0 give identical totals, so it is the field
-///    and not the archive length. A container declaring 0 therefore stops
-///    2.5 s in and returns a DNF that reads as bad driving.
-///
-/// 2. **A constant steer channel makes the fork shim lock onto the wrong
-///    memory.** The shim finds the input array by searching the address space
-///    for the steer sequence as f32 at stride 32; an all-zero channel matches a
-///    stretch of zeroes that is not the array. D's identity control caught it
-///    as `TAPE MISMATCH: 3000 of 3000 ticks differ`, which is the right
-///    outcome — a locate that matches the wrong thing is far worse than one
-///    that fails.
-///
-/// So the reference tape carries 25 distinct steer values and the throttle
-/// stays off: the car does not move, the run's length is the declared time's
-/// business, and the shim has something to lock onto.
-fn make_template(a: &Args) {
-    let map = PathBuf::from(a.req("map"));
-    let out = PathBuf::from(a.req("out"));
-    let ticks: usize = a.num("ticks", 12000usize);
-    let declare_ms: u32 = a.num("declare", 100_000u32);
-    let ncp: usize = a.num("cps", 3usize);
-
-    let mut inputs = Vec::with_capacity(ticks);
-    for t in 0..ticks {
-        // 25 distinct values in [-12, 12], in an order with no short period.
-        let v = ((t as u64 * 7919 + 13) % 25) as i8 - 12;
-        // GAS ON. The car must MOVE: `locate_blind` finds the vehicle state by
-        // its velocity consistency, and a parked car is indistinguishable from
-        // any other constant region of memory. With the throttle off the
-        // locator simply never returns — measured here as two workers sitting
-        // in locate for 440 s at a load average of 1.8, which reads as a hang
-        // and is actually a car that never moved.
-        //
-        // The steer pattern cycles all 25 values evenly, so its mean is zero
-        // and the car goes essentially straight.
-        inputs.push(tmauto::tape::Input {
-            steer: v,
-            gas: true,
-            brake: false,
-            respawn: false,
-        });
-    }
-    let distinct = {
-        let mut s: Vec<i8> = inputs.iter().map(|i| i.steer).collect();
-        s.sort_unstable();
-        s.dedup();
-        s.len()
-    };
-
-    let mut meta = tmauto::synth::meta_for_map(&map).unwrap_or_else(die);
-    let cps: Vec<i32> = (1..=ncp)
-        .map(|i| (declare_ms as i32 / (ncp as i32 + 1)) * i as i32)
-        .chain(std::iter::once(declare_ms as i32))
-        .collect();
-    meta.set_declared(declare_ms, cps.clone());
-    let bytes = tmauto::synth::synthesize(&inputs, &meta, &tmauto::synth::ChunkSet::ALL);
-    std::fs::write(&out, &bytes).unwrap_or_else(die);
-    println!(
-        "wrote {} ({} bytes)\n  map uid      {}\n  ticks        {}\n  declared     {} ({} s) -- the validator simulates until THIS, not until the tape ends\n  declared cps {:?}\n  steer channel {} distinct values -- the fork shim locks onto the array by this sequence,\n                and a constant channel matches a stretch of zeroes that is not the array",
-        out.display(),
-        bytes.len(),
-        meta.map_uid,
-        ticks,
-        secs(declare_ms as i64),
-        declare_ms / 1000,
-        cps,
-        distinct
-    );
-    if distinct < 20 {
-        println!("  WARNING: fewer than 20 distinct steer values; the locate may not lock on.");
-    }
-}
-
 /// Re-simulate a banked tape, from outside the search that produced it.
 ///
 /// The search confirms its own results as it goes, but a claim checked only by
@@ -716,7 +649,7 @@ fn make_template(a: &Args) {
 /// than inherited.
 fn confirm_tape(a: &Args) {
     let map = PathBuf::from(a.req("map"));
-    let template = PathBuf::from(a.req("template"));
+    let template_source = PathBuf::from(a.req("template"));
     let server = PathBuf::from(a.get("server").unwrap_or("/tmp/tmoracle/server"));
     let work = PathBuf::from(a.get("work").unwrap_or("/tmp/cconfirm"));
     let prefix: u64 = a.num("prefix", 153u64);
@@ -745,7 +678,8 @@ fn confirm_tape(a: &Args) {
             brake: f[3] != "0",
         });
     }
-    let oracle = EngineOracle::new(&template, &map, &server, &work).unwrap_or_else(die);
+    let (oracle, _prepared_path, _reference) =
+        prepare_oracle(&template_source, &map, &server, &work).unwrap_or_else(die);
     let frame = match (a.get("prefix"), file_frame) {
         (Some(_), _) => prefix,
         (None, Some(f)) => {
@@ -759,7 +693,7 @@ fn confirm_tape(a: &Args) {
             std::process::exit(2);
         }
     };
-    oracle.set_prefix_ticks(frame);
+    oracle.set_prefix_ticks(frame).unwrap_or_else(die);
     println!(
         "tape {} ticks, written into a {}-tick container from file tick {}",
         tape.len(),
@@ -772,7 +706,7 @@ fn confirm_tape(a: &Args) {
     let bare: Vec<Input> = Vec::new();
     match oracle.confirm_echo(&bare) {
         Ok((v, e, uid, d)) => println!(
-            "control (container's own tape): {:?}  desc {:?}  uid {}  echo {:?}",
+            "control (generated baseline): {:?}  desc {:?}  uid {}  echo {:?}",
             v, d, uid, e
         ),
         Err(e) => println!("control UNMEASURED: {}", e),

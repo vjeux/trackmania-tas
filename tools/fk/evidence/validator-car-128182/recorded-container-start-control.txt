@@ -1,0 +1,31 @@
+Container/start control, Summer 2026 - 01, 2026-08-24
+
+Source container:
+  /tmp/summer01-recorded-container.Ghost.Gbx
+  SHA-256 44d505d1701b56f67992c39626695b2a5f74c046263fdfd9eeb304f68c5c90e8
+  2,109 ticks, race -1.550..19.540
+  packet modes {2: 2109}
+  2,074 same-as-previous packets
+  24 skippable chunks, including 0x03092000 (8,975-byte CPlugEntRecordData)
+
+Synthetic container:
+  /tmp/summer01-drive.Ghost.Gbx
+  9,000 ticks, race 0.000..90.000
+  packet modes {2: 9000}
+  0 same-as-previous packets
+  5 skippable chunks; no 0x03092000 entity-record chunk
+
+Conclusion: packet modes 12/13 were not the cause on this pair. Both archives are mode 2. The game-recorded container supplies 19 additional chunks, including the entity record that the synthetic file omits. Preserving that opaque structure while replacing every input-bearing field fixes startup.
+
+The source was extended to 120.010 s with `ghost trim`, then `ContainerTemplate::prepare` replaced all 12,156 ticks with a deterministic generated tape, cleared mouse/trigger/respawn inputs, re-read the written tape, and exposed only GeneratedTape downstream.
+
+Fresh one-worker result:
+  map uid: buNzfsVlp2NF2oWtHM3729dEylg
+  input-echo control: neutral `12156_`, full-throttle `12156C` (different, PASS)
+  resume boundary: tick 307
+  first authoritative sample: (1584.0, 18.0, 801.6)
+  semantic RoadTechStart:      (1584.0, 16.0, 784.0)
+  separation: 17.7 m (40.0 m tolerance, PASS)
+  generated full-throttle trace: 185.2 m from real start over 340 states (PASS)
+  structural check: 196 states; median velocity residual 0.1936 m/s; max quaternion norm error 1.19e-7; travelled 92.7 m
+  one-evaluation plain-oracle smoke: DNF, cps 0, station 1; 2 evaluations, 0 errors

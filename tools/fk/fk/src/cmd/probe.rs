@@ -44,10 +44,11 @@
 //!   The comparison is therefore on the ticks the fork actually simulated, in
 //!   race time, and never row against row.
 
-use crate::locate::{gather_ticks, locate_v2};
+use crate::locate::gather_ticks;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
+use crate::validator::ValidatorCar;
 
 pub struct ProbeOpts {
     /// The recording whose decoded telemetry holds the answer.
@@ -99,23 +100,22 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     let affine = o.affine;
     let reference = traj::Reference::load(&o.reference)?;
     let want = crate::traj::Reference::channel_from(&o.reference, &o.channel)
-
         .ok_or_else(|| format!("the reference has no column {}", o.channel))?;
     let bounds = reference.bounds(400.0);
 
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    let layout = locate_v2(
+    let car = ValidatorCar::locate(
         &mut s.srv,
         probe,
         &recs,
         s.tape.start_offset_ms,
         bounds,
         2000,
-        4000,
         true,
     )?;
+    let layout = car.layout();
 
     // A window centred on the car, plus the clock so every gathered tick can be
     // placed in race time.
@@ -204,7 +204,10 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     // f32. Probing only the wire encoding would find nothing and prove nothing.
     let getf32 = |b: &[u8], o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as f64;
     for off in 4..reclen {
-        let raw: Vec<f64> = pairs.iter().map(|(i, _)| rows[*i].rec[off] as f64).collect();
+        let raw: Vec<f64> = pairs
+            .iter()
+            .map(|(i, _)| rows[*i].rec[off] as f64)
+            .collect();
         let mut distinct: Vec<u8> = pairs.iter().map(|(i, _)| rows[*i].rec[off]).collect();
         distinct.sort_unstable();
         distinct.dedup();
@@ -228,13 +231,18 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     // guessed, because a fitted coefficient absorbs a wrong offset.
     if let Some((a, b)) = affine {
         for off in 4..reclen {
-            let raw: Vec<f64> =
-                pairs.iter().map(|(i, _)| a * rows[*i].rec[off] as f64 + b).collect();
+            let raw: Vec<f64> = pairs
+                .iter()
+                .map(|(i, _)| a * rows[*i].rec[off] as f64 + b)
+                .collect();
             let mut distinct: Vec<u8> = pairs.iter().map(|(i, _)| rows[*i].rec[off]).collect();
             distinct.sort_unstable();
             distinct.dedup();
-            let exact = raw.iter().zip(&refvals).filter(|(x, y)| (*x - *y).abs() < 1e-9).count()
-                as f64
+            let exact = raw
+                .iter()
+                .zip(&refvals)
+                .filter(|(x, y)| (*x - *y).abs() < 1e-9)
+                .count() as f64
                 / refvals.len() as f64;
             hits.push(Hit {
                 off: off as i64 - span as i64 - 4,
@@ -252,12 +260,18 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     // correlation sat at 0.9953, which is the shape of a right answer being
     // told the wrong question.
     for off in 4..reclen {
-        let raw: Vec<f64> = pairs.iter().map(|(i, _)| rows[*i].rec[off] as f64).collect();
+        let raw: Vec<f64> = pairs
+            .iter()
+            .map(|(i, _)| rows[*i].rec[off] as f64)
+            .collect();
         let mut distinct: Vec<u8> = pairs.iter().map(|(i, _)| rows[*i].rec[off]).collect();
         distinct.sort_unstable();
         distinct.dedup();
-        let exact = raw.iter().zip(&refvals).filter(|(a, b)| (*a - *b).abs() < 1e-9).count()
-            as f64
+        let exact = raw
+            .iter()
+            .zip(&refvals)
+            .filter(|(a, b)| (*a - *b).abs() < 1e-9)
+            .count() as f64
             / refvals.len() as f64;
         hits.push(Hit {
             off: off as i64 - span as i64 - 4,
@@ -268,14 +282,20 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
         });
     }
     for off in (4..reclen.saturating_sub(4)).step_by(1) {
-        let raw: Vec<f64> = pairs.iter().map(|(i, _)| getf32(&rows[*i].rec, off)).collect();
+        let raw: Vec<f64> = pairs
+            .iter()
+            .map(|(i, _)| getf32(&rows[*i].rec, off))
+            .collect();
         // Plausible means "in the reference's own range", not "in 0..1". The
         // first version hardcoded 0..1 because the first channel it looked for
         // was a fraction, and it then silently could not see a wheel rotation
         // that runs to 1607. An assumption about a channel's range is the same
         // class of mistake as an assumption about its encoding.
         let pad = (hi - lo).abs().max(1e-6) * 0.5;
-        if raw.iter().any(|v| !v.is_finite() || *v < lo - pad || *v > hi + pad) {
+        if raw
+            .iter()
+            .any(|v| !v.is_finite() || *v < lo - pad || *v > hi + pad)
+        {
             continue;
         }
         let mut distinct: Vec<u64> = raw.iter().map(|v| (v * 1e6) as u64).collect();
@@ -332,11 +352,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     for h in hits.iter().take(o.top) {
         println!(
             "{:+}\t{}\t{:.4}\t{:+.4}\t{}",
-            h.off,
-            h.enc,
-            h.exact,
-            h.corr,
-            h.distinct
+            h.off, h.enc, h.exact, h.corr, h.distinct
         );
     }
     let best = &hits[0];

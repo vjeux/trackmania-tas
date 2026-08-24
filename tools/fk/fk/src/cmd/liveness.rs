@@ -19,10 +19,11 @@
 //! which on this fixture sits 408 bytes above; its `car + 88 + 44k` is this
 //! anchor's `car + 496 + 44k`.
 
-use crate::locate::{gather_ticks, locate_v2};
+use crate::locate::gather_ticks;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
+use crate::validator::ValidatorCar;
 
 /// Wheel records, relative to `Layout::pos`.
 ///
@@ -62,19 +63,24 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: LivenessOpts) -> Resu
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    let layout = locate_v2(
+    let car = ValidatorCar::locate(
         &mut s.srv,
         probe,
         &recs,
         s.tape.start_offset_ms,
         bounds,
         2000,
-        4000,
         true,
     )?;
+    let layout = car.layout();
 
     let mut want: Vec<(String, i64)> = (0..4)
-        .map(|k| (format!("wheel{k}_rot"), WHEEL0 + WHEEL_STRIDE * k + WHEEL_ROT))
+        .map(|k| {
+            (
+                format!("wheel{k}_rot"),
+                WHEEL0 + WHEEL_STRIDE * k + WHEEL_ROT,
+            )
+        })
         .collect();
     for a in &o.also {
         want.push((format!("car{a:+}"), *a));
@@ -89,7 +95,11 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: LivenessOpts) -> Resu
     if rows.len() < 50 {
         return Err(format!("only {} ticks gathered", rows.len()));
     }
-    println!("\nanchor {:#x} (Layout::pos), {} ticks", layout.pos, rows.len());
+    println!(
+        "\nanchor {:#x} (Layout::pos), {} ticks",
+        layout.pos,
+        rows.len()
+    );
     println!("what\toffset\tdistinct\tmin\tmax\tverdict");
     let mut live = 0;
     for (name, off) in &want {
@@ -101,7 +111,9 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: LivenessOpts) -> Resu
         let mut d: Vec<u64> = vals.iter().map(|v| v.to_bits()).collect();
         d.sort_unstable();
         d.dedup();
-        let (mn, mx) = vals.iter().fold((f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
+        let (mn, mx) = vals
+            .iter()
+            .fold((f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
         // Live means MOVING, not merely non-zero: a constant is as dead as a
         // zero for this purpose, and a dead slot in this engine is exactly one
         // repeated value.

@@ -1,0 +1,15 @@
+checkpoint lroundf #74875 -> probe tick 394 (race 2.390), tape 12156 ticks
+clock scan: 147 mapped windows of 1024 KB, nearest to the input array first
+clock scan: 13 slots step by a multiple of 10 across 3 windows (0.5s)
+CLOCK 0x5599f32aac20 (base-772532) bias +2200 ms, confirmed over 557 ticks
+VALIDATOR CAR controller 0x5599ee34f4a0 -> sim 0x5599f245c4a0 -> playground 0x5599f2c0cb30 -> player 0x5599f32abc80 -> CGameVehiclePhy 0x5599f31e3148 -> state 0x5599f31e4438; verr 0.1285 m/s, |q|-1 1.00e-7
+locate: 0.6s
+trajectory: 1943 ticks in 0.2s (2.380 .. 21.800)
+self-check ok: 1943 rows, |q|-1 p99.5 1.29e-7, |d(pos)/dt - v| median 0.187 m/s, 0 clock gaps, mean speed 31.9 m/s
+wrote tools/fk/evidence/validator-car-128182/generated-container-trace.csv (1943 rows)
+tools/fk/evidence/validator-car-128182/generated-container-trace.csv  (1943 rows, 31 columns)
+  span   2.380 .. 21.800
+  first  (1583.99, 10.37, 827.80)
+  last   (1124.69, 10.01, 1018.22)
+  bbox   x 1124.2..1584.7  y 10.0..18.1  z 827.8..1018.2
+  path   619.6 m

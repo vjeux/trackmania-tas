@@ -1,29 +1,21 @@
 //! The fork server's DRIVER side: everything the SEARCH and `fk` both do to a
 //! live dedicated server.
 //!
-//! The split is by CALLER, not by topic. What is here is what `tmsearch` runs
-//! on every candidate — start a server, arm the watchdog, resume a fork, locate
-//! the car without a reference, score it — and `fk` drives the same code, so
-//! there is one definition of what a resume is.
-//!
-//! What is NOT here is the CLOCK-FIRST locator (`fk::locate`): nothing in the
-//! search calls it. It finds the engine's race clock first and keys every
-//! sample on it, which is what makes it correct when the car does not move (a
-//! respawn) or the engine writes the state twice inside one tick. `blind` keys
-//! on the 24-byte position+velocity window instead and is what a search needs,
-//! because an evolved candidate has no recorded telemetry to match against.
+//! Controlled-car identity is deliberately not implemented here. Production
+//! callers resolve it through `fk::validator::ValidatorCar`, rooted in the
+//! validator's simulation-binding callback. This crate owns only the shared
+//! fork protocol, sampling layout, tape verification, and watchdog machinery.
 //!
 //! `pred_core` is the same source the LD_PRELOAD shim compiles into the child,
 //! so a predicate means exactly one thing on both sides of the fork.
 
-pub mod pred_core;
 pub mod forksrv;
-pub mod tree;
-pub mod pred;
-pub mod layout;
-pub mod blind;
 pub mod inputs;
+pub mod layout;
+pub mod pred;
+pub mod pred_core;
 pub mod procmem;
+pub mod tree;
 
 /// What an armed event clause saw, as the driver reports it.
 ///
@@ -42,9 +34,9 @@ pub enum EventSeen {
         value: f32,
         pos: [f32; 3],
         /// The after-key. 0 when no after-key was given (a flat band, which is
-    /// correct); NEGATIVE INFINITY when one WAS given and the after-window was
-    /// empty, so an empty window is the worst measured value rather than -- as
-    /// it was until 267460 measured it -- the best one.
+        /// correct); NEGATIVE INFINITY when one WAS given and the after-window was
+        /// empty, so an empty window is the worst measured value rather than -- as
+        /// it was until 267460 measured it -- the best one.
         after: f32,
         /// -1 when the run ended on the firing tick, or no after-key was given.
         after_tick: i32,
@@ -56,7 +48,13 @@ impl std::fmt::Display for EventSeen {
         match self {
             EventSeen::Unarmed => write!(f, "no event clause"),
             EventSeen::Silent => write!(f, "the event never fired"),
-            EventSeen::Fired { tick, value, pos, after, after_tick } => write!(
+            EventSeen::Fired {
+                tick,
+                value,
+                pos,
+                after,
+                after_tick,
+            } => write!(
                 f,
                 "FIRED at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}); after {:+.4}{}",
                 tick,

@@ -220,7 +220,6 @@ fn gather_wide(
             // Neither of these is wanted: the car is identified against the
             // recording's own path, which is a stronger test than either, and
             // both of them assume the car is at the centre of the window.
-            choose_copy: false,
             self_check: false,
             extra,
             ..GatherOpts::production(dump)
@@ -1690,10 +1689,8 @@ pub fn gather_fields(
         phase_ms,
         verbose,
         dedup: Some((0, 4 + record::win_len())),
-        choose_copy: false,
         self_check: false,
         extra: extra.clone(),
-        pos_from: car,
         ..GatherOpts::production(dump)
     };
     // PHASE A -- WIDE, AND ONLY WHEN THERE IS NO POINTER.

@@ -32,10 +32,9 @@
 //!   engine's, and `Forest` removes it.
 
 use fk::validator::ValidatorCar;
-use forkoracle::blind::bounds_from;
 use forkoracle::forksrv::{parse_result, write_key, ForkServer, Rec};
 use forkoracle::inputs::Inputs;
-use forkoracle::layout::{decode_rows, segments, tail_recs, Row, REC_LEN};
+use forkoracle::layout::{bounds_from, decode_rows, segments, tail_recs, Row, REC_LEN};
 use std::path::PathBuf;
 use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
@@ -57,8 +56,8 @@ pub struct ForkOpts {
     /// start: everything below the resulting boundary is fixed.
     pub checkpoint_clock: u64,
     pub start_offset_ms: i32,
-    /// Every position on our own route, for the locator's search bounds. This
-    /// is OUR route, derived from the map file — not a recorded line.
+    /// Every position on our own route, used only as broad bounds for the
+    /// structural check after validator ownership has established identity.
     pub route_points: Vec<[f32; 3]>,
     /// Extra ticks a candidate is allowed past its own end, so the child does
     /// not stop the instant the macro does.
@@ -367,10 +366,8 @@ impl ForkBranch {
     /// require it to be a car: the quaternion normalised, and the position
     /// derivative agreeing with the stored velocity.
     ///
-    /// This is the check that makes an offset override safe. A wrong address
-    /// holding float triples produces rows that fail both — and a locate that
-    /// matches the WRONG thing is far worse than one that fails, because it
-    /// answers.
+    /// This check validates the fixed pointer's bytes; it does not participate
+    /// in choosing the object.
     pub fn self_check(&mut self) -> Result<String, String> {
         // 200 ticks of full throttle: the car has to MOVE for any of this to
         // mean anything, and an empty tape samples nothing (my first version
@@ -494,5 +491,43 @@ impl ForkBranch {
             ));
         }
         Ok(msg)
+    }
+
+    /// Independent acceptance control: a generated full-throttle trace must
+    /// carry the validator-owned car at least `min_m` from the semantic spawn.
+    pub fn real_start_distance_control(
+        &mut self,
+        spawn: [f32; 3],
+        min_m: f32,
+    ) -> Result<String, String> {
+        let tape = vec![
+            Input {
+                steer: 0,
+                gas: true,
+                brake: false,
+            };
+            350
+        ];
+        let (states, _) = self.simulate(&tape, tape.len())?;
+        let farthest = states
+            .iter()
+            .map(|s| {
+                ((s.pos[0] - spawn[0]).powi(2)
+                    + (s.pos[1] - spawn[1]).powi(2)
+                    + (s.pos[2] - spawn[2]).powi(2))
+                .sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        if farthest < min_m {
+            return Err(format!(
+                "full throttle reached only {:.1} m from the real start (required {:.1} m)",
+                farthest, min_m
+            ));
+        }
+        Ok(format!(
+            "generated full-throttle trace reached {:.1} m from the real start over {} states",
+            farthest,
+            states.len()
+        ))
     }
 }

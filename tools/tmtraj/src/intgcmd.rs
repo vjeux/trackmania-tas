@@ -2932,7 +2932,7 @@ pub fn stale_verdict(v: &StaleVerdict) -> (i32, String) {
 // ===========================================================================
 // COVERAGE ACCOUNTING FOR NEGATIVE-RETURNING TOOLS.
 //
-// Tonight's largest bug hid in exactly this gap: `locate_candidates` had
+// Tonight's largest bug hid in exactly this gap: the old candidate scanner had
 // `take(64)` on its shortlist, dropped 6161 of 6637 addresses WITHOUT PROBING
 // THEM, and reported `0 passing` as though it had looked. Four hypotheses were
 // burned before anyone counted.

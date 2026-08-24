@@ -47,6 +47,10 @@ structural state failure is fatal. There is no scan or fallback.
 - **Fresh processes / ASLR:** the resolver succeeded in five fresh servers. Heap
   addresses differed; the fixed field path did not. See `full-chain.gdb.txt` and
   the `VALIDATOR CAR` lines in the one-worker integration run.
+- **Cross-map:** the same callback and field path resolved on
+  `tools/testdata/map2.Map.Gbx` with `human_23013.Ghost.Gbx`: 1,207 rows,
+  0.172 m/s median velocity residual, `1.24e-7` quaternion error, and no clock
+  gaps. See `cross-map-map2.txt`.
 - **Input mirror:** identical synthetic containers with 3,000 ticks of hard-left
   and hard-right produced opposite signed X responses through this exact path:
   `1349.411` vs `1370.566`, with opposite yaw quaternion signs. See
@@ -59,22 +63,40 @@ structural state failure is fatal. There is no scan or fallback.
   the exact 32-byte input-record load, called from validator simulation
   `+0x1219f89`. See `input-fault-hook.log`.
 
-## Container initialization finding
+## Container initialization finding and fix
 
-The typed path exposed a second defect rather than hiding it. On the current
-synthetic container, the validator-owned car is near waypoint index 0 / CP3,
-not the semantic `RoadTechStart`:
+The typed path exposed a second defect rather than hiding it. On the synthetic
+container, the validator-owned car was near waypoint index 0 / CP3 and ignored a
+64 m `RoadTechStart` relocation. Packet modes were not the cause: both the
+recorded and synthetic Summer 01 input archives contain only mode 2 packets.
+The structural difference is that the recorded file has 24 skippable chunks,
+including an 8,975-byte `0x03092000` entity-record chunk, while the synthetic
+file has five chunks and no entity record.
 
-- hard-left: `(1349.411, 10.024, 1098.210)`
-- hard-right: `(1370.566, 10.025, 1098.214)`
-- moving only `RoadTechStart` 64 m west leaves the left state unchanged at
-  `(1349.411, 10.024, 1098.212)`
+The explorer now accepts the recorded file only as an opaque
+`ContainerTemplate`. Before either the fork workers or policy receive it,
+`ContainerTemplate::prepare` replaces every input-bearing packet with an
+independently generated `GeneratedTape`, clears mouse/trigger/respawn inputs,
+writes the sanitized container, and requires an exact decode-back match. The
+original inputs and trajectory are not exposed by this API.
 
-The opposite signed response proves the object consumes our input, while the
-moved-start control proves the synthesized container supplies its initial state
-independently of the map start. This is not a locator ambiguity. Search remains
-fail-closed at the start-position control until a game-recorded container is
-used as opaque structure and its entire input archive is replaced.
+On a fresh one-worker run with the recorded container extended to 120.010 s:
+
+- first authoritative sample `(1584.0, 18.0, 801.6)` versus semantic spawn
+  `(1584.0, 16.0, 784.0)`: 17.7 m, inside the 40 m startup tolerance;
+- generated full-throttle control reached 185.2 m from the real start over 340
+  states;
+- structural check: 0.1936 m/s median velocity residual and `1.19e-7` maximum
+  quaternion norm error;
+- neutral and full-throttle files produced different server input echoes;
+- a fresh plain oracle re-simulated the sanitized file as DNF, while an
+  independent `fk trace` of those same generated inputs produced 1,943 rows,
+  619.6 m of path, and moved from `(1583.99, 10.37, 827.80)` to
+  `(1124.69, 10.01, 1018.22)`.
+
+See `recorded-container-start-control.txt` for the startup measurements and
+packet comparison; `plain-oracle-generated-container.txt` and
+`generated-container-trace.*` are the independent replay evidence.
 
 ## Evidence
 
@@ -85,3 +107,10 @@ used as opaque structure and its entire input archive is replaced.
 - `evidence/validator-car-128182/hard-left-start-west-64m.gdb.txt`
 - `evidence/validator-car-128182/input-fault-hook.log`
 - `evidence/validator-car-128182/validator-string-xrefs.tsv`
+- `evidence/validator-car-128182/cross-map-map2.txt`
+- `evidence/validator-car-128182/recorded-container-start-control.txt`
+- `evidence/validator-car-128182/opaque-container-live-run.txt`
+- `evidence/validator-car-128182/plain-oracle-generated-container.txt`
+- `evidence/validator-car-128182/generated-container-trace.log`
+- `evidence/validator-car-128182/generated-container-trace.csv`
+- `evidence/validator-car-128182/generated-tape-confirm.log`

@@ -1,15 +1,10 @@
-//! Where the car's state lives in one server process, and how to find it
-//! without any recorded telemetry.
+//! Sampling layout for a validator-owned car state.
 //!
-//! Extracted from `fk` into the shared driver crate so the SEARCH can locate
-//! the vehicle struct in its own fork servers -- the search cannot depend on
-//! `fk` (that dependency runs the other way), and a second copy of this code
-//! would be a second thing to get wrong.
-//!
-//! Everything here is parameterised by the input tape as `&[Rec]` rather than
-//! by a ghost `Factory`, which is what keeps this crate free of tmsearch.
+//! The addresses in a `Layout` are process-local. Production code obtains one
+//! only from `fk::validator::ValidatorCar`; this module decodes and validates
+//! samples after identity has already been established.
 
-use crate::forksrv::{ForkServer, Rec};
+use crate::forksrv::Rec;
 
 /// Where the car's state lives in one particular server process.
 #[derive(Clone, Debug)]
@@ -50,7 +45,11 @@ pub const WET_OFF: i64 = 180;
 /// The segments the production sampler gathers: the clock, the car block, and
 /// the wetness word (see `WET_OFF`).
 pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
-    vec![(l.clock, 4), (l.pos - 16, 40), (l.pos.wrapping_add(WET_OFF as u64), 4)]
+    vec![
+        (l.clock, 4),
+        (l.pos - 16, 40),
+        (l.pos.wrapping_add(WET_OFF as u64), 4),
+    ]
 }
 
 fn getf32(b: &[u8], o: usize) -> f64 {
@@ -75,58 +74,28 @@ pub struct Row {
     pub wetness: f64,
 }
 
-/// Find the engine's race clock near an already-qualified position address.
-///
-/// One extra fork: stream a wide window keyed on the position, then look for
-/// the 4-byte slot that advances by exactly 10 on every one of those ticks.
-/// Demanding *every* step rules out anything that merely correlates.
-pub fn find_clock(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    start_offset_ms: i32,
-    pos: u64,
-    back: u64,
-    ahead: u64,
-    stride: u64,
-) -> Result<(u64, i64), String> {
-    let lo = pos - back;
-    let len = (back + ahead) as u32;
-
-    // 400 ticks is plenty to pin a strict +10-every-tick slot, and keeps the
-    // discovery fork's pipe traffic to a few MB.
-    let (_j, blob) = srv.run_sampled(probe, recs, lo, len, stride, 400, (back as u32, 12));
-    let recsz = 8 + len as usize;
-    let m = blob.len() / recsz;
-    if m < 50 {
-        return Err(format!("clock discovery: only {} samples", m));
+/// Map bounding box with a generous margin, used only to reject a structurally
+/// invalid state after validator ownership has established its identity.
+pub fn bounds_from(rows: &[Row], margin: f64) -> (f64, f64, f64, f64, f64, f64) {
+    let mut b = (f64::MAX, f64::MIN, f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for r in rows {
+        b.0 = b.0.min(r.x);
+        b.1 = b.1.max(r.x);
+        b.2 = b.2.min(r.y);
+        b.3 = b.3.max(r.y);
+        b.4 = b.4.min(r.z);
+        b.5 = b.5.max(r.z);
     }
-    let g = |i: usize, o: usize| -> u32 {
-        u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 12 + o].try_into().unwrap())
-    };
-    let mut found: Vec<(u64, i64)> = Vec::new();
-    for o in (0..len as usize - 4).step_by(4) {
-        if (0..m - 1).all(|i| g(i + 1, o).wrapping_sub(g(i, o)) == 10) {
-            let race0 = sample_ms(probe, 0, start_offset_ms);
-            found.push((lo + o as u64, g(0, o) as i64 - race0));
-        }
-    }
-    if std::env::var("FKDBG").is_ok() {
-        eprintln!(
-            "DBG find_clock: {} samples (asked 400), {} slots step by exactly +10: {:?}",
-            m,
-            found.len(),
-            found
-                .iter()
-                .map(|(a, b)| format!("{:#x} bias{:+}", a, b))
-                .collect::<Vec<_>>()
-        );
-    }
-    match found.first() {
-        Some(&(a, b)) => Ok((a, b)),
-        None => Err("no u32 advances by exactly 10 every tick near the vehicle state".into()),
-    }
+    (
+        b.0 - margin,
+        b.1 + margin,
+        b.2 - margin,
+        b.3 + margin,
+        b.4 - margin,
+        b.5 + margin,
+    )
 }
+
 /// Decode a gathered sample blob into one row per tick.
 ///
 /// The record is keyed on its whole content, so the engine may emit several
@@ -218,8 +187,14 @@ pub fn verify_tape(
     brake: &[u8],
 ) -> Result<(), String> {
     let n = steer.len();
-    let buf = crate::procmem::read_at(pid, base, n * crate::forksrv::STRIDE)
-        .ok_or_else(|| format!("tape check: cannot read {} bytes at {:#x} of pid {}", n * 32, base, pid))?;
+    let buf = crate::procmem::read_at(pid, base, n * crate::forksrv::STRIDE).ok_or_else(|| {
+        format!(
+            "tape check: cannot read {} bytes at {:#x} of pid {}",
+            n * 32,
+            base,
+            pid
+        )
+    })?;
     let mut bad = 0usize;
     let mut first = String::new();
     for t in 0..n {
@@ -230,7 +205,13 @@ pub fn verify_tape(
             if bad == 0 {
                 first = format!(
                     "tick {}: server has ({}, {}, {}), tape says ({}, {}, {})",
-                    t, g(0), g(4), g(8), want.steer, want.gas, want.brake
+                    t,
+                    g(0),
+                    g(4),
+                    g(8),
+                    want.steer,
+                    want.gas,
+                    want.brake
                 );
             }
             bad += 1;
@@ -304,8 +285,10 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
         }
         let (dx, dy, dz) = (w[1].x - w[0].x, w[1].y - w[0].y, w[1].z - w[0].z);
         verrs.push(
-            ((dx / dt - w[0].vx).powi(2) + (dy / dt - w[0].vy).powi(2) + (dz / dt - w[0].vz).powi(2))
-                .sqrt(),
+            ((dx / dt - w[0].vx).powi(2)
+                + (dy / dt - w[0].vy).powi(2)
+                + (dz / dt - w[0].vz).powi(2))
+            .sqrt(),
         );
         speed += (dx * dx + dy * dy + dz * dz).sqrt() / dt;
         n += 1;
@@ -331,10 +314,16 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
     // velocity bound is RELATIVE to the car's own speed: a fixed 2.0 m/s was
     // calibrated on a 90 m/s car and means nothing on a 30 or a 300 m/s one.
     if c.quat_err > 1e-3 {
-        return Err(format!("not a unit quaternion (p99.5 |q|-1 = {:.3e}): {}", c.quat_err, c));
+        return Err(format!(
+            "not a unit quaternion (p99.5 |q|-1 = {:.3e}): {}",
+            c.quat_err, c
+        ));
     }
     if c.vel_err > (0.02 * c.mean_speed).max(0.5) {
-        return Err(format!("position derivative disagrees with the velocity triple: {}", c));
+        return Err(format!(
+            "position derivative disagrees with the velocity triple: {}",
+            c
+        ));
     }
     if c.gaps * 200 > c.rows {
         return Err(format!("clock is not advancing one tick per row: {}", c));

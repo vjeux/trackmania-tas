@@ -44,9 +44,9 @@
 use crate::oracle::validate_batch;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
-use branch::{ForkAnswer, Forest, Handle, TraceCfg, ROOT};
+use crate::validator::ValidatorCar;
+use branch::{Forest, ForkAnswer, Handle, TraceCfg, ROOT};
 use forkoracle::forksrv::{parse_result, rec_of, ForkServer, Rec};
-use forkoracle::layout::Layout;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,7 +133,9 @@ fn private_dirty_mb(pid: i32) -> Option<f64> {
 }
 
 fn recs_from(steer: &[u8], accel: &[u8], brake: &[u8], from: usize) -> Vec<Rec> {
-    (from..steer.len()).map(|t| rec_of(steer[t], accel[t], brake[t])).collect()
+    (from..steer.len())
+        .map(|t| rec_of(steer[t], accel[t], brake[t]))
+        .collect()
 }
 
 /// A macro action: hold one (steer, gas, brake) triple for `k` ticks.
@@ -156,7 +158,11 @@ fn macro_action(rng: &mut Rng) -> (u8, u8, u8) {
 /// running the tape I asked about* — so this is only ever done AFTER
 /// `assert_running_our_tape`.
 fn split(s: Session) -> (ForkServer, Tape, u64) {
-    let Session { srv, tape, checkpoint_clock } = s;
+    let Session {
+        srv,
+        tape,
+        checkpoint_clock,
+    } = s;
     (srv, tape, checkpoint_clock)
 }
 
@@ -179,20 +185,26 @@ fn fit(p: &[(f64, f64)]) -> (f64, f64) {
 ///
 /// A missing layout is **UNMEASURED**, not "no trace needed": the cost arms
 /// still run and their trace column reads UNMEASURED rather than 0.
-fn locate_layout(srv: &mut ForkServer, probe: usize, recs: &[Rec], off: i32) -> Option<Layout> {
+fn locate_layout(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    off: i32,
+) -> Option<ValidatorCar> {
     let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-    match crate::locate::locate_v2(srv, probe, recs, off, wide, 40_000, 24, false) {
-        Ok(l) => {
+    match ValidatorCar::locate(srv, probe, recs, off, wide, 40_000, false) {
+        Ok(car) => {
+            let l = car.layout();
             println!(
-                "state readout located: pos {:#x}, clock {:#x} (bias {}), self-consistency \
+                "validator-owned state resolved: pos {:#x}, clock {:#x} (bias {}), self-consistency \
                  {:.3} m/s",
                 l.pos, l.clock, l.clock_bias, l.rms
             );
-            Some(l)
+            Some(car)
         }
         Err(e) => {
             eprintln!(
-                "fk tree: the car could not be located ({}). The timing arms still run; every \
+                "fk tree: the validator-owned car did not resolve ({}). The timing arms still run; every \
                  state-trace column reads UNMEASURED. This is a harness limit, not an absence: \
                  the engine computes the state and it is in memory.",
                 e
@@ -222,7 +234,9 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     println!(
         "# fk tree cost -- load1 {:.2}, {} cores, tape {} ticks, checkpoint lroundf #{}",
         load,
-        std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0),
+        std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(0),
         n_ticks,
         s.checkpoint_clock
     );
@@ -235,8 +249,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     println!("identity control: the engine's decoded input array IS our tape, tick for tick");
 
     let probe = s.probe_tick().map_err(|e| {
-        format!("boundary probe failed ({e}); a resume cannot be trusted without it, and a \
-                 fallback here is how a plausible number 2-3 ms off gets banked")
+        format!(
+            "boundary probe failed ({e}); a resume cannot be trusted without it, and a \
+                 fallback here is how a plausible number 2-3 ms off gets banked"
+        )
     })?;
     let remaining = n_ticks.saturating_sub(probe);
     println!(
@@ -282,9 +298,11 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         a1.push(t.elapsed().as_secs_f64() * 1000.0);
         let r = parse_result(&out);
         if r.0.is_none() && r.1.is_none() {
-            return Err("the fork-to-finish arm produced no verdict at all -- the child is not \
+            return Err(
+                "the fork-to-finish arm produced no verdict at all -- the child is not \
                         reaching the validator, and every later arm would be timing nothing"
-                .into());
+                    .into(),
+            );
         }
     }
     let a1m = med(&a1);
@@ -298,7 +316,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
 
     // ---- A2: THE BRANCH, swept over k. The big-k end IS the no-tree fallback.
     let cfg = layout.as_ref().map(|l| TraceCfg {
-        layout: l.clone(),
+        layout: l.layout().clone(),
         dir: engine.work.join("traces"),
         stride: 1,
         max: 200_000,
@@ -310,12 +328,14 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     f.probe_root()?;
     let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
 
-    println!(
-        "\n      k    branch(ms)   probe(ms)    total(ms)   ticks consumed   trace rows"
-    );
+    println!("\n      k    branch(ms)   probe(ms)    total(ms)   ticks consumed   trace rows");
     let mut rows: Vec<(f64, f64)> = Vec::new();
     for &k in &o.ks {
-        let reps = if k > 500 { o.reps.min(3).max(1) } else { o.reps };
+        let reps = if k > 500 {
+            o.reps.min(3).max(1)
+        } else {
+            o.reps
+        };
         let (mut bt, mut pt) = (Vec::new(), Vec::new());
         let (mut trace_rows, mut consumed) = (0usize, 0usize);
         let mut trace_err: Option<String> = None;
@@ -333,7 +353,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             };
             let total = t.elapsed().as_secs_f64() * 1000.0;
             trace_rows = trace.len();
-            consumed = f.probed_boundary(h).map(|b| b.saturating_sub(root_b)).unwrap_or(0);
+            consumed = f
+                .probed_boundary(h)
+                .map(|b| b.saturating_sub(root_b))
+                .unwrap_or(0);
             // The split between branching and probing is MEASURED, not
             // apportioned: one more probe on the live node costs exactly one
             // probe.
@@ -359,7 +382,11 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             p,
             b + p,
             consumed,
-            if layout.is_some() { trace_rows.to_string() } else { "UNMEASURED".into() }
+            if layout.is_some() {
+                trace_rows.to_string()
+            } else {
+                "UNMEASURED".into()
+            }
         );
         rows.push((k as f64, b));
     }
@@ -377,7 +404,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         println!(
             "     the finish-and-print path a branch does NOT pay:\n       A1 ({:.3} ms) - a \
              branch that simulates the same {} ticks ({:.3} ms) = {:.3} ms",
-            a1m, remaining, modelled_full, a1m - modelled_full
+            a1m,
+            remaining,
+            modelled_full,
+            a1m - modelled_full
         );
         println!(
             "     no-tree fallback, from the SAME instrument: a branch of {} ticks = {:.3} ms",
@@ -387,10 +417,15 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         println!(
             "     one k=10 macro = {:.3} ms  ->  {:.1} min per 3.4 M-eval forward pass on {} cores",
             macro10,
-            3.4e6 * macro10 / 1000.0
+            3.4e6 * macro10
+                / 1000.0
                 / 60.0
-                / std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1) as f64,
-            std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0)
+                / std::thread::available_parallelism()
+                    .map(|v| v.get())
+                    .unwrap_or(1) as f64,
+            std::thread::available_parallelism()
+                .map(|v| v.get())
+                .unwrap_or(0)
         );
     }
 
@@ -414,7 +449,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             let (_, nh) = f.advance(h, &inputs, from, k)?;
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             gt.push((g as f64, ms));
-            let mb = f.node_pid(nh).and_then(private_dirty_mb).unwrap_or(f64::NAN);
+            let mb = f
+                .node_pid(nh)
+                .and_then(private_dirty_mb)
+                .unwrap_or(f64::NAN);
             from = f.floor(nh, None)?;
             if g <= 5 || g % 5 == 0 || g == o.depth {
                 println!("  {:3}   {:9.3}   {:17.1}   {:15}", g, ms, mb, from);
@@ -422,8 +460,11 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             chain.push(nh);
             h = nh;
         }
-        let live: Vec<f64> =
-            chain.iter().filter_map(|x| f.node_pid(*x)).filter_map(private_dirty_mb).collect();
+        let live: Vec<f64> = chain
+            .iter()
+            .filter_map(|x| f.node_pid(*x))
+            .filter_map(private_dirty_mb)
+            .collect();
         let total: f64 = live.iter().sum();
         println!(
             "  {} live nodes hold {:.1} MB of private dirty pages ({:.2} MB each) -- a 500-node \
@@ -436,7 +477,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         if gt.len() >= 4 {
             let (a, slope) = fit(&gt);
             let first = med(&gt[..gt.len() / 4].iter().map(|x| x.1).collect::<Vec<_>>());
-            let last = med(&gt[gt.len() * 3 / 4..].iter().map(|x| x.1).collect::<Vec<_>>());
+            let last = med(&gt[gt.len() * 3 / 4..]
+                .iter()
+                .map(|x| x.1)
+                .collect::<Vec<_>>());
             println!(
                 "  per-generation cost: {:.3} ms + {:.4} ms/generation; first quarter {:.3} ms, \
                  last quarter {:.3} ms ({:.2}x)",
@@ -451,7 +495,11 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             f.release(x);
         }
     }
-    println!("\n(load1 {:.2} at the start, {:.2} at the end)", load, load1());
+    println!(
+        "\n(load1 {:.2} at the start, {:.2} at the end)",
+        load,
+        load1()
+    );
     Ok(())
 }
 
@@ -491,7 +539,9 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
     let n_ticks = tape.n();
     let mut s = Session::start(engine, tape, at)?;
     s.assert_running_our_tape()?;
-    let probe = s.probe_tick().map_err(|e| format!("boundary probe failed: {e}"))?;
+    let probe = s
+        .probe_tick()
+        .map_err(|e| format!("boundary probe failed: {e}"))?;
     println!(
         "# fk tree exact -- root probe tick {} (race {}), tape {} ticks",
         probe,
@@ -540,8 +590,9 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
                     ac[t] = gg;
                     br[t] = bb;
                 }
-                let inputs: Vec<Rec> =
-                    (from..from + k).map(|t| rec_of(st[t], ac[t], br[t])).collect();
+                let inputs: Vec<Rec> = (from..from + k)
+                    .map(|t| rec_of(st[t], ac[t], br[t]))
+                    .collect();
                 let (_, nh) = f.advance(h, &inputs, from, o.k)?;
                 chain.push(nh);
                 h = nh;
@@ -560,7 +611,11 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
             let fork = f.finish(h, &tail, from)?;
             let file = engine.work.join(format!("d{:02}_{:04}.Ghost.Gbx", d, i));
             tape.write_candidate(&st, &ac, &br, &file)?;
-            cands.push(Cand { file, fork, depth: d });
+            cands.push(Cand {
+                file,
+                fork,
+                depth: d,
+            });
             for x in chain {
                 f.release(x);
             }
@@ -582,8 +637,10 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
             cands.len()
         ));
     }
-    let by: HashMap<String, (Option<i64>, Option<u32>)> =
-        plain.into_iter().map(|r| (r.file, (r.time_ms, r.cps))).collect();
+    let by: HashMap<String, (Option<i64>, Option<u32>)> = plain
+        .into_iter()
+        .map(|r| (r.file, (r.time_ms, r.cps)))
+        .collect();
 
     let mut per_depth: HashMap<usize, (usize, usize)> = HashMap::new();
     let mut shown = 0;
@@ -626,7 +683,13 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
     let mut all_ok = true;
     for d in ds {
         let (a, t) = per_depth[&d];
-        println!("  {:5}   {:5} / {:5}{}", d, a, t, if a == t { "" } else { "   <-- FAILS" });
+        println!(
+            "  {:5}   {:5} / {:5}{}",
+            d,
+            a,
+            t,
+            if a == t { "" } else { "   <-- FAILS" }
+        );
         if a != t {
             all_ok = false;
         }
@@ -711,7 +774,9 @@ fn negative_control(
         "neg",
     )?;
     let get = |name: &str| -> Option<(Option<i64>, Option<u32>)> {
-        res.iter().find(|r| r.file == name).map(|r| (r.time_ms, r.cps))
+        res.iter()
+            .find(|r| r.file == name)
+            .map(|r| (r.time_ms, r.cps))
     };
     let (ct, cc) = get("neg_C.Ghost.Gbx").ok_or("the oracle returned no row for neg_C")?;
     let (ht, hc) = get("neg_H.Ghost.Gbx").ok_or("the oracle returned no row for neg_H")?;
@@ -799,7 +864,9 @@ pub fn scale(engine: &Engine, tape: Tape, at: Checkpoint, o: ScaleOpts) -> Resul
         o.k,
         clock,
         load,
-        std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0)
+        std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(0)
     );
     let done = AtomicU64::new(0);
     let failed = AtomicU64::new(0);

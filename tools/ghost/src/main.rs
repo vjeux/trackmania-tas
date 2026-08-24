@@ -979,6 +979,11 @@ fn cmd_tape(a: &[String]) {
             println!("input events   {}", ev);
             println!("respawn ticks  {}", idx.iter().filter(|i| a0.packets[**i].respawn()).count());
             println!("same-as-prev   {}", idx.iter().filter(|i| a0.packets[**i].vsame).count());
+            let mut modes = std::collections::BTreeMap::new();
+            for i in &idx {
+                *modes.entry(a0.packets[*i].mode).or_insert(0usize) += 1;
+            }
+            println!("packet modes   {:?}", modes);
             println!("accel on       {}", idx.iter().filter(|i| a0.packets[**i].accel != 0).count());
             println!("brake on       {}", idx.iter().filter(|i| a0.packets[**i].brake != 0).count());
             println!("mouse packets  {}", idx.iter().filter(|i| a0.packets[**i].mouse.is_some()).count());

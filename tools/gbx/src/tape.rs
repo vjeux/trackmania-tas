@@ -358,7 +358,11 @@ pub fn encode_archive(a: &Archive, enc: Encoding) -> Vec<u8> {
     // explicit form cannot: every bit position after the first expansion has
     // moved, so the tail is dropped (the reader stops after `packet_count`
     // packets, which is why the game and the server accept such a file).
-    if enc == Encoding::Verbatim && a.orig_bits_used > 0 && w.pos == a.orig_bits_used && !a.tail.is_empty() {
+    if enc == Encoding::Verbatim
+        && a.orig_bits_used > 0
+        && w.pos == a.orig_bits_used
+        && !a.tail.is_empty()
+    {
         let base = a.orig_bits_used & !7usize;
         let total = base + a.tail.len() * 8;
         let mut b = w.pos;
@@ -426,7 +430,10 @@ impl Tape {
             archives.push(a);
             o += bl;
         }
-        Ok(Tape { chunk_version: ver, archives })
+        Ok(Tape {
+            chunk_version: ver,
+            archives,
+        })
     }
 
     pub fn from_file(path: &str) -> Result<Tape, String> {
@@ -504,7 +511,10 @@ impl Tape {
                     re.len(),
                     a.orig_bitstream.len(),
                     match bad {
-                        Some(k) => format!(", first differing byte {} ({:02x} vs {:02x})", k, re[k], a.orig_bitstream[k]),
+                        Some(k) => format!(
+                            ", first differing byte {} ({:02x} vs {:02x})",
+                            k, re[k], a.orig_bitstream[k]
+                        ),
                         None => String::new(),
                     }
                 ));
@@ -665,13 +675,18 @@ impl Tape {
                     );
                     k += 2;
                 }
-                archives.last_mut().ok_or_else(|| err("@tail before @archive".into()))?.tail = t;
+                archives
+                    .last_mut()
+                    .ok_or_else(|| err("@tail before @archive".into()))?
+                    .tail = t;
                 continue;
             }
             if !l.starts_with("t=") {
                 return Err(err(format!("unrecognised line {:?}", l)));
             }
-            let a = archives.last_mut().ok_or_else(|| err("a t= line before any @archive".into()))?;
+            let a = archives
+                .last_mut()
+                .ok_or_else(|| err("a t= line before any @archive".into()))?;
             let kv = parse_kv(l);
             let idx = kv_num(&kv, "t").map_err(&err)? as usize;
             if idx != a.packets.len() {
@@ -683,7 +698,11 @@ impl Tape {
             }
             let mut p = Packet::blank();
             p.mode = kv_num(&kv, "mode").map_err(&err)? as u32;
-            let w = kv.iter().find(|(k, _)| k == "w").map(|(_, v)| v.clone()).ok_or_else(|| err("no w=".into()))?;
+            let w = kv
+                .iter()
+                .find(|(k, _)| k == "w")
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| err("no w=".into()))?;
             p.state = if w == "prev" {
                 StateEnc::Prev
             } else if let Some(h) = w.strip_prefix("lit:0x") {
@@ -698,7 +717,10 @@ impl Tape {
                 return Err(err(format!("unknown w={:?}", w)));
             };
             let respawn = kv_num(&kv, "respawn").unwrap_or(0) != 0;
-            let mouse = kv.iter().find(|(k, _)| k == "mouse").map(|(_, v)| v.clone());
+            let mouse = kv
+                .iter()
+                .find(|(k, _)| k == "mouse")
+                .map(|(_, v)| v.clone());
             p.mouse = match mouse.as_deref() {
                 None | Some("none") => None,
                 Some(v) => {
@@ -730,7 +752,11 @@ impl Tape {
             // it can live, so asking for one on a repeated word expands it.
             match p.state {
                 StateEnc::Lit(l) => {
-                    let nl = if respawn { l | (1 << 31) } else { l & !(1u64 << 31) };
+                    let nl = if respawn {
+                        l | (1 << 31)
+                    } else {
+                        l & !(1u64 << 31)
+                    };
                     p.state = StateEnc::Lit(nl);
                 }
                 _ if respawn => {
@@ -779,13 +805,19 @@ impl Tape {
                 prevw = (w, f);
             }
         }
-        Ok(Tape { chunk_version, archives })
+        Ok(Tape {
+            chunk_version,
+            archives,
+        })
     }
 }
 
 fn parse_kv(s: &str) -> Vec<(String, String)> {
     s.split_whitespace()
-        .filter_map(|tok| tok.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .filter_map(|tok| {
+            tok.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
         .collect()
 }
 
@@ -795,30 +827,112 @@ fn kv_num(kv: &[(String, String)], key: &str) -> Result<i64, String> {
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.clone())
         .ok_or_else(|| format!("missing {}=", key))?;
-    v.parse::<i64>().map_err(|_| format!("{}={:?} is not an integer", key, v))
+    v.parse::<i64>()
+        .map_err(|_| format!("{}={:?} is not an integer", key, v))
 }
 
-
 impl Tape {
+    /// Replace every input-bearing field while preserving packet modes and all
+    /// non-input container structure. Mouse and trigger channels are cleared,
+    /// and the respawn bit is removed from every state literal.
+    pub fn replace_input_channels(
+        &mut self,
+        steer: &[i8],
+        accel: &[bool],
+        brake: &[bool],
+    ) -> Result<(), String> {
+        if self.archives.len() != 1 {
+            return Err(format!(
+                "input replacement requires exactly one archive, found {}",
+                self.archives.len()
+            ));
+        }
+        let a = &mut self.archives[0];
+        if steer.len() != a.packets.len()
+            || accel.len() != a.packets.len()
+            || brake.len() != a.packets.len()
+        {
+            return Err(format!(
+                "replacement lengths are steer {} accel {} brake {}, archive has {} ticks",
+                steer.len(),
+                accel.len(),
+                brake.len(),
+                a.packets.len()
+            ));
+        }
+        for (i, p) in a.packets.iter_mut().enumerate() {
+            p.mouse = None;
+            p.vsame = false;
+            p.word0 &= !0x20;
+            if let StateEnc::Lit(lit) = &mut p.state {
+                *lit &= !(1u64 << 31);
+            }
+            match p.mode {
+                2 | 4 => {
+                    p.steer = steer[i] as u8 as u32;
+                    p.accel = u32::from(accel[i]);
+                    p.brake = u32::from(brake[i]);
+                }
+                12 => {
+                    p.steer = (steer[i] as f32 / 127.0).to_bits();
+                    p.accel = u32::from(accel[i]);
+                    p.brake = u32::from(brake[i]);
+                }
+                13 => {
+                    p.steer = (steer[i] as f32 / 127.0).to_bits();
+                    p.accel = 0;
+                    p.brake = 0;
+                }
+                0 => {
+                    p.steer = 0;
+                    p.accel = 0;
+                    p.brake = 0;
+                }
+                _ => {
+                    p.steer = 0;
+                    p.accel = 0;
+                    p.brake = 0;
+                    p.tri = Some([0; 4]);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The decoded per-tick input channels of archive 0, as plain slices.
     /// Callers that only want "what did the driver do on tick i" should not
     /// have to know how a packet is coded.
     pub fn steer_i8s(&self) -> Vec<i8> {
-        self.archives.first().map(|a| a.packets.iter().map(|p| p.steer_i8()).collect()).unwrap_or_default()
+        self.archives
+            .first()
+            .map(|a| a.packets.iter().map(|p| p.steer_i8()).collect())
+            .unwrap_or_default()
     }
     pub fn accels(&self) -> Vec<u8> {
-        self.archives.first().map(|a| a.packets.iter().map(|p| p.accel as u8).collect()).unwrap_or_default()
+        self.archives
+            .first()
+            .map(|a| a.packets.iter().map(|p| p.accel as u8).collect())
+            .unwrap_or_default()
     }
     pub fn brakes(&self) -> Vec<u8> {
-        self.archives.first().map(|a| a.packets.iter().map(|p| p.brake as u8).collect()).unwrap_or_default()
+        self.archives
+            .first()
+            .map(|a| a.packets.iter().map(|p| p.brake as u8).collect())
+            .unwrap_or_default()
     }
     pub fn respawns(&self) -> Vec<bool> {
-        self.archives.first().map(|a| a.packets.iter().map(|p| p.respawn()).collect()).unwrap_or_default()
+        self.archives
+            .first()
+            .map(|a| a.packets.iter().map(|p| p.respawn()).collect())
+            .unwrap_or_default()
     }
     /// Race time in ms of tick `i` of archive 0. The offset is why: most of
     /// this project's incumbents are countdown-prefixed, so tick 0 is not race 0.
     pub fn race_ms(&self, i: usize) -> i64 {
-        self.archives.first().map(|a| a.start_offset_ms as i64 + 10 * i as i64).unwrap_or(0)
+        self.archives
+            .first()
+            .map(|a| a.start_offset_ms as i64 + 10 * i as i64)
+            .unwrap_or(0)
     }
 }
 
@@ -836,7 +950,11 @@ impl Tape {
     /// `Encoding::Explicit` is what a patchable base image needs: every vehicle
     /// field is written out, so every tick has bits at a fixed position. It is
     /// deterministic -- the same tape always produces the same bytes.
-    pub fn inject_into(&self, c: &crate::container::Container, enc: Encoding) -> Result<Vec<u8>, String> {
+    pub fn inject_into(
+        &self,
+        c: &crate::container::Container,
+        enc: Encoding,
+    ) -> Result<Vec<u8>, String> {
         let body = self.splice_into(c.body(), enc)?;
         let mut file = c.gbx.header_bytes_u();
         file.extend_from_slice(&body);

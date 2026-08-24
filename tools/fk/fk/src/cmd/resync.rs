@@ -43,10 +43,11 @@
 //! the run is already lost, and finish time is unavailable for a tape that
 //! never finishes. The horizon is monotone in exactly the thing being bought.
 
-use crate::locate::{locate_v2, trajectory};
+use crate::locate::trajectory;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
+use crate::validator::ValidatorCar;
 use forkoracle::forksrv::Rec;
 use forkoracle::layout::Row;
 
@@ -108,8 +109,8 @@ fn fit_lag(rows: &[Row], r: &traj::Reference, fit_ms: i64) -> i64 {
         let mut v = Vec::new();
         for row in rows.iter().filter(|x| x.time_ms <= t0 + fit_ms) {
             if let Some(p) = r.pos_at((row.time_ms + lag * 10) as f64) {
-                let d = ((row.x - p.0).powi(2) + (row.y - p.1).powi(2) + (row.z - p.2).powi(2))
-                    .sqrt();
+                let d =
+                    ((row.x - p.0).powi(2) + (row.y - p.1).powi(2) + (row.z - p.2).powi(2)).sqrt();
                 v.push(d);
             }
         }
@@ -170,7 +171,11 @@ fn horizon(rows: &[Row], r: &traj::Reference, lag: i64, tol: f64, onset: f64) ->
         last = row.time_ms;
     }
     resid.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med = if resid.is_empty() { f64::NAN } else { resid[resid.len() / 2] };
+    let med = if resid.is_empty() {
+        f64::NAN
+    } else {
+        resid[resid.len() / 2]
+    };
     (last, med, born)
 }
 
@@ -191,14 +196,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
         let mut s = Session::start(engine, tape.clone(), at)?;
         let probe = s.probe_tick()?;
         let base_recs = s.tape.tail_records(probe);
-        let layout = locate_v2(
+        let layout = ValidatorCar::locate(
             &mut s.srv,
             probe,
             &base_recs,
             s.tape.start_offset_ms,
             bounds,
             2000,
-            4000,
             true,
         )?;
         // The locate control must be measured on a window where the tape is
@@ -206,7 +210,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
         // 0.6123 m on the very subject of this command -- because that window
         // contains the divergence being investigated -- and six good locates
         // in a row get thrown away.
-        let rows = trajectory(&mut s.srv, probe, &base_recs, &layout, o.ctlticks as u32);
+        let rows = trajectory(
+            &mut s.srv,
+            probe,
+            &base_recs,
+            layout.layout(),
+            o.ctlticks as u32,
+        );
         // The control has to be measured AT THE FITTED LAG. The engine's clock
         // and the recording's differ by a whole number of ticks, and at
         // 145 km/h one tick is 0.40 m: judged at lag 0, a perfect locate on a
@@ -222,7 +232,11 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
             })
             .collect();
         resid.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let med = if resid.is_empty() { f64::MAX } else { resid[resid.len() / 2] };
+        let med = if resid.is_empty() {
+            f64::MAX
+        } else {
+            resid[resid.len() / 2]
+        };
         let ok = med < 0.05;
         println!(
             "attempt {}: probe tick {} (race {}), locate control: median {:.4} m over {} ticks at lag {:+}",
@@ -239,14 +253,12 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
         s.srv.quit();
         if attempt >= 6 {
             return Err(
-                "six locates in a row failed the reference control; the car was never found"
-                    .into(),
+                "six locates in a row failed the reference control; the car was never found".into(),
             );
         }
     };
     println!("tape {} ticks, reference {}", ntape, o.reference);
     let tape_race0 = s.tape.race_ms(probe);
-
 
     // How many ticks of trajectory to gather per candidate. A full 60 s tail
     // is 6600 ticks and 0.45 s; while the horizon is at 8 s, 6000 of those
@@ -258,7 +270,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
     };
 
     // The baseline, and the lag it fixes.
-    let rows0 = trajectory(&mut s.srv, probe, &base_recs, &layout, (ntape - probe + 200) as u32);
+    let rows0 = trajectory(
+        &mut s.srv,
+        probe,
+        &base_recs,
+        layout.layout(),
+        (ntape - probe + 200) as u32,
+    );
     if rows0.len() < 20 {
         return Err(format!("baseline trace returned {} rows", rows0.len()));
     }
@@ -288,12 +306,21 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
     let mut born = born0;
     if let Some(bt) = o.control_break_tick {
         if bt < probe || bt >= ntape {
-            return Err(format!("--control-break tick {} is outside [{}, {})", bt, probe, ntape));
+            return Err(format!(
+                "--control-break tick {} is outside [{}, {})",
+                bt, probe, ntape
+            ));
         }
         let i = bt - probe;
         let before = cur[i].steer;
         cur[i].steer = (cur[i].steer + o.control_break_delta as f32 / 127.0).clamp(-1.0, 1.0);
-        let rows = trajectory(&mut s.srv, probe, &cur, &layout, (ntape - probe + 200) as u32);
+        let rows = trajectory(
+            &mut s.srv,
+            probe,
+            &cur,
+            layout.layout(),
+            (ntape - probe + 200) as u32,
+        );
         let (h, _, b) = horizon(&rows, &reference, lag, o.tol, o.onset);
         println!(
             "CONTROL: broke tick {} steer {:+.4} -> {:+.4}; horizon {} -> {}, error born {}",
@@ -333,8 +360,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
         } else {
             probe + 1
         };
-        let lo = o.lo.unwrap_or_else(|| centre.saturating_sub(o.window)).max(probe);
-        let hi = o.hi.unwrap_or(centre + o.window / 4).min(ntape - 1).max(lo + 1);
+        let lo =
+            o.lo.unwrap_or_else(|| centre.saturating_sub(o.window))
+                .max(probe);
+        let hi =
+            o.hi.unwrap_or(centre + o.window / 4)
+                .min(ntape - 1)
+                .max(lo + 1);
         println!(
             "sweeping ticks [{}, {}] (error born {}), spans 1..{}, |delta| <= {}",
             lo,
@@ -378,7 +410,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
             let end = (i + span).min(cur.len());
             let saved: Vec<Rec> = cur[i..end].to_vec();
             apply(&mut cur, i, end, dd);
-            let rows = trajectory(&mut s.srv, probe, &cur, &layout, gather(best_h));
+            let rows = trajectory(&mut s.srv, probe, &cur, layout.layout(), gather(best_h));
             let (h, _, b) = horizon(&rows, &reference, lag, o.tol, o.onset);
             cur[i..end].copy_from_slice(&saved);
             if h > round_best.0 {
@@ -449,7 +481,8 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
                 brake[t] = u8::from(r.brake > 0.5);
             }
         }
-        s.tape.write_candidate(&steer, &accel, &brake, std::path::Path::new(p))?;
+        s.tape
+            .write_candidate(&steer, &accel, &brake, std::path::Path::new(p))?;
         println!("wrote {}", p);
     }
     s.srv.quit();

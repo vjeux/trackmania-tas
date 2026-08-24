@@ -26,15 +26,17 @@
 //! tape is run through both paths and must return the reference's own
 //! millisecond, and must not trip anything.
 
-use forkoracle::blind::{bounds_from, locate_blind};
+use crate::tape::Tape as Factory;
+use crate::validator::ValidatorCar;
 use forkoracle::forksrv::{parse_result, rec_of, write_key, ForkServer, Rec};
-use forkoracle::pred_core::Summary;
+use forkoracle::inputs::{mutate, Inputs as State, OpSet, Rng as MRng};
+use forkoracle::layout::{
+    bounds_from, segments, Layout, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL,
+};
 use forkoracle::pred::{outcome, parse_spec, Outcome, RefLineData, Watch};
-use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
+use forkoracle::pred_core::Summary;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use crate::tape::Tape as Factory;
-use forkoracle::inputs::{mutate, Inputs as State, OpSet, Rng as MRng};
 
 pub struct Cfg {
     pub template: String,
@@ -60,7 +62,6 @@ pub struct Cfg {
     pub corridor: f32,
     pub ahead: i32,
     pub back: i32,
-    pub every: u64,
     pub finishmargin: f32,
     pub fast: u32,
     pub reftime: i64,
@@ -86,7 +87,9 @@ fn parse(args: &[String]) -> Cfg {
         template: String::new(),
         map: String::new(),
         server: std::env::var("TM_SERVER").unwrap_or_else(|_| "/tmp/tmoracle/server".into()),
-        work: crate::session::Engine::default_work().to_string_lossy().into(),
+        work: crate::session::Engine::default_work()
+            .to_string_lossy()
+            .into(),
         shim: std::env::var("FK_SHIM")
             .ok()
             .or_else(|| crate::session::default_shim().map(|p| p.to_string_lossy().into()))
@@ -109,7 +112,6 @@ fn parse(args: &[String]) -> Cfg {
         corridor: 40.0,
         ahead: 24,
         back: 8,
-        every: 1,
         finishmargin: 10.0,
         fast: 1,
         reftime: 0,
@@ -154,7 +156,6 @@ fn parse(args: &[String]) -> Cfg {
             "--corridor" => c.corridor = next(&mut i).parse().unwrap(),
             "--ahead" => c.ahead = next(&mut i).parse().unwrap(),
             "--back" => c.back = next(&mut i).parse().unwrap(),
-            "--every" => c.every = next(&mut i).parse().unwrap(),
             "--finishmargin" => c.finishmargin = next(&mut i).parse().unwrap(),
             "--fast" => c.fast = next(&mut i).parse().unwrap(),
             "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
@@ -183,7 +184,11 @@ fn parse(args: &[String]) -> Cfg {
 /// resample onto tape ticks. `fk btraj` writes one row per 10 ms tick, so this
 /// is a re-index rather than a resample; ticks before the first row (the
 /// standing start) clamp to it.
-pub fn ref_from_csv(path: &str, start_offset_ms: i32, nticks: usize) -> Result<RefLineData, String> {
+pub fn ref_from_csv(
+    path: &str,
+    start_offset_ms: i32,
+    nticks: usize,
+) -> Result<RefLineData, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut pts: Vec<Option<[f64; 3]>> = vec![None; nticks];
     let mut nrow = 0;
@@ -351,7 +356,8 @@ fn setup(c: &Cfg) -> Setup {
         boundary as i64 * 10 + f.start_offset_ms as i64
     );
 
-    // the reference line, and the bounds the blind locate needs
+    // The route bounds are a structural guard only. Identity comes from the
+    // validator's sole participant and primary CGameVehiclePhy.
     let refline = if c.refcsv.is_empty() {
         RefLineData::default()
     } else {
@@ -379,10 +385,19 @@ fn setup(c: &Cfg) -> Setup {
         (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0)
     };
     let lrecs = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let layout = locate_blind(&mut srv, probe, &lrecs, f.start_offset_ms, c.every.max(1), bounds, true)
-        .unwrap_or_else(|e| panic!("ABORT: {}", e));
+    let car = ValidatorCar::locate(
+        &mut srv,
+        probe,
+        &lrecs,
+        f.start_offset_ms,
+        bounds,
+        2000,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("ABORT: validator-owned car did not resolve: {}", e));
+    let layout = car.layout().clone();
     println!(
-        "state located: position {:#x}, clock {:#x} (bias {:+} ms), self-consistency {:.3} m/s",
+        "validator car: position {:#x}, clock {:#x} (bias {:+} ms), self-consistency {:.3} m/s",
         layout.pos, layout.clock, layout.clock_bias, layout.rms
     );
 
@@ -508,16 +523,20 @@ fn offline(c: &Cfg) {
         watch.preds.push(parse_spec(s).unwrap());
     }
     if !c.gate.is_empty() {
-        watch.gate = forkoracle::pred::parse_gate(&c.gate, &c.gate_key)
-            .unwrap_or_else(|e| crate::die(e));
+        watch.gate =
+            forkoracle::pred::parse_gate(&c.gate, &c.gate_key).unwrap_or_else(|e| crate::die(e));
     }
     if !c.fire.is_empty() {
-        watch.fire =
-            forkoracle::pred::parse_fire(
-                &c.fire, c.fire_at, c.fire_need, &c.fire_where, &c.after_key, c.after_ticks,
-                c.after_from_end,
-            )
-                .unwrap_or_else(|e| crate::die(e));
+        watch.fire = forkoracle::pred::parse_fire(
+            &c.fire,
+            c.fire_at,
+            c.fire_need,
+            &c.fire_where,
+            &c.after_key,
+            c.after_ticks,
+            c.after_from_end,
+        )
+        .unwrap_or_else(|e| crate::die(e));
     }
     // `--trajectory`, not `--out`: this verb READS a trajectory. The flag was
     // called `--out` because the file it evaluates is usually one another
@@ -528,7 +547,12 @@ fn offline(c: &Cfg) {
     } else {
         c.traj_in.clone()
     };
-    watch.finish_s = finish_s(&watch.refline.clone(), if c.reftime > 0 { Some(c.reftime) } else { None }, f.start_offset_ms, c.finishmargin);
+    watch.finish_s = finish_s(
+        &watch.refline.clone(),
+        if c.reftime > 0 { Some(c.reftime) } else { None },
+        f.start_offset_ms,
+        c.finishmargin,
+    );
     let sum = eval_csv(&watch, &path, f.start_offset_ms, n);
     // THE SAMPLE RATE IS PART OF EVERY ANSWER HERE, and it is not the fork's.
     //
@@ -569,10 +593,16 @@ fn offline(c: &Cfg) {
                 "  fire: at tick {} ({:+.2}) at ({:.2}, {:.2}, {:.2}); {} run(s), {}{}",
                 sum.fire_tick,
                 sum.fire_value,
-                sum.fire_pos[0], sum.fire_pos[1], sum.fire_pos[2],
+                sum.fire_pos[0],
+                sum.fire_pos[1],
+                sum.fire_pos[2],
                 sum.fire_runs,
                 if sum.fire_end_tick >= 0 {
-                    format!("ended at tick {} ({} ticks)", sum.fire_end_tick, sum.fire_end_tick - sum.fire_tick + 1)
+                    format!(
+                        "ended at tick {} ({} ticks)",
+                        sum.fire_end_tick,
+                        sum.fire_end_tick - sum.fire_tick + 1
+                    )
                 } else {
                     "still holding when the run ended".to_string()
                 },
@@ -598,7 +628,10 @@ fn offline(c: &Cfg) {
                 sum.gate_quat[0], sum.gate_quat[1], sum.gate_quat[2], sum.gate_quat[3]
             );
         } else if sum.gate_miss.is_finite() {
-            println!("  gate: never entered; closest approach {:.3} m", sum.gate_miss);
+            println!(
+                "  gate: never entered; closest approach {:.3} m",
+                sum.gate_miss
+            );
         } else {
             println!("  gate: never entered, and never came within measuring distance");
         }
@@ -734,8 +767,10 @@ fn audit(c: &Cfg) {
     // applied to anything. `Distance` (first differing tick, how many differ,
     // largest steering move) is what makes the number transferable.
     let reference = State::from_arrays(&s.f.steer, &s.f.accel, &s.f.brake);
-    let dists: Vec<forkoracle::inputs::Distance> =
-        cands.iter().map(|(st, _)| st.distance_from(&reference)).collect();
+    let dists: Vec<forkoracle::inputs::Distance> = cands
+        .iter()
+        .map(|(st, _)| st.distance_from(&reference))
+        .collect();
     {
         let firsts: Vec<usize> = dists.iter().filter_map(|d| d.first_diff_tick).collect();
         let mut diffs: Vec<usize> = dists.iter().map(|d| d.diff_ticks).collect();
@@ -743,7 +778,11 @@ fn audit(c: &Cfg) {
         println!(
             "DISTANCE FROM THE REFERENCE  earliest divergence tick {} (race {}), \
              median {} of {} ticks differ, worst {}; {} candidates identical to the reference",
-            firsts.iter().min().map(|t| t.to_string()).unwrap_or("-".into()),
+            firsts
+                .iter()
+                .min()
+                .map(|t| t.to_string())
+                .unwrap_or("-".into()),
             firsts
                 .iter()
                 .min()
@@ -844,9 +883,7 @@ fn audit(c: &Cfg) {
         }
         // the observation-only pass must be invisible: same answer as no
         // watchdog at all, for every candidate
-        if r.obs.time != r.plain_time
-            || (r.obs.time.is_none() && r.obs.cps != r.plain_cps)
-        {
+        if r.obs.time != r.plain_time || (r.obs.time.is_none() && r.obs.cps != r.plain_cps) {
             obs_vs_plain_bad += 1;
             if obs_vs_plain_bad <= 5 {
                 println!(
@@ -859,8 +896,7 @@ fn audit(c: &Cfg) {
             n_trip += 1;
             continue;
         }
-        let same = r.w.time == r.plain_time
-            && (r.w.time.is_some() || r.w.cps == r.plain_cps);
+        let same = r.w.time == r.plain_time && (r.w.time.is_some() || r.w.cps == r.plain_cps);
         if same {
             same_armed += 1;
         } else {
@@ -872,9 +908,7 @@ fn audit(c: &Cfg) {
                 );
             }
         }
-        if r.plain_time != r.full_time
-            || (r.plain_time.is_none() && r.plain_cps != r.full_cps)
-        {
+        if r.plain_time != r.full_time || (r.plain_time.is_none() && r.plain_cps != r.full_cps) {
             fork_vs_full_bad += 1;
             if fork_vs_full_bad <= 5 {
                 println!(
@@ -1215,8 +1249,19 @@ fn equiv(c: &Cfg) {
                 println!(
                     "  DIFFER c{:04}: fast {:?} trip {}@{} prog {:.3} ticks {} off_max {:.3} | \
                      full {:?} trip {}@{} prog {:.3} ticks {} off_max {:.3}",
-                    i, a.time, sa.trip_pred, sa.trip_tick, sa.progress, sa.nticks, sa.off_max,
-                    b.time, sb.trip_pred, sb.trip_tick, sb.progress, sb.nticks, sb.off_max
+                    i,
+                    a.time,
+                    sa.trip_pred,
+                    sa.trip_tick,
+                    sa.progress,
+                    sa.nticks,
+                    sa.off_max,
+                    b.time,
+                    sb.trip_pred,
+                    sb.trip_tick,
+                    sb.progress,
+                    sb.nticks,
+                    sb.off_max
                 );
             }
         }
@@ -1274,7 +1319,11 @@ fn sample_step_ms(path: &str) -> i64 {
     if ts.len() < 3 {
         return 0;
     }
-    let mut d: Vec<i64> = ts.windows(2).map(|w| w[1] - w[0]).filter(|&x| x > 0).collect();
+    let mut d: Vec<i64> = ts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|&x| x > 0)
+        .collect();
     if d.is_empty() {
         return 0;
     }

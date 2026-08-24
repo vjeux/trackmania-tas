@@ -73,7 +73,6 @@ pub struct Cfg {
     pub donor: String,
     pub map: String,
     pub work: PathBuf,
-    pub state_off: String,
     pub probe_tick: String,
     pub signature_ms: String,
     pub tol: f64,
@@ -258,8 +257,6 @@ fn evaluate(
     // wrote is still the engine's own state, so the exit status is not the
     // test — the presence and length of the file is.
     let _ = Command::new(&cfg.fk)
-        .env("FK_STATE_OFF", &cfg.state_off)
-        .env("FK_VERR_MAX", "2.0")
         .args(["trace", "--tape"])
         .arg(&gb)
         .arg("--map")
@@ -499,7 +496,6 @@ fn main() {
         donor: get("--donor", "donor.Replay.Gbx"),
         map: get("--map", "map.Map.Gbx"),
         work: PathBuf::from(get("--work", "/tmp/recon")),
-        state_off: get("--state-off", "8183260"),
         probe_tick: get("--probe-tick", "60"),
         signature_ms: get("--signature-at", "95000"),
         tol: get("--tol", "8").parse().unwrap(),
