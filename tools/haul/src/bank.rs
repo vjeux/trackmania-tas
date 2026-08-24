@@ -396,12 +396,19 @@ pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
         return Err(format!("no bridge binary at {ws}"));
     }
 
-    let bundle = std::env::temp_dir().join(format!("tmhaul-{}.bundle", std::process::id()));
+    // A unique name per push. The bridge's file copier skips a transfer whose
+    // md5 already matches on the far side, so a FIXED remote name left by an
+    // earlier push is a stale file the next push can collide with — observed
+    // once as `md5 mismatch after push`, with the remote still holding the
+    // previous bundle. A fresh name each time removes the class.
+    let stamp = format!("{}-{}", std::process::id(), crate::time::now());
+    let bundle = std::env::temp_dir().join(format!("tmhaul-{stamp}.bundle"));
     let _ = std::fs::remove_file(&bundle);
     git(&l.repo, &["bundle", "create", &bundle.to_string_lossy(), branch])?;
     let local_md5 = md5_file(&bundle).map_err(|e| e.to_string())?;
 
-    gitcmd::run(&l.repo, &wsx, &["push", &bundle.to_string_lossy(), "~/tmhaul-in.bundle"])?;
+    let remote_bundle = format!("~/tmhaul-{stamp}.bundle");
+    gitcmd::run(&l.repo, &wsx, &["push", &bundle.to_string_lossy(), &remote_bundle])?;
 
     // The `+` force applies only to `tmhaul-incoming`, a scratch ref on the
     // render box that this harness owns: a rebase gives our commits new shas,
@@ -412,9 +419,10 @@ pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
         "set -e; \
          if [ ! -d ~/haul-push ]; then git clone -q github-tmtas:vjeux/trackmania-tas.git ~/haul-push; fi; \
          cd ~/haul-push; \
-         git fetch ~/tmhaul-in.bundle +{branch}:refs/heads/tmhaul-incoming; \
+         git fetch {remote_bundle} +{branch}:refs/heads/tmhaul-incoming; \
          git push origin refs/heads/tmhaul-incoming:refs/heads/{branch}; \
-         git rev-parse refs/heads/tmhaul-incoming"
+         git rev-parse refs/heads/tmhaul-incoming; \
+         rm -f {remote_bundle}"
     );
     let out = gitcmd::run(&l.repo, &ws, &[&script])?;
     let remote_sha = out.stdout.trim().lines().last().unwrap_or("").to_string();
