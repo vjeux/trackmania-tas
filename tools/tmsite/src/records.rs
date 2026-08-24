@@ -232,6 +232,172 @@ pub fn refresh(o: &Fetch) -> Result<String, String> {
     ))
 }
 
+/// Fetch one map, its two public live-board views, and every replay URL the
+/// live board exposes. The raw responses stay beside the binaries so every
+/// displayed value and downloaded seed can be re-derived later.
+pub struct Acquire {
+    pub id: i64,
+    pub out: String,
+    pub proxy: String,
+    pub sleep_ms: u64,
+    pub ua: String,
+    pub replay_limit: usize,
+}
+
+fn safe_component(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            out.push(c);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_');
+    if out.is_empty() { "unknown".to_string() } else { out.to_string() }
+}
+
+fn replay_url(s: &str) -> String {
+    if s.starts_with("http://") || s.starts_with("https://") {
+        s.to_string()
+    } else if s.starts_with('/') {
+        format!("https://trackmania.io{}", s)
+    } else {
+        format!("https://trackmania.io/{}", s)
+    }
+}
+
+fn require_200(hit: &Hit, path: &Path) -> Result<(), String> {
+    if hit.http == "200" {
+        Ok(())
+    } else {
+        Err(format!("{} returned HTTP {} ({} bytes banked at {})",
+            hit.url, hit.http, hit.bytes, path.display()))
+    }
+}
+
+pub fn acquire(o: &Acquire) -> Result<String, String> {
+    if o.id <= 0 {
+        return Err("map id must be positive".into());
+    }
+    let out = Path::new(&o.out);
+    mkdir(out)?;
+    mkdir(&out.join("replays"))?;
+    let fetch = Fetch {
+        root: String::new(), bank: o.out.clone(), proxy: o.proxy.clone(),
+        sleep_ms: o.sleep_ms, ua: o.ua.clone(),
+    };
+    let mut log = Vec::new();
+
+    let detail_path = out.join("tmx_detail.json");
+    let detail_url = format!("https://trackmania.exchange/api/maps/get_map_info/multi/{}", o.id);
+    let hit = get(&fetch, o.id, "tmx_detail", &detail_url, &detail_path)?;
+    require_200(&hit, &detail_path)?;
+    log.push(hit);
+    std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+
+    let tmx_path = out.join("tmx.json");
+    let tmx_url = format!(
+        "https://trackmania.exchange/api/maps?id={}&fields={}", o.id,
+        "MapId,MapUid,Name,Medals.Author,OnlineWR,OnlineRecordCount,UpdatedAt"
+    );
+    let hit = get(&fetch, o.id, "tmx", &tmx_url, &tmx_path)?;
+    require_200(&hit, &tmx_path)?;
+    log.push(hit);
+    let tmx_text = std::fs::read_to_string(&tmx_path)
+        .map_err(|e| format!("read {}: {}", tmx_path.display(), e))?;
+    let tmx = tmx_rows(&tmx_text).into_iter()
+        .find(|(id, _)| *id == o.id).map(|(_, row)| row)
+        .ok_or_else(|| format!("TMX response did not contain map {}", o.id))?;
+    if tmx.uid.is_empty() {
+        return Err(format!("TMX response for map {} has no UID", o.id));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+
+    let map_path = out.join("map.Map.Gbx");
+    let map_url = format!("https://trackmania.exchange/maps/download/{}", o.id);
+    let hit = get(&fetch, o.id, "map", &map_url, &map_path)?;
+    require_200(&hit, &map_path)?;
+    log.push(hit);
+    std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+
+    let tmio_map_path = out.join("tmio_map.json");
+    let tmio_map_url = format!("https://trackmania.io/api/map/{}", tmx.uid);
+    let hit = get(&fetch, o.id, "tmio_map", &tmio_map_url, &tmio_map_path)?;
+    require_200(&hit, &tmio_map_path)?;
+    log.push(hit);
+    let tmio_map_text = std::fs::read_to_string(&tmio_map_path)
+        .map_err(|e| format!("read {}: {}", tmio_map_path.display(), e))?;
+    let tmio_map_json = parse(&tmio_map_text)?;
+    let nadeo_url = tmio_map_json.get("fileUrl").and_then(|x| x.as_str())
+        .ok_or_else(|| "trackmania.io map response has no fileUrl".to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+    let nadeo_path = out.join("map_nadeo.Map.Gbx");
+    let hit = get(&fetch, o.id, "map_nadeo", nadeo_url, &nadeo_path)?;
+    require_200(&hit, &nadeo_path)?;
+    log.push(hit);
+    std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+
+    let board_path = out.join("tmio_leaderboard.json");
+    let board_url = format!("https://trackmania.io/api/leaderboard/map/{}", tmx.uid);
+    let hit = get(&fetch, o.id, "tmio_lb", &board_url, &board_path)?;
+    require_200(&hit, &board_path)?;
+    log.push(hit);
+    let board_text = std::fs::read_to_string(&board_path)
+        .map_err(|e| format!("read {}: {}", board_path.display(), e))?;
+    let board = board(&board_text)?;
+
+    let mut downloaded = 0usize;
+    for top in board.tops.iter().filter(|r| !r.ghost.is_empty()).take(o.replay_limit) {
+        std::thread::sleep(std::time::Duration::from_millis(o.sleep_ms));
+        let url = replay_url(&top.ghost);
+        let name = format!("rank{:02}_{}_{}.Ghost.Gbx",
+            top.position, top.time_ms, safe_component(&top.player));
+        let path = out.join("replays").join(name);
+        let hit = get(&fetch, o.id, "replay", &url, &path)?;
+        if hit.http == "200" { downloaded += 1; }
+        log.push(hit);
+    }
+
+    let mut manifest = String::from("mapid\tkind\thttp\tbytes\turl\n");
+    for h in &log {
+        manifest.push_str(&format!("{}\t{}\t{}\t{}\t{}\n",
+            h.id, h.kind, h.http, h.bytes, h.url));
+    }
+    let manifest_path = out.join("fetch_log.tsv");
+    std::fs::write(&manifest_path, manifest)
+        .map_err(|e| format!("write {}: {}", manifest_path.display(), e))?;
+
+    let bad_replays = log.iter().filter(|h| h.kind == "replay" && h.http != "200").count();
+    Ok(format!(
+        "{} ({}) — AT {}, live WR {}, {} live records; map and raw sources banked, {} replay(s) downloaded ({} failed)",
+        tmx.name, tmx.uid,
+        tmx.author_ms.map(secs).unwrap_or_else(|| "unknown".into()),
+        board.tops.first().map(|r| secs(r.time_ms)).unwrap_or_else(|| "none".into()),
+        board.records.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
+        downloaded, bad_replays
+    ))
+}
+
+#[cfg(test)]
+mod acquire_tests {
+    use super::{replay_url, safe_component};
+
+    #[test]
+    fn replay_urls_are_made_absolute_without_rewriting_absolute_urls() {
+        assert_eq!(replay_url("/ghost/abc"), "https://trackmania.io/ghost/abc");
+        assert_eq!(replay_url("ghost/abc"), "https://trackmania.io/ghost/abc");
+        assert_eq!(replay_url("https://cdn.example/a"), "https://cdn.example/a");
+    }
+
+    #[test]
+    fn replay_names_cannot_escape_the_bank() {
+        assert_eq!(safe_component("A/B : C"), "A_B_C");
+        assert_eq!(safe_component("../"), "..");
+        assert_eq!(safe_component(""), "unknown");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // reading the banked JSON
 // ---------------------------------------------------------------------------

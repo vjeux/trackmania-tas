@@ -24,11 +24,21 @@ tmsite verify   --ghost G [--script F] [--archive N] [--raw]
 tmsite stats    --html F [--html F2 ...]
 tmsite serve    --root D [--port N] [--requests N]
 tmsite refresh  --root D --bank DIR [--proxy URL] [--sleep MS] [--ua S]
+tmsite acquire  --map-id ID --out DIR [--replays N] [--proxy URL] [--sleep MS] [--ua S]
 tmsite records  --root D --bank DIR [--prev TSV] [--out F] [--tsv F]
                 [--fetched S] [--detail ID]
 ```
 
 `--dir` defaults to `/tmp/entrec/paths` (the decoded trajectories).
+
+## Single-map acquisition — `acquire`
+
+`acquire` is the one-map counterpart to `refresh`. It downloads the map from
+both TMX and Nadeo, banks the raw TMX and trackmania.io metadata and leaderboard
+responses, and downloads every replay URL exposed by the live board (or the first N with
+`--replays N`). `fetch_log.tsv` records every URL, HTTP status, and byte count.
+The command is GET-only and uses the same explicit proxy, User-Agent, 429 retry,
+and request spacing as `refresh`.
 
 ## The leaderboard refresh — `refresh` and `records`
 

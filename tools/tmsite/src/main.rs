@@ -7,6 +7,7 @@
 //!   stats    measure a built page (either variant) and report what is in it
 //!   serve    serve a directory over HTTP, for fetching a built page
 //!   refresh  fetch every map's live human leaderboard and bank the responses
+//!   acquire  fetch one map, its live board, and every available replay seed
 //!   records  join that bank with what the pages claim, and write the table
 //!
 //! Manual argument parsing; the only dependency is the workspace's `gbx` crate.
@@ -30,6 +31,8 @@ usage: tmsite <command> [flags]
   serve    --root D [--port N] [--requests N]
   refresh  --root D --bank DIR [--proxy URL] [--sleep MS] [--ua S]
            GET every map's live board and bank the raw responses
+  acquire  --map-id ID --out DIR [--replays N] [--proxy URL] [--sleep MS] [--ua S]
+           GET one map, its live board, and up to N available replay seeds
   records  --root D --bank DIR [--prev TSV] [--out F] [--tsv F] [--fetched S] [--detail ID]
            the leaderboard table, from the bank and the pages; no network
 
@@ -65,6 +68,8 @@ fn main() {
     let mut ua = records::DEFAULT_UA.to_string();
     let mut fetched = String::new();
     let mut detail: Option<i64> = None;
+    let mut map_id: Option<i64> = None;
+    let mut replays = usize::MAX;
 
     while i < args.len() {
         let a = args[i].clone();
@@ -114,6 +119,8 @@ fn main() {
             "--ua" => ua = next!(),
             "--fetched" => fetched = next!(),
             "--detail" => detail = Some(next_num!("a map id")),
+            "--map-id" => map_id = Some(next_num!("a map id")),
+            "--replays" => replays = next_num!("an integer"),
             "-h" | "--help" => {
                 print!("{}", USAGE);
                 return;
@@ -148,6 +155,13 @@ fn main() {
             Some(bank) => records::refresh(&records::Fetch { root, bank, proxy, sleep_ms, ua })
                 .map(|m| println!("{}", m)),
             None => Err("refresh needs --bank".to_string()),
+        },
+        "acquire" => match (map_id, out) {
+            (Some(id), Some(out)) => records::acquire(&records::Acquire {
+                id, out, proxy, sleep_ms, ua, replay_limit: replays,
+            }).map(|m| println!("{}", m)),
+            (None, _) => Err("acquire needs --map-id".to_string()),
+            (_, None) => Err("acquire needs --out".to_string()),
         },
         "records" => match bank {
             Some(bank) => records::records(&records::Table { root, bank, prev, out, tsv, fetched, detail })
