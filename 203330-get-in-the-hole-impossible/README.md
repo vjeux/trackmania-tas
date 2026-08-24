@@ -8,7 +8,16 @@ before the finish that costs the world record 490 km/h.**
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
-https://github.com/user-attachments/assets/c8d613ce-fc26-41e7-b772-186d04369bbc
+https://github.com/user-attachments/assets/39f03745-7f27-4645-8ebd-7871d61ee526
+
+**Re-shot 2026-08-24 from a ghost regenerated on the current pipeline.** Same
+treatment: two cars in one frame, chase camera on our car, input overlay.
+`ghost verify` on the filmed file — kappa **1.000** (280 of 280 samples), the
+plain oracle re-simulating the WRITTEN file to **13.984**, telemetry
+0.000 .. 13.950 in a span ending 13.984; trajectory worst **0.0083 m** against
+`replays/an330_13984.Ghost.Gbx`. **The split-screen clip above it was not
+re-shot** — it is still the older generation of these files, and it is the one
+the front page carries.
 
 **Both cars are in this one and you can see the difference.** Ours is magenta,
 in-.-'s world record is the dark car. Six thousandths of a second separate them

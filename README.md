@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
 
 https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
-**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 147.031 (ailiei., eleven respawns; 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 2 records · **being re-filmed as this page is written — no clip here yet**
+**[The Blev Special](227654-the-blev-special)** — author time `57.853` · ours **57.482** (−0.371) · best human 147.031 (ailiei., eleven respawns; 64.871 is that same driving with the retries spliced out, and it is the number the margin should be read against) · 2 records · **no clip, and not for want of trying: the game client refuses or dies on every ghost of this map whose record has been rebuilt — 24 variants, one variable each. [The page says what was tried](227654-the-blev-special).** The run itself is validated and downloadable
 
 **[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 
