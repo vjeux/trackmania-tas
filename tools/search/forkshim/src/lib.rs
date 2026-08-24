@@ -78,6 +78,38 @@ const SIG_IGN: usize = 1;
 const IONBF: c_int = 2;
 const POLLIN: i16 = 0x001;
 
+extern "C" {
+    fn socket(domain: c_int, ty: c_int, proto: c_int) -> c_int;
+    fn connect(fd: c_int, addr: *const u8, len: u32) -> c_int;
+}
+const AF_UNIX: c_int = 1;
+const SOCK_STREAM: c_int = 1;
+
+/// Connect to the driver's listening unix socket. Returns -1 on failure.
+///
+/// The path is a filesystem path in the run's own work directory rather than an
+/// abstract-namespace name: a work directory is already per-process and already
+/// locked (`take_dir_lock`), so the socket inherits that isolation instead of
+/// needing its own naming scheme. Two runs cannot collide on it for the same
+/// reason two runs cannot collide on their replays.
+unsafe fn connect_unix(path: &[u8]) -> c_int {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if fd < 0 {
+        return -1;
+    }
+    // sockaddr_un: u16 family, then a NUL-terminated path.
+    let mut sa = [0u8; 110];
+    sa[0] = AF_UNIX as u8;
+    sa[1] = 0;
+    let n = path.len().min(107);
+    std::ptr::copy_nonoverlapping(path.as_ptr(), sa.as_mut_ptr().add(2), n);
+    if connect(fd, sa.as_ptr(), (2 + n + 1) as u32) != 0 {
+        close(fd);
+        return -1;
+    }
+    fd
+}
+
 static N_LROUNDF: AtomicU64 = AtomicU64::new(0);
 static STOP_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 static CKPT_AT: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -88,6 +120,51 @@ static REAL_LROUNDF: AtomicUsize = AtomicUsize::new(0);
 static REAL_WRITE: AtomicUsize = AtomicUsize::new(0);
 static CMD_FD: AtomicI32 = AtomicI32::new(-1);
 static RES_FD: AtomicI32 = AtomicI32::new(-1);
+
+// --------------------------------------------------------------- the BRANCH
+//
+// THE SAVESTATE TREE. A fork child normally runs the tape to the end and dies;
+// everything it learned along the way dies with it, so every node of a search
+// has to be reached by re-simulating its whole prefix from the one checkpoint
+// the parent holds.
+//
+// A branch child instead simulates a FEW ticks and then re-enters the fork
+// server itself, becoming a new fork point. The three things that stopped it
+// from doing that, all in code we own:
+//
+//  1. `IS_CHILD` -- set by every child so it can never re-enter. A branch child
+//     needs to re-enter exactly once, so `BRANCH_ARMED` licenses that one
+//     re-entry and is consumed on the way in.
+//  2. `ARMED` -- the one-shot latch on the checkpoint test. Reset in the branch
+//     child so the NEXT checkpoint fires.
+//  3. **The two inherited fds.** A child that served the parent's `cmd`/`res`
+//     pipes would race the parent for every command byte. So a branch child
+//     gets FRESH fds: it connects to a unix socket the driver is listening on,
+//     and serves the same protocol down that one socket (the frame code does
+//     not care that read and write are the same descriptor).
+//
+// A branch child also caches what the first entry already worked out. The
+// entry path Horspool-scans every `rw` mapping of a 150 MB address space to
+// find the decoded input array; repeating that per node would put the scan on
+// the hot path. The array does not move (it is decoded once, before the
+// simulation, and there is exactly one copy), and the child is a fork of the
+// process that found it, so the address is still good -- but "still good" is a
+// claim, so the branch VERIFIES the cached base against the key rather than
+// trusting it, and a mismatch is a hard abort.
+static BRANCH_ARMED: AtomicUsize = AtomicUsize::new(0);
+static BRANCH_SOCK_LEN: AtomicUsize = AtomicUsize::new(0);
+static mut BRANCH_SOCK: [u8; 108] = [0; 108];
+/// The input array's base, found once by `locate` and inherited by every
+/// descendant. Re-verified, never merely trusted.
+static CACHED_BASE: AtomicUsize = AtomicUsize::new(0);
+/// The parsed key, leaked on first use so descendants need no file read.
+static CACHED_KEY: AtomicUsize = AtomicUsize::new(0);
+/// The socket this process is currently serving on (0 = none): a branch child
+/// closes its parent's so a dead driver is seen as EOF by exactly one process.
+static SERVING_FD: AtomicI32 = AtomicI32::new(-1);
+/// The trace file a branch child writes its per-tick state to while it consumes
+/// its `k` ticks; closed on re-entry so the driver reads a complete file.
+static TRACE_FD: AtomicI32 = AtomicI32::new(-1);
 
 // ------------------------------------------------------------------ sampling
 //
@@ -599,8 +676,7 @@ unsafe fn read_key(path: &str) -> Option<Key> {
 }
 
 /// Scan our own address space for the decoded input array.
-unsafe fn locate(key: &Key) -> Option<usize> {
-    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+unsafe fn locate(key: &Key) -> Option<usize> {    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
     let want: Vec<[u8; 4]> = key.steer.iter().map(|v| v.to_le_bytes()).collect();
     let hs = Horspool::new(want[key.t0]);
     let n = key.steer.len();
@@ -652,6 +728,69 @@ unsafe fn locate(key: &Key) -> Option<usize> {
     None
 }
 
+/// The steer value we believe each record holds, tick for tick.
+///
+/// **Why a shadow rather than the key.** The branch path verifies its cached
+/// base before serving, and the obvious check — "does the array still read back
+/// as the key?" — is wrong the moment anything is patched into it, which is the
+/// entire point of a tree. The first depth test written against this fired
+/// `ERR basemoved` at generation 2 for exactly that reason.
+///
+/// So the shim keeps what it believes it wrote: the key at first entry, updated
+/// on every patch. A branch then verifies the array against the process's own
+/// beliefs, which is a STRONGER control than the key ever was — it catches a
+/// moved array, a stale base, AND a patch that did not land where it was aimed.
+/// It is one f32 per tick (~18 KB on a 4500-tick tape), leaked once, and
+/// inherited by every descendant through the fork.
+static EXPECT: AtomicUsize = AtomicUsize::new(0);
+static EXPECT_N: AtomicUsize = AtomicUsize::new(0);
+
+/// Write one 12-byte input record AND record what we now believe it holds.
+///
+/// Every patch site goes through here. A patch that updated the array without
+/// updating the shadow would make the next branch abort with `ERR basemoved`,
+/// and one that updated the shadow without the array would make the check
+/// blind — so they are the same statement.
+#[inline]
+unsafe fn apply_patch(base: usize, tick: usize, src: *const u8) {
+    std::ptr::copy_nonoverlapping(src, (base + tick * STRIDE) as *mut u8, 12);
+    let p = EXPECT.load(Ordering::Relaxed) as *mut f32;
+    if !p.is_null() && tick < EXPECT_N.load(Ordering::Relaxed) {
+        let mut v = [0u8; 4];
+        std::ptr::copy_nonoverlapping(src, v.as_mut_ptr(), 4);
+        *p.add(tick) = f32::from_le_bytes(v);
+    }
+}
+
+/// Does the cached base still hold what this process believes it wrote?
+///
+/// The branch path does not re-scan: it inherits the address its ancestor
+/// found. That is sound (the array is decoded once, before the simulation, and
+/// there is exactly one copy) but it is a CLAIM, and this is what turns it back
+/// into a measurement. Cost is one strided read of `n * 32` bytes.
+///
+/// **There is deliberately no rescan fallback here.** A cached base that no
+/// longer reads back is an inconsistency about where the engine keeps its
+/// inputs, and quietly re-finding the array would hide it while producing a
+/// number that looks fine — the same comfortable recovery that
+/// `tm2020-forkserver.md` bans for the boundary probe. The caller aborts.
+unsafe fn base_still_holds(base: usize) -> Option<(usize, f32, f32)> {
+    let p = EXPECT.load(Ordering::Relaxed) as *const f32;
+    let n = EXPECT_N.load(Ordering::Relaxed);
+    if p.is_null() || n == 0 {
+        return Some((usize::MAX, 0.0, 0.0));
+    }
+    for t in 0..n {
+        let mut v = [0u8; 4];
+        std::ptr::copy_nonoverlapping((base + t * STRIDE) as *const u8, v.as_mut_ptr(), 4);
+        let got = f32::from_le_bytes(v);
+        if got.to_bits() != (*p.add(t)).to_bits() {
+            return Some((t, got, *p.add(t)));
+        }
+    }
+    None
+}
+
 // ------------------------------------------------------- boundary tick probe
 //
 // The one thing that can make a resumed run silently wrong is rewriting a tick
@@ -666,6 +805,7 @@ extern "C" {
     fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
     fn sigaction(sig: c_int, act: *const SigactionT, old: *mut SigactionT) -> c_int;
     fn getpagesize() -> c_int;
+    fn getpid() -> c_int;
 }
 
 #[repr(C)]
@@ -909,28 +1049,127 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
 }
 
 unsafe fn forkserver() {
-    let cmd = CMD_FD.load(Ordering::SeqCst);
-    let res = RES_FD.load(Ordering::SeqCst);
-    let keypath = match env_str(b"FKSHIM_KEY\0") {
-        Some(p) => p,
-        None => {
-            log(b"FKSHIM: no FKSHIM_KEY\n");
-            _exit(97)
+    // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
+    // re-enters once cannot do it twice by accident.
+    let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
+
+    // The trace file this child wrote while it consumed its k ticks. Closed
+    // BEFORE the handshake, so the driver that reads it after READY reads a
+    // complete file rather than a racing one.
+    let tfd = TRACE_FD.swap(-1, Ordering::SeqCst);
+    if tfd >= 0 {
+        SAMPLE_STRIDE.store(0, Ordering::SeqCst);
+        SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+        SAMPLE_FD.store(-1, Ordering::SeqCst);
+        close(tfd);
+    }
+
+    let (cmd, res) = if branch {
+        // FRESH FDS. Serving the inherited command pipe would put two processes
+        // in a race for every command byte, and the loser would execute a
+        // command assembled from the middle of somebody else's patch payload.
+        let path = &*core::ptr::addr_of!(BRANCH_SOCK);
+        let n = BRANCH_SOCK_LEN.load(Ordering::SeqCst);
+        let fd = connect_unix(&path[..n]);
+        if fd < 0 {
+            log(b"FKSHIM: branch could not reach the driver socket\n");
+            _exit(98)
+        }
+        // Drop everything this child inherited that belongs to an ancestor: the
+        // root server's command pipe, and the socket its parent branch is
+        // serving on. Otherwise a dead driver is never seen as EOF, which is
+        // exactly the orphan-holds-the-pipe failure the CLOEXEC work fixed on
+        // the driver side.
+        let a = CMD_FD.swap(-1, Ordering::SeqCst);
+        let b = RES_FD.swap(-1, Ordering::SeqCst);
+        if a >= 0 {
+            close(a);
+        }
+        if b >= 0 && b != a {
+            close(b);
+        }
+        let s = SERVING_FD.swap(fd, Ordering::SeqCst);
+        if s >= 0 && s != fd {
+            close(s);
+        }
+        (fd, fd)
+    } else {
+        let c = CMD_FD.load(Ordering::SeqCst);
+        let r = RES_FD.load(Ordering::SeqCst);
+        SERVING_FD.store(r, Ordering::SeqCst);
+        (c, r)
+    };
+
+    // The key, parsed once per process tree and leaked so a branch pays no
+    // file read for it.
+    let key: &Key = {
+        let p = CACHED_KEY.load(Ordering::SeqCst);
+        if p != 0 {
+            &*(p as *const Key)
+        } else {
+            let keypath = match env_str(b"FKSHIM_KEY\0") {
+                Some(p) => p,
+                None => {
+                    log(b"FKSHIM: no FKSHIM_KEY\n");
+                    _exit(97)
+                }
+            };
+            let k = match read_key(&keypath) {
+                Some(k) => k,
+                None => {
+                    log(b"FKSHIM: bad key file\n");
+                    _exit(97)
+                }
+            };
+            let leaked: &'static Key = Box::leak(Box::new(k));
+            CACHED_KEY.store(leaked as *const Key as usize, Ordering::SeqCst);
+            leaked
         }
     };
-    let key = match read_key(&keypath) {
-        Some(k) => k,
-        None => {
-            log(b"FKSHIM: bad key file\n");
-            _exit(97)
+
+    let base = if branch {
+        let b = CACHED_BASE.load(Ordering::SeqCst);
+        // HARD ABORT, never a rescan. See `base_still_holds`.
+        if b == 0 {
+            log(b"FKSHIM: branch has no cached base -- aborting\n");
+            send_frame(res, b"ERR basemoved no-cache");
+            _exit(95)
         }
-    };
-    let base = match locate(&key) {
-        Some(b) => b,
-        None => {
-            log(b"FKSHIM: input array NOT FOUND\n");
-            send_frame(res, b"ERR notfound");
-            _exit(96)
+        if let Some((t, got, want)) = base_still_holds(b) {
+            // Say WHAT it saw. A control that only says "no" cannot tell a
+            // moved array from a patch that did not land where it was aimed,
+            // and those want different fixes.
+            let mut m = Vec::new();
+            m.extend_from_slice(b"ERR basemoved tick ");
+            utoa(t as u64, &mut m);
+            m.extend_from_slice(b" got ");
+            utoa(got.to_bits() as u64, &mut m);
+            m.extend_from_slice(b" want ");
+            utoa(want.to_bits() as u64, &mut m);
+            log(b"FKSHIM: branch base no longer holds what we wrote -- aborting\n");
+            log(&m);
+            log(b"\n");
+            send_frame(res, &m);
+            _exit(95)
+        }
+        b
+    } else {
+        match locate(key) {
+            Some(b) => {
+                CACHED_BASE.store(b, Ordering::SeqCst);
+                // The shadow starts as the key: at first entry nothing has been
+                // patched, so what we believe the array holds IS the reference.
+                let mut e: Vec<f32> = key.steer.clone();
+                EXPECT_N.store(e.len(), Ordering::SeqCst);
+                EXPECT.store(e.as_mut_ptr() as usize, Ordering::SeqCst);
+                std::mem::forget(e);
+                b
+            }
+            None => {
+                log(b"FKSHIM: input array NOT FOUND\n");
+                send_frame(res, b"ERR notfound");
+                _exit(96)
+            }
         }
     };
     let mut hello = Vec::new();
@@ -939,6 +1178,11 @@ unsafe fn forkserver() {
     utoa(base as u64, &mut hello);
     hello.push(b' ');
     utoa(N_LROUNDF.load(Ordering::Relaxed), &mut hello);
+    // The branch's own pid, so the driver that now owns this node can end it.
+    // A node the driver cannot kill is an orphan holding a 150 MB address
+    // space, and a beam of them is how a box dies.
+    hello.push(b' ');
+    utoa(getpid() as u64, &mut hello);
     send_frame(res, &hello);
 
     loop {
@@ -1046,6 +1290,131 @@ unsafe fn forkserver() {
             send_frame(res, &out);
             continue;
         }
+        if payload[0] == b'B' {
+            // THE BRANCH. Fork a child that patches its tail, consumes a fixed
+            // number of `lroundf` calls, and then re-enters this same loop on a
+            // socket of its own -- a new fork point, a node of a savestate
+            // tree, rather than a candidate that runs to the end and dies.
+            //
+            //   'B' | u32 n_patch | u64 stop_after_lroundf
+            //       | u32 sock_len | sock_path
+            //       | u32 trace_len | trace_path        (0 = no state trace)
+            //       | u32 nseg | nseg * (u64 addr, u32 len)
+            //       | u64 sstride | u32 smax | u32 sdedup | u32 skeyoff
+            //       | n_patch * (u32 tick, f32 steer, f32 gas, f32 brake)
+            //
+            // The parent does NOT wait and does NOT kill: it answers
+            // `BRANCHED <pid>` at once and goes back to serving. The node
+            // announces itself when it arrives, down its own socket.
+            let np = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+            let stop_after = u64::from_le_bytes(payload[5..13].try_into().unwrap());
+            let mut o = 13usize;
+            let slen = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
+            o += 4;
+            let sock = payload[o..o + slen].to_vec();
+            o += slen;
+            let tlen = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
+            o += 4;
+            let mut tracep: Vec<u8> = payload[o..o + tlen].to_vec();
+            tracep.push(0);
+            o += tlen;
+            let nseg = (u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize)
+                .min(MAX_SEG);
+            o += 4;
+            let mut segs = [(0usize, 0usize); MAX_SEG];
+            let mut sblen = 0usize;
+            for s in 0..nseg {
+                segs[s] = (
+                    u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
+                    u32::from_le_bytes(payload[o + 8..o + 12].try_into().unwrap()) as usize,
+                );
+                sblen += segs[s].1;
+                o += 12;
+            }
+            let sstride = u64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
+            let smax = u32::from_le_bytes(payload[o + 8..o + 12].try_into().unwrap()) as u64;
+            let sdedup = u32::from_le_bytes(payload[o + 12..o + 16].try_into().unwrap()) as usize;
+            let skeyoff = u32::from_le_bytes(payload[o + 16..o + 20].try_into().unwrap()) as usize;
+            o += 20;
+            let poff = o;
+            if slen == 0 || slen > 107 {
+                send_frame(res, b"ERR socklen");
+                continue;
+            }
+            fflush(std::ptr::null_mut());
+            let pid = fork();
+            if pid < 0 {
+                send_frame(res, b"ERR fork");
+                continue;
+            }
+            if pid > 0 {
+                let mut o = Vec::new();
+                o.extend_from_slice(b"BRANCHED ");
+                utoa(pid as u64, &mut o);
+                send_frame(res, &o);
+                continue;
+            }
+            // ---- child: becomes a node of the tree
+            IS_CHILD.store(1, Ordering::SeqCst);
+            for i in 0..np {
+                let q = poff + i * 16;
+                let tick = u32::from_le_bytes(payload[q..q + 4].try_into().unwrap()) as usize;
+                apply_patch(base, tick, payload.as_ptr().add(q + 4));
+            }
+            {
+                let b = &mut *core::ptr::addr_of_mut!(BRANCH_SOCK);
+                b[..slen].copy_from_slice(&sock);
+                BRANCH_SOCK_LEN.store(slen, Ordering::SeqCst);
+            }
+            // The state trace, if the driver asked for one. Same sampler the
+            // 'S' path uses, aimed at a file instead of a pipe: nobody is
+            // reading the other end yet, and a pipe that fills would stall the
+            // simulation we are trying to time.
+            if nseg > 0 && tlen > 0 {
+                let fd = open(tracep.as_ptr() as *const c_char, 577, 0o644);
+                if fd < 0 {
+                    log(b"FKSHIM: branch could not open its trace file\n");
+                    _exit(94)
+                }
+                let mut bb = vec![0u8; 8 + sblen];
+                let mut pv = vec![0xFFu8; sblen.max(1)];
+                SAMPLE_BUF.store(bb.as_mut_ptr() as usize, Ordering::SeqCst);
+                SAMPLE_PREV.store(pv.as_mut_ptr() as usize, Ordering::SeqCst);
+                std::mem::forget(bb);
+                std::mem::forget(pv);
+                SAMPLE_ADDR.store(segs[0].0, Ordering::SeqCst);
+                SAMPLE_LEN.store(sblen, Ordering::SeqCst);
+                SEG_N.store(nseg, Ordering::SeqCst);
+                for s in 0..nseg {
+                    SEG_ADDR[s].store(segs[s].0, Ordering::SeqCst);
+                    SEG_LEN[s].store(segs[s].1, Ordering::SeqCst);
+                }
+                SAMPLE_FD.store(fd, Ordering::SeqCst);
+                TRACE_FD.store(fd, Ordering::SeqCst);
+                SAMPLE_LEFT.store(smax, Ordering::SeqCst);
+                SAMPLE_EXIT.store(0, Ordering::SeqCst);
+                SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
+                SAMPLE_DEDUP.store(sdedup, Ordering::SeqCst);
+                SAMPLE_KEYOFF.store(skeyoff, Ordering::SeqCst);
+                GATE_ADDR.store(0, Ordering::SeqCst);
+                GATE_MOD.store(0, Ordering::SeqCst);
+                SAMPLE_STRIDE.store(sstride.max(1), Ordering::SeqCst);
+                SAMPLE_NEXT.store(0, Ordering::SeqCst);
+            } else {
+                SAMPLE_STRIDE.store(0, Ordering::SeqCst);
+                SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+            }
+            // Re-arm the checkpoint: `ARMED` is the one-shot latch that stops a
+            // process entering the fork server twice, and `BRANCH_ARMED` is the
+            // one-use licence that lets THIS child past the `IS_CHILD` guard.
+            CKPT_AT.store(
+                N_LROUNDF.load(Ordering::Relaxed).saturating_add(stop_after.max(1)),
+                Ordering::SeqCst,
+            );
+            ARMED.store(0, Ordering::SeqCst);
+            BRANCH_ARMED.store(1, Ordering::SeqCst);
+            return; // resume the simulation; re-enter in `stop_after` calls
+        }
         if payload[0] == b'S' {
             // Sample-and-run: like 'R', but the child also gathers segments of
             // memory out on a second pipe as it simulates. Two frames come
@@ -1132,8 +1501,7 @@ unsafe fn forkserver() {
                 for i in 0..np {
                     let o = poff + i * 16;
                     let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                    let rec = (base + tick * STRIDE) as *mut u8;
-                    std::ptr::copy_nonoverlapping(payload.as_ptr().add(o + 4), rec, 12);
+                    apply_patch(base, tick, payload.as_ptr().add(o + 4));
                 }
                 // buffers are allocated BEFORE the hook can fire, so the hot
                 // path never allocates
@@ -1387,8 +1755,7 @@ unsafe fn forkserver() {
                 for i in 0..n {
                     let o = 5 + i * 16;
                     let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                    let rec = (base + tick * STRIDE) as *mut u8;
-                    std::ptr::copy_nonoverlapping(payload.as_ptr().add(o + 4), rec, 12);
+                    apply_patch(base, tick, payload.as_ptr().add(o + 4));
                 }
                 let ev = &mut *core::ptr::addr_of_mut!(EVAL);
                 ev.reset();
@@ -1476,8 +1843,7 @@ unsafe fn forkserver() {
             for i in 0..n {
                 let o = 5 + i * 16;
                 let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                let rec = (base + tick * STRIDE) as *mut u8;
-                std::ptr::copy_nonoverlapping(payload.as_ptr().add(o + 4), rec, 12);
+                apply_patch(base, tick, payload.as_ptr().add(o + 4));
             }
             return; // resume the simulation, with the tail rewritten
         }
@@ -1568,7 +1934,7 @@ pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
         raise(SIGSTOP);
     }
     if n >= CKPT_AT.load(Ordering::Relaxed)
-        && IS_CHILD.load(Ordering::Relaxed) == 0
+        && (IS_CHILD.load(Ordering::Relaxed) == 0 || BRANCH_ARMED.load(Ordering::Relaxed) != 0)
         && ARMED.swap(1, Ordering::SeqCst) == 0
     {
         forkserver();
