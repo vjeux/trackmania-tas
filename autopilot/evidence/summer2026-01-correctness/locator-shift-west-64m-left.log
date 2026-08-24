@@ -1,0 +1,12 @@
+checkpoint lroundf #25811 -> probe tick 54 (race 0.540), tape 3000 ticks
+clock scan: 144 mapped windows of 1024 KB, nearest to the input array first
+clock scan: 13 slots step by a multiple of 10 across 3 windows (0.0s)
+CLOCK 0x563e068495f0 (base-772132) bias +2200 ms, confirmed over 228 ticks
+state sweep: 2292 mapped 64 KB windows, nearest first from 0x563e06872834
+STATE 0x7fdebb0121c0 (base+45770198795180) verr 1.0309 m/s (median), |q|-1 5.22e-7, mean speed 57.1 m/s, after 2271 windows
+  runner-up verr 0.4373 m/s (0x worse)
+locate: 205.4s
+trajectory: 228 ticks in 0.0s (0.530 .. 2.800)
+SELF-CHECK FAILED: not a unit quaternion (p99.5 |q|-1 = 4.660e-2): 228 rows, |q|-1 p99.5 4.66e-2, |d(pos)/dt - v| median 1.031 m/s, 0 clock gaps, mean speed 57.1 m/s
+wrote /tmp/tmstart-control/shift-left.csv (228 rows)
+fk: ABORT: the trajectory did not pass its own checks; do not use it

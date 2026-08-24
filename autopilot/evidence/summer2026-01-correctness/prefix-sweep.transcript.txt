@@ -1,0 +1,196 @@
+===== stdout =====
+[
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4942C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_0.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (2 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "100C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4842C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_100.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (1 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "150C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4792C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_150.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (1 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "152C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4790C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_152.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (3 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "153C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4789C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_153.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (1 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "154C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4788C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_154.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu, but reached some checkpoints (1 out of 2)\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "155C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4787C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_155.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "200C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4742C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_200.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "300C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4642C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_300.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "60C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4882C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_60.Ghost.Gbx"
+},
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 2,
+    "NbRespawns" : 0,
+    "Time" : 40000,
+    "Score" : 0
+  },
+  "Inputs" : "74C48E72D36E24D84C12D156E48C36E24C24E36C72D72E36C36D12C36E12D24C12E108C36D24E36D12E48D48E36C12E132C36E24D48E24C12E108C24D84E36C12D72E96C132E12D108C48E12C24D24E72C72E12D12E12D156C60E12C36E24C60E24C48E24C36E84D36E72C72E108C24D36E84C48D36E72C12E84D48E120C72E12D38E4868C",
+  "GameBuild" : "date=2026-05-15_18_00",
+  "Login" : "TAS",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "frame_74.Ghost.Gbx"
+}
+]
+
+===== stderr =====
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+Starting validation of 11 ghosts (in 1 maps)... 
+Validating batch of frame_0.Ghost.Gbx on map 'Summer 2026 - 01' (batch size = 11)...
+Invalid replay: frame_0.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_100.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_150.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_152.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_153.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_154.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_155.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_200.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_300.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_60.Ghost.Gbx (#28.Day64.Script)Invalid replay: frame_74.Ghost.Gbx (#28.Day64.Script)
+---------------- 11 replays parsed --------------
+Can't load :   0% (  0)
+Incompatibl:   0% (  0)
+Is Invalid : 100% ( 11)
+Is Valid   :   0% (  0)
+Unvalidable:   0% (  0)
+0:00:01 total elapsed, 0:00:00 elapsed per validation
+
+Exiting...
+

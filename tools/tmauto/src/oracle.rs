@@ -536,6 +536,32 @@ mod tests {
     }
 
     #[test]
+    fn the_exact_wrong_simu_transcript_keeps_declared_checkpoints_separate() {
+        let text = r#"
+{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu\n",
+  "IsValid" : false,
+  "DeclaredResult" : {
+    "NbCheckpoints" : 4,
+    "NbRespawns" : 0,
+    "Time" : 0,
+    "Score" : 0
+  },
+  "Inputs" : "1000C",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "synth_probe.Ghost.Gbx"
+}
+"#;
+        let a = &parse_many(text)[0];
+        assert_eq!(a.time_ms, None);
+        assert_eq!(a.cps, None, "authored checkpoint count leaked into measured cps");
+        assert_eq!(a.declared_ms, Some(0));
+        assert_eq!(a.declared_cps, Some(4));
+        assert_eq!(a.verdict(), Some(Verdict::Dnf { cps: 0 }));
+    }
+
+    #[test]
     fn the_sentinel_is_not_a_finish() {
         let text = r#"
  "ValidatedResult": {

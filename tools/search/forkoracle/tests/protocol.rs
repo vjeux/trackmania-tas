@@ -72,6 +72,26 @@ fn wrong_simu_is_a_sentinel_not_a_distance() {
 }
 
 #[test]
+fn exact_wrong_simu_with_declared_four_is_measured_as_zero() {
+    let reply = r#"{
+  "ValidatedResult" : null,
+  "Desc" : "wrong simu",
+  "DeclaredResult" : {
+    "NbCheckpoints" : 4,
+    "NbRespawns" : 0,
+    "Time" : 0,
+    "Score" : 0
+  },
+  "Inputs" : "1000C",
+  "MapUid" : "buNzfsVlp2NF2oWtHM3729dEylg",
+  "FileName" : "synth_probe.Ghost.Gbx"
+}"#;
+    let (time, cps) = parse_result(reply);
+    assert_eq!(time, None);
+    assert_eq!(cps, Some(0), "DeclaredResult.NbCheckpoints must never become measured cps");
+}
+
+#[test]
 fn tail_recs_starts_at_the_resume_tick_and_scales_steering() {
     let steer: Vec<u8> = (0..10u8).map(|t| (t as i8 * 12) as u8).collect();
     let gas = vec![1u8; 10];

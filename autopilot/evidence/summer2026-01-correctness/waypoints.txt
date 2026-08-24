@@ -1,0 +1,6 @@
+blocks=2430 items=1704 body_regions=[(13431, 44584), (451962, 480019)] items_region=(44821, 302875)
+0 <block#617 RoadTechCheckpoint tag=Checkpoint cell=(42, 6, 34) pos=None dir=2 yaw=0.000000> world=(1360.000,8.000,1104.000)
+1 <block#670 RoadTechFinish tag=Goal cell=(42, 6, 21) pos=None dir=2 yaw=0.000000> world=(1360.000,8.000,688.000)
+2 <block#681 RoadTechStart tag=Spawn cell=(49, 7, 24) pos=None dir=0 yaw=0.000000> world=(1584.000,16.000,784.000)
+3 <block#683 RoadTechCheckpoint tag=Checkpoint cell=(38, 6, 30) pos=None dir=1 yaw=1.570796> world=(1232.000,8.000,976.000)
+4 <item#1056 GateCheckpointLeft32m tag=Checkpoint cell=(36, 6, 41) pos=(1154, 10, 1328) dir=- yaw=1.570796> world=(1154.000,10.000,1328.000)

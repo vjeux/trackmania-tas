@@ -137,6 +137,27 @@ impl Summary {
     }
 }
 
+const START_TIME_TOL_S: f64 = 0.05;
+const START_POS_TOL_M: f64 = 1.0;
+
+fn check_reference_start(t0: f64, x0: f64, z0: f64, home: (i32, i32, i32)) -> Result<f64, String> {
+    let hw = cell_to_world(home);
+    let d = ((x0 - hw.0).powi(2) + (z0 - hw.2).powi(2)).sqrt();
+    if t0.abs() > START_TIME_TOL_S {
+        return Err(format!(
+            "first sample is at race {:.3}, not tick zero (allowed ±{:.3} s)",
+            t0, START_TIME_TOL_S
+        ));
+    }
+    if d > START_POS_TOL_M {
+        return Err(format!(
+            "tick-zero sample is {:.3} m from the map's Spawn cell centre (allowed {:.3} m)",
+            d, START_POS_TOL_M
+        ));
+    }
+    Ok(d)
+}
+
 /// Build the probe tape: one fixed input word for every tick — full throttle,
 /// no steering, no brake — written EXPLICITLY so no tick inherits another's.
 ///
@@ -576,25 +597,33 @@ pub fn cmd(args: &[String]) {
 
     // ---- control 2, adjudicated ------------------------------------------
     let refp = rs.iter().find(|s| s.id == 0);
-    let hw = cell_to_world(home);
     match refp {
-        Some(r) if r.ok => {
-            let d = ((r.x0 - hw.0).powi(2) + (r.z0 - hw.2).powi(2)).sqrt();
-            println!(
-                "reference probe (real spawn cell {:?}): trace starts at ({:.1},{:.1},{:.1}) at {:.3}, \
-                 {:.1} m from the map's own spawn in (x,z) — {}",
-                home,
-                r.x0,
-                r.y0,
-                r.z0,
-                r.t0,
-                d,
-                if d < 400.0 { "POSITIVE CONTROL OK" } else { "CONTROL FAILED" }
-            );
-        }
-        _ => println!("reference probe FAILED — the scan below is about the instrument, not the map"),
+        Some(r) if r.ok => match check_reference_start(r.t0, r.x0, r.z0, home) {
+            Ok(d) => println!(
+                "reference probe (real spawn cell {:?}): tick-zero trace starts at ({:.1},{:.1},{:.1}) \
+                 at {:.3}, {:.3} m from the map's own Spawn — POSITIVE CONTROL OK",
+                home, r.x0, r.y0, r.z0, r.t0, d
+            ),
+            Err(e) => die(&format!(
+                "REFERENCE CONTROL FAILED: {}. The scan is about the instrument, not the map.",
+                e
+            )),
+        },
+        _ => die("REFERENCE CONTROL FAILED: no accepted trace for the real spawn cell. The scan is about the instrument, not the map."),
     }
     println!("wrote {} ({} probes)", sum.display(), rs.len());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_reference_start;
+
+    #[test]
+    fn reference_start_requires_tick_zero_and_the_spawn_cell() {
+        assert!(check_reference_start(0.0, 1584.0, 784.0, (49, 7, 24)).is_ok());
+        assert!(check_reference_start(0.53, 1584.0, 784.0, (49, 7, 24)).is_err());
+        assert!(check_reference_start(0.0, 1360.0, 1108.0, (49, 7, 24)).is_err());
+    }
 }
 
 fn die(m: &str) -> ! {
