@@ -1,49 +1,8 @@
 # trackmania-tas
 
-Tool-assisted runs on Trackmania 2020 maps tracked by
-[unbeaten.at](https://unbeaten.at/) — maps whose **author time no human had ever
-beaten** when the run was found. On eight of the 36 a human has since taken the
-medal, and those are group 3 below rather than quietly dropped.
-
-Every run here was found by search against the game's own physics — the headless
-`TrackmaniaServer` re-simulating input tapes — and re-validated against an
-untouched copy of the map before being published. **The point is not the replay.
-The point is the technique, written up so a human can practise it.**
-
-**[▶ Drive one of them.](trainer/)** The 6.323 on
-[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) is 23 steer
-events on three values and one brake tap — so
-[`trainer/index.html`](trainer/index.html) turns its real input tape into a
-falling-note rhythm game you can play in a browser. Save the file, double-click
-it, and find out whether a person can drive a run no human has driven.
-
-**All times are seconds.** Boards fetched **2026-08-24 03:32–03:37 UTC**, one
-76-GET pass, all HTTP 200 — the same capture behind
-[`LEADERBOARDS.md`](LEADERBOARDS.md), which is the newer measurement wherever a
-page here disagrees with it. *Control on that capture:* it re-read every board
-the repo tracked — 37 at the time, the 36 here plus Cobalt Cove, which has
-since been removed as somebody else's work — and **28 came back with exactly
-the record the page already printed**, so it reads boards rather than
-manufacturing them; the nine that moved are named in `LEADERBOARDS.md`.
-
-**36 maps: 21 + 7 + 8.** The three groups below are cut on one question: has a
-human beaten the author time? Not on whether we have. That is the axis the
-project exists on, and on eight maps the answer changed under us — six of them
-in the last three days.
-
-**An exact tie is a beat**, on either side of that comparison: the game awards
-the author medal at or under the time, so a run level with it has taken it.
-Great wtf of what #165 is in group 3 because a human matched 8.127 to the
-millisecond, and Fall 2025 - 18 CP1 End is in group 1 on a 4.492 that matches
-4.492. The convention is stated once in [`CLAIMS.md`](CLAIMS.md) so nobody
-re-litigates it per page.
-
----
+Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beaten** — 36 maps, all times in seconds, boards fetched 2026-08-24. Watch:
 
 # 1 · Author time unbeaten by any human — and this TAS takes it
-
-**21 maps.** Nobody on the leaderboard has the author medal. A tool-assisted run
-here does.
 
 **[untitled 01](276874-untitled-01)** — author time `23.839` · ours **12.759** (−11.080) · best human *none — the board is empty, and the empty board is real: 36 other boards came back populated in the same pass* · 0 records
 
@@ -131,8 +90,6 @@ https://github.com/user-attachments/assets/fba3cbee-2914-428e-8519-e8e99e6d00aa
 
 # 2 · Author time unbeaten by any human — and this TAS does not take it either
 
-**7 maps.** Still open, and each line says what is actually in the way.
-
 **[Spaghetti Nights 2](146612-spaghetti-nights-2)** — author time `38.530` · ours **38.968** (+0.438 short) · best human 40.223 (jujumasterr) · 182 records · **no clip — nobody has opened this map in a client to film it** ([`CANNOT-OPEN.md`](146612-spaghetti-nights-2/CANNOT-OPEN.md)); the 38.968 is held and **not shipped**, the fastest file published there is 39.183, and the unexecuted piece is the turn-in — the human record is at full lock 50 ms before CP3 where this line takes another 285 ms to commit
 
 **[Fall 2024 - 25 (Pure Wet Icy Wood)](210218-fall-2024-25-pure-wet-icy-wood)** — author time `94.477` · ours **96.068** — the only one of our three numbers here with a file; **UNKNOWN whether our best lap is 95.507 or 95.575**, and neither is published ([see the page](210218-fall-2024-25-pure-wet-icy-wood)) · best human 96.281 (iambeeen) · 42 records · sector time here is abundant and unspendable: 947 ms at CP12 is worth 10 ms at the finish, so chain backward from the line
@@ -156,10 +113,6 @@ https://github.com/user-attachments/assets/68a1ee6d-9117-4c5a-a030-0c7c658e7b84
 ---
 
 # 3 · Author time beaten by a human
-
-**8 maps.** The author medal on these is no longer unclaimed, whatever we did on
-them — and on two of them a human is now ahead of the run this repo publishes.
-Nothing is deleted here: rule 4, and the retraction lives on each map's page.
 
 **[Spring 2023 - 15 (Underwater)](173691-spring-2023-15-underwater)** — author time `2672.290` · **beaten by a human: 1571.209 (Maionez77, 2026-08-22, no respawns)** · ours — *no completion; the page's 36.049 is a landing, not a lap* · 1 record · the page said "0 online records" and argued the finish was out of reach — **retracted there**: it was out of reach along that route, and somebody came another way
 
@@ -197,6 +150,19 @@ https://github.com/user-attachments/assets/48be3d04-1b50-44f9-953c-d987cc6e24de
 
 # How to read these lines
 
+**The three groups are cut on one question: has a HUMAN beaten the author time?**
+Not on whether we have. That is the axis this project exists on. 36 maps,
+21 + 7 + 8 — and on eight of them the answer changed under us, six in the last
+three days. Group 3 is where they went; nothing is deleted, and the retraction
+lives on each map's page (rule 4). On two of those eight a human is now ahead of
+the run this repo publishes, and those lines say so.
+
+**An exact tie is a beat**, on either side of that comparison: the game awards
+the author medal at or under the time, so a run level with it has taken it.
+Great wtf of what #165 is in group 3 because a human matched 8.127 to the
+millisecond; Fall 2025 - 18 CP1 End is in group 1 on a 4.492 that matches 4.492.
+Stated once in [`CLAIMS.md`](CLAIMS.md) so nobody re-litigates it per page.
+
 **"Ours"** is the fastest run this project has validated on that map. It is not
 the same thing as a run you can download: three of them are **held and not
 shipped**, and each line says so. `tmtraj corpus shipped --root .` is the scan
@@ -215,7 +181,22 @@ MAX-UP, 19 on Fall 2025 - 13 — and *fewest is not easiest*: on several maps th
 sparsest tape is the least forgiving of mistimings. Each map's page names the
 run actually worth practising.
 
+**[▶ Drive one of them.](trainer/)** The 6.323 on
+[unluckE - get jiggy with it](145875-unlucke-get-jiggy-with-it) is 23 steer
+events on three values and one brake tap, so
+[`trainer/index.html`](trainer/index.html) turns its real input tape into a
+falling-note rhythm game in the browser. Save it, double-click it, and find out
+whether a person can drive a run no human has driven.
+
 # Validation
+
+**The capture behind every number above.** Boards fetched **2026-08-24
+03:32–03:37 UTC**, one 76-GET pass, all HTTP 200 — the same capture behind
+[`LEADERBOARDS.md`](LEADERBOARDS.md), which is the newer measurement wherever a
+page here disagrees with it. *Control:* it re-read every board the repo tracked
+and **28 came back with exactly the record the page already printed**, so it
+reads boards rather than manufacturing them; the nine that moved are named in
+`LEADERBOARDS.md`.
 
 Every published replay was re-simulated by the dedicated server against a
 pristine copy of the map, in a fresh process, with a downloaded human ghost in
