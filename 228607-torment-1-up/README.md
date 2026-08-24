@@ -98,7 +98,7 @@ which is the one to copy if you are driving it yourself.
 
 **Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
-https://github.com/user-attachments/assets/7a263da5-a1b2-41c7-b110-4e36c9f97a63
+https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 
 **The comparison, as a split screen: our 19.907 on the left, surms41's world
 record on the right, both clocks running from the same start.** A single camera

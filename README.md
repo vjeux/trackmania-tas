@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/6708045e-8ee0-4520-86bc-d72a58a2d05e
 
 **[Kacky Reloaded #290](126859-kacky-reloaded-290)** — author time `24.062` · ours **23.416** (−0.646) · best human 24.342 (zetos.) · 23 records
 
-https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
+https://github.com/user-attachments/assets/d84d3492-d288-4183-aa77-d8aef3f2a31a
 
 **[idm ruinin ur day #460](165922-idm-ruinin-ur-day-460)** — author time `15.643` · ours **15.217** (−0.426) · best human 16.870 (banktm) · 11 records
 
@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
 **[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 
-https://github.com/user-attachments/assets/7a263da5-a1b2-41c7-b110-4e36c9f97a63
+https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 
 **[Torment (1-DOWN)](228811-torment-1-down)** — author time `20.555` · ours **20.237** (−0.318) · best human 22.637 (KappaRiley) · 68 records
 
