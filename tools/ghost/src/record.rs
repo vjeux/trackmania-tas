@@ -129,7 +129,7 @@ pub fn cmd(a: &[String]) {
             });
             let donor = flag(a, "--from")
                 .unwrap_or_else(|| die("--from DONOR.Ghost.Gbx: the container the car was rebuilt out of"));
-            match graft_scene(inp, out, donor, crate::cli::has(a, "--car-deltas")) {
+            match graft_scene(inp, out, donor, crate::cli::has(a, "--car-deltas"), crate::cli::has(a, "--live-only")) {
                 Ok(m) => println!("{out}: {m}"),
                 Err(e) => die(e),
             }
@@ -1167,10 +1167,14 @@ pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
         // The donor's order: the scene records first, then the cars in time
         // order -- which is how the game writes them and how `rebuild_to`
         // learned to put the car first.
+        // THE CONTAINER'S OWN ORDER: this donor puts its scene records first and
+        // its cars after them, and 203072 is the map that proved order is not
+        // cosmetic -- a regenerated ghost there would not import until its
+        // entities were put back the way its container had them.
         let mut ents: Vec<Ent> = Vec::new();
         let ncut = cut.len();
-        ents.append(&mut cut);
         ents.extend(rd.ents.drain(..));
+        ents.append(&mut cut);
         rd.ents = ents;
         after = format!("{ncut} car segments [{}]", bounds.join(", "));
         Ok(())
@@ -1215,7 +1219,8 @@ pub fn resegment(inp: &str, out: &str, donor: &str) -> Result<String, String> {
     Ok(format!("{before} -> {after}; all {} samples kept, byte for byte", a.len()))
 }
 
-pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Result<String, String> {    let dbody = gbx::record::load_body(donor)?;
+pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool, live_only: bool) -> Result<String, String> {
+    let dbody = gbx::record::load_body(donor)?;
     let (dver, dblob) = gbx::record::find_entrecord_blob(&dbody)?;
     let drd = gbx::record::parse_record_data(&dblob, dver)?;
     let dveh = pick_vehicle(&drd);
@@ -1231,7 +1236,13 @@ pub fn graft_scene(inp: &str, out: &str, donor: &str, car_deltas: bool) -> Resul
         .enumerate()
         .filter(|(i, e)| {
             let cls = drd.descs.get(e.type_ as usize).map(|d| d.class_id).unwrap_or(0);
-            cls != gbx::record::CLASS_CSCENEVEHICLEVIS && Some(*i) != dveh
+            cls != gbx::record::CLASS_CSCENEVEHICLEVIS
+                && Some(*i) != dveh
+                // `--live-only`: leave the container's EMPTY entities out. A
+                // trim that emptied one crashed the game client on import
+                // (`ghost trim` refuses to write one for that reason), so a
+                // graft that puts one back is worth being able to not do.
+                && (!live_only || !e.times.is_empty())
         })
         .map(|(_, e)| e.clone())
         .collect();

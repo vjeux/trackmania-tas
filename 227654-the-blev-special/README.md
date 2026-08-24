@@ -45,7 +45,7 @@ of 46.9 s and the author time falls.**
 > **Still no video, and the reason is now a measured one, not a missing
 > machine.** The game CLIENT cannot import any ghost of this map whose record
 > has been rebuilt: it dies on import, every time, in every variant tried.
-> Twenty of them, one variable each, are in the table at the bottom of this
+> Twenty-four of them, one variable each, are in the table at the bottom of this
 > page. The dedicated server does not care — it re-simulates the input chunk and
 > never reads the scene — so nothing headless can see it, and every check in
 > this project passes on a file the game will not open.
@@ -252,6 +252,8 @@ behind a fresh launch, all on 2026-08-24 on the render box:
 | the run re-cut into the container's own five segment boundaries | 5 car entities | CRASH |
 | …with the notices stripped as well | 5 car entities | CRASH |
 | the 62 s version re-cut into seven segments, with and without the scene records | 7 car entities | CRASH |
+| the run re-cut into five segments AND put back in the container's own entity order (scene, placeholder, cars) | 7 entities | CRASH |
+| …with the container's EMPTY entity left out of the graft (`--live-only`), segmented and not | 6 and 2 entities | CRASH |
 
 So it is not the neutralised bytes, not the skin, not the notices, not the
 declared time, not `u01`, not the scene records, not the span on its own and not
