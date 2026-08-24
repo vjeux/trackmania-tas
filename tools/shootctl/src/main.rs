@@ -884,9 +884,17 @@ fn save_good(plugin_dir: &str, good_dir: &str) -> i32 {
 /// the same session, before believing anything it prints about one that does
 /// not.
 fn probe(map: &str, how: &str, mode: &str, timeout_s: u64) -> i32 {
-    let gp = match game_path(map) {
-        Ok(m) => m,
-        Err(e) => { eprintln!("{e}"); return 2; }
+    // `editreplay` names a REPLAY, and the game resolves it RELATIVE to the
+    // Replays folder — the same rule the ghost import follows. A relative path
+    // is exactly what `game_path` refuses (correctly, for a map), so this one
+    // door hands the string over as written.
+    let gp = if how == "editreplay" {
+        map.to_string()
+    } else {
+        match game_path(map) {
+            Ok(m) => m,
+            Err(e) => { eprintln!("{e}"); return 2; }
+        }
     };
     let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
     let _ = std::fs::create_dir_all(store);
@@ -916,6 +924,7 @@ fn probe(map: &str, how: &str, mode: &str, timeout_s: u64) -> i32 {
         "editghosts" => "/editghosts2".to_string(),
         "editmap3" => "/editmap3?adv=0".to_string(),
         "editmap3adv" => "/editmap3?adv=1".to_string(),
+        "editreplay" => format!("/editreplay?kind={}", if mode.is_empty() { "shoot" } else { mode }),
         other => {
             eprintln!("probe: unknown --how `{other}` (edit | play | editmap2 | editghosts)");
             return 2;

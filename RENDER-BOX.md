@@ -51,7 +51,7 @@ body (**this is the step that makes it public** — a pushed commit does not),
 then fetch it back under `env -i` with no credential at all and require 200 and
 playable bytes.
 
-## Working from an on-demand box, and the six traps that keep costing an hour
+## Working from an on-demand box, and the seven traps that keep costing an hour
 
 Every trap below was hit and diagnosed by an agent, more than one of them by
 three separate agents on the same day. None is interesting; all are expensive,
@@ -97,6 +97,20 @@ a file that does not exist. Three "diagnoses" of Spaghetti Nights 2 were made
 against that nonexistent path. Use a quoted heredoc, which interprets nothing.
 The game also cannot open a `/home/...` path at all: stage under `/mnt/c` and
 hand it the `C:/...` spelling.
+
+**7. `wsx push` OVERWRITES A WHOLE FILE, and this checkout is shared.**
+`~/trackmania-tas` on the box is one working copy that every arm pushes into. A
+top-level page pushed from a clone taken twenty minutes ago silently reverts
+every line another arm landed in the meantime — measured 2026-08-24, when a
+front-page push put back the **old asset URLs for five clips** that had just
+been re-shot, and again ten minutes later on this very file, which came back
+114 lines shorter. Nothing warns you: the push says OK and the commit is clean.
+
+So for any file more than one arm touches — `README.md`, `KAPPA.md`,
+`GHOSTS.md`, `LEADERBOARDS.md`, `FILMING.md`, this one — either **edit it in
+place on the box**, or **`git checkout --` it, re-apply your change there, and
+read `git diff` back before committing**. A per-map page or a source file only
+you are working on is safe to push whole.
 
 ## One game, one driver
 

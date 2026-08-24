@@ -114,6 +114,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/editmap2") return HttpResponse(200, EditMap2FromFile(QArg(qs, "dec")));
     if (r == "/editghosts2") return HttpResponse(200, EditGhostsFromFile());
     if (r == "/editmap3") return HttpResponse(200, EditMap3FromFile(QArg(qs, "adv") == "1"));
+    if (r == "/editreplay") return HttpResponse(200, EditReplayFromFile(QArg(qs, "kind")));
 
     auto api = MTApi();
     if (r == "/cantrack") {
@@ -382,6 +383,37 @@ string EditMap3FromFile(bool advanced) {
     if (p == "") return "no editmap.txt";
     tc.EditMap3(p, "", "", "", "", "", advanced);
     return "ok advanced=" + (advanced ? "1" : "0") + " " + p;
+}
+
+// `EditReplay2(ReplayList, EReplayEditType)` — open a REPLAY in the editor, and
+// with `Shoot` that is the MediaTracker.
+//
+// WHY THIS MATTERS BEYOND ONE MAP. Everything in this pipeline reaches the
+// MediaTracker through the TRACK EDITOR: `EditMap` to ctx 1, then
+// `EditMediatrackIngame()`. 146612 has no track editor — `EditMap` hangs
+// forever on it while `PlayMap` and `EditGhosts` load the same file in about
+// 6 s — so that map is unfilmable by the only route the pipeline has. This is
+// a second door, and it does not depend on the track editor at all.
+//
+// The path is the REPLAY, read from `editmap.txt` like every other path here,
+// and it is RELATIVE to the Replays folder (the same rule the ghost import
+// follows; a full C:/ path is accepted by the field and loads nothing).
+// `kind`: shoot (2) | edit (0) | view (1).
+string EditReplayFromFile(const string &in kind) {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    if (GetApp().Editor !is null) return "already in an editor - /back first";
+    auto tc = mp.ManiaTitleControlScriptAPI;
+    if (tc is null) return "no ManiaTitleControlScriptAPI";
+    string p = MapPathFromFile();
+    if (p == "") return "no editmap.txt";
+    MwFastBuffer<wstring> list;
+    list.Add(p);
+    auto t = CGameManiaTitleControlScriptAPI::EReplayEditType::Shoot;
+    if (kind == "edit") t = CGameManiaTitleControlScriptAPI::EReplayEditType::Edit;
+    if (kind == "view") t = CGameManiaTitleControlScriptAPI::EReplayEditType::View;
+    tc.EditReplay2(list, t);
+    return "ok kind=" + kind + " n=" + list.Length + " " + p;
 }
 
 // Open the In Game MediaTracker sequence -- the call the "EDIT" button makes.

@@ -90,16 +90,37 @@ telemetry (kappa 0.476), and the regenerated
 the shared store at `tm-nomovie-20260824/146612/`. There is nothing wrong with
 what would be filmed.
 
-**The one route left is `EditReplay2(ReplayList, EReplayEditType::Shoot)`** —
+**The one route left was `EditReplay2(ReplayList, EReplayEditType::Shoot)`** —
 the game's own "open this replay in the MediaTracker", which needs no track
-editor at all. It needs two things nobody has built:
+editor. **It has now been tried, and it does not open anything.**
 
-1. a `.Replay.Gbx` wrapper around a pure ghost (`ghost map set` refuses: a pure
-   ghost carries no embedded map, and there is no `ghost replay wrap` yet);
-2. the AngelScript call itself, whose parameter is a `MwFastBuffer<wstring>` —
-   whether Openplanet lets a plugin construct one is unknown, and a compile
-   error there unloads the plugin and takes the render box down with it, so it
-   is a lock-held experiment with `shootctl install`'s rollback behind it.
+The call itself is fine: `MwFastBuffer<wstring> list; list.Add(p);` compiles and
+runs in AngelScript (the plugin reloaded and reported its build stamp), the
+route returns `ok kind=shoot n=1`, and the title API reports `LatestResult`
+Success. What happens next is nothing — `ctx` stays 0, `IsReady` goes false and
+stays false, and a `FrameMessage` appears within a second and is gone before it
+can be read. Measured on **a replay the game itself wrote**, so this is not a
+fact about 146612 at all:
+
+| replay, named as | result |
+|---|---|
+| bare filename | `FrameMessage`, ctx 0 |
+| `My Replays/<name>.Replay.Gbx` — folder-relative, the rule the ghost import follows | nothing, ctx 0 |
+| `C:/Users/vjeux/…/Replays/My Replays/<name>.Replay.Gbx` | nothing, ctx 0 |
+| **146612 wrapped** — a donor replay with its embedded map replaced by this one (`ghost map set`, 705 348 B → 3 824 673 B, uid `jchzEcoc…`) | nothing, ctx 0 |
+
+So no `.Replay.Gbx` wrapper was worth writing after all: the wrapper is one
+`ghost map set` away (that file exists, on the render box at
+`Replays/_shoot146612/146612_wrap.Replay.Gbx`), and the door it was for does not
+open for the game's own replays either.
+
+**What is left untried, and it is one thing.** `DialogEditCutScenes_OnInGameEdit`
+(`/mtingame`) is the in-game "EDIT" button, and from a playground it does
+nothing — **but the control does nothing either**, because both were called at
+the countdown rather than on the end-of-race screen where that button lives.
+That negative has no positive control and must not be read as one. Driving a
+playground run to its finish and pressing it there is the experiment; this
+pipeline cannot drive a car, which is why it has not been done.
 
 Until then this map is **not filmable by this pipeline**, which is a much
 narrower statement than the one this page used to make.
