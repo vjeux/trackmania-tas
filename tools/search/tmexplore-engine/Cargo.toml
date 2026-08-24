@@ -1,0 +1,16 @@
+[package]
+name = "tmexplore-engine"
+version = "1.0.0"
+edition = "2021"
+
+# The adapters that bind the explorer to the real thing. Kept out of
+# `tmexplore` so the search itself stays testable on a box with no game.
+[dependencies]
+tmexplore = { path = "../tmexplore" }
+tmsearch = { path = "../tmsearch" }
+forkoracle = { path = "../forkoracle" }
+ghost = { path = "../../ghost" }
+
+[lib]
+name = "tmexplore_engine"
+path = "src/lib.rs"

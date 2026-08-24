@@ -46,6 +46,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmexplore"
+version = "1.0.0"
+
+[[package]]
+name = "tmexplore-engine"
+version = "1.0.0"
+dependencies = [
+ "forkoracle",
+ "ghost",
+ "tmexplore",
+ "tmsearch",
+]
+
+[[package]]
 name = "tmsearch"
 version = "1.0.0"
 dependencies = [
