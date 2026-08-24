@@ -497,6 +497,27 @@ impl MapFile {
     /// The GBX class of a `.Map.Gbx`: `CGameCtnChallenge`.
     pub const CLASS_CHALLENGE: u32 = 0x0304_3000;
 
+    /// `load`, without taking the process down.
+    ///
+    /// `load` panics on a malformed map, which is the right behaviour for a
+    /// one-shot CLI and the wrong behaviour inside a long-haul sweep: one bad
+    /// file in a corpus of hundreds would end the run rather than produce a
+    /// row saying which file it was. The reader is a deep recursive walk with
+    /// panics throughout, so the honest wrapper is `catch_unwind` rather than
+    /// a rewrite of every call site.
+    pub fn try_load(path: &std::path::Path) -> Result<MapFile, String> {
+        let p = path.to_path_buf();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || MapFile::load(&p)))
+            .map_err(|e| {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "the map reader panicked".to_string());
+                format!("{}: {msg}", path.display())
+            })
+    }
+
     pub fn load(path: &std::path::Path) -> MapFile {
         let gbx = Gbx::load(path).unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
         // REFUSE ANYTHING THAT IS NOT A MAP.

@@ -504,6 +504,56 @@ fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> 
 
 /// Same bounded retry as the bridge route: the race is the remote moving, not
 /// the transport.
+/// Push an arbitrary local ref to a NAMED BRANCH on the remote, through the
+/// bridge. Never `main`.
+///
+/// This exists for work that must be made durable on GitHub without being
+/// merged: two sessions can produce lineages that genuinely conflict, and the
+/// honest move is to bank both and let whoever owns the code adjudicate.
+/// Resolving somebody else's engine source by picking a side would silently
+/// drop landed work, and in this project a wrong resolution produces
+/// plausible wrong numbers rather than an error.
+pub fn push_ref_via_whitestick(l: &Layout, local_ref: &str, remote_branch: &str) -> Result<String, String> {
+    if remote_branch == "main" || remote_branch == "master" {
+        return Err(format!(
+            "refusing to push {local_ref} straight at {remote_branch}: that is what the normal \
+             bank does, with a rebase and a conflict check in front of it"
+        ));
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/var/svcscm".into());
+    let ws = format!("{home}/bin/whitestick");
+    let wsx = format!("{home}/bin/wsx");
+    if !Path::new(&ws).exists() {
+        return Err(format!("no bridge binary at {ws}"));
+    }
+    let sha = gitcmd::git(&l.repo, &["rev-parse", local_ref])?.stdout.trim().to_string();
+    let stamp = format!("{}-{}", std::process::id(), crate::time::now());
+    let bundle = std::env::temp_dir().join(format!("tmhaul-ref-{stamp}.bundle"));
+    let _ = std::fs::remove_file(&bundle);
+    gitcmd::git(&l.repo, &["bundle", "create", &bundle.to_string_lossy(), local_ref])?;
+    let remote_bundle = format!("~/tmhaul-ref-{stamp}.bundle");
+    gitcmd::run(&l.repo, &wsx, &["push", &bundle.to_string_lossy(), &remote_bundle])?;
+    let script = format!(
+        "set -e; \
+         if [ ! -d ~/haul-push ]; then git clone -q github-tmtas:vjeux/trackmania-tas.git ~/haul-push; fi; \
+         cd ~/haul-push; \
+         git fetch {remote_bundle} +{local_ref}:refs/heads/tmhaul-ref-incoming; \
+         git push origin refs/heads/tmhaul-ref-incoming:refs/heads/{remote_branch}; \
+         git rev-parse refs/heads/tmhaul-ref-incoming; \
+         rm -f {remote_bundle}"
+    );
+    let out = gitcmd::run(&l.repo, &ws, &[&script])?;
+    let remote_sha = out.stdout.trim().lines().last().unwrap_or("").to_string();
+    if remote_sha != sha {
+        return Err(format!(
+            "the box pushed {remote_sha} but {local_ref} is {sha} — the bundle did not carry what \
+             we think it did"
+        ));
+    }
+    let _ = std::fs::remove_file(&bundle);
+    Ok(format!("{remote_branch} -> {sha}"))
+}
+
 pub fn push_direct(l: &Layout, branch: &str) -> Result<String, String> {
     let mut last = String::new();
     for _ in 0..3 {

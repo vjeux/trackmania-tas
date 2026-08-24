@@ -192,6 +192,14 @@ pub struct MapHeader {
     pub ref_names: Vec<String>,
     pub chunks: Vec<(u32, usize)>,
     pub uid: String,
+    /// `authortime` from the header XML, in MILLISECONDS. The author time is a
+    /// number IN THE MAP FILE — which is what makes it a legitimate yardstick
+    /// for a project that may not consult a human ghost for anything. Print it
+    /// as seconds with a decimal.
+    pub authortime: String,
+    pub gold: String,
+    pub silver: String,
+    pub bronze: String,
     pub title: String,
     pub exever: String,
     pub exebuild: String,
@@ -252,6 +260,10 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
         ref_names,
         chunks: chunks.iter().map(|c| (c.id, c.data.len())).collect(),
         uid: get("ident", "uid"),
+        authortime: get("times", "authortime"),
+        gold: get("times", "gold"),
+        silver: get("times", "silver"),
+        bronze: get("times", "bronze"),
         title: get("header", "title"),
         exever: get("header", "exever"),
         exebuild: get("header", "exebuild"),
@@ -337,12 +349,12 @@ pub fn cmd(args: &[String]) {
             }
         };
         println!(
-            "map\tbytes\tgbxver\tnodes\textrefs\thdrchunks\ttitle\texever\texebuild\tenvir\tmood\tmaptype\tmapstyle\tvalidated\tlightmap\tghostblocks\tdisplaycost\tblocks_u\tblocks_b\titems\tmodels\tdeps\tzip_bytes\tzip_files\tzip_blocks\tthumb"
+            "map\tbytes\tauthortime\tgbxver\tnodes\textrefs\thdrchunks\ttitle\texever\texebuild\tenvir\tmood\tmaptype\tmapstyle\tvalidated\tlightmap\tghostblocks\tdisplaycost\tblocks_u\tblocks_b\titems\tmodels\tdeps\tzip_bytes\tzip_files\tzip_blocks\tthumb"
         );
         for h in &hs {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                label(&h.path), h.bytes, h.gbxver, h.nodes, h.extrefs, h.chunks.len(),
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                label(&h.path), h.bytes, crate::secs::secs_str(&h.authortime), h.gbxver, h.nodes, h.extrefs, h.chunks.len(),
                 h.title, h.exever, h.exebuild, h.envir, h.mood, h.maptype, h.mapstyle,
                 h.validated, h.lightmap, h.ghostblocks, h.displaycost, h.blocks_u, h.blocks_b, h.items, h.models,
                 h.deps.len(), h.zip_bytes, h.zip_entries.len(), h.zip_blocks(), h.thumb_bytes
@@ -397,6 +409,13 @@ pub fn cmd(args: &[String]) {
         }
         println!();
         println!("  ident       uid {}  author {}  name {}", h.uid, h.author, h.name);
+        println!(
+            "  times       author {}  gold {}  silver {}  bronze {}",
+            crate::secs::secs_str(&h.authortime),
+            crate::secs::secs_str(&h.gold),
+            crate::secs::secs_str(&h.silver),
+            crate::secs::secs_str(&h.bronze)
+        );
         println!(
             "  title       {}  exever {}  exebuild {}",
             h.title, h.exever, h.exebuild

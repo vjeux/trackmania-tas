@@ -48,3 +48,35 @@ pub fn signed(v: i64) -> String {
         ms(v)
     }
 }
+
+/// A header-XML time attribute, which is a STRING of milliseconds and may be
+/// absent (`"-"`), rendered as seconds with a decimal.
+///
+/// It stays a string rather than becoming an `Option<i64>` because "the map
+/// does not declare one" and "the map declares zero" are different facts and
+/// this project has been bitten by collapsing that distinction.
+pub fn secs_str(raw: &str) -> String {
+    match raw.trim().parse::<i64>() {
+        Ok(v) => ms(v),
+        Err(_) => raw.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod secs_str_tests {
+    use super::*;
+
+    #[test]
+    fn a_header_time_renders_as_seconds() {
+        assert_eq!(secs_str("23144"), "23.144");
+        assert_eq!(secs_str("0"), "0.000");
+    }
+
+    #[test]
+    fn an_absent_time_stays_absent_rather_than_becoming_zero() {
+        // `"-"` means the map declares no such time. Rendering it as `0.000`
+        // would invent an author time of zero, which every run beats.
+        assert_eq!(secs_str("-"), "-");
+        assert_eq!(secs_str(""), "");
+    }
+}

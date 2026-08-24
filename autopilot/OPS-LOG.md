@@ -6,6 +6,26 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## Dropping a crate from the workspace members list deletes its CI
+
+Another session's commit rewrote `tools/Cargo.toml` `members` to add its own
+crate and, in doing so, removed `haul` and `resim`. Two things then happened
+quietly:
+
+* the documented bootstrap (`cargo build --release -p haul -p resim`, the
+  first thing every heartbeat runs on a fresh box) **fails on a clean clone**;
+* the same commit reverted this harness's additions to `tmmaps`
+  (`MapHeader::authortime`, `MapFile::try_load`) — and because the crates that
+  use them were no longer in the workspace, **nothing built them to notice**.
+
+The members list is not a preference, it is the test surface. A crate outside
+it is a crate nobody compiles, and a revert of its dependencies is invisible.
+When editing that line, ADD to it; never retype it.
+
+(The `tmmaps` additions were restored from the original commit with
+`git show <sha> -- <paths> | git apply --3way`, which is the cheapest correct
+move: it takes the exact bytes rather than reconstructing them from memory.)
+
 ## An on-demand box cannot ssh to a devserver; the reverse works
 
 Measured while automating the credential bootstrap: `ssh devvm42752…` from an
