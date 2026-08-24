@@ -58,11 +58,40 @@ pub struct Input {
     pub respawn: bool,
 }
 
+/// The last race instant the strip may draw: the run's declared finish, or the
+/// end of the tape when the file declares nothing.
+///
+/// Split out of `inputs_by_race_ms` so it can be TESTED. It cannot be tested
+/// through that function: the only fixtures in the repo are genuine
+/// recordings whose tape ends at the finish, so a test through the file path
+/// passes identically with the clamp and without it — which is what the first
+/// version of this test did, and it is a guard that never fires.
+///
+/// A file declaring nothing keeps its whole tape. "This file declares no time"
+/// is a different situation from "the run ended", and clamping to zero would be
+/// worse than the defect.
+fn keep_to(tape_end_ms: i64, declared_ms: Option<i64>) -> i64 {
+    declared_ms.map(|e| e.min(tape_end_ms)).unwrap_or(tape_end_ms)
+}
+
 /// The run's inputs on a 10 ms race-time grid, indexed by `(race_ms / 10)`.
 ///
 /// Ticks before race 0 (the countdown) are dropped: they are real inputs, but
 /// no frame of the video shows them, and keeping them shifts every index by an
 /// amount that varies per tape.
+///
+/// **AND TICKS AFTER THE FINISH ARE DROPPED TOO, WHICH IS NOT COSMETIC.** A
+/// transplanted ghost inherits its CARRIER's input array, so a 12.759 run sits
+/// in a 48.480 tape and everything past the finish is a stranger's driving —
+/// the exact defect this module's header warns about, arriving through the back
+/// door. It did not matter while the strip only drew the past, because the
+/// video stops at the finish and the past never reached beyond it. Centring the
+/// strip made the future half draw up to `future_ms` AHEAD of the playhead, so
+/// the last three seconds of every clip showed someone else's inputs, presented
+/// as this run's and reading as more of the same driving.
+///
+/// `end_ms` is the run's declared time. Past it there are no inputs, so the
+/// strip visibly ENDS — which is also the honest picture: the run is over.
 pub fn inputs_by_race_ms(path: &str) -> Result<Vec<Input>, String> {
     let t = gbx::tape::Tape::from_file(path)?;
     let (st, ac, br, rs) = (t.steer_i8s(), t.accels(), t.brakes(), t.respawns());
@@ -73,10 +102,19 @@ pub fn inputs_by_race_ms(path: &str) -> Result<Vec<Input>, String> {
     if last < 0 {
         return Err(format!("{path}'s tape ends at race {last} ms -- it is all countdown"));
     }
-    let mut out = vec![Input::default(); (last / 10) as usize + 1];
+    // The declared time, when the file states one. A file with no declared time
+    // keeps the whole tape: dropping to zero would be worse than a stranger's
+    // inputs, and "this file declares nothing" is a different situation.
+    let end = gbx::record::decode_ghost(path)
+        .ok()
+        .and_then(|d| d.race_time_ms)
+        .map(|v| v as i64)
+        .filter(|v| *v > 0);
+    let keep_to = keep_to(last, end);
+    let mut out = vec![Input::default(); (keep_to / 10) as usize + 1];
     for i in 0..st.len() {
         let ms = t.race_ms(i);
-        if ms < 0 {
+        if ms < 0 || ms > keep_to {
             continue;
         }
         out[(ms / 10) as usize] = Input {
@@ -783,5 +821,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// THE STRIP MUST NOT DRAW INPUT FROM AFTER THE FINISH.
+    ///
+    /// A transplanted ghost inherits its CARRIER's input array, so a 12.759 run
+    /// sits in a 48.480 tape and every tick past the finish is a stranger's
+    /// driving. While the strip only drew the past this was invisible -- the
+    /// video stops at the finish, so the past never reached beyond it. Centring
+    /// the strip made the future half draw ahead of the playhead, and the last
+    /// three seconds of both published clips then showed someone else's inputs,
+    /// presented as this run's and reading as more of the same driving.
+    ///
+    /// Tested on `keep_to` rather than through a file, and that is the point:
+    /// every ghost in `testdata/` is a genuine recording whose tape ends AT its
+    /// finish (human_22730 declares 22.730 and its tape's last tick is race
+    /// 22730), so a test through `inputs_by_race_ms` passes identically with
+    /// the clamp and without it. I wrote that test first, removed the clamp to
+    /// check it, and it stayed green.
+    #[test]
+    fn a_carriers_tape_is_cut_at_the_runs_own_finish() {
+        // The real case: untitled 01, a 12.759 run in a 48.480 carrier tape.
+        assert_eq!(keep_to(48_480, Some(12_759)), 12_759);
+        // A genuine recording, where the two already agree: unchanged.
+        assert_eq!(keep_to(22_730, Some(22_730)), 22_730);
+        // A file that declares NOTHING keeps its tape. Clamping to zero would
+        // be worse than the defect -- an empty strip reads as "the driver never
+        // touched anything".
+        assert_eq!(keep_to(48_480, None), 48_480);
+        // And a declared time LONGER than the tape cannot invent input.
+        assert_eq!(keep_to(9_000, Some(12_759)), 9_000);
     }
 }
