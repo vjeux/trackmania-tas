@@ -49,8 +49,18 @@ pub fn touch(l: &Layout, node: &str) -> Result<(), String> {
 }
 
 pub fn retire(l: &Layout, node: &str, why: &str) -> Result<(), String> {
+    retire_at(l, node, crate::time::now(), why)
+}
+
+/// As `retire`, with the timestamp given explicitly.
+///
+/// `all` folds the per-box log in TIMESTAMP order, so a retirement stamped
+/// earlier than the box's own start reads as history and the later start wins
+/// — which is correct (a box that starts again IS active again) and is a trap
+/// for any caller whose clock disagrees with the records it is writing.
+pub fn retire_at(l: &Layout, node: &str, ts: i64, why: &str) -> Result<(), String> {
     let log = Log::at(l.boxes_dir().join(format!("{node}.rec")));
-    log.append(&Rec::new("box_retired").f("node", node).f("why", why))
+    log.append(&Rec::at(ts, "box_retired").f("node", node).f("why", why))
         .map_err(|e| e.to_string())
 }
 
@@ -154,5 +164,43 @@ mod tests {
     #[test]
     fn an_undeclared_lease_is_unknown_rather_than_infinite() {
         assert_eq!(lease_action(0, None, 1800), LeaseAction::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    fn layout(name: &str) -> Layout {
+        let p = std::env::temp_dir().join(format!("haul-lease-ord-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        for d in Layout::new(&p).all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        Layout::new(p)
+    }
+
+    #[test]
+    fn a_box_that_starts_again_after_being_retired_is_active_again() {
+        // Correct, and worth pinning: a replacement supervisor on a box that
+        // stood down earlier makes it live again.
+        let l = layout("restart");
+        register_at(&l, "boxA", 1000, Some(9999), "first").unwrap();
+        retire_at(&l, "boxA", 2000, "stood down").unwrap();
+        assert_eq!(active(&l).unwrap().len(), 0);
+        register_at(&l, "boxA", 3000, Some(9999), "second").unwrap();
+        assert_eq!(active(&l).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_retirement_stamped_before_the_start_it_follows_does_not_win() {
+        // The trap: the fold is in timestamp order, so a caller whose clock
+        // disagrees with the records it writes can retire a box "in the past"
+        // and see the retirement ignored. Pinned so the behaviour is a
+        // decision rather than a surprise.
+        let l = layout("skew");
+        register_at(&l, "boxA", 5000, Some(9999), "start").unwrap();
+        retire_at(&l, "boxA", 1000, "a retirement from before the start").unwrap();
+        assert_eq!(active(&l).unwrap().len(), 1, "the later start is the newer fact");
     }
 }

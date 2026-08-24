@@ -71,6 +71,9 @@ pub struct View {
     /// Horizontal metres between where the run's car started and where the
     /// map says the start line is. `None` means no sample has carried one.
     pub start_dev_m: Option<f64>,
+    /// Can this box reach GitHub through the bridge? `None` means the check
+    /// was not run on this pass, which is different from "no".
+    pub credential: Option<bool>,
 }
 
 impl View {
@@ -84,6 +87,7 @@ impl View {
             queue: QueueView::default(),
             last_bank: None,
             start_dev_m: None,
+            credential: None,
         }
     }
 }
@@ -528,6 +532,35 @@ pub fn start_position(v: &View, c: &Config) -> Option<Firing> {
     }
 }
 
+// ---------------------------------------------------------------- A11
+
+/// **GitHub banking is degraded.**
+///
+/// The paste mirror needs only an x509 cert and keeps working; the push to
+/// GitHub needs the bridge credential, which a fresh box does not have. So
+/// this failure loses no WORK — but the repo is the state of record a human
+/// reads, and it going stale while everything looks fine is exactly the
+/// silence this project keeps paying for.
+///
+/// It is a warning rather than a critical because nothing is lost and the
+/// credential server should heal it within its own cycle; `unbanked_drift`
+/// stays armed underneath and escalates if banking stops entirely.
+pub fn banking_degraded(v: &View, _c: &Config) -> Option<Firing> {
+    match &v.credential {
+        None => None, // not evaluated on this pass
+        Some(true) => None,
+        Some(false) => Some(Firing {
+            id: "banking_degraded",
+            severity: Severity::Warn,
+            detail: "the bridge credential is missing or the bridge does not answer, so pushes \
+                     to GitHub are failing. The paste mirror still works, so no work is at \
+                     risk — but the repo a human reads is going stale. `tmhaul credential \
+                     check`; the devserver's `tmhaul credential serve` should heal it"
+                .to_string(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------- A10
 
 /// **More boxes than the ceiling allows.**
@@ -568,6 +601,7 @@ pub const ALL: &[(&str, AlarmFn)] = &[
     ("unbanked_drift", unbanked_drift),
     ("start_position", start_position),
     ("fleet_over_cap", fleet_over_cap),
+    ("banking_degraded", banking_degraded),
 ];
 
 pub fn evaluate(v: &View, c: &Config) -> Vec<Firing> {
@@ -614,6 +648,7 @@ pub mod fixtures {
             },
             last_bank: Some(NOW - 300),
             start_dev_m: Some(0.8),
+            credential: Some(true),
         }
     }
 
@@ -766,6 +801,10 @@ pub mod fixtures {
         View { start_dev_m: None, ..healthy() }
     }
 
+    pub fn banking_degraded() -> View {
+        View { credential: Some(false), ..healthy() }
+    }
+
     pub fn too_many_boxes() -> View {
         let mut v = healthy();
         v.boxes = (0..4)
@@ -793,6 +832,7 @@ pub mod fixtures {
             ("start_position", "car starts 390 m away, at checkpoint 3", wrong_start()),
             ("start_position", "run never reported a start position", start_unreported()),
             ("fleet_over_cap", "four boxes against a ceiling of two", too_many_boxes()),
+            ("banking_degraded", "no bridge credential on this box", banking_degraded()),
         ]
     }
 }

@@ -558,6 +558,59 @@ fn real_main() -> Result<i32, String> {
             Ok(if broken == 0 { 0 } else { 2 })
         }
 
+        "credential" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/var/svcscm".into());
+            match a.word(1) {
+                "" | "check" => {
+                    let h = credential::health(&home);
+                    println!("{}", h.describe());
+                    Ok(if h.ok() { 0 } else { 1 })
+                }
+                // Run ON THE MACHINE THAT HOLDS THE CREDENTIAL (the devserver).
+                // An on-demand box cannot reach the devserver at all, so this
+                // cannot be a pull by the box that needs the file; it is a
+                // push by the one that has it, aimed by the box registry.
+                "serve" => {
+                    let l = layout()?;
+                    let me = paths::node_id();
+                    let once = a.on("once");
+                    let every = a.i("every-s", 300).max(30);
+                    loop {
+                        if let Err(e) = recover::pull(&l, &job(&l)?.branch) {
+                            eprintln!("tmhaul credential serve: cannot refresh the registry: {e}");
+                        }
+                        match credential::targets(&l, &me, time::now(), a.i("stale-after-s", 1800)) {
+                            Err(e) => eprintln!("tmhaul credential serve: {e}"),
+                            Ok(ts) => {
+                                for node in ts {
+                                    match credential::deliver(&node) {
+                                        credential::Delivery::AlreadyThere => {}
+                                        credential::Delivery::Installed => {
+                                            println!("{}  installed on {node}", time::iso(time::now()));
+                                        }
+                                        credential::Delivery::Failed(why) => {
+                                            println!("{}  {node}: {why}", time::iso(time::now()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if once {
+                            return Ok(0);
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(every as u64));
+                    }
+                }
+                "selftest" => {
+                    let (ok, report) = credential::selftest();
+                    print!("{report}");
+                    println!("\n{}", if ok { "every failure path refuses" } else { "A FAILURE PATH REPORTED SUCCESS" });
+                    Ok(if ok { 0 } else { 2 })
+                }
+                other => Err(format!("tmhaul credential check|serve|selftest, got {other:?}")),
+            }
+        }
+
         "verify" => {
             let l = layout()?;
             // "Banked" means the bytes git has. The working tree legitimately
