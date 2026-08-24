@@ -17,7 +17,11 @@ TMX map [276877](https://trackmania.exchange/mapshow/276877) · author
 
 **untitled 02** — TAS **9.415** (−21.984) | AT 31.399 | WR 14.959 by Its_Cam.
 
-https://github.com/user-attachments/assets/92fec497-7e8a-4088-8845-145a888ae26b
+With the inputs overlaid — **the strip is centred on the playhead**: three
+seconds of input behind `NOW` and three ahead, the future half drawn dimmer, so
+an input is on screen before the thing it causes.
+
+https://github.com/user-attachments/assets/f9bc5e8f-fe9f-4584-b00f-50d131ccbad6
 
 The clip is the **9.415**, the earlier rung of the same lattice skip.
 **Re-shot 2026-08-23 from a ghost regenerated out of that tape**

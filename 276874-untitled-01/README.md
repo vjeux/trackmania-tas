@@ -17,9 +17,11 @@ TMX map [276874](https://trackmania.exchange/mapshow/276874) · author
 
 **untitled 01** — TAS **12.759** (−11.080) | AT 23.839 | no human has ever recorded a time here
 
-With the inputs overlaid:
+With the inputs overlaid — **the strip is centred on the playhead**: three
+seconds of input behind `NOW` and three ahead, the future half drawn dimmer, so
+an input is on screen before the thing it causes.
 
-https://github.com/user-attachments/assets/fb3c2cbf-f2f0-4d8c-b36b-cb1125d8c2c1
+https://github.com/user-attachments/assets/3e14059f-3a90-40ed-9cb6-7d78d14a9429
 
 **Re-shot 2026-08-23 from a ghost regenerated out of this page's own tape**
 (`replays/TAS_12759.Ghost.Gbx`). The tape was identified by simulation, not by
