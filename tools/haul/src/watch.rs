@@ -104,6 +104,10 @@ impl Supervisor {
 
     /// What the worker should resume from, read out of the **repo** — not out
     /// of the box's own progress file, which a fresh box does not have.
+    pub fn last_evals(&self) -> u64 {
+        self.last_evals
+    }
+
     pub fn resume_point(&self) -> Result<(u64, Option<f64>), String> {
         let r = state::reconstruct(&self.l, crate::time::now())?;
         let evals = r.view.samples.iter().map(|s| s.evals).max().unwrap_or(0);
@@ -209,7 +213,21 @@ impl Supervisor {
         self.firing = ids;
     }
 
+    /// Seed the eval baseline from the repo before the first sample.
+    ///
+    /// Without this the budget over-counts by the entire resume point every
+    /// time a supervisor restarts: `last_evals` would start at zero, so the
+    /// first sample's "delta" would be the whole cumulative counter. On a
+    /// system whose normal mode of operation is *box dies, new box resumes*,
+    /// that quietly inflates the one number the pre-committed switch condition
+    /// is measured against.
+    pub fn seed(&mut self) -> Result<(), String> {
+        self.last_evals = self.resume_point()?.0;
+        Ok(())
+    }
+
     pub fn run(&mut self, o: &Options) -> Result<i32, String> {
+        self.seed()?;
         let mut child = self.spawn_worker()?;
         self.journal(
             &Rec::new("run_start")
@@ -387,5 +405,54 @@ mod tests {
         // pretending: a push that no-ops is worse than one that is off.
         std::env::set_var("HOME", "/nonexistent-home-for-this-test");
         assert_eq!(resolve_push("auto"), "none");
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+    use crate::log::Log;
+    use crate::rec::Rec;
+
+    #[test]
+    fn a_restarted_supervisor_does_not_re_spend_the_whole_budget() {
+        // The bug this catches was live for twenty minutes and inflated the
+        // eval count by the resume point on every restart — 582 counted for
+        // 308 actually done. The budget is the one number the pre-committed
+        // switch condition turns on, so a quiet inflation of it is a decision
+        // made for the wrong reason months later.
+        let repo = std::env::temp_dir().join(format!("haul-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        let l = Layout::new(&repo);
+        for d in l.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let log = Log::shard(&l.journal_dir(), "deadbox", 1).unwrap();
+        log.append(&Rec::at(1000, "run_start")).unwrap();
+        log.append(&Rec::at(1100, "sample").f("evals", 194).f("best", 100).f("worker_alive", 1))
+            .unwrap();
+
+        let o = Options {
+            node: "newbox".into(),
+            lease_expires: None,
+            max_passes: 1,
+            note: "seed test".into(),
+        };
+        let mut sup = Supervisor::new(l, crate::config::Job::default(), &o).unwrap();
+        assert_eq!(sup.last_evals(), 0, "before seeding");
+        sup.seed().unwrap();
+        assert_eq!(sup.last_evals(), 194, "the baseline must come from the repo");
+
+        // Control: on a genuinely fresh project there is nothing to seed from,
+        // and the baseline must be zero rather than something invented.
+        let fresh = std::env::temp_dir().join(format!("haul-seed2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fresh);
+        let l2 = Layout::new(&fresh);
+        for d in l2.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let mut sup2 = Supervisor::new(l2, crate::config::Job::default(), &o).unwrap();
+        sup2.seed().unwrap();
+        assert_eq!(sup2.last_evals(), 0);
     }
 }

@@ -77,14 +77,41 @@ pub fn record(dir: &Path, node: &str, delta_evals: u64, dt_s: i64) -> std::io::R
     )
 }
 
+/// Subtract work that was counted and should not have been.
+///
+/// The log is append-only and is never rewritten, so a miscount is corrected
+/// by recording the correction — with its reason, which is the part that still
+/// matters when somebody reads this in three months and wonders why the
+/// numbers step backwards. It exists because a real miscount happened: a
+/// restarted supervisor whose eval baseline started at zero counted its whole
+/// resume point as fresh work.
+pub fn correct(dir: &Path, node: &str, evals: u64, productive_s: i64, why: &str) -> std::io::Result<()> {
+    let log = Log::at(dir.join(format!("{node}.rec")));
+    log.append(
+        &Rec::new("budget_correction")
+            .f("evals", evals)
+            .f("productive_s", productive_s)
+            .f("why", why),
+    )
+}
+
 /// Total across every box that has ever run, reconstructed from the repo alone.
 pub fn total(dir: &Path) -> Result<Counters, String> {
     let recs = log::read_all(dir)?;
     let mut c = Counters::default();
-    for r in recs.iter().filter(|r| r.kind == "budget_interval") {
-        let de = r.get_u64("delta_evals").unwrap_or(0);
-        let dt = r.get_i64("dt_s").unwrap_or(0);
-        fold(&mut c, de, dt);
+    for r in &recs {
+        match r.kind.as_str() {
+            "budget_interval" => {
+                let de = r.get_u64("delta_evals").unwrap_or(0);
+                let dt = r.get_i64("dt_s").unwrap_or(0);
+                fold(&mut c, de, dt);
+            }
+            "budget_correction" => {
+                c.evals = c.evals.saturating_sub(r.get_u64("evals").unwrap_or(0));
+                c.productive_s = (c.productive_s - r.get_i64("productive_s").unwrap_or(0)).max(0);
+            }
+            _ => {}
+        }
     }
     Ok(c)
 }
@@ -137,6 +164,33 @@ mod tests {
         assert_eq!(c.productive_s, 500);
         assert_eq!(c.stalled_s, 500);
         assert_eq!(c.evals, 500);
+    }
+
+    #[test]
+    fn a_miscount_is_corrected_by_appending_not_by_rewriting() {
+        let d = std::env::temp_dir().join(format!("haul-budget-fix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        record(&d, "boxA", 500, 60).unwrap();
+        record(&d, "boxA", 194, 60).unwrap();   // the double-counted resume point
+        assert_eq!(total(&d).unwrap().evals, 694);
+        correct(&d, "boxA", 194, 0, "a restarted supervisor counted its resume point as fresh work").unwrap();
+        assert_eq!(total(&d).unwrap().evals, 500);
+        // and the record of both the miscount and the correction survives
+        let text = std::fs::read_to_string(d.join("boxA.rec")).unwrap();
+        assert!(text.contains("budget_correction"));
+        assert!(text.contains("resume point as fresh work"));
+        assert_eq!(text.lines().count(), 3, "nothing was rewritten");
+    }
+
+    #[test]
+    fn a_correction_cannot_drive_the_budget_below_zero() {
+        let d = std::env::temp_dir().join(format!("haul-budget-neg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        record(&d, "boxA", 10, 60).unwrap();
+        correct(&d, "boxA", 999, 999, "over-correction").unwrap();
+        let t = total(&d).unwrap();
+        assert_eq!(t.evals, 0);
+        assert_eq!(t.productive_s, 0);
     }
 
     #[test]

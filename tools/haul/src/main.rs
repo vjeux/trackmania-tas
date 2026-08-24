@@ -341,6 +341,18 @@ fn real_main() -> Result<i32, String> {
             let l = layout()?;
             let j = job(&l)?;
             match a.word(1) {
+                "correct" => {
+                    budget::correct(
+                        &l.budget_dir(),
+                        &paths::node_id(),
+                        a.i("evals", 0).max(0) as u64,
+                        a.i("productive-s", 0),
+                        &a.s("why", ""),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    println!("correction recorded");
+                    Ok(0)
+                }
                 "record" => {
                     budget::record(&l.budget_dir(), &paths::node_id(), a.i("evals", 0) as u64, a.i("dt", 0))
                         .map_err(|e| e.to_string())?;
@@ -498,6 +510,19 @@ fn real_main() -> Result<i32, String> {
                     "no worker_cmd in {} — the supervisor will not invent work to do",
                     l.job_spec().display()
                 ));
+            }
+            // Two supervisors on one box is not a configuration anybody wants,
+            // and it is easy to reach by accident: `watch` clears the STOP
+            // file at startup, so starting a second one *while the first is
+            // standing down* deletes the flag the first was about to read and
+            // leaves both alive. Refuse instead.
+            if !a.on("force") {
+                if let Some(pid) = beat::watch_pid() {
+                    return Err(format!(
+                        "a supervisor is already running on this box (pid {pid}). \
+                         Run `tmhaul stop` and wait for it to stand down, or pass --force."
+                    ));
+                }
             }
             let stop = PathBuf::from(&j.progress_file).with_file_name("STOP");
             let _ = std::fs::remove_file(&stop);
