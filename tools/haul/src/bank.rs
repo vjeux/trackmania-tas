@@ -403,12 +403,17 @@ pub fn push_via_whitestick(l: &Layout, branch: &str) -> Result<String, String> {
 
     gitcmd::run(&l.repo, &wsx, &["push", &bundle.to_string_lossy(), "~/tmhaul-in.bundle"])?;
 
+    // The `+` force applies only to `tmhaul-incoming`, a scratch ref on the
+    // render box that this harness owns: a rebase gives our commits new shas,
+    // so updating it is legitimately not a fast-forward. The push to `main` is
+    // NOT forced, so a real divergence still fails loudly instead of
+    // clobbering somebody's work.
     let script = format!(
         "set -e; \
          if [ ! -d ~/haul-push ]; then git clone -q github-tmtas:vjeux/trackmania-tas.git ~/haul-push; fi; \
          cd ~/haul-push; \
-         git fetch -q ~/tmhaul-in.bundle {branch}:refs/heads/tmhaul-incoming; \
-         git push -q origin refs/heads/tmhaul-incoming:refs/heads/{branch}; \
+         git fetch ~/tmhaul-in.bundle +{branch}:refs/heads/tmhaul-incoming; \
+         git push origin refs/heads/tmhaul-incoming:refs/heads/{branch}; \
          git rev-parse refs/heads/tmhaul-incoming"
     );
     let out = gitcmd::run(&l.repo, &ws, &[&script])?;
