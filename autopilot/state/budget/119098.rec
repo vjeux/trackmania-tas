@@ -105,3 +105,13 @@
 2026-08-25T22:11:25Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
 2026-08-25T22:12:26Z	budget_interval	budget=resim-sweep	delta_evals=20	dt_s=60	productive=1
 2026-08-25T22:13:26Z	budget_interval	budget=resim-sweep	delta_evals=37	dt_s=60	productive=1
+2026-08-25T22:15:31Z	budget_interval	budget=resim-sweep	delta_evals=17	dt_s=60	productive=1
+2026-08-25T22:16:32Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T22:17:32Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T22:18:33Z	budget_interval	budget=resim-sweep	delta_evals=40	dt_s=60	productive=1
+2026-08-25T22:19:34Z	budget_interval	budget=resim-sweep	delta_evals=28	dt_s=60	productive=1
+2026-08-25T22:20:34Z	budget_interval	budget=resim-sweep	delta_evals=29	dt_s=60	productive=1
+2026-08-25T22:21:35Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T22:22:35Z	budget_interval	budget=resim-sweep	delta_evals=21	dt_s=60	productive=1
+2026-08-25T22:23:36Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T22:24:37Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
