@@ -630,3 +630,4 @@
 2026-08-25T07:29:00Z	box_alive	node=42504
 2026-08-25T07:30:00Z	box_alive	node=42504
 2026-08-25T07:31:00Z	box_alive	node=42504
+2026-08-25T07:32:00Z	box_retired	node=42504	why=stop file
