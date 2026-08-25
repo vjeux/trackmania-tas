@@ -6,6 +6,25 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A fresh box cannot announce itself through the channel it needs the credential FOR
+
+The credential server reads the box registry out of the repo. A fresh box
+writes its registration into that registry — and then cannot PUSH it, because
+pushing is exactly what it has no credential for. So the server never learned
+the box existed, never delivered, and the box sat DEGRADED with an alarm that
+said only that it was degraded. Perfect chicken-and-egg, and the automated
+bootstrap looked like it simply did not work.
+
+The fix is to listen on the channel that still works: the **mirror pastes**.
+Writing one needs an x509 cert, which every box has from its first minute, and
+the title is `TMHAUL-STATE <node> <iso> sha=<sha>`. So a box announces itself
+durably before it can push anything, and `credential serve` now unions the
+repo registry with the nodes named by recent mirror titles.
+
+**The general shape: a bootstrap must not depend on the capability it is
+bootstrapping.** Worth checking that sentence against anything else that heals
+itself here.
+
 ## `cargo test` does not rebuild `target/release/<bin>`
 
 I fixed the budget attribution, edited `beat.rs` and `status.rs`, ran

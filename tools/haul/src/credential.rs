@@ -151,17 +151,93 @@ pub fn health(home: &str) -> Health {
 
 // ---------------------------------------------------------------- the server
 
-/// Which boxes should be handed the credential, from the registry.
+/// Which boxes should be handed the credential.
 ///
-/// Active, not retired, not this machine, and not seen so long ago that they
-/// are presumed gone — pushing a credential at a box that no longer exists is
-/// pointless, and doing it forever is worse.
+/// **Two sources, and the second one is why this works at all.**
+///
+/// The obvious source is the box registry in the repo. It is not sufficient,
+/// and the reason is a chicken-and-egg the first real rotation walked straight
+/// into: a fresh box registers itself, but it cannot PUSH that registration
+/// without the credential, so the registry the server reads never learns the
+/// box exists, so the credential is never delivered. The box sits degraded
+/// forever, and the alarm that fires says only that it is degraded.
+///
+/// The second source is the channel that still works when push does not: the
+/// **mirror pastes**. Writing one needs an x509 cert, which every box has from
+/// its first minute, and the title carries the node name. So a box announces
+/// itself durably before it can push anything — and that announcement is what
+/// the credential server listens to.
+///
+/// Filtered the same way either way: not this machine, not retired, and seen
+/// recently enough to still exist.
 pub fn targets(l: &Layout, me: &str, now: i64, stale_after_s: i64) -> Result<Vec<String>, String> {
-    Ok(lease::all(l)?
+    let mut out: Vec<String> = lease::all(l)?
         .into_iter()
         .filter(|b| !b.retired && b.node != me && now - b.last_seen <= stale_after_s)
         .map(|b| b.node)
-        .collect())
+        .collect();
+    for n in from_mirrors(me, now, stale_after_s).unwrap_or_default() {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Node names announced by recent mirror pastes.
+pub fn from_mirrors(me: &str, now: i64, stale_after_s: i64) -> Result<Vec<String>, String> {
+    let out = std::process::Command::new("meta")
+        .args([
+            "phabricator.paste",
+            "list",
+            &format!("--title-contains={}", crate::bank::MIRROR_TITLE_PREFIX),
+            "--limit=40",
+            "--output=json",
+        ])
+        .output()
+        .map_err(|e| format!("spawn meta: {e}"))?;
+    if !out.status.success() {
+        return Err("could not list mirror pastes".into());
+    }
+    Ok(parse_mirror_nodes(
+        &String::from_utf8_lossy(&out.stdout),
+        me,
+        now,
+        stale_after_s,
+    ))
+}
+
+/// Pull `(node, created)` out of the paste listing and keep the fresh ones.
+/// Pure, so the parse can be tested against a real listing without a network.
+pub fn parse_mirror_nodes(json: &str, me: &str, now: i64, stale_after_s: i64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for chunk in json.split("{\"id\":\"").skip(1) {
+        let title = chunk
+            .split("\"title\":\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        let created: i64 = chunk
+            .split("\"created\":\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        // `TMHAUL-STATE <node> <iso> sha=<sha>`
+        let Some(rest) = title.strip_prefix(&format!("{} ", crate::bank::MIRROR_TITLE_PREFIX)) else {
+            continue;
+        };
+        let Some(node) = rest.split_whitespace().next() else { continue };
+        if node.is_empty() || node == me || now - created > stale_after_s {
+            continue;
+        }
+        if !out.contains(&node.to_string()) {
+            out.push(node.to_string());
+        }
+    }
+    out
 }
 
 /// The on-demand box's fully-qualified name. The registry stores the short
@@ -419,4 +495,53 @@ pub fn selftest() -> (bool, String) {
     out.push_str(&format!("{:<44} {}\n", "(control) this box's own credential", here.describe()));
 
     (ok, out)
+}
+
+#[cfg(test)]
+mod mirror_discovery_tests {
+    use super::*;
+
+    /// A real listing, trimmed. The two 42504 rows are deliberate: the same
+    /// box mirrors every cycle and must appear once.
+    const LISTING: &str = r#"[{"id":"P2474969284","title":"TMHAUL-STATE 24576 2026-08-25T07:36:03Z sha=753114f3ed9a","created":"1787643365"},{"id":"P2474965244","title":"TMHAUL-STATE 42504 2026-08-25T07:32:00Z sha=97147649c662","created":"1787643122"},{"id":"P2474964376","title":"TMHAUL-STATE 42504 2026-08-25T07:31:00Z sha=fdaecb3b9ce2","created":"1787643062"}]"#;
+
+    const NOW: i64 = 1_787_643_400;
+
+    #[test]
+    fn a_box_that_cannot_push_yet_is_still_discovered() {
+        // The chicken-and-egg this exists for: a fresh box registers itself in
+        // the repo but cannot PUSH that registration without the credential,
+        // so the registry never learns it exists. Its mirror paste can be
+        // written with an x509 cert alone, and that is the announcement.
+        let got = parse_mirror_nodes(LISTING, "devvm42752", NOW, 1800);
+        assert!(got.contains(&"24576".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn each_box_appears_once_however_often_it_mirrors() {
+        let got = parse_mirror_nodes(LISTING, "devvm42752", NOW, 1800);
+        assert_eq!(got.iter().filter(|n| *n == "42504").count(), 1, "{got:?}");
+    }
+
+    #[test]
+    fn the_server_does_not_discover_itself() {
+        let got = parse_mirror_nodes(LISTING, "24576", NOW, 1800);
+        assert!(!got.contains(&"24576".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn a_stale_announcement_is_ignored() {
+        // A box that mirrored yesterday is gone; pushing a credential at it
+        // forever is the failure mode this avoids.
+        assert_eq!(parse_mirror_nodes(LISTING, "devvm42752", NOW + 86_400, 1800), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_listing_that_is_not_one_yields_nothing_rather_than_garbage() {
+        assert_eq!(parse_mirror_nodes("", "me", NOW, 1800), Vec::<String>::new());
+        assert_eq!(parse_mirror_nodes("not json at all", "me", NOW, 1800), Vec::<String>::new());
+        // A title of the right prefix but the wrong shape must not become a
+        // hostname somebody then tries to ssh to.
+        assert_eq!(parse_mirror_nodes(r#"[{"id":"P1","title":"TMHAUL-STATE","created":"1787643365"}]"#, "me", NOW, 1800), Vec::<String>::new());
+    }
 }
