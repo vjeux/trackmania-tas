@@ -97,3 +97,7 @@
 2026-08-25T21:50:05Z	box_alive	node=119098
 2026-08-25T21:51:06Z	box_alive	node=119098
 2026-08-25T21:52:06Z	box_alive	node=119098
+2026-08-25T21:54:10Z	box_alive	node=119098
+2026-08-25T21:55:11Z	box_alive	node=119098
+2026-08-25T21:56:12Z	box_alive	node=119098
+2026-08-25T22:01:02Z	box_start	node=119098	note=119098, restarted after the supervisor died unlogged	lease_expires=1787731200
