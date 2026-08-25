@@ -428,3 +428,4 @@
 2026-08-25T14:57:38Z	box_alive	node=24576
 2026-08-25T14:58:38Z	box_alive	node=24576
 2026-08-25T14:59:38Z	box_alive	node=24576
+2026-08-25T15:32:39Z	box_retired	node=24576	why=unreachable from the orchestrator AND by ssh from devvm at 15:30Z, with 4h of lease left; last mirror 15:00:10Z
