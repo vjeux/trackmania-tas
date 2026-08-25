@@ -15102,3 +15102,15 @@
 2026-08-25T06:30:48Z	resim	map=welcome to wiggles	file=TAS_96852_v1.Ghost.Gbx	verdict=holds	detail=96.852
 2026-08-25T06:30:48Z	resim	map=welcome to wiggles	file=gen_TAS_95839_analog.Ghost.Gbx	verdict=holds	detail=95.839
 2026-08-25T06:30:48Z	resim	map=yeet fall 2024 04	file=ACTIONKEY_10717.Ghost.Gbx	verdict=UNMEASURED	detail=ACTIONKEY_10717.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=ALPHABET153_23545.Ghost.Gbx	verdict=holds	detail=23.545
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=KEYBOARD_24164.Ghost.Gbx	verdict=holds	detail=24.164
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=TAS_23416.Ghost.Gbx	verdict=holds	detail=23.416
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=TAS_23416_regen.Ghost.Gbx	verdict=holds	detail=23.416
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=TAS_23462_v1.Ghost.Gbx	verdict=holds	detail=23.462
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=TAS_23498_v1.Ghost.Gbx	verdict=holds	detail=23.498
+2026-08-25T06:34:14Z	resim	map=kacky reloaded 290	file=THIN_318ev_23508.Ghost.Gbx	verdict=holds	detail=23.508
+2026-08-25T06:34:19Z	resim	map=kekl sausage ice	file=KEYBOARD_67625.Ghost.Gbx	verdict=holds	detail=67.625
+2026-08-25T06:34:19Z	resim	map=kekl sausage ice	file=TAS_67200.Ghost.Gbx	verdict=holds	detail=67.200
+2026-08-25T06:34:19Z	resim	map=kekl sausage ice	file=TAS_67319.Ghost.Gbx	verdict=holds	detail=67.319
+2026-08-25T06:34:19Z	resim	map=kekl sausage ice	file=TAS_67404.Ghost.Gbx	verdict=holds	detail=67.404
+2026-08-25T06:34:19Z	resim	map=unlucke get jiggy with it	file=HUMANWR_plus_early_flick_6342.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
