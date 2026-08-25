@@ -38,7 +38,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .unwrap_or_else(|| "3".into())
         .parse()
         .map_err(|_| "--checkpoints")?;
-    let mut meta = synth::meta_for_map(&map)?;
+    let mut meta = synth::complete_meta_for_map(&map)?;
     let declared_cps: Vec<i32> = (1..=checkpoints)
         .map(|i| (declared as i32 / (checkpoints + 1)) * i)
         .chain(std::iter::once(declared as i32))
@@ -120,7 +120,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         out.join("server.stderr.txt").display()
     );
     println!(
-        "map-derived initial: pos=({:.3},{:.3},{:.3}) quat=({:.6},{:.6},{:.6},{:.6}) dir={:?}",
+        "map-derived initial: pos=({:.3},{:.3},{:.3}) quat=({:.6},{:.6},{:.6},{:.6}) dir={:?} validation_start_index={}",
         initial.pos[0],
         initial.pos[1],
         initial.pos[2],
@@ -128,7 +128,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         initial.quat[1],
         initial.quat[2],
         initial.quat[3],
-        initial.roadtech_dir
+        initial.roadtech_dir,
+        meta.validation_start_index
     );
     Ok(())
 }

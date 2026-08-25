@@ -1,0 +1,7 @@
+boundary_tick	307
+ownership	controller=0x562eea1d7460	sim=0x562eee2e7c80	playground=0x562eeea9b400	participant=0x562eef133d60	vehicle=0x562eef06b498	state=0x562eef06c788
+self_check	197 states, |d(pos)/dt - v| median 0.0690 m/s, |q|-1 max 1.19e-7, travelled 57.6 m
+initial	pos=1363.291382,10.019090,1094.383057	vel=8.212282,0.035497,-19.319897	quat_wxyz=0.204261780,0.005879765,0.978891373,0.003778900
+semantic_start	pos=1584.000000,18.002001,784.000000	distance_m=380.937866	dir=Some(0)
+hard_left	end=1349.352173,10.014627,1072.355469	lateral_m=-13.939209
+hard_right	end=1370.491577,10.023090,1079.120850	lateral_m=7.200195

@@ -1,0 +1,4 @@
+boundary_tick	218
+ownership	controller=0x562bb738d490	sim=0x562bbb49df70	playground=0x562bbbc516f0	participant=0x562bbc2ea050	vehicle=0x562bbc221788	state=0x562bbc222a78
+initial	pos=1584.284302,18.007957,786.491028	vel=0.903374,0.026050,8.304174	quat_wxyz=0.996793985,-0.002340705,0.079976052,-0.000314470
+semantic_start	pos=1584.000000,18.002001,784.000000	distance_m=2.507206	dir=Some(0)

@@ -57,9 +57,9 @@ INPUTS  (operation 1 and 2)
         every map page publishes under `inputs/`. Those files had no writer in
         the repo, so a page's inputs could not be regenerated from the ghost
         they came from, or checked against it.
-  ghost tape bits FILE...
-        Which bits of the state literal actually vary across a corpus: the
-        census that says what is still unnamed in the packet.
+  ghost tape bits FILE... [--events]
+        Which bits of the state literal actually vary across a corpus; --events
+        also prints each explicit literal's tick and decoded state, never inputs.
 
 CAR STATE  (operation 3)
   ghost regen IN OUT --map MAP [--neutralise] [--inputs] [--trim-outside]
@@ -1184,6 +1184,7 @@ fn cmd_tape(a: &[String]) {
 /// enumerated set rather than a shrug.
 fn cmd_bits(a: &[String]) {
     let files: Vec<&String> = a.iter().filter(|s| !s.starts_with("--")).collect();
+    let show_events = has(a, "--events");
     let mut ones = [0u64; 34];
     let mut zeros = [0u64; 34];
     let mut lits = 0u64;
@@ -1195,10 +1196,21 @@ fn cmd_bits(a: &[String]) {
                 continue;
             }
         };
-        for ar in &t.archives {
-            for p in &ar.packets {
+        for (archive_index, ar) in t.archives.iter().enumerate() {
+            for (tick, p) in ar.packets.iter().enumerate() {
                 if let tape::StateEnc::Lit(l) = p.state {
                     lits += 1;
+                    if show_events {
+                        println!(
+                            "state\tfile={}\tarchive={}\ttick={}\trace_ms={}\tliteral=0x{l:09x}\tword0=0x{:08x}\tflags=0x{:06x}",
+                            f,
+                            archive_index,
+                            tick,
+                            ar.start_offset_ms + tick as i32 * 10,
+                            p.word0,
+                            p.flags
+                        );
+                    }
                     for b in 0..34 {
                         if l >> b & 1 == 1 {
                             ones[b] += 1

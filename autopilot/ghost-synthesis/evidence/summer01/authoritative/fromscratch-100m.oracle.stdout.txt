@@ -1,0 +1,1 @@
+map1.Map.Gbx	fromscratch-100m.Ghost.Gbx	DNF	cps=0

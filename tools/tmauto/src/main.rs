@@ -25,7 +25,12 @@ RUNG 0  (synthesizing a container with no human provenance)
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
-                     [--declared MS] [--seed N] [--steer -127..127] [--record MODE]
+                     [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N]
+                     [--record MODE]
+                     [--start-offset MS] [--format-version 11|12] [--field0 N]
+                     [--state-flags START..END:HEX]
+                     [--settings-flags N] [--validation-u03 N] [--validation-u04 N]
+                     [--title-id ID] [--title-checksum HEX]
                      [--corrupt-start-x METRES] [--no-CHUNK ...]
         Write one synthesized container. MODE is none, parent, descriptor,
         entity, sample, or grid (default: sample); each rung adds one record feature.
@@ -61,6 +66,26 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 }
 fn flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
+}
+
+fn parse_u32(s: &str, name: &str) -> Result<u32, String> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        u32::from_str_radix(hex, 16).map_err(|_| name.to_string())
+    } else {
+        s.parse().map_err(|_| name.to_string())
+    }
+}
+
+fn parse_checksum256(s: &str) -> Result<[u8; 32], String> {
+    if s.len() != 64 {
+        return Err("--title-checksum wants exactly 64 hexadecimal digits".into());
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "--title-checksum wants exactly 64 hexadecimal digits")?;
+    }
+    Ok(out)
 }
 
 fn main() {
@@ -538,11 +563,46 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
     let out = PathBuf::from(arg(args, "--out").ok_or("--out is required")?);
     let ticks: usize = arg(args, "--ticks").unwrap_or_else(|| "600".into()).parse().map_err(|_| "--ticks")?;
-    let uid = map_uid(&map)?;
-    let mut meta = GhostMeta::probe(&uid);
+    let mut meta = synth::complete_meta_for_map(&map)?;
     if let Some(s) = arg(args, "--seed") {
         meta.validation_seed = s.parse().map_err(|_| "--seed")?;
     }
+    if let Some(s) = arg(args, "--start-offset") {
+        meta.start_offset_ms = s.parse().map_err(|_| "--start-offset")?;
+    }
+    if let Some(s) = arg(args, "--format-version") {
+        meta.format_version = s.parse().map_err(|_| "--format-version")?;
+    }
+    if let Some(s) = arg(args, "--field0") {
+        meta.field0 = s.parse().map_err(|_| "--field0")?;
+    }
+    for s in args.windows(2).filter(|w| w[0] == "--state-flags").map(|w| &w[1]) {
+        let (range, value) = s.split_once(':').ok_or("--state-flags wants START..END:HEX")?;
+        let (start, end) = range.split_once("..").ok_or("--state-flags wants START..END:HEX")?;
+        let start: usize = start.parse().map_err(|_| "--state-flags start tick")?;
+        let end: usize = end.parse().map_err(|_| "--state-flags end tick")?;
+        if end <= start {
+            return Err("--state-flags range must be non-empty and half-open".into());
+        }
+        let value = value.strip_prefix("0x").unwrap_or(value);
+        let flags = u32::from_str_radix(value, 16).map_err(|_| "--state-flags HEX value")?;
+        if flags > 0x3f_ffff {
+            return Err("--state-flags exceeds the archive's 22-bit field".into());
+        }
+        meta.state_flag_ranges.push((start, end, flags));
+    }
+    if let Some(s) = arg(args, "--exe-version") { meta.exe_version = s; }
+    if let Some(s) = arg(args, "--exe-checksum") { meta.exe_checksum = parse_u32(&s, "--exe-checksum")?; }
+    if let Some(s) = arg(args, "--os-kind") { meta.os_kind = parse_u32(&s, "--os-kind")?; }
+    if let Some(s) = arg(args, "--cpu-kind") { meta.cpu_kind = parse_u32(&s, "--cpu-kind")?; }
+    if let Some(s) = arg(args, "--walltime-start") { meta.walltime_start = parse_u32(&s, "--walltime-start")?; }
+    if let Some(s) = arg(args, "--walltime-end") { meta.walltime_end = parse_u32(&s, "--walltime-end")?; }
+    if let Some(s) = arg(args, "--title-id") { meta.title_id = s; }
+    if let Some(s) = arg(args, "--title-checksum") { meta.title_checksum = parse_checksum256(&s)?; }
+    if let Some(s) = arg(args, "--settings-flags") { meta.settings_flags = parse_u32(&s, "--settings-flags")?; }
+    if let Some(s) = arg(args, "--validation-u03") { meta.validation_start_index = parse_u32(&s, "--validation-u03")?; }
+    if let Some(s) = arg(args, "--validation-u04") { meta.validation_u04 = parse_u32(&s, "--validation-u04")?; }
+    if let Some(s) = arg(args, "--race-settings") { meta.race_settings = s; }
     let set = ChunkSet {
         login: !flag(args, "--no-login"),
         validate_uid: !flag(args, "--no-uid"),
@@ -575,7 +635,19 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
             if !(-127..=127).contains(&steer) {
                 return Err("--steer wants -127..127".into());
             }
-            vec![Input::new(steer, true, false); ticks]
+            let mut inputs = vec![Input::new(steer, true, false); ticks];
+            let wobble: usize = arg(args, "--wobble-prefix")
+                .as_deref()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| "--wobble-prefix wants a tick count")?;
+            for (tick, input) in inputs.iter_mut().take(wobble).enumerate() {
+                // Same deterministic, zero-mean 25-value key as the fork-search
+                // template. It gives the input locator a unique prefix without
+                // borrowing any driving line or changing throttle.
+                input.steer = ((tick as u64 * 7919 + 13) % 25) as i8 - 12;
+            }
+            inputs
         }
     };
     // The declared time governs how long the validator simulates -- not the
@@ -618,9 +690,9 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         out.display(), bytes.len(), inputs.len(), meta.declared_ms, record_mode.name()
     );
     println!(
-        "initial  pos=({:.3},{:.3},{:.3}) quat=({:.6},{:.6},{:.6},{:.6}) vel=(0,0,0) dir={:?} corrupt_x={:.3}",
+        "initial  pos=({:.3},{:.3},{:.3}) quat=({:.6},{:.6},{:.6},{:.6}) vel=(0,0,0) dir={:?} validation_start_index={} corrupt_x={:.3}",
         initial.pos[0], initial.pos[1], initial.pos[2], initial.quat[0], initial.quat[1],
-        initial.quat[2], initial.quat[3], initial.roadtech_dir, corrupt_x_m
+        initial.quat[2], initial.quat[3], initial.roadtech_dir, meta.validation_start_index, corrupt_x_m
     );
     Ok(())
 }

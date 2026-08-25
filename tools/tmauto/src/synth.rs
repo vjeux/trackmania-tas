@@ -111,6 +111,10 @@ pub struct GhostMeta {
     /// Archive header word whose meaning is not established here. Named
     /// `field0` in `gbx::tape` for the same reason.
     pub field0: u32,
+    /// Half-open tick ranges carrying named-but-not-yet-understood state flags.
+    /// Empty is the minimal baseline. Diagnostic callers can reproduce pulses
+    /// observed in game-written input archives without copying any packet bytes.
+    pub state_flag_ranges: Vec<(usize, usize, u32)>,
     /// The ghost's declared game version, written into chunk `0x03092014`.
     /// The engine's current version is **8**; anything else is refused.
     pub game_version: u32,
@@ -120,11 +124,19 @@ pub struct GhostMeta {
     pub exe_checksum: u32,
     pub os_kind: u32,
     pub cpu_kind: u32,
+    pub title_id: String,
+    pub title_checksum: [u8; 32],
     /// The walltime pair, in unix seconds. Both must be set (`!= -1`) and
     /// their difference must sit within the race time ± (10 s + 10 %).
     pub walltime_start: u32,
     pub walltime_end: u32,
     pub race_settings: String,
+    /// The index of the semantic Spawn inside the engine's checkpoint array.
+    /// TM2020 orders non-Spawn block waypoints first, then Spawn blocks, then
+    /// item waypoints. A zero here selects array entry zero — on Summer 2026 -
+    /// 01 that is the last checkpoint, which was the wrong-start defect.
+    pub validation_start_index: u32,
+    pub validation_u04: u32,
     /// The race-settings flags. **Three 3-bit fields must each be non-zero**
     /// or the server refuses with "cannot validate scripted modes".
     pub settings_flags: u32,
@@ -153,17 +165,22 @@ impl GhostMeta {
             format_version: 11,
             input_chunk_version: 4,
             field0: 0,
+            state_flag_ranges: Vec::new(),
             game_version: 8,
             exe_version: "date=2026-05-15_18_00".to_string(),
             exe_checksum: 0,
             os_kind: 0,
             cpu_kind: 0,
+            title_id: String::new(),
+            title_checksum: [0; 32],
             // A zero-length race means a zero-length walltime, which satisfies
             // the window trivially. `set_declared` moves both together so they
             // can never drift apart.
             walltime_start: 1_700_000_000,
             walltime_end: 1_700_000_000,
             race_settings: String::new(),
+            validation_start_index: 0,
+            validation_u04: 0,
             settings_flags: SETTINGS_MINIMAL_VALID,
         }
     }
@@ -253,12 +270,25 @@ fn inline(id: u32, payload: &[u8]) -> Vec<u8> {
 /// that tick silently does nothing. A synthesized tape has no reason to want
 /// that, and a search that later pokes tick N must be able to.
 pub fn packets_for(inputs: &[Input]) -> Vec<Packet> {
+    packets_for_state_flags(inputs, &[])
+}
+
+fn packets_for_state_flags(
+    inputs: &[Input],
+    state_flag_ranges: &[(usize, usize, u32)],
+) -> Vec<Packet> {
     inputs
         .iter()
-        .map(|i| {
+        .enumerate()
+        .map(|(tick, i)| {
             // mode 2 = normal vehicle input, the mode a real run drives in.
             // The state literal's low nibble IS the mode; bit 31 is respawn.
-            let mut lit: u64 = 2;
+            // Bits 5..26 encode the separate 22-bit state-flags field.
+            let flags = state_flag_ranges
+                .iter()
+                .filter(|(start, end, _)| *start <= tick && tick < *end)
+                .fold(0u32, |all, (_, _, value)| all | value);
+            let mut lit: u64 = 2 | (((flags & 0x3f_ffff) as u64) << 5);
             if i.respawn {
                 lit |= 1u64 << 31;
             }
@@ -281,7 +311,7 @@ pub fn packets_for(inputs: &[Input]) -> Vec<Packet> {
 
 /// The `0x0309201D` chunk payload for a tape.
 pub fn inputs_payload(inputs: &[Input], meta: &GhostMeta) -> Vec<u8> {
-    let packets = packets_for(inputs);
+    let packets = packets_for_state_flags(inputs, &meta.state_flag_ranges);
     let archive = Archive {
         format_version: meta.format_version,
         field0: meta.field0,
@@ -315,12 +345,12 @@ fn validation_payload(meta: &GhostMeta) -> Vec<u8> {
     v.extend_from_slice(&meta.cpu_kind.to_le_bytes()); // -> +0x1D8
     v.extend_from_slice(&meta.walltime_start.to_le_bytes()); // -> +0x1DC
     v.extend_from_slice(&meta.walltime_end.to_le_bytes()); // -> +0x1E0
-    v.extend_from_slice(&gbx_string("")); // -> +0x1E8, title id
-    v.extend_from_slice(&[0u8; 32]); // -> +0x200, title checksum
+    v.extend_from_slice(&gbx_string(&meta.title_id)); // -> +0x1E8, title id
+    v.extend_from_slice(&meta.title_checksum); // -> +0x200, title checksum
     v.extend_from_slice(&meta.settings_flags.to_le_bytes()); // -> +0x220
-    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x224, U03
+    v.extend_from_slice(&meta.validation_start_index.to_le_bytes()); // -> +0x224, start checkpoint index
     v.extend_from_slice(&meta.validation_seed.to_le_bytes()); // -> +0x228
-    v.extend_from_slice(&0u32.to_le_bytes()); // -> +0x22C, U04
+    v.extend_from_slice(&meta.validation_u04.to_le_bytes()); // -> +0x22C, unidentified
     v.extend_from_slice(&gbx_string(&meta.race_settings)); // -> +0x230
     v
 }
@@ -353,6 +383,49 @@ pub fn meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
         )
     })?;
     Ok(GhostMeta::probe(&uid))
+}
+
+/// Index of the semantic start in TM2020's validator checkpoint array.
+///
+/// The engine's array order is not file waypoint order. Causal U03 sweeps on
+/// Summer 2026 - 01 mapped values 0, 1, 2, 3 and 4 respectively to its three
+/// non-Spawn block gates, its Spawn block, and its item gate. Independent game
+/// recordings carry U03=3 on that map, U03=2 on the two-block-gate test map,
+/// and U03=1 on Training - 10 Long. Thus a block Spawn's index is exactly the
+/// number of non-Spawn block waypoints. A missing/default zero selects gate zero
+/// and starts validation from that checkpoint instead of from RoadTechStart.
+pub fn validation_start_index_for_map(map: &std::path::Path) -> Result<u32, String> {
+    let m = tmmaps::map::MapFile::load(map);
+    let waypoints = m.waypoints();
+    let starts: Vec<_> = waypoints
+        .iter()
+        .filter(|w| w.tag == "Spawn" && w.name == "RoadTechStart")
+        .collect();
+    if starts.len() != 1 {
+        return Err(format!(
+            "{}: expected exactly one semantic RoadTechStart, found {}",
+            map.display(),
+            starts.len()
+        ));
+    }
+    if starts[0].kind != tmmaps::map::Kind::Block {
+        return Err(format!(
+            "{}: RoadTechStart is an item; validator checkpoint ordering for item starts is not established",
+            map.display()
+        ));
+    }
+    Ok(waypoints
+        .iter()
+        .filter(|w| w.kind == tmmaps::map::Kind::Block && w.tag != "Spawn")
+        .count() as u32)
+}
+
+/// Metadata for the complete writer. Kept separate from [`meta_for_map`] so
+/// legacy artifact-v1 reconstruction remains byte-identical.
+pub fn complete_meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
+    let mut meta = meta_for_map(map)?;
+    meta.validation_start_index = validation_start_index_for_map(map)?;
+    Ok(meta)
 }
 
 /// The authoritative initial transform encoded into a from-scratch record.
@@ -642,9 +715,15 @@ pub fn synthesize_complete(
     }
     let record = match mode {
         RecordMode::None | RecordMode::Parent => None,
-        RecordMode::Descriptor | RecordMode::Entity | RecordMode::Sample | RecordMode::Grid => Some(
-            from_scratch_record(inputs, meta, initial, mode, corrupt_x_m),
-        ),
+        RecordMode::Descriptor | RecordMode::Entity | RecordMode::Sample | RecordMode::Grid => {
+            Some(from_scratch_record(
+                inputs,
+                meta,
+                initial,
+                mode,
+                corrupt_x_m,
+            ))
+        }
     };
     let mut with_nodes = set.clone();
     with_nodes.num_nodes = if record.is_some() { 2 } else { 1 };
@@ -672,8 +751,17 @@ pub fn write_complete_for(
     out: &std::path::Path,
 ) -> Result<Vec<u8>, String> {
     let initial = initial_state_for_map(map)?;
+    let mut complete_meta = meta.clone();
+    complete_meta.validation_start_index = validation_start_index_for_map(map)?;
     let padded = pad_to(inputs, min_ticks);
-    let bytes = synthesize_complete(&padded, meta, &ChunkSet::ALL, initial, mode, corrupt_x_m);
+    let bytes = synthesize_complete(
+        &padded,
+        &complete_meta,
+        &ChunkSet::ALL,
+        initial,
+        mode,
+        corrupt_x_m,
+    );
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {}", out.display(), e))?;
     Ok(bytes)
 }
@@ -895,6 +983,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn state_flag_ranges_land_only_on_the_named_half_open_ticks() {
+        let mut m = meta();
+        m.state_flag_ranges.push((2, 5, 0x404));
+        let bytes = synthesize(&[Input::FULL_GAS; 7], &m, &ChunkSet::ALL);
+        let g = gbx::Gbx::parse(&bytes);
+        let t = GbxTape::from_body(&g.body).expect("the input chunk must decode");
+        let flags: Vec<u32> = t.archives[0].packets.iter().map(|p| p.flags).collect();
+        assert_eq!(flags, vec![0, 0, 0x404, 0x404, 0x404, 0, 0]);
+        assert_eq!(t.archives[0].packets[2].state, StateEnc::Lit(0x8082));
+    }
+
     /// The declared fields must read back as declared. A container whose
     /// declaration silently did not land is the defect behind five maps'
     /// corrupted objectives.
@@ -938,22 +1038,47 @@ mod tests {
     fn validation_seed_and_settings_reach_the_named_validation_fields() {
         let mut m = meta();
         m.validation_seed = 32_611_514;
+        m.validation_start_index = 3;
+        m.validation_u04 = 16;
+        m.title_id = "Trackmania".into();
+        m.title_checksum = [0xab; 32];
         m.race_settings = "from-scratch-control".into();
         let bytes = synthesize(&[Input::FULL_GAS; 10], &m, &ChunkSet::ALL);
         let g = gbx::Gbx::parse(&bytes);
         let v = gbx::manifest::validation_manifest(&g.body).expect("validation chunk");
         assert!(v.contains("\"validation_seed\":32611514"));
+        assert!(v.contains("\"u03\":3"));
+        assert!(v.contains("\"u04\":16"));
+        assert!(v.contains("\"title_id\":\"Trackmania\""));
+        assert!(v.contains(&format!("\"title_checksum_hex\":\"{}\"", "ab".repeat(32))));
         assert!(v.contains("\"race_settings\":\"from-scratch-control\""));
-        assert!(v.contains("\"title_id\":\"\""));
+    }
+
+    #[test]
+    fn validation_start_index_follows_the_engine_checkpoint_order() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let map = root.join("testdata/map2.Map.Gbx");
+        // This fixture has two non-Spawn block gates, then a block Spawn, then
+        // an item gate. The game-written controls carry U03=2.
+        assert_eq!(validation_start_index_for_map(&map).unwrap(), 2);
+        assert_eq!(
+            complete_meta_for_map(&map).unwrap().validation_start_index,
+            2
+        );
     }
 
     #[test]
     fn map_derived_roadtech_start_matches_an_independent_game_recording() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
         let map = root.join("testdata/map2.Map.Gbx");
         let ghost = root.join("testdata/human_22730.Ghost.Gbx");
         let initial = initial_state_for_map(&map).expect("semantic start");
-        let recorded = gbx::record::decode_ghost(&ghost.to_string_lossy()).expect("recorded control");
+        let recorded =
+            gbx::record::decode_ghost(&ghost.to_string_lossy()).expect("recorded control");
         let first = recorded.samples.first().expect("first sample");
         assert!((initial.pos[0] as f64 - first.x).abs() < 0.01);
         assert!((initial.pos[1] as f64 - first.y).abs() < 0.01);

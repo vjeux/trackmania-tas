@@ -1,0 +1,1 @@
+the validator-owned car did not resolve: validator-owned CGameVehiclePhy state at 0x5597d18fdf58 failed the structural trajectory check

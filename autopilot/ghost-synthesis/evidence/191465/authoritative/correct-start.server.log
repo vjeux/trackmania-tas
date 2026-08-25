@@ -1,0 +1,29 @@
+Starting Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0...
+WARNING: No system configuration file
+Starting validation of 1 ghosts (in 1 maps)... 
+Validating batch of g.Ghost.Gbx on map 'Training - 10 Long' (batch size = 1)...
+FKSHIM input_fault rip 94227144040809
+FKSHIM input_fault rdi 1700
+FKSHIM input_fault rsi 170
+FKSHIM input_fault rdx 94227220078464
+FKSHIM input_fault rcx 5440
+FKSHIM input_fault r8 10
+FKSHIM input_fault r9 0
+FKSHIM input_fault rax 94227220015880
+FKSHIM input_fault rbx 3900
+FKSHIM input_fault r12 140613909479433
+FKSHIM input_fault r13 94227220015488
+FKSHIM input_fault r14 94227220002896
+FKSHIM input_fault r15 0
+FKSHIM input_fault rbp 140723753994256
+FKSHIM input_fault rsp 140723753994256
+FKSHIM input_fault module_base 94227125563392
+FKSHIM input_fault frame 0 94227144544142
+FKSHIM input_fault frame 1 94227143964363
+FKSHIM input_fault frame 2 94227152447017
+FKSHIM input_fault frame 3 94227152449375
+FKSHIM input_fault frame 4 94227153408830
+FKSHIM input_fault frame 5 94227135088894
+FKSHIM input_fault frame 6 94227135063610
+FKSHIM input_fault frame 7 94227133514861
+FKSHIM input_fault frame 8 140614045967888

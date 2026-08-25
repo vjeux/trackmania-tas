@@ -1,0 +1,203 @@
+MAP   Summer 2026 - 01  (buNzfsVlp2NF2oWtHM3729dEylg)
+  author time 23.144   (a number in the map file, not anybody's run)
+  route 1900.3 m, 97 stations of 20 m, 3 checkpoints; gates at s = 512, 1115, 1483, 1900
+  NOTE: 88 of 111 route vertices arrived with no measured corridor width; 8 m substituted. The corridor is that much weaker a prune there.
+  RUNG 1 is the gate at s = 512 m, which is station 25 of 97.
+
+ORACLE  container holds 3000 ticks (30 s of race). A tape longer than that is refused,
+        not truncated.
+CONTROL do-nothing tape            -> Dnf { cps: 0 }  echo "3000_"  desc "wrong simu"
+CONTROL full-throttle-straight     -> Dnf { cps: 0 }  echo "3000C"
+        the server confirms it ran map uid buNzfsVlp2NF2oWtHM3729dEylg -- the one we asked for.
+        PASS, two-sided: the tapes differ, the engine's decoded echo differs, and the
+        map is ours. (A verdict comparison could not have said this: both are Dnf { cps: 0 }.)
+
+SEARCH  alphabet Ladder5 (20 actions), macro 6 ticks, rollout <= 80, 64 threads, budget 500000 evals
+        bins: CRUDE (station, lateral, height, speed, checkpoints)
+
+GATE LADDER  4 required gates in tour order, collected within 2 m:
+  gate 0 at s =    511.6 m (station  25)  (1232, 8, 976)
+  gate 1 at s =   1114.5 m (station  55)  (1154, 10, 1328)
+  gate 2 at s =   1483.1 m (station  74)  (1360, 8, 1104)
+  gate 3 at s =   1900.3 m (station  95)  (1360, 8, 688)
+  progress SATURATES at the station of the first uncollected gate: a car that cuts a
+  corner cannot score past the gate it skipped, however far it flies.
+
+FORK    checkpoint at tick 60 -> lroundf clock 51430 (fitted line, per map; the boundary
+        the server actually stops at is PROBED and is what ticks are labelled from)
+
+REFERENCE  the container's own tape: 3000 ticks, 25 distinct steer values.
+
+TICK FRAME  boundary probed 4x, MAX = tick 152 (this probe said 152). The search's tick 0
+            is file tick 152. The maximum is used because where a server stops is a property
+            of that server: probes here differ by a tick between runs, and a one-tick shift
+            of a whole tape turned a confirmed cps 3 into cps 0.
+worker  63 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   0 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  47 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  10 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  61 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   2 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  25 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  15 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  12 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  44 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   4 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  22 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  27 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  63 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  40 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  23 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  28 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  41 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  19 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   0 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  51 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  59 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  61 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  47 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   2 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   7 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  15 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  13 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  44 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  25 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  10 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  12 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  27 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  22 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   4 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  40 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  28 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  23 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  41 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  19 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  59 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  51 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  13 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   7 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker 56: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 6: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 21: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker  62 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   3 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  33 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  57 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  62 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  26 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   3 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  24 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  35 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  36 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  33 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  17 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  57 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  26 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  17 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  36 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  35 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  24 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   9 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  46 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   9 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  34 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  20 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  34 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  46 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  20 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  29 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  29 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker 11: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 58: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 32: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 14: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker  39 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   5 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  31 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  50 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker   5 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   8 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  60 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  18 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  31 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  39 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  50 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   1 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  60 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   8 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  18 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker   1 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker 53: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker  43 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  37 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  48 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  55 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  54 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  43 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  37 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  55 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  48 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  54 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker 49: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 16: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker 42: this server stopped at tick 152 but the fleet resumes at 152; ticks 152..153 would be written to the file and NEVER SIMULATED. Refusing rather than clamping -- a clamp silently changes what you searched.
+worker  52 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  38 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  45 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  52 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  30 start OK: first sample at (1584.0, 18.0, 801.6), map spawn (1584.0, 16.0, 784.0), 17.7 m apart
+worker  38 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  45 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+worker  30 ready: 196 states, |d(pos)/dt - v| median 0.1945 m/s, |q|-1 max 1.19e-7, travelled 92.7 m
+*** PLAIN ORACLE: stopped at station 2 (cps 0, 0.660 elapsed)   (station 2 of 97, 9367 evals)
+*** PLAIN ORACLE: stopped at station 5 (cps 0, 1.800 elapsed)   (station 5 of 97, 9391 evals)
+*** PLAIN ORACLE: stopped at station 11 (cps 0, 5.640 elapsed)   (station 11 of 97, 11467 evals)
+*** PLAIN ORACLE: stopped at station 12 (cps 0, 6.000 elapsed)   (station 12 of 97, 12767 evals)
+*** PLAIN ORACLE: stopped at station 14 (cps 0, 9.740 elapsed)   (station 14 of 97, 17922 evals)
+*** PLAIN ORACLE: stopped at station 17 (cps 0, 8.960 elapsed)   (station 17 of 97, 18708 evals)
+*** PLAIN ORACLE: stopped at station 18 (cps 0, 10.650 elapsed)   (station 18 of 97, 21556 evals)
+*** PLAIN ORACLE: stopped at station 20 (cps 0, 11.840 elapsed)   (station 20 of 97, 22269 evals)
+[    34s]     27204 evals (804/s)  1018 bins  furthest station 21 of 97  oracle calls 12  errors 11
+*** PLAIN ORACLE: stopped at station 21 (cps 0, 16.280 elapsed)   (station 21 of 97, 27794 evals)
+        PLAIN ORACLE on the best tape (1246 ticks, fork says station 21 with 0 gates): Dnf { cps: 0 }
+        *** NEW BEST CONFIRMED: stopped at station 21 (cps 0, 12.460 elapsed)  -> /tmp/fromscratch-cp1-search-tight/work/confirmed_st21_cps0_1246.tape.tsv
+*** PLAIN ORACLE: stopped at station 24 (cps 0, 14.720 elapsed)   (station 24 of 97, 33204 evals)
+*** PLAIN ORACLE: stopped at station 25 (cps 0, 19.770 elapsed)   (station 25 of 97, 45555 evals)
+[    58s]     49324 evals (855/s)  1344 bins  furthest station 25 of 97  oracle calls 15  errors 11
+        PLAIN ORACLE on the best tape (1805 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+        *** NEW BEST CONFIRMED: stopped at station 25 (cps 0, 18.050 elapsed)  -> /tmp/fromscratch-cp1-search-tight/work/confirmed_st25_cps0_1805.tape.tsv
+[    82s]     68931 evals (842/s)  1425 bins  furthest station 25 of 97  oracle calls 16  errors 11
+        PLAIN ORACLE on the best tape (1741 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+        *** NEW BEST CONFIRMED: stopped at station 25 (cps 0, 17.410 elapsed)  -> /tmp/fromscratch-cp1-search-tight/work/confirmed_st25_cps0_1741.tape.tsv
+[   106s]     87812 evals (831/s)  1452 bins  furthest station 25 of 97  oracle calls 17  errors 11
+        PLAIN ORACLE on the best tape (1741 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   130s]    107045 evals (823/s)  1480 bins  furthest station 25 of 97  oracle calls 18  errors 11
+        PLAIN ORACLE on the best tape (1741 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   155s]    126197 evals (816/s)  1499 bins  furthest station 25 of 97  oracle calls 19  errors 11
+        PLAIN ORACLE on the best tape (1741 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   179s]    145241 evals (811/s)  1522 bins  furthest station 25 of 97  oracle calls 20  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+        *** NEW BEST CONFIRMED: stopped at station 25 (cps 0, 17.080 elapsed)  -> /tmp/fromscratch-cp1-search-tight/work/confirmed_st25_cps0_1708.tape.tsv
+[   204s]    164839 evals (810/s)  1533 bins  furthest station 25 of 97  oracle calls 21  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   228s]    184074 evals (809/s)  1555 bins  furthest station 25 of 97  oracle calls 22  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   252s]    203071 evals (806/s)  1586 bins  furthest station 25 of 97  oracle calls 23  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   276s]    221005 evals (802/s)  1613 bins  furthest station 25 of 97  oracle calls 24  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+[   299s]    239049 evals (798/s)  1647 bins  furthest station 25 of 97  oracle calls 25  errors 11
+        PLAIN ORACLE on the best tape (1708 ticks, fork says station 25 with 0 gates): Dnf { cps: 0 }
+
+================ REPORT ================
+furthest station reached: 25 of 97 (500 m of 1900 m)
+archive: 1666 bins, 517636 offers, 3757 kept
+best CONFIRMED by the plain oracle: stopped at station 25 (cps 0, 17.080 elapsed)
+the fork has reported no finish
+plain-oracle answers: 26
+  cps 0: 26 tapes
+best speed WE have ever reached at a station (m/s) -- self-referential, every 20 stations:
+  st    0    24.4
+  st   20    43.9
+258486 evals in 328 s, 26 plain-oracle answers, 11 errors
+best confirmed outcome stopped at station 25 (cps 0, 17.080 elapsed) — its tape is at /tmp/fromscratch-cp1-search-tight/work/best.tape.tsv

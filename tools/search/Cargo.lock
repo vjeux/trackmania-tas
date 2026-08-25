@@ -69,6 +69,7 @@ version = "0.1.0"
 dependencies = [
  "gbx",
  "ghost",
+ "tmmaps",
 ]
 
 [[package]]
@@ -86,6 +87,13 @@ dependencies = [
  "tmexplore",
  "tmsearch",
  "tmtraj",
+]
+
+[[package]]
+name = "tmmaps"
+version = "0.2.0"
+dependencies = [
+ "ghost",
 ]
 
 [[package]]

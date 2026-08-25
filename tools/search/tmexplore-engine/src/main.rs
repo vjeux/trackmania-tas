@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use tmexplore::action::Alphabet;
 use tmexplore::action::Input;
 use tmexplore::archive::{Bands, Policy};
-use tmexplore::branch::{PlainOracle, Route};
+use tmexplore::branch::{Branch, PlainOracle, Route};
 use tmexplore::explore::Cfg;
 use tmexplore::outcome::{Reached, Verdict};
 use tmexplore::parallel::{self, Counters, Shared};
@@ -78,6 +78,10 @@ fn secs(ms: i64) -> String {
 
 fn main() {
     let a = Args::parse();
+    if a.1.first().map(|s| s.as_str()) == Some("state") {
+        state_probe(&a);
+        return;
+    }
     if a.1.first().map(|s| s.as_str()) == Some("confirm") {
         confirm_tape(&a);
         return;
@@ -88,7 +92,7 @@ fn main() {
     }
     if a.1.first().map(|s| s.as_str()) != Some("run") {
         eprintln!(
-            "usage: tmexplore-real run --pack P --route R --map M --template T --server S --shim SO\n           [--work DIR] [--threads N] [--budget N] [--alphabet three|keyboard|ladder5]\n           [--k N] [--rollout N] [--crude] [--forktick N] [--minutes N]"
+            "usage: tmexplore-real state --route R --map M --template T --server S --shim SO [--work DIR] [--forktick N|--checkpoint-clock N] [--ticks N] [--position-only] [--expect-start] [--expect-distance M] [--expect-opposite]\n       tmexplore-real run --pack P --route R --map M --template T --server S --shim SO\n           [--work DIR] [--threads N] [--budget N] [--alphabet three|keyboard|ladder5]\n           [--k N] [--rollout N] [--crude] [--forktick N] [--start-offset MS] [--minutes N]"
         );
         std::process::exit(2);
     }
@@ -344,7 +348,7 @@ fn main() {
         reference_ghost: template.clone(),
         shim: shim.clone(),
         checkpoint_clock: forktick,
-        start_offset_ms: 0,
+        start_offset_ms: a.num("start-offset", 0i32),
         route_points: route_pts.clone(),
         tail_margin: 200,
         common_from: None,
@@ -614,6 +618,153 @@ fn main() {
             r,
             out.display()
         );
+    }
+}
+
+fn state_probe(a: &Args) {
+    let route = BRoute::load(
+        &PathBuf::from(a.req("route")),
+        a.num("default-half", 8.0f32),
+    )
+    .unwrap_or_else(die);
+    let map = PathBuf::from(a.req("map"));
+    let template = PathBuf::from(a.req("template"));
+    let server = PathBuf::from(a.get("server").unwrap_or("/tmp/tmoracle/server"));
+    let shim = PathBuf::from(a.req("shim"));
+    let work = PathBuf::from(a.get("work").unwrap_or("/tmp/tm-state"));
+    let tape = ghost::Tape::from_file(&template.to_string_lossy()).unwrap_or_else(die);
+    let start_offset_ms = tape
+        .archives
+        .first()
+        .map(|x| x.start_offset_ms)
+        .unwrap_or(0);
+    let oracle =
+        EngineOracle::new(&template, &map, &server, &work.join("oracle")).unwrap_or_else(die);
+    let reference = oracle.template_inputs();
+    let forktick: i64 = a.num("forktick", 60i64);
+    let checkpoint_clock: u64 = a.num(
+        "checkpoint-clock",
+        tmsearch::forkeval::clock_for_tick(forktick, 0),
+    );
+    let opts = ForkOpts {
+        work: work.join("state"),
+        server,
+        map: map.clone(),
+        reference_ghost: template,
+        shim,
+        checkpoint_clock,
+        start_offset_ms,
+        route_points: route.points().to_vec(),
+        tail_margin: 200,
+        common_from: None,
+    };
+    let mut branch = ForkBranch::start(&opts, reference).unwrap_or_else(die);
+    println!("boundary_tick\t{}", branch.from);
+    let p = branch.car().provenance();
+    println!(
+        "ownership\tcontroller=0x{:x}\tsim=0x{:x}\tplayground=0x{:x}\tparticipant=0x{:x}\tvehicle=0x{:x}\tstate=0x{:x}",
+        p.controller, p.sim, p.playground, p.participant, p.vehicle, p.state_pos
+    );
+    let initial = branch
+        .initial_state()
+        .unwrap_or_else(|e| die(format!("{e:?}")));
+    let expected = tmauto::synth::initial_state_for_map(&map).unwrap_or_else(die);
+    let d = ((initial.pos[0] - expected.pos[0]).powi(2)
+        + (initial.pos[1] - expected.pos[1]).powi(2)
+        + (initial.pos[2] - expected.pos[2]).powi(2))
+    .sqrt();
+    println!(
+        "initial\tpos={:.6},{:.6},{:.6}\tvel={:.6},{:.6},{:.6}\tquat_wxyz={:.9},{:.9},{:.9},{:.9}",
+        initial.pos[0],
+        initial.pos[1],
+        initial.pos[2],
+        initial.vel[0],
+        initial.vel[1],
+        initial.vel[2],
+        initial.quat[0],
+        initial.quat[1],
+        initial.quat[2],
+        initial.quat[3]
+    );
+    println!(
+        "semantic_start\tpos={:.6},{:.6},{:.6}\tdistance_m={:.6}\tdir={:?}",
+        expected.pos[0], expected.pos[1], expected.pos[2], d, expected.roadtech_dir
+    );
+    if a.flag("expect-start") && d > a.num("spawn-tol", 1.0f32) {
+        die::<(), _>(format!("start mismatch: {d:.6} m"));
+    }
+    if a.flag("position-only") {
+        return;
+    }
+    println!("self_check\t{}", branch.self_check().unwrap_or_else(die));
+    let n: usize = a.num("ticks", 200usize);
+    let run = |branch: &mut ForkBranch, steer: i8| {
+        let h = branch
+            .open(&[], None)
+            .unwrap_or_else(|e| die(format!("{e:?}")));
+        let input = vec![
+            Input {
+                steer,
+                gas: true,
+                brake: false
+            };
+            n
+        ];
+        let a = branch
+            .advance(h, 0, &input)
+            .unwrap_or_else(|e| die(format!("{e:?}")));
+        a.trace
+            .last()
+            .copied()
+            .unwrap_or_else(|| die("no response state"))
+    };
+    let straight = run(&mut branch, 0);
+    let left = run(&mut branch, -127);
+    let right = run(&mut branch, 127);
+    let q = expected.quat;
+    let world_right = [
+        (1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2])) as f32,
+        (2.0 * (q[0] * q[1] + q[3] * q[2])) as f32,
+        (2.0 * (q[0] * q[2] - q[3] * q[1])) as f32,
+    ];
+    let lateral = |s: [f32; 3]| {
+        (s[0] - initial.pos[0]) * world_right[0]
+            + (s[1] - initial.pos[1]) * world_right[1]
+            + (s[2] - initial.pos[2]) * world_right[2]
+    };
+    let ll = lateral(left.pos);
+    let rl = lateral(right.pos);
+    let straight_distance = ((straight.pos[0] - expected.pos[0]).powi(2)
+        + (straight.pos[1] - expected.pos[1]).powi(2)
+        + (straight.pos[2] - expected.pos[2]).powi(2))
+    .sqrt();
+    println!(
+        "straight\tend={:.6},{:.6},{:.6}\tdistance_from_start_m={:.6}",
+        straight.pos[0], straight.pos[1], straight.pos[2], straight_distance
+    );
+    println!(
+        "hard_left\tend={:.6},{:.6},{:.6}\tlateral_m={:.6}",
+        left.pos[0], left.pos[1], left.pos[2], ll
+    );
+    println!(
+        "hard_right\tend={:.6},{:.6},{:.6}\tlateral_m={:.6}",
+        right.pos[0], right.pos[1], right.pos[2], rl
+    );
+    if let Some(expect) = a.get("expect-distance") {
+        let expect: f32 = expect
+            .parse()
+            .unwrap_or_else(|_| die("--expect-distance wants metres"));
+        if straight_distance < expect {
+            die::<(), _>(format!(
+                "straight-line distance {:.6} m is below required {:.6} m",
+                straight_distance, expect
+            ));
+        }
+    }
+    if a.flag("expect-opposite") && ll * rl >= 0.0 {
+        die::<(), _>(format!(
+            "left/right response is not opposite: {ll:.6}, {rl:.6}"
+        ));
     }
 }
 

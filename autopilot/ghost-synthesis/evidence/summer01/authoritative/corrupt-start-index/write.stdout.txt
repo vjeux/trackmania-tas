@@ -1,0 +1,2 @@
+wrote /tmp/corrupt-start-index/bad-u03-zero.Ghost.Gbx (25410 bytes, 4200 ticks, declared 41800 ms, record grid)
+initial  pos=(1584.000,18.002,784.000) quat=(0.000000,0.000000,0.000000,1.000000) vel=(0,0,0) dir=Some(0) validation_start_index=0 corrupt_x=0.000

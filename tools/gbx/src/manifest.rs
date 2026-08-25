@@ -92,9 +92,9 @@ pub fn validation_manifest(body: &[u8]) -> Option<String> {
     let u04 = u32_at(&mut o)? as i32;
     let settings = string_at(&mut o)?;
     Some(format!(
-        "{{\"u01\":{},\"exe_version\":{},\"exe_checksum\":{},\"os_kind\":{},\"cpu_kind\":{},\"walltime_start\":{},\"walltime_end\":{},\"title_id\":{},\"title_checksum_hex\":{},\"settings_flags\":{},\"u03\":{},\"validation_seed\":{},\"u04\":{},\"race_settings\":{},\"bytes_consumed\":{},\"bytes_total\":{}}}",
+        "{{\"u01\":{},\"exe_version\":{},\"exe_checksum\":{},\"os_kind\":{},\"cpu_kind\":{},\"walltime_start\":{},\"walltime_end\":{},\"title_id\":{},\"title_checksum_hex\":{},\"settings_flags\":{},\"start_checkpoint_index\":{},\"u03\":{},\"validation_seed\":{},\"u04\":{},\"race_settings\":{},\"bytes_consumed\":{},\"bytes_total\":{}}}",
         flag, q(&exe), checksum, os, cpu, wall_start, wall_end, q(&title), q(&title_checksum),
-        u02, u03, seed, u04, q(&settings), o - (end - n), n
+        u02, u03, u03, seed, u04, q(&settings), o - (end - n), n
     ))
 }
 
