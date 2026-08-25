@@ -6,6 +6,21 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A lock directory with a trap does not survive `kill -9`, and then wedges forever
+
+The credential server's launcher took a lock with `mkdir` and released it in
+an `EXIT` trap. The trap does not run on SIGKILL or a reboot, so the directory
+outlived the process — and every cron re-run after that exited immediately,
+believing a server was up. The self-healing restart was therefore a one-shot:
+it worked until the first hard kill, which is exactly when it was needed.
+
+The lock now records its PID and a stale one is reclaimed
+(`kill -0` on the recorded pid). Proved by `kill -9`ing the server, confirming
+the lock survived, and watching the launcher take it over and restart.
+
+**Anything that heals itself needs its healing path exercised from the failure
+it is meant to heal — not from a clean state.**
+
 ## A function that reads the machine cannot be tested
 
 Adding the credential check, I had `reconstruct` — the function that promises a
