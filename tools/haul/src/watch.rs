@@ -229,9 +229,23 @@ impl Supervisor {
     pub fn run(&mut self, o: &Options) -> Result<i32, String> {
         self.seed()?;
         let mut child = self.spawn_worker()?;
+        // Which binary produced this run. `cargo test` does NOT rebuild
+        // `target/release/tmhaul`, so it is entirely possible to verify a fix
+        // with a green test suite and then run the old binary — which happened,
+        // and the stale binary reported a budget number the fixed code does
+        // not produce. Recording the build identity makes that visible in the
+        // journal instead of being a mystery three weeks later.
+        let exe_built = std::env::current_exe()
+            .ok()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| crate::time::iso(d.as_secs() as i64))
+            .unwrap_or_else(|| "unknown".into());
         self.journal(
             &Rec::new("run_start")
                 .f("node", &self.node)
+                .f("binary_built", &exe_built)
                 .f("cmd", &self.job.worker_cmd)
                 .f("map", &self.job.map_name)
                 .f("rung", &self.job.rung),
