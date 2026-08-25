@@ -5,14 +5,15 @@ a4174b2bef5890efa7536c2a54afc547  autopilot/state/alarms/24576-1787643363.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
 35eeb260a1dd48e2974b87d4941e419e  autopilot/state/boxes/117796.rec
 eb2fd54eef6482891b94f37cb3c8444c  autopilot/state/boxes/24576.rec
-1b82ea0a7ca92437b9f766c9b314c24e  autopilot/state/boxes/36944.rec
+ba7451b1e9056fbaa25d2ca694b6148f  autopilot/state/boxes/36944.rec
 6d430421472e4cd8641e2eff316a05c7  autopilot/state/boxes/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
 441c144bd07eb37da0655b50d92eb3ab  autopilot/state/budget/24576.rec
+5e4793d0802d3acdabceb0d3424e9c5f  autopilot/state/budget/36944.rec
 a8865825b232b51ba3cf25391dfb4848  autopilot/state/budget/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-e2cf1036ee6b4f7727c5ba742a26ea81  autopilot/state/frontier/resim-results.rec
+45cdc0568f3a968bd0462a752c4b8b51  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -55,7 +56,7 @@ a88ed49d8ce8929b7808ff5014f98dd7  autopilot/state/journal/24576-1787661008.rec
 f4062bbfb9f33b0f4bf57beb20c1f2d2  autopilot/state/journal/24576-1787664612.rec
 9d0abd817f65de90eb4bca94e16f1b21  autopilot/state/journal/24576-1787666412.rec
 3ac6acd29321ef3c53dad8e450c54139  autopilot/state/journal/24576-1787668213.rec
-f5fb83821a2d47c6b7f2a69bf1349123  autopilot/state/journal/36944-1787671962.rec
+537acaf14559352478972b238d1df728  autopilot/state/journal/36944-1787671962.rec
 760e8f7f450b1730d12977215cb75c6c  autopilot/state/journal/42504-1787603555.rec
 853a4d98015f9d8ef9eb05db81f31960  autopilot/state/journal/42504-1787603665.rec
 19ce146439ae025ed31acc4ec4a6e543  autopilot/state/journal/42504-1787603810.rec
@@ -101,6 +102,7 @@ c5f5f3f0f3b896ed859eecd6ad6f347e  autopilot/state/ledger/117796-1787600887.rec
 d4e2d92c8ac081f05b7ffeb014240c89  autopilot/state/ledger/117796-1787601564.rec
 43fd2b00d082e5e0c7f47f08d135fe5b  autopilot/state/ledger/117796-1787601900.rec
 7efa764411012ff3d5a1c37ca448c7f8  autopilot/state/ledger/24576-1787643680.rec
+d1235247055b31d4576083c9690d5ab4  autopilot/state/ledger/36944-1787672071.rec
 e8c4ef375fc90ca344c509817608dfb8  autopilot/state/ledger/42504-1787603665.rec
 73ee7b8ea5d3c23638c5a3ee646935b5  autopilot/state/ledger/42504-1787603810.rec
 52b140ee0dfeaf9c88fb4408a9cbfe19  autopilot/state/ledger/42504-1787605031.rec
