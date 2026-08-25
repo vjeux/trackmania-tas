@@ -72,9 +72,9 @@ https://github.com/user-attachments/assets/0f1e45fd-bd17-40b7-b265-17240ea68e13
 
 https://github.com/user-attachments/assets/094a8c03-d9f3-4938-b21f-caafff8fa280
 
-**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · two cars, ours against the world record, inputs overlaid — *0.010 apart, so they are all but superimposed on screen*
+**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · the 5.345 ghost was published and **withdrawn again the same day** — its recording was one tick early; the time is real, the file was not publishable. *The clip below is the 5.347.*
 
-https://github.com/user-attachments/assets/4ea6ada0-8b66-4862-8823-6c8d387c534e
+https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
 **[Fall 2025 - 01 Reverse CP1 End](279197-fall-2025-01-reverse-cp1-end)** — author time `10.598` · ours **10.594** (−0.004) · best human 10.602 (ShcrTM) · 663 records · the low-input ladder here is published as a negative: keyboard does not reach the author time on this map
 

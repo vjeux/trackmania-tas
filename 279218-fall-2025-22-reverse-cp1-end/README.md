@@ -8,84 +8,98 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
-**Fall 2025 - 22 Reverse CP1 End** — TAS **5.345** (−0.005) | AT 5.350 | WR 5.355 by Matik_K
+**Fall 2025 - 22 Reverse CP1 End** — TAS **5.347** (−0.003) | AT 5.350 | WR 5.355 by Matik_K
 
-https://github.com/user-attachments/assets/4ea6ada0-8b66-4862-8823-6c8d387c534e
-
-Two cars: ours and Matik_K's 5.355 world record, with our own inputs overlaid.
-**They are 0.010 apart over 5.345, so on screen they are all but superimposed** —
-at 4.600 the record's wheels are just visible behind ours. That is the honest
-picture of the margin, and it is why the numbers below carry the result rather
-than the footage: a chase camera cannot resolve 0.4 m at 200 km/h.
-
-The shape of the gap, from the two trajectories: we are **slower** for the first
-3.5 s (−0.16 m/s at 0.500 through 1.500), level at 2.000–2.500, and ahead from
-4.000 on (+0.11, then **+0.17 m/s** at 5.000). The second-tick start gives away
-time off the line and takes it back after the first upshift — which is exactly
-what "gear-shift phasing, not traction" predicts.
-
-*Previous single-car clip of the 5.347, kept because the page's earlier text
-refers to it:*
 https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
-> **The 5.345 is no longer withdrawn — 2026-08-25.** `replays/TAS_5345_starttrick.Ghost.Gbx`
-> is now a file whose recording is **ours**, and it is the fastest run this
-> directory publishes. The clip below is still the 5.347 and has not been
-> re-shot yet.
+Single car: against the human 5.355 the two stay within 0.42 m for the whole run, so a side-by-side would show one car.
+
+> **RETRACTED, 2026-08-25, within four hours of publishing it.** Earlier today
+> this page carried a 5.345 ghost and a two-car clip rendered from it. Both are
+> **withdrawn again**: the file's recording was one tick early, and the clip
+> inherits that, which is the one defect that matters most in a two-car shot.
+> The 5.345 *time* is real and re-simulates on the oracle; the recording was not
+> publishable. Details in the file table below.
+
+> **THE 5.345 WAS UNWITHDRAWN AND RE-WITHDRAWN THE SAME DAY, 2026-08-25.** What
+> follows is the whole sequence, kept because the mistake is more instructive
+> than the fix.
 >
-> The blocker was real and is now fixed at the root. The withdrawn file's 112
-> sample positions were bit-identical to Matik_K's own 5.355 download, and it
-> could not simply be regenerated because the regenerator did not sit on the
-> game's physics tick on this map: regenerating a recording the game itself made
-> moved it **0.365 m — one 10 ms tick**.
+> The original problem was real: the withdrawn file's 112 sample positions were
+> bit-identical to Matik_K's own 5.355 download, so it carried *his* recording,
+> and regenerating it moved a game-made recording by **0.365 m — one 10 ms
+> tick**.
 >
-> **The cause was the page-fault probe.** `fk regen`'s bias is
-> `clock0 - (probe-1)*10 - start_offset`, and the probe answers *"which input
-> record is the engine about to consume"* — exactly, but that is one tick away
-> from the question being asked, because the gather's first instant is a state
-> that has already had a tick applied. Whether the two agree depends on where in
-> its tick loop the server stopped, which is a property of the map, not the run:
-> **8 of 13 maps right, 5 wrong.** Not the double-buffered car state (only one
-> copy qualifies here) and not bias jitter (`fk bias` reads +2200 at 4
-> checkpoints x 3 runs, 12 of 12 identical).
+> **A genuine root cause was found.** `fk regen`'s bias is
+> `clock0 - (probe-1)*10 - start_offset`, and the page-fault probe answers
+> *"which input record is the engine about to consume"* — exactly, but that is
+> one tick away from the question being asked, because the gather's first
+> instant is a state that has already had a tick applied. Two rival explanations
+> were disproved rather than assumed away: not the double-buffered car state
+> (only one copy qualifies here) and not bias jitter (`fk bias` reads +2200 at 4
+> checkpoints × 3 runs, 12 of 12 identical).
 >
-> **The fix needs no reference file.** The car is motionless until the throttle
-> goes down, the tape says which tick that is, and exactly one gathered instant
-> is the first that moves — the same moment in two languages, so the difference
-> in their labels *is* the pairing error, derived per run from the tape alone.
-> It abstains loudly unless it sees at least 3 still instants before the launch.
+> **The fix was anchored on the wrong landmark.** It assumed *the car is
+> motionless until the throttle goes down* and derived the pairing from the
+> first moving instant. On a tick-0 start that is right, and it reproduced a
+> human download to **0.000029 m** — 29 microns, below the 0.5 mm
+> "client-vs-server floor" this project had been quoting, which was therefore
+> never a floor. Its negative control passed both halves on 228607: the anchor
+> derived 0 by itself and left a correct file alone (0.000492 m), and forcing
+> −10 broke it to 0.824145 m.
 >
-> Regenerating the human download now reproduces its own trajectory to
-> **0.000029 m** mean, 0.000126 m worst over 112 samples — 29 microns, below the
-> 0.5 mm "client-vs-server floor" this project had been quoting, which was
-> therefore never a floor.
+> **But the landmark is false on this game.** Feed the engine a tape with *no
+> throttle at all* and the car still moves at the first race tick: 0.2246 m/s,
+> then decaying. **The first motion is the START RELEASE, not the throttle**, and
+> it is input-independent — downloads that hold the BRAKE and never touch the
+> throttle for a second still read 0.2251 at race 0. So on our start-trick tape,
+> whose throttle is one tick late, the anchor mis-derived by exactly one tick and
+> the file we published was one tick early.
 >
-> **Negative control, both halves, on 228607 — a map the pipeline was already
-> right on:** the anchor derived **0** on its own and left it alone
-> (0.000492 m), and the same map *forced* to −10 broke to **0.824145 m**. A fix
-> that only ever improves things is indistinguishable from a fudge.
+> **What proved it, and it needs no engine at all.** Download `r004_5358` has a
+> record grid starting at 40 ms instead of 0, so it samples the launch off-grid:
 >
-> The published file: `ghost verify` all PASS — kappa **1.000** (107 of 107
-> samples), the plain oracle re-simulating the WRITTEN file to **5.345**, no
-> account id, locator, badge or zone. And it is **not** anyone else's line —
-> at the correct alignment it differs from r001 (5.355) by 0.277 m, r003 (5.357)
-> by 0.293 m and r015 (5.362) by 0.364 m, with the minimum at shift +0 rather
-> than ±1.
+> | | s(40/50) | s(90/100) | s(140/150) |
+> |---|---|---|---|
+> | `r004_5358`, game-made | 0.6120 | 1.4078 | 2.2056 |
+> | **our published file** | **0.6120** | **1.4078** | **2.2056** |
+> | tick-0 downloads | 0.7711 | 1.5683 | 2.3655 |
+>
+> Four decimals, three instants, exact: the sample our file labelled race 0.050
+> carried the state the game has at race 0.040.
+>
+> **And the start trick does not explain it — there is a game-made control on
+> this very map.** Download `r005_5358`'s tape has `accel=0` at race 0 and gas
+> from race 0.010: our exact input pattern. Its record reads the unshifted
+> 0.2251 / 0.7711 / 1.5683. A late throttle does not move the record, because
+> the launch is not throttle-driven.
+>
+> Second, independent reason the number cannot be a real trajectory at that
+> label: a brake-held start reads 0.6949 at race 50, and our file read 0.6120 —
+> **no run on the gas can be slower off the line than a run on the brake.**
+>
+> **The lesson, and it is the same one three times now:** an instrument that
+> agrees with the answer key on the cases you sampled can still be wrong on a
+> case you did not. The anchor was validated on tick-0 starts and shipped
+> against a tick-1 start. `ghost verify` passed it — kappa 1.000, oracle 5.345,
+> no foreign identity — because none of those checks can see a phase error.
 >
 > `best_pF_5347_32087` and `KEYBOARD_5352_11events` sit one tick off for the
-> same reason and are now fixable; they have not been rebuilt yet.
+> same underlying reason and are still unfixed.
 
-> **Re-shot 2026-08-25 against the world record.** The clip is now the **5.345**,
-> `replays/TAS_5345_starttrick.Ghost.Gbx`, two cars, with our own inputs
-> overlaid — the run this directory's fastest file actually holds. `ghost verify`
-> on the filmed file: kappa **1.000** (107 of 107 samples), the plain oracle
-> re-simulating the WRITTEN file to **5.345**, telemetry 0.000 .. 5.300 inside a
-> span ending 5.345, and no account id, locator, badge or zone.
+> **The clip is the 5.347 again.** A two-car 5.345 clip was rendered and
+> published on 2026-08-25 and then taken down the same day: it was made from the
+> one-tick-early ghost above, and a phase error is exactly the defect a two-car
+> shot exposes and a single-car shot hides. The footage will be re-made when the
+> ghost is.
 >
-> *The earlier 2026-08-24 shoot was the 5.347, single-car, and before that the
-> caption said 5.352 — the smallest keyboard tape rather than the fastest file
-> here. `ghost verify` on that file: kappa 1.000 (107 of 107), oracle 5.347,
-> trajectory worst 0.0265 m against the file it replaced.*
+> The 2026-08-24 shoot is the current clip: the **5.347**,
+> `replays/best_pF_5347_32087.Ghost.Gbx`, single-car. Before that the caption
+> said 5.352 — the smallest keyboard tape rather than the fastest file here.
+> `ghost verify` on the filmed file: kappa 1.000 (107 of 107), oracle 5.347,
+> trajectory worst 0.0265 m against the file it replaced. **Note this file is
+> itself one tick off** by the same measurement, so its clip is provisional too;
+> it is single-car, which is why it has not been pulled.
 >
 > **One cosmetic defect, recorded rather than hidden: the car in this clip is
 > the stock livery, not ours.** The file's skin field reads
@@ -289,7 +303,7 @@ forgiving than the driving humans have actually done on this map.
 
 | file | what |
 |---|---|
-| `replays/TAS_5345_starttrick.Ghost.Gbx` | **the fastest run — no longer withdrawn (2026-08-25).** It was withdrawn because its 112 sample positions were bit-identical to Matik_K's own 5.355 download, so the file was his recording rather than ours, and the regenerator could not fix it: it did not sit on the game's physics tick on this map, and regenerating a recording the game made itself moved it 0.365 m — one 10 ms tick. **Root cause: the page-fault probe answers "which input record is the engine about to consume", which is one tick away from the question the gather asks; whether they agree depends on where the server stopped in its tick loop, so it is per-map — 8 of 13 right, 5 wrong.** The fix derives the pairing from the run's own launch (the car is still until the throttle goes down; exactly one gathered instant is the first that moves) and so needs no reference file. The download now regenerates to its own trajectory at **0.000029 m**. `ghost verify` all PASS, kappa 1.000, oracle 5.345, and it differs from every human download at shift +0 (0.277 / 0.293 / 0.364 m). |
+| ~~`replays/TAS_5345_starttrick.Ghost.Gbx`~~ | **withdrawn again, 2026-08-25, four hours after being published.** It was published on a fix whose landmark was wrong: the anchor assumed the car is motionless until the throttle goes down, which is false — feed the engine a tape with no throttle at all and the car still moves at the first race tick (0.2246 m/s, decaying). **The first motion is the start release, not the throttle**, and it is input-independent, so on this start-trick tape the anchor mis-derived by one tick. **Proof, no engine needed:** download `r004_5358` has an off-grid record starting at 40 ms and reads 0.6120 / 1.4078 / 2.2056 at 40/90/140 — our published file read those same four-decimal values at 50/100/150. **Control that kills the "the start trick explains it" defence:** `r005_5358` is a game-made recording whose tape has `accel=0` at race 0 and gas from race 0.010 — our exact pattern — and its record reads the unshifted 0.2251 / 0.7711 / 1.5683. Also: a brake-held start reads 0.6949 at race 50 and our file read 0.6120; no run on the gas is slower off the line than one on the brake. The 5.345 **time** is real and re-simulates; the recording was not publishable. |
 | `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |
