@@ -14,11 +14,57 @@ https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
 Single car: against the human 5.355 the two stay within 0.42 m for the whole run, so a side-by-side would show one car.
 
+> **The 5.345 is no longer withdrawn — 2026-08-25.** `replays/TAS_5345_starttrick.Ghost.Gbx`
+> is now a file whose recording is **ours**, and it is the fastest run this
+> directory publishes. The clip below is still the 5.347 and has not been
+> re-shot yet.
+>
+> The blocker was real and is now fixed at the root. The withdrawn file's 112
+> sample positions were bit-identical to Matik_K's own 5.355 download, and it
+> could not simply be regenerated because the regenerator did not sit on the
+> game's physics tick on this map: regenerating a recording the game itself made
+> moved it **0.365 m — one 10 ms tick**.
+>
+> **The cause was the page-fault probe.** `fk regen`'s bias is
+> `clock0 - (probe-1)*10 - start_offset`, and the probe answers *"which input
+> record is the engine about to consume"* — exactly, but that is one tick away
+> from the question being asked, because the gather's first instant is a state
+> that has already had a tick applied. Whether the two agree depends on where in
+> its tick loop the server stopped, which is a property of the map, not the run:
+> **8 of 13 maps right, 5 wrong.** Not the double-buffered car state (only one
+> copy qualifies here) and not bias jitter (`fk bias` reads +2200 at 4
+> checkpoints x 3 runs, 12 of 12 identical).
+>
+> **The fix needs no reference file.** The car is motionless until the throttle
+> goes down, the tape says which tick that is, and exactly one gathered instant
+> is the first that moves — the same moment in two languages, so the difference
+> in their labels *is* the pairing error, derived per run from the tape alone.
+> It abstains loudly unless it sees at least 3 still instants before the launch.
+>
+> Regenerating the human download now reproduces its own trajectory to
+> **0.000029 m** mean, 0.000126 m worst over 112 samples — 29 microns, below the
+> 0.5 mm "client-vs-server floor" this project had been quoting, which was
+> therefore never a floor.
+>
+> **Negative control, both halves, on 228607 — a map the pipeline was already
+> right on:** the anchor derived **0** on its own and left it alone
+> (0.000492 m), and the same map *forced* to −10 broke to **0.824145 m**. A fix
+> that only ever improves things is indistinguishable from a fudge.
+>
+> The published file: `ghost verify` all PASS — kappa **1.000** (107 of 107
+> samples), the plain oracle re-simulating the WRITTEN file to **5.345**, no
+> account id, locator, badge or zone. And it is **not** anyone else's line —
+> at the correct alignment it differs from r001 (5.355) by 0.277 m, r003 (5.357)
+> by 0.293 m and r015 (5.362) by 0.364 m, with the minimum at shift +0 rather
+> than ±1.
+>
+> `best_pF_5347_32087` and `KEYBOARD_5352_11events` sit one tick off for the
+> same reason and are now fixable; they have not been rebuilt yet.
+
 > **Re-shot 2026-08-24, and the caption now names the run in the video.** The
-> clip is the **5.347**, `replays/best_pF_5347_32087.Ghost.Gbx` — the fastest
-> lap this directory actually publishes. It used to say 5.352, which is the
-> smallest keyboard tape rather than the fastest file here, and the **5.345 is
-> withdrawn** and was not a candidate. `ghost verify` on the filmed file:
+> clip is the **5.347**, `replays/best_pF_5347_32087.Ghost.Gbx`. It used to say
+> 5.352, which is the smallest keyboard tape rather than the fastest file here.
+> `ghost verify` on the filmed file:
 > kappa **1.000** (107 of 107 samples), the plain oracle re-simulating the
 > WRITTEN file to **5.347**, telemetry 0.000 .. 5.300 inside a span ending
 > 5.347. Trajectory worst **0.0265 m** against the file it replaces.
@@ -225,7 +271,7 @@ forgiving than the driving humans have actually done on this map.
 
 | file | what |
 |---|---|
-| ~~`replays/TAS_5345_starttrick.Ghost.Gbx`~~ | **still withdrawn, and now for a reason we can name exactly.** Its 112 sample positions were bit-identical to Matik_K's own 5.355 download, so the file was his recording rather than ours, and the fix is to rewrite the record from the engine driving our tape. That cannot be done correctly on this map yet: the regenerator does not sit on the game's own physics tick here. Regenerating a recording the game made itself moves it **0.365 m**, one 10 ms tick, and that is the mode of five runs against each of two different players' downloads. A rebuilt file would be ours and still be a tick out of step with the run it claims — invisible alone, fatal in a two-car comparison. The 5.345 time is real and re-simulates on the oracle. |
+| `replays/TAS_5345_starttrick.Ghost.Gbx` | **the fastest run — no longer withdrawn (2026-08-25).** It was withdrawn because its 112 sample positions were bit-identical to Matik_K's own 5.355 download, so the file was his recording rather than ours, and the regenerator could not fix it: it did not sit on the game's physics tick on this map, and regenerating a recording the game made itself moved it 0.365 m — one 10 ms tick. **Root cause: the page-fault probe answers "which input record is the engine about to consume", which is one tick away from the question the gather asks; whether they agree depends on where the server stopped in its tick loop, so it is per-map — 8 of 13 right, 5 wrong.** The fix derives the pairing from the run's own launch (the car is still until the throttle goes down; exactly one gathered instant is the first that moves) and so needs no reference file. The download now regenerates to its own trajectory at **0.000029 m**. `ghost verify` all PASS, kappa 1.000, oracle 5.345, and it differs from every human download at shift +0 (0.277 / 0.293 / 0.364 m). |
 | `replays/DRIVABLE_5351_5detents.Ghost.Gbx` | **the one to hand a person** — 42 % two-sided, still inside the human WR |
 | `replays/KEYBOARD_5350_equals_AT.Ghost.Gbx` | **the author time on three steer values** — a human's own lap plus two blips |
 | `replays/KEYBOARD_5352_11events.Ghost.Gbx` | the smallest tape that still beats the human WR |

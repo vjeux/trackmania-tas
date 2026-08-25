@@ -72,7 +72,7 @@ https://github.com/user-attachments/assets/0f1e45fd-bd17-40b7-b265-17240ea68e13
 
 https://github.com/user-attachments/assets/094a8c03-d9f3-4938-b21f-caafff8fa280
 
-**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · the 5.345 file is **withdrawn** and named on the page; the fastest published here is 5.347, and *the clip below is that 5.347*
+**[Fall 2025 - 22 Reverse CP1 End](279218-fall-2025-22-reverse-cp1-end)** — author time `5.350` · ours **5.345** (−0.005) · best human 5.355 (Matik_K) · 474 records · the 5.345 ghost is published as of 2026-08-25, after a one-tick regenerator defect was fixed at the root; *the clip below is still the 5.347*
 
 https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 
