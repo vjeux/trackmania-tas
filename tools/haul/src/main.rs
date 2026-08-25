@@ -194,7 +194,7 @@ fn real_main() -> Result<i32, String> {
         "status" => {
             let l = layout()?;
             let j = job(&l)?;
-            let page = status::render(&l, &j, now)?;
+            let page = status::render_here(&l, &j, now)?;
             if a.on("write") {
                 std::fs::write(l.status_page(), &page).map_err(|e| e.to_string())?;
                 println!("wrote {}", l.status_page().display());

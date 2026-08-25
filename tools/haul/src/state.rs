@@ -86,15 +86,19 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
             .rev()
             .filter(|r| r.kind == "sample" || r.kind == "run_start")
             .find_map(|r| r.get_f64("start_dev_m")),
-        // Judged from the FILE only, not from a bridge probe: `reconstruct` is
-        // called by `status`, `beat` and every supervisor pass, and an ssh
-        // round-trip on each of those would be a network call inside what is
-        // meant to be a read of committed state. The supervisor proves the
-        // bridge properly once per pass and records the answer.
-        credential: Some(matches!(
-            crate::credential::inspect(&crate::credential::credential_path()),
-            crate::credential::Health::PresentUnproven | crate::credential::Health::Working
-        )),
+        // Deliberately NOT read here.
+        //
+        // `reconstruct` promises a picture built from committed state and
+        // nothing else, and a version of it that stats a file on the local
+        // machine broke that promise in the most embarrassing way available:
+        // two unit tests passed or failed depending on whether the box
+        // running them happened to hold a credential. A function whose
+        // result depends on where it runs cannot be tested, and this one is
+        // the foundation every alarm reads.
+        //
+        // The callers that legitimately know about this machine — `status`,
+        // `beat`, the supervisor — set it with `with_credential`.
+        credential: None,
     };
 
     Ok(Reconstructed {
@@ -128,9 +132,20 @@ pub fn best_objective(v: &View) -> Option<f64> {
     })
 }
 
+/// Add this machine's credential health to a reconstructed view.
+///
+/// Separate from `reconstruct` on purpose: it is the one input that is a fact
+/// about the BOX rather than about the run, so the caller states that it is
+/// asking about this box.
+pub fn with_credential(mut v: View) -> View {
+    let home = std::env::var("HOME").unwrap_or_default();
+    v.credential = Some(crate::credential::health(&home).ok());
+    v
+}
+
 pub fn alarm_state(l: &Layout, now: i64, cfg: &alarms::Config) -> Result<Vec<alarms::Firing>, String> {
     let r = reconstruct(l, now)?;
-    Ok(alarms::evaluate(&r.view, cfg))
+    Ok(alarms::evaluate(&with_credential(r.view), cfg))
 }
 
 #[cfg(test)]

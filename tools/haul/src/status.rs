@@ -21,7 +21,36 @@ use crate::paths::Layout;
 use crate::state;
 use crate::time::{dur, iso};
 
+/// Render the page from state. `credential` is passed in rather than read,
+/// for the same reason `reconstruct` does not read it: a renderer whose
+/// output depends on the machine it runs on cannot be tested.
+pub fn render_with(
+    l: &Layout,
+    job: &Job,
+    now: i64,
+    credential: Option<crate::credential::Health>,
+) -> Result<String, String> {
+    render_inner(l, job, now, credential)
+}
+
+/// The page as this box sees it, credential included.
+pub fn render_here(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    render_inner(l, job, now, Some(crate::credential::health(&home)))
+}
+
+/// Test-facing: no claim about any machine's credential.
+#[cfg(test)]
 pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
+    render_inner(l, job, now, None)
+}
+
+fn render_inner(
+    l: &Layout,
+    job: &Job,
+    now: i64,
+    credential: Option<crate::credential::Health>,
+) -> Result<String, String> {
     let r = state::reconstruct(l, now)?;
     let v = &r.view;
     let fired = alarms::evaluate(v, &job.alarms);
@@ -93,9 +122,10 @@ pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
     ));
     s.push_str(&format!(
         "| GitHub banking | {} |\n",
-        {
-            let h = crate::credential::health(&std::env::var("HOME").unwrap_or_default());
-            if h.ok() { "working".to_string() } else { format!("**DEGRADED** — {}", h.describe()) }
+        match &credential {
+            None => "not checked on this pass".to_string(),
+            Some(h) if h.ok() => "working".to_string(),
+            Some(h) => format!("**DEGRADED** — {}", h.describe()),
         }
     ));
     s.push_str(&format!(

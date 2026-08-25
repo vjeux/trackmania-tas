@@ -27,7 +27,8 @@ pub struct Beat {
 }
 
 pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Result<Beat, String> {
-    let r = state::reconstruct(l, now)?;
+    let mut r = state::reconstruct(l, now)?;
+    r.view = state::with_credential(r.view);
     let v = &r.view;
     let fired = crate::alarms::evaluate(v, &job.alarms);
     let counters = crate::budget::total_for(&l.budget_dir(), Some(&job.budget_key))?;

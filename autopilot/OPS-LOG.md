@@ -6,6 +6,19 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A function that reads the machine cannot be tested
+
+Adding the credential check, I had `reconstruct` — the function that promises a
+picture built from committed state and NOTHING else — stat a file on the local
+box. Two unit tests then passed or failed depending on whether the box running
+them happened to hold a credential. They passed on the box where I wrote them
+and failed on the next one.
+
+That function is the foundation every alarm reads, so a result that depends on
+WHERE IT RUNS is disqualifying. The credential is now passed in by the callers
+that legitimately know about this machine (`status::render_here`,
+`state::with_credential`), and the pure ones stay pure.
+
 ## A fresh box cannot announce itself through the channel it needs the credential FOR
 
 The credential server reads the box registry out of the repo. A fresh box
