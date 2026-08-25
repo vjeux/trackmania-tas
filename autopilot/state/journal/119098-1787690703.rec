@@ -7,3 +7,9 @@
 2026-08-25T20:49:06Z	config_reloaded	sample_s=60	bank_s=600	budget_key=resim-sweep
 2026-08-25T20:49:06Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650220
 2026-08-25T20:50:06Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650216
+2026-08-25T20:51:07Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650165
+2026-08-25T20:52:07Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650216
+2026-08-25T20:53:08Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650220
+2026-08-25T20:54:09Z	sample	evals=21735	worker_alive=1	node=119098	best=39	disk_free_mb=650207
+2026-08-25T20:55:10Z	sample	evals=21765	worker_alive=1	node=119098	best=68	disk_free_mb=650218
+2026-08-25T20:56:10Z	sample	evals=21795	worker_alive=1	node=119098	best=98	disk_free_mb=650215
