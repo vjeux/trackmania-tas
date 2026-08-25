@@ -30,7 +30,7 @@ pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Resul
     let r = state::reconstruct(l, now)?;
     let v = &r.view;
     let fired = crate::alarms::evaluate(v, &job.alarms);
-    let counters = crate::budget::total(&l.budget_dir())?;
+    let counters = crate::budget::total_for(&l.budget_dir(), Some(&job.budget_key))?;
     let boxes = lease::all(l)?;
     let q = Queue::open(l).map_err(|e| e.to_string())?;
     let node = crate::paths::node_id();

@@ -356,12 +356,21 @@ fn real_main() -> Result<i32, String> {
                     Ok(0)
                 }
                 "record" => {
-                    budget::record(&l.budget_dir(), &paths::node_id(), a.i("evals", 0) as u64, a.i("dt", 0))
+                    budget::record(
+                        &l.budget_dir(),
+                        &paths::node_id(),
+                        &a.s("budget", &job(&l)?.budget_key),
+                        a.i("evals", 0).max(0) as u64,
+                        a.i("dt", 0),
+                    )
                         .map_err(|e| e.to_string())?;
                     Ok(0)
                 }
                 _ => {
-                    let c = budget::total(&l.budget_dir())?;
+                    let key = a.s("budget", &j.budget_key);
+                    let c = budget::total_for(&l.budget_dir(), Some(&key))?;
+                    let all = budget::total(&l.budget_dir())?;
+                    println!("budget: {key}");
                     println!(
                         "evals {} of {}\nproductive {} of {}\nstalled {} (does not spend the budget)\nspent {:.1}%\nswitch reached: {}",
                         c.evals,
@@ -372,6 +381,14 @@ fn real_main() -> Result<i32, String> {
                         100.0 * c.spent_fraction(&j.budget),
                         c.switch_reached(&j.budget)
                     );
+                    if all.evals != c.evals || all.productive_s != c.productive_s {
+                        println!(
+                            "\nacross every budget: {} evals, {} productive — the difference is \
+                             work by jobs that do not spend this one",
+                            all.evals,
+                            time::dur(all.productive_s)
+                        );
+                    }
                     Ok(0)
                 }
             }
@@ -609,6 +626,18 @@ fn real_main() -> Result<i32, String> {
                 }
                 other => Err(format!("tmhaul credential check|serve|selftest, got {other:?}")),
             }
+        }
+
+        "push-ref" => {
+            let l = layout()?;
+            let r = bank::push_ref_via_whitestick(&l, &a.s("ref", ""), &a.s("branch", ""))?;
+            let node = paths::node_id();
+            log::Log::shard(&l.journal_dir(), &node, now)
+                .map_err(|e| e.to_string())?
+                .append(&rec::Rec::new("push_ref").f("result", &r).f("why", a.s("why", "")))
+                .map_err(|e| e.to_string())?;
+            println!("{r}");
+            Ok(0)
         }
 
         "verify" => {

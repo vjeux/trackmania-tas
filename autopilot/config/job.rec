@@ -72,3 +72,10 @@ max_boxes = 2
 # defaults to yes precisely so that a driving worker which says nothing about
 # where its car started sets off the alarm.
 worker_drives = no
+
+# WHICH budget this job's work spends. The pre-committed switch condition
+# (8M evals / 10 productive hours, DESIGN.md §3.2) was agreed for the ARCHIVE
+# SEARCH. Today's worker is the re-simulation sweep, which is not that search
+# and must not spend its threshold — so it gets its own key. Set this to
+# `archive-search` in the same change that points worker_cmd at the explorer.
+budget_key = resim-sweep

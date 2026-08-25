@@ -66,11 +66,26 @@ impl Counters {
     }
 }
 
-/// Append one interval to this box's shard.
-pub fn record(dir: &Path, node: &str, delta_evals: u64, dt_s: i64) -> std::io::Result<()> {
+/// Append one interval to this box's shard, ATTRIBUTED TO A BUDGET.
+///
+/// **A budget that counts the wrong work is the same defect as one that
+/// counts wall-clock during a stall**, and it took five hours to notice.
+/// The pre-committed switch condition — 8M evals or 10 productive hours,
+/// after which a learned ordering over archive bins gets added — was agreed
+/// for the ARCHIVE SEARCH. The re-simulation sweep was spending it. Left
+/// alone, the harness would have announced "the pre-committed switch is due"
+/// after ten hours of a workload the condition was never about, and the
+/// decision it triggers would have been made for a reason nobody could find
+/// three months later.
+///
+/// So every interval carries the `budget` its job declares, and totals are
+/// per budget. An interval written before this existed has no key and is
+/// read as `unattributed` — never silently folded into the search's.
+pub fn record(dir: &Path, node: &str, budget: &str, delta_evals: u64, dt_s: i64) -> std::io::Result<()> {
     let log = Log::at(dir.join(format!("{node}.rec")));
     log.append(
         &Rec::new("budget_interval")
+            .f("budget", budget)
             .f("delta_evals", delta_evals)
             .f("dt_s", dt_s)
             .f("productive", if delta_evals > 0 { 1 } else { 0 }),
@@ -96,10 +111,19 @@ pub fn correct(dir: &Path, node: &str, evals: u64, productive_s: i64, why: &str)
 }
 
 /// Total across every box that has ever run, reconstructed from the repo alone.
-pub fn total(dir: &Path) -> Result<Counters, String> {
+/// Total for ONE budget. `None` totals every interval regardless of key,
+/// which is what the "how much work has this project done at all" question
+/// wants and what the switch condition must never use.
+pub fn total_for(dir: &Path, budget: Option<&str>) -> Result<Counters, String> {
     let recs = log::read_all(dir)?;
     let mut c = Counters::default();
     for r in &recs {
+        if let Some(want) = budget {
+            let got = r.get("budget").unwrap_or("unattributed");
+            if got != want {
+                continue;
+            }
+        }
         match r.kind.as_str() {
             "budget_interval" => {
                 let de = r.get_u64("delta_evals").unwrap_or(0);
@@ -114,6 +138,10 @@ pub fn total(dir: &Path) -> Result<Counters, String> {
         }
     }
     Ok(c)
+}
+
+pub fn total(dir: &Path) -> Result<Counters, String> {
+    total_for(dir, None)
 }
 
 #[cfg(test)]
@@ -170,8 +198,8 @@ mod tests {
     fn a_miscount_is_corrected_by_appending_not_by_rewriting() {
         let d = std::env::temp_dir().join(format!("haul-budget-fix-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        record(&d, "boxA", 500, 60).unwrap();
-        record(&d, "boxA", 194, 60).unwrap();   // the double-counted resume point
+        record(&d, "boxA", "search", 500, 60).unwrap();
+        record(&d, "boxA", "search", 194, 60).unwrap();   // the double-counted resume point
         assert_eq!(total(&d).unwrap().evals, 694);
         correct(&d, "boxA", 194, 0, "a restarted supervisor counted its resume point as fresh work").unwrap();
         assert_eq!(total(&d).unwrap().evals, 500);
@@ -186,7 +214,7 @@ mod tests {
     fn a_correction_cannot_drive_the_budget_below_zero() {
         let d = std::env::temp_dir().join(format!("haul-budget-neg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        record(&d, "boxA", 10, 60).unwrap();
+        record(&d, "boxA", "search", 10, 60).unwrap();
         correct(&d, "boxA", 999, 999, "over-correction").unwrap();
         let t = total(&d).unwrap();
         assert_eq!(t.evals, 0);
@@ -197,12 +225,72 @@ mod tests {
     fn totals_reconstruct_from_shards_written_by_different_boxes() {
         let d = std::env::temp_dir().join(format!("haul-budget-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        record(&d, "boxA", 100, 60).unwrap();
-        record(&d, "boxB", 0, 60).unwrap();
-        record(&d, "boxA", 50, 60).unwrap();
+        record(&d, "boxA", "search", 100, 60).unwrap();
+        record(&d, "boxB", "search", 0, 60).unwrap();
+        record(&d, "boxA", "search", 50, 60).unwrap();
         let t = total(&d).unwrap();
         assert_eq!(t.evals, 150);
         assert_eq!(t.productive_s, 120);
         assert_eq!(t.stalled_s, 60);
+    }
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::*;
+
+    fn dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("haul-budget-attr-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn one_jobs_work_does_not_spend_another_jobs_threshold() {
+        // The real defect: the re-simulation sweep spent five hours of the
+        // ARCHIVE SEARCH's pre-committed budget, and the harness was on course
+        // to announce "the switch is due" for a workload the condition was
+        // never about.
+        let d = dir("scoped");
+        record(&d, "boxA", "resim-sweep", 400, 3600).unwrap();
+        record(&d, "boxA", "archive-search", 100, 600).unwrap();
+
+        let search = total_for(&d, Some("archive-search")).unwrap();
+        assert_eq!(search.evals, 100);
+        assert_eq!(search.productive_s, 600, "the sweep's hour must not be in here");
+
+        let sweep = total_for(&d, Some("resim-sweep")).unwrap();
+        assert_eq!(sweep.evals, 400);
+
+        // ...and the "everything this project has done" question still works.
+        let all = total(&d).unwrap();
+        assert_eq!(all.evals, 500);
+        assert_eq!(all.productive_s, 4200);
+    }
+
+    #[test]
+    fn an_interval_written_before_budgets_had_keys_is_unattributed_not_absorbed() {
+        // Silently folding legacy intervals into whichever budget asks first
+        // would re-create the exact bug, quietly, on the next upgrade.
+        let d = dir("legacy");
+        std::fs::create_dir_all(&d).unwrap();
+        let log = Log::at(d.join("boxA.rec"));
+        log.append(&Rec::new("budget_interval").f("delta_evals", 999).f("dt_s", 60)).unwrap();
+
+        assert_eq!(total_for(&d, Some("archive-search")).unwrap().evals, 0);
+        assert_eq!(total_for(&d, Some("unattributed")).unwrap().evals, 999);
+        assert_eq!(total(&d).unwrap().evals, 999, "but it is still real work");
+    }
+
+    #[test]
+    fn the_switch_condition_is_judged_on_the_scoped_total() {
+        let d = dir("switch");
+        // Ten productive hours of the wrong workload.
+        for _ in 0..600 {
+            record(&d, "boxA", "resim-sweep", 10, 60).unwrap();
+        }
+        let p = Policy::default();
+        assert!(!total_for(&d, Some("archive-search")).unwrap().switch_reached(&p));
+        assert!(total_for(&d, Some("resim-sweep")).unwrap().switch_reached(&p));
     }
 }

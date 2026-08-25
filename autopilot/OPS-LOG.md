@@ -6,6 +6,41 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## A budget that counts the WRONG WORK is the same defect as one that counts a stall
+
+The harness was built so that a stall could not spend the pre-committed switch
+budget. It then spent five hours of that budget on the wrong workload, and
+nobody noticed until it read **50.8%**.
+
+The condition — 8M evals or 10 productive hours, after which a learned
+ordering over archive bins gets added — was agreed for the **archive search**.
+The worker actually running is the re-simulation sweep. At the sweep's rate
+the eval arm would take a decade, so the TIME arm was going to fire first, in
+about five more hours, and the harness would have announced "the pre-committed
+switch is due" for a workload the condition was never about. The decision it
+triggers would have been made for a reason nobody could reconstruct in three
+months.
+
+Every interval now carries the `budget_key` its job declares, and totals are
+per budget. An interval written before the key existed reads as
+`unattributed` — never folded into the search's, because absorbing legacy
+rows into whichever budget asks first would re-create the bug silently at the
+next upgrade. `tmhaul budget` names which budget it is reporting and prints
+the cross-budget total underneath, so the difference is visible rather than
+missing.
+
+**The general shape: "counts work, not time" is not enough. It has to count
+THE work the threshold was agreed about.**
+
+## Compare the sha you SENT, not HEAD as it is now
+
+A push failed with *"the box pushed 3842b5b9 but our HEAD is 69ee9f62 — the
+bundle did not carry what we think it did"*. The bundle was perfect. The
+supervisor had banked concurrently and moved HEAD between the bundle being
+built and the check reading HEAD again. The claim worth checking is that the
+far side pushed **what we sent**, and on a live box HEAD will not stand still
+while you work — so the sha is captured at bundle-creation time now.
+
 ## Dropping a crate from the workspace members list deletes its CI
 
 Another session's commit rewrote `tools/Cargo.toml` `members` to add its own

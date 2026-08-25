@@ -275,7 +275,13 @@ impl Supervisor {
 
             // ---- 2. budget: only intervals that moved the counter spend it
             let delta = evals.saturating_sub(self.last_evals);
-            let _ = crate::budget::record(&self.l.budget_dir(), &self.node, delta, self.job.sample_s);
+            let _ = crate::budget::record(
+                &self.l.budget_dir(),
+                &self.node,
+                &self.job.budget_key,
+                delta,
+                self.job.sample_s,
+            );
             self.last_evals = evals;
             let _ = lease::touch(&self.l, &self.node);
 

@@ -466,6 +466,15 @@ fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> 
     let bundle = std::env::temp_dir().join(format!("tmhaul-{stamp}.bundle"));
     let _ = std::fs::remove_file(&bundle);
     git(&l.repo, &["bundle", "create", &bundle.to_string_lossy(), branch])?;
+    // The sha the bundle ACTUALLY carries, read at the moment it was built.
+    //
+    // Re-reading HEAD after the push compares the wrong two things: a
+    // supervisor banking concurrently moves HEAD between the bundle and the
+    // check, and the push is then reported as "the bundle did not carry what
+    // we think it did" when it carried exactly the right commits. The claim
+    // worth checking is that the box pushed WHAT WE SENT — not that our HEAD
+    // has stood still, which on a live box it will not.
+    let sent_sha = git(&l.repo, &["rev-parse", branch])?.stdout.trim().to_string();
     let local_md5 = md5_file(&bundle).map_err(|e| e.to_string())?;
 
     let remote_bundle = format!("~/tmhaul-{stamp}.bundle");
@@ -487,16 +496,16 @@ fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> 
     );
     let out = gitcmd::run(&l.repo, &ws, &[&script])?;
     let remote_sha = out.stdout.trim().lines().last().unwrap_or("").to_string();
-    let local_sha = gitcmd::head_sha(&l.repo)?;
-    if remote_sha != local_sha {
+    if remote_sha != sent_sha {
         return Err(format!(
-            "the box pushed {remote_sha} but our HEAD is {local_sha} — the bundle did not carry what we think it did"
+            "the box pushed {remote_sha} but the bundle carried {sent_sha} — the transfer did \
+             not deliver what we built"
         ));
     }
     let _ = std::fs::remove_file(&bundle);
     Ok(format!(
         "whitestick→github {} (bundle md5 {}){}",
-        &local_sha[..12],
+        &sent_sha[..12],
         &local_md5[..8],
         rebased.map(|r| format!(" [{r}]")).unwrap_or_default()
     ))

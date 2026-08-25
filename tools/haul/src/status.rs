@@ -25,7 +25,7 @@ pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
     let r = state::reconstruct(l, now)?;
     let v = &r.view;
     let fired = alarms::evaluate(v, &job.alarms);
-    let counters = budget::total(&l.budget_dir())?;
+    let counters = budget::total_for(&l.budget_dir(), Some(&job.budget_key))?;
     let boxes = lease::all(l)?;
     let entries = ledger::all(l)?;
 
@@ -313,7 +313,7 @@ mod tests {
         }
         log.append(&Rec::at(now - 300, "bank").f("receipt", "commit deadbeef · mirror P1")).unwrap();
         crate::lease::register_at(&l, "boxA", now - 60, Some(now + 3600), "test").unwrap();
-        crate::budget::record(&l.budget_dir(), "boxA", 72_000, 7200).unwrap();
+        crate::budget::record(&l.budget_dir(), "boxA", "archive-search", 72_000, 7200).unwrap();
 
         let page = render(&l, &Job::default(), now).unwrap();
         assert!(page.contains("**Running.**"), "{page}");

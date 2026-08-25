@@ -32,6 +32,10 @@ pub struct Job {
     pub objective: String,
     pub map_name: String,
     pub rung: String,
+    /// Which budget this job's work spends. The pre-committed switch condition
+    /// belongs to the archive search; a job that is not that search must not
+    /// spend it.
+    pub budget_key: String,
     pub alarms: alarms::Config,
     pub budget: budget::Policy,
     pub extra: BTreeMap<String, String>,
@@ -56,6 +60,7 @@ impl Default for Job {
             objective: "furthest station on our own route".into(),
             map_name: "Summer 2026 - 01".into(),
             rung: "1 — reach CP1".into(),
+            budget_key: "archive-search".into(),
             alarms: alarms::Config::default(),
             budget: budget::Policy::default(),
             extra: BTreeMap::new(),
@@ -101,6 +106,7 @@ impl Job {
                 "objective" => j.objective = v,
                 "map_name" => j.map_name = v,
                 "rung" => j.rung = v,
+                "budget_key" => j.budget_key = v,
                 "alarm_zero_window_s" => parse_i(&v, k, &mut errs, &mut j.alarms.zero_window_s),
                 "alarm_collapse_recent_s" => {
                     parse_i(&v, k, &mut errs, &mut j.alarms.collapse_recent_s)
@@ -216,6 +222,11 @@ worker_drives = yes
 # replacements without a human; a bug in that logic must not run away.
 max_boxes = {}
 
+# WHICH budget this job spends. The pre-committed switch condition below was
+# agreed for the ARCHIVE SEARCH; a job that is not that search gets its own key
+# so it cannot spend a threshold the project never meant it to.
+budget_key = {}
+
 # The pre-committed switch condition (DESIGN.md 3.2). Productive seconds only:
 # a stall never spends this.
 budget_switch_evals = {}
@@ -246,6 +257,7 @@ budget_switch_productive_s = {}
             d.alarms.bank_max_gap_s,
             d.alarms.start_dev_max_m,
             d.alarms.max_boxes,
+            d.budget_key,
             d.budget.switch_evals,
             d.budget.switch_productive_s,
         )
