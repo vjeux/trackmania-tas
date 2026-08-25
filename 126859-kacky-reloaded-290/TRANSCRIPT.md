@@ -1,5 +1,19 @@
 # Unbeaten AT: 126859 Kacky Reloaded #290
 
+**Both cars at once: the TAS at 23.416 against the human world record at 24.342.**
+The map is Kacky Reloaded #290 — author time 24.062, no checkpoints, one spawn
+and one finish gate. Below is the complete record of the agent session that
+found the run: every command it ran, every output it read, and what it was
+thinking between them.
+
+https://github.com/user-attachments/assets/f9f9765d-1c0d-4dca-be3f-cc80467036be
+
+The technique it landed on, in one line: **everybody flies the second launch and
+waits — hold full left all the way through it, hit the finish tower a car's
+height lower, and the drop into the gate is a third of a second shorter.** The
+map's own write-up, the replays and the per-sector breakdown are in
+[README.md](README.md).
+
 Full transcript of session `be97d5aa`, a sub-agent of session `dcec02e4`.
 
 | | |
