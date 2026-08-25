@@ -74,6 +74,13 @@ pub struct View {
     /// Can this box reach GitHub through the bridge? `None` means the check
     /// was not run on this pass, which is different from "no".
     pub credential: Option<bool>,
+    /// Is a supervisor process alive on THIS box? `None` means not checked —
+    /// which is the honest answer on a box that is merely reading the repo
+    /// and is not the one running the job.
+    pub supervisor_here: Option<bool>,
+    /// The node this view was assembled on, when the caller is speaking about
+    /// a specific machine.
+    pub this_node: Option<String>,
 }
 
 impl View {
@@ -88,6 +95,8 @@ impl View {
             last_bank: None,
             start_dev_m: None,
             credential: None,
+            supervisor_here: None,
+            this_node: None,
         }
     }
 }
@@ -532,6 +541,60 @@ pub fn start_position(v: &View, c: &Config) -> Option<Firing> {
     }
 }
 
+// ---------------------------------------------------------------- A12
+
+/// **The supervisor itself died.**
+///
+/// Observed 2026-08-25: a supervisor vanished on a healthy box — no
+/// `run_stop`, no line in its own log, no OOM, no reboot, the worker gone with
+/// it. `tmhaul beat` said `NOT RUNNING` because it reads `/proc`; **the alarms
+/// said nothing was firing**, and would have kept saying it for ten minutes
+/// until `zero_throughput`'s window closed.
+///
+/// Ten minutes is not the problem. The problem is that the harness KNEW and
+/// the alarm surface did not say so, which is the gap between "a check exists"
+/// and "the check is wired to the thing people read".
+///
+/// Only fires on the box that owns the run. A box merely reading the repo —
+/// a heartbeat on a fresh machine, say — reports `supervisor_here: None` and
+/// gets silence, because "no supervisor on a box that was never running one"
+/// is not a fault.
+pub fn supervisor_died(v: &View, _c: &Config) -> Option<Firing> {
+    if !v.run_active {
+        return None;
+    }
+    if v.supervisor_here != Some(false) {
+        return None;
+    }
+    // Is this box the one whose run is active? The newest sample names its
+    // writer; if that is not us, somebody else owns this run and its absence
+    // here is expected.
+    let owner = v.samples.last().map(|s| s.node);
+    let me = v.this_node.as_ref().map(|n| node_key(n));
+    if owner.is_none() || me.is_none() || owner != me {
+        return None;
+    }
+    Some(Firing {
+        id: "supervisor_died",
+        severity: Severity::Critical,
+        detail: format!(
+            "the run is active and this box wrote its last sample, but no supervisor process is \
+             alive here. Nothing is banking or watching the worker: `tmhaul watch --detach \
+             --lease-expires <expiry>`{}",
+            v.samples
+                .last()
+                .map(|s| format!(" (last sample {})", crate::time::iso(s.ts)))
+                .unwrap_or_default()
+        ),
+    })
+}
+
+/// Sample records carry a hashed node id; this is the same hash, so a caller
+/// holding a node NAME can ask whether it wrote them.
+pub fn node_key(node: &str) -> u64 {
+    u64::from_str_radix(&crate::md5::md5_hex(node.as_bytes())[..8], 16).unwrap_or(0)
+}
+
 // ---------------------------------------------------------------- A11
 
 /// **GitHub banking is degraded.**
@@ -602,6 +665,7 @@ pub const ALL: &[(&str, AlarmFn)] = &[
     ("start_position", start_position),
     ("fleet_over_cap", fleet_over_cap),
     ("banking_degraded", banking_degraded),
+    ("supervisor_died", supervisor_died),
 ];
 
 pub fn evaluate(v: &View, c: &Config) -> Vec<Firing> {
@@ -627,7 +691,7 @@ pub mod fixtures {
         for i in 0..=120 {
             samples.push(Sample {
                 ts: NOW - 7200 + i * 60,
-                node: 1,
+                node: node_key("boxA"),
                 evals: (i as u64) * 600,
                 best: Some(10.0 + i as f64),
                 disk_free_mb: Some(200_000),
@@ -649,6 +713,8 @@ pub mod fixtures {
             last_bank: Some(NOW - 300),
             start_dev_m: Some(0.8),
             credential: Some(true),
+            supervisor_here: Some(true),
+            this_node: Some("boxA".to_string()),
         }
     }
 
@@ -693,7 +759,7 @@ pub mod fixtures {
         for i in 0..=600 {
             samples.push(Sample {
                 ts: NOW - 36_000 + i * 60,
-                node: 1,
+                node: node_key("boxA"),
                 evals: (i as u64) * 6_000, // 100/s
                 best: Some(25.0),          // never moves
                 disk_free_mb: Some(200_000),
@@ -801,6 +867,12 @@ pub mod fixtures {
         View { start_dev_m: None, ..healthy() }
     }
 
+    /// The run is active, this box wrote the last sample, and the supervisor
+    /// that was doing it is gone.
+    pub fn supervisor_gone() -> View {
+        View { supervisor_here: Some(false), ..healthy() }
+    }
+
     pub fn banking_degraded() -> View {
         View { credential: Some(false), ..healthy() }
     }
@@ -833,6 +905,7 @@ pub mod fixtures {
             ("start_position", "run never reported a start position", start_unreported()),
             ("fleet_over_cap", "four boxes against a ceiling of two", too_many_boxes()),
             ("banking_degraded", "no bridge credential on this box", banking_degraded()),
+            ("supervisor_died", "run active, this box owns it, no supervisor process", supervisor_gone()),
         ]
     }
 }
@@ -1067,5 +1140,50 @@ mod drives_tests {
         let c = Config { worker_drives: false, ..Config::default() };
         assert!(zero_throughput(&stalled(), &c).is_some());
         assert!(worker_died(&worker_dead(), &c).is_some());
+    }
+}
+
+#[cfg(test)]
+mod supervisor_tests {
+    use super::fixtures::*;
+    use super::*;
+
+    #[test]
+    fn a_dead_supervisor_on_the_box_that_owns_the_run_is_critical() {
+        let f = supervisor_died(&supervisor_gone(), &Config::default()).unwrap();
+        assert_eq!(f.severity, Severity::Critical);
+        assert!(f.detail.contains("watch --detach"), "{}", f.detail);
+    }
+
+    #[test]
+    fn a_live_supervisor_is_silent() {
+        assert!(supervisor_died(&healthy(), &Config::default()).is_none());
+    }
+
+    #[test]
+    fn a_box_that_does_not_own_the_run_says_nothing_about_it() {
+        // The control that keeps this alarm from screaming on every machine
+        // that merely reads the repo: a heartbeat on a fresh box, or the
+        // devserver running `credential serve`, has no supervisor and should
+        // not — the run belongs to somebody else.
+        let v = View {
+            supervisor_here: Some(false),
+            this_node: Some("some-other-box".into()),
+            ..healthy()
+        };
+        assert!(supervisor_died(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn an_unchecked_box_is_not_a_dead_one() {
+        // `None` means nobody looked. It must not read as "no supervisor".
+        let v = View { supervisor_here: None, ..healthy() };
+        assert!(supervisor_died(&v, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn an_idle_project_does_not_want_a_supervisor() {
+        let v = View { run_active: false, supervisor_here: Some(false), ..healthy() };
+        assert!(supervisor_died(&v, &Config::default()).is_none());
     }
 }

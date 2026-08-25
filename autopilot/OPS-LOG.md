@@ -5,6 +5,30 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## The supervisor died and the alarm surface said nothing was wrong
+
+A supervisor vanished on a healthy box — no `run_stop`, nothing in its own log,
+no OOM, no reboot, the worker gone with it. `tmhaul beat` printed
+`Supervisor on this box: NOT RUNNING`, because it reads `/proc`. On the same
+data, `tmhaul alarms eval` printed **nothing firing**, and would have kept
+printing it until `zero_throughput`'s ten-minute window closed.
+
+Ten minutes of delay was not the defect. The defect is that **the harness knew
+and the alarm surface did not say so** — the gap between a check existing and
+the check being wired to the thing people read.
+
+`supervisor_died` now covers it, and only on the box that owns the run: a
+machine merely reading the repo reports `supervisor_here: None` and stays
+silent, because "no supervisor on a box that was never running one" is not a
+fault.
+
+**And `pgrep -f "release/tmhaul watch"` matches the shell command containing
+that string.** Every ad-hoc "is it alive?" check I ran that way could answer
+yes with nothing running. The alarm parses `/proc/<pid>/cmdline` and requires
+argv[0] to end in `tmhaul`, so it was right when my shell check was wrong —
+which is exactly the direction you want that disagreement to run. For a
+one-off check: `ls -la /proc/*/exe | grep release/tmhaul`.
+
 ## `grep` on a release binary is not a test of what the binary does
 
 Chasing whether a rebuilt `tmhaul` contained a change, I used

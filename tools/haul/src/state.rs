@@ -99,6 +99,10 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
         // The callers that legitimately know about this machine — `status`,
         // `beat`, the supervisor — set it with `with_credential`.
         credential: None,
+        // Both are facts about a MACHINE, not about committed state, so
+        // `reconstruct` leaves them unset and `with_this_box` fills them in.
+        supervisor_here: None,
+        this_node: None,
     };
 
     Ok(Reconstructed {
@@ -143,9 +147,18 @@ pub fn with_credential(mut v: View) -> View {
     v
 }
 
+/// Everything the view can only learn by looking at THIS machine: the
+/// credential, and whether a supervisor is alive here.
+pub fn with_this_box(mut v: View) -> View {
+    v = with_credential(v);
+    v.supervisor_here = Some(crate::beat::watch_pid().is_some());
+    v.this_node = Some(crate::paths::node_id());
+    v
+}
+
 pub fn alarm_state(l: &Layout, now: i64, cfg: &alarms::Config) -> Result<Vec<alarms::Firing>, String> {
     let r = reconstruct(l, now)?;
-    Ok(alarms::evaluate(&with_credential(r.view), cfg))
+    Ok(alarms::evaluate(&with_this_box(r.view), cfg))
 }
 
 #[cfg(test)]
