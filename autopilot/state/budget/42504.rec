@@ -363,3 +363,6 @@
 2026-08-25T02:53:41Z	budget_interval	delta_evals=0	dt_s=60	productive=0
 2026-08-25T02:54:41Z	budget_interval	delta_evals=0	dt_s=60	productive=0
 2026-08-25T02:55:41Z	budget_interval	delta_evals=0	dt_s=60	productive=0
+2026-08-25T02:57:28Z	budget_interval	delta_evals=51	dt_s=60	productive=1
+2026-08-25T02:58:28Z	budget_interval	delta_evals=29	dt_s=60	productive=1
+2026-08-25T02:59:28Z	budget_interval	delta_evals=29	dt_s=60	productive=1
