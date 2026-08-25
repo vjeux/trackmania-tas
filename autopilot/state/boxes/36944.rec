@@ -239,3 +239,4 @@
 2026-08-25T19:40:37Z	box_alive	node=36944
 2026-08-25T19:41:37Z	box_alive	node=36944
 2026-08-25T19:42:38Z	box_alive	node=36944
+2026-08-25T20:02:21Z	box_retired	node=36944	why=unreachable from the orchestrator at 20:00Z with 7h31m of lease left; second box lost mid-lease in 90 minutes
