@@ -545,3 +545,26 @@
 2026-08-25T06:00:58Z	budget_interval	delta_evals=0	dt_s=60	productive=0
 2026-08-25T06:02:43Z	budget_interval	delta_evals=53	dt_s=60	productive=1
 2026-08-25T06:03:43Z	budget_interval	delta_evals=40	dt_s=60	productive=1
+2026-08-25T06:08:51Z	budget_interval	budget=resim-sweep	delta_evals=89	dt_s=60	productive=1
+2026-08-25T06:09:51Z	budget_interval	budget=resim-sweep	delta_evals=25	dt_s=60	productive=1
+2026-08-25T06:10:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:11:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:12:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:13:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:14:51Z	budget_interval	budget=resim-sweep	delta_evals=17	dt_s=60	productive=1
+2026-08-25T06:15:51Z	budget_interval	budget=resim-sweep	delta_evals=39	dt_s=60	productive=1
+2026-08-25T06:16:51Z	budget_interval	budget=resim-sweep	delta_evals=42	dt_s=60	productive=1
+2026-08-25T06:17:51Z	budget_interval	budget=resim-sweep	delta_evals=16	dt_s=60	productive=1
+2026-08-25T06:18:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:19:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:20:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:21:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:22:51Z	budget_interval	budget=resim-sweep	delta_evals=40	dt_s=60	productive=1
+2026-08-25T06:23:51Z	budget_interval	budget=resim-sweep	delta_evals=30	dt_s=60	productive=1
+2026-08-25T06:24:51Z	budget_interval	budget=resim-sweep	delta_evals=39	dt_s=60	productive=1
+2026-08-25T06:25:51Z	budget_interval	budget=resim-sweep	delta_evals=5	dt_s=60	productive=1
+2026-08-25T06:26:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:27:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:28:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:29:51Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
+2026-08-25T06:30:51Z	budget_interval	budget=resim-sweep	delta_evals=51	dt_s=60	productive=1

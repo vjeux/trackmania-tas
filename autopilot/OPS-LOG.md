@@ -6,6 +6,20 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## `cargo test` does not rebuild `target/release/<bin>`
+
+I fixed the budget attribution, edited `beat.rs` and `status.rs`, ran
+`cargo test --release -p haul` — 134 green — and then watched `tmhaul beat`
+keep printing the OLD number. The library the tests exercise and the binary on
+disk are different artifacts: `cargo test` builds
+`target/release/deps/tmhaul-<hash>`, not `target/release/tmhaul`.
+
+**A green test suite is not evidence that the thing you are running contains
+the fix.** Run `cargo build --release -p <pkg>` before believing any CLI
+output after an edit. `run_start` now records the binary's build time so a
+later reader can tell which binary produced a run, rather than wondering why
+the journal disagrees with the source.
+
 ## A budget that counts the WRONG WORK is the same defect as one that counts a stall
 
 The harness was built so that a stall could not spend the pre-committed switch

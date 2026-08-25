@@ -1,2 +1,27 @@
 2026-08-25T06:06:55Z	worker_start	pid=1409925	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=9483	resume_best=112
 2026-08-25T06:06:55Z	run_start	node=42504	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-25T06:07:51Z	bank	why=run start	receipt=commit 81ae7ed8f2ce · mirror P2474888442 · push whitestick→github 81ae7ed8f2ce (bundle md5 c4ace1ff)
+2026-08-25T06:08:51Z	sample	evals=9572	worker_alive=1	node=42504	best=87	disk_free_mb=382294
+2026-08-25T06:09:51Z	sample	evals=9597	worker_alive=1	node=42504	best=112	disk_free_mb=382283
+2026-08-25T06:10:51Z	sample	evals=9597	worker_alive=1	node=42504	best=112	disk_free_mb=382259
+2026-08-25T06:11:51Z	sample	evals=9597	worker_alive=1	node=42504	best=112	disk_free_mb=382277
+2026-08-25T06:12:51Z	sample	evals=9597	worker_alive=1	node=42504	best=112	disk_free_mb=382317
+2026-08-25T06:13:51Z	sample	evals=9597	worker_alive=1	node=42504	best=112	disk_free_mb=382311
+2026-08-25T06:14:51Z	sample	evals=9614	worker_alive=1	node=42504	best=17	disk_free_mb=382314
+2026-08-25T06:15:51Z	sample	evals=9653	worker_alive=1	node=42504	best=54	disk_free_mb=382307
+2026-08-25T06:16:51Z	sample	evals=9695	worker_alive=1	node=42504	best=96	disk_free_mb=381462
+2026-08-25T06:17:51Z	sample	evals=9711	worker_alive=1	node=42504	best=112	disk_free_mb=382213
+2026-08-25T06:18:51Z	sample	evals=9711	worker_alive=1	node=42504	best=112	disk_free_mb=382211
+2026-08-25T06:19:51Z	sample	evals=9711	worker_alive=1	node=42504	best=112	disk_free_mb=382209
+2026-08-25T06:20:51Z	sample	evals=9711	worker_alive=1	node=42504	best=112	disk_free_mb=382194
+2026-08-25T06:21:51Z	sample	evals=9711	worker_alive=1	node=42504	best=112	disk_free_mb=382191
+2026-08-25T06:22:51Z	sample	evals=9751	worker_alive=1	node=42504	best=39	disk_free_mb=382172
+2026-08-25T06:23:51Z	sample	evals=9781	worker_alive=1	node=42504	best=68	disk_free_mb=382169
+2026-08-25T06:24:51Z	sample	evals=9820	worker_alive=1	node=42504	best=107	disk_free_mb=382172
+2026-08-25T06:25:51Z	sample	evals=9825	worker_alive=1	node=42504	best=112	disk_free_mb=382143
+2026-08-25T06:26:51Z	sample	evals=9825	worker_alive=1	node=42504	best=112	disk_free_mb=382164
+2026-08-25T06:27:51Z	sample	evals=9825	worker_alive=1	node=42504	best=112	disk_free_mb=382157
+2026-08-25T06:28:51Z	sample	evals=9825	worker_alive=1	node=42504	best=112	disk_free_mb=382152
+2026-08-25T06:29:51Z	sample	evals=9825	worker_alive=1	node=42504	best=112	disk_free_mb=382107
+2026-08-25T06:30:51Z	sample	evals=9876	worker_alive=1	node=42504	best=49	disk_free_mb=382111
+2026-08-25T06:30:51Z	run_stop	why=stop file	node=42504
