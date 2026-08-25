@@ -9,11 +9,12 @@
 //!   refresh  fetch every map's live human leaderboard and bank the responses
 //!   acquire  fetch one map, its live board, and every available replay seed
 //!   records  join that bank with what the pages claim, and write the table
+//!   names    is the title we publish for a map the map's own name?
 //!
 //! Manual argument parsing; the only dependency is the workspace's `gbx` crate.
 
 use tmsite::tick::secs;
-use tmsite::{compact, records, serve, site, stats, tick};
+use tmsite::{compact, names, records, serve, site, stats, tick};
 
 const USAGE: &str = "\
 usage: tmsite <command> [flags]
@@ -35,6 +36,10 @@ usage: tmsite <command> [flags]
            GET one map, its live board, and up to N available replay seeds
   records  --root D --bank DIR [--prev TSV] [--out F] [--tsv F] [--fetched S] [--detail ID]
            the leaderboard table, from the bank and the pages; no network
+  names    --root D --bank DIR [--headers TSV] [--out F]
+           what each map is PUBLISHED as, beside its own header name and
+           trackmania.io's; --headers is a `tmmaps header --names` TSV, and
+           without one every map is UNVERIFIABLE. No network.
 
 defaults: --dir /tmp/entrec/paths
 ";
@@ -70,6 +75,7 @@ fn main() {
     let mut detail: Option<i64> = None;
     let mut map_id: Option<i64> = None;
     let mut replays = usize::MAX;
+    let mut headers: Option<String> = None;
 
     while i < args.len() {
         let a = args[i].clone();
@@ -121,6 +127,7 @@ fn main() {
             "--detail" => detail = Some(next_num!("a map id")),
             "--map-id" => map_id = Some(next_num!("a map id")),
             "--replays" => replays = next_num!("an integer"),
+            "--headers" => headers = Some(next!()),
             "-h" | "--help" => {
                 print!("{}", USAGE);
                 return;
@@ -167,6 +174,11 @@ fn main() {
             Some(bank) => records::records(&records::Table { root, bank, prev, out, tsv, fetched, detail })
                 .map(|m| eprintln!("{}", m)),
             None => Err("records needs --bank".to_string()),
+        },
+        "names" => match bank {
+            Some(bank) => names::run(&names::Opts { root, bank, headers, out })
+                .map(|m| println!("{}", m)),
+            None => Err("names needs --bank".to_string()),
         },
         other => {
             eprintln!("unknown command {:?}\n{}", other, USAGE);

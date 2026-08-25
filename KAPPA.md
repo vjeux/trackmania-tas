@@ -47,17 +47,17 @@ header, and the oracle finishes exactly one of them at the page's time.
 | idm ruinin ur day #460 | 15.217 | 0.500 | 15.217 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
 | Tap water 01 | 22.072 | 0.151 | 22.072 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
 | Spring 2023 - 15 (Underwater) | 36.049 | - | - | no map on the store at /var/svcscm/persistent/private-30d/tm-unbeaten/173691 |
-| The Magnet Trial | 793.893 | 1.000 | 793.893 | OK |
+| [object Object] | 793.893 | 1.000 | 793.893 | OK |
 | Training 10 long | 13.070 | 1.000 | 13.070 | OK — the published run is now `TAS_13070_analog`, regenerated; the 13.071 beside it still reads 0.382 and must not be filmed |
-| Welcome to wiggles | 95.839 | - | - | 2 replays carry 95839: TAS_95839_analog.Ghost.Gbx, gen_TAS_95839_analog.Ghost.Gbx |
+| Welcome☺to wiggles | 95.839 | - | - | 2 replays carry 95839: TAS_95839_analog.Ghost.Gbx, gen_TAS_95839_analog.Ghost.Gbx |
 | YEET Fall 2024 - 04 | 10.640 | 0.427 | 10.640 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
-| Get in the hole (impossible) | 13.984 | - | - | 2 replays carry 13984: an330_13984.Ghost.Gbx, kb330_31ev_13984.Ghost.Gbx |
+| Get in the Hole | 13.984 | - | - | 2 replays carry 13984: an330_13984.Ghost.Gbx, kb330_31ev_13984.Ghost.Gbx |
 | Miru's Hell 2 | 18.160 | - | - | replays: No such file or directory (os error 2) |
 | Fall 2024 - 25 (pure wet icy wood) | 95.575 | - | - | no replay filename carries 95575 |
 | The Blev Special | ? | - | - | the page states no headline time |
 | Great WTF of what #165 | 7.998 | 0.495 | 7.998 | REFUSED: 1 check(s) failed **CARRIES ANOTHER RUN** |
-| Torment (1-UP) | 19.907 | 1.000 | 19.907 | OK |
-| Torment (1-DOWN) | 20.237 | 1.000 | 20.237 | OK |
+| Fall 2024 - 08 Torment (1-UP)(ft' Emelius) | 19.907 | 1.000 | 19.907 | OK |
+| Fall 2024 - 08 Torment (1-DOWN) | 20.237 | 1.000 | 20.237 | OK |
 | [Turtle Trial] Angustus | 239.133 | 1.000 | 239.133 | OK |
 | impossible at for ssano | 14.289 | 1.000 | 14.289 | OK |
 | surely my least cooked at | 3.836 | 1.000 | 3.836 | OK |
@@ -65,7 +65,7 @@ header, and the oracle finishes exactly one of them at the page's time.
 | bald turtle #35 | 10.758 | 1.000 | 10.758 | OK |
 | Fall 2025 - 16 (CP1 end) | 4.830 | 1.000 | 4.830 | OK |
 | Fall 2025 - 18 (CP1 end) | 4.492 | 1.000 | 4.492 | OK |
-| U10S_32 [Yeet] MAX-UP | 7.463 | 1.000 | 7.463 | OK |
+| U10S_32 By Everios96 [Yeet] MAX-UP | 7.463 | 1.000 | 7.463 | OK |
 | untitled 01 | 12.759 | 1.000 | 12.759 | OK |
 | untitled 02 | 9.415 | 1.000 | 9.415 | OK |
 | Fall 2025 - 01 Reverse (CP1 end) | 10.594 | 1.000 | 10.594 | OK |

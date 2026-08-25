@@ -5,7 +5,7 @@ the nose goes light, lift off the throttle for 40 ms and get back on it: that is
 worth 0.012, it is the easiest input in the lap to get right, and nobody in a
 field of 334 does it.**
 
-**Fall 2025 - 13 Reverse (CP1 end)** — TAS **6.578** (−0.017) | AT 6.595 | WR 6.601 by uelen.
+**Fall 2025 - 13 Reverse CP1 End** — TAS **6.578** (−0.017) | AT 6.595 | WR 6.601 by uelen.
 
 https://github.com/user-attachments/assets/d14b02ae-0b40-49ac-9198-e4df77635e2c
 

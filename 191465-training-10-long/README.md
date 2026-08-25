@@ -5,7 +5,7 @@ away. It banks a millisecond and a half crossing the reset pad and pays nine for
 it over the last 448 m — and the way to go faster is to spend *more* there, not
 less.**
 
-**Training 10 long** — TAS **13.070** (−0.010) | AT 13.080 | WR 13.081 by in-.-
+**Training - 10 Long** — TAS **13.070** (−0.010) | AT 13.080 | WR 13.081 by in-.-
 
 > ### The clip is the 13.070 now — re-shot 2026-08-24
 >

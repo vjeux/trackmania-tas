@@ -8,7 +8,7 @@ Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beat
 
 https://github.com/user-attachments/assets/eca2534b-7acc-44b1-900f-b119444670bd
 
-**[The Magnet Trial](186935-magnet-trial)** — author time `2540.641` · ours **793.893** (−1746.748) · best human 2575.154 (keby..) · 7 records
+**[[object Object]](186935-magnet-trial)** *(a magnet trial — our description, not its title)* — author time `2540.641` · ours **793.893** (−1746.748) · best human 2575.154 (keby..) · 7 records
 
 https://github.com/user-attachments/assets/2c4e4a87-fd37-471d-b709-084e9aa2422c
 
@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/56e64ae5-3b31-4361-85d5-9e9dbd45e6b5
 
 https://github.com/user-attachments/assets/31063ee4-582f-452b-9ea3-e32bc73dc0b5
 
-**[Welcome to wiggles](197047-welcome-to-wiggles)** — author time `100.784` · ours **95.839** (−4.945) · best human 101.794 (beagle.3) · 27 records
+**[Welcome☺to wiggles](197047-welcome-to-wiggles)** — author time `100.784` · ours **95.839** (−4.945) · best human 101.794 (beagle.3) · 27 records
 
 https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
 
@@ -40,11 +40,11 @@ https://github.com/user-attachments/assets/e3af1782-fa2f-40d8-a34c-13dc5ebac65f
 
 https://github.com/user-attachments/assets/237e84af-68b2-4701-9cc1-7cb27c9671b8
 
-**[Torment (1-UP)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
+**[Fall 2024 - 08 Torment (1-UP)(ft' Emelius)](228607-torment-1-up)** — author time `20.258` · ours **19.907** (−0.351) · best human 24.512 (surms41) · 30 records
 
 https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 
-**[Torment (1-DOWN)](228811-torment-1-down)** — author time `20.555` · ours **20.237** (−0.318) · best human 22.637 (KappaRiley) · 68 records
+**[Fall 2024 - 08 Torment (1-DOWN)](228811-torment-1-down)** — author time `20.555` · ours **20.237** (−0.318) · best human 22.637 (KappaRiley) · 68 records
 
 https://github.com/user-attachments/assets/fb64c1d0-5f92-404a-bf77-5271c57a7d8a
 
@@ -140,7 +140,7 @@ https://github.com/user-attachments/assets/bba81598-8f61-4b55-9a4c-bea09fae3e88
 
 https://github.com/user-attachments/assets/c9fd4a67-760c-43bd-9a71-ea4cd3a02821
 
-**[Get in the Hole ( Impossible )](203330-get-in-the-hole-impossible)** — author time `13.995` · **beaten by a human: 13.990 (in-.-)** · ours **13.984** (−0.011) · 5 records · twelve inputs reach 13.986, where the record uses 46 and crashes into the last step
+**[Get in the Hole](203330-get-in-the-hole-impossible)** — author time `13.995` · **beaten by a human: 13.990 (in-.-)** · ours **13.984** (−0.011) · 5 records · twelve inputs reach 13.986, where the record uses 46 and crashes into the last step
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
@@ -148,7 +148,7 @@ https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 
 https://github.com/user-attachments/assets/bc65e263-71d9-4ef4-b280-936318d43e65
 
-**[U10S_32 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up)** — author time `7.704` · **beaten by a human: 7.441 (poruzu4, 2026-08-23)** · ours **7.463** — **a human is now 0.022 ahead of the run this repo publishes.** We led this board by 0.430 and said so; that is [retracted on the page](274191-u10s-32-yeet-max-up), not deleted. The author-time margin of −0.241 stands · 4 records · his finish is 3.3 m from the old record's, off the same spawn: the same line driven better, not a new route
+**[U10S_32 By Everios96 [Yeet] MAX-UP](274191-u10s-32-yeet-max-up)** — author time `7.704` · **beaten by a human: 7.441 (poruzu4, 2026-08-23)** · ours **7.463** — **a human is now 0.022 ahead of the run this repo publishes.** We led this board by 0.430 and said so; that is [retracted on the page](274191-u10s-32-yeet-max-up), not deleted. The author-time margin of −0.241 stands · 4 records · his finish is 3.3 m from the old record's, off the same spawn: the same line driven better, not a new route
 
 https://github.com/user-attachments/assets/17dbb882-db05-4287-a635-8434e247e11f
 
@@ -216,6 +216,8 @@ page is edited:
 tmtraj corpus claims  --root .   # does a page agree with the files in its own directory?
 tmtraj corpus shipped --root .   # does a line above name a run that is in that map's replays/?
 tmtraj corpus dup     --root .   # two published files of one map carrying one recording
+tmsite names --root . --bank B --headers H
+                                 # is the title on a page the name in the map's own header?
 ```
 
 `corpus dup` needs `fk` beside it or on `PATH` — it is excluded from the tools
@@ -247,3 +249,11 @@ The human runs referenced throughout are other people's work, and the route on
 most of these maps is theirs — the TAS usually changes a handful of inputs on a
 line the field established. Map authors and world record holders are named in
 each map's README.
+
+**Every map above is named as its own `.Map.Gbx` header names it.** That was
+not true until 2026-08-25: six titles here were wrong and one of them —
+"The Magnet Trial", for a map actually called `[object Object]` — was invented
+in this repo out of the map's skin filenames. [`NAMES.md`](NAMES.md) is the
+audit and the retraction; `tmsite names` is the scan that keeps it true. Naming
+somebody's map something they did not name it is the same class of mistake as
+misreporting their time.

@@ -43,7 +43,7 @@ not spread evenly: **the chicane flick (3–4 s) and the whole sweeper (7 s to t
 flag)**. The bend, the downhill and the straight are driven exactly as the human
 drove them.
 
-**Fall 2025 - 01 Reverse (CP1 end)** — TAS **10.594** (−0.004) | AT 10.598 | WR 10.602 by ShcrTM
+**Fall 2025 - 01 Reverse CP1 End** — TAS **10.594** (−0.004) | AT 10.598 | WR 10.602 by ShcrTM
 
 https://github.com/user-attachments/assets/8c03c836-d321-4cc7-91b9-1cee4c275aed
 

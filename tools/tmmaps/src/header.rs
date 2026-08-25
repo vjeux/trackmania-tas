@@ -15,6 +15,7 @@
 //! ```text
 //! tmmaps header MAP [MAP ...]        one block per map
 //! tmmaps header MAP ... --tsv        one ROW per map: the corpus comparison
+//! tmmaps header MAP ... --names      uid / name / author: the identity audit
 //! tmmaps header MAP --xml            the community XML chunk, verbatim
 //! ```
 //!
@@ -77,7 +78,18 @@ pub fn header_xml(chunks: &[HChunk]) -> Option<String> {
     Some(String::from_utf8_lossy(&c.data[4..4 + n]).into_owned())
 }
 
+
+/// Strip ManiaPlanet markup from a name. The decoder lives in the format
+/// crate — see `gbx::name` for why there is exactly one of it.
+pub use gbx::name::strip_fmt;
+
 /// An attribute out of the header XML: `name="value"` inside `<tag ...>`.
+///
+/// The value is XML-UNESCAPED here, at the one place it is read. 208024's
+/// header holds `Miru&apos;s Hell 2` and 285268's `Pain ft Mango &amp;
+/// Teuflum`; handing those out raw made both look like names this repo had got
+/// wrong in the 2026-08-25 audit, which is the false positive that buries the
+/// real ones.
 fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let t = xml.find(&format!("<{tag} "))?;
     let end = xml[t..].find('>')? + t;
@@ -85,7 +97,7 @@ fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let k = format!("{name}=\"");
     let a = seg.find(&k)? + k.len();
     let b = seg[a..].find('"')? + a;
-    Some(seg[a..b].to_string())
+    Some(gbx::name::unescape_xml(&seg[a..b]))
 }
 
 /// Every `<dep file="…"/>` in the XML: the external files the map declares it
@@ -237,6 +249,12 @@ impl MapHeader {
     }
 }
 
+/// `attr`, for the self-test: the selftest asserts WHICH TAG the name comes
+/// off, which is the thing the audit's bug was in.
+pub fn attr_pub(xml: &str, tag: &str, name: &str) -> Option<String> {
+    attr(xml, tag, name)
+}
+
 pub fn read(path: &str) -> Result<MapHeader, String> {
     let g = Gbx::load(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -268,7 +286,14 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
         exever: get("header", "exever"),
         exebuild: get("header", "exebuild"),
         author: get("ident", "author"),
-        name: get("desc", "name"),
+        // The map's own declared NAME lives on `<ident>`, beside the uid and
+        // the author — NOT on `<desc>`. This read said `desc` until the
+        // 2026-08-25 name audit, so every map printed `name -` and nothing in
+        // this repo was ever checked against the name the file declares. That
+        // is how "The Magnet Trial" — a title we invented from 186935's skin
+        // dependencies — got published for a map whose header says
+        // `[object Object]`.
+        name: get("ident", "name"),
         envir: get("desc", "envir"),
         mood: get("desc", "mood"),
         maptype: get("desc", "maptype"),
@@ -293,10 +318,12 @@ pub fn cmd(args: &[String]) {
     let mut paths: Vec<String> = Vec::new();
     let mut tsv = false;
     let mut want_xml = false;
+    let mut names = false;
     for a in &args[2..] {
         match a.as_str() {
             "--tsv" => tsv = true,
             "--xml" => want_xml = true,
+            "--names" => names = true,
             s if s.starts_with("--") => {
                 eprintln!("tmmaps header: unknown option `{s}`");
                 std::process::exit(2);
@@ -305,7 +332,7 @@ pub fn cmd(args: &[String]) {
         }
     }
     if paths.is_empty() {
-        eprintln!("usage: tmmaps header MAP [MAP ...] [--tsv] [--xml]");
+        eprintln!("usage: tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names]");
         std::process::exit(2);
     }
 
@@ -321,6 +348,36 @@ pub fn cmd(args: &[String]) {
             let chunks = user_chunks(&g.user_data).unwrap_or_default();
             println!("=== {p}");
             println!("{}", header_xml(&chunks).unwrap_or_else(|| "(no XML chunk)".into()));
+        }
+        return;
+    }
+
+    if names {
+        // The identity audit view: what the FILE says it is. One row per map,
+        // uid first so it can be joined against trackmania.io — which is the
+        // only independent check on a name, since every other document in this
+        // repo is one we wrote ourselves.
+        //
+        // A map that fails to parse is a LOUD row here, not a skipped one: an
+        // absent artefact must never read as agreement.
+        println!("path\tuid\tname\trawname\tauthorid\tauthortime");
+        let mut bad = 0;
+        for p in &paths {
+            match read(p) {
+                Ok(h) => println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    h.path, h.uid, strip_fmt(&h.name), h.name, h.author,
+                    crate::secs::secs_str(&h.authortime)
+                ),
+                Err(e) => {
+                    bad += 1;
+                    println!("{p}\tERROR\tERROR\tERROR\tERROR\t-");
+                    eprintln!("{e}");
+                }
+            }
+        }
+        if bad > 0 {
+            std::process::exit(1);
         }
         return;
     }
@@ -408,7 +465,11 @@ pub fn cmd(args: &[String]) {
             print!(" 0x{id:08X}:{sz}");
         }
         println!();
-        println!("  ident       uid {}  author {}  name {}", h.uid, h.author, h.name);
+        let plain = strip_fmt(&h.name);
+        println!("  ident       uid {}  author {}  name {}", h.uid, h.author, plain);
+        if plain != h.name {
+            println!("              name (raw, with markup) {}", h.name);
+        }
         println!(
             "  times       author {}  gold {}  silver {}  bronze {}",
             crate::secs::secs_str(&h.authortime),

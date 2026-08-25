@@ -1,11 +1,11 @@
-# Torment (1-UP)
+# Fall 2024 - 08 Torment (1-UP)(ft' Emelius)
 
 **The launcher at the base of the end wall only fires if you arrive sideways —
 and on this map, unlike its low-finish twin, you must release the lock about
 200 ms after it fires and then counter-steer, a touch early rather than a touch
 late.**
 
-**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
+**Fall 2024 - 08 Torment (1-UP)(ft' Emelius)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
 > ### ⚠️ REPAIRED. What was wrong, how it was measured, and the one thing still open.
 >
@@ -96,7 +96,7 @@ and the more forgiving
 [19.948](https://github.com/user-attachments/assets/0282a92c-5227-4516-821f-2ae50123991d),
 which is the one to copy if you are driving it yourself.
 
-**Torment (1-UP)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
+**Fall 2024 - 08 Torment (1-UP)(ft' Emelius)** — TAS **19.907** (−0.351) | AT 20.258 | WR 24.512 by surms41
 
 https://github.com/user-attachments/assets/af918bb2-98f8-4bfa-ba1a-a60cf44880f5
 

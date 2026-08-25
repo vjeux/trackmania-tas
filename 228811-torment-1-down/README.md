@@ -1,10 +1,10 @@
-# Torment (1-DOWN)
+# Fall 2024 - 08 Torment (1-DOWN)
 
 **The floor at the base of the end wall is a launcher, and it fires only if you
 cross it sideways — go through the last checkpoint, then scrub across the line
 ten metres later with the car turned across its own direction of travel.**
 
-**Torment (1-DOWN)** — TAS **20.237** (−0.318) | AT 20.555 | WR 22.637 by KappaRiley
+**Fall 2024 - 08 Torment (1-DOWN)** — TAS **20.237** (−0.318) | AT 20.555 | WR 22.637 by KappaRiley
 
 https://github.com/user-attachments/assets/fb64c1d0-5f92-404a-bf77-5271c57a7d8a
 

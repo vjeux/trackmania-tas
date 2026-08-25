@@ -448,7 +448,7 @@ returns 607 shared-prefix / 135 review / **46 refuse** / 8 same-inputs.
 maps with long no-authority windows where inputs can differ for seconds without
 moving the car. The established fact is only that the check runs.
 
-### F2. 228607 Torment (1-UP) — eight published files carry a carrier's result chunk
+### F2. 228607 Fall 2024 - 08 Torment (1-UP)(ft' Emelius) — eight published files carry a carrier's result chunk
 **Category 4 + 1, on a map in the repo's *beaten* table, with three clips
 published from it, that nobody had checked.** `ghost inspect`, all eleven files:
 

@@ -8,7 +8,7 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
-**Fall 2025 - 22 Reverse (CP1 end)** — TAS **5.347** (−0.003) | AT 5.350 | WR 5.355 by Matik_K
+**Fall 2025 - 22 Reverse CP1 End** — TAS **5.347** (−0.003) | AT 5.350 | WR 5.355 by Matik_K
 
 https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
 

@@ -171,7 +171,7 @@ Nothing else in the pipeline needs renewing.
 
 **RETRACTED, and kept in place. The section here previously read "the
 MediaTracker's clip length is the MAP's author ghost, not the scene's" and gave
-The Magnet Trial as half its evidence. The Magnet Trial has since been rendered
+186935 `[object Object]` as half its evidence. That map has since been rendered
 in full and it disproves that half.** What is left is smaller, still real, and
 worth the same care.
 
@@ -180,14 +180,14 @@ worth the same care.
 | map | longest ghost STAGED | what the game actually wrote | the map's own author ghost |
 |---|---|---|---|
 | [Turtle Trial] Leto | 219.000 s (two ghosts, WR trimmed) | **441.000 s** | 441.002 s |
-| The Magnet Trial | 793.893 s (one ghost) | **793.866 s** | 2540.641 s |
+| [object Object] | 793.893 s (one ghost) | **793.866 s** | 2540.641 s |
 
 Leto is the finding: `clip cut` read the file the game wrote as
 `441.000s -> 218.812s`, with both staged ghosts ending by 219.000. **A render
 can be twice as long as anything in the scene, and everything past your run is
 rendered and then thrown away.** Budget for it, and cut afterwards.
 
-The Magnet Trial is the retraction. Its author ghost is 2540.641 s, its shoot
+186935 `[object Object]` is the retraction. Its author ghost is 2540.641 s, its shoot
 dialog estimated **01:45:52** for a thirty-second slice, and 2540.641 s of video
 at the ~2.5x realtime this box renders at is 6352 s, which is 01:45:52 to the
 second. That arithmetic is exact and the conclusion drawn from it was still

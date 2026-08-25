@@ -4,13 +4,13 @@
 lock anywhere between 0.240 and 0.770 is worth a millisecond or two, and it is
 what makes the faster corner exit pay.**
 
-**Fall 2025 - 18 (CP1 end)** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 (six players tied)
+**Fall 2025 - 18 CP1 End** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 (six players tied)
 
 https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
 Single car: the **4.492**, the tape that matches the author time.
 
-**Fall 2025 - 18 (CP1 end)** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 by AffiTM
+**Fall 2025 - 18 CP1 End** — TAS **4.492** — **the author time, taken** (±0) | AT 4.492 | WR 4.495 by AffiTM
 
 https://github.com/user-attachments/assets/1279d078-eded-49ea-8b75-8c5085f1cde2
 

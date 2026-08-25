@@ -1,4 +1,4 @@
-# U10S_32 [Yeet] MAX-UP
+# U10S_32 By Everios96 [Yeet] MAX-UP
 
 **Do not slam the wheel into the edge: feather out of the lock over the last two
 tenths of road, because the moment the wheels leave, the steering does nothing
@@ -58,7 +58,7 @@ the world record's alike, uses about 48 distinct steering values on the ground
 before the launch — restricting the ground phase to a keyboard alphabet does not
 finish at any resolution tried.
 
-**U10S_32 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR **7.441** by poruzu4 *(the opponent in this clip is Whatever8319's 7.893, the record when it was shot — see the banner above)*
+**U10S_32 By Everios96 [Yeet] MAX-UP** — TAS **7.463** (−0.241) | AT 7.704 | WR **7.441** by poruzu4 *(the opponent in this clip is Whatever8319's 7.893, the record when it was shot — see the banner above)*
 
 https://github.com/user-attachments/assets/17dbb882-db05-4287-a635-8434e247e11f
 

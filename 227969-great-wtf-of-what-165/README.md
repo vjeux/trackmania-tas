@@ -3,7 +3,7 @@
 **The author time is 8.127 and it falls on a keyboard, with the same three
 steering values and one more key press than the world record holder uses.**
 
-**Great WTF of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR **8.127** by Tannuleet
+**Great wtf of what #165** — TAS **7.998** (−0.129) | AT 8.127 | WR **8.127** by Tannuleet
 
 > ### ⚠️ SUPERSEDED 2026-08-23 — a human has now equalled the author time, which takes the medal
 >
@@ -54,7 +54,7 @@ Single car: the **7.998**, our fastest run here, driven with analog steering and
 below is the 8.050, made of eight steering levels, which a keyboard with action
 keys can reach.
 
-**Great WTF of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR **8.127** by Tannuleet *(the opponent in this clip is Titoch_tm's 8.197, the record when it was shot)*
+**Great wtf of what #165** — TAS **8.050** (−0.077) | AT 8.127 | WR **8.127** by Tannuleet *(the opponent in this clip is Titoch_tm's 8.197, the record when it was shot)*
 
 https://github.com/user-attachments/assets/ce212204-01ef-437e-9f2b-631967f19249
 

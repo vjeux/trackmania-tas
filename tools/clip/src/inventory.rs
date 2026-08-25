@@ -330,7 +330,7 @@ pub fn read_page(dir: &Path) -> Result<MapPage, String> {
             });
         // The note is the page's prose about THIS video: everything from the
         // URL up to the next video or the next `##` section. A single paragraph
-        // was too little -- The Magnet Trial states "One car, and that is a
+        // was too little -- 186935 `[object Object]` states "One car, and that is a
         // departure from this project's filming rule" in its SECOND paragraph,
         // and reading only the first called it UNKNOWN.
         let mut note = String::new();

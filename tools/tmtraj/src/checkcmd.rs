@@ -343,7 +343,7 @@ fn check_one(path: &str, race_in: i64, g: f64, contact_inherited: bool) -> (i32,
     // THIRD, AND THE ONE THAT ACTUALLY SETTLES IT: A RESPAWN RETURNS THE CAR
     // TO A PLACE IT HAS ALREADY BEEN. A splice does not, and cannot.
     // The two shapes above are symptoms; this is the mechanism. 186935
-    // "Magnet Trial" raised the question -- can a map feature legitimately
+    // "[object Object]" raised the question -- can a map feature legitimately
     // displace a car 73 m while it keeps driving at 20 m/s? -- and the answer
     // is a census, not an opinion. Measured over each file's own samples:
     //   186935 ONE_ATTEMPT: landings recur at fixed points, up to 29 times at

@@ -1,6 +1,20 @@
-# The Magnet Trial
+# [object Object]
 
-**The Magnet Trial** — TAS **793.893** (−1746.748) | AT 2540.641 | WR 2575.154 by keby
+**[object Object]** — TAS **793.893** (−1746.748) | AT 2540.641 | WR 2575.154 by keby
+
+> **The map is called `[object Object]`.** That is not a placeholder in this
+> page: it is the name in the map's own `.Map.Gbx` header, the name
+> trackmania.io serves for uid `sOIkPZULktmoT_OoFbT4HlVxpOe`, and the name the
+> in-game thumbnail prints — `[OBJECT OBJECT] BY TAXONOMON`. Somebody's map
+> editor stringified a JavaScript object into the title field and it shipped.
+>
+> Until 2026-08-25 this repo published it as **"The Magnet Trial"**, a title we
+> assembled ourselves out of the skin files the map declares
+> (`magnet-trial-cp-01…16`) because `[object Object]` did not look like a name.
+> Nobody outside this repo has ever called it that, and inventing a title is
+> not a licence this project has. Retracted, not deleted (rule 4). *A magnet
+> trial* is a fair description of the map and appears as one; it is not its
+> name.
 
 https://github.com/user-attachments/assets/2c4e4a87-fd37-471d-b709-084e9aa2422c
 

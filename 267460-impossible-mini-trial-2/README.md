@@ -1,4 +1,4 @@
-# Impossible Mini Trial 2 (TMX 267460)
+# Impossible Mini Trial 2
 
 **Author time 16.888 · World record 23.068 (Wirtual, the only record ever set on this map) · Our best 18.234**
 

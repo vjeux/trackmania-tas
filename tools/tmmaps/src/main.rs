@@ -1117,7 +1117,7 @@ READING A MAP
         STRUCTURE, NOT A BLOCK: run this before and after any move.
   tmmaps chunks MAP
         every skippable body chunk with its size
-  tmmaps header MAP [MAP ...] [--tsv] [--xml]
+  tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names]
         what the file DECLARES about itself before any block is read: container
         version, node count, EXTERNAL references, the header chunk table, the
         community XML (title, exever/exebuild, envir, maptype, validated), the
@@ -1126,6 +1126,10 @@ READING A MAP
         one row per map plus the distinct value of every column, because a
         difference only one map has is a lead and one several share is not.
         Written for 146612, which the engine loads and the editor will not open.
+        `--names` is the IDENTITY form — `path uid name authorid authortime`,
+        one row per map — for auditing what this repo publishes a map as
+        against what the map calls itself. Join it on uid against
+        trackmania.io; our own documents are not an independent check.
 
 CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume changes
   tmmaps move MAP --out F --move SPEC [--move SPEC ...]

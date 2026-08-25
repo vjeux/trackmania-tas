@@ -5,7 +5,7 @@
 world record in sector 11 alone. Arrive pointed where you are going and keep the
 wheel still.**
 
-**Fall 2024 - 25 (pure wet icy wood)** — TAS **UNKNOWN — 95.507, 95.575 or 96.068, see below** | AT 94.477 | WR 96.281 by iambeeen
+**Fall 2024 - 25 (Pure Wet Icy Wood)** — TAS **UNKNOWN — 95.507, 95.575 or 96.068, see below** | AT 94.477 | WR 96.281 by iambeeen
 
 > ### ⚠️ UNKNOWN 2026-08-24 — this map is published with three different "our best" numbers and no file for two of them
 >

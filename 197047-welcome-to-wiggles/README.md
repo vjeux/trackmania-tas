@@ -1,9 +1,9 @@
-# Welcome to wiggles
+# Welcome☺to wiggles
 
 **Wiggle slower than you think: hold each side for a quarter of a second — 250 ms
 — keep it metronomic, and press respawn the instant you touch the far gate.**
 
-**Welcome to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
+**Welcome☺to wiggles** — TAS **95.839** (−4.945) | AT 100.784 | WR 101.794 by Beagle.3
 
 https://github.com/user-attachments/assets/547aa511-63e2-4eee-a4b3-018f95d9a168
 

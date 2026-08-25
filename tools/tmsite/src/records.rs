@@ -835,11 +835,20 @@ pub fn rows(o: &Table) -> Result<Vec<Row>, String> {
             None => 0,
         };
 
-        let name = if !rr.name.is_empty() {
-            rr.name.clone()
-        } else {
-            t.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| m.dir.clone())
-        };
+        // The NAME. In order: what the root README's index calls this
+        // directory, then the older table form, then the TMX upload's name.
+        //
+        // The TMX fallback used to be second, and it is wrong for at least one
+        // map: TMX has 203330 as "Get in the Hole ( Impossible )" while the map
+        // itself is "Get in the Hole". After the 2026-08-25 name audit the root
+        // index carries the name out of each map's own header, so it goes
+        // first — otherwise a regeneration would quietly put an upload's title
+        // back on the page. `tmsite names` is the check that it still holds.
+        let name = crate::names::root_link_text(&root_readme, &m.dir)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| Some(rr.name.clone()).filter(|s| !s.is_empty()))
+            .or_else(|| t.as_ref().map(|x| x.name.clone()))
+            .unwrap_or_else(|| m.dir.clone());
 
         out.push(Row {
             tmx_id: m.tmx_id,

@@ -1,10 +1,10 @@
-# Get in the Hole ( Impossible )
+# Get in the Hole
 
 **The map is named after the hole, but the hole is not what decides it: cross it
 flat and a little left of centre, at x ≈ 171, and you will ride the 2 m step
 before the finish that costs the world record 490 km/h.**
 
-**Get in the hole (impossible)** — TAS **13.984** (−0.011) | AT 13.995 | WR 13.990 by in-.-
+**Get in the Hole** — TAS **13.984** (−0.011) | AT 13.995 | WR 13.990 by in-.-
 
 https://github.com/user-attachments/assets/a3547f58-a75b-490c-b6da-8918f5cd1b5a
 

@@ -110,6 +110,7 @@ pub fn run(args: &[String]) -> ! {
 
 fn pure(s: &mut Suite) {
     splice_checks(s);
+    name_checks(s);
     // ---- container round trip, on every fixture map
     for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
         let Some(p) = fixture(name) else {
@@ -408,6 +409,63 @@ const AWAY: [f32; 3] = [-3000.0, -3000.0, -3000.0];
 /// * row 2 — a file that finishes at 19.538 while declaring 30.000. A parser
 ///   that keeps reading to the end of the block reports **30.000**: the file's
 ///   own claim, confirmed back to itself.
+/// `tmmaps header --names` — the map's DECLARED identity.
+///
+/// Added by the 2026-08-25 name audit, which found this repo publishing a
+/// title for 186935 that appears in no file the game ships: `header::read`
+/// pulled the name off `<desc>`, where there is none, so every map printed
+/// `name -` and nothing was ever compared against it.
+fn name_checks(s: &mut Suite) {
+    // Every case here is a real string out of a map in this corpus, plus the
+    // structural escapes the renderer defines.
+    for (raw, want, what) in [
+        (
+            "$o$i$aa0Kack$05ay Re$09alo$6a0ad$aa0ed $4f0#290",
+            "Kacky Reloaded #290",
+            "126859: styles and RGB colours",
+        ),
+        ("[object Object]", "[object Object]", "186935: nothing to strip"),
+        ("KEKL- SAUSAGE ICE", "KEKL- SAUSAGE ICE", "134672: plain text"),
+        ("$fffa$0f0b", "ab", "colours between every letter"),
+        ("100$$", "100$", "`$$` is a literal dollar"),
+        ("$h[www]click$h", "click", "a link keeps its text, not its target"),
+        ("$zplain", "plain", "a reset"),
+        ("cost $5", "cost $5", "`$5` is not a colour: three hex digits are needed"),
+    ] {
+        s.check(
+            "PURE",
+            &format!("name markup stripped — {what}"),
+            crate::header::strip_fmt(raw) == want,
+            &format!("{raw:?} -> {:?}, want {want:?}", crate::header::strip_fmt(raw)),
+        );
+    }
+
+    // THE CONTROL. The three checks above say the stripper works. They do not
+    // say this audit could have caught the bug it was written for — the bug
+    // was not in the stripper, it was in WHICH ATTRIBUTE was read, and a
+    // stripper test cannot see that. So assert the shape of the real header
+    // XML directly: the name is on `<ident>`, and `<desc>` has none. If a
+    // future refactor reads `desc` again, this fails.
+    let xml = "<header type=\"map\" title=\"TMStadium\">\
+               <ident uid=\"sOIkPZULktmoT_OoFbT4HlVxpOe\" name=\"[object Object]\" \
+               author=\"XL0y4ZpuQfqC-1opr5LKwg\"/>\
+               <desc envir=\"Stadium\" mood=\"Night (no stadium)\" validated=\"1\"/>\
+               </header>";
+    s.check(
+        "PURE",
+        "the map name is read off <ident>",
+        crate::header::attr_pub(xml, "ident", "name").as_deref() == Some("[object Object]"),
+        "186935's own header, verbatim",
+    );
+    s.check(
+        "PURE",
+        "...and <desc> carries no name at all",
+        crate::header::attr_pub(xml, "desc", "name").is_none(),
+        "the wrong read this audit fixed: it returned nothing, and printed as `-` for every map \
+         in the corpus — which is why a name nobody could see was never checked",
+    );
+}
+
 fn parser_checks(s: &mut Suite) {
     let Some(p) = fixture("oracle_transcript.json") else {
         for n in [

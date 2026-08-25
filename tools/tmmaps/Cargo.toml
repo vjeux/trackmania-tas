@@ -16,3 +16,7 @@ path = "src/main.rs"
 # needs exactly one thing out of it -- the checkpoint splits a reference ghost
 # declares -- and calls in for it rather than keeping a second reader.
 ghost = { path = "../ghost" }
+# Map NAMES are text before they are bytes: the ManiaPlanet markup and the XML
+# escaping a title arrives wearing are decoded ONCE, in the format crate, so
+# `tmmaps header` and `tmsite names` cannot disagree about what a map is called.
+gbx = { path = "../gbx" }

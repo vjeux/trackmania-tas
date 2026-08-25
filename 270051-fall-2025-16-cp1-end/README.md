@@ -4,7 +4,7 @@
 each with ±10 ms of slack. 903 people have tried; the best of them is 0.003
 short.**
 
-**Fall 2025 - 16 (CP1 end)** — TAS **4.830** (−0.001) | AT 4.831 | WR 4.834 by OriginalCJM
+**Fall 2025 - 16 CP1 End** — TAS **4.830** (−0.001) | AT 4.831 | WR 4.834 by OriginalCJM
 
 https://github.com/user-attachments/assets/f43d45fc-c855-4897-a324-7b41e957be21
 

@@ -6,6 +6,11 @@ validates at 6.342 — one millisecond under the author time.**
 
 **unluckE - get jiggy with it** — TAS **6.342** (−0.001) | AT 6.343 | WR 6.346 by xeap-.-
 
+*The map's own header spells its name with **two** spaces before the dash —
+`unluckE  - get jiggy with it` — and trackmania.io serves it the same way.
+Markdown collapses a run of spaces, so the title above renders with one; the
+name is not otherwise altered here.*
+
 > ### The clip was re-shot from a repaired file
 >
 > An earlier clip on this page was shot from a replay whose recording was not

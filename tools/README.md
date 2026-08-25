@@ -20,7 +20,7 @@ something needs doing, it is a subcommand.
 | `tmtraj` | read-only analysis of a run: decode, compare, the publish gate, corpus scans, racing-line clustering | [`tmtraj/README.md`](tmtraj/README.md) |
 | `tmmaps` | `.Map.Gbx` surgery: the census, region moves, segment maps, ladders | [`tmmaps/U02-AUDIT.md`](tmmaps/U02-AUDIT.md) |
 | `ghost` | every mutation of a ghost or replay, the plain oracle, the publish decision | [`../GHOSTS.md`](../GHOSTS.md) |
-| `tmsite` | the 3D visualisation page and the TICK input-script export | [`tmsite/README.md`](tmsite/README.md) |
+| `tmsite` | the 3D visualisation page, the TICK export, the live-leaderboard capture, and `names` — is a page's title the name in the map's own header? | [`tmsite/README.md`](tmsite/README.md) |
 | `clip` | publishing a rendered clip so a logged-out visitor can watch it; the side-by-side shot; the trainer playtest | [`clip/README.md`](clip/README.md) |
 | `shootctl` | driving the game to render a clip | `RENDER-PIPELINE.md` |
 | `fk` | the live engine: re-simulate a tape and read the car's state per tick | in-crate |
