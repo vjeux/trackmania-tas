@@ -8,11 +8,25 @@ The trick came from **Matik_K**, who holds the world record on this map and
 asked whether we had tried it. We had not. His own record does not use it, and
 neither did any of the 40 runs on the leaderboard.
 
-**Fall 2025 - 22 Reverse CP1 End** — TAS **5.347** (−0.003) | AT 5.350 | WR 5.355 by Matik_K
+**Fall 2025 - 22 Reverse CP1 End** — TAS **5.345** (−0.005) | AT 5.350 | WR 5.355 by Matik_K
 
+https://github.com/user-attachments/assets/4ea6ada0-8b66-4862-8823-6c8d387c534e
+
+Two cars: ours and Matik_K's 5.355 world record, with our own inputs overlaid.
+**They are 0.010 apart over 5.345, so on screen they are all but superimposed** —
+at 4.600 the record's wheels are just visible behind ours. That is the honest
+picture of the margin, and it is why the numbers below carry the result rather
+than the footage: a chase camera cannot resolve 0.4 m at 200 km/h.
+
+The shape of the gap, from the two trajectories: we are **slower** for the first
+3.5 s (−0.16 m/s at 0.500 through 1.500), level at 2.000–2.500, and ahead from
+4.000 on (+0.11, then **+0.17 m/s** at 5.000). The second-tick start gives away
+time off the line and takes it back after the first upshift — which is exactly
+what "gear-shift phasing, not traction" predicts.
+
+*Previous single-car clip of the 5.347, kept because the page's earlier text
+refers to it:*
 https://github.com/user-attachments/assets/549e64db-e126-4c53-8160-31803f42dac3
-
-Single car: against the human 5.355 the two stay within 0.42 m for the whole run, so a side-by-side would show one car.
 
 > **The 5.345 is no longer withdrawn — 2026-08-25.** `replays/TAS_5345_starttrick.Ghost.Gbx`
 > is now a file whose recording is **ours**, and it is the fastest run this
@@ -61,13 +75,17 @@ Single car: against the human 5.355 the two stay within 0.42 m for the whole run
 > `best_pF_5347_32087` and `KEYBOARD_5352_11events` sit one tick off for the
 > same reason and are now fixable; they have not been rebuilt yet.
 
-> **Re-shot 2026-08-24, and the caption now names the run in the video.** The
-> clip is the **5.347**, `replays/best_pF_5347_32087.Ghost.Gbx`. It used to say
-> 5.352, which is the smallest keyboard tape rather than the fastest file here.
-> `ghost verify` on the filmed file:
-> kappa **1.000** (107 of 107 samples), the plain oracle re-simulating the
-> WRITTEN file to **5.347**, telemetry 0.000 .. 5.300 inside a span ending
-> 5.347. Trajectory worst **0.0265 m** against the file it replaces.
+> **Re-shot 2026-08-25 against the world record.** The clip is now the **5.345**,
+> `replays/TAS_5345_starttrick.Ghost.Gbx`, two cars, with our own inputs
+> overlaid — the run this directory's fastest file actually holds. `ghost verify`
+> on the filmed file: kappa **1.000** (107 of 107 samples), the plain oracle
+> re-simulating the WRITTEN file to **5.345**, telemetry 0.000 .. 5.300 inside a
+> span ending 5.345, and no account id, locator, badge or zone.
+>
+> *The earlier 2026-08-24 shoot was the 5.347, single-car, and before that the
+> caption said 5.352 — the smallest keyboard tape rather than the fastest file
+> here. `ghost verify` on that file: kappa 1.000 (107 of 107), oracle 5.347,
+> trajectory worst 0.0265 m against the file it replaced.*
 >
 > **One cosmetic defect, recorded rather than hidden: the car in this clip is
 > the stock livery, not ours.** The file's skin field reads
