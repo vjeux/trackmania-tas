@@ -1,2 +1,9 @@
 2026-08-25T20:45:03Z	worker_start	pid=544679	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=21581	resume_best=113
 2026-08-25T20:45:03Z	run_start	node=119098	binary_built=2026-08-25T20:40:55Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-25T20:46:04Z	bank	why=run start	receipt=commit aef951abff3a · mirror P2475816206 · push whitestick→github aef951abff3a (bundle md5 1c414abc)
+2026-08-25T20:47:04Z	sample	evals=21657	worker_alive=1	node=119098	best=74	disk_free_mb=650221
+2026-08-25T20:48:05Z	config_reloaded	sample_s=60	bank_s=660	budget_key=resim-sweep
+2026-08-25T20:48:05Z	sample	evals=21683	worker_alive=1	node=119098	best=100	disk_free_mb=650216
+2026-08-25T20:49:06Z	config_reloaded	sample_s=60	bank_s=600	budget_key=resim-sweep
+2026-08-25T20:49:06Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650220
+2026-08-25T20:50:06Z	sample	evals=21695	worker_alive=1	node=119098	best=112	disk_free_mb=650216

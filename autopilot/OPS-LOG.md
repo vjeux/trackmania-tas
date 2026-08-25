@@ -5,6 +5,26 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## `grep` on a release binary is not a test of what the binary does
+
+Chasing whether a rebuilt `tmhaul` contained a change, I used
+`grep -ac <literal> target/release/tmhaul` with `zero_throughput` as a control:
+the control found 4, the string in question found **0**. I concluded the binary
+was stale and restarted the supervisor twice on that basis.
+
+It was wrong. The behaviour test — change `bank_s` under the running supervisor
+and watch for the `config_reloaded` journal record — shows the code is present
+and running, while the same `grep` still reports 0.
+
+**The control was not equivalent to the thing it was vouching for**, which is
+the whole trap: a literal that appears four times near newlines is not evidence
+about one that appears once. A binary's string table is not its behaviour.
+
+**Test what the thing DOES.** For the supervisor that means: make the change,
+wait one pass, read the journal. `run_start` already records `binary_built`,
+and that timestamp — checked against when you built — is the cheap, honest
+version of the question I was trying to answer.
+
 ## A supervisor that snapshots its config makes every committed change a lie
 
 I tightened `bank_s` from 30m to 10m, banked it, and reported it done. The
