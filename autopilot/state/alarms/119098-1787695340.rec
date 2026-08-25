@@ -1,0 +1,1 @@
+2026-08-25T22:04:21Z	alarm	id=supervisor_died	severity=critical	detail=the run is active and this box wrote its last sample, but no supervisor process is alive here. Nothing is banking or watching the worker: `tmhaul watch --detach --lease-expires <expiry>` (last sample 2026-08-25T22:04:21Z)

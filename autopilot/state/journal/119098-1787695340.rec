@@ -1,2 +1,14 @@
 2026-08-25T22:02:20Z	worker_start	pid=713008	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=22607	resume_best=113
 2026-08-25T22:02:20Z	run_start	node=119098	binary_built=2026-08-25T22:01:53Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-25T22:03:21Z	bank	why=run start	receipt=commit 8454888c9317 · mirror P2475901590 · push whitestick→github 8454888c9317 (bundle md5 7ed93da7)
+2026-08-25T22:04:21Z	sample	evals=22714	worker_alive=1	node=119098	best=105	disk_free_mb=649531
+2026-08-25T22:04:21Z	alarm	id=supervisor_died	detail=the run is active and this box wrote its last sample, but no supervisor process is alive here. Nothing is banking or watching the worker: `tmhaul watch --detach --lease-expires <expiry>` (last sample 2026-08-25T22:04:21Z)
+2026-08-25T22:05:21Z	sample	evals=22707	worker_alive=1	node=119098	best=98	disk_free_mb=649535
+2026-08-25T22:06:22Z	sample	evals=22721	worker_alive=1	node=119098	best=112	disk_free_mb=649529
+2026-08-25T22:07:22Z	sample	evals=22721	worker_alive=1	node=119098	best=112	disk_free_mb=649533
+2026-08-25T22:08:23Z	sample	evals=22721	worker_alive=1	node=119098	best=112	disk_free_mb=649528
+2026-08-25T22:09:24Z	sample	evals=22721	worker_alive=1	node=119098	best=112	disk_free_mb=649554
+2026-08-25T22:10:24Z	sample	evals=22764	worker_alive=1	node=119098	best=41	disk_free_mb=649549
+2026-08-25T22:11:25Z	sample	evals=22761	worker_alive=1	node=119098	best=39	disk_free_mb=649553
+2026-08-25T22:12:26Z	sample	evals=22781	worker_alive=1	node=119098	best=58	disk_free_mb=649540
+2026-08-25T22:13:26Z	sample	evals=22818	worker_alive=1	node=119098	best=95	disk_free_mb=649544
