@@ -6,6 +6,30 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 
 ---
 
+## On-demand boxes die several times more often than their leases predict
+
+Two boxes were lost mid-lease inside ninety minutes on 2026-08-25:
+
+| box | alive for | lease left when it went |
+|---|---|---|
+| `24576` | 7h 24m | 4h 33m |
+| `36944` | 4h 10m | 7h 49m |
+
+Both simply stopped answering — the orchestrator lost them, and `24576` also
+refused ssh from devvm with `Permission denied (publickey)` rather than timing
+out, so **unreachability does not always present as a hang**.
+
+Nothing was lost either time: both boxes' last mirrors were already on
+`origin/main`, and `recover` found every file identical across the two
+transports. But the operating assumption changes. **The lease is not the
+planning horizon; the BANK CADENCE is**, because that is what bounds the loss
+when a box goes without warning. `bank_s` tightened 30m → 10m accordingly.
+
+The rotation itself is now routine — provision, `recover`, retire the dead box,
+restart the supervisor, and the credential server heals the new box on its
+own — so this costs a few minutes of throughput rather than a day.
+
+
 ## A lock directory with a trap does not survive `kill -9`, and then wedges forever
 
 The credential server's launcher took a lock with `mkdir` and released it in
