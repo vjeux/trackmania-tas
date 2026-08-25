@@ -549,3 +549,4 @@
 2026-08-25T06:02:43Z	box_alive	node=42504
 2026-08-25T06:03:43Z	box_alive	node=42504
 2026-08-25T06:04:46Z	box_retired	node=42504	why=stop file
+2026-08-25T06:06:55Z	box_start	node=42504	note=42504, budget-attributed	lease_expires=1787646600
