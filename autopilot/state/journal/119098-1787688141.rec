@@ -31,3 +31,5 @@
 2026-08-25T20:30:44Z	sample	evals=21448	worker_alive=1	node=119098	best=93	disk_free_mb=650203
 2026-08-25T20:31:44Z	sample	evals=21467	worker_alive=1	node=119098	best=112	disk_free_mb=650250
 2026-08-25T20:31:45Z	run_stop	why=stop file	node=119098
+2026-08-25T20:32:42Z	bank	why=stand down	receipt=commit 6c89d908b112 · mirror P2475802136 · push whitestick→github 6c89d908b112 (bundle md5 cd7eaa35)
+2026-08-25T20:32:46Z	verified	result=every banked file matches its md5 in the commit
