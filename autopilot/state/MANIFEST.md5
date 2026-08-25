@@ -5,15 +5,15 @@ a4174b2bef5890efa7536c2a54afc547  autopilot/state/alarms/24576-1787643363.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
 35eeb260a1dd48e2974b87d4941e419e  autopilot/state/boxes/117796.rec
 eb2fd54eef6482891b94f37cb3c8444c  autopilot/state/boxes/24576.rec
-2880c4df2a208eb1ba8a6d78a640af4a  autopilot/state/boxes/36944.rec
+050a627da8532199b227d4dd85c9b051  autopilot/state/boxes/36944.rec
 6d430421472e4cd8641e2eff316a05c7  autopilot/state/boxes/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
 441c144bd07eb37da0655b50d92eb3ab  autopilot/state/budget/24576.rec
-3f270e5a250c7acab99766cd1c3600b7  autopilot/state/budget/36944.rec
+0e79f2db24a9bc6825b07729306f973e  autopilot/state/budget/36944.rec
 a8865825b232b51ba3cf25391dfb4848  autopilot/state/budget/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-275b6fcf564b050e5506afaaf9aa68ce  autopilot/state/frontier/resim-results.rec
+87e1ad1715442114deabf2bbbccad170  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -56,7 +56,7 @@ a88ed49d8ce8929b7808ff5014f98dd7  autopilot/state/journal/24576-1787661008.rec
 f4062bbfb9f33b0f4bf57beb20c1f2d2  autopilot/state/journal/24576-1787664612.rec
 9d0abd817f65de90eb4bca94e16f1b21  autopilot/state/journal/24576-1787666412.rec
 3ac6acd29321ef3c53dad8e450c54139  autopilot/state/journal/24576-1787668213.rec
-30decf6231eff3b58572bc936437f85f  autopilot/state/journal/36944-1787671962.rec
+f5a2ea1c73b3be205287cd2ab5d44827  autopilot/state/journal/36944-1787671962.rec
 968f1dfe4bdeebbfa35257c8ad08126e  autopilot/state/journal/36944-1787672071.rec
 11d761cba6cedf3b545c1e07857b29f3  autopilot/state/journal/36944-1787673617.rec
 d3599c6cbcfb363234e532f9b37eb348  autopilot/state/journal/36944-1787675409.rec
