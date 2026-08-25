@@ -3,12 +3,12 @@ d41d8cd98f00b204e9800998ecf8427e  autopilot/state/alarms/.gitkeep
 7f638325dcca835064da714b0e566056  autopilot/state/alarms/42504-1787603555.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
 35eeb260a1dd48e2974b87d4941e419e  autopilot/state/boxes/117796.rec
-5f04531932011aa57bc34ebf571fd7cc  autopilot/state/boxes/42504.rec
+0f243bcffd65de4734a4fe8669863dfd  autopilot/state/boxes/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
-32f33f6c972751d16558105b191b862f  autopilot/state/budget/42504.rec
+6100fdd1b4476210211147697cd95347  autopilot/state/budget/42504.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-8678d7e229d828d0b46c8be4645dc13d  autopilot/state/frontier/resim-results.rec
+693166e46c8cf7330492848afff11ada  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -37,7 +37,7 @@ ef5740da669b58705acf7126bf290843  autopilot/state/journal/117796-1787602170.rec
 760e8f7f450b1730d12977215cb75c6c  autopilot/state/journal/42504-1787603555.rec
 853a4d98015f9d8ef9eb05db81f31960  autopilot/state/journal/42504-1787603665.rec
 19ce146439ae025ed31acc4ec4a6e543  autopilot/state/journal/42504-1787603810.rec
-f486811be2827361b18dfcd7984184ee  autopilot/state/journal/42504-1787604076.rec
+5a66e1557fcf9f24288ff4927fe7cc10  autopilot/state/journal/42504-1787604076.rec
 e2bdc56db41731fde8124efe1125a788  autopilot/state/journal/42504-1787604468.rec
 a6f5de073430afa918d08c8460169550  autopilot/state/journal/42504-1787605032.rec
 433f76788adcf6da47cf80684270d4b1  autopilot/state/journal/42504-1787605220.rec
@@ -51,6 +51,7 @@ da72e5eeccd2c08f08184d6ba02c8efb  autopilot/state/journal/42504-1787614692.rec
 4ca3942861b6f2f4de2d2222ab6aae2e  autopilot/state/journal/42504-1787616017.rec
 4adb43b59ed0a3a1724dc5756bc2f42c  autopilot/state/journal/42504-1787617806.rec
 0afece2392143c9bfa59f053431104a4  autopilot/state/journal/42504-1787618451.rec
+887e51f8aee1b25f0c0b62d3848fdfd3  autopilot/state/journal/42504-1787618736.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/ledger/.gitkeep
 6a1911d4cd942461d56629a90f40b13a  autopilot/state/ledger/117796-1787597073.rec
 877d9d1d9626546b7e7d9645a6a64f8c  autopilot/state/ledger/117796-1787598064.rec
