@@ -25,8 +25,15 @@ progress_file = /tmp/tmhaul/progress.rec
 
 # Cadences, in seconds. bank_s is the most work a vanishing box can cost:
 # everything older than the last bank is in the repo and in the mirror.
+#
+# Tightened 30m -> 10m on 2026-08-25 after TWO boxes were lost mid-lease in 90
+# minutes (24576 at 7h24m of a 12h lease, 36944 at 4h10m of one). Boxes are
+# dying several times more often than their leases predict, so bank_s is the
+# number that actually bounds the loss, not the lease. A bank costs about 60 s
+# of a 600 s cycle; that overhead is worth it while the failure rate is this
+# high, and it should be relaxed again if the infrastructure settles.
 sample_s = 60
-bank_s = 1800
+bank_s = 600
 claim_ttl_s = 3600
 lease_bank_lead_s = 1800
 restart_max = 20
