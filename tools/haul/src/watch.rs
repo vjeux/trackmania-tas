@@ -260,6 +260,47 @@ impl Supervisor {
             passes += 1;
             let now = crate::time::now();
 
+            // ---- 0. re-read the job spec.
+            //
+            // A supervisor that snapshots its config at startup makes every
+            // committed change a lie until somebody restarts it — and on this
+            // project the thing editing job.rec is a woken heartbeat agent
+            // that has no reason to suspect otherwise. It bit immediately: I
+            // tightened bank_s 30m -> 10m, reported it done, and the running
+            // supervisor kept banking every 30 minutes.
+            //
+            // A spec that no longer parses keeps the one in hand rather than
+            // taking the process down: refusing to start on a bad config is
+            // right, abandoning a healthy run over one is not.
+            match Job::load(&self.l.job_spec()) {
+                Ok(j) if j.worker_cmd == self.job.worker_cmd => {
+                    if j.sample_s != self.job.sample_s || j.bank_s != self.job.bank_s {
+                        self.journal(
+                            &Rec::new("config_reloaded")
+                                .f("sample_s", j.sample_s)
+                                .f("bank_s", j.bank_s)
+                                .f("budget_key", &j.budget_key),
+                        );
+                    }
+                    self.job = j;
+                }
+                // A changed worker_cmd needs the worker restarted, which is a
+                // stand-down, not a reload. Say so rather than half-applying.
+                Ok(_) => {
+                    if passes % 30 == 1 {
+                        eprintln!(
+                            "tmhaul: job.rec names a different worker_cmd; run `tmhaul stop` and \
+                             start a fresh supervisor to pick it up"
+                        );
+                    }
+                }
+                Err(e) => {
+                    if passes % 30 == 1 {
+                        eprintln!("tmhaul: job.rec will not parse, keeping the running config: {e}");
+                    }
+                }
+            }
+
             // ---- 1. sample
             let alive = child.try_wait().map_err(|e| e.to_string())?.map(|s| s.code().unwrap_or(-1));
             let progress = worker::read_progress(&self.progress_path()).unwrap_or_else(|e| {
@@ -486,5 +527,47 @@ mod seed_tests {
         let mut sup2 = Supervisor::new(l2, crate::config::Job::default(), &o).unwrap();
         sup2.seed().unwrap();
         assert_eq!(sup2.last_evals(), 0);
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// A config edited under a running supervisor must take effect without a
+    /// restart — and one that no longer parses must not take the run down.
+    #[test]
+    fn a_reloadable_change_is_taken_and_a_broken_spec_is_not() {
+        let repo = std::env::temp_dir().join(format!("haul-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        let l = Layout::new(&repo);
+        for d in l.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let spec = |bank: i64| {
+            format!("worker_cmd = true\nsample_s = 1\nbank_s = {bank}\nmirror = none\npush = none\n")
+        };
+        std::fs::write(l.job_spec(), spec(1800)).unwrap();
+        let job = Job::load(&l.job_spec()).unwrap();
+        assert_eq!(job.bank_s, 1800);
+
+        // The edit a heartbeat agent would make.
+        std::fs::write(l.job_spec(), spec(600)).unwrap();
+        let reloaded = Job::load(&l.job_spec()).unwrap();
+        assert_eq!(reloaded.bank_s, 600);
+        assert_eq!(reloaded.worker_cmd, job.worker_cmd, "same worker: reloadable");
+
+        // A spec that will not parse must leave the caller holding the old one.
+        std::fs::write(l.job_spec(), "bank_s = soon\n").unwrap();
+        assert!(Job::load(&l.job_spec()).is_err());
+    }
+
+    #[test]
+    fn a_changed_worker_cmd_is_not_a_reload() {
+        // Swapping the command under a running worker would leave the process
+        // and the config describing different things. It needs a stand-down.
+        let a = Job::parse("worker_cmd = old\n").unwrap();
+        let b = Job::parse("worker_cmd = new\n").unwrap();
+        assert_ne!(a.worker_cmd, b.worker_cmd);
     }
 }

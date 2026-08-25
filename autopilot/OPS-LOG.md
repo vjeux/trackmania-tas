@@ -5,6 +5,22 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## A supervisor that snapshots its config makes every committed change a lie
+
+I tightened `bank_s` from 30m to 10m, banked it, and reported it done. The
+running supervisor kept banking every 30 minutes: it had read `job.rec` once at
+startup, and the edit landed forty seconds later.
+
+Same shape as the stale binary the day before — **the thing running is not the
+thing you edited** — and worse here, because on this project the thing editing
+`job.rec` is a woken heartbeat agent with no reason to suspect otherwise.
+
+The supervisor now re-reads the spec every pass. A spec that no longer parses
+leaves the running config in place (refusing to *start* on a bad config is
+right; abandoning a healthy run over one is not), and a changed `worker_cmd`
+is explicitly NOT reloadable — that needs a stand-down, and it says so rather
+than half-applying.
+
 
 ## On-demand boxes die several times more often than their leases predict
 
