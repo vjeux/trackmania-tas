@@ -16,7 +16,7 @@ eb2fd54eef6482891b94f37cb3c8444c  autopilot/state/boxes/24576.rec
 29b4691d649f5e30487d77daf75eeeb3  autopilot/state/boxes/3952.rec
 6d430421472e4cd8641e2eff316a05c7  autopilot/state/boxes/42504.rec
 56dc55f33d6bfc70e9af3165354b05d3  autopilot/state/boxes/56655.rec
-fcc6bd0545fec15098ad0c02db790c02  autopilot/state/boxes/devvm42752.rec
+0eb98befb88f3743d310be9ba128bf88  autopilot/state/boxes/devvm42752.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
 67c004e2d492826b6abf2d52d6ece2b1  autopilot/state/budget/119098.rec
@@ -25,9 +25,9 @@ fe7a7b4fa63af7fa283a1d6847047015  autopilot/state/budget/36944.rec
 95b867f277d46b5b35920129c8759ac2  autopilot/state/budget/3952.rec
 a8865825b232b51ba3cf25391dfb4848  autopilot/state/budget/42504.rec
 258c7d7ada57a4eefd858cb83894a49d  autopilot/state/budget/56655.rec
-4bf147ecb0ffed7a33807fc40ad25c63  autopilot/state/budget/devvm42752.rec
+a56c87854f0b42f0217761d6662760ca  autopilot/state/budget/devvm42752.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-b0326f60426ed99c5d8ab35b004863ef  autopilot/state/frontier/resim-results.rec
+396a7fc77f67374e4dd140ac29103ea7  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -194,7 +194,8 @@ e1caeffe9451315cafde803f10a90f40  autopilot/state/journal/56655-1787755565.rec
 8aea195bada94d7f1790eec544de0687  autopilot/state/journal/56655-1787756620.rec
 9bfff68574a095e3acbae706043e7ca6  autopilot/state/journal/56655-1787756643.rec
 6a9f6abab447c0f91d1b389eaf8b0009  autopilot/state/journal/56655-1787756659.rec
-d23c0b32958bdbcaab25da9154e70482  autopilot/state/journal/devvm42752-1787775380.rec
+81cf079792fb42eeedfc70eec4b06208  autopilot/state/journal/devvm42752-1787775380.rec
+8736960b9ab31fd61f54ebbc95a7c575  autopilot/state/journal/devvm42752-1787775855.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/ledger/.gitkeep
 6a1911d4cd942461d56629a90f40b13a  autopilot/state/ledger/117796-1787597073.rec
 877d9d1d9626546b7e7d9645a6a64f8c  autopilot/state/ledger/117796-1787598064.rec
