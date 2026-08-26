@@ -504,3 +504,12 @@
 2026-08-26T15:01:47Z	box_start	node=56655	note=56655, restarted on the fixed binary (code mirror + brief receipts)	lease_expires=1787765640
 2026-08-26T15:02:58Z	box_alive	node=56655
 2026-08-26T15:03:59Z	box_alive	node=56655
+2026-08-26T15:04:59Z	box_alive	node=56655
+2026-08-26T15:05:59Z	box_alive	node=56655
+2026-08-26T15:07:00Z	box_alive	node=56655
+2026-08-26T15:08:00Z	box_alive	node=56655
+2026-08-26T15:09:01Z	box_alive	node=56655
+2026-08-26T15:10:01Z	box_alive	node=56655
+2026-08-26T15:11:01Z	box_alive	node=56655
+2026-08-26T15:12:02Z	box_alive	node=56655
+2026-08-26T15:32:10Z	box_retired	node=56655	why=retired by hand
