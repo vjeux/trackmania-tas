@@ -74,6 +74,11 @@ pub struct View {
     /// Can this box reach GitHub through the bridge? `None` means the check
     /// was not run on this pass, which is different from "no".
     pub credential: Option<bool>,
+    /// Is the credential FILE here and sane? `Some(true)` with
+    /// `credential: Some(false)` is the bridge being down rather than the box
+    /// being unequipped — two different outages with two different remedies,
+    /// and telling a woken agent the wrong one costs it an hour.
+    pub credential_present: Option<bool>,
     /// Is a supervisor process alive on THIS box? `None` means not checked —
     /// which is the honest answer on a box that is merely reading the repo
     /// and is not the one running the job.
@@ -95,6 +100,7 @@ impl View {
             last_bank: None,
             start_dev_m: None,
             credential: None,
+            credential_present: None,
             supervisor_here: None,
             this_node: None,
         }
@@ -612,14 +618,23 @@ pub fn banking_degraded(v: &View, _c: &Config) -> Option<Firing> {
     match &v.credential {
         None => None, // not evaluated on this pass
         Some(true) => None,
+        // Two outages wear this alarm, and the remedy is not the same one.
         Some(false) => Some(Firing {
             id: "banking_degraded",
             severity: Severity::Warn,
-            detail: "the bridge credential is missing or the bridge does not answer, so pushes \
-                     to GitHub are failing. The paste mirror still works, so no work is at \
-                     risk — but the repo a human reads is going stale. `tmhaul credential \
-                     check`; the devserver's `tmhaul credential serve` should heal it"
-                .to_string(),
+            detail: match v.credential_present {
+                Some(true) => "the bridge credential on this box is fine; the BRIDGE is not \
+                     answering — the render box it runs on is off or unreachable. Nothing on \
+                     this box can fix that and no work is at risk: state still rides the paste \
+                     mirror, and unpushed commits go with it (`tmhaul code status`). What is \
+                     stale is the GitHub repo a human reads"
+                    .to_string(),
+                _ => "no usable bridge credential on this box, so pushes to GitHub are \
+                     failing. The paste mirror still works, so no work is at risk — but the \
+                     repo a human reads is going stale. `tmhaul credential check`; the \
+                     devserver's `tmhaul credential serve` should heal it"
+                    .to_string(),
+            },
         }),
     }
 }
@@ -713,6 +728,7 @@ pub mod fixtures {
             last_bank: Some(NOW - 300),
             start_dev_m: Some(0.8),
             credential: Some(true),
+            credential_present: Some(true),
             supervisor_here: Some(true),
             this_node: Some("boxA".to_string()),
         }
@@ -874,7 +890,15 @@ pub mod fixtures {
     }
 
     pub fn banking_degraded() -> View {
-        View { credential: Some(false), ..healthy() }
+        // The unequipped box: no credential at all.
+        View { credential: Some(false), credential_present: Some(false), ..healthy() }
+    }
+
+    /// The other shape of the same alarm: the credential is fine and the
+    /// bridge is dead. It fires the same alarm and must not give the same
+    /// advice — `credential serve` cannot switch a render box back on.
+    pub fn banking_degraded_bridge_down() -> View {
+        View { credential: Some(false), credential_present: Some(true), ..healthy() }
     }
 
     pub fn too_many_boxes() -> View {
@@ -934,6 +958,27 @@ mod tests {
             let fired = ids(&v);
             assert!(fired.contains(&id), "{id} did not fire for: {why} (got {fired:?})");
         }
+    }
+
+    #[test]
+    fn banking_degraded_names_the_outage_it_is_actually_looking_at() {
+        // One alarm, two outages, two remedies. Telling a woken agent to run
+        // `credential serve` when the credential is fine and the render box is
+        // switched off sends it after the wrong thing — and it was the actual
+        // advice on the morning of 2026-08-26.
+        let unequipped = super::banking_degraded(&fixtures::banking_degraded(), &Config::default())
+            .expect("must fire");
+        let bridge = super::banking_degraded(&fixtures::banking_degraded_bridge_down(), &Config::default())
+            .expect("must fire");
+        assert!(unequipped.detail.contains("credential serve"), "{}", unequipped.detail);
+        assert!(bridge.detail.contains("BRIDGE is not"), "{}", bridge.detail);
+        assert!(
+            !bridge.detail.contains("credential serve"),
+            "a dead bridge must not be blamed on the credential: {}",
+            bridge.detail
+        );
+        // Control: a healthy bridge fires nothing at all.
+        assert!(super::banking_degraded(&fixtures::healthy(), &Config::default()).is_none());
     }
 
     #[test]

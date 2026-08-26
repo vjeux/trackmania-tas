@@ -99,6 +99,7 @@ pub fn reconstruct(l: &Layout, now: i64) -> Result<Reconstructed, String> {
         // The callers that legitimately know about this machine — `status`,
         // `beat`, the supervisor — set it with `with_credential`.
         credential: None,
+        credential_present: None,
         // Both are facts about a MACHINE, not about committed state, so
         // `reconstruct` leaves them unset and `with_this_box` fills them in.
         supervisor_here: None,
@@ -143,7 +144,14 @@ pub fn best_objective(v: &View) -> Option<f64> {
 /// asking about this box.
 pub fn with_credential(mut v: View) -> View {
     let home = std::env::var("HOME").unwrap_or_default();
-    v.credential = Some(crate::credential::health(&home).ok());
+    let h = crate::credential::health(&home);
+    v.credential = Some(h.ok());
+    // Present-and-sane is a separate fact from route-works, and the alarm text
+    // depends on which of the two failed.
+    v.credential_present = Some(!matches!(
+        h,
+        crate::credential::Health::Absent | crate::credential::Health::Unsafe(_)
+    ));
     v
 }
 

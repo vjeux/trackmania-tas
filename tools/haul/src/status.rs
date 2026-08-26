@@ -91,6 +91,10 @@ fn render_inner(
     let mut v = r.view.clone();
     if let Some(h) = &credential {
         v.credential = Some(h.ok());
+        v.credential_present = Some(!matches!(
+            h,
+            crate::credential::Health::Absent | crate::credential::Health::Unsafe(_)
+        ));
     }
     if this_box {
         v.supervisor_here = Some(crate::beat::watch_pid().is_some());
