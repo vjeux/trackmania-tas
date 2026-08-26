@@ -1,1 +1,2 @@
 2026-08-26T14:46:20Z	code_mirror	head=ea9b364006fd4b6d1d9f19f44fa6c271dd452726	base=25cc3ff0291b9a8be03dff01a8919d618472254b	key=72503f2228b03cf1b90297d3fd337acb	paste=P2476765846	bytes=46946
+2026-08-26T14:46:31Z	bank	why=control: no source change	receipt=commit 133a486eab79 · mirror P2476765915 · PUSH FAILED: the render box is offline (bridge reports instance offline)
