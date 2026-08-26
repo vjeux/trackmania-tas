@@ -55,3 +55,14 @@
 2026-08-26T21:09:22Z	sample	evals=41575	worker_alive=1	node=devvm42752	best=107	disk_free_mb=1162505
 2026-08-26T21:14:03Z	alarm	id=banking_degraded	detail=the bridge credential on this box is fine; the BRIDGE is not answering — the render box it runs on is off or unreachable. Nothing on this box can fix that and no work is at risk: state still rides the paste mirror, and unpushed commits go with it (`tmhaul code status`). What is stale is the GitHub repo a human reads
 2026-08-26T21:15:03Z	sample	evals=41616	worker_alive=1	node=devvm42752	best=35	disk_free_mb=1162163
+2026-08-26T21:15:19Z	bank	why=periodic	receipt=commit 867be18c91da · mirror P2477168607 · PUSH FAILED: the render box is offline (bridge reports instance offline)
+2026-08-26T21:16:19Z	sample	evals=41649	worker_alive=1	node=devvm42752	best=67	disk_free_mb=1156404
+2026-08-26T21:17:19Z	sample	evals=41678	worker_alive=1	node=devvm42752	best=96	disk_free_mb=1158854
+2026-08-26T21:18:20Z	sample	evals=41694	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1158843
+2026-08-26T21:19:21Z	sample	evals=41694	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1158833
+2026-08-26T21:20:21Z	sample	evals=41694	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159844
+2026-08-26T21:21:22Z	sample	evals=41694	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159842
+2026-08-26T21:22:23Z	sample	evals=41694	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159842
+2026-08-26T21:23:23Z	sample	evals=41730	worker_alive=1	node=devvm42752	best=35	disk_free_mb=1159804
+2026-08-26T21:24:24Z	sample	evals=41750	worker_alive=1	node=devvm42752	best=54	disk_free_mb=1159893
+2026-08-26T21:25:24Z	sample	evals=41788	worker_alive=1	node=devvm42752	best=92	disk_free_mb=1159957
