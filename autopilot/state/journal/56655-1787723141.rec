@@ -508,3 +508,11 @@
 2026-08-26T14:16:21Z	sample	evals=36334	worker_alive=1	node=56655	best=71	disk_free_mb=368085
 2026-08-26T14:17:22Z	sample	evals=36368	worker_alive=1	node=56655	best=105	disk_free_mb=368050
 2026-08-26T14:18:22Z	sample	evals=36375	worker_alive=1	node=56655	best=112	disk_free_mb=368070
+2026-08-26T14:19:32Z	bank	why=periodic	receipt=commit 25cc3ff0291b · mirror P2476742575 · push whitestick→github 25cc3ff0291b (bundle md5 1ebab8b2)
+2026-08-26T14:20:32Z	sample	evals=36375	worker_alive=1	node=56655	best=112	disk_free_mb=368116
+2026-08-26T14:21:32Z	sample	evals=36375	worker_alive=1	node=56655	best=112	disk_free_mb=368097
+2026-08-26T14:22:33Z	sample	evals=36375	worker_alive=1	node=56655	best=112	disk_free_mb=368088
+2026-08-26T14:23:33Z	sample	evals=36428	worker_alive=1	node=56655	best=51	disk_free_mb=368144
+2026-08-26T14:28:14Z	alarm	id=banking_degraded	detail=the bridge credential is missing or the bridge does not answer, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T14:29:14Z	sample	evals=36489	worker_alive=1	node=56655	best=112	disk_free_mb=368081
+2026-08-26T14:30:14Z	sample	evals=36489	worker_alive=1	node=56655	best=112	disk_free_mb=368073
