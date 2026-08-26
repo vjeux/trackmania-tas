@@ -576,3 +576,34 @@ that was not true:
 The general shape, and the reason all three sat unnoticed for days: **a
 degraded path exercises code that the healthy path never runs.** Everything
 here worked perfectly while the bridge was up.
+
+## The tool that recovers code cannot be recovered by itself
+
+First rotation after the code mirror was written (2026-08-26T15:30Z, box 56655
+vanished mid-lease): the fresh box cloned GitHub, built `tmhaul`, ran
+`tmhaul code recover` — and got the **usage text**. The binary came from
+GitHub, GitHub was 17 commits behind, and the command it needed was in those
+commits. Read carelessly, that output says "no such thing to recover".
+
+Recovered by hand with `meta phabricator.paste read`, `base64 -d`, `git bundle
+verify`, `git merge --ff-only` — nothing but git, meta and coreutils, which is
+the property the fallback has to have. Written into HARNESS.md and, more
+importantly, into the **heartbeat message**: the repo is stale in exactly the
+situation where this matters, and the subscription text is the one channel
+that is not.
+
+The general shape: **a recovery mechanism that ships inside the thing being
+recovered has a floor, and the floor is whatever the last successful publish
+left behind.** Every layer of this harness needs a route that assumes only
+what a bare box has.
+
+Two more things the same rotation turned up:
+
+- **Code was mirrored only when a push FAILED.** A box with no credential has
+  push switched *off* — no failure, no error, no mirror — and that is the box
+  most likely to be the only copy of something. The trigger is now "GitHub
+  does not have these commits", which never consults the push settings.
+- **HARNESS.md pointed at a `SETUP.md` that is not in this repo**, for both
+  the Rust proxy config and the oracle download. A recovery instruction that
+  names a file nobody can open is worse than none: it reads as authoritative.
+  Both are inline now.

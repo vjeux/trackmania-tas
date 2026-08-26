@@ -725,18 +725,22 @@ pub fn bank(l: &Layout, node: &str, o: &Options) -> Result<Receipt, String> {
         },
     }
 
-    // When the push route is down, the *state* is still safe — the paste
-    // mirror carries it — but any COMMIT that is not state (a harness fix, a
-    // new tool) exists only on this box, and this box is designed to be thrown
-    // away at the end of its lease. Send the commits down the transport that
-    // still works. Only when the head has moved since the last one: a code
-    // pack per bank would be a paste every ten minutes saying the same thing.
-    if r.push_error.is_some() {
-        match code_mirror_if_new(l, node, &o.branch) {
-            Ok(Some(id)) => r.code_mirror = Some(id),
-            Ok(None) => {}
-            Err(e) => r.code_mirror_error = Some(brief_error(&e)),
-        }
+    // When the push route is unavailable, the *state* is still safe — the
+    // paste mirror carries it — but any COMMIT that is not state (a harness
+    // fix, a new tool, a corrected HARNESS.md) exists only on this box, and
+    // this box is designed to be thrown away at the end of its lease. Send
+    // those commits down the transport that still works.
+    //
+    // The trigger is simply "GitHub does not have them", not "a push failed".
+    // The first version ran only on a push error, which silently excluded the
+    // box that fails hardest: one with no credential at all, where push is
+    // switched *off* and there is no error to react to. `code_mirror_if_new`
+    // is a no-op when GitHub is level and when this source was already sent,
+    // so this is cheap on a healthy day.
+    match code_mirror_if_new(l, node, &o.branch) {
+        Ok(Some(id)) => r.code_mirror = Some(id),
+        Ok(None) => {}
+        Err(e) => r.code_mirror_error = Some(brief_error(&e)),
     }
 
     Ok(r)
@@ -747,7 +751,16 @@ pub fn bank(l: &Layout, node: &str, o: &Options) -> Result<Receipt, String> {
 /// "Already sent" is read from the journal rather than kept in memory: the
 /// supervisor restarts, and a restart that re-sends every pack would be the
 /// same bug as the budget that re-counted its resume point.
-pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option<String>, String> {
+/// Should this box send its unpushed commits, and what would it send?
+///
+/// Separated from the publishing so the *decision* is testable without a paste
+/// service — and so it is obvious by reading it that the decision does not
+/// consult the push settings at all. It asks only: does GitHub have this
+/// source, and have we already sent this exact source?
+pub fn code_mirror_needed(
+    l: &Layout,
+    branch: &str,
+) -> Result<Option<(codemirror::CodePack, String)>, String> {
     let Some(pack) = codemirror::build(&l.repo, branch)? else {
         return Ok(None);
     };
@@ -761,6 +774,18 @@ pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option
     if already {
         return Ok(None);
     }
+    Ok(Some((pack, key)))
+}
+
+/// Mirror unpushed commits as a code pack, unless this source was already sent.
+///
+/// "Already sent" is read from the journal rather than kept in memory: the
+/// supervisor restarts, and a restart that re-sent every pack would be the
+/// same bug as the budget that re-counted its resume point.
+pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option<String>, String> {
+    let Some((pack, key)) = code_mirror_needed(l, branch)? else {
+        return Ok(None);
+    };
     let id = codemirror::publish(node, &pack)?;
     let lg = crate::log::Log::shard(&l.journal_dir(), node, crate::time::now())
         .map_err(|e| e.to_string())?;
@@ -785,6 +810,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn a_box_with_no_push_credential_still_mirrors_its_code() {
+        // The hole the 15:30Z rotation opened: the first version mirrored code
+        // only when a push FAILED. A fresh box with no credential has push
+        // switched off — no failure, no error, and so no mirror. That is the
+        // box most likely to be holding the only copy of something, because it
+        // is the one that cannot push at all.
+        let root = tmp("nopush");
+        gitcmd::run(&root, "git", &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        gitcmd::run(
+            &root,
+            "git",
+            &["clone", "-q", &root.join("origin.git").to_string_lossy(), "box"],
+        )
+        .unwrap();
+        let repo = root.join("box");
+        let g = |args: &[&str]| gitcmd::git(&repo, args).unwrap();
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "boxA"]);
+        std::fs::create_dir_all(repo.join("tools")).unwrap();
+        std::fs::write(repo.join("tools/lib.rs"), "// v1").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "root"]);
+        g(&["push", "-q", "origin", "main"]);
+
+        let l = Layout::new(&repo);
+        for d in l.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+
+        // Level with GitHub: nothing to send, whatever the push setting.
+        assert!(code_mirror_needed(&l, "main").unwrap().is_none());
+
+        // A local fix. The decision must say yes without ever being told how
+        // (or whether) this box pushes.
+        std::fs::write(repo.join("tools/lib.rs"), "// v2 — the fix").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "a fix nobody else has"]);
+        let (pack, key) = code_mirror_needed(&l, "main").unwrap().expect("must want to mirror");
+        assert_eq!(pack.head, gitcmd::head_sha(&repo).unwrap());
+
+        // And once it has been sent, it stops asking — across a restart,
+        // because the record is on disk rather than in memory.
+        crate::log::Log::shard(&l.journal_dir(), "boxA", 1)
+            .unwrap()
+            .append(&crate::rec::Rec::at(1, "code_mirror").f("key", &key).f("paste", "P1"))
+            .unwrap();
+        assert!(code_mirror_needed(&l, "main").unwrap().is_none());
     }
 
     #[test]

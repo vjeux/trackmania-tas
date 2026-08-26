@@ -348,11 +348,49 @@ is not a recovery:
 
 | | where it comes from |
 |---|---|
-| Rust | `rustup`, plus `~/.cargo/config.toml` with the proxy — `SETUP.md` §1. **cargo does not inherit the shell proxy** |
-| the dedicated server (385 MB) | `SETUP.md` §3, one `curl` |
+| Rust | `rustup`, then **write `~/.cargo/config.toml` yourself** — cargo does **not** inherit the shell proxy, and without the file it dies on a random crate three retries in, which reads as a flaky network: `[http]` `proxy = "http://fwdproxy:8080"`, `[net]` `git-fetch-with-cli = true` |
+| the dedicated server (the oracle) | one fetch, below |
 | the map corpus (`.Map.Gbx`) | **not in the repo, on purpose** — see below |
-| the bridge credential | `~/.navi/credentials.json` from devvm42752, for pushing |
+| the bridge credential | `~/.navi/credentials.json`, delivered by the devserver's `tmhaul credential serve`; needed only for pushing |
 | commits GitHub never received | `tmhaul code recover` — only matters while the push bridge is down, and that is exactly when a fresh box cannot tell |
+
+```bash
+# the oracle: TM_SERVER points here, and tmresim will not run without it
+export https_proxy=http://fwdproxy:8080 http_proxy=http://fwdproxy:8080
+mkdir -p /tmp/tmoracle/server && cd /tmp/tmoracle/server
+curl -sSL -o ts.zip http://files.v04.maniaplanet.com/server/TrackmaniaServer_Latest.zip
+unzip -o -q ts.zip && rm ts.zip     # leaves ./TrackmaniaServer, ~30 MB
+```
+
+*(This list used to point at a `SETUP.md` that is not in this repo. Following a
+recovery instruction to a file that does not exist costs a rotation ten minutes
+at exactly the wrong moment, so the commands live here now.)*
+
+### Recovering code when the tool that recovers code is too old
+
+A chicken-and-egg worth knowing before you meet it: `tmhaul code recover` lives
+in the binary you build **from the clone**, and the clone comes from GitHub. If
+the fix you need is one GitHub never received, the binary you just built does
+not have the command — it prints its usage, and you conclude, wrongly, that
+there is nothing to recover. This happened on the first rotation after the
+mechanism was written.
+
+The fallback needs nothing but git, `meta` and coreutils:
+
+```bash
+meta phabricator.paste list --title-contains=TMHAUL-CODE --limit=5 --output=json
+# a title reads: TMHAUL-CODE <node> <iso> head=<sha> base=<sha>
+meta phabricator.paste read --id=P<id> > /tmp/pack.txt
+head -5 /tmp/pack.txt                      # base, head, bytes, md5 — read them
+sed -n '/^--$/,$p' /tmp/pack.txt | tail -n +2 | tr -d '\n\r' | base64 -d > /tmp/pack.bundle
+md5sum /tmp/pack.bundle                    # MUST equal the md5 in the header
+cd /tmp/tmtas && git bundle verify /tmp/pack.bundle
+git fetch -q /tmp/pack.bundle "+<head>:refs/tmhaul/in" && git merge -q --ff-only <head>
+cd tools && cargo build --release -p haul -p resim
+```
+
+Check that md5 by hand. It is the check `tmhaul code recover` does for you, and
+a truncated paste decodes to a plausible bundle that fails later, confusingly.
 
 ### The map corpus is refetched, never redistributed
 
