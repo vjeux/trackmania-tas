@@ -1,2 +1,10 @@
 2026-08-26T20:16:20Z	worker_start	pid=2314325	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=40782	resume_best=113
 2026-08-26T20:16:20Z	run_start	node=devvm42752	binary_built=2026-08-26T20:15:19Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-26T20:18:06Z	bank	why=run start	receipt=commit b27c71822c5f · mirror P2477102122 · PUSH FAILED: the render box is offline (bridge reports instance offline)
+2026-08-26T20:19:06Z	sample	evals=40877	worker_alive=1	node=devvm42752	best=93	disk_free_mb=1162268
+2026-08-26T20:19:06Z	alarm	id=banking_degraded	detail=no usable bridge credential on this box, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T20:20:06Z	sample	evals=40896	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1162223
+2026-08-26T20:21:06Z	sample	evals=40896	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1162306
+2026-08-26T20:22:06Z	sample	evals=40896	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1162304
+2026-08-26T20:23:06Z	sample	evals=40896	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1162302
+2026-08-26T20:24:06Z	sample	evals=40896	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1162328
