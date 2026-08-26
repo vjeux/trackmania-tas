@@ -12,7 +12,7 @@ d41d8cd98f00b204e9800998ecf8427e  autopilot/state/boxes/.gitkeep
 b547d7f53843b73ca904e48f5563b04a  autopilot/state/boxes/119098.rec
 eb2fd54eef6482891b94f37cb3c8444c  autopilot/state/boxes/24576.rec
 07057417d61a89311f428b11593bc1b5  autopilot/state/boxes/36944.rec
-88cb195306f0b9a5b1f5a415ca0dd06a  autopilot/state/boxes/3952.rec
+64e55f971260099b34059122312004e7  autopilot/state/boxes/3952.rec
 6d430421472e4cd8641e2eff316a05c7  autopilot/state/boxes/42504.rec
 56dc55f33d6bfc70e9af3165354b05d3  autopilot/state/boxes/56655.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
@@ -20,11 +20,11 @@ f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
 67c004e2d492826b6abf2d52d6ece2b1  autopilot/state/budget/119098.rec
 441c144bd07eb37da0655b50d92eb3ab  autopilot/state/budget/24576.rec
 fe7a7b4fa63af7fa283a1d6847047015  autopilot/state/budget/36944.rec
-784ed2bb5cdae4c2acfca9a7d325176e  autopilot/state/budget/3952.rec
+25b5c954603d59189538246c9f77c95b  autopilot/state/budget/3952.rec
 a8865825b232b51ba3cf25391dfb4848  autopilot/state/budget/42504.rec
 258c7d7ada57a4eefd858cb83894a49d  autopilot/state/budget/56655.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-41d85faeaa720c18af05696ac1b94396  autopilot/state/frontier/resim-results.rec
+8b05ccef0150b7f117167f995ad095ca  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -102,9 +102,11 @@ d3599c6cbcfb363234e532f9b37eb348  autopilot/state/journal/36944-1787675409.rec
 892b964ffca233b4d19e81fe91d3b9e9  autopilot/state/journal/36944-1787680812.rec
 be12ffd5f5dd9d3c16ff4abed7796e77  autopilot/state/journal/36944-1787684669.rec
 ed5e9d0cf5e8408f2e8ec4fee9f253cf  autopilot/state/journal/36944-1787686209.rec
-8b417fcdd1d91b7d6ea2282ef973a2de  autopilot/state/journal/3952-1787758541.rec
+791e548ca64fb6b226f14a3edaee2bdd  autopilot/state/journal/3952-1787758541.rec
 e39f5d5901c7aeba194aed1a09247b29  autopilot/state/journal/3952-1787758761.rec
 5162f7351197af42d3d6f4951eef6b03  autopilot/state/journal/3952-1787758773.rec
+e8d3dae0e827be7041e80a63cb4e66e9  autopilot/state/journal/3952-1787760011.rec
+25a7e2cb26462acf4c7cfce28c22bc1d  autopilot/state/journal/3952-1787760026.rec
 760e8f7f450b1730d12977215cb75c6c  autopilot/state/journal/42504-1787603555.rec
 853a4d98015f9d8ef9eb05db81f31960  autopilot/state/journal/42504-1787603665.rec
 19ce146439ae025ed31acc4ec4a6e543  autopilot/state/journal/42504-1787603810.rec
