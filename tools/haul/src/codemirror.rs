@@ -142,6 +142,38 @@ fn scratch(kind: &str, ext: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("tmhaul-{kind}-{}-{nanos}-{n}.{ext}", std::process::id()))
 }
 
+/// A digest of everything in the repo that the STATE mirror does not carry.
+///
+/// Why not just the head sha: while the push route is down, the supervisor
+/// commits state every ten minutes, so the head moves constantly. Keying the
+/// code mirror on the head would publish a paste every ten minutes saying the
+/// same thing about the same source — 144 a day, each one indistinguishable
+/// from a real change.
+///
+/// The state mirror carries `autopilot/state/` and nothing else, so what is at
+/// risk on this box is: `tools/` (the harness itself) and everything under
+/// `autopilot/` that is not `state/` (HARNESS.md, OPS-LOG.md, the job spec,
+/// the map registry — the documents a fresh box and a human both need).
+pub fn content_key(repo: &Path) -> Result<String, String> {
+    let tools = git(repo, &["rev-parse", "HEAD:tools"])
+        .map(|o| o.stdout.trim().to_string())
+        .unwrap_or_else(|_| "no-tools".into());
+    let autopilot = git(repo, &["ls-tree", "HEAD:autopilot"])
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    let mut material = format!("tools:{tools}\n");
+    for line in autopilot.lines() {
+        // `<mode> <type> <sha>\t<name>`
+        let name = line.split('\t').nth(1).unwrap_or("");
+        if name == "state" {
+            continue;
+        }
+        material.push_str(line.trim());
+        material.push('\n');
+    }
+    Ok(md5_hex(material.as_bytes()))
+}
+
 /// Build a pack of everything on `branch` that `origin/<branch>` has not got.
 ///
 /// Returns `Ok(None)` when the remote is already level — mirroring nothing is
@@ -435,6 +467,45 @@ mod tests {
         // Control: with nothing unpushed there is nothing to mirror.
         g(&a, &["push", "-q", "origin", "main"]);
         assert_eq!(build(&a, "main").unwrap(), None);
+    }
+
+    #[test]
+    fn a_state_only_commit_does_not_count_as_new_code() {
+        // The flood this prevents: with the push route down the supervisor
+        // commits state every ten minutes, so the head moves constantly. Keyed
+        // on the head, the code mirror would publish a paste every ten minutes
+        // about source nobody had touched.
+        let root = tmp("contentkey");
+        gitcmd::run(&root, "git", &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        let a = origin_and_clone(&root, "boxA");
+        std::fs::create_dir_all(a.join("tools/haul/src")).unwrap();
+        std::fs::create_dir_all(a.join("autopilot/state/journal")).unwrap();
+        std::fs::write(a.join("tools/haul/src/lib.rs"), "// v1").unwrap();
+        std::fs::write(a.join("autopilot/HARNESS.md"), "# how it works").unwrap();
+        std::fs::write(a.join("autopilot/state/journal/boxA-1.rec"), "1\tsample\n").unwrap();
+        g(&a, &["add", "-A"]);
+        g(&a, &["commit", "-q", "-m", "root"]);
+        let k0 = content_key(&a).unwrap();
+
+        // A bank: state only.
+        std::fs::write(a.join("autopilot/state/journal/boxA-1.rec"), "1\tsample\n2\tsample\n").unwrap();
+        g(&a, &["add", "-A"]);
+        g(&a, &["commit", "-q", "-m", "autopilot: periodic"]);
+        assert_eq!(content_key(&a).unwrap(), k0, "state churn is not new code");
+
+        // A source change.
+        std::fs::write(a.join("tools/haul/src/lib.rs"), "// v2").unwrap();
+        g(&a, &["add", "-A"]);
+        g(&a, &["commit", "-q", "-m", "a fix"]);
+        assert_ne!(content_key(&a).unwrap(), k0);
+
+        // A document that the state mirror does not carry counts too: losing
+        // HARNESS.md with the box is losing the recovery instructions.
+        let k2 = content_key(&a).unwrap();
+        std::fs::write(a.join("autopilot/HARNESS.md"), "# how it works, corrected").unwrap();
+        g(&a, &["add", "-A"]);
+        g(&a, &["commit", "-q", "-m", "docs"]);
+        assert_ne!(content_key(&a).unwrap(), k2);
     }
 
     #[test]

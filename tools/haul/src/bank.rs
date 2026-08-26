@@ -751,9 +751,13 @@ pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option
     let Some(pack) = codemirror::build(&l.repo, branch)? else {
         return Ok(None);
     };
+    // Keyed on the CONTENT the state mirror does not carry, not on the head:
+    // the head moves every time the supervisor banks, and re-sending the same
+    // source every ten minutes would bury the one paste that matters.
+    let key = codemirror::content_key(&l.repo)?;
     let already = crate::log::read_all(&l.journal_dir())?
         .iter()
-        .any(|rec| rec.kind == "code_mirror" && rec.get("head") == Some(pack.head.as_str()));
+        .any(|rec| rec.kind == "code_mirror" && rec.get("key") == Some(key.as_str()));
     if already {
         return Ok(None);
     }
@@ -764,6 +768,7 @@ pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option
         &crate::rec::Rec::new("code_mirror")
             .f("head", &pack.head)
             .f("base", &pack.base)
+            .f("key", &key)
             .f("paste", &id)
             .f("bytes", pack.bytes),
     )

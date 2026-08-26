@@ -88,9 +88,10 @@ pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Resul
         Ok(Some(0)) | Ok(None) => {}
         Ok(Some(n)) => {
             let mirrored = crate::log::read_all(&l.journal_dir())
-                .map(|recs| {
-                    let head = crate::gitcmd::head_sha(&l.repo).unwrap_or_default();
-                    recs.iter().any(|x| x.kind == "code_mirror" && x.get("head") == Some(head.as_str()))
+                .ok()
+                .zip(crate::codemirror::content_key(&l.repo).ok())
+                .map(|(recs, key)| {
+                    recs.iter().any(|x| x.kind == "code_mirror" && x.get("key") == Some(key.as_str()))
                 })
                 .unwrap_or(false);
             if mirrored {
@@ -357,9 +358,10 @@ mod tests {
 
         // Once mirrored, it says so — and stops asking.
         let head = crate::gitcmd::head_sha(&repo).unwrap();
+        let key = crate::codemirror::content_key(&repo).unwrap();
         Log::shard(&l.journal_dir(), "boxA", now)
             .unwrap()
-            .append(&Rec::at(now, "code_mirror").f("head", &head).f("paste", "P9"))
+            .append(&Rec::at(now, "code_mirror").f("head", &head).f("key", &key).f("paste", "P9"))
             .unwrap();
         let b = brief(&l, &Job::default(), now, Some(1)).unwrap();
         assert!(b.text.contains("mirrored to a paste"), "{}", b.text);
