@@ -1,0 +1,1 @@
+2026-08-26T11:31:11Z	bank	why=heartbeat	receipt=commit ccb64eeac656 · mirror P2476634907 · PUSH FAILED: the box pushed ccb64eeac656854d7daf6d3b63810bcc6d0ff4fc but the bundle carried 07eaef721635cfc956eaf1b43aded4034403690d — the transfer did not deliver what we built
