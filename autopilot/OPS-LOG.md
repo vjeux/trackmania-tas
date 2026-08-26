@@ -5,6 +5,30 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## Splitting the budget KEY was half a fix: the sweep still measured itself against somebody else's threshold
+
+Yesterday the re-simulation sweep was found spending the archive search's
+pre-committed budget, and each job got its own `budget_key`. That stopped the
+sweep *consuming* the search's allowance. It did not stop the sweep being
+*measured against the search's number* — and tonight it reached **98.3% of the
+switch threshold**, hours from announcing "the pre-committed switch is due"
+for a workload the switch was never about.
+
+The 8M-eval / 10-productive-hour condition is a decision: reach it without CP1
+and a learned ordering over archive bins gets added. That decision is
+meaningless for a re-simulation sweep. A countdown to it is worse than
+meaningless — it is a prompt to act, aimed at nobody.
+
+`budget_has_switch` (default `yes`) lets a budget say it is a **meter, not a
+countdown**. The numbers are still reported; the percentage and the "switch
+reached" line are not, because they would be a fraction of a threshold this
+job does not have.
+
+**The general shape, and it is the third variation on it this week: scoping WHO
+spends a budget is not the same as scoping WHAT the budget means.** Ask not
+only "is this counter measuring the right work?" but "is the number it is
+compared against a decision anyone could act on for this job?"
+
 ## The supervisor died and the alarm surface said nothing was wrong
 
 A supervisor vanished on a healthy box — no `run_stop`, nothing in its own log,

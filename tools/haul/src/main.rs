@@ -371,6 +371,22 @@ fn real_main() -> Result<i32, String> {
                     let c = budget::total_for(&l.budget_dir(), Some(&key))?;
                     let all = budget::total(&l.budget_dir())?;
                     println!("budget: {key}");
+                    if !j.budget.has_switch {
+                        println!(
+                            "evals {}\nproductive {}\nstalled {} (does not spend the budget)\nno switch condition for this budget: a meter, not a countdown",
+                            c.evals,
+                            time::dur(c.productive_s),
+                            time::dur(c.stalled_s)
+                        );
+                        if all.evals != c.evals || all.productive_s != c.productive_s {
+                            println!(
+                                "\nacross every budget: {} evals, {} productive",
+                                all.evals,
+                                time::dur(all.productive_s)
+                            );
+                        }
+                        return Ok(0);
+                    }
                     println!(
                         "evals {} of {}\nproductive {} of {}\nstalled {} (does not spend the budget)\nspent {:.1}%\nswitch reached: {}",
                         c.evals,
@@ -379,7 +395,7 @@ fn real_main() -> Result<i32, String> {
                         time::dur(j.budget.switch_productive_s),
                         time::dur(c.stalled_s),
                         100.0 * c.spent_fraction(&j.budget),
-                        c.switch_reached(&j.budget)
+                        if j.budget.has_switch { c.switch_reached(&j.budget).to_string() } else { "no switch for this budget — it is a meter".to_string() }
                     );
                     if all.evals != c.evals || all.productive_s != c.productive_s {
                         println!(

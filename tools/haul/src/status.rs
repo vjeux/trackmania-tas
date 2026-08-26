@@ -158,27 +158,38 @@ fn render_inner(
 
     // ---- budget
     s.push_str("## Budget — work done, not time passed\n\n");
-    s.push_str(&format!(
-        "The pre-committed switch condition is **{} evals or {} of productive time**,\nafter which a learned ordering over archive bins gets added (DESIGN.md §3.2).\n\n",
-        counters_thousands(job.budget.switch_evals),
-        dur(job.budget.switch_productive_s)
-    ));
+    if job.budget.has_switch {
+        s.push_str(&format!(
+            "The pre-committed switch condition is **{} evals or {} of productive time**,\nafter which a learned ordering over archive bins gets added (DESIGN.md §3.2).\n\n",
+            counters_thousands(job.budget.switch_evals),
+            dur(job.budget.switch_productive_s)
+        ));
+    } else {
+        s.push_str(&format!(
+            "This budget (`{}`) is a **meter, not a countdown**: it has no switch condition.\nThe pre-committed 8M-eval / 10-hour switch belongs to the archive search\n(DESIGN.md §3.2), and a job that is not that search must not measure itself\nagainst it.\n\n",
+            job.budget_key
+        ));
+    }
     s.push_str("| | |\n|---|---|\n");
     s.push_str(&format!("| evals | {} |\n", counters_thousands(counters.evals)));
     s.push_str(&format!(
-        "| productive time | {} of {} |\n",
+        "| productive time | {}{} |\n",
         dur(counters.productive_s),
-        dur(job.budget.switch_productive_s)
+        if job.budget.has_switch { format!(" of {}", dur(job.budget.switch_productive_s)) } else { String::new() }
     ));
     s.push_str(&format!(
         "| stalled time (does **not** spend the budget) | {} |\n",
         dur(counters.stalled_s)
     ));
-    s.push_str(&format!("| spent | {:.1}% |\n", 100.0 * counters.spent_fraction(&job.budget)));
-    s.push_str(&format!(
-        "| switch reached | {} |\n\n",
-        if counters.switch_reached(&job.budget) { "**yes**" } else { "no" }
-    ));
+    if job.budget.has_switch {
+        s.push_str(&format!("| spent | {:.1}% |\n", 100.0 * counters.spent_fraction(&job.budget)));
+        s.push_str(&format!(
+            "| switch reached | {} |\n\n",
+            if counters.switch_reached(&job.budget) { "**yes**" } else { "no" }
+        ));
+    } else {
+        s.push_str("| switch | none for this budget |\n\n");
+    }
 
     // ---- queue
     s.push_str("## Queue\n\n");

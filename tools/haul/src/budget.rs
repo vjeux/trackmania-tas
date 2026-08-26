@@ -28,12 +28,26 @@ pub struct Counters {
 pub struct Policy {
     pub switch_evals: u64,
     pub switch_productive_s: i64,
+    /// Does this budget HAVE a switch condition?
+    ///
+    /// The 8M-evals / 10-productive-hours threshold is a pre-committed
+    /// decision about the ARCHIVE SEARCH: reach it without CP1 and a learned
+    /// ordering over archive bins gets added. It is meaningless for any other
+    /// workload, and a budget that reports "98.3% of the switch threshold"
+    /// for a job the switch was never about is a countdown to a decision
+    /// nobody can act on.
+    ///
+    /// Splitting the KEY off the search was the first half of that fix and it
+    /// was not enough: the sweep still measured itself against a threshold
+    /// borrowed from somebody else. A budget can now say it is a meter
+    /// rather than a countdown.
+    pub has_switch: bool,
 }
 
 impl Default for Policy {
     fn default() -> Self {
         // The pre-committed switch condition from DESIGN.md §3.2.
-        Policy { switch_evals: 8_000_000, switch_productive_s: 10 * 3600 }
+        Policy { switch_evals: 8_000_000, switch_productive_s: 10 * 3600, has_switch: true }
     }
 }
 
@@ -62,7 +76,7 @@ impl Counters {
     }
 
     pub fn switch_reached(&self, p: &Policy) -> bool {
-        self.evals >= p.switch_evals || self.productive_s >= p.switch_productive_s
+        p.has_switch && (self.evals >= p.switch_evals || self.productive_s >= p.switch_productive_s)
     }
 }
 
@@ -292,5 +306,38 @@ mod attribution_tests {
         let p = Policy::default();
         assert!(!total_for(&d, Some("archive-search")).unwrap().switch_reached(&p));
         assert!(total_for(&d, Some("resim-sweep")).unwrap().switch_reached(&p));
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::*;
+
+    #[test]
+    fn a_budget_with_no_switch_never_reports_one_reached() {
+        // The sweep ran to 98.3% of a threshold written for the archive
+        // search. Splitting the KEY stopped it spending the search's budget;
+        // it did not stop it measuring itself against the search's number,
+        // and the harness was hours from announcing a decision nobody could
+        // act on.
+        let p = Policy { has_switch: false, ..Policy::default() };
+        let mut c = Counters::default();
+        for _ in 0..(20 * 60) {
+            fold(&mut c, 10_000_000, 60); // far past both arms
+        }
+        assert!(!c.switch_reached(&p));
+        assert!(c.productive_s > p.switch_productive_s);
+        assert!(c.evals > p.switch_evals);
+    }
+
+    #[test]
+    fn a_budget_that_does_have_a_switch_still_trips_it() {
+        // The control: turning the countdown off for one budget must not turn
+        // it off for the one the decision was actually agreed about.
+        let p = Policy::default();
+        assert!(p.has_switch);
+        let mut c = Counters::default();
+        fold(&mut c, 8_000_000, 60);
+        assert!(c.switch_reached(&p));
     }
 }

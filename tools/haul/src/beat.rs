@@ -84,15 +84,20 @@ pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Resul
 
     // ---- budget
     s.push_str(&format!(
-        "BUDGET (work, not wall-clock)\n  {} evals · {} productive · {} stalled · {:.1}% of the switch threshold{}\n\n",
+        "BUDGET (work, not wall-clock) — {}\n  {} evals · {} productive · {} stalled{}\n\n",
+        job.budget_key,
         counters.evals,
         dur(counters.productive_s),
         dur(counters.stalled_s),
-        100.0 * counters.spent_fraction(&job.budget),
-        if counters.switch_reached(&job.budget) {
-            " — THRESHOLD REACHED, the pre-committed switch is due (DESIGN.md §3.2)"
+        if !job.budget.has_switch {
+            "\n  no switch condition for this budget: these are a meter, not a countdown".to_string()
+        } else if counters.switch_reached(&job.budget) {
+            format!(
+                "\n  {:.1}% — THRESHOLD REACHED, the pre-committed switch is due (DESIGN.md §3.2)",
+                100.0 * counters.spent_fraction(&job.budget)
+            )
         } else {
-            ""
+            format!("\n  {:.1}% of the switch threshold", 100.0 * counters.spent_fraction(&job.budget))
         }
     ));
 

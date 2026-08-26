@@ -149,6 +149,12 @@ impl Job {
                 "budget_switch_productive_s" => {
                     parse_i(&v, k, &mut errs, &mut j.budget.switch_productive_s)
                 }
+                "budget_has_switch" => {
+                    j.budget.has_switch = matches!(v.as_str(), "yes" | "true" | "1");
+                    if !matches!(v.as_str(), "yes" | "true" | "1" | "no" | "false" | "0") {
+                        errs.push(format!("{k}: {v:?} is not yes or no"));
+                    }
+                }
                 other => {
                     j.extra.insert(other.to_string(), v);
                 }
@@ -226,6 +232,12 @@ max_boxes = {}
 # agreed for the ARCHIVE SEARCH; a job that is not that search gets its own key
 # so it cannot spend a threshold the project never meant it to.
 budget_key = {}
+
+# Does this budget have a SWITCH, or is it just a meter? The threshold below is
+# a pre-committed decision about the ARCHIVE SEARCH; for any other workload it
+# is a countdown to a decision nobody can act on. Say no and the numbers are
+# still reported, without pretending they mean something.
+budget_has_switch = yes
 
 # The pre-committed switch condition (DESIGN.md 3.2). Productive seconds only:
 # a stall never spends this.

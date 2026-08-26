@@ -86,3 +86,10 @@ worker_drives = no
 # and must not spend its threshold — so it gets its own key. Set this to
 # `archive-search` in the same change that points worker_cmd at the explorer.
 budget_key = resim-sweep
+
+# Does THIS budget have a switch, or is it just a meter? The 8M-eval /
+# 10-productive-hour threshold is a pre-committed decision about the ARCHIVE
+# SEARCH (DESIGN.md §3.2). The re-simulation sweep is not that search, so its
+# numbers are reported without a countdown attached. Set this back to `yes` in
+# the same change that points worker_cmd at the explorer.
+budget_has_switch = no
