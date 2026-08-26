@@ -23,3 +23,7 @@
 2026-08-26T15:54:01Z	sample	evals=37489	worker_alive=1	node=3952	best=100	disk_free_mb=274246
 2026-08-26T15:55:01Z	sample	evals=37501	worker_alive=1	node=3952	best=112	disk_free_mb=274165
 2026-08-26T15:56:02Z	sample	evals=37501	worker_alive=1	node=3952	best=112	disk_free_mb=274163
+2026-08-26T15:56:12Z	bank	why=periodic	receipt=commit 10e915668dc7 · mirror P2476824600 · PUSH FAILED: the render box is offline (bridge reports instance offline)
+2026-08-26T15:57:12Z	sample	evals=37501	worker_alive=1	node=3952	best=112	disk_free_mb=274161
+2026-08-26T15:58:12Z	sample	evals=37501	worker_alive=1	node=3952	best=112	disk_free_mb=274173
+2026-08-26T15:59:13Z	sample	evals=37501	worker_alive=1	node=3952	best=112	disk_free_mb=274171
