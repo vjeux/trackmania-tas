@@ -3,3 +3,4 @@
 2026-08-26T05:37:49Z	box_alive	node=56655
 2026-08-26T05:38:49Z	box_alive	node=56655
 2026-08-26T05:38:59Z	box_retired	node=56655	why=stop file
+2026-08-26T05:45:41Z	box_start	node=56655	note=56655, watch_pid: counts itself for alarms, not for the guard	lease_expires=1787765640
