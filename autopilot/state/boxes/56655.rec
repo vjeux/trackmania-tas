@@ -500,3 +500,4 @@
 2026-08-26T14:58:51Z	box_alive	node=56655
 2026-08-26T14:59:51Z	box_alive	node=56655
 2026-08-26T15:00:52Z	box_alive	node=56655
+2026-08-26T15:01:17Z	box_retired	node=56655	why=stop file
