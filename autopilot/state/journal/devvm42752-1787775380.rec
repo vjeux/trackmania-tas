@@ -43,3 +43,6 @@
 2026-08-26T20:58:06Z	sample	evals=41359	worker_alive=1	node=devvm42752	best=7	disk_free_mb=1161832
 2026-08-26T20:59:06Z	sample	evals=41403	worker_alive=1	node=devvm42752	best=49	disk_free_mb=1161659
 2026-08-26T21:00:06Z	sample	evals=41432	worker_alive=1	node=devvm42752	best=78	disk_free_mb=1161904
+2026-08-26T21:01:07Z	sample	evals=41461	worker_alive=1	node=devvm42752	best=107	disk_free_mb=1161780
+2026-08-26T21:01:08Z	alarm_clear	id=banking_degraded
+2026-08-26T21:02:08Z	sample	evals=41466	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1161517
