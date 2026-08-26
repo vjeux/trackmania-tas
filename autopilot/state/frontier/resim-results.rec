@@ -45695,3 +45695,38 @@
 2026-08-26T02:25:00Z	resim	map=turtle trial leto	file=HUMANCUT_236972_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
 2026-08-26T02:25:00Z	resim	map=turtle trial leto	file=HUMANCUT_237122_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
 2026-08-26T02:25:00Z	resim	map=turtle trial leto	file=MINIMAL_832ev_219581.Ghost.Gbx	verdict=UNMEASURED	detail=MINIMAL_832ev_219581.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T02:25:07Z	resim	map=turtle trial leto	file=BEST_218812.Ghost.Gbx	verdict=holds	detail=218.812
+2026-08-26T02:25:07Z	resim	map=turtle trial leto	file=KEYBOARD_218877.Ghost.Gbx	verdict=holds	detail=218.877
+2026-08-26T02:25:07Z	resim	map=turtle trial leto	file=KEYBOARD_235939.Ghost.Gbx	verdict=holds	detail=235.939
+2026-08-26T02:25:07Z	resim	map=turtle trial leto	file=TAS_235625.Ghost.Gbx	verdict=holds	detail=235.625
+2026-08-26T02:25:07Z	resim	map=turtle trial leto	file=TAS_analog26_235814.Ghost.Gbx	verdict=holds	detail=235.814
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=ALPHABET153_23545.Ghost.Gbx	verdict=holds	detail=23.545
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=KEYBOARD_24164.Ghost.Gbx	verdict=holds	detail=24.164
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=TAS_23416.Ghost.Gbx	verdict=holds	detail=23.416
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=TAS_23416_regen.Ghost.Gbx	verdict=holds	detail=23.416
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=TAS_23462_v1.Ghost.Gbx	verdict=holds	detail=23.462
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=TAS_23498_v1.Ghost.Gbx	verdict=holds	detail=23.498
+2026-08-26T02:29:49Z	resim	map=kacky reloaded 290	file=THIN_318ev_23508.Ghost.Gbx	verdict=holds	detail=23.508
+2026-08-26T02:29:55Z	resim	map=kekl sausage ice	file=KEYBOARD_67625.Ghost.Gbx	verdict=holds	detail=67.625
+2026-08-26T02:29:55Z	resim	map=kekl sausage ice	file=TAS_67200.Ghost.Gbx	verdict=holds	detail=67.200
+2026-08-26T02:29:55Z	resim	map=kekl sausage ice	file=TAS_67319.Ghost.Gbx	verdict=holds	detail=67.319
+2026-08-26T02:29:55Z	resim	map=kekl sausage ice	file=TAS_67404.Ghost.Gbx	verdict=holds	detail=67.404
+2026-08-26T02:29:55Z	resim	map=unlucke get jiggy with it	file=HUMANWR_plus_early_flick_6342.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=BEST_6322.Ghost.Gbx	verdict=holds	detail=6.322
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=BEST_KEYBOARD_6323.Ghost.Gbx	verdict=holds	detail=6.323
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=KEYBOARD_23ev_6323.Ghost.Gbx	verdict=holds	detail=6.323
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=TAS_6342_regen.Ghost.Gbx	verdict=holds	detail=6.342
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=tas_6330.Ghost.Gbx	verdict=holds	detail=6.330
+2026-08-26T02:30:00Z	resim	map=unlucke get jiggy with it	file=tas_6333.Ghost.Gbx	verdict=holds	detail=6.333
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=BEST_39961_v3.Ghost.Gbx	verdict=holds	detail=39.961
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=KEYBOARD_39706.Ghost.Gbx	verdict=holds	detail=39.706
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=KEYBOARD_39996_v3.Ghost.Gbx	verdict=holds	detail=39.996
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=SEGMENT_cp5_32702_DO_NOT_PUBLISH_declares_40226.Ghost.Gbx	verdict=dnf	detail=DNF at cp5, published as 40.226
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39183.Ghost.Gbx	verdict=holds	detail=39.183
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39183_carrier.Ghost.Gbx	verdict=holds	detail=39.183
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39430.Ghost.Gbx	verdict=holds	detail=39.430
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39460.Ghost.Gbx	verdict=holds	detail=39.460
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39478.Ghost.Gbx	verdict=holds	detail=39.478
+2026-08-26T02:30:07Z	resim	map=spaghetti nights 2	file=TAS_39748.Ghost.Gbx	verdict=holds	detail=39.748
+2026-08-26T02:30:07Z	resim	map=p found pokeuuu	file=HUMAN_RECORD_retries_and_loops_cut_941395.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T02:30:07Z	resim	map=p found pokeuuu	file=HUMAN_RECORD_retries_cut_1214545.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
