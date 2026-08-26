@@ -538,3 +538,14 @@
 2026-08-26T14:48:38Z	sample	evals=36831	worker_alive=1	node=56655	best=112	disk_free_mb=368623
 2026-08-26T14:49:39Z	sample	evals=36831	worker_alive=1	node=56655	best=112	disk_free_mb=368615
 2026-08-26T14:50:39Z	sample	evals=36831	worker_alive=1	node=56655	best=112	disk_free_mb=368617
+2026-08-26T14:50:49Z	bank	why=periodic	receipt=commit 8c3190d23a6b · mirror P2476769638 · PUSH FAILED: /var/svcscm/bin/wsx push /tmp/tmhaul-246970-1787755845.bundle ~/tmhaul-246970-1787755845.bundle exited 1: wsx: retrying (remote command failed (exit status: 1): printf %s "$HOME"\n  stderr: [whitestick] error: instance offline)\n\nwsx: retrying (remote command failed (exit status: 1): printf %s "$HOME"\n  stderr: [whitestick] error: instance offline)\nwsx: remote command failed (exit status: 1): printf %s "$HOME"\n  stderr: [whitestick] error: instance offline
+2026-08-26T14:51:49Z	sample	evals=36831	worker_alive=1	node=56655	best=112	disk_free_mb=368555
+2026-08-26T14:52:49Z	sample	evals=36831	worker_alive=1	node=56655	best=112	disk_free_mb=368558
+2026-08-26T14:53:49Z	sample	evals=36858	worker_alive=1	node=56655	best=26	disk_free_mb=368666
+2026-08-26T14:54:50Z	sample	evals=36891	worker_alive=1	node=56655	best=58	disk_free_mb=368670
+2026-08-26T14:55:50Z	sample	evals=36929	worker_alive=1	node=56655	best=96	disk_free_mb=368662
+2026-08-26T14:56:50Z	sample	evals=36945	worker_alive=1	node=56655	best=112	disk_free_mb=368661
+2026-08-26T14:57:51Z	sample	evals=36945	worker_alive=1	node=56655	best=112	disk_free_mb=368646
+2026-08-26T14:58:51Z	sample	evals=36945	worker_alive=1	node=56655	best=112	disk_free_mb=368649
+2026-08-26T14:59:51Z	sample	evals=36945	worker_alive=1	node=56655	best=112	disk_free_mb=368632
+2026-08-26T15:00:52Z	sample	evals=36945	worker_alive=1	node=56655	best=112	disk_free_mb=368658
