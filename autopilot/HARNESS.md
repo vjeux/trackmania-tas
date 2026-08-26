@@ -19,10 +19,22 @@ git clone https://github.com/vjeux/trackmania-tas.git /tmp/tmtas
 cd /tmp/tmtas/tools && cargo build --release -p haul -p resim
 
 cd /tmp/tmtas
+./tools/target/release/tmhaul code recover  # commits GitHub never received
+cd tools && cargo build --release -p haul -p resim && cd ..   # only if it advanced
 ./tools/target/release/tmhaul beat        # what is going on, and what to do
 ./tools/target/release/tmhaul recover     # take the run over from the repo
 ./tools/target/release/tmhaul watch --detach --lease-expires 2026-08-25T06:18:00Z
 ```
+
+`code recover` is the step that is easy to skip and expensive to skip. The
+clone gives this box whatever code **GitHub** last received, and the push
+route to GitHub is a bridge through a machine that can be switched off (it
+was, on 2026-08-26). While that bridge is down the harness keeps working and
+keeps banking — state rides the paste mirror, which needs nothing but this
+box's own certificate — but new *commits* only reach a fresh box through
+`code recover`. It is a no-op when GitHub is level, prints `already have` when
+this box is current, and refuses rather than touching a dirty or divergent
+checkout.
 
 `tmhaul beat` reconstructs everything from committed files and prints a **DO
 NOW** list. If you read nothing else, read its output.
@@ -86,6 +98,33 @@ that silently did nothing is the failure shape this project keeps paying for.
    the manifest carries a digest: a truncated or corrupted pack is **refused**,
    never half-restored.
 3. **Push** to GitHub — the state of record a human reads.
+
+### …and a fourth for *code*, because state and code fail differently
+
+The three layers above carry `autopilot/state/`. They do not carry the
+harness's own source, and until 2026-08-26 nothing did except GitHub: a fresh
+box clones GitHub, builds `tools/`, and gets whatever GitHub last received.
+That asymmetry is invisible while the push bridge works. The morning the
+render box went offline it meant a harness fix lived **only** on the box that
+wrote it — and rotation is designed to throw that box away. One outage plus
+one routine rotation loses a day of work with every alarm quiet, because
+nothing in the system considered unpushed source to be at risk.
+
+`tmhaul code mirror` sends the commits GitHub has not got as a **git bundle**
+in a paste, titled `TMHAUL-CODE <node> <iso> head=<sha> base=<sha>`; the same
+transport as the state mirror, for the same reason (an x509 cert and nothing
+else). `bank` does it automatically whenever a push fails — once per head, so
+a stuck bridge does not produce a paste every ten minutes — and records
+`code_mirror head=… paste=…` in the journal. `tmhaul code recover` on a fresh
+box finds the newest pack by title, verifies its byte count and md5 before
+decoding, and applies it **fast-forward only**, refusing a dirty checkout, a
+divergent one, or a pack whose base commit this box does not have. `tmhaul
+code status` says how many commits are at risk, and `beat` says it too when
+this box is the only copy.
+
+A bundle rather than a patch on purpose: git verifies it, and it carries the
+real commits — messages, authorship, parents — rather than a reconstruction of
+them.
 
 ### The bridge credential bootstraps itself
 
@@ -313,6 +352,7 @@ is not a recovery:
 | the dedicated server (385 MB) | `SETUP.md` §3, one `curl` |
 | the map corpus (`.Map.Gbx`) | **not in the repo, on purpose** — see below |
 | the bridge credential | `~/.navi/credentials.json` from devvm42752, for pushing |
+| commits GitHub never received | `tmhaul code recover` — only matters while the push bridge is down, and that is exactly when a fresh box cannot tell |
 
 ### The map corpus is refetched, never redistributed
 
@@ -354,6 +394,7 @@ tmhaul init | status [--write] | beat | recover | bank [--why T] | verify
 tmhaul watch [--detach] [--lease-expires ISO] [--note T] | stop
 tmhaul journal add|tail   ledger add|list   queue push|claim|complete|list|reap
 tmhaul budget show   lease   mirror latest|restore   config get KEY
+tmhaul code status|mirror|recover     commits GitHub has not got, via a paste
 tmhaul alarms eval|selftest|live-test
 tmhaul claim --what T --tape-md5 H --map-md5 H --template-md5 H --frame-start-tick N
              --tick0-x X --tick0-y Y --tick0-z Z --start-dev-m M --transcript-file F

@@ -540,3 +540,39 @@ Write `~/.cargo/config.toml` with `[http] proxy` and `[net] git-fetch-with-cli`.
 A clone into the persistent mount dies with `premature end of pack file` at a
 different byte count every time. Three agents have tuned postBuffer, HTTP/2 and
 `--filter` chasing it. Work in `/tmp`; bank to persistent and to the repo.
+
+## The push bridge is a machine somebody can switch off
+
+2026-08-26T14:20Z: every push started failing with `[whitestick] error:
+instance offline`. The render box hosting the bridge was simply not running.
+Nothing on our side was wrong and nothing could fix it from here: a deploy key
+on a box that is off is not reachable, and no on-demand box and no devserver
+holds a GitHub credential of its own (checked: no `~/.git-credentials`, no
+`gh` config, no ssh key).
+
+What this costs and what it does not: **state is safe** — the paste mirror
+needs only the box's x509 cert, so banking continues and `unbanked_drift`
+stays armed as designed. What was *not* safe was **code**: a fix committed
+during the outage lived only on the box that wrote it, and the rotation that
+was two hours away is designed to throw that box away. Fixed by giving code
+its own mirror through the transport that still works (`tmhaul code
+mirror`/`code recover`, HARNESS.md §Durability).
+
+Three defects fell out of the same outage, each one a thing the harness said
+that was not true:
+
+- **The status page contradicted itself.** The "GitHub banking" row read the
+  credential; the alarms table was evaluated on a view that never carried it.
+  The page said **DEGRADED** at the top and "None firing" below. Two renders of
+  one page must come from one judgement, and now do.
+- **A dead bridge reported as an untried one.** `Health::PresentUnproven` says
+  "no bridge operation has been tried" — printed about a probe that had been
+  sent and had failed. Two states, one variant. Split.
+- **A transport's error body was being committed to a public repo** and pasted
+  into a markdown table, where its newlines broke the table exactly when the
+  page mattered. Receipts now carry one brief line; the full text stays on the
+  box's stderr.
+
+The general shape, and the reason all three sat unnoticed for days: **a
+degraded path exercises code that the healthy path never runs.** Everything
+here worked perfectly while the bridge was up.
