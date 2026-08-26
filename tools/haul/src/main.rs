@@ -39,6 +39,9 @@ DURABILITY
   bank [--why TEXT]          manifest, commit, mirror, push — with a receipt
   verify                     re-hash every banked file against MANIFEST.md5
   mirror latest | mirror restore
+  code status                how many commits GitHub has not got
+  code mirror                send those commits as a bundle in a paste
+  code recover               take a code pack on (fresh box, dead push route)
   recover                    take over a run from the repo + newest mirror
 
 ALARMS
@@ -702,6 +705,64 @@ fn real_main() -> Result<i32, String> {
             }
             _ => Err("usage: tmhaul mirror latest|restore".into()),
         },
+
+        "code" => {
+            // The source-code half of durability. `bank` does the sending on
+            // its own when a push fails; these are the manual handles, and the
+            // one a fresh box needs after a clone.
+            let l = layout()?;
+            let j = job(&l)?;
+            let node = paths::node_id();
+            match a.word(1) {
+                "mirror" => match bank::code_mirror_if_new(&l, &node, &j.branch)? {
+                    Some(id) => {
+                        println!("code mirrored to paste {id}");
+                        Ok(0)
+                    }
+                    None => {
+                        println!("nothing to mirror: GitHub has every commit on {}", j.branch);
+                        Ok(0)
+                    }
+                },
+                "recover" => {
+                    let Some((id, title)) = codemirror::latest()? else {
+                        println!("no code pack has ever been published");
+                        return Ok(0);
+                    };
+                    println!("newest code pack: {id} ({title})");
+                    let pack = codemirror::CodePack::parse(&codemirror::read_paste(&id)?)?;
+                    match codemirror::apply(&l.repo, &j.branch, &pack)? {
+                        codemirror::Applied::Advanced { from, to, commits } => {
+                            println!(
+                                "  advanced {} → {} ({commits} commit(s)) — REBUILD: cargo build --release -p haul -p resim",
+                                &from[..12.min(from.len())],
+                                &to[..12.min(to.len())]
+                            );
+                            Ok(0)
+                        }
+                        codemirror::Applied::AlreadyHave(sha) => {
+                            println!("  already have {}", &sha[..12.min(sha.len())]);
+                            Ok(0)
+                        }
+                        codemirror::Applied::Refused(why) => {
+                            println!("  REFUSED: {why}");
+                            Ok(1)
+                        }
+                    }
+                }
+                "status" => {
+                    match codemirror::unpushed_code(&l, &j.branch)? {
+                        Some(n) => println!("{n} commit(s) on {} that GitHub has not got", j.branch),
+                        None => println!(
+                            "unknown: this checkout has no origin/{} to compare against",
+                            j.branch
+                        ),
+                    }
+                    Ok(0)
+                }
+                _ => Err("usage: tmhaul code mirror|recover|status".into()),
+            }
+        }
 
         "recover" => {
             let l = layout()?;

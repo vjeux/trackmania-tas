@@ -76,11 +76,39 @@ pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Resul
         }
     ));
     s.push_str(&format!(
-        "  Last bank: {}\n\n",
+        "  Last bank: {}\n",
         v.last_bank
             .map(|t| format!("{} ago — {}", dur(now - t), r.last_bank_receipt.clone().unwrap_or_default()))
             .unwrap_or_else(|| "NEVER".into())
     ));
+    // Unpushed COMMITS are the one kind of work the state mirror does not
+    // carry. Say it here, where a woken session looks, because the moment it
+    // matters is the rotation that throws this box away.
+    match crate::codemirror::unpushed_code(l, &job.branch) {
+        Ok(Some(0)) | Ok(None) => {}
+        Ok(Some(n)) => {
+            let mirrored = crate::log::read_all(&l.journal_dir())
+                .map(|recs| {
+                    let head = crate::gitcmd::head_sha(&l.repo).unwrap_or_default();
+                    recs.iter().any(|x| x.kind == "code_mirror" && x.get("head") == Some(head.as_str()))
+                })
+                .unwrap_or(false);
+            if mirrored {
+                s.push_str(&format!(
+                    "  Code: {n} commit(s) GitHub has not got — mirrored to a paste; a fresh box needs `tmhaul code recover`\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "  Code: {n} commit(s) GitHub has not got, and NOT mirrored — they exist only here\n"
+                ));
+                actions.push("tmhaul code mirror".into());
+            }
+        }
+        // Not a reason to fail a briefing: a checkout without a remote is a
+        // legitimate state (a test rig, a box mid-bootstrap).
+        Err(_) => {}
+    }
+    s.push('\n');
 
     // ---- budget
     s.push_str(&format!(
@@ -281,6 +309,61 @@ mod tests {
             b.text.contains("git clone"),
             "the briefing must carry the recovery route for a box that cannot be used"
         );
+    }
+
+    #[test]
+    fn a_briefing_says_when_this_box_is_the_only_copy_of_a_commit() {
+        // The gap the 2026-08-26 bridge outage opened: the state mirror keeps
+        // state safe, and says nothing about COMMITS. A box holding an
+        // unmirrored fix is one routine rotation away from losing it, and the
+        // briefing is where a woken session would have to notice.
+        let root = std::env::temp_dir().join(format!("haul-beat-code-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        crate::gitcmd::run(&root, "git", &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        crate::gitcmd::run(
+            &root,
+            "git",
+            &["clone", "-q", &root.join("origin.git").to_string_lossy(), "box"],
+        )
+        .unwrap();
+        let repo = root.join("box");
+        let g = |args: &[&str]| crate::gitcmd::git(&repo, args).unwrap();
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "boxA"]);
+        std::fs::write(repo.join("README.md"), "root").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "root"]);
+        g(&["push", "-q", "origin", "main"]);
+
+        let l = Layout::new(&repo);
+        for d in l.all_dirs() {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let now = 1_800_000_000;
+
+        // Level with the remote: the briefing must not mention code at all.
+        let b = brief(&l, &Job::default(), now, Some(1)).unwrap();
+        assert!(!b.text.contains("Code:"), "{}", b.text);
+
+        // A local fix that GitHub has not got.
+        std::fs::write(repo.join("fix.rs"), "the fix").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-q", "-m", "a harness fix"]);
+        let b = brief(&l, &Job::default(), now, Some(1)).unwrap();
+        assert!(b.text.contains("Code: 1 commit(s)"), "{}", b.text);
+        assert!(b.text.contains("NOT mirrored"), "{}", b.text);
+        assert!(b.actions.iter().any(|a| a.contains("code mirror")), "{:?}", b.actions);
+
+        // Once mirrored, it says so — and stops asking.
+        let head = crate::gitcmd::head_sha(&repo).unwrap();
+        Log::shard(&l.journal_dir(), "boxA", now)
+            .unwrap()
+            .append(&Rec::at(now, "code_mirror").f("head", &head).f("paste", "P9"))
+            .unwrap();
+        let b = brief(&l, &Job::default(), now, Some(1)).unwrap();
+        assert!(b.text.contains("mirrored to a paste"), "{}", b.text);
+        assert!(!b.actions.iter().any(|a| a.contains("code mirror")), "{:?}", b.actions);
     }
 
     #[test]

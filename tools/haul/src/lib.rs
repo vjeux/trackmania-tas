@@ -10,6 +10,7 @@ pub mod alarms;
 pub mod bank;
 pub mod beat;
 pub mod budget;
+pub mod codemirror;
 pub mod config;
 pub mod credential;
 pub mod disk;

@@ -176,7 +176,7 @@ impl Supervisor {
             }
             Err(e) => {
                 eprintln!("tmhaul: BANK FAILED: {e}");
-                self.journal(&Rec::new("bank_failed").f("why", why).f("error", e));
+                self.journal(&Rec::new("bank_failed").f("why", why).f("error", &bank::brief_error(&e)));
             }
         }
         self.last_bank = crate::time::now();

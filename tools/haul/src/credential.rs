@@ -51,6 +51,15 @@ pub enum Health {
     Working,
     /// Present and sane, but no bridge operation has been tried.
     PresentUnproven,
+    /// Present and sane, the bridge WAS tried, and it did not answer.
+    ///
+    /// Split out from `PresentUnproven` on 2026-08-26, when the render box went
+    /// offline and the status page reported "DEGRADED — no bridge operation has
+    /// been tried" about a probe that had just been tried and failed. A state
+    /// whose description contradicts what happened is how a real outage gets
+    /// read as a cosmetic one. The reason string is ours, never the bridge's
+    /// error body: a bridge failure can echo request context.
+    BridgeDown(&'static str),
     /// Present and wrong: mode, ownership or size.
     Unsafe(String),
     Absent,
@@ -66,6 +75,11 @@ impl Health {
             Health::PresentUnproven => {
                 "the bridge credential is present; no bridge operation has been tried".into()
             }
+            Health::BridgeDown(why) => format!(
+                "the bridge credential is present and sane, but the bridge itself did not \
+                 answer ({why}), so pushes to GitHub cannot happen from this box. The paste \
+                 mirror is unaffected"
+            ),
             Health::Unsafe(why) => format!("the bridge credential is present but {why}"),
             Health::Absent => {
                 "no bridge credential: GitHub banking is DEGRADED, the paste mirror still works"
@@ -133,10 +147,13 @@ pub fn prove(home: &str) -> Health {
     }
     match crate::gitcmd::try_run(Path::new("/tmp"), &ws, &["echo tmhaul-credential-probe"]) {
         // Never fold the error body into the result: a bridge failure can echo
-        // request context, and this is the one place that would leak it.
-        Err(_) => Health::PresentUnproven,
+        // request context, and this is the one place that would leak it. What
+        // we DO record is that the probe ran and did not come back — the
+        // distinction between "untried" and "tried and dead" is the whole
+        // value of a probe.
+        Err(_) => Health::BridgeDown("the bridge command could not be run on this box"),
         Ok(o) if o.code == 0 && o.stdout.contains("tmhaul-credential-probe") => Health::Working,
-        Ok(_) => Health::PresentUnproven,
+        Ok(_) => Health::BridgeDown("the probe was sent and the bridge did not answer it"),
     }
 }
 
@@ -350,6 +367,25 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         Layout::new(p)
+    }
+
+    #[test]
+    fn a_dead_bridge_is_not_reported_as_an_untried_one() {
+        // The distinction the probe exists to make. On 2026-08-26 the render
+        // box went offline and the page said "DEGRADED — no bridge operation
+        // has been tried", about a probe that had just been tried and had
+        // failed. Both states are not-ok; only one of them is an outage.
+        let untried = Health::PresentUnproven;
+        let dead = Health::BridgeDown("the probe was sent and the bridge did not answer it");
+        assert!(!untried.ok() && !dead.ok());
+        assert!(untried.describe().contains("no bridge operation has been tried"));
+        assert!(dead.describe().contains("did not answer"), "{}", dead.describe());
+        assert!(
+            !dead.describe().contains("has been tried\""),
+            "a dead bridge must never claim to be untried: {}",
+            dead.describe()
+        );
+        assert_ne!(untried.describe(), dead.describe());
     }
 
     #[test]

@@ -19,6 +19,7 @@
 //! returns a receipt naming each layer's outcome, and `unbanked_drift` alarms
 //! on the gap.
 
+use crate::codemirror;
 use crate::gitcmd::{self, git};
 use crate::md5::md5_file;
 use crate::pack;
@@ -63,6 +64,10 @@ pub struct Receipt {
     pub mirror_error: Option<String>,
     pub pushed: Option<String>,
     pub push_error: Option<String>,
+    /// Set only when the push failed and unpushed commits were sent down the
+    /// paste transport instead.
+    pub code_mirror: Option<String>,
+    pub code_mirror_error: Option<String>,
     pub files_hashed: usize,
 }
 
@@ -76,15 +81,64 @@ impl Receipt {
         }
         match (&self.mirror, &self.mirror_error) {
             (Some(id), _) => parts.push(format!("mirror {id}")),
-            (None, Some(e)) => parts.push(format!("MIRROR FAILED: {e}")),
+            (None, Some(e)) => parts.push(format!("MIRROR FAILED: {}", brief_error(e))),
             (None, None) => parts.push("mirror off".into()),
         }
         match (&self.pushed, &self.push_error) {
             (Some(w), _) => parts.push(format!("push {w}")),
-            (None, Some(e)) => parts.push(format!("PUSH FAILED: {e}")),
+            (None, Some(e)) => parts.push(format!("PUSH FAILED: {}", brief_error(e))),
             (None, None) => parts.push("push off".into()),
         }
+        match (&self.code_mirror, &self.code_mirror_error) {
+            (Some(id), _) => parts.push(format!("code mirrored {id}")),
+            (None, Some(e)) => parts.push(format!("CODE MIRROR FAILED: {}", brief_error(e))),
+            (None, None) => {}
+        }
         parts.join(" · ")
+    }
+}
+
+/// One short line, safe to commit to a **public** repository.
+///
+/// Two reasons, both learned the hard way on 2026-08-26, when the render box
+/// went offline and every 10 minutes a bank wrote the bridge's whole retry
+/// transcript into the journal:
+///
+/// 1. **A transport's error body is not ours to publish.** The bridge is
+///    credentialed, and a failing credentialed call can echo request context.
+///    Everywhere else in this crate refuses to fold a bridge error body into a
+///    result; the receipt was the hole in that rule, and the receipt is the one
+///    string that gets committed and pushed.
+/// 2. **A multi-line error breaks the page a human reads.** It is banked into a
+///    record log and rendered into a markdown table; a newline in it corrupts
+///    both, precisely when something is wrong.
+///
+/// The full text still reaches the operator: the supervisor prints it to its
+/// own stderr, which stays on the box.
+pub fn brief_error(e: &str) -> String {
+    let flat: String = e
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .collect();
+    let mut squeezed = String::new();
+    for c in flat.chars() {
+        if c == ' ' && squeezed.ends_with(' ') {
+            continue;
+        }
+        squeezed.push(c);
+    }
+    let squeezed = squeezed.trim().to_string();
+    // A recognised shape says the operative fact in four words. Anything else
+    // is truncated rather than interpreted — a guess about an unknown error is
+    // worse than the first 160 characters of it.
+    if squeezed.contains("instance offline") {
+        return "the render box is offline (bridge reports instance offline)".into();
+    }
+    if squeezed.chars().count() > 160 {
+        let cut: String = squeezed.chars().take(160).collect();
+        format!("{cut}…")
+    } else {
+        squeezed
     }
 }
 
@@ -671,7 +725,50 @@ pub fn bank(l: &Layout, node: &str, o: &Options) -> Result<Receipt, String> {
         },
     }
 
+    // When the push route is down, the *state* is still safe — the paste
+    // mirror carries it — but any COMMIT that is not state (a harness fix, a
+    // new tool) exists only on this box, and this box is designed to be thrown
+    // away at the end of its lease. Send the commits down the transport that
+    // still works. Only when the head has moved since the last one: a code
+    // pack per bank would be a paste every ten minutes saying the same thing.
+    if r.push_error.is_some() {
+        match code_mirror_if_new(l, node, &o.branch) {
+            Ok(Some(id)) => r.code_mirror = Some(id),
+            Ok(None) => {}
+            Err(e) => r.code_mirror_error = Some(brief_error(&e)),
+        }
+    }
+
     Ok(r)
+}
+
+/// Mirror unpushed commits as a code pack, unless this head was already sent.
+///
+/// "Already sent" is read from the journal rather than kept in memory: the
+/// supervisor restarts, and a restart that re-sends every pack would be the
+/// same bug as the budget that re-counted its resume point.
+pub fn code_mirror_if_new(l: &Layout, node: &str, branch: &str) -> Result<Option<String>, String> {
+    let Some(pack) = codemirror::build(&l.repo, branch)? else {
+        return Ok(None);
+    };
+    let already = crate::log::read_all(&l.journal_dir())?
+        .iter()
+        .any(|rec| rec.kind == "code_mirror" && rec.get("head") == Some(pack.head.as_str()));
+    if already {
+        return Ok(None);
+    }
+    let id = codemirror::publish(node, &pack)?;
+    let lg = crate::log::Log::shard(&l.journal_dir(), node, crate::time::now())
+        .map_err(|e| e.to_string())?;
+    lg.append(
+        &crate::rec::Rec::new("code_mirror")
+            .f("head", &pack.head)
+            .f("base", &pack.base)
+            .f("paste", &id)
+            .f("bytes", pack.bytes),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Some(id))
 }
 
 #[cfg(test)]
@@ -683,6 +780,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn a_banked_receipt_never_carries_a_transports_error_body() {
+        // The receipt is committed to a PUBLIC repo and rendered into a
+        // markdown table. A credentialed transport's error body belongs in
+        // neither: it can echo request context, and it is multi-line.
+        let r = Receipt {
+            push_error: Some(
+                "/bin/wsx push /tmp/x.bundle exited 1: wsx: retrying (remote command failed \
+                 (exit status: 1): printf %s \"$HOME\"\n  stderr: [whitestick] error: instance \
+                 offline)\n\nwsx: gave up"
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        let s = r.summary();
+        assert!(!s.contains('\n'), "one line: {s}");
+        assert!(s.contains("PUSH FAILED"), "{s}");
+        assert!(s.contains("render box is offline"), "{s}");
+        assert!(!s.contains("$HOME"), "no request context: {s}");
+
+        // An unrecognised error is truncated, not interpreted.
+        let long = "x".repeat(500);
+        let r2 = Receipt { push_error: Some(long), ..Default::default() };
+        let s2 = r2.summary();
+        assert!(s2.chars().count() < 260, "{}", s2.len());
+        assert!(s2.ends_with('…'), "{s2}");
+    }
+
+    #[test]
+    fn brief_error_squeezes_whitespace() {
+        assert_eq!(brief_error("  a\n\n  b\t c  "), "a b c");
     }
 
     #[test]

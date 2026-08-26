@@ -30,19 +30,49 @@ pub fn render_with(
     now: i64,
     credential: Option<crate::credential::Health>,
 ) -> Result<String, String> {
-    render_inner(l, job, now, credential)
+    render_inner(l, job, now, credential, false)
 }
 
 /// The page as this box sees it, credential included.
 pub fn render_here(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    render_inner(l, job, now, Some(crate::credential::health(&home)))
+    render_inner(l, job, now, Some(crate::credential::health(&home)), true)
 }
 
 /// Test-facing: no claim about any machine's credential.
 #[cfg(test)]
 pub fn render(l: &Layout, job: &Job, now: i64) -> Result<String, String> {
-    render_inner(l, job, now, None)
+    render_inner(l, job, now, None, false)
+}
+
+/// Collapse a value into one line for a markdown table cell.
+///
+/// A bank receipt can carry a multi-line error body from a failing bridge.
+/// Pasted raw into a `|` table it breaks the table, and the page a human reads
+/// stops rendering exactly when something has gone wrong — the one moment it
+/// has to be readable.
+fn one_line(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut last_space = false;
+    for c in s.chars() {
+        let c = if c == '\n' || c == '\r' || c == '\t' || c == '|' { ' ' } else { c };
+        if c == ' ' {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(c);
+            last_space = false;
+        }
+    }
+    let out = out.trim_end().to_string();
+    if out.chars().count() > max {
+        let cut: String = out.chars().take(max).collect();
+        format!("{cut}…")
+    } else {
+        out
+    }
 }
 
 fn render_inner(
@@ -50,9 +80,23 @@ fn render_inner(
     job: &Job,
     now: i64,
     credential: Option<crate::credential::Health>,
+    this_box: bool,
 ) -> Result<String, String> {
     let r = state::reconstruct(l, now)?;
-    let v = &r.view;
+    // The alarms table and the "GitHub banking" row must be two views of ONE
+    // judgement. Before 2026-08-26 the row consulted the credential and the
+    // table did not, so a page could say **DEGRADED** at the top and "None
+    // firing" six lines below — the reader's only summary, disagreeing with
+    // itself about whether anything was wrong.
+    let mut v = r.view.clone();
+    if let Some(h) = &credential {
+        v.credential = Some(h.ok());
+    }
+    if this_box {
+        v.supervisor_here = Some(crate::beat::watch_pid().is_some());
+        v.this_node = Some(crate::paths::node_id());
+    }
+    let v = &v;
     let fired = alarms::evaluate(v, &job.alarms);
     let counters = budget::total_for(&l.budget_dir(), Some(&job.budget_key))?;
     let boxes = lease::all(l)?;
@@ -131,7 +175,11 @@ fn render_inner(
     s.push_str(&format!(
         "| last banked | {} |\n",
         v.last_bank
-            .map(|t| format!("{} ago — {}", dur(now - t), r.last_bank_receipt.clone().unwrap_or_default()))
+            .map(|t| format!(
+                "{} ago — {}",
+                dur(now - t),
+                one_line(&r.last_bank_receipt.clone().unwrap_or_default(), 240)
+            ))
             .unwrap_or_else(|| "**never**".into())
     ));
     s.push('\n');
@@ -380,6 +428,75 @@ mod tests {
             "{page}"
         );
         assert!(!page.contains("0.0 evals/s"), "{page}");
+    }
+
+    #[test]
+    fn a_degraded_bridge_appears_in_the_alarms_table_not_only_in_the_banking_row() {
+        // The defect this pins down, seen for real on 2026-08-26: the page said
+        // "GitHub banking: **DEGRADED**" in the summary table and "None firing"
+        // in the alarms section of the same render. The two came from different
+        // views of the world — the row consulted the credential, the alarm
+        // evaluation did not — so the page contradicted itself about whether
+        // anything was wrong, and the alarms section, which is where a reader
+        // looks, said no.
+        let l = layout("degraded-bridge");
+        let log = Log::shard(&l.journal_dir(), "boxA", 1).unwrap();
+        let now = 1_800_000_000;
+        log.append(&Rec::at(now - 7200, "run_start").f("start_dev_m", 0.9)).unwrap();
+        for i in 0..=120 {
+            log.append(
+                &Rec::at(now - 7200 + i * 60, "sample")
+                    .f("evals", i as u64 * 600)
+                    .f("best", 20 + i)
+                    .f("disk_free_mb", 200_000)
+                    .f("worker_alive", 1),
+            )
+            .unwrap();
+        }
+        log.append(&Rec::at(now - 300, "bank").f("receipt", "commit deadbeef · mirror P1")).unwrap();
+        crate::lease::register_at(&l, "boxA", now - 60, Some(now + 3600), "test").unwrap();
+
+        let down = crate::credential::Health::BridgeDown("the probe was sent and the bridge did not answer it");
+        let page = render_with(&l, &Job::default(), now, Some(down)).unwrap();
+        assert!(page.contains("**DEGRADED**"), "{page}");
+        assert!(page.contains("banking_degraded"), "the alarm must be on the page: {page}");
+        assert!(!page.contains("None firing"), "the page must not contradict itself: {page}");
+
+        // Control: the same page with a working bridge says neither thing.
+        let page_ok = render_with(&l, &Job::default(), now, Some(crate::credential::Health::Working)).unwrap();
+        assert!(page_ok.contains("None firing"), "{page_ok}");
+        assert!(!page_ok.contains("**DEGRADED**"), "{page_ok}");
+    }
+
+    #[test]
+    fn a_multi_line_bank_receipt_cannot_break_the_table() {
+        // A failing bridge writes a retry transcript into the receipt. Rendered
+        // raw into a `|` table it breaks the page exactly when the page matters.
+        let l = layout("ugly-receipt");
+        let log = Log::shard(&l.journal_dir(), "boxA", 1).unwrap();
+        let now = 1_800_000_000;
+        log.append(&Rec::at(now - 300, "sample").f("evals", 10).f("worker_alive", 1)).unwrap();
+        log.append(
+            &Rec::at(now - 300, "bank")
+                .f("receipt", "commit abc · PUSH FAILED: wsx: retrying\n  stderr: offline\nwsx: gave | up"),
+        )
+        .unwrap();
+        let page = render(&l, &Job::default(), now).unwrap();
+        let row = page
+            .lines()
+            .find(|l| l.starts_with("| last banked |"))
+            .expect("the row must exist");
+        assert!(row.ends_with(" |"), "the row must be one closed table cell: {row}");
+        assert!(!row.contains("stderr: offline |"), "no stray pipe from the body: {row}");
+        assert!(row.contains("PUSH FAILED"), "and it must still say what happened: {row}");
+    }
+
+    #[test]
+    fn one_line_collapses_and_caps() {
+        assert_eq!(one_line("a\nb\tc", 80), "a b c");
+        assert_eq!(one_line("a   b", 80), "a b");
+        assert_eq!(one_line("a|b", 80), "a b");
+        assert_eq!(one_line("abcdef", 3), "abc…");
     }
 
     #[test]
