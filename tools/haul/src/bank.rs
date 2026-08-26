@@ -465,16 +465,27 @@ fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> 
     let stamp = format!("{}-{}", std::process::id(), crate::time::now());
     let bundle = std::env::temp_dir().join(format!("tmhaul-{stamp}.bundle"));
     let _ = std::fs::remove_file(&bundle);
-    git(&l.repo, &["bundle", "create", &bundle.to_string_lossy(), branch])?;
-    // The sha the bundle ACTUALLY carries, read at the moment it was built.
+
+    // RESOLVE THE SHA FIRST, THEN BUNDLE THAT EXACT SHA.
     //
-    // Re-reading HEAD after the push compares the wrong two things: a
-    // supervisor banking concurrently moves HEAD between the bundle and the
-    // check, and the push is then reported as "the bundle did not carry what
-    // we think it did" when it carried exactly the right commits. The claim
-    // worth checking is that the box pushed WHAT WE SENT — not that our HEAD
-    // has stood still, which on a live box it will not.
+    // Bundling `branch` and then asking what `branch` points at is two reads
+    // of a moving target. A supervisor banking concurrently commits between
+    // them — observed: the bundle carried the heartbeat's commit and the
+    // rev-parse eight seconds later returned the supervisor's, and the push
+    // was reported as a failed transfer when it had delivered exactly what it
+    // was given.
+    //
+    // This is the SECOND time this check has cried wolf: first comparing
+    // against HEAD after the push, now against the branch after the bundle.
+    // Narrowing the window was the wrong instinct both times. Pinning the sha
+    // into a ref of our own closes it by construction — the bundle cannot
+    // carry anything else, whatever the branch does next.
     let sent_sha = git(&l.repo, &["rev-parse", branch])?.stdout.trim().to_string();
+    let send_ref = format!("refs/tmhaul/send-{stamp}");
+    git(&l.repo, &["update-ref", &send_ref, &sent_sha])?;
+    let bundled = git(&l.repo, &["bundle", "create", &bundle.to_string_lossy(), &send_ref]);
+    let _ = git(&l.repo, &["update-ref", "-d", &send_ref]);
+    bundled?;
     let local_md5 = md5_file(&bundle).map_err(|e| e.to_string())?;
 
     let remote_bundle = format!("~/tmhaul-{stamp}.bundle");
@@ -489,7 +500,7 @@ fn push_via_whitestick_once(l: &Layout, branch: &str) -> Result<String, String> 
         "set -e; \
          if [ ! -d ~/haul-push ]; then git clone -q github-tmtas:vjeux/trackmania-tas.git ~/haul-push; fi; \
          cd ~/haul-push; \
-         git fetch {remote_bundle} +{branch}:refs/heads/tmhaul-incoming; \
+         git fetch {remote_bundle} +{send_ref}:refs/heads/tmhaul-incoming; \
          git push origin refs/heads/tmhaul-incoming:refs/heads/{branch}; \
          git rev-parse refs/heads/tmhaul-incoming; \
          rm -f {remote_bundle}"
