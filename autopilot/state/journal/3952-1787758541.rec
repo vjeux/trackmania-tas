@@ -1,8 +1,8 @@
-2026-08-26T15:35:41Z	worker_start	pid=245665	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=37159	resume_best=113
 2026-08-26T15:35:41Z	run_start	node=3952	binary_built=2026-08-26T15:31:44Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-26T15:35:41Z	worker_start	pid=245665	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=37159	resume_best=113
 2026-08-26T15:35:46Z	bank	why=run start	receipt=commit 84f8f8811df9 · mirror P2476807372 · push off
-2026-08-26T15:36:46Z	sample	evals=37212	worker_alive=1	node=3952	best=51	disk_free_mb=274905
 2026-08-26T15:36:46Z	alarm	id=banking_degraded	detail=no usable bridge credential on this box, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T15:36:46Z	sample	evals=37212	worker_alive=1	node=3952	best=51	disk_free_mb=274905
 2026-08-26T15:37:46Z	sample	evals=37246	worker_alive=1	node=3952	best=85	disk_free_mb=274894
 2026-08-26T15:38:46Z	sample	evals=37273	worker_alive=1	node=3952	best=112	disk_free_mb=274923
 2026-08-26T15:39:47Z	sample	evals=37273	worker_alive=1	node=3952	best=112	disk_free_mb=274900
@@ -254,3 +254,14 @@
 2026-08-26T19:30:08Z	sample	evals=40579	worker_alive=1	node=3952	best=112	disk_free_mb=274844
 2026-08-26T19:31:10Z	sample	evals=40579	worker_alive=1	node=3952	best=112	disk_free_mb=274844
 2026-08-26T19:32:10Z	sample	evals=40579	worker_alive=1	node=3952	best=112	disk_free_mb=274774
+2026-08-26T19:32:29Z	bank	why=periodic	receipt=commit a07ffaba9030 · mirror P2477055327 · PUSH FAILED: the render box is offline (bridge reports instance offline) · code mirrored P2477055726
+2026-08-26T19:33:29Z	sample	evals=40632	worker_alive=1	node=3952	best=51	disk_free_mb=274704
+2026-08-26T19:34:29Z	sample	evals=40668	worker_alive=1	node=3952	best=87	disk_free_mb=273991
+2026-08-26T19:35:30Z	sample	evals=40693	worker_alive=1	node=3952	best=112	disk_free_mb=273989
+2026-08-26T19:36:30Z	sample	evals=40693	worker_alive=1	node=3952	best=112	disk_free_mb=273987
+2026-08-26T19:37:30Z	sample	evals=40693	worker_alive=1	node=3952	best=112	disk_free_mb=274014
+2026-08-26T19:38:31Z	sample	evals=40693	worker_alive=1	node=3952	best=112	disk_free_mb=273975
+2026-08-26T19:39:31Z	sample	evals=40693	worker_alive=1	node=3952	best=112	disk_free_mb=274005
+2026-08-26T19:40:31Z	sample	evals=40700	worker_alive=1	node=3952	best=7	disk_free_mb=274002
+2026-08-26T19:41:32Z	sample	evals=40746	worker_alive=1	node=3952	best=51	disk_free_mb=274064
+2026-08-26T19:42:32Z	sample	evals=40782	worker_alive=1	node=3952	best=87	disk_free_mb=273993
