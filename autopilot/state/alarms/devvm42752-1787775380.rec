@@ -1,2 +1,3 @@
 2026-08-26T20:19:06Z	alarm	id=banking_degraded	severity=warn	detail=no usable bridge credential on this box, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
 2026-08-26T21:01:08Z	alarm_clear	id=banking_degraded
+2026-08-26T21:14:03Z	alarm	id=banking_degraded	severity=warn	detail=the bridge credential on this box is fine; the BRIDGE is not answering — the render box it runs on is off or unreachable. Nothing on this box can fix that and no work is at risk: state still rides the paste mirror, and unpushed commits go with it (`tmhaul code status`). What is stale is the GitHub repo a human reads
