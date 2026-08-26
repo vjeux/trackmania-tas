@@ -1,1 +1,2 @@
 2026-08-26T05:46:46Z	alarm	id=banking_degraded	severity=warn	detail=the bridge credential is missing or the bridge does not answer, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T05:49:46Z	alarm_clear	id=banking_degraded
