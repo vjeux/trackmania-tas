@@ -1,2 +1,9 @@
 2026-08-26T05:35:43Z	worker_start	pid=216064	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=28751	resume_best=113
 2026-08-26T05:35:43Z	run_start	node=56655	binary_built=2026-08-26T05:35:04Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-26T05:35:49Z	bank	why=run start	receipt=commit cc2bc899413a · mirror P2476359433 · push off
+2026-08-26T05:36:49Z	sample	evals=28797	worker_alive=1	node=56655	best=44	disk_free_mb=378199
+2026-08-26T05:36:49Z	alarm	id=banking_degraded	detail=the bridge credential is missing or the bridge does not answer, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T05:36:49Z	alarm	id=supervisor_died	detail=the run is active and this box wrote its last sample, but no supervisor process is alive here. Nothing is banking or watching the worker: `tmhaul watch --detach --lease-expires <expiry>` (last sample 2026-08-26T05:36:49Z)
+2026-08-26T05:37:49Z	sample	evals=28821	worker_alive=1	node=56655	best=68	disk_free_mb=378196
+2026-08-26T05:38:49Z	sample	evals=28851	worker_alive=1	node=56655	best=98	disk_free_mb=378192
+2026-08-26T05:38:49Z	run_stop	why=stop file	node=56655
