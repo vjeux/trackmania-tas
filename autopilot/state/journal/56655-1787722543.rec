@@ -7,3 +7,5 @@
 2026-08-26T05:37:49Z	sample	evals=28821	worker_alive=1	node=56655	best=68	disk_free_mb=378196
 2026-08-26T05:38:49Z	sample	evals=28851	worker_alive=1	node=56655	best=98	disk_free_mb=378192
 2026-08-26T05:38:49Z	run_stop	why=stop file	node=56655
+2026-08-26T05:38:54Z	bank	why=stand down	receipt=commit 61350a2f45bc · mirror P2476362321 · push off
+2026-08-26T05:38:59Z	verified	result=every banked file matches its md5 in the commit
