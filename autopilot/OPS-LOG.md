@@ -5,6 +5,30 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## Narrowing a race is not closing it — pin the thing, do not re-read it
+
+The bundle-integrity check has now cried wolf twice on perfectly good pushes.
+
+* **First:** it compared the bundle against `HEAD` re-read *after* the push. A
+  concurrent supervisor bank moved `HEAD` in between.
+* **Then I "fixed" it** by reading the branch immediately after building the
+  bundle. Smaller window, same race — and it fired again: the bundle carried
+  the heartbeat's commit `ccb64ee`, the supervisor committed `07eaef7` eight
+  seconds later, and the rev-parse returned the wrong one. A transfer that
+  delivered exactly what it was handed was reported as a failed transfer.
+
+**Narrowing the window was the wrong instinct both times.** Two reads of a
+moving target are a race however close together they are. The sha is now
+resolved once, written to `refs/tmhaul/send-<stamp>`, and *that ref* is what
+gets bundled and fetched — the bundle cannot carry anything else, whatever the
+branch does next. The ref is deleted immediately, so a crashed push leaves no
+litter.
+
+The general form: **when a check compares "what I sent" with "what arrived",
+the sent side must be pinned, not looked up again.** And a check that fires on
+healthy operation is worse than no check — it is the second time this one has
+sent me hunting a transport bug that did not exist.
+
 ## One `/proc` scan, two opposite questions, both wrong in turn
 
 `watch_pid()` skipped its own pid. That is right for `beat`, which asks
