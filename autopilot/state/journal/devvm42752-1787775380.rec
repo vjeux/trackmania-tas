@@ -66,3 +66,8 @@
 2026-08-26T21:23:23Z	sample	evals=41730	worker_alive=1	node=devvm42752	best=35	disk_free_mb=1159804
 2026-08-26T21:24:24Z	sample	evals=41750	worker_alive=1	node=devvm42752	best=54	disk_free_mb=1159893
 2026-08-26T21:25:24Z	sample	evals=41788	worker_alive=1	node=devvm42752	best=92	disk_free_mb=1159957
+2026-08-26T21:25:40Z	bank	why=periodic	receipt=commit b353a72de530 · mirror P2477179151 · PUSH FAILED: the render box is offline (bridge reports instance offline)
+2026-08-26T21:26:40Z	sample	evals=41808	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159898
+2026-08-26T21:27:40Z	sample	evals=41808	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159410
+2026-08-26T21:28:41Z	sample	evals=41808	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159399
+2026-08-26T21:29:41Z	sample	evals=41808	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159389
