@@ -58464,3 +58464,70 @@
 2026-08-26T09:27:05Z	resim	map=impossible mini trial 2	file=TAS_21918_analog.Ghost.Gbx	verdict=holds	detail=21.918
 2026-08-26T09:27:05Z	resim	map=impossible mini trial 2	file=TAS_22290_thinned.Ghost.Gbx	verdict=holds	detail=22.290
 2026-08-26T09:27:05Z	resim	map=impossible mini trial 2	file=TAS_22698_lowinput.Ghost.Gbx	verdict=holds	detail=22.698
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=KEYBOARD_10788.Ghost.Gbx	verdict=holds	detail=10.788
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=KEYBOARD_10897.Ghost.Gbx	verdict=holds	detail=10.897
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=TAS_10758.Ghost.Gbx	verdict=holds	detail=10.758
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=TAS_10759.Ghost.Gbx	verdict=holds	detail=10.759
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=TAS_10768.Ghost.Gbx	verdict=holds	detail=10.768
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=TAS_10769.Ghost.Gbx	verdict=holds	detail=10.769
+2026-08-26T09:27:10Z	resim	map=bald turtle 35	file=TAS_10859.Ghost.Gbx	verdict=holds	detail=10.859
+2026-08-26T09:27:10Z	resim	map=fall 2025 16 cp1 end	file=m270051_4830.Ghost.Gbx	verdict=UNMEASURED	detail=m270051_4830.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:10Z	resim	map=fall 2025 16 cp1 end	file=m270051_human_shaped_4831.Ghost.Gbx	verdict=UNMEASURED	detail=m270051_human_shaped_4831.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:10Z	resim	map=fall 2025 16 cp1 end	file=m270051_keyboard_4834.Ghost.Gbx	verdict=UNMEASURED	detail=m270051_keyboard_4834.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:10Z	resim	map=fall 2025 16 cp1 end	file=m270051_one_input_4832.Ghost.Gbx	verdict=UNMEASURED	detail=m270051_one_input_4832.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:10Z	resim	map=fall 2025 18 cp1 end	file=ablation_early_only_4493.Ghost.Gbx	verdict=UNMEASURED	detail=ablation_early_only_4493.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:10Z	resim	map=fall 2025 18 cp1 end	file=ablation_exit_only_4495.Ghost.Gbx	verdict=UNMEASURED	detail=ablation_exit_only_4495.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:15Z	resim	map=fall 2025 18 cp1 end	file=tas_4492_v1.Ghost.Gbx	verdict=holds	detail=4.492
+2026-08-26T09:27:15Z	resim	map=fall 2025 18 cp1 end	file=tas_4493_singletick_v1.Ghost.Gbx	verdict=holds	detail=4.493
+2026-08-26T09:27:19Z	resim	map=u10s 32 yeet max up	file=KEYBOARD_4input_7514.Ghost.Gbx	verdict=holds	detail=7.514
+2026-08-26T09:27:19Z	resim	map=u10s 32 yeet max up	file=KEYBOARD_7474.Ghost.Gbx	verdict=holds	detail=7.474
+2026-08-26T09:27:19Z	resim	map=u10s 32 yeet max up	file=KEYBOARD_7476.Ghost.Gbx	verdict=holds	detail=7.476
+2026-08-26T09:27:19Z	resim	map=u10s 32 yeet max up	file=TAS_7463.Ghost.Gbx	verdict=holds	detail=7.463
+2026-08-26T09:27:23Z	resim	map=untitled 01	file=TAS_12759.Ghost.Gbx	verdict=holds	detail=12.759
+2026-08-26T09:27:28Z	resim	map=untitled 02	file=TAS_9415.Ghost.Gbx	verdict=holds	detail=9.415
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=ACTIONKEY_5detent_10643.Ghost.Gbx	verdict=UNMEASURED	detail=ACTIONKEY_5detent_10643.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=DETENT16_10602.Ghost.Gbx	verdict=UNMEASURED	detail=DETENT16_10602.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=best_10596.Ghost.Gbx	verdict=UNMEASURED	detail=best_10596.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=best_10597.Ghost.Gbx	verdict=UNMEASURED	detail=best_10597.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=best_10598.Ghost.Gbx	verdict=UNMEASURED	detail=best_10598.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=real_10594.Ghost.Gbx	verdict=UNMEASURED	detail=real_10594.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:28Z	resim	map=fall 2025 01 reverse cp1 end	file=real_10595.Ghost.Gbx	verdict=UNMEASURED	detail=real_10595.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 01 reverse cp1 end	file=KEYBOARD_10636.Ghost.Gbx	verdict=holds	detail=10.636
+2026-08-26T09:27:33Z	resim	map=fall 2025 01 reverse cp1 end	file=KEYBOARD_35ev_10646.Ghost.Gbx	verdict=holds	detail=10.646
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=AK5_6595.Ghost.Gbx	verdict=UNMEASURED	detail=AK5_6595.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=AK7_6591.Ghost.Gbx	verdict=UNMEASURED	detail=AK7_6591.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=KB_SIMPLE_6595.Ghost.Gbx	verdict=UNMEASURED	detail=KB_SIMPLE_6595.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=champ_6578.Ghost.Gbx	verdict=UNMEASURED	detail=champ_6578.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=kb2_best_6595.Ghost.Gbx	verdict=UNMEASURED	detail=kb2_best_6595.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=kb_gasfull.Ghost.Gbx	verdict=UNMEASURED	detail=kb_gasfull.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:33Z	resim	map=fall 2025 13 reverse cp1 end	file=ms_r002_6608_best_6585.Ghost.Gbx	verdict=UNMEASURED	detail=ms_r002_6608_best_6585.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:37Z	resim	map=fall 2025 13 reverse cp1 end	file=BEST_6578_ratcheted.Ghost.Gbx	verdict=holds	detail=6.578
+2026-08-26T09:27:37Z	resim	map=fall 2025 22 reverse cp1 end	file=DRIVABLE_5351_5detents.Ghost.Gbx	verdict=UNMEASURED	detail=DRIVABLE_5351_5detents.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:37Z	resim	map=fall 2025 22 reverse cp1 end	file=best_pC_5348_32098.Ghost.Gbx	verdict=UNMEASURED	detail=best_pC_5348_32098.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:37Z	resim	map=fall 2025 22 reverse cp1 end	file=best_pF_5347_32087.Ghost.Gbx	verdict=UNMEASURED	detail=best_pF_5347_32087.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:42Z	resim	map=fall 2025 22 reverse cp1 end	file=KEYBOARD_5350_equals_AT.Ghost.Gbx	verdict=holds	detail=5.350
+2026-08-26T09:27:42Z	resim	map=fall 2025 22 reverse cp1 end	file=KEYBOARD_5352_11events.Ghost.Gbx	verdict=holds	detail=5.352
+2026-08-26T09:27:48Z	resim	map=you love water	file=TAS_97325.Ghost.Gbx	verdict=holds	detail=97.325
+2026-08-26T09:27:48Z	resim	map=you love water	file=TAS_97325_carrier.Ghost.Gbx	verdict=holds	detail=97.325
+2026-08-26T09:27:48Z	resim	map=pain ft mango teuflum	file=HUMAN_rank2_keyboard_49491.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:54Z	resim	map=pain ft mango teuflum	file=KEYBOARD_49475.Ghost.Gbx	verdict=holds	detail=49.475
+2026-08-26T09:27:54Z	resim	map=pain ft mango teuflum	file=TAS_49275.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T09:27:54Z	resim	map=pain ft mango teuflum	file=TAS_49275_independent.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T09:27:54Z	resim	map=pain ft mango teuflum	file=TAS_49275_regenerated.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T09:27:54Z	resim	map=pain ft mango teuflum	file=TAS_49278.Ghost.Gbx	verdict=holds	detail=49.278
+2026-08-26T09:27:54Z	resim	map=finish is on the roof	file=POKE_1input_50659.Ghost.Gbx	verdict=UNMEASURED	detail=POKE_1input_50659.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:54Z	resim	map=finish is on the roof	file=TRIGGERPOKE_50469.Ghost.Gbx	verdict=UNMEASURED	detail=TRIGGERPOKE_50469.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:27:59Z	resim	map=finish is on the roof	file=TAS_50229.Ghost.Gbx	verdict=holds	detail=50.229
+2026-08-26T09:27:59Z	resim	map=finish is on the roof	file=TAS_50229_shootable.Ghost.Gbx	verdict=holds	detail=50.229
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=AUTHORCUT_220391.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=AUTHORCUT_220391_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=AUTHORCUT_220821_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=AUTHOR_AT_ghost_from_map_DNF_cps1_DO_NOT_PUBLISH_declares_441002.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=HUMANCUT_236972_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=HUMANCUT_237122_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T09:27:59Z	resim	map=turtle trial leto	file=MINIMAL_832ev_219581.Ghost.Gbx	verdict=UNMEASURED	detail=MINIMAL_832ev_219581.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T09:28:05Z	resim	map=turtle trial leto	file=BEST_218812.Ghost.Gbx	verdict=holds	detail=218.812
+2026-08-26T09:28:05Z	resim	map=turtle trial leto	file=KEYBOARD_218877.Ghost.Gbx	verdict=holds	detail=218.877
+2026-08-26T09:28:05Z	resim	map=turtle trial leto	file=KEYBOARD_235939.Ghost.Gbx	verdict=holds	detail=235.939
+2026-08-26T09:28:05Z	resim	map=turtle trial leto	file=TAS_235625.Ghost.Gbx	verdict=holds	detail=235.625
+2026-08-26T09:28:05Z	resim	map=turtle trial leto	file=TAS_analog26_235814.Ghost.Gbx	verdict=holds	detail=235.814
