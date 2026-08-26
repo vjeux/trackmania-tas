@@ -40807,3 +40807,24 @@
 2026-08-26T00:27:19Z	resim	map=you love water	file=TAS_97325.Ghost.Gbx	verdict=holds	detail=97.325
 2026-08-26T00:27:19Z	resim	map=you love water	file=TAS_97325_carrier.Ghost.Gbx	verdict=holds	detail=97.325
 2026-08-26T00:27:19Z	resim	map=pain ft mango teuflum	file=HUMAN_rank2_keyboard_49491.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:26Z	resim	map=pain ft mango teuflum	file=KEYBOARD_49475.Ghost.Gbx	verdict=holds	detail=49.475
+2026-08-26T00:27:26Z	resim	map=pain ft mango teuflum	file=TAS_49275.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T00:27:26Z	resim	map=pain ft mango teuflum	file=TAS_49275_independent.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T00:27:26Z	resim	map=pain ft mango teuflum	file=TAS_49275_regenerated.Ghost.Gbx	verdict=holds	detail=49.275
+2026-08-26T00:27:26Z	resim	map=pain ft mango teuflum	file=TAS_49278.Ghost.Gbx	verdict=holds	detail=49.278
+2026-08-26T00:27:26Z	resim	map=finish is on the roof	file=POKE_1input_50659.Ghost.Gbx	verdict=UNMEASURED	detail=POKE_1input_50659.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T00:27:26Z	resim	map=finish is on the roof	file=TRIGGERPOKE_50469.Ghost.Gbx	verdict=UNMEASURED	detail=TRIGGERPOKE_50469.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T00:27:32Z	resim	map=finish is on the roof	file=TAS_50229.Ghost.Gbx	verdict=holds	detail=50.229
+2026-08-26T00:27:32Z	resim	map=finish is on the roof	file=TAS_50229_shootable.Ghost.Gbx	verdict=holds	detail=50.229
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=AUTHORCUT_220391.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=AUTHORCUT_220391_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=AUTHORCUT_220821_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=AUTHOR_AT_ghost_from_map_DNF_cps1_DO_NOT_PUBLISH_declares_441002.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=HUMANCUT_236972_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=HUMANCUT_237122_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
+2026-08-26T00:27:32Z	resim	map=turtle trial leto	file=MINIMAL_832ev_219581.Ghost.Gbx	verdict=UNMEASURED	detail=MINIMAL_832ev_219581.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T00:27:39Z	resim	map=turtle trial leto	file=BEST_218812.Ghost.Gbx	verdict=holds	detail=218.812
+2026-08-26T00:27:39Z	resim	map=turtle trial leto	file=KEYBOARD_218877.Ghost.Gbx	verdict=holds	detail=218.877
+2026-08-26T00:27:39Z	resim	map=turtle trial leto	file=KEYBOARD_235939.Ghost.Gbx	verdict=holds	detail=235.939
+2026-08-26T00:27:39Z	resim	map=turtle trial leto	file=TAS_235625.Ghost.Gbx	verdict=holds	detail=235.625
+2026-08-26T00:27:39Z	resim	map=turtle trial leto	file=TAS_analog26_235814.Ghost.Gbx	verdict=holds	detail=235.814
