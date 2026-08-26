@@ -7,19 +7,16 @@ map_name = Summer 2026 - 01
 rung = 1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
 objective = tapes confirmed by the plain oracle this pass
 
-# THE WORK.
+# THE WORK — SHUT DOWN 2026-08-26 AT VJEUX'S REQUEST.
 #
-# Today this is the standing re-simulation sweep: every banked result in the
-# repo, back through the plain oracle, forever. The project's rule is that a
-# result is re-simulated "standing, not a spot check", and until now nothing
-# made that true. It is real work with real throughput and real failure modes.
-#
-# When agent C's rung-1 explorer lands, THIS LINE IS THE WHOLE INTEGRATION:
-# point worker_cmd at it, commit, and the next supervisor pass runs it. The
-# contract a worker must honour is two lines long and is written in
-# tools/haul/src/worker.rs — append progress records to $TMHAUL_PROGRESS, and
-# resume from $TMHAUL_RESUME_EVALS.
-worker_cmd = TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300
+# Empty by design. `tmhaul watch` refuses to start when this is blank, so a
+# stale shell, a copied command, or a future operator cannot accidentally
+# restart the sweep merely because the old process stopped. To start a new job,
+# choose it deliberately, restore this command, and reinstate a scheduler in a
+# separate reviewed change.
+worker_cmd =
+# Last worker, kept here as history rather than executable configuration:
+# TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300
 worker_dir = /tmp/tmtas
 progress_file = /tmp/tmhaul/progress.rec
 

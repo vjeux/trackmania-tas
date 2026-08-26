@@ -1,0 +1,1 @@
+2026-08-26T21:54:39Z	shutdown	note=Autopilot deliberately disabled at vjeux request: scheduler removed, worker_cmd blank, all processes and restart hooks removed.

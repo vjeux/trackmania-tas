@@ -1,5 +1,11 @@
 # The long-haul harness
 
+> **SHUT DOWN 2026-08-26 at vjeux's request.** There is no heartbeat,
+> supervisor, worker, credential-delivery loop, or restart cron. The configured
+> `worker_cmd` is intentionally empty so `tmhaul watch` fails closed. See
+> [SHUTDOWN-2026-08-26.md](SHUTDOWN-2026-08-26.md). Everything below documents
+> the historical system; it is not an instruction to restart it.
+
 *How this project keeps running for months on boxes that live at most eighteen
 hours, with nobody tending it.*
 
