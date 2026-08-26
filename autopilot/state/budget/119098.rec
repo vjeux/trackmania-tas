@@ -405,3 +405,5 @@
 2026-08-26T03:54:29Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
 2026-08-26T03:55:30Z	budget_interval	budget=resim-sweep	delta_evals=51	dt_s=60	productive=1
 2026-08-26T03:56:31Z	budget_interval	budget=resim-sweep	delta_evals=17	dt_s=60	productive=1
+2026-08-26T03:58:45Z	budget_interval	budget=resim-sweep	delta_evals=46	dt_s=60	productive=1
+2026-08-26T03:59:46Z	budget_interval	budget=resim-sweep	delta_evals=0	dt_s=60	productive=0
