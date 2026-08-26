@@ -621,3 +621,31 @@ The sharper question is not *"is it in the state mirror"* but **"could a fresh
 box reproduce this from what it already has?"** STATUS.md is `tmhaul status
 --write` away. Excluded, with the reason written next to it, because the next
 generated file added under `autopilot/` will want the same treatment.
+
+## A requested 12-hour box can come back with 25 minutes
+
+2026-08-26T19:42Z: box 3952 vanished mid-lease, the fourth box to do so. Three
+replacement provisions, including env-provided and ssh placement and an
+explicit 720-minute request, all returned `ondemand_devserver` boxes with
+25–29 minutes left. Renewal failed with `No lease policy configured for this
+devserver type`. A box under the heartbeat's 45-minute floor is not a
+replacement; bootstrapping it spends half its useful life, then asks the next
+heartbeat to do the same thing.
+
+Fallback: separate the credential server from its `/tmp/tmtas` clone
+(`/tmp/tmtas-credential`), recover the newest code bundle and state mirror into
+`/tmp/tmtas` on the long-lived devserver, and run the low-throughput resim
+supervisor there until durable OD capacity returns. The dedicated server was
+refetched; the first pass completed in 3m and resumed at eval 40,896. All three
+short reservations were released rather than allowed to drift.
+
+Why the credential server needed its own clone: it fetches/builds from GitHub
+while the supervisor commits, mirrors and rebases. Two independent services
+writing git metadata in one checkout is a lock race waiting for the minute
+that both need it. A separate clone costs disk and removes the shared mutable
+thing.
+
+The general rule: **the TTL requested is not the TTL granted.** Read the lease
+that came back and refuse anything below the planning floor; never reason from
+the request. When capacity cannot produce the requested class, degrade onto a
+known long-lived host rather than rotate every thirty minutes.
