@@ -186,6 +186,30 @@ fn render_inner(
             ))
             .unwrap_or_else(|| "**never**".into())
     ));
+    // Only when there is something to say. On a healthy day GitHub is level
+    // and a row reading "0 commits at risk" is one more line to scroll past.
+    if this_box {
+        if let Ok(Some(n)) = crate::codemirror::unpushed_code(l, &job.branch) {
+            if n > 0 {
+                let mirrored = crate::log::read_all(&l.journal_dir())
+                    .ok()
+                    .zip(crate::codemirror::content_key(&l.repo).ok())
+                    .map(|(recs, key)| {
+                        recs.iter()
+                            .any(|x| x.kind == "code_mirror" && x.get("key") == Some(key.as_str()))
+                    })
+                    .unwrap_or(false);
+                s.push_str(&format!(
+                    "| commits GitHub has not got | {n} — {} |\n",
+                    if mirrored {
+                        "mirrored to a paste; a fresh box picks them up with `tmhaul code recover`"
+                    } else {
+                        "**not mirrored** — they exist only on this box; run `tmhaul code mirror`"
+                    }
+                ));
+            }
+        }
+    }
     s.push('\n');
 
     // ---- alarms
