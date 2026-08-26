@@ -764,7 +764,7 @@ fn real_main() -> Result<i32, String> {
             // standing down* deletes the flag the first was about to read and
             // leaves both alive. Refuse instead.
             if !a.on("force") {
-                if let Some(pid) = beat::watch_pid() {
+                if let Some(pid) = beat::watch_pid_excluding(Some(std::process::id())) {
                     return Err(format!(
                         "a supervisor is already running on this box (pid {pid}). \
                          Run `tmhaul stop` and wait for it to stand down, or pass --force."

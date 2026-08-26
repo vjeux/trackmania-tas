@@ -176,10 +176,25 @@ pub fn targets(l: &Layout, me: &str, now: i64, stale_after_s: i64) -> Result<Vec
         .filter(|b| !b.retired && b.node != me && now - b.last_seen <= stale_after_s)
         .map(|b| b.node)
         .collect();
-    for n in from_mirrors(me, now, stale_after_s).unwrap_or_default() {
-        if !out.contains(&n) {
-            out.push(n);
+    // A mirror lookup that FAILED is not "no boxes announced themselves".
+    // `.unwrap_or_default()` here made a broken discovery path indistinguishable
+    // from an empty one, and a server whose `meta` call had started failing
+    // went on looking healthy while a box sat degraded for fourteen minutes.
+    // `.ok()?` is `2>/dev/null` with a nicer spelling — this was the same thing
+    // wearing a different hat.
+    match from_mirrors(me, now, stale_after_s) {
+        Ok(ns) => {
+            for n in ns {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
         }
+        Err(e) => eprintln!(
+            "{}  mirror discovery FAILED ({e}) — only the repo registry was consulted, so a box \
+             that cannot push yet is invisible",
+            crate::time::iso(now)
+        ),
     }
     out.sort();
     out.dedup();

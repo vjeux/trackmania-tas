@@ -1,2 +1,7 @@
 2026-08-26T05:45:41Z	worker_start	pid=246974	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	resume_evals=28851	resume_best=113
 2026-08-26T05:45:41Z	run_start	node=56655	binary_built=2026-08-26T05:43:59Z	cmd=TM_SERVER=/tmp/tmoracle/server /tmp/tmtas/tools/target/release/tmresim --repo /tmp/tmtas --results /tmp/tmtas/autopilot/state/frontier/resim-results.rec --loop --pause-s 300	map=Summer 2026 - 01	rung=1 — reach CP1 (the gate at 512 m, station 25 of 97); author time 23.144
+2026-08-26T05:45:46Z	bank	why=run start	receipt=commit 8449459c1316 · mirror P2476368372 · push off
+2026-08-26T05:46:46Z	sample	evals=28904	worker_alive=1	node=56655	best=51	disk_free_mb=378121
+2026-08-26T05:46:46Z	alarm	id=banking_degraded	detail=the bridge credential is missing or the bridge does not answer, so pushes to GitHub are failing. The paste mirror still works, so no work is at risk — but the repo a human reads is going stale. `tmhaul credential check`; the devserver's `tmhaul credential serve` should heal it
+2026-08-26T05:47:46Z	sample	evals=28940	worker_alive=1	node=56655	best=87	disk_free_mb=378120
+2026-08-26T05:48:46Z	sample	evals=28965	worker_alive=1	node=56655	best=112	disk_free_mb=378125

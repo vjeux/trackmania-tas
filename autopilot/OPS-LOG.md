@@ -5,6 +5,39 @@ them. Newest at the top. Each entry: **what broke**, **how it presented**,
 **the fix**. If it cost more than ten minutes, it belongs here.
 
 ---
+## One `/proc` scan, two opposite questions, both wrong in turn
+
+`watch_pid()` skipped its own pid. That is right for `beat`, which asks
+whether *somebody else* is supervising, and wrong for the supervisor, which
+evaluates alarms about *itself* every pass: excluding itself, a perfectly
+healthy supervisor journalled `supervisor_died` on its first pass on every new
+box.
+
+Fixing it by counting itself immediately broke the other caller. The
+`watch --detach` guard is also a `tmhaul … watch …` process, so it found
+itself and refused every start with *"a supervisor is already running"* —
+naming its own pid.
+
+Two live defects, twenty minutes apart, from one function answering a question
+its callers meant differently. `watch_pid_excluding(skip)` makes each caller
+say which it means: the alarm counts itself, the guard does not.
+
+**When a predicate has two callers, check whether they mean the same thing by
+it.** "Is a supervisor running here?" is not one question.
+
+## `.unwrap_or_default()` on a discovery path is the same bug as `.ok()?`
+
+The credential server's mirror discovery — the thing that lets it find a box
+that cannot push its own registration yet — was wired as
+`from_mirrors(...).unwrap_or_default()`. A failed lookup and "nobody announced
+themselves" produced the identical empty list, so a server whose `meta` call
+had started failing kept looking healthy while a fresh box sat DEGRADED.
+
+Now it says so on stderr and falls back to the repo registry explicitly. The
+project's own rule, in a new costume: **an absent answer is not a negative
+answer**, and swallowing the difference is how an instrument fails toward
+clean.
+
 ## Splitting the budget KEY was half a fix: the sweep still measured itself against somebody else's threshold
 
 Yesterday the re-simulation sweep was found spending the archive search's

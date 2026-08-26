@@ -205,13 +205,38 @@ pub fn brief(l: &Layout, job: &Job, now: i64, watch_alive: Option<u32>) -> Resul
 /// Is a `tmhaul watch` running on this box? Read from `/proc`, so it is a fact
 /// about the machine rather than a claim in a file that a crash could have
 /// left behind.
+/// Is a `tmhaul watch` running on this box? Read from `/proc`, so it is a
+/// fact about the machine rather than a claim in a file that a crash could
+/// have left behind.
+///
+/// **It counts THIS process too, and that is not an oversight.** It used to
+/// skip its own pid — sensible for `beat`, which asks about somebody else,
+/// and wrong for the supervisor, which evaluates alarms about itself every
+/// pass. Excluding itself, a perfectly healthy supervisor concluded that no
+/// supervisor was running and journalled `supervisor_died` on its first pass
+/// on every new box. `beat` run from a shell is a different process and gets
+/// the same true answer either way.
 pub fn watch_pid() -> Option<u32> {
-    let me = std::process::id();
+    watch_pid_excluding(None)
+}
+
+/// The same scan, ignoring one pid.
+///
+/// **Two callers ask opposite questions and both are right.**
+/// The supervisor evaluating alarms about itself must COUNT itself, or a
+/// healthy run reports `supervisor_died` on its own first pass. The
+/// `watch --detach` guard, deciding whether somebody else is already
+/// supervising, must NOT count itself — it is a `tmhaul … watch …` process
+/// too, so counting itself makes every start refuse with "a supervisor is
+/// already running", naming its own pid.
+///
+/// Both were live defects, twenty minutes apart, from the same function.
+pub fn watch_pid_excluding(skip: Option<u32>) -> Option<u32> {
     let dir = std::fs::read_dir("/proc").ok()?;
     for e in dir.filter_map(|e| e.ok()) {
         let name = e.file_name().to_string_lossy().to_string();
         let Ok(pid) = name.parse::<u32>() else { continue };
-        if pid == me {
+        if Some(pid) == skip {
             continue;
         }
         let Ok(cmdline) = std::fs::read(e.path().join("cmdline")) else { continue };
@@ -297,5 +322,38 @@ mod tests {
         assert!(!b.critical, "{}", b.text);
         assert!(b.text.contains("pid 4242"));
         assert!(b.actions[0].contains("nothing"), "{:?}", b.actions);
+    }
+}
+
+#[cfg(test)]
+mod watch_pid_tests {
+    use super::*;
+
+    #[test]
+    fn a_process_named_tmhaul_watch_is_found_including_this_one() {
+        // The regression: `watch_pid` skipped its own pid, so the SUPERVISOR
+        // — which evaluates alarms about itself every pass — concluded no
+        // supervisor was running and fired `supervisor_died` on its own first
+        // pass on every new box. The test harness is not named `tmhaul`, so
+        // this asserts the shape of the scan rather than a specific answer:
+        // whatever it returns must be a pid that really is a tmhaul watch.
+        if let Some(pid) = watch_pid() {
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let parts: Vec<String> = cmdline
+                .split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| String::from_utf8_lossy(s).to_string())
+                .collect();
+            assert!(parts[0].ends_with("tmhaul"), "argv[0] was {:?}", parts[0]);
+            assert!(parts.iter().any(|p| p == "watch"), "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn a_shell_command_merely_containing_the_words_is_not_a_supervisor() {
+        // `pgrep -f "release/tmhaul watch"` matches the shell running the
+        // grep. This must not: argv[0] has to BE the binary.
+        let parts = ["/bin/bash", "-c", "pgrep -f 'release/tmhaul watch'"];
+        assert!(!parts[0].ends_with("tmhaul"));
     }
 }
