@@ -16,7 +16,7 @@ eb2fd54eef6482891b94f37cb3c8444c  autopilot/state/boxes/24576.rec
 29b4691d649f5e30487d77daf75eeeb3  autopilot/state/boxes/3952.rec
 6d430421472e4cd8641e2eff316a05c7  autopilot/state/boxes/42504.rec
 56dc55f33d6bfc70e9af3165354b05d3  autopilot/state/boxes/56655.rec
-8068591badd4987cbc8e910bc171ba88  autopilot/state/boxes/devvm42752.rec
+ec8fc80ef4836ddffbc245f0420d5e69  autopilot/state/boxes/devvm42752.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/budget/.gitkeep
 f268e7bd7ff260688f8be3c4e206ee5e  autopilot/state/budget/117796.rec
 67c004e2d492826b6abf2d52d6ece2b1  autopilot/state/budget/119098.rec
@@ -25,9 +25,9 @@ fe7a7b4fa63af7fa283a1d6847047015  autopilot/state/budget/36944.rec
 95b867f277d46b5b35920129c8759ac2  autopilot/state/budget/3952.rec
 a8865825b232b51ba3cf25391dfb4848  autopilot/state/budget/42504.rec
 258c7d7ada57a4eefd858cb83894a49d  autopilot/state/budget/56655.rec
-f303dcd29d1d36ba49dfee717815702a  autopilot/state/budget/devvm42752.rec
+c37bdf265e6f9a7d121ad2843a148a8c  autopilot/state/budget/devvm42752.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/frontier/.gitkeep
-b5e015d4112d9da2461ffb08fd0293a6  autopilot/state/frontier/resim-results.rec
+56283b7ec44d941d48b904a6df06b551  autopilot/state/frontier/resim-results.rec
 d41d8cd98f00b204e9800998ecf8427e  autopilot/state/journal/.gitkeep
 b4197f8f8cbdf1ad9e3c4e8f55a8e1dc  autopilot/state/journal/117796-1787596729.rec
 54cb18f562a69de457445eec9ef23dca  autopilot/state/journal/117796-1787596941.rec
@@ -194,7 +194,7 @@ e1caeffe9451315cafde803f10a90f40  autopilot/state/journal/56655-1787755565.rec
 8aea195bada94d7f1790eec544de0687  autopilot/state/journal/56655-1787756620.rec
 9bfff68574a095e3acbae706043e7ca6  autopilot/state/journal/56655-1787756643.rec
 6a9f6abab447c0f91d1b389eaf8b0009  autopilot/state/journal/56655-1787756659.rec
-306ec5e5b2de42a41e782829a0e6b4f4  autopilot/state/journal/devvm42752-1787775380.rec
+b79598f158bcc84a330c222f5754b0ad  autopilot/state/journal/devvm42752-1787775380.rec
 8736960b9ab31fd61f54ebbc95a7c575  autopilot/state/journal/devvm42752-1787775855.rec
 16fb4a553bcde33c390d1fff9fa877e8  autopilot/state/journal/devvm42752-1787775949.rec
 946856a770f1bcf9c002b43522f5803d  autopilot/state/journal/devvm42752-1787775966.rec
