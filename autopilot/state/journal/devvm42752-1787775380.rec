@@ -78,3 +78,14 @@
 2026-08-26T21:33:45Z	alarm_clear	id=banking_degraded
 2026-08-26T21:34:45Z	sample	evals=41922	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159702
 2026-08-26T21:35:45Z	sample	evals=41922	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159697
+2026-08-26T21:36:54Z	bank	why=periodic	receipt=commit 8850d72cd086 · mirror P2477191401 · push whitestick→github 8850d72cd086 (bundle md5 dce86eb5)
+2026-08-26T21:37:54Z	sample	evals=41922	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1160130
+2026-08-26T21:38:55Z	sample	evals=41922	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1160130
+2026-08-26T21:39:55Z	sample	evals=41939	worker_alive=1	node=devvm42752	best=17	disk_free_mb=1160120
+2026-08-26T21:40:56Z	sample	evals=41975	worker_alive=1	node=devvm42752	best=51	disk_free_mb=1160111
+2026-08-26T21:41:57Z	sample	evals=42002	worker_alive=1	node=devvm42752	best=78	disk_free_mb=1160107
+2026-08-26T21:42:57Z	sample	evals=42031	worker_alive=1	node=devvm42752	best=107	disk_free_mb=1160100
+2026-08-26T21:43:58Z	sample	evals=42036	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159975
+2026-08-26T21:44:59Z	sample	evals=42036	worker_alive=1	node=devvm42752	best=112	disk_free_mb=1159824
+2026-08-26T21:49:39Z	alarm	id=banking_degraded	detail=the bridge credential on this box is fine; the BRIDGE is not answering — the render box it runs on is off or unreachable. Nothing on this box can fix that and no work is at risk: state still rides the paste mirror, and unpushed commits go with it (`tmhaul code status`). What is stale is the GitHub repo a human reads
+2026-08-26T21:49:39Z	run_stop	why=stop file	node=devvm42752
