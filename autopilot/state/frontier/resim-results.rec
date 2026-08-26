@@ -68768,3 +68768,8 @@
 2026-08-26T17:28:17Z	resim	map=turtle trial leto	file=HUMANCUT_236972_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
 2026-08-26T17:28:17Z	resim	map=turtle trial leto	file=HUMANCUT_237122_watchable.Ghost.Gbx	verdict=refused-human-ghost	detail=a human drove it; not read
 2026-08-26T17:28:17Z	resim	map=turtle trial leto	file=MINIMAL_832ev_219581.Ghost.Gbx	verdict=UNMEASURED	detail=MINIMAL_832ev_219581.Ghost.Gbx: nothing in the name places this file. It is not read — an unplaceable tape is refused, not assumed to be ours
+2026-08-26T17:28:23Z	resim	map=turtle trial leto	file=BEST_218812.Ghost.Gbx	verdict=holds	detail=218.812
+2026-08-26T17:28:23Z	resim	map=turtle trial leto	file=KEYBOARD_218877.Ghost.Gbx	verdict=holds	detail=218.877
+2026-08-26T17:28:23Z	resim	map=turtle trial leto	file=KEYBOARD_235939.Ghost.Gbx	verdict=holds	detail=235.939
+2026-08-26T17:28:23Z	resim	map=turtle trial leto	file=TAS_235625.Ghost.Gbx	verdict=holds	detail=235.625
+2026-08-26T17:28:23Z	resim	map=turtle trial leto	file=TAS_analog26_235814.Ghost.Gbx	verdict=holds	detail=235.814

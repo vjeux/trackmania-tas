@@ -142,6 +142,21 @@ fn scratch(kind: &str, ext: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("tmhaul-{kind}-{}-{nanos}-{n}.{ext}", std::process::id()))
 }
 
+/// Paths under `autopilot/` that the key ignores, and why each one.
+///
+/// The rule is not "is it in the state mirror" but the sharper question
+/// **"could a fresh box reproduce this from what it already has?"** — because
+/// that is what makes losing it harmless.
+const DERIVED: &[&str] = &[
+    // `state/` rides the HAULPACK mirror; that is the whole division of labour.
+    "state",
+    // STATUS.md is `tmhaul status --write` away, from state alone. It also
+    // regenerates on EVERY heartbeat, so counting it published a code paste
+    // every thirty minutes about source nobody had touched — the exact flood
+    // the content key exists to prevent, sneaking in through a generated file.
+    "STATUS.md",
+];
+
 /// A digest of everything in the repo that the STATE mirror does not carry.
 ///
 /// Why not just the head sha: while the push route is down, the supervisor
@@ -150,10 +165,10 @@ fn scratch(kind: &str, ext: &str) -> std::path::PathBuf {
 /// same thing about the same source — 144 a day, each one indistinguishable
 /// from a real change.
 ///
-/// The state mirror carries `autopilot/state/` and nothing else, so what is at
-/// risk on this box is: `tools/` (the harness itself) and everything under
-/// `autopilot/` that is not `state/` (HARNESS.md, OPS-LOG.md, the job spec,
-/// the map registry — the documents a fresh box and a human both need).
+/// So the key covers what is genuinely at risk on this box: `tools/` (the
+/// harness itself) and everything under `autopilot/` that is neither state nor
+/// derived from it (HARNESS.md, OPS-LOG.md, the job spec, the map registry —
+/// the documents a fresh box and a human both need).
 pub fn content_key(repo: &Path) -> Result<String, String> {
     let tools = git(repo, &["rev-parse", "HEAD:tools"])
         .map(|o| o.stdout.trim().to_string())
@@ -165,7 +180,7 @@ pub fn content_key(repo: &Path) -> Result<String, String> {
     for line in autopilot.lines() {
         // `<mode> <type> <sha>\t<name>`
         let name = line.split('\t').nth(1).unwrap_or("");
-        if name == "state" {
+        if DERIVED.contains(&name) {
             continue;
         }
         material.push_str(line.trim());
@@ -492,6 +507,16 @@ mod tests {
         g(&a, &["add", "-A"]);
         g(&a, &["commit", "-q", "-m", "autopilot: periodic"]);
         assert_eq!(content_key(&a).unwrap(), k0, "state churn is not new code");
+
+        // A heartbeat regenerating the status page. It lives outside state/,
+        // but it is `tmhaul status --write` away from being reproduced — and
+        // it changes every thirty minutes, so counting it published a code
+        // paste per heartbeat about source nobody had touched. Observed, and
+        // fixed, on 2026-08-26.
+        std::fs::write(a.join("autopilot/STATUS.md"), "# status\n\n0.23 evals/s\n").unwrap();
+        g(&a, &["add", "-A"]);
+        g(&a, &["commit", "-q", "-m", "autopilot: heartbeat"]);
+        assert_eq!(content_key(&a).unwrap(), k0, "a regenerated page is not new code");
 
         // A source change.
         std::fs::write(a.join("tools/haul/src/lib.rs"), "// v2").unwrap();
