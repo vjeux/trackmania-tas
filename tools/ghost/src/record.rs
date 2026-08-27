@@ -228,6 +228,24 @@ pub fn cmd(a: &[String]) {
                 Err(e) => die(e),
             }
         }
+        Some("from-csv") => {
+            let inp = a.get(1).unwrap_or_else(|| {
+                die("ghost record from-csv IN OUT --csv TRACE.csv [--tol MS]")
+            });
+            let out = a.get(2).unwrap_or_else(|| {
+                die("ghost record from-csv IN OUT --csv TRACE.csv [--tol MS]")
+            });
+            let csv = flag(a, "--csv").unwrap_or_else(|| {
+                die("ghost record from-csv needs --csv TRACE.csv -- a trajectory CSV with \
+                     time_ms,x,y,z,vx,vy,vz,qx,qy,qz,qw, the shape `fk trace` and \
+                     `tmtraj export` write")
+            });
+            let tol: i32 = flag(a, "--tol").map_or(25, |s| s.parse().expect("--tol MS"));
+            match from_csv(inp, out, &csv, tol) {
+                Ok(m) => println!("{out}: {m}"),
+                Err(e) => die(e),
+            }
+        }
         Some("resample") => {
             let inp = a.get(1).unwrap_or_else(|| {
                 die("ghost record resample IN OUT --from SRC.Ghost.Gbx")
@@ -337,6 +355,16 @@ pub fn cmd(a: &[String]) {
              \x20                            -- put SRC's car samples into IN's record, instant\n\
              \x20                               for instant, changing nothing else. The way to\n\
              \x20                               film a run whose own record the client refuses\n\
+             ghost record from-csv IN OUT --csv TRACE.csv [--tol MS]\n\
+             \x20                            -- write a TRAJECTORY CSV's position, orientation\n\
+             \x20                               and velocity into IN's record, instant for\n\
+             \x20                               instant. The way to film a run whose engine\n\
+             \x20                               trace exists as a CSV and whose own container\n\
+             \x20                               the client refuses: rebuild a container the\n\
+             \x20                               client accepts to the run's span, then write\n\
+             \x20                               the run into it. Instants outside the CSV's own\n\
+             \x20                               span HOLD its first/last row, and the count is\n\
+             \x20                               reported rather than hidden\n\
              ghost record blob FILE OUT   -- the DECOMPRESSED record payload, for telling a\n\
              \x20                               changed zlib stream from a changed record\n\
              ghost record show FILE",
@@ -365,6 +393,183 @@ fn seed_x(inp: &str, out: &str, dx: f32) -> Result<String, String> {
     Ok(format!(
         "first vehicle sample x {before:.6} -> {:.6}; every other field untouched",
         before + dx
+    ))
+}
+
+/// Write a trajectory CSV into a container's car record, instant for instant.
+///
+/// This exists because a run can have a TRUE trajectory and no container the
+/// client will import. Haystack 6's 278-move route is the case: the tape's own
+/// synthesised container carries 6 skippable chunks where a game-recorded one
+/// carries 24, and the client dies at `Trackmania.exe+0xd3788a` on import
+/// whatever the record holds -- measured with the map and a game-recorded ghost
+/// as controls, so it is the container and not the map, the length, the sample
+/// count or the entity count. `ghost record rebuild` a container the client
+/// DOES accept out to the run's span, write the run into it with this, and the
+/// scene is the run.
+///
+/// It is not a regeneration and it does not pretend to be: nothing here runs an
+/// engine. The CSV is the answer somebody else measured, and this command's
+/// whole job is to put it in the file without changing it. So it reads back the
+/// file it wrote and refuses unless the first and last written samples decode
+/// to the positions the CSV asked for -- the encoding is lossy by construction
+/// (`write_transform` says how), and a claim that the record IS the trace has to
+/// be checked against the bytes on disk rather than against the intent.
+pub fn from_csv(inp: &str, out: &str, csv: &str, tol_ms: i32) -> Result<String, String> {
+    let text = std::fs::read_to_string(csv).map_err(|e| format!("{csv}: {e}"))?;
+    let mut lines = text.lines();
+    let hdr = lines.next().ok_or_else(|| format!("{csv} is empty"))?;
+    let cols: Vec<&str> = hdr.split(',').map(str::trim).collect();
+    let idx = |n: &str| {
+        cols.iter()
+            .position(|c| *c == n)
+            .ok_or_else(|| format!("{csv} has no column {n:?}; it has: {}", cols.join(",")))
+    };
+    let (it, ix, iy, iz) = (idx("time_ms")?, idx("x")?, idx("y")?, idx("z")?);
+    let (ivx, ivy, ivz) = (idx("vx")?, idx("vy")?, idx("vz")?);
+    let (iqx, iqy, iqz, iqw) = (idx("qx")?, idx("qy")?, idx("qz")?, idx("qw")?);
+    let need = *[it, ix, iy, iz, ivx, ivy, ivz, iqx, iqy, iqz, iqw]
+        .iter()
+        .max()
+        .unwrap();
+
+    let mut rows: Vec<(i32, gbx::recwrite::Xform)> = Vec::new();
+    for (n, l) in lines.enumerate() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = l.split(',').collect();
+        if f.len() <= need {
+            return Err(format!("{csv}:{}: {} fields, need {}", n + 2, f.len(), need + 1));
+        }
+        let g = |i: usize| -> Result<f64, String> {
+            f[i].trim()
+                .parse::<f64>()
+                .map_err(|_| format!("{csv}:{}: {:?} is not a number", n + 2, f[i].trim()))
+        };
+        let q = [g(iqx)?, g(iqy)?, g(iqz)?, g(iqw)?];
+        let nq = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if !nq.is_finite() || nq < 1e-6 {
+            return Err(format!("{csv}:{}: the quaternion is not a rotation", n + 2));
+        }
+        let p = [g(ix)? as f32, g(iy)? as f32, g(iz)? as f32];
+        if p.iter().any(|v| !v.is_finite()) {
+            return Err(format!("{csv}:{}: a non-finite position", n + 2));
+        }
+        rows.push((
+            g(it)?.round() as i32,
+            gbx::recwrite::Xform {
+                pos: p,
+                quat: [q[0] / nq, q[1] / nq, q[2] / nq, q[3] / nq],
+                vel: [g(ivx)?, g(ivy)?, g(ivz)?],
+            },
+        ));
+    }
+    if rows.is_empty() {
+        return Err(format!("{csv} has no rows"));
+    }
+    rows.sort_by_key(|r| r.0);
+    let times: Vec<i32> = rows.iter().map(|r| r.0).collect();
+    let (lo, hi) = (times[0], times[times.len() - 1]);
+
+    let mut wrote = 0usize;
+    let mut held = 0usize;
+    let mut worst_dt = 0i32;
+    let mut nsamples = 0usize;
+    let mut first_last: Vec<(usize, usize)> = Vec::new(); // (sample index, row index)
+    rewrite_ghost(inp, out, |rd| {
+        let vi = pick_vehicle(rd).ok_or("no vehicle entity to write into")?;
+        let e = &mut rd.ents[vi];
+        let ss = e.sample_size;
+        // `write_transform` owns 22 bytes at 47.
+        if ss < 69 {
+            return Err(format!("the vehicle's samples are {ss} B; the transform needs 69"));
+        }
+        nsamples = e.times.len();
+        for k in 0..e.times.len() {
+            let t = e.times[k];
+            let j = times.partition_point(|x| *x < t);
+            let cand = [j.checked_sub(1), (j < times.len()).then_some(j)];
+            let best = cand
+                .iter()
+                .flatten()
+                .map(|i| (*i, (times[*i] - t).abs()))
+                .min_by_key(|(_, d)| *d);
+            let (ri, dt) = match best {
+                Some((i, d)) if d <= tol_ms => {
+                    wrote += 1;
+                    (i, d)
+                }
+                // Outside the CSV's own span the car HOLDS the nearest end.
+                // The alternative is leaving the grid's template sample there,
+                // which is a different car in a different place -- a visible
+                // teleport at both ends of a clip.
+                _ if t < lo => {
+                    held += 1;
+                    (0, 0)
+                }
+                _ if t > hi => {
+                    held += 1;
+                    (times.len() - 1, 0)
+                }
+                Some((i, d)) => {
+                    return Err(format!(
+                        "instant {t} ms is inside the CSV's span and its nearest row is {d} ms \
+                         away, past --tol {tol_ms}. The record's grid and the trace disagree; \
+                         raise --tol only if that gap is smaller than the car moves in it. \
+                         (nearest row: {} ms)",
+                        times[i]
+                    ))
+                }
+                None => return Err("the CSV has no rows".into()),
+            };
+            if dt > worst_dt {
+                worst_dt = dt;
+            }
+            if k == 0 || k == e.times.len() - 1 {
+                first_last.push((k, ri));
+            }
+            let a = k * ss;
+            gbx::recwrite::write_transform(&mut e.raw[a..a + ss], 47, &rows[ri].1);
+        }
+        Ok(())
+    })?;
+
+    // THE READ-BACK. What is on disk, not what the loop believes.
+    let back = gbx::record::decode_ghost(out)?;
+    let mut worst_m = 0f64;
+    for (k, ri) in &first_last {
+        let s = back
+            .samples
+            .get(*k)
+            .ok_or_else(|| format!("the written file has no sample {k}"))?;
+        let w = &rows[*ri].1;
+        let d = ((s.x - w.pos[0] as f64).powi(2)
+            + (s.y - w.pos[1] as f64).powi(2)
+            + (s.z - w.pos[2] as f64).powi(2))
+        .sqrt();
+        if d > worst_m {
+            worst_m = d;
+        }
+    }
+    if worst_m > 1e-3 {
+        let _ = std::fs::remove_file(out);
+        return Err(format!(
+            "read-back: a written sample decodes {worst_m:.6} m from the CSV row it was written \
+             from -- the file was NOT written and is deleted"
+        ));
+    }
+    Ok(format!(
+        "{} of {} samples written from {} CSV rows spanning {}..{} ms ({} held at an end, \
+         worst instant gap {} ms, read-back error {:.2e} m)",
+        wrote,
+        nsamples,
+        rows.len(),
+        lo,
+        hi,
+        held,
+        worst_dt,
+        worst_m
     ))
 }
 

@@ -148,6 +148,72 @@ minidump and the PE; the Application event log has the fault offset for free
 else, and `ghost record resample --all-cars --mixed-run` puts our samples into a
 container that already passes. The Blev Special was finally shot with the first.
 
+### ...and on Haystack 6 the padding did NOT fix it. It is the CONTAINER.
+
+Measured 2026-08-26 on `ONCE278.Ghost.Gbx` (the 278-move Haystack 6 route),
+eleven client launches, every reading with its own control. The import crash is
+the same `Trackmania.exe+0xd3788a`, and **`--pad N` does not touch it**:
+
+| file | entities | samples | verdict |
+|---|---|---|---|
+| `ONCE278` unpadded | 1 | 1 | crash |
+| `--pad 2 / 3 / 5 / 9 / 17 / 29` | 2..29 | 1 | **crash, every one** |
+| regridded to the run's span, unpadded | 1 | 28259 | crash |
+| ...`--pad 29` | 29 | 28259 | crash |
+| ...`graft-scene --from` a game ghost | 3 (1 live non-vehicle) | 28259 | crash |
+| ...trimmed to 30 s / 120 s / 600 s | 1 | 601..12001 | crash |
+
+So it is not the entity count, not the sample count, not the record span, not
+the missing non-vehicle record (V11's repair), and not the length.
+
+**The two controls that located it**, same session, same map file:
+
+| | verdict |
+|---|---|
+| Haystack 6 + a game-recorded ghost (`279218_WR_5355`) | **imports**, camera written, scene ready |
+| the control map + our `ONCE278`-shaped file | **crash** |
+
+The map is innocent and the client renders Haystack 6 fine. The file is guilty
+on any map. `ghost chunks` says why in one line:
+
+```
+ours  body 830639 B,  6 skippable chunks
+WR    body  12941 B, 24 skippable chunks
+```
+
+Our synthesised container carries 6 of the 24 chunks the game writes —
+`0x0303F007`, `0x03092008`, `0x0309200A/B`, `0x03092013`, `0x0309201A/B` and
+the whole `0x03092022`..`0x03092029` run are simply absent. The MediaTracker
+routine at `+0xd3788a` reads one of them and does not null-check it.
+
+**The fix is the container, and it is remedy 2 from the Blev Special, not
+remedy 1**: put the run in a container the client already accepts.
+
+```sh
+ghost record rebuild <a game-recorded ghost> grid.Ghost.Gbx --span <run ms> --period 50
+ghost record from-csv grid.Ghost.Gbx SHOT.Ghost.Gbx --csv <trajectory>.csv
+```
+
+`ghost record from-csv` is new and exists for this: it writes a trajectory
+CSV's position, orientation and velocity into a container's car record, instant
+for instant, and reads the file back before it claims to have done it. The
+control that the transplant is the run: `tmtraj export` the written file and
+`tmtraj csvdiff` it against the trace — on Haystack 6, **28235 shared instants,
+position median / p95 / max all 0.000 m**.
+
+The regridded donor is worth keeping as a control of its own: a game-recorded
+container **regridded to 1412.900 s and 28259 samples imports cleanly**, which
+is what rules out the length and the sample count in the table above.
+
+**`ghost regen` cannot rebuild a DNF run's record on its own.** Step 0 asks the
+oracle for the run's simulated time so it can regrid the record; on a DNF it
+says "the span is left as it is" and passes the template through untouched — so
+on a tape-only ghost (1 sample at t=0) all 24 attempts regenerate into a
+one-sample grid. Run `ghost record rebuild --span <tape ms>` yourself first.
+And its in-process locate is the wrong tool for a route that starts stationary:
+on this tape it spent **14 minutes** before reporting "this tape is probably not
+moving at the handover". `--no-inprocess` skips it.
+
 ## Credentials on this box, and their blast radius
 
 | what | scope | used for |
