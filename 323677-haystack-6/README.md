@@ -4,6 +4,23 @@ Puzzle map by **m1el**: [Trackmania Exchange](https://trackmania.exchange/mapsho
 
 Stock map MD5: `440c2bc538d9fcff2bde3f595c0d2f21`
 
+## The 278-move run, on video
+
+https://github.com/user-attachments/assets/3bc83e5f-33b5-430a-9d3c-8db53a1814a0
+
+Nine 12-second samples spread across the run. The full render is 23:32.87 at
+1280x720 — one clip as long as the run itself, because every move is a respawn
+teleport and the car jump-cuts to a new cell every few seconds.
+
+The filmed container is a **film container, not a publishable ghost**: our own
+synthesised container crashes the retail client on import (it carries 6
+skippable chunks where a game-recorded one carries 24), and it holds no
+trajectory at all — it is an input tape, not a recording. So a game-recorded
+container was rebuilt to the run span and this run's driven trace written into
+it instant for instant. Verified: 28,235 shared instants, position median, p95
+and max all **0.000 m** against the drive trace; the plain oracle independently
+returns `cps Some(278)` on the untouched tape.
+
 ## Current status — 2026-08-26
 
 - **Best fully driven route:** 278 moves, 278 fresh groups, every respawn placement exact; reproduced on a second fork.
