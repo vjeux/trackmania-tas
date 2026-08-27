@@ -75,7 +75,10 @@ the failure that reads as "the map did not open".
 
 ## The scene
 
-The map is loaded by absolute path (`EditMap`), so it needs no folder at all.
+The map is loaded by absolute path (`EditMap`) — but the path **must be under
+`Documents/Trackmania/`**. This sentence used to end "so it needs no folder at
+all", and that was wrong; see "The map must live under the Trackmania user
+tree" in RENDER-BOX.md. Stage maps in `Maps/_shoot/`.
 Ghosts are staged into `Replays/_shoot/`, which holds exactly the files for this
 render — nothing to page through, nothing to mis-index. A leftover `old/`
 subdirectory inside the picker's folder once shifted every row and imported the

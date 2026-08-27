@@ -274,3 +274,129 @@ cannot be done over the bridge. **A human has to run that installer.**
 `GW523-READ-ME-FIRST.txt` and `gw523_go.sh` in the box's home are the hand-off:
 Great Wtf of What #523's progress clip at 9.024 is staged, verified and one
 command away from being rendered.
+
+## 2026-08-26: the map must live under the Trackmania user tree
+
+`EditMap`/`PlayMap` load a map **only from a path underneath
+`C:/Users/vjeux/OneDrive/Documents/Trackmania/`**. Anywhere else — `C:/tmshoot/`,
+`C:/Users/vjeux/h6/`, any `/home/...` — the call returns `ok` and **nothing
+happens, forever**. It is not the file: one map, one md5, same game session:
+
+| path | result |
+|---|---|
+| `C:/Users/vjeux/h6/control.Map.Gbx` | ctx stays 0 |
+| `C:/tmshoot/control.Map.Gbx` | ctx stays 0 |
+| `.../Trackmania/Maps/My Maps/control.Map.Gbx` | **opens** |
+| `.../Trackmania/Maps/_shoot/control.Map.Gbx` (dir made after boot) | **opens** |
+
+The last row rules out startup indexing. Stage maps in `Maps/_shoot/`, the way
+`gw523_go.sh` always did.
+
+**The signal that says so is `latestResult`, and it is in `/ready` already.**
+`Openplanet.h` (search `CGameManiaTitleControlScriptAPI::EResult`) decodes it:
+`0` Success, `1` Error_Internal, **`2` Error_DataMgr**, then the network ones.
+A fresh boot reads 0; a rejected `EditMap` flips it to 2 within a second. Three
+sessions reported `"latestResult":2` verbatim without decoding it and went
+looking at Nadeo, the GPU and the title pack instead. **Decode it first.**
+
+## 2026-08-26: the bridge daemon can fill the disk by itself
+
+`navi-node` — the WhiteStick bridge — crash-loops with SIGABRT, and it holds
+~74 GB of virtual address space, so WSL writes a **~6.7 GB core dump per crash**
+into `%LOCALAPPDATA%\Temp\wsl-crashes`. On 2026-08-26 ten dumps took C: from
+"nearly full" to **1.1 MB free in three hours**, and the game then failed in
+ways that point nowhere near a disk: `cp` returning *Input/output error*, a map
+copied into `Maps/` silently **truncated**, `shootctl launch` reporting
+*"Openplanet hung on the Nadeo login"* twice out of three, and an
+`Updating data...` dialog stuck at 0.
+
+**`df -h /mnt/c` is the first command of any WhiteStick investigation.**
+
+Guards now in place: `C:\Users\vjeux\.wslconfig` sets `crashDumpCount=0` (needs a
+`wsl --shutdown` to take effect, which kills the bridge — so it lands at the
+next restart), and an hourly cron runs `~/bin/prune-wsl-crashes.sh`, deleting
+dumps over 200 MB. The SIGABRT itself is **not fixed**; three small dumps are
+kept in that folder for whoever wants it.
+
+C: is 937 GB and ~97 % of it is games (Steam 196, Diablo IV 82, WoW 77) — that
+is vjeuxs,
+## 2026-08-26: the map must live under the Trackmania user tree
+
+`EditMap`/`PlayMap` load a map **only from a path underneath
+`C:/Users/vjeux/OneDrive/Documents/Trackmania/`**. Anywhere else — `C:/tmshoot/`,
+`C:/Users/vjeux/h6/`, any `/home/...` — the call returns `ok` and **nothing
+happens, forever**. It is not the file: one map, one md5, same game session:
+
+| path | result |
+|---|---|
+| `C:/Users/vjeux/h6/control.Map.Gbx` | ctx stays 0 |
+| `C:/tmshoot/control.Map.Gbx` | ctx stays 0 |
+| `.../Trackmania/Maps/My Maps/control.Map.Gbx` | **opens** |
+| `.../Trackmania/Maps/_shoot/control.Map.Gbx` (dir made after boot) | **opens** |
+
+The last row rules out startup indexing. Stage maps in `Maps/_shoot/`, the way
+`gw523_go.sh` always did.
+
+**The signal that says so is `latestResult`, and it is in `/ready` already.**
+`Openplanet.h` (search `CGameManiaTitleControlScriptAPI::EResult`) decodes it:
+`0` Success, `1` Error_Internal, **`2` Error_DataMgr**, then the network ones.
+A fresh boot reads 0; a rejected `EditMap` flips it to 2 within a second. This
+investigation quoted `"latestResult":2` verbatim for half an hour, and went
+looking at Nadeo, the GPU and the title pack, before decoding the one number
+that was already in every reply. **Decode it first.**
+
+### And the control has to differ in the variable under test
+
+The control map that "also failed" had been copied into the SAME directory as
+the subject. It shared the defect with the thing it was controlling, so
+"the control fails too" read as *the machine is broken* when it meant
+*the location is guilty*. A control that differs in every variable except the
+one under test is not a control.
+
+## 2026-08-26: the bridge daemon can fill the disk by itself
+
+`navi-node` — the WhiteStick bridge — crash-loops with SIGABRT, and it holds
+~74 GB of virtual address space, so WSL writes a **~6.7 GB core dump per crash**
+into `%LOCALAPPDATA%\Temp\wsl-crashes`. On 2026-08-26 ten dumps took C: from
+"nearly full" to **1.1 MB free in three hours**, and the game then failed in
+ways that point nowhere near a disk: `cp` returning *Input/output error*, a map
+copied into `Maps/` silently **truncated**, `shootctl launch` reporting
+*"Openplanet hung on the Nadeo login"* twice out of three, and an
+`Updating data...` dialog stuck at 0.
+
+**`df -h /mnt/c` is the first command of any WhiteStick investigation.**
+
+Guards now in place: `C:\Users\vjeux\.wslconfig` sets `crashDumpCount=0` (needs a
+`wsl --shutdown` to take effect, which kills the bridge — so it lands at the
+next restart), and an hourly cron runs `~/bin/prune-wsl-crashes.sh`, deleting
+dumps over 200 MB. The SIGABRT itself is **not fixed**; three small dumps are
+kept in that folder for whoever wants it.
+
+C: is 937 GB and ~97 % of it is games (Steam 196, Diablo IV 82, WoW 77) — those
+belong to vjeux, do not touch them. Reclaimable if ever desperate: 13.8 GB of
+Windows Update cache, and ~63 GB of slack inside the 106 GB `ext4.vhdx`
+(compacting needs `wsl --shutdown`, i.e. somebody at the console).
+
+### The screenshot tool under-captures by a third
+
+`shot.ps1` reads `Screen.PrimaryScreen.Bounds` with no DPI awareness, so at
+150 % it saves a 2560x1440 image of the **top-left corner** of the 3840x2160
+screen — the player card and the whole right side are simply missing, and the
+menu looks half-initialised. `shotdpi.ps1` (beside it, written 2026-08-26)
+calls `SetProcessDpiAwarenessContext(-4)` and `GetSystemMetrics` first, and
+captures the real thing. Use that one.
+
+### `shootctl get /editmap?path=...` ignores the query string
+
+The plugin reads the path from `editmap.txt` in its storage folder, so a
+hand-run `/editmap` silently uses whatever the last `probe`/`run` left there
+and echoes it back — which reads exactly like it honoured your argument.
+Use `shootctl probe --map`.
+
+### GW523-READ-ME-FIRST.txt is stale
+
+It says a human must run `UbisoftConnectInstaller.exe` before anything renders.
+Not true any more: the game runs from the **Steam** copy
+(`C:\Program Files (x86)\Steam\steamapps\common\Trackmania\Trackmania.exe`,
+2026.2.2.1751), is signed in as VJEUX and online, and rendered fine on
+2026-08-26.
