@@ -21,6 +21,10 @@ it instant for instant. Verified: 28,235 shared instants, position median, p95
 and max all **0.000 m** against the drive trace; the plain oracle independently
 returns `cps Some(278)` on the untouched tape.
 
+## Full research notes
+
+[**NOTES.md**](NOTES.md) — the compiled findings: the engine's real transition rule, the author's own waypoint timing recovered from the map file, every measured constant, the retractions, the instrument defects, and the controlled negatives.
+
 ## Current status — 2026-08-26
 
 - **Best fully driven route:** 278 moves, 278 fresh groups, every respawn placement exact; reproduced on a second fork.
