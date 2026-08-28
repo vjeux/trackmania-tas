@@ -3,14 +3,14 @@
 **A 5.5 minute course with 18 records, and the world record falls to brake
 pulses in the final segment.**
 
-**Scorpion Loop** — TAS **339.399** (+7.491) | AT 331.908 | WR 349.453 by Quantiks
+**Scorpion Loop** — TAS **339.223** (+7.315) | AT 331.908 | WR 349.453 by Quantiks
 
-https://github.com/user-attachments/assets/cfcbb66c-4cd8-4d39-ae32-b3099267c120
+https://github.com/user-attachments/assets/84d6dc2c-0a46-4e04-9944-61c43ebeb66e
 
 *Five and a half minutes, two cars, with this run own inputs drawn on. Both of the record holder crashes are gone.*
 
 **Both of the world record two crashes have been cut out.** The author time is **not** beaten — and it is **plugin-set**, so there is no
-evidence anybody ever drove it. The human world record is beaten by **10.054**, and we are **1.704 under the best
+evidence anybody ever drove it. The human world record is beaten by **10.230**, and we are **1.704 under the best
 human pace with his mistakes arithmetically deleted** (341.103).
 
 ## Removing the crashes: splice on STATE, not on time
@@ -30,6 +30,35 @@ scored separately — puts it at **0.392 m**.
 **The cut LENGTH is the whole answer and the start point is irrelevant.** Twelve
 start points on seg03 and eight on seg16 give byte-identical times, and a
 2,356-cell sweep says 452 is the only length that works.
+
+## The whole lap is a tightrope
+
+**51 % of this lap (17,512 of 34,163 ticks) rejects every input change we can
+make.** Not unexplored - measured, with positive controls:
+
+| probe in the dead regions | result |
+|---|---|
+| `steer` +/-24 over 40 ticks, 20 sites | **40/40 DNF** |
+| `steer` +/-1 and +/-2, 3 sites | **12/12 DNF** |
+| throttle-off 12 ticks / brake 8 ticks, 6 sites | **24/24 DNF** |
+| the same short pedal edits at a LIVE site | **339.401 / 339.399 - they finish** |
+
+So it is not magnitude and not the lateral channel: **a single tick of any input
+either side of the line loses the lap.** The failure deepens along the route -
+`cps None` before tick 11000, `cps 12-14` by tick 23000 - the car gets
+progressively further before it dies.
+
+No operator family ever placed candidates in that half because everything that
+tried died immediately and the region dropped out of every search. **The 49 %
+that responds is not where we happened to look; it is the only part of the lap
+that admits input at all.**
+
+On that responsive half, **six operator families over ~220 oracle cells** -
+smooth bump, compound two-bump, pedal delta, asymmetric delta, multiplicative,
+and a discrete generator sampled from the incumbent's own change statistics
+(one change per 2.78 ticks, 68 % single-tick holds, 63.6 % negative). Closest
+approaches 339.224 and 339.226. **339.223 is a local optimum for every operator
+family and both input channels.**
 
 ## What does NOT work, measured
 
