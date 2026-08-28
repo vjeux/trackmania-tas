@@ -58,12 +58,43 @@ The envelope, over ~50,000 candidates:
 is −140 — this run's.** The author time needs roughly −159 while still holding
 vy ≥ 90, and that quadrant is empty.
 
-## What is left
+## What the remaining 0.279 s actually is
 
-The run reaches the gate **42 m higher than it needs to**. Trading that surplus
-climb for southward speed is the one operator nothing in this search could
-express — every family here moves the launch, and moving the launch moves the
-aim with it.
+The flight has two regimes: heavy drag for 0.58 s, then southward speed **locks
+constant** for the remaining 80 % of the arc. So the launch's advantage is never
+washed out, and flight time follows one number:
+
+```
+flight_time  ~=  K / |exit vz| ,   K = 362
+```
+
+| tape | exit vz | flight | t·\|vz\| |
+|---|---:|---:|---:|
+| this run | −145.2 | 2.336 | 339 |
+| BilboHaggins96 (WR) | −105.7 | 3.789 | 400 |
+| dongr. | −93.6 | 3.873 | 363 |
+| Novastxr | −81.8 | 4.254 | 348 |
+| Sasquatch_PJs | −82.3 | 4.404 | 362 |
+
+**From our own contact instant, the author time needs a 2.057 s flight, and that
+needs |exit vz| ≈ 176.** The maximum ever produced by this collision, across
+~51,000 candidates and the entire human field, is **−143.65** — and that one
+launches flat at vy 55 and passes 55 m *under* the sky gate. The best among runs
+that actually reach the gate is **−140.35**, which is this one.
+
+> **The author time needs 26 % more southward launch speed than this collision
+> has ever produced, while holding vy in the 90–110 band that reaching the gate
+> requires. The quadrant is empty.**
+
+The remaining 0.279 s is not spread across the lap. It is one number at one
+instant, and the question is now two numbers rather than a region: **vz ≈ −176
+with vy ≥ 90.**
+
+Three attempts to buy it, all measured, all null: arrival pitch is uniquely good
+at 0.0805 and every reachable value collapses the launch; a 270-cell yaw×release
+grid reached 9.130 and put exactly one candidate in the target quadrant, which
+missed the gate; and the strongest launch on record cannot be re-aimed because
+it was never going to arrive.
 
 ## What the map is
 
