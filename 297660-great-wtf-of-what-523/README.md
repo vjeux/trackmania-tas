@@ -1,7 +1,7 @@
 # Great Wtf of What #523
 
-**The whole field coasts through the flight. Holding the throttle there is
-worth 65 ms, and it takes the world record.**
+**Every human holds full steering lock through the collision. Letting a third
+of it go, for the three ticks that span contact, is worth 0.43 s.**
 
 **Great Wtf of What #523** — TAS **9.006** (+0.279) | AT 8.727 | WR 10.439 by BilboHaggins96
 
@@ -10,6 +10,60 @@ https://github.com/user-attachments/assets/0bbc4f27-1340-4362-9a67-c937b38d2bd8
 *The 9.006, with its own inputs drawn on, against BilboHaggins96 world record.*
 
 The author time is **not** beaten. The human world record is, by **1.433**.
+
+## The three ticks
+
+The map launches the car off a finish-gate rail and flies it to a gate in the
+sky. Everyone in the field arrives at that rail holding **steer −127**, full
+lock, and holds it through the impact.
+
+**This run comes off to −84 for the three ticks that span contact.** It leaves
+the rail with **−145 m/s of southward speed** where the world record leaves with
+−106, and it is causal rather than incidental: put the world record's −127 back
+over exactly those three ticks and the lap loses **0.43 s**.
+
+It is also not the approach. The drift into the rail is the world record's own —
+76.6° of yaw against his 78.7°, the same brake window opening at 5.590. The
+whole difference is three ticks of steering at the moment of contact.
+
+## Why it stops at 9.006
+
+**The launcher is a 2.4 m lip.** The gate's collision surface is one
+`CPlugSurface` of 2586 triangles; the rail the car hits spans y 7.18–9.60, with
+**4.4 m of open air above it** before the arch bar. The car sits at y 8.10 and
+rides over a metre and a half of steel at 145 m/s. Anything higher passes
+through the fence untouched.
+
+The rail is **continuous** — items every 2.00 m spanning ±0.99, so it tiles with
+2 cm seams. There is no special place along it. Where the launch happens is a
+property of how the car arrives, not of the geometry.
+
+**And the sky gate is a keep-out.** Release more lock and the launch gets
+stronger *and misses*: the six strongest launches in the corpus are all DNF,
+crossing the gate plane at x 546.0 against its eastern edge at 544. Leaving
+harder means arriving sooner means less time to drift west. **Launch strength
+and flight aim are the same variable.**
+
+The envelope, over ~50,000 candidates:
+
+| exit vy | exit vz | reach the gate |
+|---:|---:|---:|
+| 100 | **−140** | **341** |
+| 100 | −120 | 39 |
+| 110 | −90 | 61 |
+| 50 | −140 | **0** |
+| 60 | −50 | **0** |
+
+**Every launcher that reaches the gate has vy 90–110, and the best vz among them
+is −140 — this run's.** The author time needs roughly −159 while still holding
+vy ≥ 90, and that quadrant is empty.
+
+## What is left
+
+The run reaches the gate **42 m higher than it needs to**. Trading that surplus
+climb for southward speed is the one operator nothing in this search could
+express — every family here moves the launch, and moving the launch moves the
+aim with it.
 
 ## What the map is
 
