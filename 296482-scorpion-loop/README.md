@@ -3,14 +3,50 @@
 **A 5.5 minute course with 18 records, and the world record falls to brake
 pulses in the final segment.**
 
-**Scorpion Loop** — TAS **348.739** (+16.831) | AT 331.908 | WR 349.453 by Quantiks
+**Scorpion Loop** — TAS **339.399** (+7.491) | AT 331.908 | WR 349.453 by Quantiks
 
-https://github.com/user-attachments/assets/d359cdda-2ae1-4990-8ec1-8795a96cad8e
+https://github.com/user-attachments/assets/cfcbb66c-4cd8-4d39-ae32-b3099267c120
 
-*Five and a half minutes, two cars, with this run own inputs drawn on.*
+*Five and a half minutes, two cars, with this run own inputs drawn on. Both of the record holder crashes are gone.*
 
-The author time is **not** beaten — and it is **plugin-set**, so there is no
-evidence anybody ever drove it. The human world record is beaten by **0.714**.
+**Both of the world record two crashes have been cut out.** The author time is **not** beaten — and it is **plugin-set**, so there is no
+evidence anybody ever drove it. The human world record is beaten by **10.054**, and we are **1.704 under the best
+human pace with his mistakes arithmetically deleted** (341.103).
+
+## Removing the crashes: splice on STATE, not on time
+
+The record contains two respawns — race **52.690** (seg03) and **304.750**
+(seg16) — costing **3.510 + 4.840 = 8.350 s** between them. They are not driving
+skill to out-perform; they are dead time a human paid for two mistakes.
+
+`ghost splice --rule retries` cuts at the CHECKPOINT, which is matching an
+*instant*: on seg03 that puts the junction **40.38 m** from where the car
+actually was. Matching on **STATE** — position, velocity and attitude together,
+scored separately — puts it at **0.392 m**.
+
+- seg03: cut 452 ticks -> 344.229
+- seg16: cut 484 ticks -> **339.399**
+
+**The cut LENGTH is the whole answer and the start point is irrelevant.** Twelve
+start points on seg03 and eight on seg16 give byte-identical times, and a
+2,356-cell sweep says 452 is the only length that works.
+
+## What does NOT work, measured
+
+Grafting *another driver* inputs in fails everywhere, however well the state
+matches. Tested with the confound removed — same tick index, zero time shift:
+tick 26890 -> `cps 14`, 20000 -> `cps 10`, 10000 -> `None`. **Eleven handovers,
+states matched to 0.017 m, every recorded channel equal**, including pairs at
+zero engine-load difference. All fail.
+
+**A human input tape is a closed loop around their own trajectory** — 10 ms of
+someone else steering puts the car where their next 10 ms does not expect it.
+But **the same driver own earlier lap IS a legitimate donor**, subject to exact
+tick alignment: our tape is Quantiks inputs with two cuts in it, and grafting
+his tail back onto it returns `cps 16` at every point tested.
+
+So the ~6.4 s of field-best slack is a **bound, not a plan** — reachable only by
+search, never by assembly.
 
 ## The map
 
