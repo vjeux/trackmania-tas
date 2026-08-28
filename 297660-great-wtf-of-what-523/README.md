@@ -3,11 +3,11 @@
 **The whole field coasts through the flight. Holding the throttle there is
 worth 65 ms, and it takes the world record.**
 
-**Great Wtf of What #523** — TAS **10.255** (+1.528) | AT 8.727 | WR 10.439 by BilboHaggins96
+**Great Wtf of What #523** — TAS **10.007** (+1.280) | AT 8.727 | WR 10.439 by BilboHaggins96
 
-https://github.com/user-attachments/assets/c9ed9f4a-6efc-4d96-bede-3101e9f98f81
+https://github.com/user-attachments/assets/9def0407-81ee-45ee-a59b-99beb29fef97
 
-*The 10.255, with its own inputs drawn on, against BilboHaggins96 world record.*
+*The 10.007, with its own inputs drawn on, against BilboHaggins96 world record.*
 
 The author time is **not** beaten. The human world record is, by **0.171**.
 
@@ -35,8 +35,29 @@ The second is a compound — no single-lever sweep keeps any of the three.
 
 Then **`830-870 steer=0`** — releasing an inherited full lock in the flight,
 in the region where steering supposedly does nothing: **10.258 → 10.255**.
-Both of this map gains came the same way. *The inherited input was never
-questioned.*
+
+## The sign was inherited too
+
+Every sweep for eleven leases explored magnitudes *around* the human `steer=-127`
+through the collision, or releases toward 0. **Positive steer was never in an
+operator set** — not tested and rejected, simply never generated, because the
+ranges were built around the value the human used. Eleven leases searching a
+half-space.
+
+**`steer=+30` through the collision ticks: 10.255 → 10.013.** Then 10.008,
+then **10.007**.
+
+*A region excluded by an assumption is not a region searched — and the
+assumption can live in the SHAPE of the operator rather than in anything
+written down.* Every gain on this map came the same way: an inherited input
+nobody questioned.
+
+Closed since, each with a mechanism rather than a bare null: shaped operators
+(ramp/cosine/triangle/pump, 139 of 144 DNF — the amplitudes shapes need are
+wider than this collision tolerates), the single-tick collision sweep (266
+evaluable, 0 improvements — saturated), and the 103-tick approach block, which
+turns out to be a **forced corridor** (875 of 900 DNF) rather than an
+unexamined one.
 
 ## What is measured and closed
 
