@@ -3,11 +3,19 @@
 **A 5.5 minute course with 18 records, and the world record falls to brake
 pulses in the final segment.**
 
-**Scorpion Loop** — TAS **339.216** (+7.308) | AT 331.908 | WR 349.453 by Quantiks
+**Scorpion Loop** — TAS **339.216** | AT 331.908 | WR **330.222** by SmithyTM
 
 https://github.com/user-attachments/assets/90c835c9-d702-4612-bf1c-c81492e52850
 
 *Five and a half minutes, two cars, with this run own inputs drawn on. Both of the record holder crashes are gone.*
+
+> **2026-08-28 — this map is no longer unbeaten, and not by us.** SmithyTM
+> improved the world record three times in one day — 349.453 → 336.963 →
+> **330.222** — and that last one is **1.686 s inside the author time**. When
+> we started, the record was Quantiks' 349.453 and no human had beaten the
+> author time. Our 339.216 beat the old record by 10.237 s and is now 9.006 s
+> behind the new one. **The clip below is our run against Quantiks, the record
+> that stood when it was filmed.**
 
 **Both of the world record two crashes have been cut out.** The author time is **not** beaten — and it is **plugin-set**, so there is no
 evidence anybody ever drove it. The human world record is beaten by **10.237**, and we are **1.704 under the best
