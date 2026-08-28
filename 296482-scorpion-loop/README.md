@@ -3,14 +3,14 @@
 **A 5.5 minute course with 18 records, and the world record falls to brake
 pulses in the final segment.**
 
-**Scorpion Loop** — TAS **339.223** (+7.315) | AT 331.908 | WR 349.453 by Quantiks
+**Scorpion Loop** — TAS **339.216** (+7.308) | AT 331.908 | WR 349.453 by Quantiks
 
-https://github.com/user-attachments/assets/a6ab15f2-d413-4729-a6a1-cbcb72124f7d
+https://github.com/user-attachments/assets/90c835c9-d702-4612-bf1c-c81492e52850
 
 *Five and a half minutes, two cars, with this run own inputs drawn on. Both of the record holder crashes are gone.*
 
 **Both of the world record two crashes have been cut out.** The author time is **not** beaten — and it is **plugin-set**, so there is no
-evidence anybody ever drove it. The human world record is beaten by **10.230**, and we are **1.704 under the best
+evidence anybody ever drove it. The human world record is beaten by **10.237**, and we are **1.704 under the best
 human pace with his mistakes arithmetically deleted** (341.103).
 
 ## Removing the crashes: splice on STATE, not on time
