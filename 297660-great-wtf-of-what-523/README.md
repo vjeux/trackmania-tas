@@ -3,13 +3,13 @@
 **The whole field coasts through the flight. Holding the throttle there is
 worth 65 ms, and it takes the world record.**
 
-**Great Wtf of What #523** — TAS **10.007** (+1.280) | AT 8.727 | WR 10.439 by BilboHaggins96
+**Great Wtf of What #523** — TAS **9.006** (+0.279) | AT 8.727 | WR 10.439 by BilboHaggins96
 
-https://github.com/user-attachments/assets/9def0407-81ee-45ee-a59b-99beb29fef97
+https://github.com/user-attachments/assets/0bbc4f27-1340-4362-9a67-c937b38d2bd8
 
-*The 10.007, with its own inputs drawn on, against BilboHaggins96 world record.*
+*The 9.006, with its own inputs drawn on, against BilboHaggins96 world record.*
 
-The author time is **not** beaten. The human world record is, by **0.171**.
+The author time is **not** beaten. The human world record is, by **1.433**.
 
 ## What the map is
 
