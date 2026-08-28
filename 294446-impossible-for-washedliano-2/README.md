@@ -3,13 +3,13 @@
 **The deck the whole map crawls across has steering-dependent friction. Sliding
 it diagonally is worth 4.630 s, and it takes the world record by three seconds.**
 
-**impossible for washedliano poss for sauucey part 2** — TAS **43.022** (+7.423) | AT 35.599 | WR 49.274 by FiggeTM
+**impossible for washedliano poss for sauucey part 2** — TAS **37.995** (+2.396) | AT 35.599 | WR 49.274 by FiggeTM
 
-https://github.com/user-attachments/assets/0c3e7d80-f03d-4fc1-a2b8-b45106b9dd47
+https://github.com/user-attachments/assets/e6ef5549-da4d-4c18-91fe-1345ae488105
 
 *Two cars, with this run own inputs drawn on. The clip ends at our finish; the human is still driving.*
 
-The author time is **not** beaten. The human world record is, by **6.252**.
+The author time is **not** beaten. The human world record is, by **11.279**.
 
 ## The map
 
