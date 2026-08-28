@@ -5,7 +5,7 @@ pulses in the final segment.**
 
 **Scorpion Loop** — TAS **339.223** (+7.315) | AT 331.908 | WR 349.453 by Quantiks
 
-https://github.com/user-attachments/assets/84d6dc2c-0a46-4e04-9944-61c43ebeb66e
+https://github.com/user-attachments/assets/a6ab15f2-d413-4729-a6a1-cbcb72124f7d
 
 *Five and a half minutes, two cars, with this run own inputs drawn on. Both of the record holder crashes are gone.*
 
