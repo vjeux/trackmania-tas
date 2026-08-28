@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/0c3e7d80-f03d-4fc1-a2b8-b45106b9dd47
 
 *Two cars, with this run own inputs drawn on. The clip ends at our finish; the human is still driving.*
 
-The author time is **not** beaten. The human world record is, by **3.161**.
+The author time is **not** beaten. The human world record is, by **6.252**.
 
 ## The map
 
