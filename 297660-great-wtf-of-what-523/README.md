@@ -3,11 +3,11 @@
 **The whole field coasts through the flight. Holding the throttle there is
 worth 65 ms, and it takes the world record.**
 
-**Great Wtf of What #523** — TAS **10.268** (+1.541) | AT 8.727 | WR 10.439 by BilboHaggins96
+**Great Wtf of What #523** — TAS **10.255** (+1.528) | AT 8.727 | WR 10.439 by BilboHaggins96
 
-https://github.com/user-attachments/assets/bf02dbf0-dfaf-4656-a497-07569a2a6407
+https://github.com/user-attachments/assets/c9ed9f4a-6efc-4d96-bede-3101e9f98f81
 
-*The clip is the 10.374, with its own inputs drawn on. The 10.268 is validated but not yet filmed.*
+*The 10.255, with its own inputs drawn on, against BilboHaggins96 world record.*
 
 The author time is **not** beaten. The human world record is, by **0.171**.
 
@@ -32,6 +32,11 @@ against. Rank 1 coasts for **91 of its 379 airborne ticks**.
   `775-776 accel=1`, `824-827 accel=0`): **10.374 → 10.268**
 
 The second is a compound — no single-lever sweep keeps any of the three.
+
+Then **`830-870 steer=0`** — releasing an inherited full lock in the flight,
+in the region where steering supposedly does nothing: **10.258 → 10.255**.
+Both of this map gains came the same way. *The inherited input was never
+questioned.*
 
 ## What is measured and closed
 
