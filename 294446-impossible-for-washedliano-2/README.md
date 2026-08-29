@@ -1,15 +1,17 @@
 # impossible for washedliano poss for sauucey part 2
 
 **The deck the whole map crawls across has steering-dependent friction. Sliding
-it diagonally is worth 4.630 s, and it takes the world record by three seconds.**
+it diagonally is worth 4.630 s — and driven over the human's own no-respawn
+route it takes the author time by 6.510 s.**
 
-**impossible for washedliano poss for sauucey part 2** — TAS **37.995** (+2.396) | AT 35.599 | WR 49.274 by FiggeTM
+**impossible for washedliano poss for sauucey part 2** — TAS **29.089** (−6.510) | AT 35.599 | WR 33.656 by A------------ar
 
-https://github.com/user-attachments/assets/e6ef5549-da4d-4c18-91fe-1345ae488105
+https://github.com/user-attachments/assets/c8862a9a-0fa7-4493-adcb-1e7731f2e544
 
-*Two cars, with this run own inputs drawn on. The clip ends at our finish; the human is still driving.*
+*Our run, with its own inputs drawn on. **Zero respawns**: every earlier lap this programme drove here used one, and the no-respawn route was a hypothesis for fifteen leases before a human posted one.*
 
-The author time is **not** beaten. The human world record is, by **11.279**.
+The author time **is** beaten, by **6.510** — the first author time this programme has taken. The human world record is beaten by **4.567**.
+
 
 ## The map
 
