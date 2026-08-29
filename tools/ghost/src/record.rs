@@ -74,6 +74,46 @@ pub fn cmd(a: &[String]) {
             let p = a.get(1).unwrap_or_else(|| die("ghost record chain FILE"));
             crate::splice::print_chain(p);
         }
+        Some("countdown") => {
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record countdown IN OUT"));
+            let out = a.get(2).unwrap_or_else(|| die("ghost record countdown IN OUT"));
+            let check = has(a, "--check");
+            match countdown(inp, out, check) {
+                Ok(m) => println!("{m}"),
+                Err(e) => die(e),
+            }
+        }
+        Some("dumpbytes") => {
+            let p = a
+                .get(1)
+                .unwrap_or_else(|| die("ghost record dumpbytes FILE --bytes LIST [--stride N]"));
+            let bytes = parse_byte_ranges(
+                &flag(a, "--bytes").unwrap_or_else(|| die("--bytes N,N,A..B")),
+            );
+            let stride: usize =
+                flag(a, "--stride").map(|s| s.parse().unwrap_or(1)).unwrap_or(1).max(1);
+            let ent: Option<usize> = flag(a, "--ent").map(|s| s.parse().unwrap_or(0));
+            match dumpbytes(p, &bytes, stride, ent) {
+                Ok(m) => print!("{m}"),
+                Err(e) => die(e),
+            }
+        }
+        Some("bytediff") => {
+            let l = a.get(1).unwrap_or_else(|| die("ghost record bytediff LEFT RIGHT"));
+            let r = a.get(2).unwrap_or_else(|| die("ghost record bytediff LEFT RIGHT"));
+            match bytediff(l, r) {
+                Ok(m) => print!("{m}"),
+                Err(e) => die(e),
+            }
+        }
+        Some("life") => {
+            let p = a.get(1).unwrap_or_else(|| die("ghost record life FILE --life N [--csv OUT]"));
+            let n: usize = flag(a, "--life")
+                .unwrap_or_else(|| die("--life N"))
+                .parse()
+                .unwrap_or_else(|_| die("--life wants a number"));
+            crate::splice::life_csv(p, n, flag(a, "--csv"), flag(a, "--shift-ms").map(|s| s.parse().unwrap_or_else(|_| die("--shift-ms wants a number"))).unwrap_or(0));
+        }
         Some("rebuild") => rebuild(&a[1..]),
         Some("resegment") => {
             let inp = a.get(1).unwrap_or_else(|| die("ghost record resegment IN OUT --like DONOR"));
@@ -122,13 +162,14 @@ pub fn cmd(a: &[String]) {
                 let donor = flag(a, "--from").unwrap_or_else(|| {
                     die("--from DONOR.Ghost.Gbx: the file to take the named sample bytes from")
                 });
+                // RANGES, the same `19,47..69,91` spelling `resample --bytes`
+                // already takes. A bisect over the 94 bytes `regen` does NOT
+                // write is a range and a range's complement; spelling those out
+                // as 94 comma-separated integers on a command line is how an
+                // off-by-one gets into a measurement unseen.
                 let list = flag(a, "--bytes")
-                    .unwrap_or_else(|| die("--bytes N,N,... : which of the 116 sample bytes to copy"));
-                let bytes: Vec<usize> = list
-                    .split(',')
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|s| s.trim().parse::<usize>().unwrap_or_else(|_| die(format!("--bytes: {s} is not a number"))))
-                    .collect();
+                    .unwrap_or_else(|| die("--bytes N,N,A..B : which of the 116 sample bytes to copy"));
+                let bytes: Vec<usize> = parse_byte_ranges(&list);
                 match copy_channels(inp, out, donor, &bytes) {
                     Ok(m) => println!("{out}: {m}"),
                     Err(e) => die(e),
@@ -744,6 +785,218 @@ pub fn shorten_scene(inp: &str, out: &str) -> Result<String, String> {
 /// is offset-binary -- the dampen bytes decode 0 as **-2, fully extended
 /// wheels**, and byte 32/33 hold 128/42 at rest in every recording the game
 /// made itself.
+/// Named sample bytes, one row an instant. The other half of `bytediff`: the
+/// diff says WHICH byte disagrees, this says WHAT it holds -- which is what
+/// separates "a channel the run genuinely drives" from "a channel pinned at a
+/// value the engine never writes".
+/// Author sample bytes 108..111 -- the client-side countdown -- from the file's
+/// own race clock.
+///
+/// **The one channel a regenerated car cannot get from the dedicated server.**
+/// `SAMPLE-LAYOUT.md` reads the writer as `-2 - min(now - state[0x340], 3000)`:
+/// the value in the state is the TIMESTAMP OF AN EVENT and `now` is the
+/// archiver's caller-supplied clock, which the dedicated server does not hand
+/// the gather. So `fk --carrier layout` leaves these four bytes alone and they
+/// stay whatever the rebuild's neutral template held -- which is the constant
+/// `-2`, i.e. **"the event happened this instant", on every single sample**.
+///
+/// That is what makes the car a hologram. Measured on 287431, 2026-08-29: a
+/// film whose only remaining difference from a rendering donor was these four
+/// bytes drew a transparent wireframe, and restoring them drew a solid car.
+///
+/// The law needs no borrowed bytes, because `now - t` is a DIFFERENCE and the
+/// engine clock cancels out of it. `t` is constant across an entity's life --
+/// an event does not move -- so `now - t` advances exactly with race time, and
+/// the offset at the entity's own first instant is zero: the event IS the
+/// entity's creation. Every recording the game wrote on this map says so, and
+/// `--check` re-derives the field on a file that already has it and requires
+/// every byte back:
+///
+/// * the FIRST vehicle entity carries `-1` throughout -- no event yet;
+/// * each LATER one counts `-2 - min(t - t0, 3000)` from its own first instant.
+pub fn countdown(inp: &str, out: &str, check: bool) -> Result<String, String> {
+    const SAT: i32 = 3000;
+    let mut lines: Vec<String> = Vec::new();
+    let mut wrong = 0usize;
+    let mut total = 0usize;
+    rewrite_ghost(inp, out, |rd| {
+        let veh: Vec<usize> = (0..rd.ents.len())
+            .filter(|i| {
+                rd.descs.get(rd.ents[*i].type_ as usize).map(|d| d.class_id).unwrap_or(0)
+                    == gbx::record::CLASS_CSCENEVEHICLEVIS
+                    && !rd.ents[*i].times.is_empty()
+            })
+            .collect();
+        if veh.is_empty() {
+            return Err("no live vehicle entity: there is no car to time".into());
+        }
+        // Time order, because "first" means first in the run, not first in the
+        // entity list -- `record entorder` moves the car and would otherwise
+        // silently change which segment is the spawn.
+        let mut order = veh.clone();
+        order.sort_by_key(|i| rd.ents[*i].times[0]);
+        for (rank, i) in order.iter().enumerate() {
+            let e = &mut rd.ents[*i];
+            let ss = e.sample_size;
+            if ss < 112 {
+                return Err(format!("entity {i}'s samples are {ss} B -- no byte 108..111 in them"));
+            }
+            let t0 = e.times[0];
+            let mut changed = 0usize;
+            for (k, t) in e.times.clone().iter().enumerate() {
+                let v: i32 = if rank == 0 { -1 } else { -2 - (t - t0).clamp(0, SAT) };
+                let b = v.to_le_bytes();
+                let at = k * ss + 108;
+                total += 1;
+                if e.raw[at..at + 4] != b {
+                    changed += 1;
+                    if check {
+                        wrong += 1;
+                    }
+                }
+                e.raw[at..at + 4].copy_from_slice(&b);
+            }
+            lines.push(format!(
+                "  entity {i} ({} samples from {}): {}, {changed} sample(s) rewritten",
+                e.times.len(),
+                secs(t0 as i64),
+                if rank == 0 {
+                    "-1 throughout (the spawn segment: no event yet)".to_string()
+                } else {
+                    format!("-2 - min(t - {t0}, {SAT})")
+                }
+            ));
+        }
+        Ok(())
+    })?;
+    if check {
+        let _ = std::fs::remove_file(out);
+        if wrong == 0 {
+            return Ok(format!(
+                "{inp}: CONTROL PASSED -- the law reproduces all {total} of this file's own \
+                 countdown samples, byte for byte.\n{}",
+                lines.join("\n")
+            ));
+        }
+        return Err(format!(
+            "{inp}: CONTROL FAILED -- the law disagrees with this file on {wrong} of {total} \
+             samples.\n{}",
+            lines.join("\n")
+        ));
+    }
+    Ok(format!("{out}: countdown authored on {total} sample(s)\n{}", lines.join("\n")))
+}
+
+pub fn dumpbytes(
+    path: &str,
+    bytes: &[usize],
+    stride: usize,
+    ent: Option<usize>,
+) -> Result<String, String> {
+    // `--ent N` reads a NAMED entity rather than the one `decode_ghost` picks.
+    // A two-segment container's freefall car is never the picked one, and its
+    // bytes are exactly where a per-entity law (the countdown's epoch) shows
+    // itself.
+    let (times, raw, ss, label) = match ent {
+        Some(i) => {
+            let body = gbx::record::load_body(path)?;
+            let (ver, blob) = gbx::record::find_entrecord_blob(&body)?;
+            let rd = gbx::record::parse_record_data(&blob, ver)?;
+            let e = rd.ents.get(i).ok_or(format!("{path} has no entity {i}"))?;
+            (e.times.clone(), e.raw.clone(), e.sample_size, format!("ent {i}"))
+        }
+        None => {
+            let g = gbx::record::decode_ghost(path)?;
+            (
+                g.samples.iter().map(|s| s.time_ms).collect(),
+                g.raw.clone(),
+                g.sample_size,
+                "the picked car".to_string(),
+            )
+        }
+    };
+    for b in bytes {
+        if *b >= ss {
+            return Err(format!("byte {b} is past the {ss}-byte sample"));
+        }
+    }
+    let mut o = format!("{path} ({label}): {} samples x {ss} B\n     ms", times.len());
+    for b in bytes {
+        o.push_str(&format!(" {b:>4}"));
+    }
+    o.push('\n');
+    for (i, t) in times.iter().enumerate() {
+        if i % stride != 0 || (i + 1) * ss > raw.len() {
+            continue;
+        }
+        o.push_str(&format!("{t:7}"));
+        for b in bytes {
+            o.push_str(&format!(" {:4}", raw[i * ss + b]));
+        }
+        o.push('\n');
+    }
+    Ok(o)
+}
+
+/// Per-byte disagreement between two records' driving-car samples, over the
+/// instants they share.
+///
+/// The bisect's map. `copy_channels` can move a set of bytes from one file to
+/// another, but choosing WHICH set to move was an argument until this printed
+/// the answer: on a film that renders no car beside a donor that renders one,
+/// the bytes that differ are the whole suspect list, and the bytes that agree
+/// can be struck off without a render.
+pub fn bytediff(left: &str, right: &str) -> Result<String, String> {
+    let l = gbx::record::decode_ghost(left)?;
+    let r = gbx::record::decode_ghost(right)?;
+    let ss = l.sample_size;
+    if ss != r.sample_size {
+        return Err(format!("sample size {ss} vs {} -- not the same shape", r.sample_size));
+    }
+    let rmap: std::collections::HashMap<i32, &[u8]> = r
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.time_ms, &r.raw[i * ss..(i + 1) * ss]))
+        .collect();
+    let mut diff = vec![0usize; ss];
+    let mut shared = 0usize;
+    for (i, s) in l.samples.iter().enumerate() {
+        let Some(rs) = rmap.get(&s.time_ms) else { continue };
+        shared += 1;
+        let ls = &l.raw[i * ss..(i + 1) * ss];
+        for b in 0..ss {
+            if ls[b] != rs[b] {
+                diff[b] += 1;
+            }
+        }
+    }
+    let mut o = format!(
+        "{} shared instant(s) of {} here and {} there; {}-byte samples\n",
+        shared,
+        l.samples.len(),
+        r.samples.len(),
+        ss
+    );
+    if shared == 0 {
+        return Ok(o);
+    }
+    let mut agree: Vec<usize> = Vec::new();
+    for b in 0..ss {
+        if diff[b] == 0 {
+            agree.push(b);
+        } else {
+            o.push_str(&format!(
+                "  byte {b:3}: {:5} of {shared} differ ({:6.2} %)\n",
+                diff[b],
+                100.0 * diff[b] as f64 / shared as f64
+            ));
+        }
+    }
+    o.push_str(&format!("identical on every shared instant: {agree:?}\n"));
+    Ok(o)
+}
+
 pub fn set_channels(inp: &str, out: &str, pairs: &[(usize, u8)]) -> Result<String, String> {
     if pairs.is_empty() {
         return Err("no bytes named: --set N=V,N=V is the experiment".into());

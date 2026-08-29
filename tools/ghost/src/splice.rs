@@ -700,3 +700,63 @@ pub fn print_chain(path: &str) {
         );
     }
 }
+
+/// `ghost record life FILE --life N [--csv OUT]` -- the RECORDED trajectory of
+/// ONE life of a server recording.
+///
+/// `record chain` says which entities tile the driver's race; this prints what
+/// the car actually did inside one of them. On a practice replay that is the
+/// only honest way to see an individual attempt: the stock reader takes the
+/// entity with the most samples and hands back somebody else's car, or another
+/// attempt, with no warning.
+pub fn life_csv(path: &str, life: usize, out: Option<&str>, shift_ms: i32) {
+    let body = gbx::record::load_body(path).unwrap_or_else(|e| die(e));
+    let (version, blob) = gbx::record::find_entrecord_blob(&body).unwrap_or_else(|e| die(e));
+    let rec = gbx::record::parse_record_data(&blob, version).unwrap_or_else(|e| die(e));
+    let (chain, _, _) = player_chain(&rec);
+    if chain.is_empty() {
+        die("no CSceneVehicleVis entity in this record");
+    }
+    if life >= chain.len() {
+        die(format!("--life {} but the driver chain has {} lives", life, chain.len()));
+    }
+    let e = &rec.ents[chain[life]];
+    let ss = e.sample_size;
+    let mut s = String::from(
+        "time_ms,x,y,z,vx,vy,vz,speed_kmh,yaw,pitch,roll,steer,gas,brake,ground,wetness,gear\n",
+    );
+    let mut path = 0.0f64;
+    let mut prev: Option<[f64; 3]> = None;
+    for (k, t) in e.times.iter().enumerate() {
+        let sm = gbx::record::decode_vehicle_sample(&e.raw[k * ss..(k + 1) * ss]);
+        if let Some(p) = prev {
+            let d = ((p[0] - sm.x).powi(2) + (p[1] - sm.y).powi(2) + (p[2] - sm.z).powi(2)).sqrt();
+            if d <= 15.0 {
+                path += d;
+            }
+        }
+        prev = Some([sm.x, sm.y, sm.z]);
+        s.push_str(&format!(
+            "{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.3},{:.5},{:.5},{:.5},{:.4},{:.4},{:.4},{},{:.4},{:.3}\n",
+            t + shift_ms, sm.x, sm.y, sm.z, sm.vx, sm.vy, sm.vz, sm.speed_kmh, sm.yaw, sm.pitch, sm.roll,
+            sm.steer, sm.gas, sm.brake, if sm.is_ground_contact { 1 } else { 0 }, sm.wetness, sm.gear
+        ));
+    }
+    match out {
+        Some(f) => {
+            std::fs::write(f, &s).unwrap_or_else(|e| die(format!("{}: {}", f, e)));
+            println!(
+                "wrote {}  (life {} of {}, entity {}, {} samples, {} .. {}, path {:.0} m)",
+                f,
+                life,
+                chain.len(),
+                chain[life],
+                e.times.len(),
+                secs(*e.times.first().unwrap() as i64),
+                secs(*e.times.last().unwrap() as i64),
+                path
+            );
+        }
+        None => print!("{}", s),
+    }
+}

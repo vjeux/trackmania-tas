@@ -285,6 +285,22 @@ pub fn cmd(a: &[String]) {
         v.push("layout".into());
         v
     };
+    // A FLAG THAT DOES NOTHING IS WORSE THAN NO FLAG. All five above are pushed
+    // unconditionally, so passing one by hand changed nothing and the run said
+    // nothing either. On 287431 `--neutralise` was tested on and off, the two
+    // outputs were byte-identical (md5 b9a8bc3a...), and the byte hypothesis --
+    // which was the answer -- was eliminated on the strength of it. The flags
+    // are gone from the usage; a caller who still passes one is told plainly
+    // rather than silently humoured.
+    for k in ["--neutralise", "--inputs", "--trim-outside", "--carrier"] {
+        if has(a, k) {
+            println!(
+                "NOTE: {k} is UNCONDITIONAL in this pipeline -- passing it changes nothing, and \
+                 there is no run without it. Do not read a difference between two runs as this \
+                 flag's doing."
+            );
+        }
+    }
     let tries: i64 = num(a, "--tries").unwrap_or(24);
     let jobs: usize = num(a, "--jobs").unwrap_or(12).max(1) as usize;
     let force = has(a, "--force");

@@ -62,17 +62,25 @@ INPUTS  (operation 1 and 2)
         also prints each explicit literal's tick and decoded state, never inputs.
 
 CAR STATE  (operation 3)
-  ghost regen IN OUT --map MAP [--neutralise] [--inputs] [--trim-outside]
-                              [--anchorticks a,b,c] [--noanchor]
+  ghost regen IN OUT --map MAP [--anchorticks a,b,c] [--noanchor]
         Run the real engine on this file's own inputs, capture per-sample car
         state and write it into the ghost, so the recorded trajectory MATCHES
         the tape. Refuses unless the acceptance gate passes.
-        --neutralise ALSO zeros the 49 per-run bytes the transform encoder does
-        not write (ground contact, wheels, rpm, suspension, surface effects).
-        Without it those bytes stay the donor container's, which is what every
-        C5/C6/C7 refusal in this corpus is; with it they are honestly absent,
-        and `tmtraj check` C10 then fails by design.
-        --inputs also rewrites the record's steer/gas/brake echo from the tape.
+        Every sample byte the engine can source is AUTHORED, from the game's
+        own writer transcribed at 0x9cfed0: the transform, and the 94 other
+        bytes (speed, rpm, the four wheels, gear, dampers, ground contact, the
+        reactor). 11 channels the dedicated server cannot source stay the
+        carrier's and the run names them; `ghost record countdown` authors four
+        more of those from the file's own race clock.
+        There is no flag for any of this. `--neutralise`, `--inputs`,
+        `--trim-outside` and `--carrier` are UNCONDITIONAL and are not options:
+        passing them changes nothing and there is no run without them. That
+        cost a day on 287431 -- `--neutralise` was tested on and off, the two
+        outputs were byte-identical (md5 b9a8bc3a...), and the byte hypothesis
+        was eliminated on the strength of a flag that was already on. A regen
+        without the carrier draws the car as a TRANSPARENT WIREFRAME in the
+        game client while gating at V1-V11 and kappa 1.000; three clips shipped
+        that way before anyone looked at a frame.
         --spawn-ref FILE names the recording G2 checks the start against, for a
         template whose own record is a rebuilt grid (a constant identifies
         nothing, and G2 says UNMEASURED rather than passing).
@@ -263,6 +271,7 @@ fn main() {
         "census" => census::cmd(rest),
         "phase" => phase::cmd(rest),
         "record" => record::cmd(rest),
+        "film" => film::cmd(rest),
         "regen" => regen::cmd(rest),
         "regen-control" => regen::control(rest),
         "roundtrip" => roundtrip::cmd(rest),
@@ -450,6 +459,7 @@ fn cmd_inspect(a: &[String]) {
     }
 }
 
+mod film;
 mod sweep;
 
 fn cmd_tape(a: &[String]) {
