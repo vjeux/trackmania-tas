@@ -155,6 +155,9 @@ pub fn cmd(a: &[String]) {
     // WR) to the last sample's own time (19.500) -- a change to a recording
     // nobody asked to edit, in a command that only added ticks after it.
     let mut pruned = 0usize;
+    // Empty entities are load-bearing on every map measured so far; see the
+    // note at the retain() below. Opt in to the old destructive behaviour.
+    let prune_empty = has(a, "--prune-empty");
     let cutting = cut_head > 0 || cut_tail > 0;
     let had_record =
         cutting && gbx::recwrite::find_rec_site(&Container::load(&tmp).unwrap().gbx.body).is_ok();
@@ -215,8 +218,31 @@ pub fn cmd(a: &[String]) {
             // until the count is back and changes nothing else, and `ghost
             // record resample --all-cars` puts the samples into a container that
             // already passes. 227654's clip is the first of those.
+            // 2026-08-29: THE PRUNE IS NOW OPT-IN, BECAUSE IT WAS SILENTLY
+            // BREAKING EVERY FILM THIS PROJECT MADE.
+            //
+            // The reasoning below was written when both shapes crashed, so
+            // pruning cost nothing. That is no longer true and it has been
+            // measured twice: 287431's client accepts EXACTLY
+            // `0x2D001000, 0x2D001000, 0x032CB000(0 samples), CAR` with the car
+            // at absolute index 3, and 297660's wants the car at index 1 of 3
+            // with a 0-sample `0x032CB000` at index 2. In both, the placeholder
+            // this line deletes is LOAD-BEARING: dropping it produced a hard
+            // client crash on one map and a silent `0 -> 0` / `FrameMessage`
+            // refusal on the other.
+            //
+            // Worse, the prune is invisible: it changes the entity list and
+            // NOTHING IN `ghost verify` LOOKS AT ENTITY ORDER OR COUNT, so a
+            // scrambled container passes all eleven checks and then kills the
+            // client. The standing film recipe ended with a trim, so every arm
+            // in the fleet was running the command that broke its own output.
+            //
+            // Empty entities are therefore KEPT by default. `--prune-empty`
+            // restores the old behaviour for the caller who actually wants it.
             let before_ents = rd.ents.len();
-            rd.ents.retain(|e| !e.times.is_empty() && e.sample_size > 0);
+            if prune_empty {
+                rd.ents.retain(|e| !e.times.is_empty() && e.sample_size > 0);
+            }
             pruned = before_ents - rd.ents.len();
             Ok(())
         });
