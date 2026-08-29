@@ -247,21 +247,6 @@ pub fn cmd(a: &[String]) {
                 v.push(x.to_string());
             }
         }
-        // `--carrier TABLE` writes more per-sample channels from engine memory
-        // in the SAME engine run, so there is no second pass and no ordering
-        // rule.
-        //
-        // `--carrier layout` is the successor and should be preferred: instead
-        // of a table of hand-fitted rows it uses the game's OWN writer,
-        // transcribed from the archiver at 0x9cfed0, and writes every byte that
-        // writer predicts. It needs no coefficients, it covers the packed
-        // bit-fields no per-byte affine fit can represent -- the five reactor
-        // members live across bytes 89, 90, 91 and 76 -- and it cannot drift
-        // from the table because there is no table.
-        if let Some(t) = flag(a, "--carrier") {
-            v.push("--carrier".into());
-            v.push(t.to_string());
-        }
         for k in ["--verbose", "--inherit-outside", "--allow-partial",
                   "--keep-transform", "--noanchor"] {
             if has(a, k) {
@@ -283,6 +268,21 @@ pub fn cmd(a: &[String]) {
         v.push("--neutralise".into());
         v.push("--inputs".into());
         v.push("--trim-outside".into());
+        // AND THE CARRIER, for the same reason. Without it the transform writes
+        // 22 of the 116 sample bytes and the other 94 are ZEROED -- which on
+        // 287431 (measured 2026-08-29) draws the car as a TRANSPARENT
+        // WIREFRAME. Three clips shipped like that, every one gating at V6
+        // kappa 1.000, because kappa compares the tape to the record and
+        // cannot see whether a car is drawn.
+        //
+        // `layout` is the game's own writer transcribed from the archiver at
+        // 0x9cfed0 (see `vislayout`): no coefficients, no hand-fitted table to
+        // drift, and it covers the packed bit-fields no per-byte affine fit
+        // can represent. There was a `--carrier` flag to select it. It is gone
+        // -- a file with unauthored visual channels is not publishable, so
+        // there is nothing for the flag to have meant.
+        v.push("--carrier".into());
+        v.push("layout".into());
         v
     };
     let tries: i64 = num(a, "--tries").unwrap_or(24);
@@ -937,6 +937,12 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
                         (Some(t), Some(d)) if t == d => {
                             s.push_str(&format!("   G4 oracle on the written file: {}\n", secs(t)))
                         }
+                        (Some(t), Some(d)) if has(a, "--expect-dnf") => s.push_str(&format!(
+                            "   G4 oracle: {} against a declared {} -- ACCEPTED, --expect-dnf was \
+                             given (the declared time is the carrier's, not this run's)\n",
+                            secs(t),
+                            secs(d)
+                        )),
                         (Some(t), Some(d)) => {
                             return Err(format!(
                                 "   G4 oracle re-simulated the written file to {} but it declares {}",
@@ -945,8 +951,33 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
                             ))
                         }
                         (Some(t), None) => s.push_str(&format!("   G4 oracle: {}\n", secs(t))),
+                        // A DNF IS A LEGITIMATE THING TO REGENERATE, AND THE
+                        // GATE COULD NOT EXPRESS IT.
+                        //
+                        // G4 exists so a regenerated file cannot claim a lap it
+                        // does not drive. But a tape that never finishes cannot
+                        // satisfy it by construction -- and those are exactly
+                        // the tapes worth looking at: a failed human attempt, a
+                        // search candidate that reaches a state our operators
+                        // cannot, a reconstruction from video. Before this flag
+                        // the only way to film one was to harvest the
+                        // `OUT.tryN.raw` that a REFUSED attempt leaves on disk,
+                        // which is a valid ghost the tool deleted its own
+                        // pointer to. That is a trap, not a workflow.
+                        //
+                        // --expect-dnf says "I know this does not finish";
+                        // every other gate still runs, and the DNF is REPORTED
+                        // rather than waived silently.
+                        (None, _) if has(a, "--expect-dnf") => s.push_str(&format!(
+                            "   G4 oracle: DNF (cps {:?}) -- ACCEPTED, --expect-dnf was given\n",
+                            res.cps
+                        )),
                         (None, _) => {
-                            return Err(format!("   G4 oracle: DNF on the written file (cps {:?})", res.cps))
+                            return Err(format!(
+                                "   G4 oracle: DNF on the written file (cps {:?}). If this tape is \
+                                 MEANT not to finish, pass --expect-dnf; the other gates still run.",
+                                res.cps
+                            ))
                         }
                     }
                 }
