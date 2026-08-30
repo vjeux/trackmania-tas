@@ -76,7 +76,13 @@ pub fn cmd(a: &[String]) {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "ghost".into());
     let scratch = format!("{}.film", out);
-    let s = |n: &str| format!("{}.{}", scratch, n);
+    // EVERY scratch file must still be named *.Ghost.Gbx. The dedicated server
+    // ignores a file with any other extension and returns a bare DNF that is
+    // indistinguishable from a genuine one, so `.film.rb` made regen's clock
+    // scan fail with "could not measure the clock bias at any checkpoint" --
+    // three commands away from the cause. The oracle's own error says this
+    // plainly; it only fires once something actually hands it the file.
+    let s = |n: &str| format!("{}.{}.Ghost.Gbx", scratch, n);
     let owned = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
 
     // ---- 0. What does the tape actually run to, and what does it claim? ----
@@ -86,14 +92,17 @@ pub fn cmd(a: &[String]) {
     println!("== film: input\n{}", chain.lines().take(2).collect::<Vec<_>>().join("\n"));
 
     let span = flag(a, "--span").map(String::from).unwrap_or_else(|| {
-        // Default: the record's own end, in ms, rounded up to a tick.
-        chain
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .windows(2)
-            .find_map(|w| (w[0] == "..").then(|| w[1].trim_end_matches(',').parse::<f64>().ok()).flatten())
-            .map(|end| format!("{}", (end * 1000.0).ceil() as i64))
-            .unwrap_or_else(|| die("film: could not read the record's span -- pass --span MS"))
+        // Default: the file's DECLARED time, not the last sample's timestamp.
+        //
+        // The record's own end is the last SAMPLE, which lands on the tick
+        // before the finish -- 10.600 for a 10.640 run at a 20 ms period. A
+        // grid rebuilt to 10600 is 40 ms short of the lap, so the regenerated
+        // car stops before the line and the last frames of the film show the
+        // finish being crossed by nothing. Measured on 203072.
+        //
+        // `declared_ms` reads the same number `verify`'s V2 census gates on,
+        // which is the run's own time.
+        declared_ms(&me, &inp)
     });
 
     // ---- 1. Strip the donor's grid coverage (trap 1) ------------------------
@@ -179,6 +188,7 @@ pub fn cmd(a: &[String]) {
     for l in v.lines().filter(|l| l.contains("V5") || l.contains("V6")) {
         println!("{}", l);
     }
+    carrier_check(&me, &out, Some(&refr));
     let kappa_ok = v.lines().any(|l| l.contains("V6") && l.contains("kappa 1.000"));
     if !kappa_ok {
         die(format!(
@@ -205,14 +215,151 @@ pub fn cmd(a: &[String]) {
     );
 }
 
-/// Which entity index holds the car, as `record chain` reports it.
+/// Which entity index holds the car, read from `record show`'s OWN marker.
+///
+/// This used to count lines after "lives" in `record chain` and take the
+/// second whitespace token, which on a rebuilt grid picks up a word and
+/// panics downstream in `record ents` with `ParseIntError` -- a failure two
+/// commands away from its cause. `record show` labels the car explicitly
+/// ("<- the car this project reads"); parse the label, not a position.
 fn car_index(me: &str, f: &str) -> String {
-    let c = run(me, &["record".into(), "chain".into(), f.into()], "record chain");
+    let c = run(me, &["record".into(), "show".into(), f.into()], "record show");
     c.lines()
-        .skip_while(|l| !l.contains("lives"))
-        .nth(1)
-        .and_then(|l| l.split_whitespace().nth(1).map(|x| x.to_string()))
-        .unwrap_or_else(|| die(format!("film: could not find the car entity in {}", f)))
+        .find(|l| l.contains("the car this project reads"))
+        .and_then(|l| {
+            l.split_whitespace()
+                .nth(1)
+                .map(|x| x.trim_end_matches(':').to_string())
+        })
+        .filter(|x| x.parse::<usize>().is_ok())
+        .unwrap_or_else(|| {
+            die(format!(
+                "film: could not find the car entity in {} -- `record show` printed no \
+                 line marked as the car. Run it by hand and look at the entity list.",
+                f
+            ))
+        })
+}
+
+/// REFUSE a file whose visual channels never move.
+///
+/// The bug this exists for: `regen` writing 22 of the 116 sample bytes and
+/// zeroing the other 94. The car then reports no speed, no rpm, gear 0 and no
+/// ground contact, and the CLIENT DRAWS IT AS A TRANSPARENT WIREFRAME -- or,
+/// with the reactor members dead, drives the whole run with the booster
+/// unlit. Three clips shipped invisible and one shipped with no reactor, and
+/// every one of them passed V2, V5 and V6 at kappa 1.000: kappa compares the
+/// tape to the record and has no opinion about whether a car is rendered.
+///
+/// Bytes 89, 90, 91 and 76 carry the five packed reactor members; a real run
+/// moves them constantly. If they hold one value for the whole lap, the
+/// carrier did not run, and the only honest thing to do is say so BEFORE a
+/// human watches the video.
+fn carrier_is_live(me: &str, f: &str) {
+    carrier_check(me, f, None)
+}
+
+/// The same check with a POSITIVE CONTROL: a byte the reference moves and we
+/// do not is under-authored, and no absolute threshold can tell you that.
+///
+/// Without the control this check can only catch a TOTAL freeze. The reactor
+/// bug on 203072 froze three of the four bytes and left one twitching, which
+/// reads as "live" on its own and as an obvious defect beside a real
+/// recording: the reference swept b76 to 16 and b89 to 73 over the same lap
+/// where ours held 0 and 1.
+fn carrier_check(me: &str, f: &str, control: Option<&str>) {
+    let read = |p: &str| -> Vec<Vec<u32>> {
+        let d = run(
+            me,
+            &[
+                "record".into(),
+                "dumpbytes".into(),
+                p.into(),
+                "--bytes".into(),
+                "76,89,90,91".into(),
+            ],
+            "record dumpbytes",
+        );
+        d.lines()
+            .filter_map(|l| {
+                let v: Vec<u32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                (v.len() == 5).then_some(v[1..].to_vec())
+            })
+            .collect()
+    };
+    let spread = |rows: &[Vec<u32>], i: usize| -> u32 {
+        let (mut lo, mut hi) = (u32::MAX, 0u32);
+        for r in rows {
+            lo = lo.min(r[i]);
+            hi = hi.max(r[i]);
+        }
+        hi.saturating_sub(lo)
+    };
+
+    let rows = read(f);
+    if rows.len() < 8 {
+        println!("   carrier: only {} sample rows read -- not checked", rows.len());
+        return;
+    }
+    let names = ["b76", "b89", "b90", "b91"];
+    let ours: Vec<u32> = (0..4).map(|i| spread(&rows, i)).collect();
+
+    if ours.iter().all(|s| *s == 0) {
+        die(format!(
+            "film: THE CARRIER DID NOT RUN. Bytes 76, 89, 90 and 91 hold one value for \
+             all {} samples of {}, so the reactor and the wheels are frozen: the render \
+             will show a car that never fires its booster, and with the rest of the 94 \
+             carrier bytes dead the client may draw it as a TRANSPARENT WIREFRAME. \
+             That is what `regen` produces when the field gather is skipped -- check \
+             that its log mentions the carrier and that `want_fields` is true in \
+             regen.rs. Every other gate passes on this file, which is the whole \
+             problem.",
+            rows.len(),
+            f
+        ));
+    }
+
+    if let Some(c) = control {
+        let cr = read(c);
+        if cr.len() >= 8 {
+            let dead: Vec<&str> = (0..4)
+                .filter(|i| ours[*i] == 0 && spread(&cr, *i) > 4)
+                .map(|i| names[i])
+                .collect();
+            if !dead.is_empty() {
+                die(format!(
+                    "film: UNDER-AUTHORED CARRIER. {} never move in {}, but the \
+                     reference {} sweeps them over the same lap -- so these are \
+                     channels this map's car really does drive, and ours are dead. \
+                     The render will be missing whatever they carry (the reactor \
+                     flame, the wheel rotation). This is a partial version of the \
+                     total freeze above and no absolute threshold catches it; only \
+                     the comparison does.",
+                    dead.join(", "),
+                    f,
+                    c
+                ));
+            }
+            println!(
+                "PASS carrier: every channel the reference drives is driven here too \
+                 ({} samples, control {})",
+                rows.len(),
+                c
+            );
+            return;
+        }
+    }
+
+    let dead: Vec<&str> = (0..4).filter(|i| ours[*i] == 0).map(|i| names[i]).collect();
+    if dead.is_empty() {
+        println!("PASS carrier: bytes 76/89/90/91 all move across {} samples", rows.len());
+    } else {
+        println!(
+            "   carrier: {} never move -- NOT PROVEN either way without a control; \
+             pass --ref a real recording of this map to settle it",
+            dead.join(", ")
+        );
+    }
 }
 
 fn ent_count(me: &str, f: &str) -> usize {

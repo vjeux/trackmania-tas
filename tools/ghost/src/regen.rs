@@ -460,7 +460,12 @@ pub fn cmd(a: &[String]) {
     //
     // A flag that is quietly ignored is worse than one that fails, so when
     // fields are asked for this path is skipped rather than run without them.
-    let want_fields = flag(a, "--carrier").is_some();
+    // ALWAYS true: the carrier is unconditional now (the flag was removed), so
+    // the in-process path must always be skipped. Reading the user flag here
+    // after deleting it silently disabled the field gather -- regen then ran
+    // the fast path, wrote 22 of 116 bytes, and the reactor stayed frozen at
+    // its template value while the gate passed. Measured on 203072.
+    let want_fields = true;
     if !has(a, "--no-inprocess") && !want_fields {
         let cand = format!("{}.ip", out);
         let raw = format!("{}.raw", cand);
