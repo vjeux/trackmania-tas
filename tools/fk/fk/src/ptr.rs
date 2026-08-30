@@ -102,7 +102,25 @@ use std::io::{Read, Seek, SeekFrom};
 /// acceptance the blind search applies — the state must reproduce the run's own
 /// measured path and all four wheel-rotation slots must be live — so a stale
 /// chain fails and the caller falls back to searching.
-pub const DEFAULT_CHAIN: &str = "mod+0x1e45148:0:+0x148#4x8+0x46c";
+/// The chain that names the car ON THE BINARY THIS PROJECT RUNS.
+///
+/// `fk ptr check` grades it: "state 0x…e50: 0.000000 m median from the
+/// recording's own path (p90 0.000000, worst 0.000000) over 213 paired
+/// instants, 4 of 4 wheel slots live -- ACCEPTED".
+///
+/// The previous default ended `+0x46c` and landed on a BARE POSITION COPY --
+/// "0 of 4 wheel slots live … a pointer to it would be a pointer to the wrong
+/// thing" -- so the field gather fell back to the blind window every time. The
+/// vis state on this build sits at `+0x4e8` in the vehicle object, and every
+/// chain `fk ptr find` reports ends there, at depths 2 through 4. Re-derive it
+/// with `fk ptr find` after a server upgrade; `measure_anchors` falls back to
+/// the search when it stops resolving, so a stale chain costs time and cannot
+/// produce a wrong file.
+pub const DEFAULT_CHAIN: &str = "mod+0x1d56e48:0:+0xd8:+0x4e8";
+
+/// The pre-2026-08-30 chain, kept for reference: it resolves on this binary
+/// and names a copy of the car with no wheel data.
+pub const LEGACY_CHAIN: &str = "mod+0x1e45148:0:+0x148#4x8+0x46c";
 
 /// A POOL, not an element — and that correction cost two rounds.
 ///

@@ -558,6 +558,23 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     // WITH the wheels, not a prerequisite. Left wired up and switchable so the
     // next person can test a chain in one run.
     let mut positions: Vec<u64> = Vec::new();
+    // OPT-IN until `discover_layout` can accept what the pointer names.
+    //
+    // The chain itself is now CORRECT and proven -- `fk ptr check` grades
+    // DEFAULT_CHAIN "0.000000 m median from the recording's own path over 213
+    // paired instants, 4 of 4 wheel slots live -- ACCEPTED". The field gather
+    // uses it happily. What fails is this call site: `measure_anchors` needs a
+    // quaternion 16 B before the position and a velocity 12 B after it, and
+    // `discover_layout` hunts for that layout AROUND the address. The copy the
+    // pointer names does not carry it -- the same reason
+    // `--transform-from-fields` is refused with a pointer: "it is the struct
+    // itself, and the struct holds a 3x3 rotation rather than a quaternion".
+    //
+    // So the pointer gives a position with no quaternion beside it, and the
+    // search still has to run to find a copy that has one. Closing that gap is
+    // what ends the locate cost for good: either teach `discover_layout` to
+    // read the 3x3 rotation out of the vis state, or resolve the SIBLING copy
+    // that carries the quaternion once the vis state is known.
     let chain = std::env::var("FK_CAR_CHAIN").unwrap_or_default();
     if !chain.is_empty() {
         match crate::ptr::module_base(srv.pid()) {
