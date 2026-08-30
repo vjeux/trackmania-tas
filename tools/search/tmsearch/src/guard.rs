@@ -34,7 +34,7 @@
 
 use forkoracle::inputs::{Distance, Inputs};
 use forkoracle::pred::GateRecord;
-use crate::score::{tag, GateState, Outcome};
+use crate::score::{tag, GateState, Outcome, Progress};
 use crate::tape::Patcher;
 use ghost::secs;
 use ghost::oracle::{validate, MapsMode};
@@ -247,6 +247,15 @@ impl Bank {
             // measured state is written out beside the tape -- and the file
             // never acquires a millisecond it did not earn.
             (Outcome::Gate(_), _) => true,
+            // `--must`: a demoted finisher. It DID finish the real map -- that
+            // is why it carries a millisecond -- and it was demoted because it
+            // failed a variant map, which the oracle was not asked about here.
+            // So the check is the finisher's check: the millisecond the search
+            // claimed must be the one the written bytes produce.
+            (
+                Outcome::Dnf(Progress::Checkpoints { cps, seg_ms: Some(a) }),
+                Outcome::Finish { ms: b, .. },
+            ) if cps >= crate::batch::MUST_RUNG => a == b,
             _ => false,
         };
 

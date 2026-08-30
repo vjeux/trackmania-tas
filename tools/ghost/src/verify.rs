@@ -412,6 +412,96 @@ pub fn run(path: &str, a: &[String]) -> Report {
         }
     }
 
+    // ---- V12 the declared SPLIT TABLE --------------------------------------
+    //
+    // The intermediate checkpoint times, checked for the things a single file
+    // can actually establish about them: the last entry IS the race time (true
+    // of every reference ghost in this corpus), the list does not go backwards,
+    // and no intermediate sits at or past the finish.
+    //
+    // ⚠ READ THIS BEFORE TRUSTING A PASS. **These checks cannot detect the one
+    // defect that has actually shipped here — a split table INHERITED from the
+    // donor.** 287431's whole lineage is seeded from ITZYNO1FAN's 24.092 ghost;
+    // every tape it produced declared his six splits beside its own finish, and
+    // that table is monotonic, ends at the declared time, and sits entirely
+    // inside the run. It passes all three checks below and is somebody else's
+    // measurement. A published clip said "CP6 at 16.945" on that basis.
+    //
+    // Nor can the trajectory settle it. The obvious gate -- "was the car near
+    // checkpoint k at split k" -- was built and MEASURED on this map before
+    // being rejected: our line tracks his to about 2 m through CP4, so at his
+    // split times our car is 1.2 / 2.9 / 2.4 / 2.6 m from his position, well
+    // inside the 20-46 m that a checkpoint block's ORIGIN sits from its own
+    // gate. Every one of the six passes. A test any outcome satisfies is
+    // decoration, so it is not here.
+    //
+    // WHERE THE DEFECT IS CAUGHT INSTEAD: `ghost declare`, which is the only
+    // place that sees the run BEFORE and AFTER. When the declared time changes,
+    // the intermediates timed the old run and are zeroed. Hence the zero rule
+    // below -- a blank table is the honest state, not a broken one.
+    {
+        let sp: Vec<i64> = c.splits().iter().map(|v| *v as i64).collect();
+        let decl = vals.first().copied().unwrap_or(0) as i64;
+        if sp.is_empty() {
+            r.add("V12", Verdict::Na, "this container declares no split table");
+        } else {
+            let inter = &sp[..sp.len() - 1];
+            let last = *sp.last().unwrap();
+            let blank = inter.iter().all(|v| *v == 0);
+            let mut bad: Vec<String> = Vec::new();
+            if decl > 0 && last != decl {
+                bad.push(format!(
+                    "the last split is {} and the file declares {}",
+                    secs(last),
+                    secs(decl)
+                ));
+            }
+            if !blank {
+                for w in inter.windows(2) {
+                    if w[1] < w[0] {
+                        bad.push(format!("the splits go backwards: {} then {}", secs(w[0]), secs(w[1])));
+                        break;
+                    }
+                }
+                if let Some(v) = inter.iter().find(|v| **v >= last && last > 0) {
+                    bad.push(format!(
+                        "an intermediate split ({}) is at or past the finish ({})",
+                        secs(*v),
+                        secs(last)
+                    ));
+                }
+            }
+            if !bad.is_empty() {
+                r.add("V12", Verdict::Fail, format!("split table: {}", bad.join("; ")));
+            } else if blank {
+                r.add(
+                    "V12",
+                    Verdict::Pass,
+                    format!(
+                        "the {} intermediate split(s) are blank (0.000) and the last is the \
+                         race time {}. Blank is HONEST, not missing: it says this container \
+                         does not know its own checkpoint crossings. Measure them and write \
+                         them with `ghost declare --splits`.",
+                        inter.len(),
+                        secs(last)
+                    ),
+                );
+            } else {
+                r.add(
+                    "V12",
+                    Verdict::Warn,
+                    format!(
+                        "split table {} is self-consistent -- BUT NOTHING HERE SHOWS IT IS THIS \
+                         RUN'S. An inherited table passes every check in V12 (see the comment). \
+                         If this file came from a search or a regen, confirm the splits were \
+                         MEASURED for it; if they were not, `ghost declare` will blank them.",
+                        inter.iter().map(|v| secs(*v)).collect::<Vec<_>>().join(" ")
+                    ),
+                );
+            }
+        }
+    }
+
     // ---- V5 telemetry span -------------------------------------------------
     match gbx::record::decode_ghost(path) {
         Err(e) => r.add("V5", Verdict::Na, format!("no telemetry record ({})", e)),

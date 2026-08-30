@@ -53,6 +53,17 @@ WHERE
 SEARCH
   --start-from G      begin from this tape instead of the template's own
   --seg K:MAP         segment map ending at checkpoint K (repeatable)
+  --must-window S     how far a variant finish may sit from the real one
+                      (default 0.150). A variant finish outside it is a
+                      DIFFERENT crossing and does not count.
+  --must MAP          a VARIANT map every finisher must ALSO finish on
+                      (repeatable). The same map with one object moved by a
+                      known amount: "still finishes there" is a hard statement
+                      about WHERE THE CAR WAS, measured by the oracle that
+                      decides the result -- not a shaped reward. A finisher
+                      that fails one is demoted to a rung of its own, so the
+                      ladder is (number of variants passed) and only a run that
+                      passes them all is a Finish. Plain oracle only.
   --workers N         default: all cores
   --batch N           candidates per oracle call (default 30)
   --nops N            operators per candidate, or --nops-upto N
@@ -159,6 +170,8 @@ struct Args {
     start_from: Option<String>,
     map: Option<String>,
     segs: Vec<(u32, PathBuf)>,
+    musts: Vec<PathBuf>,
+    must_window_ms: i64,
     server: Option<String>,
     root: Option<String>,
     bestdir: String,
@@ -216,6 +229,8 @@ fn parse() -> Args {
         start_from: None,
         map: None,
         segs: Vec::new(),
+        musts: Vec::new(),
+        must_window_ms: 150,
         server: None,
         root: None,
         bestdir: "best".into(),
@@ -327,6 +342,14 @@ fn parse() -> Args {
             }
             "--after-key" => a.after_key = next(&mut i),
             "--gate-seed-state" => a.gate_seed_state = next(&mut i),
+            "--must-window" => {
+                let s = next(&mut i);
+                a.must_window_ms = (s.parse::<f64>().unwrap_or_else(|_| die("--must-window wants seconds")) * 1000.0).round() as i64;
+            }
+            "--must" => {
+                let s = next(&mut i);
+                a.musts.push(PathBuf::from(s));
+            }
             "--seg" => {
                 let s = next(&mut i);
                 let (kk, p) = s.split_once(':').unwrap_or_else(|| die("--seg wants K:/path/map.Map.Gbx"));
@@ -578,6 +601,7 @@ fn cmd_search(a: &Args) {
     let plain_outcome = measure(&server, &map, &p, &start, &root.path);
     eprintln!("incumbent: {}", plain_outcome);
     check_segment_maps(a, &server, &p, &start, &root.path);
+    let must_outcome = check_must_maps(a, &server, &p, &start, &root.path, plain_outcome);
 
     // IN GATE MODE THE INCUMBENT IS NOT A TIME. The plain measurement above
     // stays: it is the run's first positive control, and if the seed does not
@@ -586,7 +610,7 @@ fn cmd_search(a: &Args) {
     // worker 0 measures the seed's real band before the first candidate --
     // which is the same evaluation the decoy test needs, so it is free.
     let start_outcome = if a.gate.is_empty() {
-        plain_outcome
+        must_outcome
     } else {
         eprintln!(
             "gate mode: the ranking above is the plain oracle's and is a control, not the \
@@ -628,10 +652,18 @@ fn cmd_search(a: &Args) {
             &root, &server, &map,
         );
     } else {
-        let (pp, rootp, serverp, mapp, segs, refr) =
-            (Arc::clone(&p), root.path.clone(), server.clone(), map.clone(), a.segs.clone(), start.clone());
+        let (pp, rootp, serverp, mapp, segs, musts, mw, refr) = (
+            Arc::clone(&p),
+            root.path.clone(),
+            server.clone(),
+            map.clone(),
+            a.segs.clone(),
+            a.musts.clone(),
+            a.must_window_ms,
+            start.clone(),
+        );
         tmsearch::search::run(&cfg, Arc::clone(&p), start, start_outcome, &mut bank, move |wi| {
-            BatchEval::new(Arc::clone(&pp), &rootp, &serverp, &mapp, &segs, wi, refr.clone())
+            BatchEval::new(Arc::clone(&pp), &rootp, &serverp, &mapp, &segs, &musts, mw, wi, refr.clone())
         });
     }
 }
@@ -777,6 +809,106 @@ fn run_fork(
     });
 }
 
+/// Report the seed against every `--must MAP`, and put the seed on the rung it
+/// has actually earned.
+///
+/// A `--must` map is the real map with ONE object moved by a known amount, so
+/// "this tape still finishes there" is a measurement of where the car was, made
+/// by the same oracle that decides the result -- a hard constraint, not a
+/// shaped reward. Two things matter at startup and both are checked here:
+///
+/// * every map must LOAD and return an answer. A map the server cannot read
+///   would demote every candidate for the whole run and look exactly like a
+///   constraint nothing can satisfy.
+/// * the seed's own rung has to be the one the search starts from. If the seed
+///   finishes the real map it enters as a `Finish`, and then no candidate can
+///   ever displace it except one that is both compliant AND faster -- which is
+///   a search that cannot climb. So a seed that fails a `--must` map is
+///   demoted here exactly as a candidate would be, and the run starts at the
+///   bottom of the ladder it is meant to climb.
+fn check_must_maps(
+    a: &Args,
+    server: &Path,
+    p: &Patcher,
+    start: &Inputs,
+    scratch: &Path,
+    plain: Outcome,
+) -> Outcome {
+    if a.musts.is_empty() {
+        return plain;
+    }
+    if a.fork {
+        die("--must needs the plain oracle: the fork evaluator does not run the \
+             variant maps, so every candidate would be scored as compliant without \
+             anything having been checked.");
+    }
+    let f = scratch.join("mustcheck.Ghost.Gbx");
+    let mut buf = p.base.clone();
+    p.apply(&mut buf, start);
+    std::fs::write(&f, &buf).unwrap_or_else(|e| die(format!("{}: {}", f.display(), e)));
+
+    let ms = plain.finish_ms();
+    let mut rung = None;
+    for (j, m) in a.musts.iter().enumerate() {
+        let r = ghost::oracle::validate(server, &f, ghost::oracle::MapsMode::One(m), "mustcheck")
+            .unwrap_or_else(|e| die(format!("--must {}: {}", m.display(), e)));
+        let late = match (r.time_ms, ms) {
+            (Some(t), Some(base)) => (t - base).abs() > a.must_window_ms,
+            _ => false,
+        };
+        match r.time_ms {
+            Some(t) if !late => {
+                eprintln!("--must {}: the seed finishes at {}", m.display(), secs(t))
+            }
+            Some(t) => {
+                eprintln!(
+                    "--must {}: the seed finishes at {} -- {} off the real map, OUTSIDE \
+                     --must-window, so this is a DIFFERENT crossing and does not count -- rung {}",
+                    m.display(),
+                    secs(t),
+                    secs((t - ms.unwrap_or(t)).abs()),
+                    j
+                );
+                if rung.is_none() {
+                    rung = Some(j);
+                }
+            }
+            None => {
+                eprintln!(
+                    "--must {}: the seed does NOT finish (cp{}) -- rung {}",
+                    m.display(),
+                    r.cps.unwrap_or(0),
+                    j
+                );
+                if rung.is_none() {
+                    rung = Some(j);
+                }
+            }
+        }
+    }
+    match (rung, ms) {
+        (None, _) => {
+            eprintln!(
+                "--must: the seed already satisfies every variant map. The constraint is \
+                 real but it is not binding on this seed -- tighten it, or the search is \
+                 an ordinary time search."
+            );
+            plain
+        }
+        (Some(j), Some(t)) => {
+            let demoted = Outcome::Dnf(Progress::Checkpoints {
+                cps: tmsearch::batch::MUST_RUNG + j as u32,
+                seg_ms: Some(t),
+            });
+            eprintln!("--must: the seed enters the search demoted to {}", demoted);
+            demoted
+        }
+        // The seed does not finish the real map either, so it is already on the
+        // checkpoint ladder and the must maps have nothing to demote.
+        (Some(_), None) => plain,
+    }
+}
+
 /// Check every `--seg K:MAP` before the search trusts it as a ladder rung.
 ///
 /// A segment map is the same map with the finish moved to checkpoint K, and
@@ -887,6 +1019,8 @@ fn cmd_dump(a: &Args) {
         &server,
         &map,
         &a.segs,
+        &a.musts,
+        a.must_window_ms,
         0,
         start.clone(),
     )

@@ -95,6 +95,16 @@ pub fn cmd(a: &[String]) {
         }
     }
     let before: Vec<i32> = c.splits();
+    // Did the run this file describes just change? The old declared time is
+    // read BEFORE any rewrite; see the stale-splits block below.
+    let old_declared: Option<i64> =
+        c.declared_times().first().map(|x| x.1 as i64);
+    let stale_splits = match old_declared {
+        Some(old) => old != ms,
+        // A container that declares no time at all cannot vouch for its
+        // splits either.
+        None => true,
+    };
     let body = trim::rewrite_result(&body, |r| {
         r.race_ms = ms as i32;
         if let Some(sp) = &want_splits {
@@ -173,6 +183,43 @@ pub fn cmd(a: &[String]) {
             // declared time.
             last.0 = ms as i32;
         }
+        // ---- STALE INTERMEDIATE SPLITS, ZEROED UNCONDITIONALLY -------------
+        //
+        // Everything above rewrites the FINAL time and, without `--splits`,
+        // leaves the intermediate checkpoint times exactly as they were. When
+        // the time just changed, those intermediates describe A DIFFERENT RUN
+        // -- the donor's -- and nothing downstream can tell, because a
+        // borrowed split table is a plausible list of increasing numbers that
+        // no check compares against anything.
+        //
+        // This is the byte-73 defect one level up, and it reached a published
+        // clip: 287431's whole lineage is seeded from ITZYNO1FAN's 24.092, and
+        // every tape it has ever produced declared HIS six splits
+        // (5.154 / 7.375 / 9.920 / 11.680 / 14.477 / 16.945) beside its own
+        // finish. A viewer reads "this run reached CP6 at 16.945"; that is his
+        // crossing, not ours.
+        //
+        // So: if the declared time CHANGED, the intermediates are stale by
+        // construction, and a zero is written instead. `--cps` already
+        // establishes the meaning -- 0.000 reads as "this container does not
+        // know its intermediate splits", where a donor's number reads as a
+        // measurement. Pass `--splits` when you have measured them and this
+        // does not fire.
+        //
+        // The test is "the time changed" rather than "this is a synthesised
+        // tape", because that is the part this code can actually know. Its one
+        // blind spot: a searched tape whose time lands exactly on the donor's
+        // keeps the donor's splits. Narrow, and the alternative -- zeroing the
+        // splits of a genuine recording being re-declared to its own time --
+        // destroys good data on every honest file.
+        if want_splits.is_none() && stale_splits {
+            let n = r.entries.len();
+            for (k, e) in r.entries.iter_mut().enumerate() {
+                if k + 1 != n {
+                    *e = (0, 0);
+                }
+            }
+        }
     })
     .unwrap_or_else(|e| die(e));
     let stage = format!("{}.declare-stage", out);
@@ -206,6 +253,40 @@ pub fn cmd(a: &[String]) {
         die(format!("read-back control FAILED: declared copies are {:?}", dt));
     }
     let after: Vec<i32> = c2.splits();
+    if want_splits.is_none() && stale_splits {
+        // Read-back control for the zeroing above, and the notice a human
+        // needs: this file's intermediate splits are now BLANK, on purpose,
+        // and they will stay blank until somebody measures them.
+        let kept: Vec<i32> = after.iter().take(after.len().saturating_sub(1)).copied().collect();
+        if kept.iter().any(|v| *v != 0) {
+            die(format!(
+                "read-back control FAILED: the declared time changed, so the intermediate \
+                 splits should have been zeroed, and the file still declares {:?}",
+                kept
+            ));
+        }
+        if !before.is_empty() {
+            println!(
+                "  the declared time changed ({} -> {}), so the {} intermediate split(s) are \
+                 STALE -- they timed the old run. They were {:?} and are now 0.000.",
+                match old_declared {
+                    Some(o) => secs(o),
+                    None => "none".to_string(),
+                },
+                secs(ms),
+                before.len().saturating_sub(1),
+                before
+                    .iter()
+                    .take(before.len().saturating_sub(1))
+                    .map(|v| secs(*v as i64))
+                    .collect::<Vec<_>>()
+            );
+            println!(
+                "  0.000 means \"this container does not know its intermediate splits\". \
+                 To fill them in, measure each checkpoint crossing and pass --splits."
+            );
+        }
+    }
     if let Some(sp) = &want_splits {
         if after.iter().map(|v| *v as i64).collect::<Vec<i64>>() != *sp {
             die(format!(

@@ -223,6 +223,7 @@ fn main() {
                 println!("{} {}", i, w);
             }
         }
+        "segat" => segments::cmd_segat(&args),
         "segments" => {
             let src = PathBuf::from(&args[2]);
             let out = PathBuf::from(flag(&args, "--out").unwrap_or("/tmp/segmaps"));
@@ -1161,6 +1162,14 @@ CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume ch
   tmmaps clear MAP --out F --box X0,Y0,Z0:X1,Y1,Z1 --to X,Y,Z [--filter PAT]
         move EVERYTHING in the box, then re-read the written map and REQUIRE
         the box to be empty. This is the enforced form of the lesson below.
+  tmmaps segat MAP --out F --promote W [--neutralise W,W,...] [--force-rename]
+        ONE segment map, spelled out: W becomes the finish and each --neutralise
+        waypoint stops being a checkpoint. Nothing is inferred and nothing is
+        verified -- the caller owns the comparison. This is the only way to cut
+        at a LINKED checkpoint (`segments` cannot enumerate one). Rules: every
+        checkpoint at or after the cut must be neutralised, AND every other
+        member of the cut's own linked group; a linked group EARLIER than the
+        cut is left alone.
   tmmaps segments MAP --ref-ghost G [--out DIR] [--order W,W,...] [-j N]
         measure the checkpoint order, then build every segment map + a control.
         The order is MEASURED against the reference ghost and every round is

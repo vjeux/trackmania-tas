@@ -42,18 +42,26 @@ pub struct BatchEval {
     map: PathBuf,
     /// checkpoint depth -> the segment map that ends there
     segs: Vec<(u32, PathBuf)>,
+    /// `--must MAP`: variant maps a finisher must ALSO finish on. See the
+    /// module docs.
+    musts: Vec<PathBuf>,
+    /// How far a variant map's finish may sit from the real map's, in ms.
+    must_window_ms: i64,
     dir: PathBuf,
     tag: String,
     reference: Inputs,
 }
 
 impl BatchEval {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         patcher: Arc<Patcher>,
         root: &Path,
         server: &Path,
         map: &Path,
         segs: &[(u32, PathBuf)],
+        musts: &[PathBuf],
+        must_window_ms: i64,
         wi: usize,
         reference: Inputs,
     ) -> Result<BatchEval, String> {
@@ -64,6 +72,8 @@ impl BatchEval {
             server: server.to_path_buf(),
             map: map.to_path_buf(),
             segs: segs.to_vec(),
+            musts: musts.to_vec(),
+            must_window_ms,
             dir,
             tag: format!("w{:03}", wi),
             reference,
@@ -85,6 +95,95 @@ impl BatchEval {
 
 fn index_of(name: &str) -> Option<usize> {
     name.trim_start_matches('c').trim_end_matches(".Ghost.Gbx").parse().ok()
+}
+
+/// The rung a finisher sits on while it still fails a `--must` map.
+///
+/// Far above any real checkpoint count, so a partially compliant finisher can
+/// never be confused with — or outranked by — a run that merely collected
+/// checkpoints. The ladder is `MUST_RUNG + (number of --must maps passed)`,
+/// and a run that passes them all becomes a true `Finish`.
+pub const MUST_RUNG: u32 = 50;
+
+impl BatchEval {
+    /// `--must`: a candidate that finishes the real map must finish the
+    /// variant maps too, or it is demoted to a rung of its own.
+    ///
+    /// This is a HARD constraint made of engine truth, not a shaped reward:
+    /// each variant is the same map with one object moved, so "finishes on all
+    /// of them" is a statement about where the car actually was, measured by
+    /// the same oracle that decides the result. Short-circuit in a fixed
+    /// order, so a candidate that fails the first one costs one extra launch
+    /// and not `n`.
+    ///
+    /// A variant finish only counts if it happens AT THE SAME INSTANT as the
+    /// real one, within `--must-window`. Without that a run can miss the moved
+    /// trigger entirely, carry on, and be caught by it -- or by another gate --
+    /// a second later; the oracle says "finished" and the constraint has
+    /// measured nothing. One seed did exactly this: it failed nothing and
+    /// finished 1.281 s late on four of the six.
+    ///
+    /// Demotion keeps the main map's millisecond as `seg_ms`, so runs on the
+    /// same rung are still ordered by lap time; the rung dominates, so a run
+    /// that climbs one is always preferred to a faster run that did not.
+    fn apply_musts(&self, files: &[PathBuf], out: &mut [Outcome]) {
+        if self.musts.is_empty() {
+            return;
+        }
+        // (index, the main map's millisecond) for everything still alive.
+        let mut alive: Vec<(usize, i64)> = out
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| match o {
+                Outcome::Finish { ms, .. } => Some((i, *ms)),
+                _ => None,
+            })
+            .collect();
+        for (j, map) in self.musts.iter().enumerate() {
+            if alive.is_empty() {
+                return;
+            }
+            let sub: Vec<&Path> = alive.iter().map(|&(i, _)| files[i].as_path()).collect();
+            let tag = format!("{}_m{}", self.tag, j);
+            let rows = match validate_many(&self.server, &sub, MapsMode::One(map), &tag) {
+                Ok(r) => r,
+                Err(e) => {
+                    // An oracle failure must not silently promote a
+                    // non-compliant candidate: demote everything still alive.
+                    eprintln!("must[{}] oracle: {}", j, e);
+                    for &(i, ms) in &alive {
+                        out[i] = Outcome::Dnf(Progress::Checkpoints {
+                            cps: MUST_RUNG + j as u32,
+                            seg_ms: Some(ms),
+                        });
+                    }
+                    return;
+                }
+            };
+            let mut got: HashMap<usize, Option<i64>> = HashMap::new();
+            for r in &rows {
+                if let Some(i) = index_of(&r.file) {
+                    got.insert(i, r.time_ms);
+                }
+            }
+            let mut next = Vec::with_capacity(alive.len());
+            for &(i, ms) in &alive {
+                let ok = match got.get(&i).copied().flatten() {
+                    Some(t) => (t - ms).abs() <= self.must_window_ms,
+                    None => false,
+                };
+                if ok {
+                    next.push((i, ms));
+                } else {
+                    out[i] = Outcome::Dnf(Progress::Checkpoints {
+                        cps: MUST_RUNG + j as u32,
+                        seg_ms: Some(ms),
+                    });
+                }
+            }
+            alive = next;
+        }
+    }
 }
 
 impl Evaluator for BatchEval {
@@ -132,6 +231,7 @@ impl Evaluator for BatchEval {
                 }
             }
         }
+        self.apply_musts(&files, &mut out);
         out
     }
 

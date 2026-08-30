@@ -554,6 +554,62 @@ pub fn order_checkpoints(
 /// one checkpoint across BOTH carriers -- block and item indices are separate
 /// spaces and can collide, so an ambiguous bare number is refused rather than
 /// resolved by a rule the caller cannot see.
+/// Resolve ONE waypoint token (`439`, `i439`/`item#439`, `b2089`/`block#2089`)
+/// against a pool of candidates.
+///
+/// Split out of `resolve_order` so that a caller naming a single waypoint --
+/// `segat` -- gets the same parsing, the same ambiguity rule and the same
+/// error prose without also getting `--order`'s arity check, which is about a
+/// whole driving order and is exactly wrong for one name.
+pub fn resolve_waypoint(cps: &[Waypoint], tok: &str) -> Result<Waypoint, String> {
+    let names = |v: &[Waypoint]| {
+        v.iter()
+            .map(|w| format!("{}{}", if w.kind == Kind::Block { "b" } else { "i" }, w.index))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let t = tok.trim();
+    let (want_kind, digits) = if let Some(d) = t.strip_prefix("item#") {
+        (Some(Kind::Item), d)
+    } else if let Some(d) = t.strip_prefix("block#") {
+        (Some(Kind::Block), d)
+    } else if let Some(d) = t.strip_prefix('i') {
+        (Some(Kind::Item), d)
+    } else if let Some(d) = t.strip_prefix('b') {
+        (Some(Kind::Block), d)
+    } else {
+        (None, t)
+    };
+    let idx: usize = digits.parse().map_err(|_| {
+        format!(
+            "REFUSING --order: cannot read '{}' as a waypoint index. \
+             Write `439`, `i439`/`item#439` for an item, `b2089`/`block#2089` for a block.",
+            t
+        )
+    })?;
+    let hits: Vec<&Waypoint> = cps
+        .iter()
+        .filter(|w| w.index == idx && want_kind.as_ref().map(|k| *k == w.kind).unwrap_or(true))
+        .collect();
+    match hits.len() {
+        1 => Ok(hits[0].clone()),
+        0 => Err(format!(
+            "REFUSING --order: '{}' names no checkpoint of this map. Its checkpoints are {}.",
+            t,
+            names(cps)
+        )),
+        _ => Err(format!(
+            "REFUSING --order: '{}' is AMBIGUOUS -- it matches {} checkpoints ({}). \
+             Block and item indices are separate spaces; spell it `b{}` or `i{}`.",
+            t,
+            hits.len(),
+            hits.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(" and "),
+            idx,
+            idx
+        )),
+    }
+}
+
 pub fn resolve_order(cps: &[Waypoint], spec: &[String]) -> Result<Vec<Waypoint>, String> {
     let names = |v: &[Waypoint]| {
         v.iter()
@@ -577,50 +633,7 @@ pub fn resolve_order(cps: &[Waypoint], spec: &[String]) -> Result<Vec<Waypoint>,
     }
     let mut out: Vec<Waypoint> = Vec::new();
     for tok in spec {
-        let t = tok.trim();
-        let (want_kind, digits) = if let Some(d) = t.strip_prefix("item#") {
-            (Some(Kind::Item), d)
-        } else if let Some(d) = t.strip_prefix("block#") {
-            (Some(Kind::Block), d)
-        } else if let Some(d) = t.strip_prefix('i') {
-            (Some(Kind::Item), d)
-        } else if let Some(d) = t.strip_prefix('b') {
-            (Some(Kind::Block), d)
-        } else {
-            (None, t)
-        };
-        let idx: usize = digits.parse().map_err(|_| {
-            format!(
-                "REFUSING --order: cannot read '{}' as a waypoint index. \
-                 Write `439`, `i439`/`item#439` for an item, `b2089`/`block#2089` for a block.",
-                t
-            )
-        })?;
-        let hits: Vec<&Waypoint> = cps
-            .iter()
-            .filter(|w| w.index == idx && want_kind.as_ref().map(|k| *k == w.kind).unwrap_or(true))
-            .collect();
-        match hits.len() {
-            1 => out.push(hits[0].clone()),
-            0 => {
-                return Err(format!(
-                    "REFUSING --order: '{}' names no checkpoint of this map. Its checkpoints are {}.",
-                    t,
-                    names(cps)
-                ))
-            }
-            _ => {
-                return Err(format!(
-                    "REFUSING --order: '{}' is AMBIGUOUS -- it matches {} checkpoints ({}). \
-                     Block and item indices are separate spaces; spell it `b{}` or `i{}`.",
-                    t,
-                    hits.len(),
-                    hits.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(" and "),
-                    idx,
-                    idx
-                ))
-            }
-        }
+        out.push(resolve_waypoint(cps, tok)?);
     }
     let key = |w: &Waypoint| (if w.kind == Kind::Block { 0 } else { 1 }, w.index);
     let mut got: Vec<_> = out.iter().map(key).collect();
@@ -974,4 +987,123 @@ pub fn make_all(
     verbose: bool,
 ) -> Result<Vec<Segment>, String> {
     make_all_ordered(src, out_dir, ref_ghost, jobs, server, verbose, None)
+}
+
+// ------------------------------------------------- ONE SEGMENT, SPELLED OUT
+//
+// `segat` -- build ONE segment map from an explicit promote/neutralise list.
+//
+// WHY THIS EXISTS. `make_all_ordered` enumerates the cut points itself, and it
+// can only enumerate waypoints tagged `Checkpoint`. A **linked** checkpoint --
+// several gates spanning one wide road that the game counts as ONE checkpoint
+// number -- therefore cannot be a cut, and on a map that has one (287431's CP5
+// is five `PlatformTechCheckpoint` blocks at 32 m spacing) the whole builder
+// refuses before it has built anything, including the segments it could
+// perfectly well have built for the plain checkpoints.
+//
+// This is the primitive underneath that decision, with the policy taken out:
+// the caller says exactly which waypoint becomes the finish and exactly which
+// ones stop being checkpoints, and nothing is inferred. It builds the map and
+// makes no claim about it -- there is no reference ghost here and no
+// verification, because the caller is doing that comparison itself and a check
+// that lives in two places is a check nobody owns.
+//
+// The rules the caller has to keep, which `make_all_ordered` normally keeps
+// for you:
+//
+//   * every checkpoint at or after the cut must be neutralised, or the finish
+//     never counts -- the game ends a race at a Goal only once every
+//     checkpoint has been collected;
+//   * every OTHER member of the cut's own linked group must be neutralised
+//     too, for the same reason: the promoted member stops being a checkpoint,
+//     so a sibling left standing is an uncollected checkpoint;
+//   * a linked group EARLIER than the cut is left completely alone. The game
+//     counts the group once and the car collects it by crossing any one
+//     member, which is exactly what happens on the untouched map.
+//
+// A block cut is promoted by relocating a spare gate ITEM onto it, which is
+// the exact method; `--force-rename` takes the approximate one (renaming the
+// block's model makes it fire at the cell ENTRY, 100-170 ms early) and is
+// there for the case where no spare gate fires. WHICH ONE YOU GOT IS PRINTED,
+// and a rename is not a measurement.
+pub fn cmd_segat(args: &[String]) {
+    let src = Path::new(&args[2]);
+    let out = crate::cli::flag(args, "--out")
+        .unwrap_or_else(|| crate::cli::die("segat needs --out FILE"));
+    let promote = crate::cli::flag(args, "--promote")
+        .unwrap_or_else(|| crate::cli::die("segat needs --promote WAYPOINT"));
+    let neut: Vec<String> = crate::cli::flag(args, "--neutralise")
+        .map(|s| s.split(',').map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect())
+        .unwrap_or_default();
+    let force_rename = crate::cli::has(args, "--force-rename");
+
+    let m0 = MapFile::load(src);
+    let wps = m0.waypoints();
+    // Any waypoint the map calls a checkpoint, of either tag: this command's
+    // whole reason for existing is that the linked ones are addressable.
+    let pool: Vec<Waypoint> = wps
+        .iter()
+        .filter(|w| w.tag == "Checkpoint" || w.tag == "LinkedCheckpoint")
+        .cloned()
+        .collect();
+    let one = |spec: &str| -> Waypoint {
+        match resolve_waypoint(&pool, spec) {
+            Ok(w) => w,
+            Err(e) => crate::cli::die(&e.replace("--order", "segat")),
+        }
+    };
+    let cut = one(promote);
+    let later: Vec<Waypoint> = neut.iter().map(|s| one(s)).collect();
+    if later.iter().any(|w| w.kind == cut.kind && w.index == cut.index) {
+        crate::cli::die("segat: --promote names a waypoint that --neutralise also names");
+    }
+
+    let mut m = MapFile::load(src);
+    let method;
+    if cut.kind == Kind::Item {
+        neutralise(&mut m, &cut);
+        method = Method::GateSwappedInPlace;
+    } else {
+        let spare: Option<Waypoint> = if force_rename {
+            None
+        } else {
+            // A spare gate is an ITEM waypoint that is not itself being cut or
+            // neutralised -- moving one of those would destroy the very
+            // trigger this segment depends on.
+            wps.iter()
+                .find(|w| {
+                    w.kind == Kind::Item
+                        && !(w.kind == cut.kind && w.index == cut.index)
+                        && !later.iter().any(|l| l.kind == w.kind && l.index == w.index)
+                })
+                .cloned()
+        };
+        match spare {
+            None => {
+                neutralise(&mut m, &cut);
+                method = Method::BlockRenamed;
+            }
+            Some(g) => {
+                let pos = block_gate_pos(&cut, &g);
+                move_gate(&mut m, &g, pos, cut.yaw.unwrap_or(0.0), cut.coords);
+                method = Method::GateRelocated;
+            }
+        }
+    }
+    for w in &later {
+        neutralise(&mut m, w);
+    }
+    m.write_to(Path::new(out)).expect("write segment map");
+    println!(
+        "wrote {}\n  cut      {}\n  method   {}{}\n  neutralised {}",
+        out,
+        cut,
+        method.label(),
+        if method.exact() { "" } else { "   <- NOT A MEASUREMENT" },
+        if later.is_empty() {
+            "(nothing)".to_string()
+        } else {
+            later.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", ")
+        }
+    );
 }

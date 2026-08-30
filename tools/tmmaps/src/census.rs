@@ -154,7 +154,7 @@ pub fn cmd_census(args: &[String]) {
     let m = MapFile::load(Path::new(&args[2]));
     let pat = filter_of(args);
     let free_only = crate::cli::has(args, "--free");
-    println!("src\tid\tname\tcx\tcy\tcz\tflags\tplacement\tx\ty\tz\twp");
+    println!("src\tid\tname\tcx\tcy\tcz\tflags\tplacement\tx\ty\tz\trx\try\trz\twp");
     let rows = m
         .blocks
         .iter()
@@ -176,7 +176,7 @@ pub fn cmd_census(args: &[String]) {
         }
         let c = b.coords();
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{}",
             src,
             e.id,
             b.name,
@@ -188,6 +188,9 @@ pub fn cmd_census(args: &[String]) {
             e.pos[0],
             e.pos[1],
             e.pos[2],
+            b.free_rot.unwrap_or([0.0;3])[0],
+            b.free_rot.unwrap_or([0.0;3])[1],
+            b.free_rot.unwrap_or([0.0;3])[2],
             b.waypoint_tag.clone().unwrap_or_default()
         );
     }
@@ -200,7 +203,7 @@ pub fn cmd_census(args: &[String]) {
         nfree += 1;
         let c = it.coords();
         println!(
-            "I\t{}\t{}\t{}\t{}\t{}\t{:08X}\tITEM\t{:.3}\t{:.3}\t{:.3}\t{}",
+            "I\t{}\t{}\t{}\t{}\t{}\t{:08X}\tITEM\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{}",
             e.id,
             it.model,
             c.0,
@@ -210,6 +213,9 @@ pub fn cmd_census(args: &[String]) {
             e.pos[0],
             e.pos[1],
             e.pos[2],
+            it.yaw,
+            it.pitch,
+            it.roll,
             it.waypoint_tag.clone().unwrap_or_default()
         );
     }
