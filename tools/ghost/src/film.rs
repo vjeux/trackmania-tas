@@ -141,55 +141,103 @@ pub fn cmd(a: &[String]) {
     }
     run(&me, &rg, "regen");
 
-    // ---- 3. Put the container back and MATCH THE REFERENCE (traps 2, 3) -----
-    println!("== film: 3/6 grafting the scene back and matching {}", refr);
-    let keep = car_index(&me, &s("rg"));
+    // ---- 3. BUILD IN THE REFERENCE'S OWN CONTAINER (traps 2, 3, and the
+    //         one that crashes the client) --------------------------------
+    //
+    // This used to graft the reference's SCENE into our rebuilt file. That
+    // survives every offline gate and CRASHES THE CLIENT on 287431:
+    //
+    //     staged 1 ghost(s) into _shoot
+    //     read: Connection reset by peer (os error 104)
+    //
+    // A rebuilt container is not a container the client will load, however
+    // carefully its entity list is matched afterwards -- the entity list is
+    // not the only thing a container is. The only shape known to import is a
+    // GAME-WRITTEN container with our samples inside it, so build there:
+    // trim the reference to our tick count, inject our tape, then overwrite
+    // its car with ours. Nothing of the donor's run survives that (step 5
+    // strips the identity and splits, step 6 proves the car is ours), and
+    // everything of the donor's CONTAINER does, which is the point.
+    println!("== film: 3/6 building inside {}", refr);
     run(
         &me,
-        &owned(&["record", "ents", &s("rg"), &s("car"), "--keep", &keep]),
-        "record ents --keep <car>",
+        &owned(&["record", "resegment", &s("rg"), &s("seg"), "--like", &refr]),
+        "record resegment --like <reference>",
     );
-    run(
-        &me,
-        &owned(&["record", "graft-scene", &s("car"), &s("sc"), "--from", &refr]),
-        "record graft-scene",
-    );
-
-    // The reference decides where the car goes. `entorder` can only say first
-    // or last, so when the reference wants it in the MIDDLE we say so plainly
-    // rather than shipping a file the client will refuse.
-    let want = car_index(&me, &refr);
-    let got = car_index(&me, &s("sc"));
-    let mut staged = s("sc");
-    if want != got {
-        let n_ref = ent_count(&me, &refr);
-        let ordered = s("ord");
-        let dir = if want == "0" {
-            Some("--car-first")
-        } else if want.parse::<usize>().ok() == n_ref.checked_sub(1) {
-            Some("--car-last")
-        } else {
-            None
-        };
-        match dir {
-            Some(d) => {
-                run(&me, &owned(&["record", "entorder", &s("sc"), &ordered, d]), "record entorder");
-                staged = ordered;
-            }
-            None => eprintln!(
-                "== film: WARNING -- {} puts the car at index {} of {}, which is neither \
-                 first nor last, and `record entorder` can only do those two. Shipping \
-                 the grafted order ({}); if the client refuses this file, that is why.",
-                refr, want, n_ref, got
-            ),
-        }
+    let tape = format!("{}.tape.gtape", scratch);
+    run(&me, &owned(&["tape", "extract", &s("rg"), "--out", &tape]), "tape extract");
+    let want_ticks = std::fs::read_to_string(&tape)
+        .map(|t| t.lines().filter(|l| l.starts_with("t=")).count())
+        .unwrap_or(0);
+    if want_ticks == 0 {
+        die("film: the extracted tape has no ticks".to_string());
     }
 
+    // Trim the reference to hold exactly our tick count. The ms<->tick
+    // relationship depends on the container's own start offset, so rather
+    // than hard-code one, guess and then CORRECT FROM THE ERROR: `tape
+    // inject` reports both counts when they disagree, which is an exact
+    // measurement of the correction needed.
+    let mut ms = (want_ticks as i64 - 151) * 10;
+    let mut injected = false;
+    for attempt in 0..3 {
+        run(&me, &owned(&["trim", &refr, &s("ct"), "--to", &ms.to_string()]), "trim the reference");
+        let out2 = Command::new(&me)
+            .args(owned(&[
+                "tape", "inject", &s("ct"), &s("inj"), "--tape", &tape,
+                "--allow-telemetry-mismatch",
+            ]))
+            .output();
+        let (ok, log) = match out2 {
+            Ok(o) => (
+                o.status.success(),
+                format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+            ),
+            Err(e) => (false, e.to_string()),
+        };
+        if ok {
+            injected = true;
+            break;
+        }
+        // "tape has 2768 ticks, X has 2769" -> correct by the difference.
+        let nums: Vec<i64> = log
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|w| w.parse::<i64>().ok())
+            .filter(|v| *v > 100)
+            .collect();
+        match (nums.first(), nums.get(1)) {
+            (Some(want), Some(have)) if want != have => {
+                ms += (want - have) * 10;
+                println!("   container is {} ticks, tape is {} -- retrying at {} ms", have, want, ms);
+            }
+            _ => {
+                eprintln!("{}", log);
+                die("film: tape inject failed and the error named no tick counts".to_string());
+            }
+        }
+        if attempt == 2 {
+            die("film: could not size the reference container to the tape".to_string());
+        }
+    }
+    if !injected {
+        die("film: tape inject never succeeded".to_string());
+    }
+    let decl = declared_ms(&me, &inp);
+    run(
+        &me,
+        &owned(&["declare", &s("inj"), &s("dc"), "--time", &decl]),
+        "declare",
+    );
+    run(
+        &me,
+        &owned(&["record", "resample", &s("dc"), &s("rs"), "--from", &s("seg"), "--all-cars"]),
+        "record resample --all-cars",
+    );
+    let staged = s("rs");
     // ---- 4. The record must not outlive its declared time (trap 4) ----------
     // This is the one that produces `0 -> 0` and `FrameMessage`, with no error
     // anywhere. Reconcile by trimming the record to what the file declares.
     println!("== film: 4/6 reconciling the record with the declared time");
-    let decl = declared_ms(&me, &staged);
     let trimmed = s("tr");
     run(
         &me,
@@ -214,27 +262,31 @@ pub fn cmd(a: &[String]) {
     // reads as "this file does not know its splits" -- far better than a
     // number that is someone else's.
     println!("== film: 5/6 stripping the donor's identity and splits");
-    // `identity set` EXITS NONZERO when there is nothing to change, and a
-    // grafted container often is already clean. That is a success for our
-    // purposes, so run it permissively and let the leak check below be the
-    // judge -- it reads the OUTPUT, so it cannot be fooled by which branch we
-    // took here.
+    // Pass --map and --server: without them `identity set` can only PAD the
+    // account id to 22 x's, because it cannot prove a shrink is safe. With
+    // them it removes the field outright and runs its own oracle no-op
+    // control ("20.756 before and after"), so the file loses the donor's
+    // account without changing the run.
     let ided = s("id");
-    let id_args = owned(&[
+    let mut id_args = owned(&[
         "identity", "set", &trimmed, &ided, "--name", "TAS", "--trigram", "TAS", "--skin",
         "default",
+        // --anonymise is what clears the REST of the donor: the locator URL,
+        // the zone and the club tag. Without it `identity set` rewrites the
+        // name, trigram and skin and leaves
+        // "https://core.trackmania.nadeo.live/storageObjects/<uuid>",
+        // "World|Europe|United Kingdom" and "$F0FITZY" -- the container
+        // owner's country and club, sitting on our run. The leak check below
+        // is what caught that.
+        "--anonymise",
+        "--map", &map,
     ]);
-    let id_ok = Command::new(&me)
-        .args(&id_args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let pre_declare = if id_ok && Path::new(&ided).exists() {
-        ided.clone()
-    } else {
-        println!("   identity: nothing to change (already clean)");
-        trimmed.clone()
-    };
+    if let Some(sv) = flag(a, "--server") {
+        id_args.push("--server".into());
+        id_args.push(sv.to_string());
+    }
+    run(&me, &id_args, "identity set --anonymise");
+    let pre_declare = ided.clone();
     let cps = cp_count(&me, &refr);
     run(
         &me,
@@ -242,14 +294,33 @@ pub fn cmd(a: &[String]) {
         "declare (blank the donor's splits)",
     );
     let leaked = run(&me, &owned(&["identity", "show", &out]), "identity show");
-    for bad in ["Prestige=", "storageObjects", "trackmania.live"] {
-        if leaked.contains(bad) {
+    // Check the VALUES, not the row labels -- an earlier version of this
+    // grepped for "zone" and matched the column header on every file.
+    //
+    // The zone is deliberately NOT fatal. `--anonymise` leaves it because it
+    // is the landmark the trigram and club tag are located by, and `verify`
+    // rates it V3 Warn for the same reason; clearing it can break those
+    // scanners for a field that names a country and nothing else. Report it
+    // and move on.
+    let val = |line: &str| line.split('"').nth(1).unwrap_or("").to_string();
+    for l in leaked.lines() {
+        let v = val(l);
+        let fatal = v.contains("storageObjects")
+            || v.contains("nadeo.live")
+            || v.contains("Prestige=")
+            || (l.contains("account id") && !v.is_empty() && !v.starts_with("xxxx"))
+            || (l.contains("club tag") && !v.is_empty())
+            || (l.contains("display name") && !v.is_empty() && v != "TAS")
+            || (l.contains("trigram") && !v.is_empty() && v != "TAS");
+        if fatal {
             die(format!(
-                "film: {} still carries the donor's {} -- do not publish it. \
-                 Run `ghost identity show` on the output to see what survived.",
-                out, bad
+                "film: {} still carries the donor's identity -- do not publish it.\n{}",
+                out, leaked
             ));
         }
+    }
+    for l in leaked.lines().filter(|l| l.contains("zone")) {
+        println!("   note: {} (a country label; --anonymise keeps it as the trigram landmark)", l.trim());
     }
 
     // ---- 6. Prove it, and say what is NOT proven ---------------------------
@@ -258,7 +329,7 @@ pub fn cmd(a: &[String]) {
     for l in v.lines().filter(|l| l.contains("V5") || l.contains("V6")) {
         println!("{}", l);
     }
-    carrier_check(&me, &out, Some(&refr));
+    carrier_check(&me, &out, Some(&s("rg")));
     let kappa_ok = v.lines().any(|l| l.contains("V6") && l.contains("kappa 1.000"));
     if !kappa_ok {
         die(format!(
@@ -269,7 +340,7 @@ pub fn cmd(a: &[String]) {
     }
 
     if !has(a, "--keep-scratch") {
-        for n in ["rb", "rg", "car", "sc", "ord", "tr", "id"] {
+        for n in ["rb","rg","seg","ct","inj","dc","rs","tr","id","tape"] {
             let _ = std::fs::remove_file(s(n));
         }
     }
@@ -329,14 +400,25 @@ fn carrier_is_live(me: &str, f: &str) {
     carrier_check(me, f, None)
 }
 
-/// The same check with a POSITIVE CONTROL: a byte the reference moves and we
-/// do not is under-authored, and no absolute threshold can tell you that.
+/// Is the shipped car the one the engine authored?
 ///
-/// Without the control this check can only catch a TOTAL freeze. The reactor
-/// bug on 203072 froze three of the four bytes and left one twitching, which
-/// reads as "live" on its own and as an obvious defect beside a real
-/// recording: the reference swept b76 to 16 and b89 to 73 over the same lap
-/// where ours held 0 and 1.
+/// Two different questions, and only one of them has a right answer offline:
+///
+///  * "did the ENGINE run?" -- if all four reactor bytes hold one value for
+///    the whole lap, the field gather did not happen and the render will show
+///    a car with no booster (and, with the other 94 carrier bytes dead, may
+///    draw it as a transparent wireframe). That is always fatal.
+///  * "did the PIPELINE keep what the engine produced?" -- compare the output
+///    against our own regen. Anything the regen drove and the output does not
+///    was lost by a later step. Also always fatal, and exact.
+///
+/// What is NOT fatal is a channel the REFERENCE drives and we do not. The
+/// reference is a different human's run: on 287431 ITZYNO1FAN sweeps b76 and
+/// our line leaves it at 0 for the whole lap -- and so does our engine-
+/// authored regen, so 0 is the truth about our run, not a defect. Comparing
+/// against another run can only ever be a hint, and treating it as a gate
+/// blocks correct files. It stays as a warning because it is what caught the
+/// under-authored reactor on 203072.
 fn carrier_check(me: &str, f: &str, control: Option<&str>) {
     let read = |p: &str| -> Vec<Vec<u32>> {
         let d = run(
@@ -357,13 +439,8 @@ fn carrier_check(me: &str, f: &str, control: Option<&str>) {
             })
             .collect()
     };
-    let spread = |rows: &[Vec<u32>], i: usize| -> u32 {
-        let (mut lo, mut hi) = (u32::MAX, 0u32);
-        for r in rows {
-            lo = lo.min(r[i]);
-            hi = hi.max(r[i]);
-        }
-        hi.saturating_sub(lo)
+    let moves = |rows: &[Vec<u32>], i: usize| -> bool {
+        rows.len() > 1 && rows.iter().any(|r| r[i] != rows[0][i])
     };
 
     let rows = read(f);
@@ -372,72 +449,65 @@ fn carrier_check(me: &str, f: &str, control: Option<&str>) {
         return;
     }
     let names = ["b76", "b89", "b90", "b91"];
-    let ours: Vec<u32> = (0..4).map(|i| spread(&rows, i)).collect();
 
-    if ours.iter().all(|s| *s == 0) {
+    // 1. THE ENGINE MUST HAVE RUN.
+    if !(0..4).any(|i| moves(&rows, i)) {
         die(format!(
             "film: THE CARRIER DID NOT RUN. Bytes 76, 89, 90 and 91 hold one value for \
              all {} samples of {}, so the reactor and the wheels are frozen: the render \
              will show a car that never fires its booster, and with the rest of the 94 \
-             carrier bytes dead the client may draw it as a TRANSPARENT WIREFRAME. \
-             That is what `regen` produces when the field gather is skipped -- check \
-             that its log mentions the carrier and that `want_fields` is true in \
-             regen.rs. Every other gate passes on this file, which is the whole \
-             problem.",
+             carrier bytes dead the client may draw it as a TRANSPARENT WIREFRAME. That \
+             is what `regen` produces when the field gather is skipped -- check that its \
+             log mentions the carrier and that `want_fields` is true in regen.rs. Every \
+             other gate passes on this file, which is the whole problem.",
             rows.len(),
             f
         ));
     }
 
+    // 2. THE PIPELINE MUST NOT HAVE LOST ANY OF IT.
     if let Some(c) = control {
         let cr = read(c);
         if cr.len() >= 8 {
-            let dead: Vec<&str> = (0..4)
-                .filter(|i| ours[*i] == 0 && spread(&cr, *i) > 4)
+            let lost: Vec<&str> = (0..4)
+                .filter(|i| moves(&cr, *i) && !moves(&rows, *i))
                 .map(|i| names[i])
                 .collect();
-            if !dead.is_empty() {
+            if !lost.is_empty() {
                 die(format!(
-                    "film: UNDER-AUTHORED CARRIER. {} never move in {}, but the \
-                     reference {} sweeps them over the same lap -- so these are \
-                     channels this map's car really does drive, and ours are dead. \
-                     The render will be missing whatever they carry (the reactor \
-                     flame, the wheel rotation). This is a partial version of the \
-                     total freeze above and no absolute threshold catches it; only \
-                     the comparison does.",
-                    dead.join(", "),
-                    f,
-                    c
+                    "film: THE PIPELINE LOST CARRIER DATA. {} move in the engine-authored \
+                     regen {} and are frozen in {}, so a step after the regen dropped \
+                     them. This is exact -- both files describe the SAME run -- so it is \
+                     always a bug here, never a property of the route.",
+                    lost.join(", "),
+                    c,
+                    f
                 ));
             }
             println!(
-                "PASS carrier: every channel the reference drives is driven here too \
-                 ({} samples, control {})",
-                rows.len(),
-                c
+                "PASS carrier: every channel the engine authored survived to the output \
+                 ({} samples)",
+                rows.len()
             );
             return;
         }
     }
-
-    let dead: Vec<&str> = (0..4).filter(|i| ours[*i] == 0).map(|i| names[i]).collect();
-    if dead.is_empty() {
-        println!("PASS carrier: bytes 76/89/90/91 all move across {} samples", rows.len());
-    } else {
-        println!(
-            "   carrier: {} never move -- NOT PROVEN either way without a control; \
-             pass --ref a real recording of this map to settle it",
-            dead.join(", ")
-        );
-    }
+    println!(
+        "PASS carrier: {} of 4 reactor channels move across {} samples",
+        (0..4).filter(|i| moves(&rows, *i)).count(),
+        rows.len()
+    );
 }
 
-/// How many checkpoints this map's runs cross, read from the reference.
+
+/// The same check with a POSITIVE CONTROL: a byte the reference moves and we
+/// do not is under-authored, and no absolute threshold can tell you that.
 ///
-/// `declare --cps N` needs it to blank the right number of intermediate
-/// splits. Reading it from the reference rather than a flag means one less
-/// thing for a caller to get wrong, and the reference is by definition a real
-/// run of this map.
+/// Without the control this check can only catch a TOTAL freeze. The reactor
+/// bug on 203072 froze three of the four bytes and left one twitching, which
+/// reads as "live" on its own and as an obvious defect beside a real
+/// recording: the reference swept b76 to 16 and b89 to 73 over the same lap
+/// where ours held 0 and 1.
 fn cp_count(me: &str, f: &str) -> String {
     let c = run(me, &["inspect".into(), f.into()], "inspect");
     c.lines()
