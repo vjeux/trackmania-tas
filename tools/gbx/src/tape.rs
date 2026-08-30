@@ -375,6 +375,31 @@ pub fn encode_archive(a: &Archive, enc: Encoding) -> Vec<u8> {
     w.buf
 }
 
+/// EVERY input chunk in a body, in file order: (chunk offset, payload offset,
+/// size). A solo ghost has one. A SERVER RECORDING has one per life -- this
+/// map's practice replay has 46 -- and `find_inputs_chunk` returns only the
+/// first, which is how a naive reader silently reads life 0 and calls it the
+/// run. The walk advances past each payload it accepts, so a chunk id that
+/// happens to occur inside an accepted payload cannot be counted twice.
+pub fn find_inputs_chunks(body: &[u8]) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 12 <= body.len() {
+        if u32::from_le_bytes(body[i..i + 4].try_into().unwrap()) == INPUTS_CHUNK_ID
+            && &body[i + 4..i + 8] == SKIP_MAGIC
+        {
+            let size = u32::from_le_bytes(body[i + 8..i + 12].try_into().unwrap()) as usize;
+            if i + 12 + size <= body.len() {
+                out.push((i, i + 12, size));
+                i += 12 + size;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Where the input chunk sits in a body: (chunk offset, payload offset, size).
 pub fn find_inputs_chunk(body: &[u8]) -> Option<(usize, usize, usize)> {
     let mut i = 0usize;
@@ -395,8 +420,20 @@ pub fn find_inputs_chunk(body: &[u8]) -> Option<(usize, usize, usize)> {
 impl Tape {
     /// Decode every archive of a ghost's input chunk.
     pub fn from_body(body: &[u8]) -> Result<Tape, String> {
-        let (_, payload_off, payload_size) =
-            find_inputs_chunk(body).ok_or("no 0x0309201D input chunk in this file")?;
+        Tape::from_body_nth(body, 0)
+    }
+
+    /// Decode the Nth input chunk of a body (0 = the first, what every stock
+    /// reader takes).
+    pub fn from_body_nth(body: &[u8], nth: usize) -> Result<Tape, String> {
+        let all = find_inputs_chunks(body);
+        if all.is_empty() {
+            return Err("no 0x0309201D input chunk in this file".into());
+        }
+        if nth >= all.len() {
+            return Err(format!("--nth {} but this file has {} input chunks", nth, all.len()));
+        }
+        let (_, payload_off, payload_size) = all[nth];
         let pay = &body[payload_off..payload_off + payload_size];
         let ver = u32::from_le_bytes(pay[0..4].try_into().unwrap());
         if ver > 4 {
@@ -430,9 +467,13 @@ impl Tape {
     }
 
     pub fn from_file(path: &str) -> Result<Tape, String> {
+        Tape::from_file_nth(path, 0)
+    }
+
+    pub fn from_file_nth(path: &str, nth: usize) -> Result<Tape, String> {
         let data = std::fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
         let g = Gbx::parse(&data);
-        Tape::from_body(&g.body)
+        Tape::from_body_nth(&g.body, nth)
     }
 
     /// Serialise the whole chunk payload.
@@ -515,8 +556,15 @@ impl Tape {
 
     /// Write this tape back into `body`, returning the new body.
     pub fn splice_into(&self, body: &[u8], enc: Encoding) -> Result<Vec<u8>, String> {
-        let (chunk_off, payload_off, payload_size) =
-            find_inputs_chunk(body).ok_or("no 0x0309201D input chunk in this file")?;
+        self.splice_into_nth(body, enc, 0)
+    }
+
+    pub fn splice_into_nth(&self, body: &[u8], enc: Encoding, nth: usize) -> Result<Vec<u8>, String> {
+        let all = find_inputs_chunks(body);
+        if nth >= all.len() {
+            return Err(format!("--nth {} but this file has {} input chunks", nth, all.len()));
+        }
+        let (chunk_off, payload_off, payload_size) = all[nth];
         let pay = self.to_payload(enc);
         let mut out = Vec::with_capacity(body.len() + pay.len());
         out.extend_from_slice(&body[..chunk_off + 8]);
@@ -837,7 +885,11 @@ impl Tape {
     /// field is written out, so every tick has bits at a fixed position. It is
     /// deterministic -- the same tape always produces the same bytes.
     pub fn inject_into(&self, c: &crate::container::Container, enc: Encoding) -> Result<Vec<u8>, String> {
-        let body = self.splice_into(c.body(), enc)?;
+        self.inject_into_nth(c, enc, 0)
+    }
+
+    pub fn inject_into_nth(&self, c: &crate::container::Container, enc: Encoding, nth: usize) -> Result<Vec<u8>, String> {
+        let body = self.splice_into_nth(c.body(), enc, nth)?;
         let mut file = c.gbx.header_bytes_u();
         file.extend_from_slice(&body);
         Ok(file)

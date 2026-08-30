@@ -48,12 +48,31 @@ fn load(path: &str) -> Result<BTreeMap<i64, Row>, String> {
 pub fn cmd(argv: &[String]) -> i32 {
     let mut files: Vec<&String> = Vec::new();
     let mut tol: i64 = 5;
+    let mut from: i64 = i64::MIN;
+    let mut to: i64 = i64::MAX;
+    let mut per: i64 = 0;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--tol-ms" => {
                 i += 1;
                 tol = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(5);
+            }
+            "--from" => {
+                i += 1;
+                from = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(i64::MIN);
+            }
+            "--to" => {
+                i += 1;
+                to = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(i64::MAX);
+            }
+            // A single median over a whole run hides WHERE two runs part company,
+            // and on a run that starts in free fall it is dominated by the plunge:
+            // at 277 m/s one 10 ms sampling offset is 2.8 m of "deviation" that is
+            // not a difference in the line at all. This prints the profile.
+            "--per" => {
+                i += 1;
+                per = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
             }
             s if s.starts_with("--") => {
                 eprintln!("tmtraj csvdiff: unknown flag {s}");
@@ -64,7 +83,7 @@ pub fn cmd(argv: &[String]) -> i32 {
         i += 1;
     }
     if files.len() != 2 {
-        eprintln!("usage: tmtraj csvdiff A.csv B.csv [--tol-ms N]");
+        eprintln!("usage: tmtraj csvdiff A.csv B.csv [--tol-ms N] [--from MS] [--to MS] [--per MS]");
         return 2;
     }
     let (a, b) = match (load(files[0]), load(files[1])) {
@@ -76,8 +95,12 @@ pub fn cmd(argv: &[String]) -> i32 {
     };
     let mut d: Vec<f64> = Vec::new();
     let mut ds: Vec<f64> = Vec::new();
+    let mut prof: Vec<(i64, f64)> = Vec::new();
     let mut span = (i64::MAX, i64::MIN);
     for (t, ra) in &a {
+        if *t < from || *t > to {
+            continue;
+        }
         let mut best: Option<(i64, &Row)> = None;
         for (u, rb) in b.range(t - tol..=t + tol) {
             let dt = (u - t).abs();
@@ -87,7 +110,9 @@ pub fn cmd(argv: &[String]) -> i32 {
         }
         let Some((_, rb)) = best else { continue };
         span = (span.0.min(*t), span.1.max(*t));
-        d.push(((ra.x - rb.x).powi(2) + (ra.y - rb.y).powi(2) + (ra.z - rb.z).powi(2)).sqrt());
+        let dist = ((ra.x - rb.x).powi(2) + (ra.y - rb.y).powi(2) + (ra.z - rb.z).powi(2)).sqrt();
+        d.push(dist);
+        prof.push((*t, dist));
         if ra.kmh.is_finite() && rb.kmh.is_finite() {
             ds.push((ra.kmh - rb.kmh).abs());
         }
@@ -118,6 +143,26 @@ pub fn cmd(argv: &[String]) -> i32 {
             p(&ds, 95),
             ds[ds.len() - 1]
         );
+    }
+    if per > 0 {
+        println!("  window        n   median_m      max_m");
+        let mut k = 0usize;
+        while k < prof.len() {
+            let w0 = prof[k].0 - prof[k].0.rem_euclid(per);
+            let mut v: Vec<f64> = Vec::new();
+            while k < prof.len() && prof[k].0 < w0 + per {
+                v.push(prof[k].1);
+                k += 1;
+            }
+            v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            println!(
+                "  {:>7.3}  {:>4}  {:>9.3}  {:>9.3}",
+                w0 as f64 / 1000.0,
+                v.len(),
+                v[(v.len() - 1) / 2],
+                v[v.len() - 1]
+            );
+        }
     }
     0
 }
