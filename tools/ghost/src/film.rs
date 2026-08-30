@@ -159,11 +159,37 @@ pub fn cmd(a: &[String]) {
     // strips the identity and splits, step 6 proves the car is ours), and
     // everything of the donor's CONTAINER does, which is the point.
     println!("== film: 3/6 building inside {}", refr);
-    run(
-        &me,
-        &owned(&["record", "resegment", &s("rg"), &s("seg"), "--like", &refr]),
-        "record resegment --like <reference>",
-    );
+    // RESEGMENT ONLY FOR THE FREEFALL CASE, which is the only one it models.
+    //
+    // 287431 needs it: that map spawns the car 646 m up and the game records
+    // the 2.13 s fall as a SEPARATE vehicle entity, so its reference has
+    // exactly 2 car segments and a single-segment file does not match it.
+    //
+    // Anything else must be left alone. A reference with 1 segment makes
+    // `resegment --like` refuse outright ("there is nothing to copy the shape
+    // of"), and a human run with RESPAWNS has one segment per life -- 203072's
+    // reference has 23, covering 2714 samples against our 213, and copying
+    // that shape is not merely useless but impossible. Both maps had worked a
+    // commit earlier and were broken by resegmenting unconditionally.
+    let ref_segs = car_segments(&me, &refr);
+    let our_segs = car_segments(&me, &s("rg"));
+    let seg_src = if ref_segs == 2 && our_segs == 1 {
+        println!("   reference splits its car in two (a freefall spawn) -- matching that");
+        run(
+            &me,
+            &owned(&["record", "resegment", &s("rg"), &s("seg"), "--like", &refr]),
+            "record resegment --like <reference>",
+        );
+        s("seg")
+    } else {
+        if ref_segs != our_segs {
+            println!(
+                "   reference has {} car segment(s), ours has {} -- leaving the shape alone",
+                ref_segs, our_segs
+            );
+        }
+        s("rg")
+    };
     let tape = format!("{}.tape.gtape", scratch);
     run(&me, &owned(&["tape", "extract", &s("rg"), "--out", &tape]), "tape extract");
     let want_ticks = std::fs::read_to_string(&tape)
@@ -173,14 +199,22 @@ pub fn cmd(a: &[String]) {
         die("film: the extracted tape has no ticks".to_string());
     }
 
-    // Trim the reference to hold exactly our tick count. The ms<->tick
-    // relationship depends on the container's own start offset, so rather
-    // than hard-code one, guess and then CORRECT FROM THE ERROR: `tape
-    // inject` reports both counts when they disagree, which is an exact
-    // measurement of the correction needed.
-    let mut ms = (want_ticks as i64 - 151) * 10;
+    // Size the reference container to hold exactly our tick count.
+    //
+    // START FROM THE REFERENCE'S OWN LENGTH, which is always a valid trim, and
+    // let `tape inject`'s error do the arithmetic: it reports both tick counts
+    // when they disagree, which is an exact measurement of the correction. Two
+    // earlier attempts computed the target directly -- a fixed `-151` tuned on
+    // one map, then a formula over the reference's span -- and BOTH produced
+    // negative windows on other maps ("the window 0.000 .. -1211.440 leaves no
+    // ticks"). A measured correction cannot do that: it only ever moves toward
+    // a length the container actually has.
+    let mut ms = declared_ms(&me, &refr).parse::<i64>().unwrap_or(0);
+    if ms <= 0 {
+        die("film: could not read the reference's declared time".to_string());
+    }
     let mut injected = false;
-    for attempt in 0..3 {
+    for attempt in 0..8 {
         run(&me, &owned(&["trim", &refr, &s("ct"), "--to", &ms.to_string()]), "trim the reference");
         let out2 = Command::new(&me)
             .args(owned(&[
@@ -199,23 +233,39 @@ pub fn cmd(a: &[String]) {
             injected = true;
             break;
         }
-        // "tape has 2768 ticks, X has 2769" -> correct by the difference.
-        let nums: Vec<i64> = log
-            .split(|c: char| !c.is_ascii_digit())
-            .filter_map(|w| w.parse::<i64>().ok())
-            .filter(|v| *v > 100)
-            .collect();
-        match (nums.first(), nums.get(1)) {
+        // "archive 0: tape has 2768 ticks, <path> has 2769." Parse the two
+        // counts by their POSITION RELATIVE TO THE WORD "ticks", never by
+        // scraping every number out of the line: the message contains the
+        // file path, and these paths are named after the map id, so a plain
+        // number scrape read "126859" as a tick count and drove the next trim
+        // to -1214.918 s.
+        let toks: Vec<&str> = log.split_whitespace().collect();
+        let want_n = toks
+            .iter()
+            .position(|t| t.starts_with("ticks"))
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| toks[i].parse::<i64>().ok());
+        let have_n = toks
+            .iter()
+            .rposition(|t| *t == "has")
+            .and_then(|i| toks.get(i + 1))
+            .and_then(|t| t.trim_end_matches('.').parse::<i64>().ok());
+        match (want_n, have_n) {
             (Some(want), Some(have)) if want != have => {
                 ms += (want - have) * 10;
                 println!("   container is {} ticks, tape is {} -- retrying at {} ms", have, want, ms);
+                if ms <= 0 {
+                    eprintln!("{}", log);
+                    die("film: sizing the container went negative -- the reference is \
+                         shorter than the tape".to_string());
+                }
             }
             _ => {
                 eprintln!("{}", log);
                 die("film: tape inject failed and the error named no tick counts".to_string());
             }
         }
-        if attempt == 2 {
+        if attempt == 7 {
             die("film: could not size the reference container to the tape".to_string());
         }
     }
@@ -230,7 +280,7 @@ pub fn cmd(a: &[String]) {
     );
     run(
         &me,
-        &owned(&["record", "resample", &s("dc"), &s("rs"), "--from", &s("seg"), "--all-cars"]),
+        &owned(&["record", "resample", &s("dc"), &s("rs"), "--from", &seg_src, "--all-cars"]),
         "record resample --all-cars",
     );
     let staged = s("rs");
@@ -538,4 +588,29 @@ fn declared_ms(me: &str, f: &str) -> String {
         .and_then(|l| l.split_whitespace().nth(1).map(|x| x.to_string()))
         .and_then(|secs| secs.parse::<f64>().ok().map(|v| format!("{}", (v * 1000.0).round() as i64)))
         .unwrap_or_else(|| die(format!("film: could not read the declared time of {}", f)))
+}
+
+/// How many vehicle segments a file's car is split into.
+///
+/// `record show` lists one line per entity; the vehicle class is 0x0A018000.
+/// A map whose spawn is a long fall records the fall as its own segment, so
+/// the count is 2 there and 1 almost everywhere else. It decides whether
+/// `resegment --like` is needed at all -- running it when the reference has a
+/// single segment is refused outright, which broke two maps that had worked.
+fn car_segments(me: &str, f: &str) -> usize {
+    let c = run(me, &["record".into(), "show".into(), f.into()], "record show");
+    c.lines().filter(|l| l.contains("0x0A018000")).count()
+}
+
+/// How many ticks a file's input tape carries.
+///
+/// Used to size a reference container against our tape. `tape stats` prints
+/// "<n> ticks"; anything unparseable returns 0 and the caller falls back.
+fn tape_ticks(me: &str, f: &str) -> usize {
+    let c = run(me, &["tape".into(), "stats".into(), f.into()], "tape stats");
+    c.split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find_map(|w| (w[1].starts_with("ticks")).then(|| w[0].parse::<usize>().ok()).flatten())
+        .unwrap_or(0)
 }

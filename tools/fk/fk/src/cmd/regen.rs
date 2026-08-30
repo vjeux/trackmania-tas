@@ -109,6 +109,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // checkpoint, where the page-fault probe's tick estimate is exact, is what
     // keeps the early handover usable.
     let mut bias = 0i64;
+    // NOT CACHED, and the measurement says why. The bias is genuinely constant
+    // for a (binary, map) pair -- every attempt on 203072 measures +2200 --
+    // so caching it looks like free money. It is not: measured cold 58.97 s
+    // against warm 81.94 s on the same input, because the clock scan shares
+    // its forked engine with the work that follows it and skipping the scan
+    // costs that sharing more than the scan itself costs. The expense is the
+    // FORK-AND-SIMULATE per window, not the arithmetic over the window.
     for t in &ticks {
         match crate::record::measure_bias(&c, &f, *t, verbose) {
             Ok(b) => {
@@ -155,7 +162,27 @@ pub fn run(args: &[String]) -> Result<(), String> {
         a0.bias = bias;
         println!("using the calibrated anchor base{:+} (no locate)", a0.pos_delta);
         anchors.push(a0);
-    } else if !noanchor {
+    } else {
+        // Every proven layout for this (binary, map), each with a fresh clock.
+        // Cheap enough that trying all of them still beats one full search.
+        let cals = calib_get_all(&c);
+        if !cals.is_empty() {
+            println!("trying {} saved calibration(s) before searching", cals.len());
+        }
+        'cal: for cal in &cals {
+            for t in &ticks {
+                if let Ok(b) = crate::record::anchors_from_calibration(&c, &f, *t, cal, verbose) {
+                    println!(
+                        "anchors from the saved calibration base{:+} (skipped the locate)",
+                        cal.pos_delta
+                    );
+                    anchors.extend(b);
+                    break 'cal;
+                }
+            }
+        }
+    }
+    if anchors.is_empty() && !noanchor {
         for t in &ticks {
             match measure_anchors(&c, &f, *t, verbose) {
                 Ok(mut b) => {
@@ -526,6 +553,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // and there are none.
         let mut field_anchors: Vec<crate::record::Anchors> = Vec::new();
         if let Some(a) = used_anchor {
+            // This one passed the acceptance test, so it is worth keeping: the
+            // next regen of this (binary, map) can skip the ~7.5 s locate per
+            // anchor tick. Saved AFTER acceptance, never before.
+            calib_put(&c, &a);
             field_anchors.push(a);
         }
         for a in &anchors {
@@ -1151,12 +1182,104 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The engine flags, in the flat form the recorder threads through its ladder.
+
+
+
+
+/// Where a proven car layout is remembered between runs.
 ///
-/// `fk regen` is the one command that does NOT go through the shared
-/// `--tape`/`--at` parsing: it takes `--template`, it runs that file verbatim,
-/// and it chooses its own checkpoints from a ladder rather than being told one.
-/// Both differences are real, and `ghost regen` depends on this exact contract.
+/// One line per (binary, map): the four numbers that describe WHERE THE CAR IS
+/// and how its quaternion and velocity sit relative to it. Not the clock, and
+/// not the bias -- those are measured fresh every run because they move. See
+/// `record::anchors_from_calibration`.
+///
+/// Deleting this file is always safe: the next regen measures everything from
+/// scratch and writes it again.
+fn calib_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("fk-car-calibration.tsv")
+}
+
+/// Identify the (engine binary, map) pair a calibration belongs to.
+///
+/// The car offset moves when the SERVER BINARY changes (a different build lays
+/// its allocations out differently) or when the MAP changes. It does not move
+/// between tapes on the same pair, which is what makes this reusable at all.
+/// mtime+size stands in for hashing 30 MB on every run; a rebuilt server
+/// always changes one of them.
+fn calib_key(c: &crate::session::Ctx) -> Option<String> {
+    let bin = std::path::Path::new(&c.server).join("TrackmaniaServer");
+    let m = std::fs::metadata(&bin).ok()?;
+    let mt = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let map = std::path::Path::new(&c.map).file_name()?.to_string_lossy().to_string();
+    Some(format!("{}:{}:{}", mt, m.len(), map))
+}
+
+/// Every proven car layout for this (binary, map), newest first.
+///
+/// NOT a single value: the offset is stable enough to be worth caching and not
+/// stable enough to be trusted blind. Three consecutive runs of one file gave
+/// `-4012784`, `-4012672` and `-4890252` -- the first two are allocation
+/// jitter 112 bytes apart, the third is a different copy of the car
+/// altogether. Caching one of those would miss most of the time and cost a
+/// failed attempt.
+///
+/// So keep them all and try them in order. Each costs a 0.1 s clock scan
+/// against the 7.5 s a full `locate_candidates` sweep costs, so even three
+/// misses are cheaper than one search, and the acceptance test downstream is
+/// unchanged: a wrong offset fails and the next one is tried, with the full
+/// search still there as the last resort.
+fn calib_get_all(c: &crate::session::Ctx) -> Vec<crate::record::Anchors> {
+    let Some(key) = calib_key(c) else { return Vec::new() };
+    let Ok(txt) = std::fs::read_to_string(calib_path()) else { return Vec::new() };
+    let mut out: Vec<crate::record::Anchors> = Vec::new();
+    for line in txt.lines().rev() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 5 || f[0] != key {
+            continue;
+        }
+        let (Ok(pos), Ok(qo), Ok(qk), Ok(vo)) = (
+            f[1].parse::<i64>(),
+            f[2].parse::<i64>(),
+            f[3].parse::<u8>(),
+            f[4].parse::<i64>(),
+        ) else {
+            continue;
+        };
+        if out.iter().any(|a| a.pos_delta == pos) {
+            continue;
+        }
+        out.push(crate::record::Anchors {
+            bias: 0,
+            pos_delta: pos,
+            clock_delta: 0,
+            speed: 0.0,
+            quat_off: qo,
+            quat_kind: qk,
+            vel_off: vo,
+        });
+    }
+    out
+}
+
+fn calib_get(c: &crate::session::Ctx) -> Option<crate::record::Anchors> {
+    calib_get_all(c).into_iter().next()
+}
+
+fn calib_put(c: &crate::session::Ctx, a: &crate::record::Anchors) {
+    use std::io::Write;
+    let Some(key) = calib_key(c) else { return };
+    if calib_get(c).map(|p| p.pos_delta == a.pos_delta).unwrap_or(false) {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(calib_path()) {
+        let _ = writeln!(
+            f,
+            "{}\t{}\t{}\t{}\t{}",
+            key, a.pos_delta, a.quat_off, a.quat_kind, a.vel_off
+        );
+    }
+}
+
 fn parse_ctx(a: &[String]) -> Result<crate::session::Ctx, String> {
     let flag = |n: &str| -> Option<String> {
         a.iter().position(|x| x == n).and_then(|i| a.get(i + 1)).cloned()

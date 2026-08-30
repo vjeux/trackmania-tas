@@ -917,22 +917,50 @@ pub fn locate_candidates(
     let mut out: Vec<PosHit> = Vec::new();
     let mut scanned = 0usize;
     let mut firsthit = usize::MAX;
-    for w in wins {
-        scanned += 1;
-        let segs = [(clock, 4u32), (w, slice)];
-        let lstride: u32 = std::env::var("FK_LOCATE_STRIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    // BATCH THE WINDOWS. Each `gather_ticks_stride` call forks the engine and
+    // simulates it, and that fork -- not the memory read -- is the whole cost:
+    // `fk ptr find` snapshots ALL 202 MB of writable memory in 0.11 s, so the
+    // bytes are free and the engine run is seconds. Scanning one 64 KB window
+    // per run meant ~129 forks per locate and ~7.5 s, five times per regen.
+    //
+    // The gatherer already accepts an ARRAY of segments, so ask for many
+    // windows in one run. Nothing about the sweep changes -- the same offsets
+    // are examined with the same tests -- only how many engine runs it costs.
+    let batch: usize = std::env::var("FK_LOCATE_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        // DEFAULT 1, which is the original behaviour. Batching looked like the
+        // obvious win -- one fork for many windows -- and MEASURED FAR WORSE:
+        // 24 windows x 64 KB x ~24 ticks is ~36 MB of snapshot per call
+        // written to the dump, and a 90 s regen went past 27 minutes. The fork
+        // is expensive, but the per-tick snapshot VOLUME is more expensive
+        // still, so trading one for the other loses. Raise it only with a
+        // measurement in hand.
+        .unwrap_or(1)
+        .max(1);
+    let lstride: u32 = std::env::var("FK_LOCATE_STRIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    'outer: for chunk in wins.chunks(batch) {
+        let mut segs: Vec<(u64, u32)> = Vec::with_capacity(chunk.len() + 1);
+        segs.push((clock, 4u32));
+        for w in chunk {
+            segs.push((*w, slice));
+        }
         let ts = gather_ticks_stride(srv, probe, recs, &segs, 6 * lstride + 4, 24, (0, 4), lstride);
         if ts.len() < 4 {
+            scanned += chunk.len();
             continue;
         }
         let n = ts.len();
-        let mut shortlist: Vec<u64> = Vec::new();
-        for o in (4..4 + slice as usize).step_by(4) {
-            if o + 24 > 4 + slice as usize {
-                break;
-            }
-            let at = |i: usize, k: usize| getf32(&ts[i].rec, o + k);
-            let inb = |i: usize| {
+        for (j, w) in chunk.iter().enumerate() {
+            scanned += 1;
+            let wbase = 4 + j * slice as usize;
+            let mut shortlist: Vec<u64> = Vec::new();
+            for o in (wbase..wbase + slice as usize).step_by(4) {
+                if o + 24 > wbase + slice as usize {
+                    break;
+                }
+                let at = |i: usize, k: usize| getf32(&ts[i].rec, o + k);
+                let inb = |i: usize| {
                 let (x, y, z) = (at(i, 0), at(i, 4), at(i, 8));
                 x.is_finite() && y.is_finite() && z.is_finite()
                     && x >= xlo && x <= xhi && y >= ylo && y <= yhi && z >= zlo && z <= zhi
@@ -942,7 +970,7 @@ pub fn locate_candidates(
             }
             let moved = triple_moves(n, &at);
             if moved {
-                shortlist.push(w + (o - 4) as u64);
+                shortlist.push(*w + (o - wbase) as u64);
             }
         }
         // Cap the qualify probes per window: with wide bounds a 64 KB window can
@@ -972,10 +1000,12 @@ pub fn locate_candidates(
             out.push(h);
             firsthit = firsthit.min(scanned);
         }
-        // Stop soon after the first hit: scanning all 3226 windows for a sixth
-        // candidate costs minutes and buys nothing (208024 spent 15 of them).
-        if out.len() >= want || (!out.is_empty() && scanned > firsthit + 40) {
-            break;
+            // Stop soon after the first hit: scanning all 3226 windows for a
+            // sixth candidate costs minutes and buys nothing (208024 spent 15
+            // of them).
+            if out.len() >= want || (!out.is_empty() && scanned > firsthit + 40) {
+                break 'outer;
+            }
         }
     }
     out.sort_by(|a, b| b.mean_speed.total_cmp(&a.mean_speed));
