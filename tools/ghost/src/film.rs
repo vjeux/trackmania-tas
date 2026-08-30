@@ -75,13 +75,17 @@ pub fn cmd(a: &[String]) {
     let me = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "ghost".into());
-    let scratch = format!("{}.film", out);
-    // EVERY scratch file must still be named *.Ghost.Gbx. The dedicated server
-    // ignores a file with any other extension and returns a bare DNF that is
-    // indistinguishable from a genuine one, so `.film.rb` made regen's clock
-    // scan fail with "could not measure the clock bias at any checkpoint" --
-    // three commands away from the cause. The oracle's own error says this
-    // plainly; it only fires once something actually hands it the file.
+    // Scratch names: strip the output's own extension before appending, so we
+    // get `out.film.rg.Ghost.Gbx` and not `out.Ghost.Gbx.film.rg.Ghost.Gbx`.
+    // A DOUBLED extension is not cosmetic here -- the server's own name
+    // handling keys off the suffix, and the first version of this command
+    // produced scratch files it silently ignored. Keep exactly one.
+    let stem = out
+        .strip_suffix(".Ghost.Gbx")
+        .or_else(|| out.strip_suffix(".Replay.Gbx"))
+        .unwrap_or(&out)
+        .to_string();
+    let scratch = format!("{}.film", stem);
     let s = |n: &str| format!("{}.{}.Ghost.Gbx", scratch, n);
     let owned = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
 
@@ -106,7 +110,7 @@ pub fn cmd(a: &[String]) {
     });
 
     // ---- 1. Strip the donor's grid coverage (trap 1) ------------------------
-    println!("== film: 1/5 stripping the donor grid at 20 ms (span {} ms)", span);
+    println!("== film: 1/6 stripping the donor grid at 20 ms (span {} ms)", span);
     run(
         &me,
         &owned(&["record", "rebuild", &inp, &s("rb"), "--span", &span, "--period", "20"]),
@@ -114,21 +118,31 @@ pub fn cmd(a: &[String]) {
     );
 
     // ---- 2. Regenerate (trap 1's other half) --------------------------------
-    println!("== film: 2/5 regenerating from engine memory");
+    println!("== film: 2/6 regenerating from engine memory");
     let mut rg = owned(&[
         "regen", &s("rb"), &s("rg"), "--map", &map, // carrier and neutralise are unconditional in regen now
     ]);
-    // A rebuilt grid does not move, so it cannot be its own spawn reference.
-    // Default to the accepted file, which by definition is a real recording.
-    rg.push("--spawn-ref".into());
-    rg.push(flag(a, "--spawn-ref").map(String::from).unwrap_or_else(|| refr.clone()));
+    // NO --spawn-ref. It was passed here defensively (a rebuilt grid does not
+    // move, so it cannot be its own spawn reference) and it silently COSTS THE
+    // CARRIER: measured on 203072, the same rebuild regenerates with b76
+    // sweeping to 16 and b89 to 73 without the flag, and frozen at 0 and 1
+    // with it. A dead reactor in every film is a far worse failure than the
+    // spawn check it was buying, and G2's own refusals on 287431 were false
+    // (2.8 m at the landing after a 646 m freefall). The spawn is checked
+    // where it belongs -- against the reference's entity shape in step 3 --
+    // and the carrier gate in step 6 now catches the very thing this flag
+    // broke.
+    if let Some(sr) = flag(a, "--spawn-ref") {
+        rg.push("--spawn-ref".into());
+        rg.push(sr.to_string());
+    }
     if has(a, "--expect-dnf") {
         rg.push("--expect-dnf".into());
     }
     run(&me, &rg, "regen");
 
     // ---- 3. Put the container back and MATCH THE REFERENCE (traps 2, 3) -----
-    println!("== film: 3/5 grafting the scene back and matching {}", refr);
+    println!("== film: 3/6 grafting the scene back and matching {}", refr);
     let keep = car_index(&me, &s("rg"));
     run(
         &me,
@@ -174,16 +188,72 @@ pub fn cmd(a: &[String]) {
     // ---- 4. The record must not outlive its declared time (trap 4) ----------
     // This is the one that produces `0 -> 0` and `FrameMessage`, with no error
     // anywhere. Reconcile by trimming the record to what the file declares.
-    println!("== film: 4/5 reconciling the record with the declared time");
+    println!("== film: 4/6 reconciling the record with the declared time");
     let decl = declared_ms(&me, &staged);
+    let trimmed = s("tr");
     run(
         &me,
-        &owned(&["trim", &staged, &out, "--to", &decl, "--declare", &decl]),
+        &owned(&["trim", &staged, &trimmed, "--to", &decl, "--declare", &decl]),
         "trim to the declared time",
     );
 
-    // ---- 5. Prove it, and say what is NOT proven ---------------------------
-    println!("== film: 5/5 verifying");
+    // ---- 5. NOTHING OF THE DONOR'S MAY SHIP (the traps nobody had numbered) --
+    //
+    // A container we inherited carries its owner, not just their car. On the
+    // YEET donor `ghost inspect` lists: two skin archive paths, a
+    // storageObjects locator URL, a ranked badge ("Prestige=Yes&Level=6&..."),
+    // the display name "Bonobo.e" and the trigram "DIH". Every clip built on
+    // that container published a stranger's identity next to our run, and no
+    // gate said a word.
+    //
+    // The splits are the same defect one layer down. The result chunk carries
+    // the DONOR's intermediate checkpoint times; `declare` only ever rewrote
+    // the final one, so a file would assert it matched a human's first six
+    // checkpoints to the millisecond and then gained three seconds in the last
+    // segment. `--cps N` writes 0.000 for the intermediates, which honestly
+    // reads as "this file does not know its splits" -- far better than a
+    // number that is someone else's.
+    println!("== film: 5/6 stripping the donor's identity and splits");
+    // `identity set` EXITS NONZERO when there is nothing to change, and a
+    // grafted container often is already clean. That is a success for our
+    // purposes, so run it permissively and let the leak check below be the
+    // judge -- it reads the OUTPUT, so it cannot be fooled by which branch we
+    // took here.
+    let ided = s("id");
+    let id_args = owned(&[
+        "identity", "set", &trimmed, &ided, "--name", "TAS", "--trigram", "TAS", "--skin",
+        "default",
+    ]);
+    let id_ok = Command::new(&me)
+        .args(&id_args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let pre_declare = if id_ok && Path::new(&ided).exists() {
+        ided.clone()
+    } else {
+        println!("   identity: nothing to change (already clean)");
+        trimmed.clone()
+    };
+    let cps = cp_count(&me, &refr);
+    run(
+        &me,
+        &owned(&["declare", &pre_declare, &out, "--time", &decl, "--cps", &cps]),
+        "declare (blank the donor's splits)",
+    );
+    let leaked = run(&me, &owned(&["identity", "show", &out]), "identity show");
+    for bad in ["Prestige=", "storageObjects", "trackmania.live"] {
+        if leaked.contains(bad) {
+            die(format!(
+                "film: {} still carries the donor's {} -- do not publish it. \
+                 Run `ghost identity show` on the output to see what survived.",
+                out, bad
+            ));
+        }
+    }
+
+    // ---- 6. Prove it, and say what is NOT proven ---------------------------
+    println!("== film: 6/6 verifying");
     let v = run(&me, &owned(&["verify", &out, "--map", &map]), "verify");
     for l in v.lines().filter(|l| l.contains("V5") || l.contains("V6")) {
         println!("{}", l);
@@ -199,7 +269,7 @@ pub fn cmd(a: &[String]) {
     }
 
     if !has(a, "--keep-scratch") {
-        for n in ["rb", "rg", "car", "sc", "ord"] {
+        for n in ["rb", "rg", "car", "sc", "ord", "tr", "id"] {
             let _ = std::fs::remove_file(s(n));
         }
     }
@@ -360,6 +430,26 @@ fn carrier_check(me: &str, f: &str, control: Option<&str>) {
             dead.join(", ")
         );
     }
+}
+
+/// How many checkpoints this map's runs cross, read from the reference.
+///
+/// `declare --cps N` needs it to blank the right number of intermediate
+/// splits. Reading it from the reference rather than a flag means one less
+/// thing for a caller to get wrong, and the reference is by definition a real
+/// run of this map.
+fn cp_count(me: &str, f: &str) -> String {
+    let c = run(me, &["inspect".into(), f.into()], "inspect");
+    c.lines()
+        .find(|l| l.contains("checkpoints, the last is the finish"))
+        .and_then(|l| {
+            l.split('(')
+                .nth(1)
+                .and_then(|r| r.split_whitespace().next())
+                .map(|x| x.to_string())
+        })
+        .filter(|x| x.parse::<usize>().is_ok())
+        .unwrap_or_else(|| "1".to_string())
 }
 
 fn ent_count(me: &str, f: &str) -> usize {
