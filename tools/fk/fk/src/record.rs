@@ -415,16 +415,23 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
             v
         }
     };
-    // Every vehicle every chain reaches, in order. Typically a handful; the
-    // self-check downstream decides which is the driven car.
+    // EVERY vehicle every chain reaches. No liveness filter here.
+    //
+    // Filtering candidates by "is the car readable at this instant" looked
+    // prudent and was actively wrong: `measure_anchors` runs at one checkpoint
+    // (tick 200 = 2.0 s), and 287431's car does not exist until 2.13 s because
+    // the map spawns it 646 m up. So the CORRECT chain read as dead and was
+    // dropped, the wrong ones survived, and a map whose chain resolves
+    // perfectly (`fk ptr check`: 0.000000 m median, 4 of 4 wheels, ACCEPTED)
+    // fell all the way through to the memory search.
+    //
+    // A chain either resolves or it does not; whether the car is alive at one
+    // arbitrary instant says nothing about the chain. Collect them all and let
+    // the acceptance test — which reads the whole run — decide.
     let mut out: Vec<Anchors> = Vec::new();
     for ch in &chains {
         if let Ok(v) = Anchors::candidates(ck.bias, ck.addr as i64 - base as i64, ch, pid) {
-            for a in v {
-                if a.car_is_live_in(pid) {
-                    out.push(a);
-                }
-            }
+            out.extend(v);
         }
     }
     srv.quit();

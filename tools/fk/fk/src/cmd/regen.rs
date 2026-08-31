@@ -111,28 +111,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // the bias is what labels every sample. Getting it from a mid-tape
     // checkpoint, where the page-fault probe's tick estimate is exact, is what
     // keeps the early handover usable.
+    // THE BIAS COMES FREE WITH THE ANCHORS. It used to be measured here, in a
+    // server started for that alone -- ~2 s of a 10.9 s run -- and then
+    // measured AGAIN by the clock scan inside every later server start, which
+    // reports the identical value ("CLOCK ... bias +2200 ms" appears in each).
+    // `measure_anchors` already carries `ck.bias` out on every anchor it
+    // returns, so take it from there and start one fewer engine.
     let mut bias = 0i64;
-    // NOT CACHED, and the measurement says why. The bias is genuinely constant
-    // for a (binary, map) pair -- every attempt on 203072 measures +2200 --
-    // so caching it looks like free money. It is not: measured cold 58.97 s
-    // against warm 81.94 s on the same input, because the clock scan shares
-    // its forked engine with the work that follows it and skipping the scan
-    // costs that sharing more than the scan itself costs. The expense is the
-    // FORK-AND-SIMULATE per window, not the arithmetic over the window.
-    for t in &ticks {
-        match crate::record::measure_bias(&c, &f, *t, verbose) {
-            Ok(b) => {
-                bias = b;
-                println!("bias {} (tick {})", b, t);
-                break;
-            }
-            Err(e) => println!("bias at tick {}: {}", t, e),
-        }
-    }
-    if bias == 0 {
-        println!("ABORT: could not measure the clock bias at any checkpoint");
-        std::process::exit(3);
-    }
     // arm `whl`: with --need-wheels a run is only usable if the gathered
     // record actually contains the wheel block, so collect anchors from EVERY
     // checkpoint in the ladder instead of stopping at the first that yields
@@ -174,16 +159,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
-                    for a in b.iter_mut() {
-                        a.bias = bias;
+                    if let Some(first) = b.first() {
+                        bias = first.bias;
+                        println!("bias {} (from the anchor clock scan)", bias);
                     }
                     anchors.append(&mut b);
-                    // COLLECT FROM EVERY CHECKPOINT, not just the first that
-                    // yields anything. One checkpoint usually returns ONE
-                    // candidate, and if that one is a decoy the whole run is
-                    // wasted -- which is why this used to succeed about one
-                    // time in eight. The acceptance test below is strong
-                    // enough to sort a long list, so give it a long list.
+                    // ONE CHECKPOINT IS ENOUGH, because a chain is not a
+                    // measurement. The old loop ran `measure_anchors` at every
+                    // tick in the ladder and merged the results: the SEARCH
+                    // could return a decoy at one tick and the car at another,
+                    // so a long list was the only defence. Measured on 203072:
+                    // six ticks, ~2.5 s each, every one returning the SAME
+                    // nine chains -- 15 of the run's 18 s spent re-deriving an
+                    // answer that cannot vary. A chain is resolved from static
+                    // data and says the same thing at every tick.
+                    break;
                 }
                 Err(e) => println!("anchor tick {}: {}", t, e),
             }
@@ -340,6 +330,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
     }
+    // TRIED AND REVERTED: retrying the chain anchors from later checkpoints
+    // (4200/12000/20000) to get past 287431'"'"'s car reallocation. It never
+    // rescued the chain and cost 718 s against 274 s for going straight to the
+    // search. The chain is genuinely not usable on that map by this route;
+    // whatever  reads over the whole run, the clean run'"'"'s gather
+    // does not see from any checkpoint.
     // EVERY CHAIN REJECTED -- fall back to the search.
     //
     // Chains are per (binary, map) and the built-in list does not cover every
