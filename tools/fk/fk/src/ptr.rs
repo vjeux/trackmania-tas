@@ -151,6 +151,23 @@ pub const CAR_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
     "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
     "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
+    // WHAT THE TWO OUTPUTS ACTUALLY DIFFER BY, since it is not the run.
+    // `ghost manifest diff` on a chain-run file against a search-run file:
+    //
+    //   record bytes_consumed   58655 == 58655
+    //   entities                identical (415 / 0 / 416 samples, same deltas)
+    //   first_vehicle_sample    raw_hex IDENTICAL, 116 bytes
+    //   tape, validation block  identical
+    //   0x0911F000 (compressed) 10400 vs 10443 bytes   <-- the only difference
+    //
+    // The TRAJECTORY IS BYTE-IDENTICAL. Both files oracle to 20.756 with
+    // cps=7, and the identity strings (skin, display name) match too. The 43
+    // bytes live inside the compressed node's payload, below what the manifest
+    // resolves. So the two regenerations are the same run, and the md5
+    // difference is metadata rather than physics -- which is why every gate
+    // passes on both. Worth knowing before anyone "fixes" the chain to chase
+    // a byte match that was never a correctness problem.
+    //
     // 287431 -- THESE PASS ABOUT ONE RUN IN FOUR. Measured: 1 of 4 regens hit
     // "path 1693.2 m over the run" (89 s); the other 3 fell through to the
     // memory search (and all produced the same md5 b5d4f44f, so the SEARCH is
