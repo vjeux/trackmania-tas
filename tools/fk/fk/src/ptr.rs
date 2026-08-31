@@ -552,6 +552,17 @@ pub fn resolve(pid: i32, module: u64, spec: &str) -> Result<u64, String> {
         if a < 0x1000 {
             return Err(format!("step {} at {:#x} is a null pointer -- the chain is stale", i, at));
         }
+        // TRIED AND REVERTED: rejecting a stack address here (a >= 0x7f00...).
+        //
+        // On 294446 a chain resolves to 0x7ffec82f2a08, which IS in the stack
+        // range, and the obvious reading -- "the stack is not a vehicle state"
+        // -- is wrong. That address is the carrier window the gather goes on to
+        // use; refusing it made the map take 114.98 s and produce NO coverage
+        // line at all, against 42.88 s working. The engine really does hand
+        // back a stack-resident view of the state on this map.
+        //
+        // The 30 s blind-window retry that motivated the guard is real, but it
+        // is not caused by the address being on the stack.
     }
     unreachable!()
 }
