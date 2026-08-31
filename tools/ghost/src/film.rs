@@ -121,6 +121,10 @@ pub fn cmd(a: &[String]) {
     println!("== film: 2/6 regenerating from engine memory");
     let mut rg = owned(&[
         "regen", &s("rb"), &s("rg"), "--map", &map, // carrier and neutralise are unconditional in regen now
+        // film built the grid in step 1 from the input's own declared span, so
+        // `regen` need not boot an engine to re-derive it. Saves ~3 s of a
+        // ~13 s regen; G4 still re-simulates the written file and checks it.
+        "--declared-known",
     ]);
     // `regen` is one attempt now (it resolves the car from a pointer chain),
     // so there is no fan-out to pre-empt. This used to run a single try first

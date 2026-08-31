@@ -417,8 +417,27 @@ pub fn cmd(a: &[String]) {
                 // Declaring it afterwards would mean the gate ran against a
                 // claim we already knew was wrong.
                 let dstage = format!("{}.decl.Ghost.Gbx", out.trim_end_matches(".Ghost.Gbx"));
-                let mut d: Vec<String> = vec![staged.clone(), dstage.clone(), "--from-oracle".into(),
-                                              "--map".into(), map.to_string()];
+                // `--declared-known` skips the oracle here, and only a caller
+                // that already knows the time may pass it.
+                //
+                // `--from-oracle` exists so a declared time is never TYPED by
+                // a human or copied out of a search log -- it asks the engine
+                // what the file does. That is right for a person at a prompt
+                // and redundant for `ghost film`, which read the span out of
+                // the input tape and just rebuilt this grid to `ms`. The
+                // oracle is a whole engine boot (~3 s of a 12.9 s
+                // `ghost regen`) to re-derive a number we were handed.
+                //
+                // G4 still re-simulates the WRITTEN file at the end and
+                // compares it against what that file declares, so a wrong
+                // value here cannot ship: it fails the gate instead.
+                let mut d: Vec<String> = if has(a, "--declared-known") {
+                    println!("   declaring {} (given by the caller; G4 still checks it)", secs(ms));
+                    vec![staged.clone(), dstage.clone(), "--time".into(), ms.to_string()]
+                } else {
+                    vec![staged.clone(), dstage.clone(), "--from-oracle".into(),
+                         "--map".into(), map.to_string()]
+                };
                 if let Some(sv) = flag(a, "--server") {
                     d.push("--server".into());
                     d.push(sv.to_string());
