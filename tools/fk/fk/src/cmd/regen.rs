@@ -154,7 +154,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     // Did the anchors come from the on-disk cache? If so a total failure below
     // is a cache miss, not a dead end -- see the fallback after the clean run.
-    let mut used_calibration = false;
     // The BIAS first, on its own: the clock scan is far more robust than the
     // position locate (its signature is "+10 every tick, no exceptions"), and
     // the bias is what labels every sample. Getting it from a mid-tape
@@ -341,6 +340,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Err(e) => println!("anchor {}: {}", a.chain, e),
         }
     }
+    // TRIED, NEVER REACHED, REVERTED. `validator.rs` walks a fully
+    // disassembled route to a car the VALIDATOR owns -- controller +0x1a70 ->
+    // sim +0x18 -> playground +0x660 -> participant +0x1118 -> CGameVehiclePhy
+    // +0x12f0, with a class-id check -- and its layout is the anchor's
+    // (quaternion 16 B before the position), not the vis state's 3x3. On paper
+    // that is exactly what 287431 needs, since the validator's vehicle does
+    // not vanish when the map's 646 m freefall hands the scene car from one
+    // entity to another.
+    //
+    // In practice `ValidatorCar::locate` returned nothing on this map at every
+    // tick tried, printing not even its error, and the run still fell through
+    // to the memory search at 185 s -- and the output md5 changed from
+    // 82339ca8 to b5d4f44f, so something in the ordering also disturbed the
+    // result. Reverted rather than shipped. `anchors_from_validator` is left
+    // in record.rs, unused, for whoever picks this up: the route is right, the
+    // reason it finds nothing here is not yet known.
     // Last resort: locate in the clean process itself. It cannot see a
     // stationary car, but when the tape is already moving at the handover it
     // needs no cross-process assumption at all.
@@ -383,40 +398,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // properly and try once more. The cost is the search we were trying to
     // skip; the alternative is a run that fails for no reason but a stale
     // hint.
-    if o.is_none() && used_calibration {
-        println!("the saved calibration did not work in this process -- measuring instead");
-        let mut fresh: Vec<crate::record::Anchors> = Vec::new();
-        for t in &ticks {
-            if let Ok(mut b) = measure_anchors(&c, &f, *t, verbose) {
-                for a in b.iter_mut() {
-                    a.bias = bias;
-                }
-                fresh.append(&mut b);
-                if !fresh.is_empty() {
-                    break;
-                }
-            }
-        }
-        for a in &fresh {
-            let g = crate::record::GatherOpts {
-                segs_rel: &segs_rel,
-                bias_override: if bias == 0 { None } else { Some(bias) },
-                anchors: Some(a),
-                period,
-                phase_ms: phase,
-                dump: &dump,
-                verbose,
-                ..crate::record::GatherOpts::production(&dump)
-            };
-            if let Ok(v) = run_clean_anch(&c, &g) {
-                if crate::record::car_path_len(&dump, v.reclen, v.pos_off).is_ok() {
-                    used_anchor = Some(a.clone());
-                    o = Some(v);
-                    break;
-                }
-            }
-        }
-    }
+    // (The "stale calibration, measure instead" block that stood here is gone
+    // with the calibration cache itself -- `used_calibration` was set false
+    // and never set true, so it was unreachable.)
     // TRIED AND REVERTED: retrying the chain anchors from later checkpoints
     // (4200/12000/20000) to get past 287431'"'"'s car reallocation. It never
     // rescued the chain and cost 718 s against 274 s for going straight to the

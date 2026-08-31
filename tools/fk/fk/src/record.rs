@@ -1832,3 +1832,69 @@ pub fn measure_anchors_by_search(
     }
     Ok(out)
 }
+
+/// The car by the VALIDATOR'S OWN POINTERS -- named hops, not a blind chain.
+///
+/// `validator.rs` walks a route that is fully disassembled on this build:
+///
+///     controller +0x1a70 -> validation sim
+///     sim        +0x18   -> playground
+///     playground +0x660  -> the sole validation-player vector
+///     participant +0x1110/+0x1118 -> CGameVehiclePhy (class id checked)
+///     vehicle    +0x12f0 -> state: q(wxyz) at pos-16, position, velocity
+///
+/// Two things make this the right tool for 287431, where the built-in chains
+/// fail. It is the VALIDATOR'S vehicle, not a scene copy -- so it does not
+/// vanish and reappear when the map's 646 m freefall hands the car from one
+/// entity to another. And its layout is exactly the anchor's: a quaternion 16
+/// bytes before the position and the velocity after it, which is what
+/// `measure_anchors` wants and what the vis state (a 3x3 rotation) is not.
+///
+/// The class id is checked at the CGameVehiclePhy hop, so a stale offset fails
+/// rather than naming something else.
+pub fn anchors_from_validator(
+    c: &Ctx,
+    f: &Factory,
+    tick: i64,
+    verbose: bool,
+) -> Result<Vec<Anchors>, String> {
+    use std::path::PathBuf;
+    let work = PathBuf::from(format!("{}-val", c.work));
+    let _ = std::fs::create_dir_all(&work);
+    let ckpt = clock_for_tick(tick, f.start_offset_ms);
+    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    let got = crate::validator::ValidatorCar::locate(
+        &mut srv,
+        probe,
+        &lrecs,
+        f.start_offset_ms,
+        bounds,
+        100000,
+        verbose,
+    );
+    let base = srv.base;
+    srv.quit();
+    let _ = std::fs::remove_dir_all(&work);
+    let v = got?;
+    let l = v.layout();
+    if verbose {
+        println!(
+            "  validator car at {:#x} (base{:+}) -- q at -16, vel after the position",
+            l.pos,
+            l.pos as i64 - base as i64
+        );
+    }
+    Ok(vec![Anchors {
+        bias: l.clock_bias,
+        chain: format!("base{:+}", l.pos as i64 - base as i64),
+        member: 0,
+        clock_delta: l.clock as i64 - base as i64,
+        speed: 0.0,
+        quat_off: -16,
+        quat_kind: 1,
+        vel_off: 12,
+    }])
+}
