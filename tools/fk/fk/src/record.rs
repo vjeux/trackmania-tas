@@ -739,6 +739,12 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // must not take the regeneration with it: fall through to the ordinary
     // fixed-address gather, which is what happens for every other map.
     if let Some((root, ref offs, tail)) = live_chain {
+        // FK_CHAIN_EMPTY=1 arms a chain of ZERO hops: the same command, the
+        // same frame exchange, nothing stored and nothing walked. If the clock
+        // scan still fails, the disturbance is the round-trip itself and not
+        // anything the handler does with the payload.
+        let probe_only = std::env::var("FK_CHAIN_EMPTY").is_ok();
+        let offs: &[u64] = if probe_only { &[] } else { offs };
         if let Err(e) = srv.arm_chain(root, (win_back() - tail) as u64, offs) {
             println!("  the sampler chain did not arm ({}) -- continuing without it", e);
         }

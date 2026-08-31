@@ -233,13 +233,12 @@ unsafe fn addr_readable(a: usize) -> bool {
     // EFAULT for an unmapped address instead of delivering a signal, which is
     // the whole point: a bad pointer must come back as `false`, never as a
     // SIGSEGV that kills the server and reads as "arm_chain: no reply".
-    let mut fd = DEVNULL_FD.load(Ordering::Relaxed);
+    // The fd is opened at library init, NOT here. This shim tracks its own
+    // descriptors, and taking one lazily -- at arm time, in the middle of a
+    // run -- shifts the numbering underneath it.
+    let fd = DEVNULL_FD.load(Ordering::Relaxed);
     if fd < 0 {
-        fd = open(b"/dev/null\0".as_ptr() as *const c_char, 1, 0);
-        if fd < 0 {
-            return false;
-        }
-        DEVNULL_FD.store(fd, Ordering::Relaxed);
+        return false;
     }
     let r: isize;
     std::arch::asm!(
@@ -836,6 +835,12 @@ unsafe fn init() {
         return;
     }
     MODULE_BASE.store(main_module_base(), Ordering::SeqCst);
+    // The chain walker's readability probe writes 8 bytes at a candidate
+    // address to /dev/null and reads the errno: EFAULT for an unmapped page,
+    // instead of a signal. Its fd is taken HERE, at init, before the engine
+    // has opened anything -- taking it lazily mid-run shifts descriptor
+    // numbering under code that tracks its own.
+    DEVNULL_FD.store(open(b"/dev/null\0".as_ptr() as *const c_char, 1, 0), Ordering::SeqCst);
     if let Some(v) = env_i64(b"FKSHIM_STOP_LROUNDF\0") {
         if v > 0 {
             STOP_AT.store(v as u64, Ordering::SeqCst);
@@ -1753,6 +1758,14 @@ unsafe fn forkserver() {
             return; // resume the simulation; re-enter in `stop_after` calls
         }
         if payload[0] == b'S' {
+            // AN 'S' FORK MUST NOT SEE THE CHAIN. `find_clock2` hunts the race
+            // clock with 'S' commands, and a forked child inherits CHAIN_N --
+            // so the chain rewrote segment 1 inside the very scan that was
+            // trying to measure it, and the scan failed with "no slot advances
+            // by a multiple of 10 per tick". The chain belongs to the parent's
+            // own 'G' run and nothing else. Proven by control: with a
+            // zero-hop chain armed, the same scan succeeds.
+            CHAIN_ARMED.store(false, Ordering::SeqCst);
             // Sample-and-run: like 'R', but the child also gathers segments of
             // memory out on a second pipe as it simulates. Two frames come
             // back: the validator's JSON, then the raw sample blob.
