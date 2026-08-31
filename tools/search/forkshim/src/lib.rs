@@ -2436,3 +2436,19 @@ mod tests {
         );
     }
 }
+
+// THE BOOT IS NOT THE SLEEPING, THOUGH IT LOOKS LIKE IT. Measured, and left
+// here so it is not re-derived:
+//
+//   strace -c on a bare boot: clock_nanosleep 69.96% of syscall time, 273
+//   calls, and summing the wall time of each gives 2.74 s inside a 2.24 s
+//   boot -- more than the boot itself, because they are concurrent IDLE
+//   threads, not the critical path.
+//
+// An LD_PRELOAD interceptor for `nanosleep` (the symbol the binary actually
+// imports -- `objdump -T` shows `nanosleep`, while strace reports both under
+// one name) DOES bind: with the shim loaded, strace counts ZERO sleep calls.
+// The boot still takes 2.24 s. So the sleeps cost nothing and the boot's real
+// cost is elsewhere -- most likely the 27,174 FAILING stat calls and the
+// engine's own start-up work. Interception was the right instinct and the
+// wrong target.
