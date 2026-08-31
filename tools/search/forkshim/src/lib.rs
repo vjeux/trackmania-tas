@@ -2026,6 +2026,9 @@ unsafe fn forkserver() {
                 // nothing must report that, not kill the process.
                 // ONE HOP AT A TIME, reporting which one broke, so a bad
                 // chain names its own bad hop instead of dying anonymously.
+                // Record every hop so the reply can say where the walk went,
+                // not merely that it failed.
+                let mut hops = [0usize; 8];
                 let mut a = root;
                 let mut ok = true;
                 let mut broke_at = 99usize;
@@ -2038,17 +2041,28 @@ unsafe fn forkserver() {
                     a = *(a as *const usize);
                     if a == 0 || a < 0x1000 { ok = false; break; }
                     a = a.wrapping_add(CHAIN_OFF[i].load(Ordering::Relaxed));
+                    if i < 8 { hops[i] = a; }
                 }
-                let mut msg = [0u8; 64];
+                let mut msg = [0u8; 200];
                 let m = if ok {
                     let mut w = 0usize;
                     for (i, b) in b"CHAIN at ".iter().enumerate() { msg[i] = *b; w = i + 1; }
-                    let mut v = a;
-                    let mut d = [0u8; 20];
-                    let mut dn = 0;
-                    if v == 0 { d[0] = b'0'; dn = 1; }
-                    while v > 0 { d[dn] = b'0' + (v % 10) as u8; v /= 10; dn += 1; }
-                    while dn > 0 { dn -= 1; msg[w] = d[dn]; w += 1; }
+                    // the landing address, then every hop that led to it
+                    fn put(msg: &mut [u8], w: &mut usize, v0: usize) {
+                        let mut v = v0;
+                        let mut d = [0u8; 20];
+                        let mut dn = 0;
+                        if v == 0 { d[0] = b'0'; dn = 1; }
+                        while v > 0 { d[dn] = b'0' + (v % 10) as u8; v /= 10; dn += 1; }
+                        while dn > 0 { dn -= 1; msg[*w] = d[dn]; *w += 1; }
+                    }
+                    put(&mut msg, &mut w, a);
+                    for b in b" hops" { msg[w] = *b; w += 1; }
+                    for i in 0..n.min(8) {
+                        msg[w] = b' '; w += 1;
+                        let h = hops[i];
+                        put(&mut msg, &mut w, h);
+                    }
                     &msg[..w]
                 } else {
                     let mut w = 0usize;
