@@ -347,7 +347,21 @@ fn find(a: &[String]) -> Result<(), String> {
         o += each as i64;
     }
     let snap: RefCell<Option<Snapshot>> = RefCell::new(None);
+    // THE ANCHOR'S ADDRESS, IN THE SNAPSHOT'S OWN PROCESS.
+    //
+    // This closure has always been handed `pos` and has always thrown it away.
+    // It is the one thing `--at` could not get from outside: an address is
+    // only meaningful in the process that measured it, and every attempt to
+    // carry a `base±N` in from a previous run failed for exactly that reason
+    // (08798cc -- "NOT IN THE SNAPSHOT in this process", on a map whose chain
+    // is known good).
+    //
+    // Here it is free. The gather resolves the anchor in the child, calls this
+    // to snapshot the same child, and the address it passes belongs to those
+    // very bytes.
+    let anchor_pos: std::cell::Cell<u64> = std::cell::Cell::new(0);
     let take = |pid: i32, _pos: u64, _segs: &[(u64, u32)]| {
+        anchor_pos.set(_pos);
         let t = std::time::Instant::now();
         match Snapshot::take(pid) {
             Ok(s) => {
@@ -423,6 +437,20 @@ fn find(a: &[String]) -> Result<(), String> {
     // A stable copy EXISTS; only a chain to it is missing. So take the address
     // in the search's own notation and hand it straight to the walk. The
     // acceptance tests below are unchanged, so a wrong address fails there.
+    // `--at anchor` uses the address the gather resolved in the snapshot's own
+    // process -- the only address that is valid there.
+    if flag(a, "--at").as_deref() == Some("anchor") {
+        let car = anchor_pos.get();
+        if car == 0 {
+            return Err("--at anchor: the gather never reported an anchor address".into());
+        }
+        println!(
+            "--at anchor: the car as the gather resolved it here, {:#x} (module{:+})",
+            car,
+            car as i64 - snap.module as i64
+        );
+        return chains_to(&snap, car, a, None);
+    }
     if let Some(v) = flag(a, "--at") {
         let d: i64 = v
             .trim_start_matches("base")

@@ -151,6 +151,16 @@ pub const CAR_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
     "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
     "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
+    // 287431, derived with `--at anchor` -- the address the gather resolves in
+    // the snapshot's OWN process, which is the only address valid there. These
+    // end at +0x4e8 like every other map's, not the +0x6268 an earlier
+    // derivation produced from a stale cross-process address.
+    "mod+0x1cb6670:0:+0x4e8",
+    "mod+0x1cb6688:0:+0x4e8",
+    "mod+0x1cb2e50:0:+0x210:+0x30:+0x4e8",
+    "mod+0x1cb32d8:0:+0x378:+0x30:+0x4e8",
+    "mod+0x1cb32e0:0:+0xf8:+0x30:+0x4e8",
+    "mod+0x1cb2e48:0:+0x130:+0x3c0:+0x4e8",
     // 287431: the SAME roots, a different walk, and the state at +0x6268.
     // This is the evidence that a chain is not a property of the binary
     // alone -- `fk ptr find` on this map reports six chains and every one of
