@@ -194,6 +194,18 @@ pub const CAR_CHAINS: &[&str] = &[
     // sets are real cars at the tick they were found; the tick-400 ones score
     // "path length 0.0 m" over the whole run, i.e. they are frozen after the
     // handover. These are the later object.
+    // THESE CHAINS ARE NOT PER-MAP. Measured across the staged corpus: 126859
+    // resolves `mod+0x1e45148:0:+0x1c8:+0xdd4` -- the chain derived on 287431 --
+    // and scores "path 2698.7 m over the run" with it. So the list works as a
+    // shared pool: a chain derived on one map routinely serves another, which
+    // is why banking generously is right and why a map should never be
+    // declared chainless until the whole pool has been tried on it.
+    //
+    //     126859   204 s -> 31 s      (fell back before these were banked)
+    //     294446    89 s -> 42.6 s
+    //     287431   190 s -> 14.8 s
+    //     203072            5.6 s
+    //
     // FOUR TICKS, FOUR DIFFERENT OBJECTS -- and banking them all is the fix.
     //
     // `--at search --tick N` at 400, 600, 900 and 1200 finds the car at four
