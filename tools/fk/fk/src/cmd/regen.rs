@@ -239,9 +239,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     for a in b.iter_mut() {
                         a.bias = bias;
                     }
-                    for a in b.iter() {
-                        if !known.iter().any(|k| k.pos_delta == a.pos_delta) {
-                            known.push(*a);
+                    // Only SEARCH-derived anchors are reusable at another
+                    // tick. A pointer-derived address is per-process (the car
+                    // is on the heap), so banking its delta and applying it in
+                    // the next process gives nonsense -- measured as
+                    // `base+46682783385316` and a panic in the gather.
+                    if std::env::var("FK_CAR_CHAIN").is_err() {
+                        for a in b.iter() {
+                            if !known.iter().any(|k| k.pos_delta == a.pos_delta) {
+                                known.push(*a);
+                            }
                         }
                     }
                     anchors.append(&mut b);

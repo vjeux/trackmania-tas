@@ -670,6 +670,21 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
         for pos in &positions {
             out.push(Anchors {
                 bias: ck.bias,
+                // NOTE the model mismatch this exposes. `Anchors` stores an
+                // offset FROM THE MODULE BASE, which assumes the car sits at a
+                // fixed distance from the loaded binary. It does not: the car
+                // is on the HEAP. That assumption holds often enough for the
+                // search's answer to be reusable across processes (the same
+                // binary, map and tape allocate reproducibly), which is why the
+                // calibration cache works about three times in five -- and it
+                // is why it fails the other two.
+                //
+                // A pointer-derived address is per-process by construction, so
+                // it MUST NOT be banked or reused in another process: doing so
+                // produced `base+46682783385316` and a panic. The caller guards
+                // that below; the honest fix is for `Anchors` to carry the
+                // CHAIN rather than a delta, so every process resolves it
+                // afresh.
                 pos_delta: *pos as i64 - base as i64,
                 clock_delta: ck.addr as i64 - base as i64,
                 speed: 0.0,
