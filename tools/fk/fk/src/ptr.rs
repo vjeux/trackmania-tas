@@ -194,6 +194,24 @@ pub const CAR_CHAINS: &[&str] = &[
     // sets are real cars at the tick they were found; the tick-400 ones score
     // "path length 0.0 m" over the whole run, i.e. they are frozen after the
     // handover. These are the later object.
+    // FOUR TICKS, FOUR DIFFERENT OBJECTS -- and banking them all is the fix.
+    //
+    // `--at search --tick N` at 400, 600, 900 and 1200 finds the car at four
+    // distinct addresses with three distinct terminal offsets (+0x4e8, +0xdd4,
+    // +0x4c). That is this map's 646 m freefall handing the car between
+    // entities: which one a process holds at the checkpoint varies, which is
+    // why a single tick's chains passed only 1 run in 4 (9a090c1).
+    //
+    // There is no need to work out WHICH entity a given process will hold.
+    // Bank a chain for each and one of them resolves live every time: measured
+    // 4 hits in 4 runs, and the regeneration went 190 s (search) -> 14.8 s.
+    // A chain that misses costs only its resolve attempt.
+    "mod+0x1e45148:0:+0x1c8:+0xdd4",
+    "mod+0x1cb97c8:0:+0x368:+0x1c8:+0xdd4",
+    "mod+0x1d56e48:0:+0x78:+0x298:+0xdd4",
+    "mod+0x1cba348:0:+0x1b8:+0x80:+0x4e8",
+    "mod+0x1d56e48:0:+0x1a8:+0x8:+0x4e8",
+    "mod+0x1d56e50:0:+0x1d0:+0x8:+0x4e8",
     "mod+0x1cba348:0:+0x1b8:+0x80:+0x4c",
     "mod+0x1d56e48:0:+0x260:+0x8:+0x4c",
     "mod+0x1d56e50:0:+0x288:+0x8:+0x4c",
