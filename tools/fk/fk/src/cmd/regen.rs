@@ -183,7 +183,45 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     if anchors.is_empty() && !noanchor {
+        // PAY FOR THE SEARCH ONCE. Each `measure_anchors` starts a server and
+        // runs a full `locate_candidates` -- ~7.5 s -- and this loop runs it
+        // per anchor tick. Measured on 203072: four ticks, 9 s + 18 s + 9 s +
+        // 9 s, and THREE OF THE FOUR return the identical address
+        // (base-3453700). That is 45 s of a 50 s regen spent finding one
+        // number four times.
+        //
+        // Collecting from every checkpoint is still right -- the comment below
+        // explains why, and it is load-bearing -- but only the FIRST one needs
+        // to search. Once a layout is known, `anchors_from_calibration` gets
+        // the same answer for another tick with a fresh clock scan (0.1 s) and
+        // no locate at all, and every candidate it yields faces the same
+        // acceptance test. So: search on the first tick that answers, then
+        // confirm the rest cheaply.
+        let mut known: Vec<crate::record::Anchors> = Vec::new();
         for t in &ticks {
+            if !known.is_empty() {
+                let mut got = false;
+                for k in &known {
+                    if let Ok(mut b) =
+                        crate::record::anchors_from_calibration(&c, &f, *t, k, verbose)
+                    {
+                        for a in b.iter_mut() {
+                            a.bias = bias;
+                        }
+                        if !b.is_empty() {
+                            println!(
+                                "anchors from tick {} reusing base{:+} (no locate)",
+                                t, k.pos_delta
+                            );
+                            anchors.append(&mut b);
+                            got = true;
+                        }
+                    }
+                }
+                if got {
+                    continue;
+                }
+            }
             match measure_anchors(&c, &f, *t, verbose) {
                 Ok(mut b) => {
                     println!(
@@ -196,6 +234,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     );
                     for a in b.iter_mut() {
                         a.bias = bias;
+                    }
+                    for a in b.iter() {
+                        if !known.iter().any(|k| k.pos_delta == a.pos_delta) {
+                            known.push(*a);
+                        }
                     }
                     anchors.append(&mut b);
                     // COLLECT FROM EVERY CHECKPOINT, not just the first that

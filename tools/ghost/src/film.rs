@@ -122,6 +122,43 @@ pub fn cmd(a: &[String]) {
     let mut rg = owned(&[
         "regen", &s("rb"), &s("rg"), "--map", &map, // carrier and neutralise are unconditional in regen now
     ]);
+    // ONE ATTEMPT FIRST, THEN THE FAN-OUT.
+    //
+    // `ghost regen` defaults to --tries 24 --jobs 12, so film launched twelve
+    // parallel engine runs that all start COLD -- none of them can use the
+    // car-layout calibration the others are about to write, and they contend
+    // for the box. A single attempt is ~28 s cold and ~10 s warm; the batch
+    // was taking 200-330 s.
+    //
+    // A single try succeeds on every map measured here, and when it does not
+    // the fan-out still runs and nothing is lost but the one attempt. It also
+    // leaves the calibration primed, so the batch that follows is warm.
+    let single = {
+        let mut v = rg.clone();
+        v.push("--tries".into());
+        v.push("1".into());
+        v.push("--jobs".into());
+        v.push("1".into());
+        v
+    };
+    if let Some(sr) = flag(a, "--spawn-ref") {
+        rg.push("--spawn-ref".into());
+        rg.push(sr.to_string());
+    }
+    if has(a, "--expect-dnf") {
+        rg.push("--expect-dnf".into());
+    }
+    let quick = Command::new(&me)
+        .args(&single)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if quick && Path::new(&s("rg")).exists() {
+        println!("   one attempt was enough");
+    } else {
+        println!("   the single attempt did not pass the gate -- running the full batch");
+        run(&me, &rg, "regen");
+    }
     // NO --spawn-ref. It was passed here defensively (a rebuilt grid does not
     // move, so it cannot be its own spawn reference) and it silently COSTS THE
     // CARRIER: measured on 203072, the same rebuild regenerates with b76
@@ -132,14 +169,6 @@ pub fn cmd(a: &[String]) {
     // where it belongs -- against the reference's entity shape in step 3 --
     // and the carrier gate in step 6 now catches the very thing this flag
     // broke.
-    if let Some(sr) = flag(a, "--spawn-ref") {
-        rg.push("--spawn-ref".into());
-        rg.push(sr.to_string());
-    }
-    if has(a, "--expect-dnf") {
-        rg.push("--expect-dnf".into());
-    }
-    run(&me, &rg, "regen");
 
     // ---- 3. BUILD IN THE REFERENCE'S OWN CONTAINER (traps 2, 3, and the
     //         one that crashes the client) --------------------------------
@@ -278,11 +307,39 @@ pub fn cmd(a: &[String]) {
         &owned(&["declare", &s("inj"), &s("dc"), "--time", &decl]),
         "declare",
     );
-    run(
-        &me,
-        &owned(&["record", "resample", &s("dc"), &s("rs"), "--from", &seg_src, "--all-cars"]),
-        "record resample --all-cars",
-    );
+    // MAKE THE CONTAINER'S CAR MATCH OUR RUN, not the other way round.
+    //
+    // After the inject the container still carries the DONOR's car
+    // segmentation, and a human's run is segmented by his respawns: ayti's
+    // 203072 reference has 23 segments where our lap has 2. Resampling our
+    // samples into 23 entities leaves holes -- "25 target instant(s) INSIDE
+    // the source's own span have no sample at the same time" -- and nothing is
+    // written.
+    //
+    // It is our run being filmed, so the car shape is ours. Reshape the
+    // container to it. This changes the car entities of a GAME-WRITTEN
+    // container, which is not the same as rebuilding one: the chunks, the
+    // scene and everything the client validates on import stay exactly as the
+    // game wrote them.
+    // `--all-cars` ONLY WHEN OUR RUN HAS MORE THAN ONE SEGMENT.
+    //
+    // Plain `resample` writes the longest car entity, which is exactly right
+    // when our lap is one continuous segment: the container may carry 22 of
+    // them (a human's respawns) and we have no samples for the other 21.
+    // `--all-cars` then tries to fill all of them and fails with holes.
+    // 287431 is the case that needs it: our lap really is two segments there,
+    // because the map's spawn is a 2.13 s freefall the game records
+    // separately.
+    //
+    // Reshaping the container instead does not work: `resegment --like`
+    // refuses a single-segment donor -- "there is nothing to copy the shape
+    // of" -- because it re-cuts a car, it cannot merge one.
+    let src_segs = car_segments(&me, &seg_src);
+    let mut rs = owned(&["record", "resample", &s("dc"), &s("rs"), "--from", &seg_src]);
+    if src_segs > 1 {
+        rs.push("--all-cars".into());
+    }
+    run(&me, &rs, "record resample");
     let staged = s("rs");
     // ---- 4. The record must not outlive its declared time (trap 4) ----------
     // This is the one that produces `0 -> 0` and `FrameMessage`, with no error
@@ -335,8 +392,22 @@ pub fn cmd(a: &[String]) {
         id_args.push("--server".into());
         id_args.push(sv.to_string());
     }
-    run(&me, &id_args, "identity set --anonymise");
-    let pre_declare = ided.clone();
+    // `identity set` EXITS NONZERO when there is nothing to change, and an
+    // already-anonymous reference (one of our own published files, say) gives
+    // exactly that. It is a success for our purposes, so run it permissively
+    // and let the leak check below decide -- that check reads the OUTPUT, so
+    // it cannot be fooled by which branch ran here.
+    let id_ok = Command::new(&me)
+        .args(&id_args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let pre_declare = if id_ok && Path::new(&ided).exists() {
+        ided.clone()
+    } else {
+        println!("   identity: nothing to change (already clean)");
+        trimmed.clone()
+    };
     let cps = cp_count(&me, &refr);
     run(
         &me,
@@ -390,7 +461,7 @@ pub fn cmd(a: &[String]) {
     }
 
     if !has(a, "--keep-scratch") {
-        for n in ["rb","rg","seg","ct","inj","dc","rs","tr","id","tape"] {
+        for n in ["rb","rg","seg","ct","inj","dc","cs","rs","tr","id","tape"] {
             let _ = std::fs::remove_file(s(n));
         }
     }
@@ -599,7 +670,14 @@ fn declared_ms(me: &str, f: &str) -> String {
 /// single segment is refused outright, which broke two maps that had worked.
 fn car_segments(me: &str, f: &str) -> usize {
     let c = run(me, &["record".into(), "show".into(), f.into()], "record show");
-    c.lines().filter(|l| l.contains("0x0A018000")).count()
+    // ENTITY lines only. `record show` prints a `desc` line for the class as
+    // well as an `ent` line per entity, so counting every mention of
+    // 0x0A018000 reported 2 for a single-segment file -- which sent a file
+    // with one car into `resegment`, and it refused: "has 1 vehicle segment(s)
+    // -- there is nothing to copy the shape of".
+    c.lines()
+        .filter(|l| l.trim_start().starts_with("ent ") && l.contains("0x0A018000"))
+        .count()
 }
 
 /// How many ticks a file's input tape carries.
