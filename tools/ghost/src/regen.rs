@@ -313,8 +313,22 @@ pub fn cmd(a: &[String]) {
     //
     // The knobs remain for `--census`, which deliberately runs a batch to ask
     // whether the candidates AGREE. They are not a reliability mechanism.
-    let tries: i64 = num(a, "--tries").unwrap_or(1);
-    let jobs: usize = num(a, "--jobs").unwrap_or(1).max(1) as usize;
+    // ONE ATTEMPT, THEN ESCALATE IF IT FAILED.
+    //
+    // The two paths inside `fk regen` have opposite needs and only the tool
+    // knows which one ran. A map whose pointer chain is known is exact: one
+    // attempt, ~20 s, and five runs in a row come out byte-identical. A map
+    // whose chain is not known falls back to the memory search, which is a
+    // lottery -- a `base±N` anchor measured in one process is right in the
+    // next only when the allocation repeated -- and needs a dozen tickets.
+    //
+    // Defaulting to 12 taxes every good map; defaulting to 1 broke 287431.
+    // So: start with 1, and if nothing passed the gate, run the batch. The
+    // fast path stays fast and the fallback keeps the reliability it needs.
+    let user_set_tries = num(a, "--tries").is_some() || num(a, "--jobs").is_some();
+    let mut tries: i64 = num(a, "--tries").unwrap_or(1);
+    let mut jobs: usize = num(a, "--jobs").unwrap_or(1).max(1) as usize;
+    let mut escalated = false;
     let force = has(a, "--force");
     // The container this file is built in, kept before `inp` becomes the
     // rebuilt grid: the finishing pass measures per-byte provenance against it,
@@ -590,6 +604,15 @@ pub fn cmd(a: &[String]) {
             }
         }
         round += jobs;
+        // Nothing passed on the single default attempt: the fallback search
+        // ran, and it needs its tickets. Escalate ONCE, then let the loop
+        // continue with the wider batch.
+        if accepted.is_none() && !user_set_tries && !escalated && (round as i64) >= tries {
+            escalated = true;
+            tries = 12;
+            jobs = 12;
+            println!("== the single attempt did not pass; escalating to {} parallel attempts", jobs);
+        }
         // THE BATCH ALREADY HOLDS THE ANSWER AND THE OLD CODE THREW IT AWAY.
         //
         // Twelve attempts run in parallel and the first one that passed the

@@ -214,7 +214,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // Try each anchor in turn: the clean run's own self-check is what decides,
     // and it is a structural test on the data actually sampled.
     // Two anchors with the same position delta are the same object found twice.
-    anchors.dedup_by_key(|a| a.chain.clone());
+    anchors.dedup_by_key(|a| (a.chain.clone(), a.member));
     println!("{} distinct anchor candidates to try", anchors.len());
     let mut o = None;
     // Which anchor the clean run actually used, so a second gather can be
@@ -237,9 +237,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // self-consistent, so the clean run's own structural check
                 // cannot see it; this one can.
                 match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                    Ok(len) => println!("anchor {}: path {:.1} m over the run", a.chain, len),
+                    Ok(len) => println!("anchor {}#{}: path {:.1} m over the run", a.chain, a.member, len),
                     Err(e) => {
-                        println!("anchor {}: REJECTED -- {}", a.chain, e);
+                        println!("anchor {}#{}: REJECTED -- {}", a.chain, a.member, e);
                         continue;
                     }
                 }
@@ -251,9 +251,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // to search for it again.
                 println!(
                     "ACCEPTED ANCHOR {}:{}:{}:{}:{}:{}",
-                    a.bias, a.chain, a.clock_delta, a.quat_off, a.quat_kind, a.vel_off
+                    a.bias, format!("{}#{}", a.chain, a.member), a.clock_delta, a.quat_off, a.quat_kind, a.vel_off
                 );
                 used_anchor = Some(a.clone());
+                // Remember the chain that PASSED for this map. Safe to cache
+                // because a chain is resolved fresh in every process; the
+                // address it yields never is.
+                crate::ptr::chain_cache_put(&c.server, &c.map, &a.chain);
                 o = Some(v);
                 break;
             }
@@ -277,11 +281,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         };
         match run_clean_anch(&c, &g) {
             Ok(v) => {
-                if let Err(e) = crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                    println!("in-process locate: REJECTED -- {}", e);
-                    std::process::exit(3);
+                // Do NOT exit here. This is one candidate among several, and
+                // the memory-search fallback below is the last resort -- an
+                // exit at this point killed the run before it could run.
+                match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
+                    Ok(_) => o = Some(v),
+                    Err(e) => println!("in-process locate: REJECTED -- {}", e),
                 }
-                o = Some(v);
             }
             Err(e) => println!("in-process locate: {}", e),
         }
@@ -331,6 +337,61 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     o = Some(v);
                     break;
                 }
+            }
+        }
+    }
+    // EVERY CHAIN REJECTED -- fall back to the search.
+    //
+    // Chains are per (binary, map) and the built-in list does not cover every
+    // map yet, so a map nobody has run `fk ptr find` on has no chain that
+    // resolves. When that happens the tool should still produce a file: sweep
+    // for the car the old way, and let the same acceptance test judge it.
+    // This costs ~7.5 s per anchor tick and can need several tries, which is
+    // exactly the cost the pointer removes where it works.
+    if o.is_none() {
+        println!("no pointer chain passed -- falling back to the memory search");
+        let mut searched: Vec<crate::record::Anchors> = Vec::new();
+        for t in &ticks {
+            if let Ok(mut b) = crate::record::measure_anchors_by_search(&c, &f, *t, verbose) {
+                for a in b.iter_mut() {
+                    a.bias = bias;
+                }
+                searched.append(&mut b);
+            }
+        }
+        // COLLECT FROM EVERY CHECKPOINT, and do not stop at the first that
+        // answers. A searched anchor is a `base±N` offset measured in ANOTHER
+        // process, so it is right only when the allocation happened to repeat;
+        // one checkpoint's single candidate is a coin toss, and taking the
+        // first one cost 287431 its regeneration. A long list is what the
+        // acceptance test needs to work with -- this is the fragility the
+        // pointer chain removes, preserved here only because the fallback has
+        // no better option.
+        for a in &searched {
+            let g = crate::record::GatherOpts {
+                segs_rel: &segs_rel,
+                bias_override: Some(bias),
+                anchors: Some(a),
+                period,
+                phase_ms: phase,
+                dump: &dump,
+                verbose,
+                ..crate::record::GatherOpts::production(&dump)
+            };
+            match run_clean_anch(&c, &g) {
+                Ok(v) => {
+                    match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
+                        Ok(len) => println!("searched anchor {}: path {:.1} m", a.chain, len),
+                        Err(e) => {
+                            println!("searched anchor {}: REJECTED -- {}", a.chain, e);
+                            continue;
+                        }
+                    }
+                    used_anchor = Some(a.clone());
+                    o = Some(v);
+                    break;
+                }
+                Err(e) => println!("searched anchor {}: {}", a.chain, e),
             }
         }
     }
@@ -600,7 +661,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     field_anchors.append(&mut b);
                 }
             }
-            field_anchors.dedup_by_key(|a| a.chain.clone());
+            field_anchors.dedup_by_key(|a| (a.chain.clone(), a.member));
             println!("--carrier: {} anchors measured for the field gather", field_anchors.len());
         }
         if field_anchors.is_empty() {

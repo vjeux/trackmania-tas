@@ -432,6 +432,138 @@ pub struct PosHit {
     pub first: (f64, f64, f64),
 }
 
+
+
+/// The whole thing: clock, then state, returned in the same `Layout` every
+/// existing consumer already takes.
+pub fn locate_v2(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    start_offset_ms: i32,
+    bounds: (f64, f64, f64, f64, f64, f64),
+    bias_max: i64,
+    max_windows: usize,
+    verbose: bool,
+) -> Result<Layout, String> {
+    let ck = find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?;
+    // FK_STATE_OFF=<n> -- take the vehicle state slot at `base - n` instead of
+    // sweeping for it. The slot sits at a FIXED offset from the server's own
+    // base (measured: base-8183260 on every fork of every probe tick of the
+    // same build), so once a map has been located honestly the sweep is 50
+    // seconds of rediscovering the same address. It is an override, not a
+    // guess: `fk trace` still runs its own self-check on the trajectory it
+    // reads out, and the offset is only ever taken from a run that located.
+    if let Ok(v) = std::env::var("FK_STATE_OFF") {
+        let off: u64 = v.parse().map_err(|_| "FK_STATE_OFF is a decimal byte offset".to_string())?;
+        let pos = srv.base.checked_sub(off).ok_or("FK_STATE_OFF is past the base")?;
+        if verbose {
+            println!("STATE {:#014x} (base-{}) taken from FK_STATE_OFF", pos, off);
+        }
+        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 });
+    }
+    // THE CAR COMES FROM THE POINTER, not from a sweep.
+    //
+    // This used to call `locate_pos2`, which forked the engine once per memory
+    // window hunting for a self-consistent moving float triple and then took
+    // the fastest one -- a heuristic that picked a decoy on 126859 and needed
+    // the caller's own self-check to catch it. The engine has a pointer to the
+    // car; ask it.
+    let chain = std::env::var("FK_CAR_CHAIN")
+        .unwrap_or_else(|_| crate::ptr::DEFAULT_CHAIN.to_string());
+    let (m, _) = crate::ptr::module_base(srv.pid())
+        .ok_or("no module base for the live server")?;
+    let states = crate::ptr::resolve_pool(srv.pid(), m, &chain)
+        .map_err(|e| format!("the car chain {} did not resolve: {}", chain, e))?;
+    let pos = states
+        .first()
+        .map(|s| s + crate::vislayout::POS_IN_STATE as u64)
+        .ok_or_else(|| format!("the chain {} named no vehicle state", chain))?;
+    if verbose {
+        println!("STATE {:#014x} via {} ({} vehicle state(s))", pos, chain, states.len());
+    }
+    let _ = (recs, bounds, max_windows, probe);
+    Ok(Layout {
+        pos,
+        clock: ck.addr,
+        clock_bias: ck.bias,
+        rms: 0.0,
+        max_dev: 0.0,
+    })
+}
+
+/// Extract the whole trajectory with a located layout, one row per tick.
+pub fn trajectory(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    l: &Layout,
+    ticks: u32,
+) -> Vec<Row> {
+    let segs = forkoracle::layout::segments(l);
+    let ts = gather_ticks(srv, probe, recs, &segs, ticks, 200_000, (0, REC_LEN as u32));
+    ts.iter()
+        .map(|t| Row {
+            time_ms: t.clock as i64 - l.clock_bias,
+            x: getf32(&t.rec, R_POS),
+            y: getf32(&t.rec, R_POS + 4),
+            z: getf32(&t.rec, R_POS + 8),
+            vx: getf32(&t.rec, R_VEL),
+            vy: getf32(&t.rec, R_VEL + 4),
+            vz: getf32(&t.rec, R_VEL + 8),
+            qw: getf32(&t.rec, R_QUAT),
+            qx: getf32(&t.rec, R_QUAT + 4),
+            qy: getf32(&t.rec, R_QUAT + 8),
+            qz: getf32(&t.rec, R_QUAT + 12),
+            wetness: getf32(&t.rec, forkoracle::layout::R_WET),
+        })
+        .collect()
+}
+
+/// `gather_ticks`, but keeping only every `stride`-th tick.
+///
+/// The child still samples every tick (the clock is the dedup key); the driver
+/// thins the result. That costs a little pipe traffic and buys a phase-1 window
+/// wide enough for the car to have moved, which is what the "is this a position
+/// triple" filter needs.
+pub fn gather_ticks_stride(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    segs: &[(u64, u32)],
+    ticks: u32,
+    max_samples: u32,
+    key: (u32, u32),
+    stride: u32,
+) -> Vec<Tick> {
+    if stride <= 1 {
+        return gather_ticks(srv, probe, recs, segs, ticks, max_samples, key);
+    }
+    let all = gather_ticks(srv, probe, recs, segs, ticks, max_samples * stride, key);
+    all.into_iter()
+        .enumerate()
+        .filter(|(i, _)| i % stride as usize == 0)
+        .map(|(_, t)| t)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Two things the three sweeps in this file each had their own copy of.
+//
+// They agreed, which is worse than if they had not: a change to the alignment,
+// the ordering or the movement threshold would have been applied to two of
+// them and the third would have gone on quietly disagreeing. Nothing here is
+// new behaviour -- `fk trace` produces a byte-identical CSV before and after.
+
+
+
+// ---------------------------------------------------------------------------
+// `qualify2` GRADES ONE ADDRESS. It is not a search and it survived the
+// deletion of the sweeps for that reason: `validator.rs` resolves the
+// validator-owned CGameVehiclePhy state by pointer chain and then asks this
+// whether the thing at that address really moves like a car. Checking an
+// address someone else supplied is cheap and sound; sweeping memory for one
+// was neither.
 /// Deep test of one candidate: gather `[clock | q(16) | pos(12) | vel(12)]` for
 /// `ticks` ticks, one row per clock value, and judge it on two independent
 /// signatures.
@@ -573,7 +705,19 @@ pub fn qualify2(
         ticks: ts.len(),
     })
 }
-
+// ---------------------------------------------------------------------------
+// THE SEARCH, KEPT AS A LAST RESORT.
+//
+// The pointer chain is the primary and it is exact where it works. It does
+// not work everywhere yet: chains are per (binary, MAP) -- on 203072 every
+// chain `fk ptr find` reports ends at the vis state +0x4e8, and on 287431
+// every one ends +0x6268 by a different walk -- and a map whose chains have
+// not been derived has none that resolve. Deleting this outright broke 287431,
+// a map that regenerated correctly the day before.
+//
+// So it stays, and it runs ONLY when every chain has been tried and rejected.
+// When the chain works there is no search and no lottery; when it does not,
+// the tool still produces a file instead of an apology.
 /// STEP 2: the vehicle state, by sweeping mapped memory with the clock in the
 /// record. `hint` orders the sweep (nothing depends on it being right).
 pub fn locate_pos2(
@@ -793,129 +937,6 @@ pub fn locate_pos2(
     }
 }
 
-/// The whole thing: clock, then state, returned in the same `Layout` every
-/// existing consumer already takes.
-pub fn locate_v2(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    start_offset_ms: i32,
-    bounds: (f64, f64, f64, f64, f64, f64),
-    bias_max: i64,
-    max_windows: usize,
-    verbose: bool,
-) -> Result<Layout, String> {
-    let ck = find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?;
-    // FK_STATE_OFF=<n> -- take the vehicle state slot at `base - n` instead of
-    // sweeping for it. The slot sits at a FIXED offset from the server's own
-    // base (measured: base-8183260 on every fork of every probe tick of the
-    // same build), so once a map has been located honestly the sweep is 50
-    // seconds of rediscovering the same address. It is an override, not a
-    // guess: `fk trace` still runs its own self-check on the trajectory it
-    // reads out, and the offset is only ever taken from a run that located.
-    if let Ok(v) = std::env::var("FK_STATE_OFF") {
-        let off: u64 = v.parse().map_err(|_| "FK_STATE_OFF is a decimal byte offset".to_string())?;
-        let pos = srv.base.checked_sub(off).ok_or("FK_STATE_OFF is past the base")?;
-        if verbose {
-            println!("STATE {:#014x} (base-{}) taken from FK_STATE_OFF", pos, off);
-        }
-        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 });
-    }
-    let p = locate_pos2(srv, probe, recs, ck.addr, bounds, max_windows, verbose)?;
-    Ok(Layout {
-        pos: p.pos,
-        clock: ck.addr,
-        clock_bias: ck.bias,
-        rms: p.verr,
-        max_dev: p.qerr,
-    })
-}
-
-/// Extract the whole trajectory with a located layout, one row per tick.
-pub fn trajectory(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    l: &Layout,
-    ticks: u32,
-) -> Vec<Row> {
-    let segs = forkoracle::layout::segments(l);
-    let ts = gather_ticks(srv, probe, recs, &segs, ticks, 200_000, (0, REC_LEN as u32));
-    ts.iter()
-        .map(|t| Row {
-            time_ms: t.clock as i64 - l.clock_bias,
-            x: getf32(&t.rec, R_POS),
-            y: getf32(&t.rec, R_POS + 4),
-            z: getf32(&t.rec, R_POS + 8),
-            vx: getf32(&t.rec, R_VEL),
-            vy: getf32(&t.rec, R_VEL + 4),
-            vz: getf32(&t.rec, R_VEL + 8),
-            qw: getf32(&t.rec, R_QUAT),
-            qx: getf32(&t.rec, R_QUAT + 4),
-            qy: getf32(&t.rec, R_QUAT + 8),
-            qz: getf32(&t.rec, R_QUAT + 12),
-            wetness: getf32(&t.rec, forkoracle::layout::R_WET),
-        })
-        .collect()
-}
-
-/// `gather_ticks`, but keeping only every `stride`-th tick.
-///
-/// The child still samples every tick (the clock is the dedup key); the driver
-/// thins the result. That costs a little pipe traffic and buys a phase-1 window
-/// wide enough for the car to have moved, which is what the "is this a position
-/// triple" filter needs.
-pub fn gather_ticks_stride(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    segs: &[(u64, u32)],
-    ticks: u32,
-    max_samples: u32,
-    key: (u32, u32),
-    stride: u32,
-) -> Vec<Tick> {
-    if stride <= 1 {
-        return gather_ticks(srv, probe, recs, segs, ticks, max_samples, key);
-    }
-    let all = gather_ticks(srv, probe, recs, segs, ticks, max_samples * stride, key);
-    all.into_iter()
-        .enumerate()
-        .filter(|(i, _)| i % stride as usize == 0)
-        .map(|(_, t)| t)
-        .collect()
-}
-
-/// Every vehicle-state candidate that passes BOTH structural tests, best first
-/// by mean speed.
-///
-/// WHY A LIST: `locate_pos2` returns the single lowest-verr candidate, and on
-/// 126859 that is a decoy -- some other entity whose position, velocity and
-/// quaternion are perfectly self-consistent, moving at 3.8 m/s while the car
-/// does 40. Self-consistency cannot tell them apart; it was never meant to.
-/// What separates them is cheap and reference-free: the CAR is the fastest
-/// self-consistent moving thing at a mid-race checkpoint, and if that heuristic
-/// is ever wrong the clean run's own self-check refuses the file rather than
-/// writing a plausible one.
-
-/// Position candidates with NO assumption about what sits around them.
-///
-/// `locate_candidates` requires a unit quaternion 16 B before the position and
-/// a matching velocity 12 B after it. That layout is a property of one COPY of
-/// the car state, and on 186935 / 227654 / 238835 / 267859 the copy the sweep
-/// lands on does not have it -- so the strict locator returns nothing and 21
-/// published files stay stale. This returns anything that MOVES LIKE A CAR
-/// (finite, in bounds, smooth, and actually going somewhere) and leaves the
-/// rest of the layout to be discovered around it.
-
-// ---------------------------------------------------------------------------
-// Two things the three sweeps in this file each had their own copy of.
-//
-// They agreed, which is worse than if they had not: a change to the alignment,
-// the ordering or the movement threshold would have been applied to two of
-// them and the third would have gone on quietly disagreeing. Nothing here is
-// new behaviour -- `fk trace` produces a byte-identical CSV before and after.
-
 /// Every page-aligned `slice`-sized window in the process's writable regions,
 /// **ordered nearest first** to a hint address.
 ///
@@ -955,4 +976,250 @@ pub fn triple_moves(n: usize, at: &dyn Fn(usize, usize) -> f64) -> bool {
             + (at(i, 8) - at(i - 1, 8)).abs()
             > 1e-4
     })
+}
+
+/// Every vehicle-state candidate that passes BOTH structural tests, best first
+/// by mean speed.
+///
+/// WHY A LIST: `locate_pos2` returns the single lowest-verr candidate, and on
+/// 126859 that is a decoy -- some other entity whose position, velocity and
+/// quaternion are perfectly self-consistent, moving at 3.8 m/s while the car
+/// does 40. Self-consistency cannot tell them apart; it was never meant to.
+/// What separates them is cheap and reference-free: the CAR is the fastest
+/// self-consistent moving thing at a mid-race checkpoint, and if that heuristic
+/// is ever wrong the clean run's own self-check refuses the file rather than
+/// writing a plausible one.
+pub fn locate_candidates(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    clock: u64,
+    bounds: (f64, f64, f64, f64, f64, f64),
+    max_windows: usize,
+    want: usize,
+    verbose: bool,
+) -> Vec<PosHit> {
+    let base = srv.base;
+    let hint = base.saturating_sub(603_616);
+    let slice: u32 = 64 * 1024;
+    let wins = windows_near(srv.pid(), hint, slice, max_windows);
+    let (xlo, xhi, ylo, yhi, zlo, zhi) = bounds;
+    let qmax: f64 = std::env::var("FK_QERR_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-3);
+    let qticks: u32 = std::env::var("FK_QUALIFY_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    let mut out: Vec<PosHit> = Vec::new();
+    let mut scanned = 0usize;
+    let mut firsthit = usize::MAX;
+    // BATCH THE WINDOWS. Each `gather_ticks_stride` call forks the engine and
+    // simulates it, and that fork -- not the memory read -- is the whole cost:
+    // `fk ptr find` snapshots ALL 202 MB of writable memory in 0.11 s, so the
+    // bytes are free and the engine run is seconds. Scanning one 64 KB window
+    // per run meant ~129 forks per locate and ~7.5 s, five times per regen.
+    //
+    // The gatherer already accepts an ARRAY of segments, so ask for many
+    // windows in one run. Nothing about the sweep changes -- the same offsets
+    // are examined with the same tests -- only how many engine runs it costs.
+    let batch: usize = std::env::var("FK_LOCATE_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        // DEFAULT 1, which is the original behaviour. Batching looked like the
+        // obvious win -- one fork for many windows -- and MEASURED FAR WORSE:
+        // 24 windows x 64 KB x ~24 ticks is ~36 MB of snapshot per call
+        // written to the dump, and a 90 s regen went past 27 minutes. The fork
+        // is expensive, but the per-tick snapshot VOLUME is more expensive
+        // still, so trading one for the other loses. Raise it only with a
+        // measurement in hand.
+        .unwrap_or(1)
+        .max(1);
+    let lstride: u32 = std::env::var("FK_LOCATE_STRIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    'outer: for chunk in wins.chunks(batch) {
+        let mut segs: Vec<(u64, u32)> = Vec::with_capacity(chunk.len() + 1);
+        segs.push((clock, 4u32));
+        for w in chunk {
+            segs.push((*w, slice));
+        }
+        let ts = gather_ticks_stride(srv, probe, recs, &segs, 6 * lstride + 4, 24, (0, 4), lstride);
+        if ts.len() < 4 {
+            scanned += chunk.len();
+            continue;
+        }
+        let n = ts.len();
+        for (j, w) in chunk.iter().enumerate() {
+            scanned += 1;
+            let wbase = 4 + j * slice as usize;
+            let mut shortlist: Vec<u64> = Vec::new();
+            for o in (wbase..wbase + slice as usize).step_by(4) {
+                if o + 24 > wbase + slice as usize {
+                    break;
+                }
+                let at = |i: usize, k: usize| getf32(&ts[i].rec, o + k);
+                let inb = |i: usize| {
+                let (x, y, z) = (at(i, 0), at(i, 4), at(i, 8));
+                x.is_finite() && y.is_finite() && z.is_finite()
+                    && x >= xlo && x <= xhi && y >= ylo && y <= yhi && z >= zlo && z <= zhi
+            };
+            if !(0..n).all(inb) {
+                continue;
+            }
+            let moved = triple_moves(n, &at);
+            if moved {
+                shortlist.push(*w + (o - wbase) as u64);
+            }
+        }
+        // Cap the qualify probes per window: with wide bounds a 64 KB window can
+        // shortlist hundreds of junk triples, each costing a fork, and the sweep
+        // then takes 15 minutes to say nothing (208024).
+        for a in shortlist.into_iter().take(64) {
+            if a < 16 {
+                continue;
+            }
+            let Some(h) = qualify2(srv, probe, recs, clock, a, qticks, bounds) else { continue };
+            if h.qerr >= qmax || h.mean_speed <= 1.0 {
+                continue;
+            }
+            // rule 3 here too -- see the note at the main gate above
+            if h.qvary < std::env::var("FK_QVARY_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0) {
+                continue;
+            }
+            if h.verr >= (0.02 * h.mean_speed).max(0.25) {
+                continue;
+            }
+            if verbose {
+                println!(
+                    "  candidate {:#014x} (base{:+}) verr {:.4} |q|-1 {:.1e} qvary {:.0}% qtravel {:.1}deg speed {:.1}",
+                    h.pos, h.pos as i64 - base as i64, h.verr, h.qerr, h.qvary * 100.0, h.qtravel.to_degrees(), h.mean_speed
+                );
+            }
+            out.push(h);
+            firsthit = firsthit.min(scanned);
+        }
+            // Stop soon after the first hit: scanning all 3226 windows for a
+            // sixth candidate costs minutes and buys nothing (208024 spent 15
+            // of them).
+            if out.len() >= want || (!out.is_empty() && scanned > firsthit + 40) {
+                break 'outer;
+            }
+        }
+    }
+    out.sort_by(|a, b| b.mean_speed.total_cmp(&a.mean_speed));
+    if verbose {
+        println!("locate_candidates: {} passing, {} windows scanned", out.len(), scanned);
+    }
+    out
+}
+
+/// Position candidates with NO assumption about what sits around them.
+///
+/// `locate_candidates` requires a unit quaternion 16 B before the position and
+/// a matching velocity 12 B after it. That layout is a property of one COPY of
+/// the car state, and on 186935 / 227654 / 238835 / 267859 the copy the sweep
+/// lands on does not have it -- so the strict locator returns nothing and 21
+/// published files stay stale. This returns anything that MOVES LIKE A CAR
+/// (finite, in bounds, smooth, and actually going somewhere) and leaves the
+/// rest of the layout to be discovered around it.
+pub fn locate_positions_loose(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    clock: u64,
+    bounds: (f64, f64, f64, f64, f64, f64),
+    max_windows: usize,
+    want: usize,
+    verbose: bool,
+) -> Vec<PosHit> {
+    let base = srv.base;
+    let hint = base.saturating_sub(603_616);
+    let slice: u32 = 64 * 1024;
+    let wins = windows_near(srv.pid(), hint, slice, max_windows);
+    let (xlo, xhi, ylo, yhi, zlo, zhi) = bounds;
+    let mut out: Vec<PosHit> = Vec::new();
+    let mut firsthit = usize::MAX;
+    let mut scanned = 0usize;
+    for w in wins {
+        scanned += 1;
+        let segs = [(clock, 4u32), (w, slice)];
+        let ts = gather_ticks_stride(srv, probe, recs, &segs, 64, 24, (0, 4), 10);
+        if ts.len() < 4 {
+            continue;
+        }
+        let n = ts.len();
+        let mut shortlist: Vec<u64> = Vec::new();
+        for o in (4..4 + slice as usize).step_by(4) {
+            if o + 12 > 4 + slice as usize {
+                break;
+            }
+            let at = |i: usize, k: usize| getf32(&ts[i].rec, o + k);
+            let ok = (0..n).all(|i| {
+                let (x, y, z) = (at(i, 0), at(i, 4), at(i, 8));
+                x.is_finite() && y.is_finite() && z.is_finite()
+                    && x >= xlo && x <= xhi && y >= ylo && y <= yhi && z >= zlo && z <= zhi
+            });
+            if !ok {
+                continue;
+            }
+            let moved = triple_moves(n, &at);
+            if moved {
+                shortlist.push(w + (o - 4) as u64);
+            }
+        }
+        for a in shortlist.into_iter().take(64) {
+            if a < 256 {
+                continue;
+            }
+            // A dense look at this one triple: is it a trajectory?
+            let segs = [(clock, 4u32), (a, 12u32)];
+            let ts = gather_ticks(srv, probe, recs, &segs, 150, 1200, (0, 16));
+            if ts.len() < 40 {
+                continue;
+            }
+            let g = |t: &Tick, k: usize| getf32(&t.rec, 4 + k * 4);
+            let mut steps: Vec<f64> = Vec::new();
+            for w2 in ts.windows(2) {
+                let dt = (w2[1].clock as i64 - w2[0].clock as i64) as f64 / 1000.0;
+                if dt <= 0.0 {
+                    continue;
+                }
+                let d: f64 = (0..3).map(|k| (g(&w2[1], k) - g(&w2[0], k)).powi(2)).sum::<f64>().sqrt();
+                steps.push(d / dt);
+            }
+            if steps.len() < 20 {
+                continue;
+            }
+            steps.sort_by(|x, y| x.total_cmp(y));
+            let med = steps[steps.len() / 2];
+            let p95 = steps[(steps.len() as f64 * 0.95) as usize];
+            // moving, but not teleporting every tick
+            if med < 1.0 || p95 > 400.0 {
+                continue;
+            }
+            if verbose {
+                println!(
+                    "  loose candidate {:#014x} (base{:+}) median speed {:.1} m/s, p95 {:.1}",
+                    a,
+                    a as i64 - base as i64,
+                    med,
+                    p95
+                );
+            }
+            out.push(PosHit {
+                pos: a,
+                verr: 0.0,
+                qerr: 0.0,
+                // This shortlist path does not read a quaternion at all, so it
+                // has no evidence either way. Zero is the honest value: it
+                // means "not measured here", and the rule-3 gate downstream
+                // must therefore not be applied to hits from this path.
+                qvary: 0.0,
+                qtravel: 0.0,
+                mean_speed: med,
+                ticks: ts.len(),
+                first: (0.0, 0.0, 0.0),
+            });
+            firsthit = firsthit.min(scanned);
+        }
+        if out.len() >= want || (!out.is_empty() && scanned > firsthit + 20) {
+            break;
+        }
+    }
+    out.sort_by(|a, b| b.mean_speed.total_cmp(&a.mean_speed));
+    out
 }

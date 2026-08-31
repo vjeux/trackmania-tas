@@ -128,6 +128,91 @@ use std::io::{Read, Seek, SeekFrom};
 /// Re-derive after a server upgrade with `fk ptr find --bare`.
 pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";
 
+/// EVERY chain that reaches a vehicle state on this binary, shortest first.
+///
+/// One chain is not enough, and 287431 is why: `DEFAULT_CHAIN` resolves there
+/// and its position reads fine, but the orientation at -36 is garbage
+/// (`|q|-1 p99.5 is 7.46e32`), because on that map `+0xd8` reaches a different
+/// object than it does on 203072. Which pointer walks to the driven car is a
+/// property of the RUN, not only of the binary.
+///
+/// So carry the whole set `fk ptr find` reported -- they all end at `+0x4e8`,
+/// the vis state -- and let the self-check that already exists say which one
+/// is the car this time. That is still deterministic and still free: half a
+/// dozen pointer walks, no memory scanned, and every candidate faces the same
+/// structural test. Re-derive the list with `fk ptr find` after a server
+/// upgrade.
+pub const CAR_CHAINS: &[&str] = &[
+    // 203072 and friends: the vis state at +0x4e8.
+    "mod+0x1d56e48:0:+0xd8:+0x4e8",
+    "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8",
+    "mod+0x1d56e50:0:+0x10:+0x28:+0x4e8",
+    "mod+0x1cba348:0:+0x238:+0x140:+0x298:+0x4e8",
+    "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
+    "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
+    "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
+    // 287431: the SAME roots, a different walk, and the state at +0x6268.
+    // This is the evidence that a chain is not a property of the binary
+    // alone -- `fk ptr find` on this map reports six chains and every one of
+    // them ends +0x6268, where every chain on 203072 ends +0x4e8.
+    "mod+0x1d56e48:0:+0x178:+0xc0:+0x6268",
+    "mod+0x1d56e50:0:+0x1a0:+0xc0:+0x6268",
+    "mod+0x1e45148:0:+0x160:+0xc0:+0x6268",
+    "mod+0x1cb97c8:0:+0x368:+0x160:+0xc0:+0x6268",
+    "mod+0x1cba348:0:+0x2d8:+0x208:+0xc0:+0x6268",
+    "mod+0x1e45178:0:+0x368:+0x160:+0xc0:+0x6268",
+];
+
+/// Chains proven for one (server binary, map), learned by `fk ptr find`.
+///
+/// CACHING A CHAIN IS SAFE, in a way that caching an ADDRESS never was. An
+/// address is a heap location and belongs to the process that measured it --
+/// that mistake is what `Anchors::pos_delta` used to be, and what made regen a
+/// lottery. A chain is a walk from static data and is resolved fresh in every
+/// process, so a cached one is either right or it fails loudly.
+///
+/// `fk ptr find` appends here; `measure_anchors` reads it before falling back
+/// to the built-in list above.
+pub fn chain_cache_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("fk-car-chains.tsv")
+}
+
+pub fn chain_cache_key(server: &str, map: &str) -> Option<String> {
+    let bin = std::path::Path::new(server).join("TrackmaniaServer");
+    let m = std::fs::metadata(&bin).ok()?;
+    let mt = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let map = std::path::Path::new(map).file_name()?.to_string_lossy().to_string();
+    Some(format!("{}:{}:{}", mt, m.len(), map))
+}
+
+pub fn chain_cache_get(server: &str, map: &str) -> Vec<String> {
+    let Some(key) = chain_cache_key(server, map) else { return Vec::new() };
+    let Ok(txt) = std::fs::read_to_string(chain_cache_path()) else { return Vec::new() };
+    let mut out = Vec::new();
+    for l in txt.lines().rev() {
+        let mut it = l.split('\t');
+        if it.next() == Some(key.as_str()) {
+            if let Some(c) = it.next() {
+                if !out.iter().any(|x| x == c) {
+                    out.push(c.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn chain_cache_put(server: &str, map: &str, chain: &str) {
+    use std::io::Write;
+    let Some(key) = chain_cache_key(server, map) else { return };
+    if chain_cache_get(server, map).iter().any(|c| c == chain) {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(chain_cache_path()) {
+        let _ = writeln!(f, "{}\t{}", key, chain);
+    }
+}
+
 pub const DEFAULT_CHAIN: &str = "mod+0x1d56e48:0:+0xd8:+0x4e8";
 
 /// The pre-2026-08-30 chain, kept for reference: it resolves on this binary
