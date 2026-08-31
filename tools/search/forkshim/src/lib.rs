@@ -256,6 +256,9 @@ unsafe fn addr_readable(a: usize) -> bool {
 }
 static DEVNULL_FD: AtomicI32 = AtomicI32::new(-1);
 static CHAIN_N: AtomicUsize = AtomicUsize::new(0);
+/// The chain only rewrites segment 1 once the real gather has begun; see the
+/// note in the sampler.
+static CHAIN_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CHAIN_ROOT: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_BACK: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_OFF: [AtomicUsize; 8] = [
@@ -381,7 +384,21 @@ unsafe fn do_sample(clock: u64) {
     // which runs inside the simulation, can follow it.
     //
     // CHAIN_N == 0 means no chain is armed and this costs one relaxed load.
-    let cn = CHAIN_N.load(Ordering::Relaxed);
+    // ONLY ONCE THE REAL GATHER IS RUNNING.
+    //
+    // `find_clock2` issues its own sampling commands to hunt for the race
+    // clock, and it looks for a slot that advances by 10 per tick. Rewriting
+    // segment 1 underneath it corrupts exactly what it is measuring, and the
+    // clock scan then fails with "no slot advances by a multiple of 10 per
+    // tick: race clock not located" -- a failure three layers from its cause.
+    //
+    // CHAIN_ARMED is set by the 'G' handler, so the chain is inert for every
+    // probe and scan that comes before it.
+    let cn = if CHAIN_ARMED.load(Ordering::Relaxed) {
+        CHAIN_N.load(Ordering::Relaxed)
+    } else {
+        0
+    };
     if cn != 0 {
         let mut a = CHAIN_ROOT.load(Ordering::Relaxed);
         let mut ok = true;
@@ -1979,6 +1996,11 @@ unsafe fn forkserver() {
                 CHAIN_ROOT.store(root, Ordering::SeqCst);
                 CHAIN_BACK.store(back, Ordering::SeqCst);
                 CHAIN_N.store(n, Ordering::SeqCst);
+                // Bisect point 2: parsed and stored, nothing walked yet.
+                if std::env::var("FK_CHAIN_PING2").is_ok() {
+                    send_frame(res, b"CHAIN at 2");
+                    continue;
+                }
                 // Walk it ONCE here and report where it lands, so the caller
                 // can compare against an address it resolved by other means in
                 // this same process. Without this, a chain that walks into
@@ -2096,6 +2118,7 @@ unsafe fn forkserver() {
             GATE_PHASE.store(gphase, Ordering::SeqCst);
             SAMPLE_STRIDE.store(sstride.max(1), Ordering::SeqCst);
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
+            CHAIN_ARMED.store(true, Ordering::SeqCst);
             send_frame(res, b"GO");
             return;
         }
