@@ -103,6 +103,41 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ticks.dedup();
     }
     let mut anchors: Vec<crate::record::Anchors> = Vec::new();
+    // THE CHAIN LIST NEEDS NO ENGINE. `measure_anchors` started a server for
+    // ~2 s to produce three things, and the clean run needs none of them from
+    // there: the CHAIN LIST is static (the built-in set plus this map's cache
+    // entries), the CLOCK DELTA is re-measured by the clean run's own
+    // `find_clock2` and the value carried in is discarded, and the BIAS comes
+    // back out on `CleanOut`. So build the candidates here, for free, and let
+    // the clean run measure what only it can.
+    // OPT-IN (FK_STATIC_CHAINS=1) until the field gather agrees with it.
+    //
+    // Skipping the anchor server is a real 8.05 s -> 2.75 s on the clean run,
+    // and it BREAKS the carrier gather: the record comes back 1.3 MB (the
+    // blind window) instead of 1244 B (the pointer window) and the run aborts
+    // with "no copy in the field window holds the trajectory the clean run
+    // measured". The difference is that  enumerates every
+    // POOL MEMBER the chain reaches -- nine live states on 203072 -- where the
+    // static list carries member 0 of each chain only, and the gather needs
+    // the whole pool to pick its copy. Enumerating the pool needs a live
+    // process, which is exactly what this was trying to avoid.
+    if !noanchor && std::env::var("FK_ANCHOR_SERVER").is_err() {
+        let mut chains: Vec<String> = crate::ptr::chain_cache_get(&c.server, &c.map);
+        if let Ok(v) = std::env::var("FK_CAR_CHAIN") {
+            chains = vec![v];
+        } else {
+            for s in crate::ptr::CAR_CHAINS {
+                if !chains.iter().any(|x| x == s) {
+                    chains.push(s.to_string());
+                }
+            }
+        }
+        for ch in &chains {
+            anchors.push(crate::record::Anchors::from_chain(0, 0, ch));
+        }
+        println!("{} chain(s) to try, resolved in the clean run itself", anchors.len());
+
+    }
     // Did the anchors come from the on-disk cache? If so a total failure below
     // is a cache miss, not a dead end -- see the fallback after the clean run.
     let mut used_calibration = false;
@@ -117,7 +152,38 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // reports the identical value ("CLOCK ... bias +2200 ms" appears in each).
     // `measure_anchors` already carries `ck.bias` out on every anchor it
     // returns, so take it from there and start one fewer engine.
-    let mut bias = 0i64;
+    // The bias for this (binary, map), if it has ever been measured. See
+    // ptr::bias_cache_get -- it is a scalar property of the pair, not an
+    // address, and a stale one aborts the run instead of writing a bad file.
+    let mut bias = crate::ptr::bias_cache_get(&c.server, &c.map).unwrap_or(0);
+    if bias != 0 {
+        println!("bias {} (cached for this binary and map)", bias);
+    }
+    // THE ANCHORS MUST CARRY THE BIAS. The clean run takes it from
+    // `bias_override`, so a zero here is invisible there -- but
+    // `gather_fields` reads `a.bias` and a zero sends it to the blind 1.25 MB
+    // window, which then fails with "no copy in the field window holds the
+    // trajectory the clean run measured". That cost a 2.75 s run a 264 s abort.
+    // Stamped again after the miss-path measurement below.
+    for a in anchors.iter_mut() {
+        a.bias = bias;
+    }
+    // On a cache MISS the bias is measured once, in a server started for that
+    // alone, and written back below -- so this costs a map its first run and
+    // nothing after.
+    if bias == 0 && !noanchor {
+        for t in &ticks {
+            if let Ok(b) = crate::record::measure_bias(&c, &f, *t, verbose) {
+                bias = b;
+                println!("bias {} (measured at tick {}; caching it)", b, t);
+                crate::ptr::bias_cache_put(&c.server, &c.map, b);
+                for a in anchors.iter_mut() {
+                    a.bias = b;
+                }
+                break;
+            }
+        }
+    }
     // arm `whl`: with --need-wheels a run is only usable if the gathered
     // record actually contains the wheel block, so collect anchors from EVERY
     // checkpoint in the ladder instead of stopping at the first that yields
@@ -213,7 +279,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for (i, a) in anchors.iter().enumerate() {
         let g = crate::record::GatherOpts {
             segs_rel: &segs_rel,
-            bias_override: Some(bias),
+            bias_override: if bias == 0 { None } else { Some(bias) },
             anchors: Some(a),
             period,
             phase_ms: phase,
@@ -261,7 +327,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("falling back to an in-process locate");
         let g = crate::record::GatherOpts {
             segs_rel: &segs_rel,
-            bias_override: Some(bias),
+            bias_override: if bias == 0 { None } else { Some(bias) },
             anchors: None,
             period,
             phase_ms: phase,
@@ -313,7 +379,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         for a in &fresh {
             let g = crate::record::GatherOpts {
                 segs_rel: &segs_rel,
-                bias_override: Some(bias),
+                bias_override: if bias == 0 { None } else { Some(bias) },
                 anchors: Some(a),
                 period,
                 phase_ms: phase,
@@ -366,7 +432,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         for a in &searched {
             let g = crate::record::GatherOpts {
                 segs_rel: &segs_rel,
-                bias_override: Some(bias),
+                bias_override: if bias == 0 { None } else { Some(bias) },
                 anchors: Some(a),
                 period,
                 phase_ms: phase,

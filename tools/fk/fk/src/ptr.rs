@@ -841,3 +841,43 @@ mod tests {
         assert!(parse_i64("nonsense").is_err());
     }
 }
+
+/// The clock bias for one (server binary, map).
+///
+/// CACHING THIS WAS MEASURED SLOWER ONCE, and that measurement is no longer
+/// about this code. It was taken when the bias scan shared its forked engine
+/// with the anchor measurement that followed it, so skipping the scan cost
+/// more sharing than it saved work (cold 58.97 s against warm 81.94 s). The
+/// anchor server is gone -- the chain list is static and the clean run
+/// resolves it in its own process -- so the bias measurement is now a server
+/// started for nothing else, ~2 s of a ~6 s run.
+///
+/// The value is a property of the pair and does not drift: every attempt on
+/// 203072 measures +2200. It is NOT a memory address, so unlike the old
+/// calibration cache there is nothing here that can be valid in one process
+/// and wrong in the next. A stale entry shows up immediately as a coverage
+/// hole ("N recorded instants INSIDE THE RACE have no engine instant"), which
+/// aborts the run rather than writing a bad file.
+pub fn bias_cache_get(server: &str, map: &str) -> Option<i64> {
+    let key = chain_cache_key(server, map)?;
+    let txt = std::fs::read_to_string(std::env::temp_dir().join("fk-clock-bias.tsv")).ok()?;
+    txt.lines().rev().find_map(|l| {
+        let mut it = l.split('\t');
+        (it.next()? == key).then(|| it.next()?.parse().ok())?
+    })
+}
+
+pub fn bias_cache_put(server: &str, map: &str, bias: i64) {
+    use std::io::Write;
+    let Some(key) = chain_cache_key(server, map) else { return };
+    if bias_cache_get(server, map) == Some(bias) {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("fk-clock-bias.tsv"))
+    {
+        let _ = writeln!(f, "{}\t{}", key, bias);
+    }
+}
