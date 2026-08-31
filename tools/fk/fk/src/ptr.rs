@@ -154,6 +154,13 @@ pub const CARRIER_CHAINS: &[&str] = &[
     "mod+0x1d56e48:0:+0x158:+0x848",
     "mod+0x1d56e50:0:+0x180:+0x848",
     "mod+0x1d91b00:0:+0x30:+0x60:+0x848",
+    // 126859 again, from `--ckpt 7000 --bare`. Its film escalates to 12
+    // parallel attempts and each is a separate process drawing its own layout,
+    // so parallelism multiplies the coin flip instead of hedging it -- more
+    // chains is the only thing that helps.
+    "mod+0x1cba348:0:+0x330:+0x320:+0x848",
+    "mod+0x1d56e48:0:+0x260:+0x0:+0x848",
+    "mod+0x1d56e50:0:+0x288:+0x0:+0x848",
 ];
 
 pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";
