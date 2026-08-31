@@ -206,6 +206,27 @@ pub fn outlives_the_car(path: &str) -> Result<Option<String>, String> {
 /// channel that may rest", but a channel that is *usually* live and is
 /// legitimately constant on this particular run. The general lesson is in
 /// CLAIMS.md -- a check must consult the artefact rather than the average.
+/// Which sample bytes never change across a file's own record.
+///
+/// The discriminator `dead_channels` lacks: a byte that is constant in the
+/// SOURCE is legitimately constant in a faithful regeneration of it, where a
+/// byte that varies in the source and not in ours means the gather did not
+/// run. Same measurement, different file.
+pub fn constant_bytes(path: &str) -> Result<Vec<usize>, String> {
+    let d = gbx::record::decode_ghost(path)?;
+    let ss = d.sample_size;
+    let n = d.raw.len() / ss.max(1);
+    if ss == 0 || n == 0 {
+        return Ok(Vec::new());
+    }
+    Ok((0..ss)
+        .filter(|o| {
+            let first = d.raw[*o];
+            (0..n).all(|i| d.raw[i * ss + o] == first)
+        })
+        .collect())
+}
+
 pub fn dead_channels(path: &str, expect_alive: &[(usize, &str)]) -> Result<Vec<String>, String> {
     let d = gbx::record::decode_ghost(path)?;
     let ss = d.sample_size;

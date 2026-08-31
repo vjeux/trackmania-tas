@@ -828,11 +828,46 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
         }
         Err(_) => {}
     }
+    // A CHANNEL THE SOURCE ALSO HOLDS CONSTANT IS NOT DEAD.
+    //
+    // `dead_channels` refuses a claimed byte that never varies, which is the
+    // right catch: it is how a gather that silently did not run gets caught
+    // (c01a842, ~99 channels arriving as the donor's). It excuses a constant
+    // only when the TAPE says the driver held that input all run -- and
+    // `echoes` maps just steer/accel/brake, so an ENGINE-derived byte can
+    // never be excused that way.
+    //
+    // 287431 is the case: byte 59 (orientation angle) holds 0x00 on all 416
+    // samples of our output AND on the source file we are regenerating, and
+    // on 203072's film, which passes every gate. The engine is not withholding
+    // it from the pointer; it is zero. Refusing there is refusing a faithful
+    // reproduction.
+    //
+    // So a byte that is constant in the SOURCE too is not evidence of a dead
+    // gather. Every other constant still is -- the c01a842 failure has ~99
+    // channels constant in our output and VARYING in the donor, so it is
+    // untouched by this.
+    // `carrier` here is `template_for_provenance`, i.e. the ORIGINAL input
+    // captured before step 0 rebuilds the grid -- the file we are regenerating,
+    // which is exactly the right comparison.
+    let src_const = crate::finish::constant_bytes(carrier).unwrap_or_default();
     match crate::finish::dead_channels(out, &claim) {
         Ok(v) if v.is_empty() => println!("   every channel this pipeline writes varies over the run."),
         Ok(v) => {
             for d in &v {
-                refused.push(format!("a channel we claim to write is dead: {d}"));
+                let excused = d
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .map(|b| src_const.contains(&b))
+                    .unwrap_or(false);
+                if excused {
+                    println!(
+                        "   constant in our output AND in the source, so not a dead gather: {d}"
+                    );
+                } else {
+                    refused.push(format!("a channel we claim to write is dead: {d}"));
+                }
             }
         }
         Err(e) => println!("   channel liveness could not be measured: {e}"),
