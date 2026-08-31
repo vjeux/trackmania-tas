@@ -219,6 +219,15 @@ static SAMPLE_LEN: AtomicUsize = AtomicUsize::new(0);
 /// gathering two small segments costs nothing.
 const MAX_SEG: usize = 8;
 static SEG_N: AtomicUsize = AtomicUsize::new(0);
+/// A pointer chain the SAMPLER re-walks at every instant, so segment 0 follows
+/// a car that the engine reallocates mid-race. 0 = disabled.
+static CHAIN_N: AtomicUsize = AtomicUsize::new(0);
+static CHAIN_ROOT: AtomicUsize = AtomicUsize::new(0);
+static CHAIN_BACK: AtomicUsize = AtomicUsize::new(0);
+static CHAIN_OFF: [AtomicUsize; 8] = [
+    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+];
 static SEG_ADDR: [AtomicUsize; MAX_SEG] = [
     AtomicUsize::new(0),
     AtomicUsize::new(0),
@@ -327,6 +336,37 @@ unsafe fn do_sample(clock: u64) {
         return;
     }
     let nseg = SEG_N.load(Ordering::Relaxed);
+    // RE-WALK THE CAR'S POINTER CHAIN AT EVERY SAMPLE, when one is armed.
+    //
+    // A fixed address is only correct for a map that keeps one vehicle object
+    // for the whole race. 287431 does not: it spawns the car 646 m up, the
+    // 2.13 s fall is a separate entity, and the object a chain resolved at the
+    // start is left FROZEN when the driving entity replaces it -- `fk trace`
+    // on that address shows y stuck at 20.875 while vy holds -277.794 m/s for
+    // two seconds. Resolving once per run cannot see that; only the sampler,
+    // which runs inside the simulation, can follow it.
+    //
+    // CHAIN_N == 0 means no chain is armed and this costs one relaxed load.
+    let cn = CHAIN_N.load(Ordering::Relaxed);
+    if cn != 0 {
+        let mut a = CHAIN_ROOT.load(Ordering::Relaxed);
+        let mut ok = true;
+        for i in 0..cn {
+            if a == 0 {
+                ok = false;
+                break;
+            }
+            a = *(a as *const usize);
+            if a == 0 {
+                ok = false;
+                break;
+            }
+            a = a.wrapping_add(CHAIN_OFF[i].load(Ordering::Relaxed));
+        }
+        if ok && a != 0 {
+            SEG_ADDR[0].store(a.wrapping_sub(CHAIN_BACK.load(Ordering::Relaxed)), Ordering::Relaxed);
+        }
+    }
     let mut o = 0usize;
     for s in 0..nseg {
         let a = SEG_ADDR[s].load(Ordering::Relaxed) as *const u8;
@@ -1937,6 +1977,37 @@ unsafe fn forkserver() {
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
             send_frame(res, b"GO");
             return;
+        }
+        if payload[0] == b'C' {
+            // ARM THE SAMPLER'S POINTER CHAIN.
+            //
+            //   u64 root | u64 back | u32 n | n x u64 off
+            //
+            // Segment 0's address is then recomputed at every sampled instant
+            // as (walk(root, offs) - back), so a car the engine reallocates
+            // mid-race is followed instead of going stale. n = 0 disarms.
+            if payload.len() >= 21 {
+                let root = u64::from_le_bytes(payload[1..9].try_into().unwrap()) as usize;
+                let back = u64::from_le_bytes(payload[9..17].try_into().unwrap()) as usize;
+                let n = u32::from_le_bytes(payload[17..21].try_into().unwrap()) as usize;
+                let n = n.min(8);
+                for i in 0..n {
+                    let o = 21 + i * 8;
+                    if o + 8 <= payload.len() {
+                        CHAIN_OFF[i].store(
+                            u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
+                            Ordering::SeqCst,
+                        );
+                    }
+                }
+                CHAIN_ROOT.store(root, Ordering::SeqCst);
+                CHAIN_BACK.store(back, Ordering::SeqCst);
+                CHAIN_N.store(n, Ordering::SeqCst);
+                send_frame(res, b"CHAIN");
+            } else {
+                send_frame(res, b"ERR chain");
+            }
+            continue;
         }
         if payload[0] == b'A' {
             let (np, nref, nk) = parse_arm(&payload);
