@@ -693,6 +693,9 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         }
     }
     let mut srv = srv.ok_or(err)?;
+    // Remember how this server was booted so it can go back to the pool at the
+    // end of the function instead of being dropped. See .
+    let pool_key_ckpt = used;
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let probe_ms = forkoracle::layout::sample_ms(probe, 0, f.start_offset_ms);
     if verbose {
@@ -1334,6 +1337,12 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         .find(|l| l.trim_start().starts_with("\"Time\""))
         .and_then(|l| l.split(':').nth(1))
         .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok());
+    // Hand the booted engine back.  is called twice per regen
+    // -- once here and once from  -- at the same checkpoint
+    // with the same tape, and the boot is ~2 s of a 5.9 s run.
+    crate::session::SERVER_POOL.with(|p| {
+        p.borrow_mut().put(c, &f, pool_key_ckpt, std::path::Path::new(&c.template), srv)
+    });
     Ok(CleanOut {
         bias: layout.clock_bias,
         reclen,

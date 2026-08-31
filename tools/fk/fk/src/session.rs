@@ -355,3 +355,109 @@ pub fn default_shim() -> Option<PathBuf> {
     }
     None
 }
+
+/// TRIED AND REVERTED -- A REUSED SERVER IS NOT A BOOTED SERVER.
+///
+/// Wiring this into `run_clean_anch` (take at the top, put back at the end)
+/// made a 5.9 s regen take 41.8 s AND changed the output: md5 ee875d65 where
+/// every correct run gives eb1b8a7c. A fork server's parent sits at its
+/// checkpoint holding state the first caller's gather consumes -- handing it
+/// to a second caller does not hand over that state, so the second gather
+/// re-derives it the slow way and reads something subtly different.
+///
+/// Pooling the boot needs the parent RESET to the checkpoint between callers,
+/// which is a forkoracle change, not a caller-side one. Left here, unused, so
+/// the next attempt starts from the measurement.
+///
+/// A BOOTED ENGINE, KEPT FOR THE LIFE OF THE PROCESS.
+///
+/// `start_server_on_file` costs ~2 s: it lays out a scratch root, launches
+/// `TrackmaniaServer` under the shim, and runs the simulation to the
+/// checkpoint. A regen does that TWICE -- once for the clean run and once
+/// inside `gather_fields` -- at the same checkpoint, with the same tape,
+/// resolving the same address ("the anchor would have said 0x…, +0 bytes").
+/// Four of the remaining 5.9 s are those two boots; the gathers themselves are
+/// about a second each.
+///
+/// The parent process sits AT the checkpoint and forks a child per request --
+/// that is the whole design of the fork server -- so handing the same parent
+/// to a second caller is exactly what it is for. The key is everything that
+/// determines the booted state: the server build, the map, the ghost, the
+/// checkpoint, and the tape's own input array.
+///
+/// The pool holds the server until the process exits. `fk regen` is one
+/// regeneration per process, so nothing accumulates; a caller that wants the
+/// old behaviour passes FK_NO_SERVER_POOL.
+pub struct ServerPool {
+    entries: Vec<(String, ForkServer)>,
+}
+
+impl ServerPool {
+    pub const fn new() -> ServerPool {
+        ServerPool { entries: Vec::new() }
+    }
+
+    fn key(c: &Ctx, tape: &crate::tape::Tape, ckpt: u64, ghost: &Path) -> String {
+        let mut h: u64 = 1469598103934665603;
+        for b in tape.steer.iter() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        format!(
+            "{}|{}|{}|{}|{:x}",
+            c.server,
+            c.map,
+            ghost.display(),
+            ckpt,
+            h
+        )
+    }
+
+    /// Take the booted server for these parameters, booting one if the pool
+    /// has none. The caller OWNS it and must `put` it back rather than calling
+    /// `.quit()`, or the next caller pays the boot again.
+    pub fn take(
+        &mut self,
+        c: &Ctx,
+        tape: &crate::tape::Tape,
+        work: &Path,
+        ckpt: u64,
+        ghost: &Path,
+    ) -> Result<ForkServer, String> {
+        let k = Self::key(c, tape, ckpt, ghost);
+        if let Some(i) = self.entries.iter().position(|(kk, _)| *kk == k) {
+            let (_, s) = self.entries.swap_remove(i);
+            return Ok(s);
+        }
+        start_server_on_file(c, tape, work, ckpt, ghost)
+    }
+
+    pub fn put(&mut self, c: &Ctx, tape: &crate::tape::Tape, ckpt: u64, ghost: &Path, s: ForkServer) {
+        if std::env::var("FK_NO_SERVER_POOL").is_ok() {
+            s.quit();
+            return;
+        }
+        let k = Self::key(c, tape, ckpt, ghost);
+        self.entries.push((k, s));
+    }
+}
+
+thread_local! {
+    pub static SERVER_POOL: std::cell::RefCell<ServerPool> =
+        std::cell::RefCell::new(ServerPool::new());
+}
+
+/// Borrow a booted server for these parameters, run `f`, and put it back.
+pub fn with_server<T>(
+    c: &Ctx,
+    tape: &crate::tape::Tape,
+    work: &Path,
+    ckpt: u64,
+    ghost: &Path,
+    f: impl FnOnce(&mut ForkServer) -> T,
+) -> Result<T, String> {
+    let mut srv = SERVER_POOL.with(|p| p.borrow_mut().take(c, tape, work, ckpt, ghost))?;
+    let out = f(&mut srv);
+    SERVER_POOL.with(|p| p.borrow_mut().put(c, tape, ckpt, ghost, srv));
+    Ok(out)
+}
