@@ -307,6 +307,19 @@ pub fn cmd(a: &[String]) {
     if src_segs > 1 {
         rs.push("--all-cars".into());
     }
+    // FORWARD --mixed-run. The resample guard's own error tells the caller to
+    // "pass --mixed-run", and film swallowed it -- so the advice was
+    // unfollowable through the pipeline that prints it. 286279 needs it today
+    // for a reason that is NOT what the guard is about: `declare` re-encodes
+    // the tape and its encoder emits one extra padding byte, so the declared
+    // container and the regenerated file differ at payload byte 24 (the
+    // bitstream length) while carrying identical inputs -- same 25350 packets,
+    // same accel/brake/steer/respawn counts, and the regenerated file matches
+    // the SOURCE exactly. Forwarding the flag does not fix that; it makes the
+    // documented escape hatch reachable while it is fixed properly.
+    if has(a, "--mixed-run") {
+        rs.push("--mixed-run".into());
+    }
     run(&me, &rs, "record resample");
     let staged = s("rs");
     // ---- 4. The record must not outlive its declared time (trap 4) ----------
