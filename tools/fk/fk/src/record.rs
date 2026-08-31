@@ -1833,6 +1833,28 @@ pub fn measure_anchors_by_search(
     Ok(out)
 }
 
+/// UNUSABLE ON A FREEFALL-SPAWN MAP, and the trace says exactly why.
+///
+/// `FK_STATE_OFF=4879052 fk trace` on 287431 -- the very address this returns:
+///
+///     10260 ms  y=20.875  vy=-277.794  speed=277.794
+///     10270 ms  y=20.875  vy=-277.794  speed=277.794
+///     ...
+///     12270 ms  y=20.875  vy=-277.794  speed=277.794
+///
+/// The position NEVER MOVES while the velocity reads a constant -277.794 m/s
+/// (1000 km/h straight down -- the map's 646 m drop). That is a STALE COPY:
+/// the object the validator pointed at when the freefall entity was live, left
+/// frozen after the driving entity replaced it. It is not the car, and the
+/// self-check refusing it ("median |d(pos)/dt - v| is 277.79 at median speed
+/// 277.8") is correct -- the residual equals the speed precisely because the
+/// derivative is zero and the velocity is not.
+///
+/// So the validator route is right in principle and wrong on exactly the maps
+/// that need it: its pointer is captured once, at the simulation-binding
+/// callback, and a map that reallocates its vehicle invalidates it. Making it
+/// work would mean re-resolving the chain per tick rather than once per run.
+///
 /// The car by the VALIDATOR'S OWN POINTERS -- named hops, not a blind chain.
 ///
 /// `validator.rs` walks a route that is fully disassembled on this build:
