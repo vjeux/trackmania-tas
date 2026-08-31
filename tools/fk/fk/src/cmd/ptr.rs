@@ -240,7 +240,7 @@ fn bias_and_anchors(
             break;
         }
     }
-    anchors.dedup_by_key(|a| a.chain.clone());
+    anchors.dedup_by_key(|a| (a.chain.clone(), a.member));
     if anchors.is_empty() {
         return Err("no anchor at any checkpoint".into());
     }
@@ -440,6 +440,30 @@ fn find(a: &[String]) -> Result<(), String> {
             err, bar
         ));
     }
+    // THE REFRAME THIS COMMAND NEEDS, and it is small.
+    //
+    // Everything ABOVE this line answers "which object is the car?" by
+    // matching candidates against the recording's own path. Everything BELOW
+    // walks backwards from that answer to every chain that reaches it. The two
+    // halves are independent, and on a map where the first half cannot work
+    // the second half is still exactly what is wanted.
+    //
+    // 287431 is that map. `ptr find` gathers from tick 0, where the car does
+    // not exist yet -- "no offset in the gathered window holds the recording's
+    // own path" -- so it never reaches the walk. But the memory SEARCH finds
+    // an object there that is the car for the WHOLE run: base-4012928, stable,
+    // accepted by every downstream check, used for the 169 s regeneration that
+    // produces the bytes the client accepted.
+    //
+    // So a stable copy EXISTS on that map. Nothing needs to follow a moving
+    // car -- the sampler-chain machinery in forkshim was solving a problem the
+    // evidence says is not the problem. What is missing is only a CHAIN TO AN
+    // ADDRESS WE ALREADY HAVE.
+    //
+    // Add `--at <addr>` (or a base-relative form) that skips the
+    // identification and hands `car` straight to the walk below. The one piece
+    // of plumbing needed is the fork server's base in this scope, so the
+    // search's own `base±N` notation can be used verbatim.
     let state = car - POS_IN_STATE;
     println!(
         "the state runs {:#x}..{:#x} ({} bytes); it is {} in this process{}",
