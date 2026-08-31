@@ -126,6 +126,22 @@ use std::io::{Read, Seek, SeekFrom};
 /// vis state with the wheels, which is what `--carrier` gathers from.
 ///
 /// Re-derive after a server upgrade with `fk ptr find --bare`.
+/// Chains to the WHEELED vis state -- what `--carrier` gathers from.
+///
+/// Separate from CAR_CHAINS because the two gates want different objects. The
+/// anchor's acceptance test asks for a trajectory, and a BARE POSITION COPY
+/// passes it; the carrier needs the wheels, and reading a bare copy gives it
+/// "0 of 4 wheel slots live" and a fall into the blind window.
+///
+/// Derive one with plain `fk ptr find` (NO --at): its acceptance requires
+/// 4 of 4 wheel slots live, so what it reports is by construction a carrier
+/// chain. On 126859 that is the entry below, and using it takes the map from
+/// 29.07 s to 15.07 s.
+pub const CARRIER_CHAINS: &[&str] = &[
+    // 126859, "4 of 4 wheel slots live; 6 copies matched"
+    "mod+0x1cba348:0:+0x2c0:+0x240:+0x848",
+];
+
 pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";
 
 /// EVERY chain that reaches a vehicle state on this binary, shortest first.

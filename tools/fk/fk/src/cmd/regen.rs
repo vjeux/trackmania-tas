@@ -1003,6 +1003,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     tried.push(cached);
                 }
             }
+            // NOT WIRED: CARRIER_CHAINS in ptr.rs holds 126859's wheeled chain
+            // (mod+0x1cba348:0:+0x2c0:+0x240:+0x848), and adding it to `tried`
+            // here does NOT reproduce what --car-chain does with the same
+            // string: the run took 50.22 s and still fell to the blind window,
+            // against 15.07 s when the flag supplies it. So the retry path and
+            // the flag path differ in something other than the chain -- the
+            // flag is read before `field_anchors` is built, so the anchors
+            // themselves are probably different. Chase that before wiring this
+            // up; a slower tree is not worth a half-connected feature.
             for ch in &tried {
                 let resolve_ch = |pid: i32, srv_base: u64| -> Result<(u64, Vec<(i64, u32)>), String> {
                     let m = crate::ptr::module_base(pid).map(|(m, _)| m).ok_or("no module base")?;
