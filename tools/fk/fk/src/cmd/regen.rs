@@ -720,7 +720,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // candidate, and a fresh measurement if the run came in on --noanchor
         // and there are none.
         let mut field_anchors: Vec<crate::record::Anchors> = Vec::new();
-        if let Some(a) = used_anchor {
+        if let Some(a) = used_anchor.clone() {
             // This one passed the acceptance test, so it is worth keeping: the
             // next regen of this (binary, map) can skip the ~7.5 s locate per
             // anchor tick. Saved AFTER acceptance, never before.
@@ -906,7 +906,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // slots must be live -- and when it does not, this falls through to the
         // blind window below and says so. A wrong pointer cannot produce a
         // file; it can only cost the time the search would have cost anyway.
-        let chain = flag("--car-chain").unwrap_or_else(|| crate::ptr::DEFAULT_CHAIN.to_string());
+        // USE THE CHAIN THE CLEAN RUN JUST PROVED, not the default.
+        //
+        // This read DEFAULT_CHAIN whenever --car-chain was absent, so on any
+        // map whose car is not at the default the carrier was handed a chain
+        // naming a DIFFERENT vehicle. Measured on 294446 (3 entities): the
+        // clean run accepts mod+0x1e45148:0:+0x148:+0x8:+0x4e8, the carrier was
+        // given mod+0x1d56e48:0:+0xd8:+0x4e8, and the gather rejected it as
+        // "1739.052302 m from the trajectory the clean run measured" -- then
+        // fell into the blind 1 MB window, 1.5 GB and 30 s, most of that map's
+        // 41 s.
+        //
+        // `used_anchor` is the anchor the acceptance test passed. Its chain is
+        // the one that names this map's car in this process, so it is what the
+        // carrier should resolve.
+        let chain = flag("--car-chain").unwrap_or_else(|| {
+            used_anchor
+                .as_ref()
+                .map(|a| a.chain.clone())
+                .unwrap_or_else(|| crate::ptr::DEFAULT_CHAIN.to_string())
+        });
         let no_chain = args.iter().any(|a| a == "--no-car-chain") || chain.is_empty();
         if !no_chain && xform_from_fields {
             println!(
