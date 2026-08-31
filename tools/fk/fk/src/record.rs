@@ -566,6 +566,10 @@ pub struct GatherOpts<'a> {
     /// downstream chooses between them — the same rule, on four candidates
     /// instead of 300,000.
     pub pos_from: Option<&'a dyn Fn(i32, u64) -> Result<(u64, Vec<(i64, u32)>), String>>,
+    /// A chain the SAMPLER re-walks at every instant, so segment 0 follows a
+    /// car the engine reallocates mid-race. `(root_abs, offsets)`; the window
+    /// start is derived from `win_back()`. See `ForkServer::arm_chain`.
+    pub live_chain: Option<(u64, Vec<u64>)>,
     /// Look at the live server, halted, just before the run starts.
     ///
     /// Called with `(pid, the position anchor, the segments about to be
@@ -603,6 +607,7 @@ impl<'a> GatherOpts<'a> {
             copy_scan_hi: None,
             require_live: Vec::new(),
             pos_from: None,
+            live_chain: None,
             before_go: None,
             self_check: true,
         }
@@ -624,12 +629,14 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         copy_scan_hi,
         require_live,
         pos_from,
+        live_chain,
         before_go,
         self_check,
     } = o;
     let (segs_rel, bias_override, anchors) = (*segs_rel, *bias_override, *anchors);
     let (period, phase_ms, dump, verbose) = (*period, *phase_ms, *dump, *verbose);
     let (dedup, choose_copy, self_check) = (*dedup, *choose_copy, *self_check);
+    let live_chain = live_chain.clone();
     let copy_scan_hi = *copy_scan_hi;
     // Does the candidate at record offset `p` hold a live float at every
     // offset the caller named? See `GatherOpts::require_live`.
@@ -766,6 +773,16 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             );
         }
         layout.pos = p;
+    }
+    // ARM THE SAMPLER'S CHAIN, if the caller gave one. From here the shim
+    // recomputes segment 0's address at every sampled instant rather than
+    // trusting the one we resolved above.
+    if let Some((root, ref offs)) = live_chain {
+        srv.arm_chain(root, win_back() as u64, offs)
+            .map_err(|e| format!("arming the sampler chain: {}", e))?;
+        if verbose {
+            println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
+        }
     }
     let gate_phase = if period == 10 {
         // every tick: let the shim take the phase from its own clock

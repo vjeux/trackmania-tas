@@ -685,6 +685,36 @@ impl ForkServer {
 
     /// Ask the engine which tick it is about to consume: the first tick that is
     /// safe to rewrite at this checkpoint.
+    /// Arm the sampler's pointer chain (shim command 'C').
+    ///
+    /// Segment 0's address is recomputed at EVERY sampled instant as
+    /// `walk(root, offs) - back`, instead of being fixed when the gather
+    /// starts. That is the only way to follow a car the engine reallocates
+    /// mid-race: on 287431 the object a one-shot resolve names is left frozen
+    /// (y stuck at 20.875, vy holding -277.794 m/s) once the 646 m freefall
+    /// entity hands over to the driving one.
+    ///
+    /// `offs` empty disarms it, which is the default and costs one relaxed
+    /// load per sample.
+    pub fn arm_chain(&mut self, root: u64, back: u64, offs: &[u64]) -> Result<(), String> {
+        let mut p = Vec::with_capacity(21 + offs.len() * 8);
+        p.push(b'C');
+        p.extend_from_slice(&root.to_le_bytes());
+        p.extend_from_slice(&back.to_le_bytes());
+        p.extend_from_slice(&(offs.len() as u32).to_le_bytes());
+        for o in offs {
+            p.extend_from_slice(&o.to_le_bytes());
+        }
+        write_frame(&mut self.cmd_w, &p).map_err(|e| e.to_string())?;
+        let v = read_frame(&mut self.res_r).ok_or("arm_chain: no reply")?;
+        let r = String::from_utf8_lossy(&v);
+        if r.starts_with("CHAIN") {
+            Ok(())
+        } else {
+            Err(format!("arm_chain: {}", r))
+        }
+    }
+
     pub fn probe_tick(&mut self) -> Result<usize, String> {
         write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
         let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
