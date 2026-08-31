@@ -132,8 +132,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 }
             }
         }
+        // EVERY POOL MEMBER, not just the first. The chain names the engine's
+        // vehicle ARRAY and which element is the driven car varies by process
+        // and by map -- 203072 answers at member 0, and a map that answers at
+        // member 2 would look exactly like a stale chain if only member 0 were
+        // tried. `resolve_in` fails cleanly for a member the pool does not
+        // have, so an over-long list costs nothing but a skipped entry.
+        let members: usize = std::env::var("FK_POOL_MEMBERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
         for ch in &chains {
-            anchors.push(crate::record::Anchors::from_chain(0, 0, ch));
+            for m in 0..members {
+                let mut a = crate::record::Anchors::from_chain(0, 0, ch);
+                a.member = m;
+                anchors.push(a);
+            }
         }
         println!("{} chain(s) to try, resolved in the clean run itself", anchors.len());
 

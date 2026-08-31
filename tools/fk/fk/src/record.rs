@@ -669,26 +669,17 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     for ck in ladder {
         match start_server_on_file(c, &f, &work, ck, std::path::Path::new(&c.template)) {
             Ok(s) => {
-                // The checkpoint must be one where the CAR EXISTS. On a map
-                // that starts with a long fall the vehicle is not allocated at
-                // the first rung of this ladder, and committing to it means
-                // gathering an address the child cannot read.
-                //
-                // Only a real CHAIN can be checked this way. A `base±N` anchor
-                // comes from the search and names a heap address measured in
-                // another process, so resolving it here yields garbage and the
-                // check would reject every rung -- which it did, walking the
-                // whole ladder to "ckpt 56000: the car does not exist yet" and
-                // failing a map the search had already solved.
-                if let Some(a) = anchors {
-                    if !a.chain.starts_with("base") && !a.car_is_live_in(s.pid()) {
-                        err = format!("ckpt {}: the car does not exist yet at this checkpoint", ck);
-                        if verbose {
-                            println!("  {}", err);
-                        }
-                        continue;
-                    }
-                }
+                // NO LIVENESS GATE HERE. One was tried: read the car's position at
+                // this checkpoint and walk to the next rung if it is not
+                // plausible, so that a map whose spawn is a long fall gets a
+                // checkpoint where the vehicle exists. It does not work and it
+                // is expensive. It cannot tell "not allocated yet" from "a
+                // chain that names something else", so it walks the whole
+                // ladder for every candidate -- 52 anchors x 10 rungs is 520
+                // engine starts -- and ends at "ckpt 56000: the car does not
+                // exist yet" having rejected chains that were fine. The
+                // acceptance test downstream reads the WHOLE run and is the
+                // thing that can actually tell.
                 srv = Some(s);
                 used = ck;
                 break;
