@@ -291,6 +291,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // centred the same way rather than searching again.
     let mut used_anchor: Option<crate::record::Anchors> = None;
     for (i, a) in anchors.iter().enumerate() {
+        // TRIED AND REVERTED: gathering the field window HERE to make the
+        // second boot redundant (FK_ONE_GATHER). The output stayed correct
+        // (md5 eb1b8a7c) and the run took 125.7 s against 5.5 s -- the clean
+        // run's copy-selection scans every offset in the window it is given,
+        // so widening it from 452 B to 1244 B multiplies that scan by far more
+        // than a 2.24 s boot costs. The two gathers want different windows for
+        // good reason: one identifies the car, the other transcribes it.
         let g = crate::record::GatherOpts {
             segs_rel: &segs_rel,
             bias_override: if bias == 0 { None } else { Some(bias) },
