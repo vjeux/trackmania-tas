@@ -122,25 +122,9 @@ pub fn cmd(a: &[String]) {
     let mut rg = owned(&[
         "regen", &s("rb"), &s("rg"), "--map", &map, // carrier and neutralise are unconditional in regen now
     ]);
-    // ONE ATTEMPT FIRST, THEN THE FAN-OUT.
-    //
-    // `ghost regen` defaults to --tries 24 --jobs 12, so film launched twelve
-    // parallel engine runs that all start COLD -- none of them can use the
-    // car-layout calibration the others are about to write, and they contend
-    // for the box. A single attempt is ~28 s cold and ~10 s warm; the batch
-    // was taking 200-330 s.
-    //
-    // A single try succeeds on every map measured here, and when it does not
-    // the fan-out still runs and nothing is lost but the one attempt. It also
-    // leaves the calibration primed, so the batch that follows is warm.
-    let single = {
-        let mut v = rg.clone();
-        v.push("--tries".into());
-        v.push("1".into());
-        v.push("--jobs".into());
-        v.push("1".into());
-        v
-    };
+    // `regen` is one attempt now (it resolves the car from a pointer chain),
+    // so there is no fan-out to pre-empt. This used to run a single try first
+    // and fall back to the twelve-way batch.
     if let Some(sr) = flag(a, "--spawn-ref") {
         rg.push("--spawn-ref".into());
         rg.push(sr.to_string());
@@ -148,27 +132,7 @@ pub fn cmd(a: &[String]) {
     if has(a, "--expect-dnf") {
         rg.push("--expect-dnf".into());
     }
-    let quick = Command::new(&me)
-        .args(&single)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if quick && Path::new(&s("rg")).exists() {
-        println!("   one attempt was enough");
-    } else {
-        println!("   the single attempt did not pass the gate -- running the full batch");
-        run(&me, &rg, "regen");
-    }
-    // NO --spawn-ref. It was passed here defensively (a rebuilt grid does not
-    // move, so it cannot be its own spawn reference) and it silently COSTS THE
-    // CARRIER: measured on 203072, the same rebuild regenerates with b76
-    // sweeping to 16 and b89 to 73 without the flag, and frozen at 0 and 1
-    // with it. A dead reactor in every film is a far worse failure than the
-    // spawn check it was buying, and G2's own refusals on 287431 were false
-    // (2.8 m at the landing after a 646 m freefall). The spawn is checked
-    // where it belongs -- against the reference's entity shape in step 3 --
-    // and the carrier gate in step 6 now catches the very thing this flag
-    // broke.
+    run(&me, &rg, "regen");
 
     // ---- 3. BUILD IN THE REFERENCE'S OWN CONTAINER (traps 2, 3, and the
     //         one that crashes the client) --------------------------------

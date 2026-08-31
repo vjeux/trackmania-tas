@@ -301,8 +301,20 @@ pub fn cmd(a: &[String]) {
             );
         }
     }
-    let tries: i64 = num(a, "--tries").unwrap_or(24);
-    let jobs: usize = num(a, "--jobs").unwrap_or(12).max(1) as usize;
+    // ONE ATTEMPT. There is nothing to retry.
+    //
+    // These defaulted to 24 and 12: a dozen parallel engine runs per
+    // regeneration, because the car was found by sweeping memory for
+    // something that "moves like a car" and that sweep landed on a decoy about
+    // seven times in eight. The car is now resolved from a pointer chain out
+    // of static data, which is right in every process, so a second attempt
+    // does exactly what the first did. Measured after the change: 5 of 5 runs
+    // succeeded and all five were byte-identical.
+    //
+    // The knobs remain for `--census`, which deliberately runs a batch to ask
+    // whether the candidates AGREE. They are not a reliability mechanism.
+    let tries: i64 = num(a, "--tries").unwrap_or(1);
+    let jobs: usize = num(a, "--jobs").unwrap_or(1).max(1) as usize;
     let force = has(a, "--force");
     // The container this file is built in, kept before `inp` becomes the
     // rebuilt grid: the finishing pass measures per-byte provenance against it,
