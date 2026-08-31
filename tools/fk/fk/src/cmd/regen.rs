@@ -933,6 +933,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     .collect();
                 Ok((anchor, ex))
             };
+            // TRIED AND REVERTED: offering the pointer to EVERY field anchor
+            // instead of just the first. The reasoning was that resolving an
+            // anchor costs milliseconds where the blind-window fallback costs
+            // tens of seconds, so 52 cheap attempts should beat one expensive
+            // one. Measured on 294446: 41.12 s -> 99.97 s. Each attempt is not
+            // milliseconds -- `gather_fields` runs a full clean run per anchor
+            // -- and on this map none of them produces the car anyway, so the
+            // blind window runs at the end regardless. The first anchor is the
+            // only one worth the pointer.
             let a = field_anchors[0].clone();
             match crate::cmd::carrier::gather_fields(
                 &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0, Some(&resolve), verbose,
