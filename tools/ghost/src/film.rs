@@ -414,9 +414,27 @@ pub fn cmd(a: &[String]) {
 
     // ---- 6. Prove it, and say what is NOT proven ---------------------------
     println!("== film: 6/6 verifying");
+    // V7 IS THE 2.4 SECONDS HERE, and it is worth them -- but it was being
+    // paid for silently. `verify` boots an oracle to re-simulate the FINAL
+    // file and check it against its own declared time; everything else in
+    // `verify` is instant (measured: 2.41 s with the oracle, 0.00 s with
+    // --no-oracle). film was running it and then printing only V5 and V6, so
+    // the one check that proves the shipped file still plays was invisible in
+    // the output.
+    //
+    // It is not a duplicate of regen's G4: that ran on regen's output, BEFORE
+    // the container was rebuilt, the record resampled and the identity
+    // stripped. This is the only check that the thing actually being shipped
+    // is still a valid run. So keep it, and SAY it.
     let v = run(&me, &owned(&["verify", &out, "--map", &map]), "verify");
-    for l in v.lines().filter(|l| l.contains("V5") || l.contains("V6")) {
+    for l in v.lines().filter(|l| l.contains("V5") || l.contains("V6") || l.contains("V7")) {
         println!("{}", l);
+    }
+    if v.lines().any(|l| l.contains("V7") && l.contains("FAIL")) {
+        die(format!(
+            "film: the oracle does not re-simulate {} to its declared time -- the file              does not play as it claims. Do not render it.",
+            out
+        ));
     }
     carrier_check(&me, &out, Some(&s("rg")));
     let kappa_ok = v.lines().any(|l| l.contains("V6") && l.contains("kappa 1.000"));
