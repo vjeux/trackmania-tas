@@ -920,6 +920,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // `used_anchor` is the anchor the acceptance test passed. Its chain is
         // the one that names this map's car in this process, so it is what the
         // carrier should resolve.
+        // TRIED AND REVERTED: rewriting the accepted chain's last hop to
+        // +0x4e8 when it is a bare copy.
+        //
+        // ptr.rs (see ANCHOR_CHAIN) says the anchor's copy and the carrier's
+        // vis state are two objects on the same vehicle, the vis state at
+        // +0x4e8, so swapping the final hop looked like a free way to give the
+        // carrier what it needs on 126859 (whose accepted chain ends +0xdd4
+        // with 0 of 4 wheels). It resolves, and it names a DIFFERENT CAR:
+        // "1626.438747 m from the trajectory the clean run measured". +0xdd4
+        // and +0x4e8 are not two views of one object on this map. 29.17 s
+        // against 29.24 s -- no gain, and a misleading path if left in.
         let chain = flag("--car-chain").unwrap_or_else(|| {
             used_anchor
                 .as_ref()
