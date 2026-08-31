@@ -1894,7 +1894,14 @@ pub fn anchors_from_validator(
         clock_delta: l.clock as i64 - base as i64,
         speed: 0.0,
         quat_off: -16,
-        quat_kind: 1,
+        // KIND 0, not 1. `qualify2` -- which is what validated this very
+        // address inside `ValidatorCar::resolve` -- gathers 40 bytes from
+        // pos-16 and reads the quaternion as q(0),q(4),q(8),q(12): the
+        // (x,y,z,w) form, kind 0. Declaring kind 1 made the anchor self-check
+        // read the velocity as zero, so |d(pos)/dt - v| came out equal to the
+        // speed itself (277.79 against a median speed of 277.8) and a correct
+        // anchor was refused as "not the vehicle state".
+        quat_kind: 0,
         vel_off: 12,
     }])
 }

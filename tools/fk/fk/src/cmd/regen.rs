@@ -103,24 +103,27 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ticks.dedup();
     }
     let mut anchors: Vec<crate::record::Anchors> = Vec::new();
-    // THE CHAIN LIST NEEDS NO ENGINE. `measure_anchors` started a server for
-    // ~2 s to produce three things, and the clean run needs none of them from
-    // there: the CHAIN LIST is static (the built-in set plus this map's cache
-    // entries), the CLOCK DELTA is re-measured by the clean run's own
-    // `find_clock2` and the value carried in is discarded, and the BIAS comes
-    // back out on `CleanOut`. So build the candidates here, for free, and let
-    // the clean run measure what only it can.
-    // OPT-IN (FK_STATIC_CHAINS=1) until the field gather agrees with it.
+    // THE VALIDATOR'S CAR: RESOLVED, VALIDATED, AND STILL NOT USABLE HERE.
+    // Tried and reverted; `anchors_from_validator` stays in record.rs unused.
     //
-    // Skipping the anchor server is a real 8.05 s -> 2.75 s on the clean run,
-    // and it BREAKS the carrier gather: the record comes back 1.3 MB (the
-    // blind window) instead of 1244 B (the pointer window) and the run aborts
-    // with "no copy in the field window holds the trajectory the clean run
-    // measured". The difference is that  enumerates every
-    // POOL MEMBER the chain reaches -- nine live states on 203072 -- where the
-    // static list carries member 0 of each chain only, and the gather needs
-    // the whole pool to pick its copy. Enumerating the pool needs a live
-    // process, which is exactly what this was trying to avoid.
+    // The route works. On 287431 -- where every scene chain fails --
+    // `validator.rs` resolves base-4879052 at every tick, identically, by
+    // named hops with a class-id check, and `qualify2` accepts that address
+    // inside `ValidatorCar::resolve`: verr and qerr both pass, on a 40-byte
+    // window from pos-16 that is quaternion, position, velocity in that order.
+    //
+    // Handing the same address to the CLEAN RUN as an anchor fails, and fails
+    // the same way with quat_kind 0 or 1:
+    //
+    //     self-check: median |d(pos)/dt - v| is 277.79 m/s at median speed
+    //     277.8 -- the sampled window is not the vehicle state
+    //
+    // |d(pos)/dt - v| equalling the speed exactly means the velocity reads as
+    // ZERO in that window. So the same address that carries a live velocity in
+    // the probe process carries zeros in the clean run's gather -- a real
+    // difference between the two contexts, not a layout guess. Whoever picks
+    // this up should start there: dump the 40 bytes at pos-16 in BOTH
+    // processes and diff them, rather than trying more quat_kind values.
     if !noanchor && std::env::var("FK_ANCHOR_SERVER").is_err() {
         let mut chains: Vec<String> = crate::ptr::chain_cache_get(&c.server, &c.map);
         if let Ok(v) = std::env::var("FK_CAR_CHAIN") {
