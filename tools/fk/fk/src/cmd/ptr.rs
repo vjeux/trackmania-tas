@@ -378,10 +378,63 @@ fn find(a: &[String]) -> Result<(), String> {
         before_go: Some(&take),
         ..GatherOpts::production(&dump)
     };
-    let out = record::run_clean_anch(&c, &g)?;
-    let recs = record::read_samples_pair(&dump, out.reclen);
+    // WITH `--at` THE CLEAN RUN ONLY HAS TO TAKE THE SNAPSHOT.
+    //
+    // Its self-check is about the TRAJECTORY -- "the clock bias does not
+    // belong to this process's counter" on 287431 -- and the backward walk
+    // does not use the trajectory at all. It uses the snapshot, which the
+    // gather has already taken by the time the check runs (the `take` closure
+    // fires during the run). So when the caller has supplied the address, a
+    // self-check failure is not fatal: it means the identification would have
+    // failed, which is exactly why `--at` was passed.
+    let at_given = flag(a, "--at").is_some();
+    let out = match record::run_clean_anch(&c, &g) {
+        Ok(v) => v,
+        Err(e) if at_given && snap.borrow().is_some() => {
+            println!("the clean run did not self-check ({}) -- with --at, only the snapshot is needed", e);
+            record::CleanOut::default()
+        }
+        Err(e) => return Err(e),
+    };
+    // `read_samples_pair` slices by `reclen`, and an empty CleanOut has none.
+    // Under --at there is nothing to read: the walk wants the snapshot only.
+    let recs = if at_given && out.reclen == 0 {
+        Vec::new()
+    } else {
+        record::read_samples_pair(&dump, out.reclen)
+    };
     let _ = std::fs::remove_file(&dump);
     let snap = snap.into_inner().ok_or("no snapshot was taken")?;
+
+    // `--at base±N` NAMES THE CAR INSTEAD OF IDENTIFYING IT.
+    //
+    // This command is two independent halves: everything to here answers
+    // "which object is the car?" by matching candidates against the
+    // recording's own path, and everything after walks backwards from that
+    // answer to every chain that reaches it.
+    //
+    // Only the FIRST half fails on 287431. It gathers from tick 0, where that
+    // map has not spawned its car yet, so it dies on the very next line with
+    // "no offset in the gathered window holds the recording's own path" and
+    // never reaches the walk. But the memory SEARCH finds an object there that
+    // is the car for the whole run -- base-4012928, stable, the basis of the
+    // regeneration that produces the bytes the client accepted.
+    //
+    // A stable copy EXISTS; only a chain to it is missing. So take the address
+    // in the search's own notation and hand it straight to the walk. The
+    // acceptance tests below are unchanged, so a wrong address fails there.
+    if let Some(v) = flag(a, "--at") {
+        let d: i64 = v
+            .trim_start_matches("base")
+            .parse()
+            .map_err(|_| format!("--at wants base±N, e.g. base-4012928, not {:?}", v))?;
+        let car = (snap.module as i64 + d) as u64;
+        println!(
+            "--at {}: taking the car as given at {:#x} (module{:+}), skipping identification",
+            v, car, d
+        );
+        return chains_to(&snap, car, a, None);
+    }
 
     // THE CAR, identified the way everything else here identifies it.
     let scored = car_offsets(&recs, &truth, out.bias, out.reclen);
@@ -464,6 +517,34 @@ fn find(a: &[String]) -> Result<(), String> {
     // identification and hands `car` straight to the walk below. The one piece
     // of plumbing needed is the fork server's base in this scope, so the
     // search's own `base±N` notation can be used verbatim.
+    let copies: Vec<(u64, f64, usize)> = scored
+        .iter()
+        .filter_map(|(e, o, l)| out.addr_of(*o).map(|ad| (ad, *e, *l)))
+        .collect();
+    chains_to(&snap, car, a, Some(&copies))
+}
+
+
+/// Every chain of pointers that reaches `car`, from static data.
+///
+/// THE SECOND HALF OF `ptr find`, extracted so it can be reached two ways:
+/// after identifying the car from the recording's own path, or with an address
+/// supplied by `--at`. It uses nothing from the identification -- verified by
+/// reading every line of it -- which is why the split is clean.
+fn chains_to(
+    snap: &Snapshot,
+    car: u64,
+    a: &[String],
+    // The other copies of this car, when the caller identified it and so knows
+    // them. `--at` supplies an address and no census, and the walk does not
+    // need one -- this only feeds a report.
+    copies_in: Option<&[(u64, f64, usize)]>,
+) -> Result<(), String> {
+    // Re-read the flag-derived knobs here: this function is now reached from
+    // two places.
+    let depth = num(a, "--depth", 4) as usize;
+    let maxoff = num(a, "--maxoff", 0x400);
+    let verbose = a.iter().any(|x| x == "--verbose");
     let state = car - POS_IN_STATE;
     println!(
         "the state runs {:#x}..{:#x} ({} bytes); it is {} in this process{}",
@@ -492,12 +573,7 @@ fn find(a: &[String]) -> Result<(), String> {
     // EVERY OTHER COPY OF THIS CAR, because the question is which of them the
     // engine owns. They are the offsets that also reproduce the recording; the
     // one this command anchors on is the one that also has live wheels.
-    let mut copies: Vec<(u64, f64, usize)> = Vec::new();
-    for (e, o, l) in scored.iter() {
-        if let Some(ad) = out.addr_of(*o) {
-            copies.push((ad, *e, *l));
-        }
-    }
+    let mut copies: Vec<(u64, f64, usize)> = copies_in.unwrap_or(&[]).to_vec();
     copies.sort_by_key(|c| c.0);
     println!("{} copies of this car in the gathered window:", copies.len());
     for (ad, e, l) in &copies {
@@ -681,6 +757,7 @@ fn find(a: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
 
 // ===========================================================================
 

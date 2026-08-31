@@ -88,6 +88,7 @@ pub fn parse_segs(s: &str) -> Vec<(i64, u32)> {
         .collect()
 }
 
+#[derive(Default)]
 pub struct CleanOut {
     pub bias: i64,
     pub reclen: usize,
