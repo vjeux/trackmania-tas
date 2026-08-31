@@ -240,7 +240,7 @@ fn bias_and_anchors(
             break;
         }
     }
-    anchors.dedup_by_key(|a| a.pos_delta);
+    anchors.dedup_by_key(|a| a.chain.clone());
     if anchors.is_empty() {
         return Err("no anchor at any checkpoint".into());
     }

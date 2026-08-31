@@ -145,47 +145,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // there is nothing left to look for. `--anchor` supplies it, the
     // acceptance test still runs, and a stale calibration therefore cannot
     // produce a wrong file -- it can only fail and fall back to searching.
-    let explicit = flag("--anchor").and_then(|s| {
-        let p: Vec<i64> = s.split(':').filter_map(|v| v.trim().parse().ok()).collect();
-        if p.len() == 6 {
-            Some(crate::record::Anchors {
-                bias: p[0],
-                pos_delta: p[1],
-                clock_delta: p[2],
-                speed: 0.0,
-                quat_off: p[3],
-                quat_kind: p[4] as u8,
-                vel_off: p[5],
-            })
-        } else {
-            None
-        }
-    });
-    if let Some(mut a0) = explicit {
-        a0.bias = bias;
-        println!("using the calibrated anchor base{:+} (no locate)", a0.pos_delta);
-        anchors.push(a0);
-    } else {
-        // Every proven layout for this (binary, map), each with a fresh clock.
-        // Cheap enough that trying all of them still beats one full search.
-        let cals = calib_get_all(&c);
-        if !cals.is_empty() {
-            used_calibration = true;
-            println!("trying {} saved calibration(s) before searching", cals.len());
-        }
-        'cal: for cal in &cals {
-            for t in &ticks {
-                if let Ok(b) = crate::record::anchors_from_calibration(&c, &f, *t, cal, verbose) {
-                    println!(
-                        "anchors from the saved calibration base{:+} (skipped the locate)",
-                        cal.pos_delta
-                    );
-                    anchors.extend(b);
-                    break 'cal;
-                }
-            }
-        }
-    }
+    // `--anchor bias:pos:clock:q:kind:vel` is GONE. It named the car by an
+    // offset from the module base, which is only ever valid in the process
+    // that measured it -- the car is on the heap. Name it with a CHAIN
+    // instead: --car-chain, or FK_CAR_CHAIN, resolved fresh every run.
     if anchors.is_empty() && !noanchor {
         // PAY FOR THE SEARCH ONCE. Each `measure_anchors` starts a server and
         // runs a full `locate_candidates` -- ~7.5 s -- and this loop runs it
@@ -194,62 +157,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // (base-3453700). That is 45 s of a 50 s regen spent finding one
         // number four times.
         //
-        // Collecting from every checkpoint is still right -- the comment below
-        // explains why, and it is load-bearing -- but only the FIRST one needs
-        // to search. Once a layout is known, `anchors_from_calibration` gets
-        // the same answer for another tick with a fresh clock scan (0.1 s) and
-        // no locate at all, and every candidate it yields faces the same
-        // acceptance test. So: search on the first tick that answers, then
-        // confirm the rest cheaply.
-        let mut known: Vec<crate::record::Anchors> = Vec::new();
+        // ONE ANCHOR, FROM THE POINTER. There is no reuse-across-ticks dance
+        // any more and no "collect from every checkpoint in case this one is a
+        // decoy": `measure_anchors` resolves a chain from static data and
+        // cannot return a decoy. It is also cheap -- a clock scan and a
+        // handful of pointer reads -- so the first tick that answers is the
+        // answer.
         for t in &ticks {
-            if !known.is_empty() {
-                let mut got = false;
-                for k in &known {
-                    if let Ok(mut b) =
-                        crate::record::anchors_from_calibration(&c, &f, *t, k, verbose)
-                    {
-                        for a in b.iter_mut() {
-                            a.bias = bias;
-                        }
-                        if !b.is_empty() {
-                            println!(
-                                "anchors from tick {} reusing base{:+} (no locate)",
-                                t, k.pos_delta
-                            );
-                            anchors.append(&mut b);
-                            got = true;
-                        }
-                    }
-                }
-                if got {
-                    continue;
-                }
-            }
             match measure_anchors(&c, &f, *t, verbose) {
                 Ok(mut b) => {
                     println!(
                         "anchors from tick {}: {}",
                         t,
                         b.iter()
-                            .map(|a| format!("base{:+} ({:.1} m/s)", a.pos_delta, a.speed))
+                            .map(|a| a.chain.clone())
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
                     for a in b.iter_mut() {
                         a.bias = bias;
-                    }
-                    // Only SEARCH-derived anchors are reusable at another
-                    // tick. A pointer-derived address is per-process (the car
-                    // is on the heap), so banking its delta and applying it in
-                    // the next process gives nonsense -- measured as
-                    // `base+46682783385316` and a panic in the gather.
-                    if std::env::var("FK_CAR_CHAIN").is_err() {
-                        for a in b.iter() {
-                            if !known.iter().any(|k| k.pos_delta == a.pos_delta) {
-                                known.push(*a);
-                            }
-                        }
                     }
                     anchors.append(&mut b);
                     // COLLECT FROM EVERY CHECKPOINT, not just the first that
@@ -288,7 +214,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // Try each anchor in turn: the clean run's own self-check is what decides,
     // and it is a structural test on the data actually sampled.
     // Two anchors with the same position delta are the same object found twice.
-    anchors.dedup_by_key(|a| a.pos_delta);
+    anchors.dedup_by_key(|a| a.chain.clone());
     println!("{} distinct anchor candidates to try", anchors.len());
     let mut o = None;
     // Which anchor the clean run actually used, so a second gather can be
@@ -311,9 +237,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // self-consistent, so the clean run's own structural check
                 // cannot see it; this one can.
                 match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                    Ok(len) => println!("anchor base{:+}: path {:.1} m over the run", a.pos_delta, len),
+                    Ok(len) => println!("anchor {}: path {:.1} m over the run", a.chain, len),
                     Err(e) => {
-                        println!("anchor base{:+}: REJECTED -- {}", a.pos_delta, e);
+                        println!("anchor {}: REJECTED -- {}", a.chain, e);
                         continue;
                     }
                 }
@@ -325,13 +251,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // to search for it again.
                 println!(
                     "ACCEPTED ANCHOR {}:{}:{}:{}:{}:{}",
-                    a.bias, a.pos_delta, a.clock_delta, a.quat_off, a.quat_kind, a.vel_off
+                    a.bias, a.chain, a.clock_delta, a.quat_off, a.quat_kind, a.vel_off
                 );
-                used_anchor = Some(*a);
+                used_anchor = Some(a.clone());
                 o = Some(v);
                 break;
             }
-            Err(e) => println!("anchor base{:+}: {}", a.pos_delta, e),
+            Err(e) => println!("anchor {}: {}", a.chain, e),
         }
     }
     // Last resort: locate in the clean process itself. It cannot see a
@@ -401,7 +327,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             };
             if let Ok(v) = run_clean_anch(&c, &g) {
                 if crate::record::car_path_len(&dump, v.reclen, v.pos_off).is_ok() {
-                    used_anchor = Some(*a);
+                    used_anchor = Some(a.clone());
                     o = Some(v);
                     break;
                 }
@@ -658,12 +584,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // This one passed the acceptance test, so it is worth keeping: the
             // next regen of this (binary, map) can skip the ~7.5 s locate per
             // anchor tick. Saved AFTER acceptance, never before.
-            calib_put(&c, &a);
             field_anchors.push(a);
         }
         for a in &anchors {
-            if !field_anchors.iter().any(|x| x.pos_delta == a.pos_delta) {
-                field_anchors.push(*a);
+            if !field_anchors.iter().any(|x| x.chain == a.chain) {
+                field_anchors.push(a.clone());
             }
         }
         if field_anchors.is_empty() {
@@ -675,7 +600,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     field_anchors.append(&mut b);
                 }
             }
-            field_anchors.dedup_by_key(|a| a.pos_delta);
+            field_anchors.dedup_by_key(|a| a.chain.clone());
             println!("--carrier: {} anchors measured for the field gather", field_anchors.len());
         }
         if field_anchors.is_empty() {
@@ -868,7 +793,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     .collect();
                 Ok((anchor, ex))
             };
-            let a = field_anchors[0];
+            let a = field_anchors[0].clone();
             match crate::cmd::carrier::gather_fields(
                 &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0, Some(&resolve), verbose,
             ) {
@@ -896,7 +821,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     break;
                 }
                 Err(e) => {
-                    println!("field gather, anchor base{:+}: {}", a.pos_delta, e);
+                    println!("field gather, anchor {}: {}", a.chain, e);
                     last = e;
                 }
             }
@@ -1288,99 +1213,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
 
 
-/// Where a proven car layout is remembered between runs.
-///
-/// One line per (binary, map): the four numbers that describe WHERE THE CAR IS
-/// and how its quaternion and velocity sit relative to it. Not the clock, and
-/// not the bias -- those are measured fresh every run because they move. See
-/// `record::anchors_from_calibration`.
-///
-/// Deleting this file is always safe: the next regen measures everything from
-/// scratch and writes it again.
-fn calib_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("fk-car-calibration.tsv")
-}
 
-/// Identify the (engine binary, map) pair a calibration belongs to.
-///
-/// The car offset moves when the SERVER BINARY changes (a different build lays
-/// its allocations out differently) or when the MAP changes. It does not move
-/// between tapes on the same pair, which is what makes this reusable at all.
-/// mtime+size stands in for hashing 30 MB on every run; a rebuilt server
-/// always changes one of them.
-fn calib_key(c: &crate::session::Ctx) -> Option<String> {
-    let bin = std::path::Path::new(&c.server).join("TrackmaniaServer");
-    let m = std::fs::metadata(&bin).ok()?;
-    let mt = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let map = std::path::Path::new(&c.map).file_name()?.to_string_lossy().to_string();
-    Some(format!("{}:{}:{}", mt, m.len(), map))
-}
 
-/// Every proven car layout for this (binary, map), newest first.
-///
-/// NOT a single value: the offset is stable enough to be worth caching and not
-/// stable enough to be trusted blind. Three consecutive runs of one file gave
-/// `-4012784`, `-4012672` and `-4890252` -- the first two are allocation
-/// jitter 112 bytes apart, the third is a different copy of the car
-/// altogether. Caching one of those would miss most of the time and cost a
-/// failed attempt.
-///
-/// So keep them all and try them in order. Each costs a 0.1 s clock scan
-/// against the 7.5 s a full `locate_candidates` sweep costs, so even three
-/// misses are cheaper than one search, and the acceptance test downstream is
-/// unchanged: a wrong offset fails and the next one is tried, with the full
-/// search still there as the last resort.
-fn calib_get_all(c: &crate::session::Ctx) -> Vec<crate::record::Anchors> {
-    let Some(key) = calib_key(c) else { return Vec::new() };
-    let Ok(txt) = std::fs::read_to_string(calib_path()) else { return Vec::new() };
-    let mut out: Vec<crate::record::Anchors> = Vec::new();
-    for line in txt.lines().rev() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 5 || f[0] != key {
-            continue;
-        }
-        let (Ok(pos), Ok(qo), Ok(qk), Ok(vo)) = (
-            f[1].parse::<i64>(),
-            f[2].parse::<i64>(),
-            f[3].parse::<u8>(),
-            f[4].parse::<i64>(),
-        ) else {
-            continue;
-        };
-        if out.iter().any(|a| a.pos_delta == pos) {
-            continue;
-        }
-        out.push(crate::record::Anchors {
-            bias: 0,
-            pos_delta: pos,
-            clock_delta: 0,
-            speed: 0.0,
-            quat_off: qo,
-            quat_kind: qk,
-            vel_off: vo,
-        });
-    }
-    out
-}
 
-fn calib_get(c: &crate::session::Ctx) -> Option<crate::record::Anchors> {
-    calib_get_all(c).into_iter().next()
-}
 
-fn calib_put(c: &crate::session::Ctx, a: &crate::record::Anchors) {
-    use std::io::Write;
-    let Some(key) = calib_key(c) else { return };
-    if calib_get(c).map(|p| p.pos_delta == a.pos_delta).unwrap_or(false) {
-        return;
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(calib_path()) {
-        let _ = writeln!(
-            f,
-            "{}\t{}\t{}\t{}\t{}",
-            key, a.pos_delta, a.quat_off, a.quat_kind, a.vel_off
-        );
-    }
-}
 
 fn parse_ctx(a: &[String]) -> Result<crate::session::Ctx, String> {
     let flag = |n: &str| -> Option<String> {

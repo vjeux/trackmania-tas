@@ -169,19 +169,67 @@ impl CleanOut {
 /// runs on 208024 put the state at base-470768 and the clock at base-478580
 /// every time, and the clean run re-derives both from its OWN base and then
 /// checks them against the sampled data.
-#[derive(Clone, Copy)]
+/// WHERE THE CAR IS, AS A CHAIN OF POINTERS FROM STATIC DATA.
+///
+/// This used to be `pos_delta`, an offset from the module base -- and the
+/// vehicle state is a HEAP allocation, so the two only agreed when an
+/// identical binary, map and tape happened to allocate the same way. They
+/// usually did, which is worse than never: a banked delta worked about three
+/// runs in five and produced garbage in the other two. Everything downstream
+/// was built to survive that. `locate_candidates` swept hundreds of megabytes
+/// of memory looking for something that "moves like a car" because the engine's
+/// own answer was being thrown away; `--tries 24 --jobs 12` bought a dozen
+/// lottery tickets because the sweep landed on a decoy seven times in eight.
+///
+/// A chain is resolved from static data IN THIS PROCESS, so it is correct in
+/// every process and there is nothing to be lucky about. The layout around it
+/// is not searched either: `CSceneVehicleVisState` is disassembled member by
+/// member in VEHICLEVISSTATE.md and the three fields anyone needs sit at fixed
+/// offsets from `Loc.translation` -- the 3x3 rotation at -36, the position at
+/// 0, WorldVel at +12.
+#[derive(Clone)]
 pub struct Anchors {
     pub bias: i64,
-    pub pos_delta: i64,
+    /// The pointer chain to the vehicle state, e.g.
+    /// `mod+0x1d56e48:0:+0xd8:+0x4e8`. Resolved fresh per process.
+    pub chain: String,
     pub clock_delta: i64,
     pub speed: f64,
-    /// Offset of the unit quaternion relative to the position triple.
+    /// Offset of the orientation relative to the position triple.
     pub quat_off: i64,
     /// 0 = (x,y,z,w) quaternion, 1 = (w,x,y,z) quaternion, 2 = orthonormal 3x3
     pub quat_kind: u8,
     /// Offset of the velocity triple relative to the position triple.
     pub vel_off: i64,
 }
+
+impl Anchors {
+    /// The car's position address in THIS process. There is one way to get it.
+    pub fn resolve_in(&self, pid: i32) -> Result<u64, String> {
+        let (m, _) = crate::ptr::module_base(pid)
+            .ok_or("no module base for the live server")?;
+        let states = crate::ptr::resolve_pool(pid, m, &self.chain)?;
+        states
+            .first()
+            .map(|s| s + crate::vislayout::POS_IN_STATE as u64)
+            .ok_or_else(|| format!("the chain {} named no vehicle state", self.chain))
+    }
+
+    /// The anchor every regen uses: the wheeled vis state, with the layout
+    /// read out of the binary rather than searched for.
+    pub fn from_chain(bias: i64, clock_delta: i64, chain: &str) -> Anchors {
+        Anchors {
+            bias,
+            chain: chain.to_string(),
+            clock_delta,
+            speed: 0.0,
+            quat_off: -36,
+            quat_kind: 2,
+            vel_off: 12,
+        }
+    }
+}
+
 
 /// How far either side of the position the layout search looks, and how wide
 /// the sampled window is.
@@ -258,219 +306,27 @@ fn wrap(a: f64) -> f64 {
 /// car is going: the spread of (body heading - velocity heading) over the whole
 /// window has to be small. A car can drift, so the test allows a wide constant
 /// offset and only rejects on SPREAD.
-fn discover_layout(
-    srv: &mut forkoracle::forksrv::ForkServer,
-    probe: usize,
-    recs: &[forkoracle::forksrv::Rec],
-    clock: u64,
-    pos: u64,
-) -> Option<(i64, u8, i64, f64)> {
-    let segs = [(clock, 4u32), ((pos as i64 - win_back()) as u64, win_len())];
-    let ts = crate::locate::gather_ticks(srv, probe, recs, &segs, 200, 1600, (0, 4 + win_len()));
-    if ts.len() < 40 {
-        return None;
-    }
-    let g = |t: &crate::locate::Tick, o: usize| -> f64 {
-        f32::from_le_bytes(t.rec[o..o + 4].try_into().unwrap()) as f64
-    };
-    let p0 = 4 + win_back() as usize;
-    let mut best_v: Option<(f64, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 12)).step_by(4) {
-        let mut ds: Vec<f64> = Vec::new();
-        for w in ts.windows(2) {
-            let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-            if dt <= 0.0 {
-                continue;
-            }
-            let mut d = 0.0;
-            for k in 0..3 {
-                let dv = (g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt - g(&w[0], o + k * 4);
-                d += dv * dv;
-            }
-            ds.push(d.sqrt());
-        }
-        if ds.is_empty() {
-            continue;
-        }
-        ds.sort_by(|a, b| a.total_cmp(b));
-        let med = ds[ds.len() / 2];
-        if med.is_finite() && best_v.map_or(true, |b: (f64, i64)| med < b.0) {
-            best_v = Some((med, o as i64 - p0 as i64));
-        }
-    }
-    let mut speeds: Vec<f64> = Vec::new();
-    for w in ts.windows(2) {
-        let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-        if dt > 0.0 {
-            let s: f64 = (0..3)
-                .map(|k| ((g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            speeds.push(s);
-        }
-    }
-    speeds.sort_by(|a, b| a.total_cmp(b));
-    let speed = if speeds.is_empty() { 0.0 } else { speeds[speeds.len() / 2] };
-    let (verr, voff) = best_v?;
-    if verr > (0.15 * speed).max(1.0) {
-        return None;
-    }
-    // ---- orientation: a unit quaternion OR an orthonormal 3x3, and it must
-    //      point roughly where the car is going.
-    let vyaw: Vec<Option<f64>> = ts
-        .iter()
-        .map(|t| {
-            let vx = g(t, (p0 as i64 + voff) as usize);
-            let vz = g(t, (p0 as i64 + voff) as usize + 8);
-            if (vx * vx + vz * vz).sqrt() > 3.0 {
-                Some(vz.atan2(vx))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let heading_spread = |qs: &[Option<[f64; 4]>]| -> Option<f64> {
-        let mut d: Vec<f64> = Vec::new();
-        for (i, q) in qs.iter().enumerate() {
-            let (Some(q), Some(vy)) = (q, vyaw[i]) else { continue };
-            let f = quat_fwd(*q);
-            if (f[0] * f[0] + f[2] * f[2]).sqrt() < 0.2 {
-                continue;
-            }
-            d.push(wrap(f[2].atan2(f[0]) - vy));
-        }
-        if d.len() < 20 {
-            return None;
-        }
-        // circular median, then the spread about it
-        let mut s: Vec<f64> = d.clone();
-        s.sort_by(|a, b| a.total_cmp(b));
-        let med = s[s.len() / 2];
-        let mut dev: Vec<f64> = d.iter().map(|x| wrap(x - med).abs()).collect();
-        dev.sort_by(|a, b| a.total_cmp(b));
-        Some(dev[(dev.len() as f64 * 0.9) as usize])
-    };
-    let mut best_o: Option<(f64, u8, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 16)).step_by(4) {
-        // quaternion candidate
-        let mut ok = true;
-        let mut varies = false;
-        let qs: Vec<Option<[f64; 4]>> = ts
-            .iter()
-            .map(|t| {
-                let q = [g(t, o), g(t, o + 4), g(t, o + 8), g(t, o + 12)];
-                let n: f64 = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-                if !n.is_finite() || (n - 1.0).abs() > 1e-4 {
-                    ok = false;
-                }
-                if q[0] != g(&ts[0], o) {
-                    varies = true;
-                }
-                // the record's convention is (x, y, z, w)
-                Some([q[0], q[1], q[2], q[3]])
-            })
-            .collect();
-        if ok && varies {
-            for order in 0..2 {
-                let qq: Vec<Option<[f64; 4]>> = qs
-                    .iter()
-                    .map(|q| {
-                        q.map(|q| {
-                            if order == 0 {
-                                q
-                            } else {
-                                [q[1], q[2], q[3], q[0]] // engine (w,x,y,z)
-                            }
-                        })
-                    })
-                    .collect();
-                if let Some(sp) = heading_spread(&qq) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, order, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-        // orthonormal 3x3 candidate
-        if o + 36 <= 4 + win_len() as usize {
-            let mut good = true;
-            let ms: Vec<Option<[f64; 4]>> = ts
-                .iter()
-                .map(|t| {
-                    let mut m = [0.0f64; 9];
-                    for k in 0..9 {
-                        m[k] = g(t, o + k * 4);
-                    }
-                    let row = |i: usize| [m[i * 3], m[i * 3 + 1], m[i * 3 + 2]];
-                    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    for i in 0..3 {
-                        let r = row(i);
-                        if (dot(r, r).sqrt() - 1.0).abs() > 1e-3 {
-                            good = false;
-                        }
-                    }
-                    if dot(row(0), row(1)).abs() > 1e-3
-                        || dot(row(0), row(2)).abs() > 1e-3
-                        || dot(row(1), row(2)).abs() > 1e-3
-                    {
-                        good = false;
-                    }
-                    Some(mat_to_quat(&m))
-                })
-                .collect();
-            if good {
-                if let Some(sp) = heading_spread(&ms) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, 2, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-    }
-    let (spread, kind, ooff) = best_o?;
-    if std::env::var("FKDBG").is_ok() {
-        println!(
-            "    orientation: kind {} at {:+}, heading spread p90 {:.1} deg",
-            kind,
-            ooff,
-            spread.to_degrees()
-        );
-    }
-    Some((ooff, kind, voff, speed))
-}
 
-/// Every plausible anchor, fastest candidate first, each with its own measured
-/// (position, quaternion, velocity) layout.
-/// Build anchors from a KNOWN car layout, re-measuring only the clock.
-///
-/// `measure_anchors` costs ~7.5 s and spends nearly all of it in
-/// `locate_candidates`, which forks and simulates the engine once per 1 MB
-/// window over ~129 windows to find where the car lives. A regen calls it once
-/// per anchor tick -- five times on 203072 -- and every call returns the SAME
-/// address: 40 s of a 60 s regen is spent rediscovering one number.
-///
-/// The number is stable because it is an offset from the module base for a
-/// given binary and map. What is NOT stable is the CLOCK address, which lands
-/// somewhere different in every forked child (`base-3219748`, `base-3220452`,
-/// `base-3220372` on three consecutive runs of the same file). The `--anchor`
-/// tuple welds the two together, so a cached tuple carries a dead clock into a
-/// new process and the whole anchor is rejected -- which is exactly what
-/// happened when a calibration was first tried here.
-///
-/// So: take the expensive half from the calibration, measure the cheap half
-/// fresh (the clock scan is 0.1 s and stops after 8 windows), and let the
-/// acceptance test downstream be the judge as it always was. A stale
-/// calibration can only fail and fall back to the full search; it cannot
-/// produce a wrong file.
-pub fn anchors_from_calibration(
-    c: &Ctx,
-    f: &Factory,
-    tick: i64,
-    cal: &Anchors,
-    verbose: bool,
-) -> Result<Vec<Anchors>, String> {
+
+pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
+    // ASK THE ENGINE WHERE THE CAR IS. There is no search here any more.
+    //
+    // This used to fork the engine once per 1 MB window over ~129 windows,
+    // sweeping every 4-byte offset for a float triple that moves like a car:
+    // ~7.5 s, once per anchor tick, and it landed on a decoy about seven times
+    // in eight -- which is what `--tries 24 --jobs 12` was buying tickets
+    // against. The engine has always held the answer as a pointer, and
+    // POINTER.md wrote the chain down.
+    //
+    // The layout is not searched either. `CSceneVehicleVisState` is
+    // disassembled member by member in VEHICLEVISSTATE.md: the 3x3 rotation at
+    // -36 from the position, WorldVel at +12. The old search's own accepted
+    // anchors reported exactly those offsets every time.
+    //
+    // Only the CLOCK is still measured, because its address genuinely moves
+    // per process -- and that scan costs 0.1 s and stops after 8 windows.
     use std::path::PathBuf;
-    let work = PathBuf::from(format!("{}-cal", c.work));
+    let work = PathBuf::from(format!("{}-anch", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
@@ -478,303 +334,32 @@ pub fn anchors_from_calibration(
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
     let base = srv.base;
+    let pid = srv.pid();
+
+    let chain = std::env::var("FK_CAR_CHAIN")
+        .unwrap_or_else(|_| crate::ptr::DEFAULT_CHAIN.to_string());
+    let a = Anchors::from_chain(ck.bias, ck.addr as i64 - base as i64, &chain);
+    let addr = a.resolve_in(pid);
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    if verbose {
-        println!(
-            "  calibrated layout base{:+} with a freshly measured clock base{:+}",
-            cal.pos_delta,
-            ck.addr as i64 - base as i64
-        );
-    }
-    Ok(vec![Anchors {
-        bias: ck.bias,
-        pos_delta: cal.pos_delta,
-        clock_delta: ck.addr as i64 - base as i64,
-        speed: 0.0,
-        quat_off: cal.quat_off,
-        quat_kind: cal.quat_kind,
-        vel_off: cal.vel_off,
-    }])
-}
-
-pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
-
-    use std::path::PathBuf;
-    let work = PathBuf::from(format!("{}-anch", c.work));
-    let _ = std::fs::create_dir_all(&work);
-    let ckpt = clock_for_tick(tick, f.start_offset_ms);
-    let mut srv =
-        start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    // NO INPUT PATCH for the locate probes. The staged ghost is the original
-    // file, so the child already has the right tape; patching it with the
-    // Factory's decoded values is at best a no-op and at worst wrong -- on
-    // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
-    // nothing but decoys. Observing costs nothing and assumes nothing.
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
-
-    // ASK THE ENGINE WHERE THE CAR IS, rather than searching for it.
-    //
-    // `locate_candidates` forks and simulates the engine once per 1 MB window
-    // over ~129 windows, sweeping every 4-byte offset for a float triple that
-    // matches a position we already know: ~7.5 s, and a regen calls it once
-    // per anchor tick (five times on 203072) for the SAME answer every time.
-    // That was 40 s of a 60 s regen.
-    //
-    // The engine has always held the answer as a pointer, and `POINTER.md`
-    // wrote the chain down:
-    //
-    //     vehicles = *( *(module + 0x1e45148) + 0x148 )
-    //     car[k]   = *(vehicles + 8k)      k = 0..3
-    //     state    = car[k] + 0x46c
-    //     position = state + 0x50
-    //
-    // `--carrier` already used it for the field gather; the locate never did.
-    // Resolving it is a handful of pointer reads -- microseconds against
-    // seconds -- and it needs no assumption about where allocations landed,
-    // which is what made the search unstable enough to return three different
-    // offsets for one binary and map.
-    //
-    // NOTHING IS TRUSTED: these are candidate POSITIONS, and every one still
-    // faces `discover_layout` and the acceptance test downstream exactly as a
-    // searched candidate does. A stale chain (a new server build) resolves to
-    // nothing or to something that fails those tests, and the blind search
-    // below runs as it always has.
-    // OPT-IN (`FK_CAR_CHAIN=<spec>`), not the default. The chain is real and
-    // `fk ptr find` resolves it, but on this corpus it names a copy of the car
-    // that passes `discover_layout` and then FAILS the acceptance test
-    // downstream -- and by then `measure_anchors` has already returned, so the
-    // blind search never runs and the whole regen fails ("no regeneration
-    // passed the gate in 24 attempts", with locate_candidates never called).
-    // `fk ptr find` says the same thing more precisely on 203072: "the best
-    // copy has 0 of 4 wheel slots live -- this is a bare position copy and a
-    // pointer to it would be a pointer to the wrong thing".
-    //
-    // The batching below already removes most of what the search cost, so the
-    // pointer is an optimisation waiting on a chain that resolves to the copy
-    // WITH the wheels, not a prerequisite. Left wired up and switchable so the
-    // next person can test a chain in one run.
-    let mut positions: Vec<u64> = Vec::new();
-    // OPT-IN, and the measurement below says this is unlikely ever to change.
-    //
-    // The chain is correct: `fk ptr check` grades DEFAULT_CHAIN "0.000000 m
-    // median from the recording's own path over 213 paired instants, 4 of 4
-    // wheel slots live -- ACCEPTED", and the FIELD GATHER uses it happily.
-    //
-    // But `measure_anchors` wants a different object. Run both on one file and
-    // the addresses are 3 MB apart:
-    //
-    //     pointer  -> the vis state, ~base-3453700   (wheels, 3x3 rotation)
-    //     locate   -> base-307840, base-306660       (quaternion + velocity)
-    //
-    // Those are two genuinely different copies of the car, not two names for
-    // one. `CARRIER.md` says as much -- the clean run reads a copy half a
-    // millimetre from the one that has the fields -- and it is why
-    // `--transform-from-fields` is refused with a pointer: "it is the struct
-    // itself, and the struct holds a 3x3 rotation rather than a quaternion".
-    //
-    // So the pointer cannot replace the locate by pointing at the same thing;
-    // it would have to point at the OTHER copy. That is a second chain to
-    // discover (`fk ptr find` walks backwards from an address, so it can be
-    // asked for one), not a fix to this call site. Until someone does that,
-    // the honest state is: the pointer saves the FIELD gather a search, and
-    // the anchor locate still costs ~7.5 s per anchor tick, mitigated by the
-    // calibration cache rather than removed.
-    // OPT-IN (FK_CAR_CHAIN=<spec>) until the self-check accepts a 3x3.
-    //
-    // Everything up to that check now works: ANCHOR_CHAIN resolves to the
-    // anchor copy at 0.000000 m median over 533 instants, and the layout comes
-    // from VEHICLEVISSTATE.md instead of a search. The run then dies in the
-    // anchor self-check with
-    //
-    //     |q|-1 p99.5 is 1.00e0 -- the sampled window is not the vehicle state
-    //
-    // which is that check reading the orientation as a 4-float QUATERNION
-    // whatever `quat_kind` says. On this copy it is a 3x3 rotation, so |q|
-    // comes out 0 and every instant fails. Teach the self-check to branch on
-    // quat_kind (or widen the gather window to include all nine floats at -36)
-    // and the search is gone from regen entirely.
-    let chain = std::env::var("FK_CAR_CHAIN").unwrap_or_default();
-    if !chain.is_empty() {
-        match crate::ptr::module_base(srv.pid()) {
-            Some((m, _)) => match crate::ptr::resolve_pool(srv.pid(), m, &chain) {
-                Ok(states) => {
-                    for st in &states {
-                        positions.push(st + crate::vislayout::POS_IN_STATE as u64);
-                    }
-                    if verbose {
-                        println!(
-                            "car pointer {}: {} vehicle state(s), no locate needed",
-                            chain,
-                            states.len()
-                        );
-                    }
-                }
-                Err(e) => {
-                    if verbose {
-                        println!("car pointer did not resolve ({}) -- searching instead", e)
-                    }
-                }
-            },
-            None => {
-                if verbose {
-                    println!("no module base for the live server -- searching instead")
-                }
-            }
-        }
-    }
-
-    let mut cands = Vec::new();
-    let cands_searched = positions.is_empty();
-    if positions.is_empty() {
-        cands = crate::locate::locate_candidates(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-        );
-        if cands.is_empty() {
-            cands = crate::locate::locate_positions_loose(
-                &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-            );
+    match addr {
+        Ok(p) => {
             if verbose {
-                println!("loose position candidates: {}", cands.len());
+                println!(
+                    "  car at {:#x} via {} -- layout from VEHICLEVISSTATE.md (rot -36 as 3x3, vel +12)",
+                    p, chain
+                );
             }
+            Ok(vec![a])
         }
-        positions = cands.iter().map(|h| h.pos).collect();
+        Err(e) => Err(format!(
+            "the car chain {} did not resolve: {}. Re-derive it with `fk ptr find` after a \
+             server upgrade -- the chain is a property of the binary.",
+            chain, e
+        )),
     }
-    let _ = &cands;
-    let base = srv.base;
-    let mut out: Vec<Anchors> = Vec::new();
-
-    // WHEN THE POINTER NAMED IT, THE LAYOUT IS A FACT, NOT A SEARCH.
-    //
-    // `discover_layout` hunts a window around the position for a unit
-    // quaternion and a matching velocity. That is the right thing to do for an
-    // address a blind sweep guessed at, and the wrong thing for one the engine
-    // handed us: `CSceneVehicleVisState` is disassembled member by member in
-    // VEHICLEVISSTATE.md, and the three fields this needs are at fixed offsets
-    // from `Loc.translation`:
-    //
-    //     0x2c  -36   Loc rotation      3 rows of 3 f32  (quat_kind 2)
-    //     0x50    0   Loc.translation   THE ANCHOR
-    //     0x5c  +12   WorldVel
-    //
-    // The independently-measured calibrations agree: one of the entries banked
-    // by the search reads exactly `-36  2  12`. So when the chain resolves,
-    // take the offsets from the reading of the binary rather than paying ~7.5 s
-    // to rediscover them -- and rather than grading a candidate on "does it
-    // move like a car and land within N microns of the recording", which is a
-    // heuristic standing in for a structure we already have.
-    if !cands_searched && !positions.is_empty() {
-        for pos in &positions {
-            out.push(Anchors {
-                bias: ck.bias,
-                // NOTE the model mismatch this exposes. `Anchors` stores an
-                // offset FROM THE MODULE BASE, which assumes the car sits at a
-                // fixed distance from the loaded binary. It does not: the car
-                // is on the HEAP. That assumption holds often enough for the
-                // search's answer to be reusable across processes (the same
-                // binary, map and tape allocate reproducibly), which is why the
-                // calibration cache works about three times in five -- and it
-                // is why it fails the other two.
-                //
-                // A pointer-derived address is per-process by construction, so
-                // it MUST NOT be banked or reused in another process: doing so
-                // produced `base+46682783385316` and a panic. The caller guards
-                // that below; the honest fix is for `Anchors` to carry the
-                // CHAIN rather than a delta, so every process resolves it
-                // afresh.
-                pos_delta: *pos as i64 - base as i64,
-                clock_delta: ck.addr as i64 - base as i64,
-                speed: 0.0,
-                quat_off: -36,
-                quat_kind: 2,
-                vel_off: 12,
-            });
-        }
-        if verbose {
-            println!(
-                "  {} state(s) from the pointer, layout from VEHICLEVISSTATE.md \
-                 (rot -36 as 3x3, vel +12) -- no discover_layout",
-                out.len()
-            );
-        }
-    }
-
-    for pos in &positions {
-        if !out.is_empty() {
-            break;
-        }
-        let Some((qoff, qkind, voff, speed)) = discover_layout(&mut srv, probe, &lrecs, ck.addr, *pos)
-        else {
-            continue;
-        };
-        if verbose {
-            println!(
-                "  layout at base{:+}: orient kind {} {:+}, vel {:+}, speed {:.1} m/s",
-                *pos as i64 - base as i64,
-                qkind,
-                qoff,
-                voff,
-                speed
-            );
-        }
-        out.push(Anchors {
-            bias: ck.bias,
-            pos_delta: *pos as i64 - base as i64,
-            clock_delta: ck.addr as i64 - base as i64,
-            speed,
-            quat_off: qoff,
-            quat_kind: qkind,
-            vel_off: voff,
-        });
-    }
-
-    // THE POINTER IS AN OPTIMISATION, NEVER A SOURCE OF TRUTH. If it resolved
-    // but nothing it named survives `discover_layout`, the chain is stale or
-    // this build lays the struct out differently -- fall back to the search
-    // rather than returning nothing, which would send the caller all the way
-    // to its last-resort path and cost far more than the search would have.
-    if out.is_empty() && !cands_searched {
-        if verbose {
-            println!("the pointer named nothing that passes discover_layout -- searching");
-        }
-        let mut c2 = crate::locate::locate_candidates(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-        );
-        if c2.is_empty() {
-            c2 = crate::locate::locate_positions_loose(
-                &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-            );
-        }
-        for h in &c2 {
-            if let Some((qoff, qkind, voff, speed)) =
-                discover_layout(&mut srv, probe, &lrecs, ck.addr, h.pos)
-            {
-                out.push(Anchors {
-                    bias: ck.bias,
-                    pos_delta: h.pos as i64 - base as i64,
-                    clock_delta: ck.addr as i64 - base as i64,
-                    speed,
-                    quat_off: qoff,
-                    quat_kind: qkind,
-                    vel_off: voff,
-                });
-            }
-        }
-    }
-    srv.quit();
-    let _ = std::fs::remove_dir_all(&work);
-    if out.is_empty() {
-        return Err("no candidate with a discoverable (position, quaternion, velocity) layout".into());
-    }
-    out.sort_by(|a, b| b.speed.total_cmp(&a.speed));
-    Ok(out)
 }
 
-/// The engine clock's offset against race time, read at a checkpoint far enough
-/// in for the page-fault probe to be exact.
 pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i64, String> {
 
     use std::path::PathBuf;
@@ -1035,7 +620,9 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             )
             .map_err(|e| format!("clock: {}", e))?;
             forkoracle::layout::Layout {
-                pos: (srv.base as i64 + a.pos_delta) as u64,
+                pos: a
+                    .resolve_in(srv.pid())
+                    .map_err(|e| format!("resolving the car chain: {}", e))?,
                 clock: ck.addr,
                 clock_bias: a.bias,
                 rms: 0.0,
