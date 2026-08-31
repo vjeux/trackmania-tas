@@ -961,6 +961,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // -- and on this map none of them produces the car anyway, so the
             // blind window runs at the end regardless. The first anchor is the
             // only one worth the pointer.
+            // TRIED AND REVERTED: sweeping every banked chain here before the
+            // blind window. 126859's accepted anchor is a BARE POSITION COPY
+            // ("0.000000 m from the clean run's own measured path ... 0 of 4
+            // wheel slots live") -- correct for the trajectory, useless to the
+            // carrier -- so the hope was that another banked chain reaches a
+            // full state on the same map. Measured: 29.06 s -> 212.76 s. Each
+            // chain costs a full `gather_fields`, i.e. an engine run, and ~60
+            // of them dwarfs the blind window they were meant to avoid; none
+            // held the wheels either. Same shape of mistake as 5c92747, made
+            // once more on a different axis.
             let a = field_anchors[0].clone();
             match crate::cmd::carrier::gather_fields(
                 &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0, Some(&resolve), verbose,
