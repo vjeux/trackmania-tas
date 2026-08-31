@@ -479,6 +479,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // This costs ~7.5 s per anchor tick and can need several tries, which is
     // exactly the cost the pointer removes where it works.
     if o.is_none() {
+        // FK_NO_SEARCH=1 refuses the fallback instead of running it. This is
+        // how the corpus gets measured honestly: a map that "works" today may
+        // be working only because the sweep rescued it, and the sweep is what
+        // we are trying to delete.
+        if std::env::var("FK_NO_SEARCH").is_ok() {
+            return Err(
+                "no pointer chain passed and FK_NO_SEARCH is set -- this map still needs the                  memory search, so the slow paths cannot be deleted yet"
+                    .into(),
+            );
+        }
         println!("no pointer chain passed -- falling back to the memory search");
         let mut searched: Vec<crate::record::Anchors> = Vec::new();
         for t in &ticks {
