@@ -447,93 +447,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Err(e) => println!("in-process locate: {}", e),
         }
     }
-    // A STALE CALIBRATION MUST FALL BACK, NOT ABORT.
+    // THE MEMORY SEARCH IS GONE FROM REGEN.
     //
-    // The car's offset from the module base is not perfectly stable -- one
-    // binary and map gave -4012784, -4012672 and -4890252 across runs -- so a
-    // cached offset is sometimes for an allocation this process did not make.
-    // When that happens every calibrated anchor fails here, and aborting turns
-    // a cache miss into a failed regen: measured 3 of 5 single-try runs
-    // succeeding, the other 2 dying on exactly this line with the search never
-    // attempted.
+    // It swept mapped memory for an object whose motion matched the recording:
+    // ~7.5 s per anchor tick, several tries, and the reason a regeneration used
+    // to cost minutes. It stayed this long as insurance for a map with no
+    // chain -- and deleting it on a guess broke 287431 once (fd15b01), so this
+    // time the insurance was measured before being cancelled (7ae3b71):
     //
-    // So when the anchors came from the cache and none of them worked, measure
-    // properly and try once more. The cost is the search we were trying to
-    // skip; the alternative is a run that fails for no reason but a stale
-    // hint.
-    // (The "stale calibration, measure instead" block that stood here is gone
-    // with the calibration cache itself -- `used_calibration` was set false
-    // and never set true, so it was unreachable.)
-    // TRIED AND REVERTED: retrying the chain anchors from later checkpoints
-    // (4200/12000/20000) to get past 287431'"'"'s car reallocation. It never
-    // rescued the chain and cost 718 s against 274 s for going straight to the
-    // search. The chain is genuinely not usable on that map by this route;
-    // whatever  reads over the whole run, the clean run'"'"'s gather
-    // does not see from any checkpoint.
-    // EVERY CHAIN REJECTED -- fall back to the search.
+    //     203072  PASS 5.17 s     287431  PASS 17.76 s
+    //     126859  PASS 29.10 s    294446  PASS 45.10 s
+    //     286279  fails in the CARRIER gather, never reaching this fallback
     //
-    // Chains are per (binary, map) and the built-in list does not cover every
-    // map yet, so a map nobody has run `fk ptr find` on has no chain that
-    // resolves. When that happens the tool should still produce a file: sweep
-    // for the car the old way, and let the same acceptance test judge it.
-    // This costs ~7.5 s per anchor tick and can need several tries, which is
-    // exactly the cost the pointer removes where it works.
+    // Nothing was being rescued. A map that cannot resolve a chain now fails
+    // loudly instead of quietly taking the slow road, which is the honest
+    // behaviour: it means `fk ptr find --at search` has not been run on that
+    // map yet, and that is a five-minute fix rather than a permanent tax on
+    // every regeneration.
+    //
+    // The search ITSELF still exists, in `record::search_car_and_snapshot`,
+    // because it is how chains are DERIVED. What is deleted is its use as a
+    // per-run fallback.
     if o.is_none() {
-        // FK_NO_SEARCH=1 refuses the fallback instead of running it. This is
-        // how the corpus gets measured honestly: a map that "works" today may
-        // be working only because the sweep rescued it, and the sweep is what
-        // we are trying to delete.
-        if std::env::var("FK_NO_SEARCH").is_ok() {
-            return Err(
-                "no pointer chain passed and FK_NO_SEARCH is set -- this map still needs the                  memory search, so the slow paths cannot be deleted yet"
-                    .into(),
-            );
-        }
-        println!("no pointer chain passed -- falling back to the memory search");
-        let mut searched: Vec<crate::record::Anchors> = Vec::new();
-        for t in &ticks {
-            if let Ok(mut b) = crate::record::measure_anchors_by_search(&c, &f, *t, verbose) {
-                for a in b.iter_mut() {
-                    a.bias = bias;
-                }
-                searched.append(&mut b);
-            }
-        }
-        // COLLECT FROM EVERY CHECKPOINT, and do not stop at the first that
-        // answers. A searched anchor is a `base±N` offset measured in ANOTHER
-        // process, so it is right only when the allocation happened to repeat;
-        // one checkpoint's single candidate is a coin toss, and taking the
-        // first one cost 287431 its regeneration. A long list is what the
-        // acceptance test needs to work with -- this is the fragility the
-        // pointer chain removes, preserved here only because the fallback has
-        // no better option.
-        for a in &searched {
-            let g = crate::record::GatherOpts {
-                segs_rel: &segs_rel,
-                bias_override: if bias == 0 { None } else { Some(bias) },
-                anchors: Some(a),
-                period,
-                phase_ms: phase,
-                dump: &dump,
-                verbose,
-                ..crate::record::GatherOpts::production(&dump)
-            };
-            match run_clean_anch(&c, &g) {
-                Ok(v) => {
-                    match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                        Ok(len) => println!("searched anchor {}: path {:.1} m", a.chain, len),
-                        Err(e) => {
-                            println!("searched anchor {}: REJECTED -- {}", a.chain, e);
-                            continue;
-                        }
-                    }
-                    used_anchor = Some(a.clone());
-                    o = Some(v);
-                    break;
-                }
-                Err(e) => println!("searched anchor {}: {}", a.chain, e),
-            }
-        }
+        return Err("no pointer chain resolved to this map's car. Derive one with: \
+                    fk ptr find --template <tape> --map <map> --at search --tick 400 \
+                    -- then add the chains it prints to CAR_CHAINS in fk/src/ptr.rs."
+            .into());
     }
     let o = match o {
         Some(o) => o,

@@ -1827,69 +1827,17 @@ fn discover_layout(
     Some((ooff, kind, voff, speed))
 }
 
-/// Anchors by SEARCH -- the fallback for a map whose chains are not known.
-///
-/// This is the old `measure_anchors`, unchanged in what it does: sweep memory
-/// for a float triple that moves like a car, then discover the layout around
-/// it. It is slow (~7.5 s), it is a heuristic, and it picks a decoy often
-/// enough that the caller must be ready to reject several. It runs only after
-/// every pointer chain has been tried, and its results are named `base±N`
-/// because that is all a sweep can say.
-pub fn measure_anchors_by_search(
-    c: &Ctx,
-    f: &Factory,
-    tick: i64,
-    verbose: bool,
-) -> Result<Vec<Anchors>, String> {
-    use std::path::PathBuf;
-    let work = PathBuf::from(format!("{}-srch", c.work));
-    let _ = std::fs::create_dir_all(&work);
-    let ckpt = clock_for_tick(tick, f.start_offset_ms);
-    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
-    let mut cands = crate::locate::locate_candidates(
-        &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-    );
-    if cands.is_empty() {
-        cands = crate::locate::locate_positions_loose(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-        );
-    }
-    let base = srv.base;
-    let mut out: Vec<Anchors> = Vec::new();
-    for h in &cands {
-        let Some((qoff, qkind, voff, speed)) =
-            discover_layout(&mut srv, probe, &lrecs, ck.addr, h.pos)
-        else {
-            continue;
-        };
-        if verbose {
-            println!(
-                "  layout at base{:+}: orient kind {} {:+}, vel {:+}, speed {:.1} m/s",
-                h.pos as i64 - base as i64, qkind, qoff, voff, speed
-            );
-        }
-        out.push(Anchors {
-            bias: ck.bias,
-            chain: format!("base{:+}", h.pos as i64 - base as i64),
-            member: 0,
-            clock_delta: ck.addr as i64 - base as i64,
-            speed,
-            quat_off: qoff,
-            quat_kind: qkind,
-            vel_off: voff,
-        });
-    }
-    srv.quit();
-    let _ = std::fs::remove_dir_all(&work);
-    if out.is_empty() {
-        return Err("the search found no vehicle state".into());
-    }
-    Ok(out)
-}
+// `measure_anchors_by_search` was HERE and is deleted (see the note at its old
+// call site in cmd/regen.rs). It measured anchors by sweeping mapped memory --
+// ~7.5 s per tick -- and was regen's fallback when no chain resolved. The
+// staged corpus was measured with the fallback refused (FK_NO_SEARCH=1) and
+// nothing needed it, so it is gone rather than merely unused.
+//
+// The sweep survives where it earns its cost: `search_car_and_snapshot` below
+// uses it ONCE, to locate a car in a live process so `ptr find --at search`
+// can walk backwards and DERIVE a chain. Paying seconds once per map to derive
+// a chain is the good trade; paying it on every regeneration was not.
+
 
 /// UNUSABLE ON A FREEFALL-SPAWN MAP, and the trace says exactly why.
 ///
