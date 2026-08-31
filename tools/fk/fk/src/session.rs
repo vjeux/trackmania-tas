@@ -427,7 +427,13 @@ impl ServerPool {
         let k = Self::key(c, tape, ckpt, ghost);
         if let Some(i) = self.entries.iter().position(|(kk, _)| *kk == k) {
             let (_, s) = self.entries.swap_remove(i);
+            if std::env::var("FK_POOL_DEBUG").is_ok() {
+                eprintln!("POOL HIT  {}", k);
+            }
             return Ok(s);
+        }
+        if std::env::var("FK_POOL_DEBUG").is_ok() {
+            eprintln!("POOL MISS {}", k);
         }
         start_server_on_file(c, tape, work, ckpt, ghost)
     }

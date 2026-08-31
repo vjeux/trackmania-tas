@@ -693,9 +693,16 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         }
     }
     let mut srv = srv.ok_or(err)?;
-    // Remember how this server was booted so it can go back to the pool at the
-    // end of the function instead of being dropped. See .
-    let pool_key_ckpt = used;
+    // NO POOL IS POSSIBLE HERE, and the reason is in the protocol rather than
+    // in this function. The gather ends with `srv.go(...)`, which sends the
+    // 'G' command and then calls `self.child.wait()`: 'G' tells the server to
+    // run to completion and EXIT. The process is gone by the time the caller
+    // has its dump, so there is nothing to hand back -- which is why naive
+    // pooling gave 41.8 s and a wrong md5 (`ee875d65` against `eb1b8a7c`): the
+    // second caller was handed a corpse and fell back to re-deriving
+    // everything. Reusing a booted engine needs a NON-TERMINAL variant of 'G'
+    // in the shim protocol, so the parent stays at its checkpoint after
+    // streaming a dump. See ServerPool in session.rs.
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let probe_ms = forkoracle::layout::sample_ms(probe, 0, f.start_offset_ms);
     if verbose {
@@ -1340,9 +1347,6 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // Hand the booted engine back.  is called twice per regen
     // -- once here and once from  -- at the same checkpoint
     // with the same tape, and the boot is ~2 s of a 5.9 s run.
-    crate::session::SERVER_POOL.with(|p| {
-        p.borrow_mut().put(c, &f, pool_key_ckpt, std::path::Path::new(&c.template), srv)
-    });
     Ok(CleanOut {
         bias: layout.clock_bias,
         reclen,
