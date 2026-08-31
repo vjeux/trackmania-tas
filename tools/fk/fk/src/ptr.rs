@@ -146,6 +146,14 @@ pub const CARRIER_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x258:+0x848",
     "mod+0x1e44510:0:+0xb0:+0x300:+0x3e8:+0x848",
     "mod+0x1e45148:0:+0x198:+0x38:+0x20:+0x848",
+    // 286279, from `--ckpt 2600 --bare`. The plain (1e-5) bar refuses this
+    // map's car at 0.000501 m -- half a millimetre, over 4719 instants of a
+    // 235-second run, which is float drift on a lap 20x longer than the bar
+    // was tuned for, not a wrong object. --bare's 1e-3 accepts it and the walk
+    // then reports these.
+    "mod+0x1d56e48:0:+0x158:+0x848",
+    "mod+0x1d56e50:0:+0x180:+0x848",
+    "mod+0x1d91b00:0:+0x30:+0x60:+0x848",
 ];
 
 pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";

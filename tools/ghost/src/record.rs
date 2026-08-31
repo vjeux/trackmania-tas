@@ -1938,13 +1938,28 @@ pub fn resample_opt(
             ts.to_payload(gbx::tape::Encoding::Verbatim),
         );
         if pi != ps {
+            // SAY WHAT ACTUALLY DIFFERS. The comparison is on the whole
+            // encoded payload; reporting only tick counts produced
+            // "do not carry the same input tape (25350 vs 25350 ticks)" on
+            // 286279 -- a message that reads like a bug in itself and sent me
+            // looking in the wrong place. Same length, different bytes, and
+            // the first differing byte is the thing worth printing.
+            let first_diff = pi
+                .iter()
+                .zip(ps.iter())
+                .position(|(a, b)| a != b)
+                .map(|i| format!("first differing payload byte at {}", i))
+                .unwrap_or_else(|| {
+                    format!("payloads are {} and {} bytes", pi.len(), ps.len())
+                });
             return Err(format!(
-                "{inp} and {src} do not carry the same input tape ({} vs {} ticks). resample \
+                "{inp} and {src} do not carry the same input tape ({} vs {} ticks, {}). resample \
                  writes one file's car into another's container; with different tapes the result \
                  is a record of one run wearing another's inputs, which is the defect KAPPA.md is \
                  about. Pass --mixed-run only for a file that will never be published.",
                 ti.n(),
-                ts.n()
+                ts.n(),
+                first_diff
             ));
         }
     }
