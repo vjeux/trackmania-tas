@@ -151,6 +151,23 @@ pub const CAR_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
     "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
     "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
+    // 287431, derived with `fk ptr find --at search --tick 400`: the memory
+    // search LOCATES the car in a live process, and the walk starts from that
+    // verified address rather than from a candidate chain. Note the root
+    // mod+0x1d56e48 -- the same static slot 203072's working chain starts
+    // from, which is what a real answer looks like here.
+    "mod+0x1d56e48:0:+0x158:+0x4e8",
+    "mod+0x1d56e50:0:+0x180:+0x4e8",
+    "mod+0x1e45148:0:+0x148:+0x8:+0x4e8",
+    "mod+0x1e59460:0:+0x180:+0x2d8:+0x4e8",
+    // ...and the same search at tick 1200 finds a DIFFERENT object, at a
+    // positive base offset, whose chains end +0x4c rather than +0x4e8. Both
+    // sets are real cars at the tick they were found; the tick-400 ones score
+    // "path length 0.0 m" over the whole run, i.e. they are frozen after the
+    // handover. These are the later object.
+    "mod+0x1cba348:0:+0x1b8:+0x80:+0x4c",
+    "mod+0x1d56e48:0:+0x260:+0x8:+0x4c",
+    "mod+0x1d56e50:0:+0x288:+0x8:+0x4c",
     // (Chains "derived with --at anchor" for 287431 were REMOVED. They came
     // from an anchor address of 0x3f8000003f800538 -- 0x3f800000 is the float
     // 1.0 bit pattern, twice -- so the walk was aimed at float data misread as

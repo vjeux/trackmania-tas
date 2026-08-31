@@ -2031,3 +2031,59 @@ pub fn anchors_from_validator(
         vel_off: 12,
     }])
 }
+
+/// The car's address IN A LIVE PROCESS, found by the memory search, together
+/// with a snapshot of that same process.
+///
+/// This is what `ptr find --at search` needs and could not previously get. Its
+/// ordinary path resolves `anchors[0]` -- a CANDIDATE chain -- and on a map
+/// where no candidate is valid that lands in float data
+/// (0x3f8000003f800538 on 287431: 1.0f, twice). The search does not guess: it
+/// scans for objects whose motion matches the recording, so its answer is a
+/// car or there is no answer.
+///
+/// The address and the snapshot come from ONE process, which is the whole
+/// point -- an address means nothing in any other (see the retraction in
+/// c46f521 and the `pos_delta` mistake in 6400cef).
+pub fn search_car_and_snapshot(
+    c: &Ctx,
+    f: &Factory,
+    tick: i64,
+    verbose: bool,
+) -> Result<(u64, crate::ptr::Snapshot), String> {
+    use std::path::PathBuf;
+    let work = PathBuf::from(format!("{}-scs", c.work));
+    let _ = std::fs::create_dir_all(&work);
+    let ckpt = clock_for_tick(tick, f.start_offset_ms);
+    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let mut cands = crate::locate::locate_candidates(
+        &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
+    );
+    if cands.is_empty() {
+        cands = crate::locate::locate_positions_loose(
+            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
+        );
+    }
+    let hit = cands
+        .first()
+        .ok_or("the search found no car in this process")?;
+    let pos = hit.pos;
+    // Snapshot BEFORE the server goes away: `quit` reaps the child and
+    // /proc/<pid>/maps with it.
+    let snap = crate::ptr::Snapshot::take(srv.pid())?;
+    srv.quit();
+    let _ = std::fs::remove_dir_all(&work);
+    if verbose {
+        println!(
+            "search: the car is at {:#x} (base{:+}) in pid {}",
+            pos,
+            pos as i64 - snap.module as i64,
+            snap.pid
+        );
+    }
+    Ok((pos, snap))
+}

@@ -346,6 +346,26 @@ fn find(a: &[String]) -> Result<(), String> {
         }
         o += each as i64;
     }
+    // `--at search` LOCATES THE CAR INSTEAD OF GUESSING AT IT.
+    //
+    // The ordinary path resolves `anchors[0]`, a CANDIDATE chain, and on a map
+    // where no candidate is valid that lands wherever the bad walk ends --
+    // float data, on 287431. The memory search does not guess: it scans for an
+    // object whose motion matches the recording. It is slow, and for deriving
+    // a chain ONCE that does not matter at all.
+    //
+    // The address and the snapshot must come from ONE process, so this takes
+    // both together and goes straight to the walk.
+    if flag(a, "--at").as_deref() == Some("search") {
+        let tick = num(a, "--tick", 200) as i64;
+        let (car, snap) = record::search_car_and_snapshot(&c, &f, tick, true)?;
+        println!(
+            "--at search: the car is at {:#x} (module{:+}), located in this process",
+            car,
+            car as i64 - snap.module as i64
+        );
+        return chains_to(&snap, car, a, None);
+    }
     let snap: RefCell<Option<Snapshot>> = RefCell::new(None);
     // THE ANCHOR'S ADDRESS, IN THE SNAPSHOT'S OWN PROCESS.
     //
