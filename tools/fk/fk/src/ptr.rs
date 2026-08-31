@@ -151,7 +151,19 @@ pub const CAR_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
     "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
     "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
-    // 287431, derived with `fk ptr find --at search --tick 400`: the memory
+    // 287431 -- THESE PASS ABOUT ONE RUN IN FOUR. Measured: 1 of 4 regens hit
+    // "path 1693.2 m over the run" (89 s); the other 3 fell through to the
+    // memory search (and all produced the same md5 b5d4f44f, so the SEARCH is
+    // deterministic and the chains are not). The object they name exists in
+    // some processes and not others -- this map's 646 m freefall hands the car
+    // between entities, and which entity a given process ends up holding at
+    // the checkpoint varies.
+    //
+    // They are kept because a hit is a 2x speed-up and a miss costs only the
+    // resolve attempt, but this map is NOT off the memory search: the fallback
+    // still runs three times in four, and cannot be deleted.
+    //
+    // Derived with `fk ptr find --at search --tick 400`: the memory
     // search LOCATES the car in a live process, and the walk starts from that
     // verified address rather than from a candidate chain. Note the root
     // mod+0x1d56e48 -- the same static slot 203072's working chain starts
