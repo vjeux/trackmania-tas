@@ -449,6 +449,21 @@ fn find(a: &[String]) -> Result<(), String> {
             car,
             car as i64 - snap.module as i64
         );
+        // THE ANCHOR IS NOT ALWAYS A CAR, and this path skips the acceptance
+        // test that would normally say so. On 287431 it comes back as
+        // 0x3f8000003f800538 -- `0x3f800000` is the float 1.0 bit pattern,
+        // twice, so the chain read FLOAT DATA as a pointer. Walking to an
+        // address like that produces confident nonsense: chains that "reach"
+        // an object which does not exist.
+        //
+        // The snapshot is the check. It holds every writable mapping in this
+        // process, so an address outside it is not an object at all.
+        if !snap.contains(car) {
+            return Err(format!(
+                "--at anchor: {:#x} is not in any writable mapping of this process -- the                  anchor did not resolve to an object (a chain that reads float data as a                  pointer lands here: 0x3f800000 is 1.0f). There is no car to walk to.",
+                car
+            ));
+        }
         return chains_to(&snap, car, a, None);
     }
     if let Some(v) = flag(a, "--at") {

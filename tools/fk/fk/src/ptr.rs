@@ -151,16 +151,12 @@ pub const CAR_CHAINS: &[&str] = &[
     "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
     "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
     "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
-    // 287431, derived with `--at anchor` -- the address the gather resolves in
-    // the snapshot's OWN process, which is the only address valid there. These
-    // end at +0x4e8 like every other map's, not the +0x6268 an earlier
-    // derivation produced from a stale cross-process address.
-    "mod+0x1cb6670:0:+0x4e8",
-    "mod+0x1cb6688:0:+0x4e8",
-    "mod+0x1cb2e50:0:+0x210:+0x30:+0x4e8",
-    "mod+0x1cb32d8:0:+0x378:+0x30:+0x4e8",
-    "mod+0x1cb32e0:0:+0xf8:+0x30:+0x4e8",
-    "mod+0x1cb2e48:0:+0x130:+0x3c0:+0x4e8",
+    // (Chains "derived with --at anchor" for 287431 were REMOVED. They came
+    // from an anchor address of 0x3f8000003f800538 -- 0x3f800000 is the float
+    // 1.0 bit pattern, twice -- so the walk was aimed at float data misread as
+    // a pointer, and the chains it produced reached an object that does not
+    // exist. `--at anchor` now refuses an address outside every writable
+    // mapping, so this cannot be repeated silently.)
     // 287431: the SAME roots, a different walk, and the state at +0x6268.
     // This is the evidence that a chain is not a property of the binary
     // alone -- `fk ptr find` on this map reports six chains and every one of
@@ -342,6 +338,19 @@ impl Kind {
 }
 
 /// One mapping, its bytes, and what kind of thing it is.
+impl Snapshot {
+    /// Is this address inside any writable mapping we captured?
+    ///
+    /// The cheap "is this an object at all?" test. A chain that misreads float
+    /// data as a pointer produces an address in no mapping whatsoever, and
+    /// walking to one yields chains to a thing that does not exist.
+    pub fn contains(&self, a: u64) -> bool {
+        self.chunks
+            .iter()
+            .any(|c| a >= c.start && a < c.start + c.bytes.len() as u64)
+    }
+}
+
 pub struct Chunk {
     pub start: u64,
     pub kind: Kind,
