@@ -356,6 +356,30 @@ pub fn default_shim() -> Option<PathBuf> {
     None
 }
 
+/// A PERSISTENT SERVER IS NOT POSSIBLE WITH THIS ENGINE. Settled by reading
+/// the shim, after two failed attempts and one wrong explanation.
+///
+/// The chain of facts, each checkable in the source:
+///
+///  1. `ForkServer::go` sends 'G' and then calls `self.child.wait()`.
+///  2. In the shim, 'G' sets the sampling flags and RETURNS from the command
+///     loop. It does not fork -- deliberately: "a forked child is NOT the
+///     clean run", measured at 0 of 522 ticks agreeing and up to 2.9 m of
+///     divergence. The parent's own /validatepath run is the clean run.
+///  3. The parent then finishes its race, sampling as it goes, and exits.
+///     The process ending is the RACE ending, not a teardown we chose.
+///  4. The command loop is entered from the validator's simulation-binding
+///     callback "before the first simulation tick" -- once per process, per
+///     validation run.
+///
+/// So the clean run is single-use by construction. Keeping the process alive
+/// would mean re-entering /validatepath for a second race, which is the 1.99 s
+/// of engine start-up all over again. There is no non-terminal 'G' to write.
+///
+/// The consequence for speed: 2.24 s of engine CPU per boot is a hard floor
+/// for one regeneration, and the only remaining saving is one boot instead of
+/// two (~3.3 s). Under a second is not reachable with this binary.
+///
 /// TRIED AND REVERTED -- A REUSED SERVER IS NOT A BOOTED SERVER.
 ///
 /// Wiring this into `run_clean_anch` (take at the top, put back at the end)
