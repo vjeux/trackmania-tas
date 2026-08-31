@@ -1003,6 +1003,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     tried.push(cached);
                 }
             }
+            for ch in crate::ptr::CARRIER_CHAINS {
+                if *ch != chain && !tried.iter().any(|t| t == ch) {
+                    tried.push(ch.to_string());
+                }
+            }
             // NOT WIRED: CARRIER_CHAINS in ptr.rs holds 126859's wheeled chain
             // (mod+0x1cba348:0:+0x2c0:+0x240:+0x848), and adding it to `tried`
             // here does NOT reproduce what --car-chain does with the same

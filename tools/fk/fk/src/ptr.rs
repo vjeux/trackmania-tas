@@ -138,8 +138,14 @@ use std::io::{Read, Seek, SeekFrom};
 /// chain. On 126859 that is the entry below, and using it takes the map from
 /// 29.07 s to 15.07 s.
 pub const CARRIER_CHAINS: &[&str] = &[
-    // 126859, "4 of 4 wheel slots live; 6 copies matched"
+    // 126859, "4 of 4 wheel slots live". Several, from DIFFERENT checkpoints,
+    // for the same reason CAR_CHAINS carries several per map: any one of them
+    // resolves in only some processes (the first was measured at 1 hit in 3),
+    // and a miss costs one resolve while a hit saves a blind-window scan.
     "mod+0x1cba348:0:+0x2c0:+0x240:+0x848",
+    "mod+0x1d58ef0:0:+0x360:+0x48:+0x258:+0x848",
+    "mod+0x1e44510:0:+0xb0:+0x300:+0x3e8:+0x848",
+    "mod+0x1e45148:0:+0x198:+0x38:+0x20:+0x848",
 ];
 
 pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";
