@@ -874,10 +874,24 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
         }
         if !force {
             let _ = std::fs::remove_file(out);
+            // NAME THE CHECKS THAT FAILED, in the message that kills the run.
+            //
+            // These refusals were counted here and printed nowhere near the
+            // G1-G4 lines, so a run could show four passing gates and still
+            // delete its output with only "1 check(s) failed" to explain it.
+            // On 287431 the real reason -- "byte 59 (orientation angle) holds
+            // 0x00 on all 416 samples" -- was reachable only by grepping the
+            // log for words you had to already know. A gate that can delete
+            // the output has to say which gate it was.
             die(format!(
                 "{} check(s) failed and {out} has been DELETED. Pass --force to keep the file \
-                 anyway; it is not publishable.",
-                refused.len()
+                 anyway; it is not publishable.\n{}",
+                refused.len(),
+                refused
+                    .iter()
+                    .map(|r| format!("  FAILED: {}", r))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ));
         }
         eprintln!("--force: keeping {out} despite {} failed check(s).", refused.len());
