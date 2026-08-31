@@ -359,23 +359,66 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // result. Reverted rather than shipped. `anchors_from_validator` is left
     // in record.rs, unused, for whoever picks this up: the route is right, the
     // reason it finds nothing here is not yet known.
-    // THE LIVE CHAIN IS BUILT AND PLUMBED, AND NOT YET WORKING. Opt-in with
-    // FK_LIVE_CHAIN=1; the code is in git history at this commit's parent if
-    // it is ever cut. Where it got to on 287431:
+    // THE LIVE CHAIN: follow the car instead of naming it once (FK_LIVE_CHAIN=1).
     //
-    //   * the shim's 'C' command arms, and the walk resolves:
-    //     "live chain: root 0x…, 4 hops, tail 0x12f0";
-    //   * the gather then samples ZERO instants -- "the grid gate never
-    //     matched (wrong clock?)".
-    //
-    // The gate compares the race clock against the sampling grid, and the
-    // placeholder anchor this path builds carries `clock_delta: 0` where every
-    // working anchor carries the measured offset from the server base. That is
-    // the next thing to fix, not another guess at the chain: the walk is right
-    // (it is `resolve_with`'s own route, hop for hop, with the final +0x12f0
-    // folded into the window start) and the arming is right (the shim replies
-    // CHAIN and segment 1, the car window, is what gets rewritten -- segment 0
-    // is the 4-byte clock the gate itself reads).
+    // Every other route resolves an address before the run and is defeated by
+    // a map that reallocates its vehicle. This hands the shim the validator's
+    // walk and has the SAMPLER redo it at every instant.
+    if o.is_none() && std::env::var("FK_LIVE_CHAIN").is_ok() {
+        match crate::record::validator_live_chain(&c, &f, ticks[0]) {
+            Ok((root, offs, tail)) => {
+                println!("live chain: root {:#x}, {} hops, tail {:#x}", root, offs.len(), tail);
+                let a = crate::record::Anchors {
+                    bias,
+                    chain: "live".into(),
+                    member: 0,
+                    clock_delta: 0,
+                    speed: 0.0,
+                    quat_off: -16,
+                    quat_kind: 0,
+                    vel_off: 12,
+                };
+                let g = crate::record::GatherOpts {
+                    segs_rel: &segs_rel,
+                    bias_override: if bias == 0 { None } else { Some(bias) },
+                    anchors: Some(&a),
+                    period,
+                    phase_ms: phase,
+                    dump: &dump,
+                    verbose,
+                    live_chain: Some((root, offs, tail)),
+                    ..crate::record::GatherOpts::production(&dump)
+                };
+                match run_clean_anch(&c, &g) {
+                    // STILL "0 instants sampled" WITH THE PHASE FIXED. The
+                    // gate is not the cause: `gate_phase` is now u32::MAX for
+                    // a live chain (the shim's own "take the phase from this
+                    // process's clock" form) and the count is unchanged.
+                    //
+                    // The next suspect is the walk landing somewhere
+                    // unreadable, which would make the sampler's copy fault
+                    // and emit nothing. That is testable directly: have the
+                    // shim's 'C' handler walk the chain ONCE at arm time and
+                    // report the address it reaches, then compare it against
+                    // the base-4879052 the one-shot validator resolve returns
+                    // in the same process. Equal means the walk is right and
+                    // the fault is in the sampling; different means the hop
+                    // list is wrong.
+                    Ok(v) => match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
+                        Ok(len) => {
+                            println!("LIVE CHAIN WORKS: path {:.1} m over the run", len);
+                            used_anchor = Some(a.clone());
+                            o = Some(v);
+                        }
+                        Err(e) => println!("live chain: REJECTED -- {}", e),
+                    },
+                    Err(e) => println!("live chain: {}", e),
+                }
+            }
+            Err(e) => println!("live chain: {}", e),
+        }
+    }
+
     // Last resort: locate in the clean process itself. It cannot see a
     // stationary car, but when the tape is already moving at the handover it
     // needs no cross-process assumption at all.

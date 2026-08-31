@@ -798,8 +798,17 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
         }
     }
-    let gate_phase = if period == 10 {
-        // every tick: let the shim take the phase from its own clock
+    let gate_phase = if period == 10 || live_chain.is_some() {
+        // every tick: let the shim take the phase from its own clock.
+        //
+        // A LIVE CHAIN MUST USE THIS TOO. The `else` branch computes the phase
+        // from `layout.clock_bias`, and the shim's own comment says what
+        // happens when that comes from anywhere but this process:
+        // "`find_clock2` returns a CLASS of counters and two processes can
+        // land on ones with different absolute offsets, so a phase computed in
+        // the anchor process can match NOTHING here -- measured as '0 instants
+        // sampled' on a third of the corpus". The live-chain anchor is a
+        // placeholder with no measured bias, so it hit exactly that.
         u32::MAX as i64
     } else {
         (((phase_ms + layout.clock_bias) % period) + period) % period
