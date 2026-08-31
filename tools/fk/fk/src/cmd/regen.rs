@@ -359,6 +359,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // result. Reverted rather than shipped. `anchors_from_validator` is left
     // in record.rs, unused, for whoever picks this up: the route is right, the
     // reason it finds nothing here is not yet known.
+    // THE LIVE CHAIN IS BUILT AND PLUMBED, AND NOT YET WORKING. Opt-in with
+    // FK_LIVE_CHAIN=1; the code is in git history at this commit's parent if
+    // it is ever cut. Where it got to on 287431:
+    //
+    //   * the shim's 'C' command arms, and the walk resolves:
+    //     "live chain: root 0x…, 4 hops, tail 0x12f0";
+    //   * the gather then samples ZERO instants -- "the grid gate never
+    //     matched (wrong clock?)".
+    //
+    // The gate compares the race clock against the sampling grid, and the
+    // placeholder anchor this path builds carries `clock_delta: 0` where every
+    // working anchor carries the measured offset from the server base. That is
+    // the next thing to fix, not another guess at the chain: the walk is right
+    // (it is `resolve_with`'s own route, hop for hop, with the final +0x12f0
+    // folded into the window start) and the arming is right (the shim replies
+    // CHAIN and segment 1, the car window, is what gets rewritten -- segment 0
+    // is the 4-byte clock the gate itself reads).
     // Last resort: locate in the clean process itself. It cannot see a
     // stationary car, but when the tape is already moving at the handover it
     // needs no cross-process assumption at all.

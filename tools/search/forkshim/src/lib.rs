@@ -364,7 +364,12 @@ unsafe fn do_sample(clock: u64) {
             a = a.wrapping_add(CHAIN_OFF[i].load(Ordering::Relaxed));
         }
         if ok && a != 0 {
-            SEG_ADDR[0].store(a.wrapping_sub(CHAIN_BACK.load(Ordering::Relaxed)), Ordering::Relaxed);
+            // SEGMENT 1, NOT 0. Segment 0 is the 4-byte race CLOCK -- the grid
+            // gate reads it to decide whether this instant is on the sampling
+            // grid at all. Overwriting it with the car's address made the gate
+            // never match and the run gathered 0 instants. The car window is
+            // the segment after it.
+            SEG_ADDR[1].store(a.wrapping_sub(CHAIN_BACK.load(Ordering::Relaxed)), Ordering::Relaxed);
         }
     }
     let mut o = 0usize;

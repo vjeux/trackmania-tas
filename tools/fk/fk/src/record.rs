@@ -250,6 +250,15 @@ impl Anchors {
     /// gather then cannot read. A chain ignores `srv_base` — it walks from the
     /// module's static data by construction.
     pub fn resolve_in(&self, pid: i32, srv_base: u64) -> Result<u64, String> {
+        // "live" means the SAMPLER resolves the address at every instant (see
+        // `GatherOpts::live_chain`), so there is nothing to resolve here. The
+        // value returned is a placeholder the gather overwrites; it only has
+        // to be a readable address, and the module base always is.
+        if self.chain == "live" {
+            let (m, _) = crate::ptr::module_base(pid)
+                .ok_or("no module base for the live server")?;
+            return Ok(m);
+        }
         if let Some(rest) = self.chain.strip_prefix("base") {
             let d: i64 = rest.parse().map_err(|_| format!("bad base offset {:?}", rest))?;
             return Ok((srv_base as i64 + d) as u64);
@@ -567,9 +576,14 @@ pub struct GatherOpts<'a> {
     /// instead of 300,000.
     pub pos_from: Option<&'a dyn Fn(i32, u64) -> Result<(u64, Vec<(i64, u32)>), String>>,
     /// A chain the SAMPLER re-walks at every instant, so segment 0 follows a
-    /// car the engine reallocates mid-race. `(root_abs, offsets)`; the window
-    /// start is derived from `win_back()`. See `ForkServer::arm_chain`.
-    pub live_chain: Option<(u64, Vec<u64>)>,
+    /// car the engine reallocates mid-race: `(root_abs, offsets, tail)`.
+    ///
+    /// `tail` is added to the walk's last result before the window is taken,
+    /// for a route whose final step is a FIELD rather than a pointer -- the
+    /// validator's is `vehicle + 0x12f0`. The sampler is told to subtract
+    /// `win_back() - tail`, so the window still starts `win_back()` bytes
+    /// before the car. See `ForkServer::arm_chain`.
+    pub live_chain: Option<(u64, Vec<u64>, i64)>,
     /// Look at the live server, halted, just before the run starts.
     ///
     /// Called with `(pid, the position anchor, the segments about to be
@@ -777,8 +791,8 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // ARM THE SAMPLER'S CHAIN, if the caller gave one. From here the shim
     // recomputes segment 0's address at every sampled instant rather than
     // trusting the one we resolved above.
-    if let Some((root, ref offs)) = live_chain {
-        srv.arm_chain(root, win_back() as u64, offs)
+    if let Some((root, ref offs, tail)) = live_chain {
+        srv.arm_chain(root, (win_back() - tail) as u64, offs)
             .map_err(|e| format!("arming the sampler chain: {}", e))?;
         if verbose {
             println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
@@ -1891,6 +1905,52 @@ pub fn measure_anchors_by_search(
 ///
 /// The class id is checked at the CGameVehiclePhy hop, so a stale offset fails
 /// rather than naming something else.
+/// The validator's route as a LIVE chain the sampler can re-walk.
+///
+/// Returns `(root, offsets)` for `GatherOpts::live_chain`. The root is the
+/// controller -- a stable address captured at the simulation-binding callback
+/// -- and each hop is `*(p) + off` in the shim's walk, so the offsets are the
+/// disassembled field offsets of BUILD_128182 shifted by one: the shim
+/// dereferences first, then adds.
+///
+/// This is the same route `anchors_from_validator` takes, expressed so it can
+/// be followed at every instant instead of once. That distinction is the whole
+/// point on 287431, where the one-shot answer goes stale mid-race.
+pub fn validator_live_chain(
+    c: &Ctx,
+    f: &Factory,
+    tick: i64,
+) -> Result<(u64, Vec<u64>, i64), String> {
+    use std::path::PathBuf;
+    let work = PathBuf::from(format!("{}-vlc", c.work));
+    let _ = std::fs::create_dir_all(&work);
+    let ckpt = clock_for_tick(tick, f.start_offset_ms);
+    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let root = srv.validator_controller;
+    srv.quit();
+    let _ = std::fs::remove_dir_all(&work);
+    if root == 0 {
+        return Err("the validator controller was not captured".into());
+    }
+    // The walk, matched hop for hop against `resolve_with`. The shim does
+    // `a = *(a); a += off` per element, so each offset is applied AFTER the
+    // dereference -- and the last hop must NOT dereference, because
+    // `state_pos` is `vehicle + 0x12f0`, an address inside the object rather
+    // than a pointer to it. That is why 0x12f0 is not in this list:
+    //
+    //     *(controller + 0x1a70)          -> sim          [off 0x18]
+    //     *(sim + 0x18)                   -> playground   [off 0x660]
+    //     *(playground + 0x660)           -> players      [off 0]
+    //     *(players)                      -> participant  [off 0x1118]
+    //     *(participant + 0x1118)         -> vehicle      [off 0x12f0 -> back]
+    //
+    // The final `+ 0x12f0` is folded into the window start the sampler
+    // subtracts, so `back` is `win_back() - 0x12f0` and the chain ends on the
+    // vehicle. Getting this wrong reads a pointer as a position and the
+    // self-check refuses it, which is the honest failure mode.
+    Ok((root + 0x1a70, vec![0x18, 0x660, 0x0, 0x1118], 0x12f0))
+}
+
 pub fn anchors_from_validator(
     c: &Ctx,
     f: &Factory,
