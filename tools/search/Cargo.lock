@@ -93,6 +93,7 @@ dependencies = [
 name = "tmmaps"
 version = "0.2.0"
 dependencies = [
+ "gbx",
  "ghost",
 ]
 

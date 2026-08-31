@@ -725,6 +725,20 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // in the shim protocol, so the parent stays at its checkpoint after
     // streaming a dump. See ServerPool in session.rs.
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    // ARM THE SAMPLER'S CHAIN FIRST, BEFORE ANY OTHER COMMAND.
+    //
+    // It has to be here and not next to the gather. `find_clock2` below issues
+    // 'S' commands, and an 'S' FORKS A CHILD and reaps it -- so by the time
+    // the old placement ran, the loop that answers 'C' was gone and the caller
+    // saw "arm_chain: no reply". The shim's 'C' handler also has to sit above
+    // its 'G' handler, because 'G' RETURNS from the command loop.
+    if let Some((root, ref offs, tail)) = live_chain {
+        srv.arm_chain(root, (win_back() - tail) as u64, offs)
+            .map_err(|e| format!("arming the sampler chain: {}", e))?;
+        if verbose {
+            println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
+        }
+    }
     let probe_ms = forkoracle::layout::sample_ms(probe, 0, f.start_offset_ms);
     if verbose {
         println!("handover at lroundf {} -> probe tick {} (race {} ms)", used, probe, probe_ms);
@@ -787,16 +801,6 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             );
         }
         layout.pos = p;
-    }
-    // ARM THE SAMPLER'S CHAIN, if the caller gave one. From here the shim
-    // recomputes segment 0's address at every sampled instant rather than
-    // trusting the one we resolved above.
-    if let Some((root, ref offs, tail)) = live_chain {
-        srv.arm_chain(root, (win_back() - tail) as u64, offs)
-            .map_err(|e| format!("arming the sampler chain: {}", e))?;
-        if verbose {
-            println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
-        }
     }
     let gate_phase = if period == 10 || live_chain.is_some() {
         // every tick: let the shim take the phase from its own clock.

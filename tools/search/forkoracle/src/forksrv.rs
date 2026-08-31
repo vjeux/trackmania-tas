@@ -708,8 +708,15 @@ impl ForkServer {
         write_frame(&mut self.cmd_w, &p).map_err(|e| e.to_string())?;
         let v = read_frame(&mut self.res_r).ok_or("arm_chain: no reply")?;
         let r = String::from_utf8_lossy(&v);
-        if r.starts_with("CHAIN") {
+        if r.starts_with("CHAIN at") {
+            // The shim walked it once and says where it landed. Surfacing this
+            // is the difference between "the chain is wrong" and "the chain is
+            // right and the sampling is wrong", which otherwise look identical
+            // three layers up ("0 instants sampled").
+            println!("  shim: {}", r.trim());
             Ok(())
+        } else if r.starts_with("CHAIN") {
+            Err(format!("arm_chain: the shim could not walk it: {}", r.trim()))
         } else {
             Err(format!("arm_chain: {}", r))
         }

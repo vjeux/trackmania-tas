@@ -221,6 +221,20 @@ const MAX_SEG: usize = 8;
 static SEG_N: AtomicUsize = AtomicUsize::new(0);
 /// A pointer chain the SAMPLER re-walks at every instant, so segment 0 follows
 /// a car that the engine reallocates mid-race. 0 = disabled.
+/// Is this address readable? A cheap `write`-to-devnull probe: the kernel
+/// returns EFAULT rather than delivering a signal, so this cannot crash.
+unsafe fn addr_readable(a: usize) -> bool {
+    let mut fd = DEVNULL_FD.load(Ordering::Relaxed);
+    if fd < 0 {
+        fd = open(b"/dev/null\0".as_ptr() as *const c_char, 1, 0);
+        if fd < 0 {
+            return true;
+        }
+        DEVNULL_FD.store(fd, Ordering::Relaxed);
+    }
+    real_write()(fd, a as *const c_void, 8) == 8
+}
+static DEVNULL_FD: AtomicI32 = AtomicI32::new(-1);
 static CHAIN_N: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_ROOT: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_BACK: AtomicUsize = AtomicUsize::new(0);
@@ -352,12 +366,14 @@ unsafe fn do_sample(clock: u64) {
         let mut a = CHAIN_ROOT.load(Ordering::Relaxed);
         let mut ok = true;
         for i in 0..cn {
-            if a == 0 {
+            // Checked, for the same reason as at arm time: this runs at every
+            // sampled instant, and a fault here takes the whole run with it.
+            if a == 0 || a < 0x1000 || !addr_readable(a) {
                 ok = false;
                 break;
             }
             a = *(a as *const usize);
-            if a == 0 {
+            if a == 0 || a < 0x1000 {
                 ok = false;
                 break;
             }
@@ -1911,6 +1927,69 @@ unsafe fn forkserver() {
             send_frame(res, &samples);
             continue;
         }
+        if payload[0] == b'C' {
+            // ARM THE SAMPLER'S POINTER CHAIN.
+            //
+            //   u64 root | u64 back | u32 n | n x u64 off
+            //
+            // Segment 0's address is then recomputed at every sampled instant
+            // as (walk(root, offs) - back), so a car the engine reallocates
+            // mid-race is followed instead of going stale. n = 0 disarms.
+            if payload.len() >= 21 {
+                let root = u64::from_le_bytes(payload[1..9].try_into().unwrap()) as usize;
+                let back = u64::from_le_bytes(payload[9..17].try_into().unwrap()) as usize;
+                let n = u32::from_le_bytes(payload[17..21].try_into().unwrap()) as usize;
+                let n = n.min(8);
+                for i in 0..n {
+                    let o = 21 + i * 8;
+                    if o + 8 <= payload.len() {
+                        CHAIN_OFF[i].store(
+                            u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
+                            Ordering::SeqCst,
+                        );
+                    }
+                }
+                CHAIN_ROOT.store(root, Ordering::SeqCst);
+                CHAIN_BACK.store(back, Ordering::SeqCst);
+                CHAIN_N.store(n, Ordering::SeqCst);
+                // Walk it ONCE here and report where it lands, so the caller
+                // can compare against an address it resolved by other means in
+                // this same process. Without this, a chain that walks into
+                // nothing is indistinguishable from a chain that walks
+                // somewhere fine and is sampled wrongly -- both show up only
+                // as "0 instants sampled", three layers away.
+                // EVERY DEREFERENCE IS CHECKED. An unchecked walk SIGSEGVs the
+                // server, and the caller sees "arm_chain: no reply" -- which is
+                // how the first version of this failed. A chain that walks into
+                // nothing must report that, not kill the process.
+                let mut a = root;
+                let mut ok = true;
+                for i in 0..n {
+                    if a == 0 || a < 0x1000 || !addr_readable(a) { ok = false; break; }
+                    a = *(a as *const usize);
+                    if a == 0 || a < 0x1000 { ok = false; break; }
+                    a = a.wrapping_add(CHAIN_OFF[i].load(Ordering::Relaxed));
+                }
+                let mut msg = [0u8; 64];
+                let m = if ok {
+                    let mut w = 0usize;
+                    for (i, b) in b"CHAIN at ".iter().enumerate() { msg[i] = *b; w = i + 1; }
+                    let mut v = a;
+                    let mut d = [0u8; 20];
+                    let mut dn = 0;
+                    if v == 0 { d[0] = b'0'; dn = 1; }
+                    while v > 0 { d[dn] = b'0' + (v % 10) as u8; v /= 10; dn += 1; }
+                    while dn > 0 { dn -= 1; msg[w] = d[dn]; w += 1; }
+                    &msg[..w]
+                } else {
+                    b"CHAIN broke"
+                };
+                send_frame(res, m);
+            } else {
+                send_frame(res, b"ERR chain");
+            }
+            continue;
+        }
         if payload[0] == b'G' {
             // GO: sample the rest of THIS process's run and return to the
             // simulation. No fork, no resume, no input patching.
@@ -1982,37 +2061,6 @@ unsafe fn forkserver() {
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
             send_frame(res, b"GO");
             return;
-        }
-        if payload[0] == b'C' {
-            // ARM THE SAMPLER'S POINTER CHAIN.
-            //
-            //   u64 root | u64 back | u32 n | n x u64 off
-            //
-            // Segment 0's address is then recomputed at every sampled instant
-            // as (walk(root, offs) - back), so a car the engine reallocates
-            // mid-race is followed instead of going stale. n = 0 disarms.
-            if payload.len() >= 21 {
-                let root = u64::from_le_bytes(payload[1..9].try_into().unwrap()) as usize;
-                let back = u64::from_le_bytes(payload[9..17].try_into().unwrap()) as usize;
-                let n = u32::from_le_bytes(payload[17..21].try_into().unwrap()) as usize;
-                let n = n.min(8);
-                for i in 0..n {
-                    let o = 21 + i * 8;
-                    if o + 8 <= payload.len() {
-                        CHAIN_OFF[i].store(
-                            u64::from_le_bytes(payload[o..o + 8].try_into().unwrap()) as usize,
-                            Ordering::SeqCst,
-                        );
-                    }
-                }
-                CHAIN_ROOT.store(root, Ordering::SeqCst);
-                CHAIN_BACK.store(back, Ordering::SeqCst);
-                CHAIN_N.store(n, Ordering::SeqCst);
-                send_frame(res, b"CHAIN");
-            } else {
-                send_frame(res, b"ERR chain");
-            }
-            continue;
         }
         if payload[0] == b'A' {
             let (np, nref, nk) = parse_arm(&payload);
