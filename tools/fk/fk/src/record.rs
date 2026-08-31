@@ -732,9 +732,16 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // the old placement ran, the loop that answers 'C' was gone and the caller
     // saw "arm_chain: no reply". The shim's 'C' handler also has to sit above
     // its 'G' handler, because 'G' RETURNS from the command loop.
+    // ARMING IS NON-FATAL. The shim dies somewhere in its 'C' handler on this
+    // build -- with FK_CHAIN_PING=1 it replies "CHAIN at 0" immediately and
+    // the run continues, so the handler IS reached and the fault is in what
+    // follows the reply-first branch. Until that is found, a failure to arm
+    // must not take the regeneration with it: fall through to the ordinary
+    // fixed-address gather, which is what happens for every other map.
     if let Some((root, ref offs, tail)) = live_chain {
-        srv.arm_chain(root, (win_back() - tail) as u64, offs)
-            .map_err(|e| format!("arming the sampler chain: {}", e))?;
+        if let Err(e) = srv.arm_chain(root, (win_back() - tail) as u64, offs) {
+            println!("  the sampler chain did not arm ({}) -- continuing without it", e);
+        }
         if verbose {
             println!("sampler chain armed: root {:#x}, {} hop(s)", root, offs.len());
         }

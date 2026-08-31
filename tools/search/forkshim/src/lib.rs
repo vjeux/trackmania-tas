@@ -224,15 +224,35 @@ static SEG_N: AtomicUsize = AtomicUsize::new(0);
 /// Is this address readable? A cheap `write`-to-devnull probe: the kernel
 /// returns EFAULT rather than delivering a signal, so this cannot crash.
 unsafe fn addr_readable(a: usize) -> bool {
+    // A RAW SYSCALL, not `write` and not `real_write()`.
+    //
+    // This shim EXPORTS `write`, and it runs on the sampling path -- going
+    // through the C library here risks re-entering the interceptor, and
+    // `real_write()`'s dlsym is not something to be doing at every
+    // dereference of every sampled instant. `SYS_write` on a probe fd returns
+    // EFAULT for an unmapped address instead of delivering a signal, which is
+    // the whole point: a bad pointer must come back as `false`, never as a
+    // SIGSEGV that kills the server and reads as "arm_chain: no reply".
     let mut fd = DEVNULL_FD.load(Ordering::Relaxed);
     if fd < 0 {
         fd = open(b"/dev/null\0".as_ptr() as *const c_char, 1, 0);
         if fd < 0 {
-            return true;
+            return false;
         }
         DEVNULL_FD.store(fd, Ordering::Relaxed);
     }
-    real_write()(fd, a as *const c_void, 8) == 8
+    let r: isize;
+    std::arch::asm!(
+        "syscall",
+        inlateout("rax") 1isize => r,   // SYS_write
+        in("rdi") fd as usize,
+        in("rsi") a,
+        in("rdx") 8usize,
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
+    );
+    r == 8
 }
 static DEVNULL_FD: AtomicI32 = AtomicI32::new(-1);
 static CHAIN_N: AtomicUsize = AtomicUsize::new(0);
@@ -1928,6 +1948,13 @@ unsafe fn forkserver() {
             continue;
         }
         if payload[0] == b'C' {
+            // REPLY FIRST. Separates "the handler never runs" from "the
+            // handler runs and dies before it answers" -- both look like
+            // "arm_chain: no reply" to the caller.
+            if std::env::var("FK_CHAIN_PING").is_ok() {
+                send_frame(res, b"CHAIN at 0");
+                continue;
+            }
             // ARM THE SAMPLER'S POINTER CHAIN.
             //
             //   u64 root | u64 back | u32 n | n x u64 off
@@ -1962,10 +1989,17 @@ unsafe fn forkserver() {
                 // server, and the caller sees "arm_chain: no reply" -- which is
                 // how the first version of this failed. A chain that walks into
                 // nothing must report that, not kill the process.
+                // ONE HOP AT A TIME, reporting which one broke, so a bad
+                // chain names its own bad hop instead of dying anonymously.
                 let mut a = root;
                 let mut ok = true;
+                let mut broke_at = 99usize;
                 for i in 0..n {
-                    if a == 0 || a < 0x1000 || !addr_readable(a) { ok = false; break; }
+                    if a == 0 || a < 0x1000 || !addr_readable(a) {
+                        ok = false;
+                        broke_at = i;
+                        break;
+                    }
                     a = *(a as *const usize);
                     if a == 0 || a < 0x1000 { ok = false; break; }
                     a = a.wrapping_add(CHAIN_OFF[i].load(Ordering::Relaxed));
@@ -1982,7 +2016,10 @@ unsafe fn forkserver() {
                     while dn > 0 { dn -= 1; msg[w] = d[dn]; w += 1; }
                     &msg[..w]
                 } else {
-                    b"CHAIN broke"
+                    let mut w = 0usize;
+                    for (i, b) in b"CHAIN broke at hop ".iter().enumerate() { msg[i] = *b; w = i + 1; }
+                    msg[w] = b'0' + (broke_at.min(9) as u8);
+                    &msg[..w + 1]
                 };
                 send_frame(res, m);
             } else {
