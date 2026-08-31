@@ -982,19 +982,56 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // of them dwarfs the blind window they were meant to avoid; none
             // held the wheels either. Same shape of mistake as 5c92747, made
             // once more on a different axis.
+            // ONE SECOND CHANCE FOR THE POINTER, from the CACHE.
+            //
+            // The accepted chain can be a bare position copy -- it satisfies
+            // the trajectory gate with 0 of 4 wheels -- and the carrier needs
+            // the wheels. 126859 is that case, and its wheeled vis state is
+            // reachable: `fk ptr find` (no --at, so 4-of-4 wheels required)
+            // reports mod+0x1cba348:0:+0x2c0:+0x240:+0x848, and passing it as
+            // --car-chain takes the map from 29.07 s to 15.07 s.
+            //
+            // So on failure, try the chain the CACHE holds for this (binary,
+            // map) if it differs. That is ONE extra attempt, not a sweep --
+            // sweeping all ~60 banked chains was measured at 212 s (af305d3)
+            // and sweeping anchors at 100 s (5c92747); both looped an engine
+            // run. One retry is bounded and pays for itself here.
             let a = field_anchors[0].clone();
-            match crate::cmd::carrier::gather_fields(
-                &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0, Some(&resolve), verbose,
-            ) {
-                Ok(v) => {
-                    println!("--carrier: the fields came from the pointer {}", chain);
-                    carrier_vals = v;
+            let mut tried: Vec<String> = vec![chain.clone()];
+            for cached in crate::ptr::chain_cache_get(&c.server, &c.map) {
+                if cached != chain && !tried.contains(&cached) {
+                    tried.push(cached);
                 }
-                Err(e) => println!(
-                    "--carrier: the pointer {} did not produce the car ({}); falling back to the \
-                     blind window",
-                    chain, e
-                ),
+            }
+            for ch in &tried {
+                let resolve_ch = |pid: i32, srv_base: u64| -> Result<(u64, Vec<(i64, u32)>), String> {
+                    let m = crate::ptr::module_base(pid).map(|(m, _)| m).ok_or("no module base")?;
+                    let _ = srv_base;
+                    let states = crate::ptr::resolve_pool(pid, m, ch)?;
+                    let anchor = *states.first().ok_or("the chain named no vehicle state")?;
+                    let ex = states[1..]
+                        .iter()
+                        .map(|s| (*s as i64 - anchor as i64, 0x368u32))
+                        .collect();
+                    Ok((anchor, ex))
+                };
+                match crate::cmd::carrier::gather_fields(
+                    &c, &a, &carrier, &truth, &truth_q, gp, gph, &fdump, 0, 0,
+                    Some(&resolve_ch), verbose,
+                ) {
+                    Ok(v) => {
+                        println!("--carrier: the fields came from the pointer {}", ch);
+                        carrier_vals = v;
+                        break;
+                    }
+                    Err(e) => println!(
+                        "--carrier: the pointer {} did not produce the car ({})",
+                        ch, e
+                    ),
+                }
+            }
+            if carrier_vals.is_empty() {
+                println!("--carrier: falling back to the blind window");
             }
         }
         for a in &field_anchors {

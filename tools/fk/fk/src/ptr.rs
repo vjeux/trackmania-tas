@@ -194,6 +194,16 @@ pub const CAR_CHAINS: &[&str] = &[
     // sets are real cars at the tick they were found; the tick-400 ones score
     // "path length 0.0 m" over the whole run, i.e. they are frozen after the
     // handover. These are the later object.
+    // 126859's WHEELED vis state, terminal +0x848.
+    //
+    // Plain `fk ptr find` (no --at) requires 4 of 4 wheel slots live, and on
+    // this map it reports "the car is at 0x… 0.000000 m from the recording's
+    // own path over 480 instants, 4 of 4 wheel slots live" for this chain.
+    // Every other route to 126859 lands on the BARE position copy at +0xdd4 --
+    // the search does too -- which satisfies the trajectory gate and leaves the
+    // carrier with no wheels (af305d3, 3b7375b). A third terminal offset, and
+    // the one the carrier actually needs here.
+    "mod+0x1cba348:0:+0x2c0:+0x240:+0x848",
     // THESE CHAINS ARE NOT PER-MAP. Measured across the staged corpus: 126859
     // resolves `mod+0x1e45148:0:+0x1c8:+0xdd4` -- the chain derived on 287431 --
     // and scores "path 2698.7 m over the run" with it. So the list works as a
