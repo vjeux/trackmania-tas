@@ -116,6 +116,18 @@ use std::io::{Read, Seek, SeekFrom};
 /// with `fk ptr find` after a server upgrade; `measure_anchors` falls back to
 /// the search when it stops resolving, so a stale chain costs time and cannot
 /// produce a wrong file.
+/// The chain to the ANCHOR copy -- the one `measure_anchors` needs.
+///
+/// `fk ptr check` on this binary: "state 0x…c18: 0.000000 m median from the
+/// recording's own path (p90 0.000000, worst 0.000000) over 533 paired
+/// instants, 0 of 4 wheel slots live". Zero wheels is correct: this is the
+/// bare position copy, and it carries the 3x3 rotation at -36 and WorldVel at
+/// +12 that the anchor wants. DEFAULT_CHAIN below names the OTHER copy, the
+/// vis state with the wheels, which is what `--carrier` gathers from.
+///
+/// Re-derive after a server upgrade with `fk ptr find --bare`.
+pub const ANCHOR_CHAIN: &str = "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8";
+
 pub const DEFAULT_CHAIN: &str = "mod+0x1d56e48:0:+0xd8:+0x4e8";
 
 /// The pre-2026-08-30 chain, kept for reference: it resolves on this binary

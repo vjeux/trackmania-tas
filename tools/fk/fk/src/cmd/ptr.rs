@@ -292,6 +292,15 @@ fn find(a: &[String]) -> Result<(), String> {
     // distinction was found rather than assumed.
     let engine_truth = flag(a, "--truth").as_deref() == Some("engine");
     let mut bar = 1e-5;
+    // The 10-micron bar is for the copy the RECORDING was written from -- that
+    // one matches its own file to the bit. The anchor copy is a different copy
+    // of the same car, and CARRIER.md measures the gap between copies at about
+    // half a millimetre, so 10 microns rejects it for being what it is: 203072
+    // reports 0.000061 m, six times the bar and a hundredth of the real gap.
+    // Under --bare, use the same millimetre bar `gather_fields` uses.
+    if a.iter().any(|x| x == "--bare") {
+        bar = 1e-3;
+    }
     if engine_truth {
         let cdump = format!("{}.clean", dump);
         let g = GatherOpts {
@@ -392,12 +401,38 @@ fn find(a: &[String]) -> Result<(), String> {
         live,
         scored.len()
     );
-    if live < 4 {
+    // THE WHEELS ARE REQUIRED FOR THE FIELD GATHER, NOT FOR THE ANCHOR.
+    //
+    // There are two copies of the car in engine memory and they serve
+    // different callers. The vis state carries the wheels and a 3x3 rotation,
+    // and `--carrier` needs it. `measure_anchors` needs the OTHER one: a bare
+    // position triple with a quaternion 16 B before it and a velocity 12 B
+    // after. They are megabytes apart -- measured on 203072, the vis state at
+    // ~base-3453700 and the anchor copies at base-307840 and base-306660.
+    //
+    // This command was written for the first caller and rejects the second
+    // outright, which is why `locate_candidates` still has to search hundreds
+    // of megabytes for something the engine has a pointer to. `--bare` asks
+    // for a chain to the anchor copy instead: same identification against the
+    // recording's own path, same distance bar, only the wheel requirement
+    // dropped -- because on that copy the wheels are genuinely absent rather
+    // than a sign of the wrong object.
+    let want_bare = a.iter().any(|x| x == "--bare");
+    if live < 4 && !want_bare {
         return Err(format!(
             "the best copy has {} of 4 wheel slots live -- this is a bare position copy and a \
-             pointer to it would be a pointer to the wrong thing",
+             pointer to it would be a pointer to the wrong thing. Pass --bare if you are \
+             looking for the ANCHOR copy (quaternion + velocity, no wheels), which is what \
+             `measure_anchors` needs.",
             live
         ));
+    }
+    if live < 4 {
+        println!(
+            "--bare: accepting a copy with {} of 4 wheel slots -- this is the anchor copy, \
+             not the vis state",
+            live
+        );
     }
     if !(err < bar) {
         return Err(format!(

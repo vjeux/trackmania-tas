@@ -583,6 +583,20 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     // the honest state is: the pointer saves the FIELD gather a search, and
     // the anchor locate still costs ~7.5 s per anchor tick, mitigated by the
     // calibration cache rather than removed.
+    // OPT-IN (FK_CAR_CHAIN=<spec>) until the self-check accepts a 3x3.
+    //
+    // Everything up to that check now works: ANCHOR_CHAIN resolves to the
+    // anchor copy at 0.000000 m median over 533 instants, and the layout comes
+    // from VEHICLEVISSTATE.md instead of a search. The run then dies in the
+    // anchor self-check with
+    //
+    //     |q|-1 p99.5 is 1.00e0 -- the sampled window is not the vehicle state
+    //
+    // which is that check reading the orientation as a 4-float QUATERNION
+    // whatever `quat_kind` says. On this copy it is a 3x3 rotation, so |q|
+    // comes out 0 and every instant fails. Teach the self-check to branch on
+    // quat_kind (or widen the gather window to include all nine floats at -36)
+    // and the search is gone from regen entirely.
     let chain = std::env::var("FK_CAR_CHAIN").unwrap_or_default();
     if !chain.is_empty() {
         match crate::ptr::module_base(srv.pid()) {
@@ -632,7 +646,51 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     let _ = &cands;
     let base = srv.base;
     let mut out: Vec<Anchors> = Vec::new();
+
+    // WHEN THE POINTER NAMED IT, THE LAYOUT IS A FACT, NOT A SEARCH.
+    //
+    // `discover_layout` hunts a window around the position for a unit
+    // quaternion and a matching velocity. That is the right thing to do for an
+    // address a blind sweep guessed at, and the wrong thing for one the engine
+    // handed us: `CSceneVehicleVisState` is disassembled member by member in
+    // VEHICLEVISSTATE.md, and the three fields this needs are at fixed offsets
+    // from `Loc.translation`:
+    //
+    //     0x2c  -36   Loc rotation      3 rows of 3 f32  (quat_kind 2)
+    //     0x50    0   Loc.translation   THE ANCHOR
+    //     0x5c  +12   WorldVel
+    //
+    // The independently-measured calibrations agree: one of the entries banked
+    // by the search reads exactly `-36  2  12`. So when the chain resolves,
+    // take the offsets from the reading of the binary rather than paying ~7.5 s
+    // to rediscover them -- and rather than grading a candidate on "does it
+    // move like a car and land within N microns of the recording", which is a
+    // heuristic standing in for a structure we already have.
+    if !cands_searched && !positions.is_empty() {
+        for pos in &positions {
+            out.push(Anchors {
+                bias: ck.bias,
+                pos_delta: *pos as i64 - base as i64,
+                clock_delta: ck.addr as i64 - base as i64,
+                speed: 0.0,
+                quat_off: -36,
+                quat_kind: 2,
+                vel_off: 12,
+            });
+        }
+        if verbose {
+            println!(
+                "  {} state(s) from the pointer, layout from VEHICLEVISSTATE.md \
+                 (rot -36 as 3x3, vel +12) -- no discover_layout",
+                out.len()
+            );
+        }
+    }
+
     for pos in &positions {
+        if !out.is_empty() {
+            break;
+        }
         let Some((qoff, qkind, voff, speed)) = discover_layout(&mut srv, probe, &lrecs, ck.addr, *pos)
         else {
             continue;

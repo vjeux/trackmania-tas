@@ -103,6 +103,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ticks.dedup();
     }
     let mut anchors: Vec<crate::record::Anchors> = Vec::new();
+    // Did the anchors come from the on-disk cache? If so a total failure below
+    // is a cache miss, not a dead end -- see the fallback after the clean run.
+    let mut used_calibration = false;
     // The BIAS first, on its own: the clock scan is far more robust than the
     // position locate (its signature is "+10 every tick, no exceptions"), and
     // the bias is what labels every sample. Getting it from a mid-tape
@@ -167,6 +170,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // Cheap enough that trying all of them still beats one full search.
         let cals = calib_get_all(&c);
         if !cals.is_empty() {
+            used_calibration = true;
             println!("trying {} saved calibration(s) before searching", cals.len());
         }
         'cal: for cal in &cals {
@@ -347,6 +351,54 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 o = Some(v);
             }
             Err(e) => println!("in-process locate: {}", e),
+        }
+    }
+    // A STALE CALIBRATION MUST FALL BACK, NOT ABORT.
+    //
+    // The car's offset from the module base is not perfectly stable -- one
+    // binary and map gave -4012784, -4012672 and -4890252 across runs -- so a
+    // cached offset is sometimes for an allocation this process did not make.
+    // When that happens every calibrated anchor fails here, and aborting turns
+    // a cache miss into a failed regen: measured 3 of 5 single-try runs
+    // succeeding, the other 2 dying on exactly this line with the search never
+    // attempted.
+    //
+    // So when the anchors came from the cache and none of them worked, measure
+    // properly and try once more. The cost is the search we were trying to
+    // skip; the alternative is a run that fails for no reason but a stale
+    // hint.
+    if o.is_none() && used_calibration {
+        println!("the saved calibration did not work in this process -- measuring instead");
+        let mut fresh: Vec<crate::record::Anchors> = Vec::new();
+        for t in &ticks {
+            if let Ok(mut b) = measure_anchors(&c, &f, *t, verbose) {
+                for a in b.iter_mut() {
+                    a.bias = bias;
+                }
+                fresh.append(&mut b);
+                if !fresh.is_empty() {
+                    break;
+                }
+            }
+        }
+        for a in &fresh {
+            let g = crate::record::GatherOpts {
+                segs_rel: &segs_rel,
+                bias_override: Some(bias),
+                anchors: Some(a),
+                period,
+                phase_ms: phase,
+                dump: &dump,
+                verbose,
+                ..crate::record::GatherOpts::production(&dump)
+            };
+            if let Ok(v) = run_clean_anch(&c, &g) {
+                if crate::record::car_path_len(&dump, v.reclen, v.pos_off).is_ok() {
+                    used_anchor = Some(*a);
+                    o = Some(v);
+                    break;
+                }
+            }
         }
     }
     let o = match o {
