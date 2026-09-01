@@ -77,8 +77,28 @@ pub fn lzo_decompress(src: &[u8], out_len: usize) -> Vec<u8> {
             std::ptr::null_mut(),
         )
     };
-    assert_eq!(r, 0, "lzo1x_decompress_safe -> {}", r);
-    dst.truncate(dl);
+    // A DECOMPRESSION FAILURE IS DATA, NOT A CRASH.
+    //
+    // This asserted, so any corrupt or truncated ghost took the whole process
+    // down with `lzo1x_decompress_safe -> -4` (exit 101) instead of being
+    // refused by the gates that exist to judge it. `_safe` is doing its job --
+    // it detects the bad input and returns non-zero; the caller was throwing
+    // that away.
+    //
+    // On failure return what was decoded (`dl` bytes, possibly zero). Every
+    // caller already validates what it gets -- the record grammar, the chunk
+    // table and the publish gates all check structure -- so a short or empty
+    // body flows into an honest refusal instead of a panic.
+    if r != 0 {
+        eprintln!(
+            "warning: lzo1x_decompress_safe -> {} ({} compressed bytes, {} declared); \
+             the file is damaged and what follows is judged on what could be read",
+            r,
+            src.len(),
+            out_len
+        );
+    }
+    dst.truncate(dl.min(out_len));
     dst
 }
 
@@ -91,18 +111,37 @@ impl<'a> Reader<'a> {
     pub fn new(b: &'a [u8]) -> Self {
         Reader { b, o: 0 }
     }
+    /// PAST THE END READS ZERO, and every read is bounds-checked.
+    ///
+    /// These primitives indexed the slice directly, so a damaged header --
+    /// where the very first fields are the lengths everything else is sliced
+    /// by -- panicked before any gate could look at the file. Feeding `verify`
+    /// the four bytes `GBX` + 0xFF asked for a 4,294,967,312-byte slice of a
+    /// 67-byte file.
+    ///
+    /// Returning zero for a short read keeps the decode going to the point
+    /// where the structural checks can refuse the file *as data*. Callers that
+    /// care whether the data ran out ask `ended_early()`.
     pub fn u8(&mut self) -> u8 {
-        let v = self.b[self.o];
+        let v = self.b.get(self.o).copied().unwrap_or(0);
         self.o += 1;
         v
     }
     pub fn u16(&mut self) -> u16 {
-        let v = u16::from_le_bytes(self.b[self.o..self.o + 2].try_into().unwrap());
+        let v = self
+            .b
+            .get(self.o..self.o + 2)
+            .map(|s| u16::from_le_bytes(s.try_into().unwrap()))
+            .unwrap_or(0);
         self.o += 2;
         v
     }
     pub fn u32(&mut self) -> u32 {
-        let v = u32::from_le_bytes(self.b[self.o..self.o + 4].try_into().unwrap());
+        let v = self
+            .b
+            .get(self.o..self.o + 4)
+            .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+            .unwrap_or(0);
         self.o += 4;
         v
     }
@@ -110,11 +149,23 @@ impl<'a> Reader<'a> {
         self.u32() as i32
     }
     pub fn skip(&mut self, n: usize) {
-        self.o += n;
+        self.o = self.o.saturating_add(n);
     }
     pub fn string(&mut self) {
         let n = self.u32() as usize;
         self.skip(n);
+    }
+    /// True once a read has gone past the end of the data.
+    pub fn ended_early(&self) -> bool {
+        self.o > self.b.len()
+    }
+    /// `n` bytes from the cursor, clamped to what is actually there. Use this
+    /// instead of `data[r.o .. r.o + n]` with an `n` that came from the file.
+    pub fn take(&mut self, n: usize) -> &'a [u8] {
+        let start = self.o.min(self.b.len());
+        let end = self.o.saturating_add(n).min(self.b.len());
+        self.o = self.o.saturating_add(n);
+        &self.b[start..end]
     }
 }
 
@@ -145,19 +196,35 @@ impl Gbx {
         let mut user_data = Vec::new();
         if version >= 6 {
             let n = r.u32() as usize;
-            user_data = data[r.o..r.o + n].to_vec();
-            r.skip(n);
+            // `n` is FROM THE FILE: take() clamps, a raw slice panics.
+            user_data = r.take(n).to_vec();
         }
         let num_nodes = r.u32();
         let ref_start = r.o;
         parse_ref_table(&mut r, version);
-        let ref_table = data[ref_start..r.o].to_vec();
+        let ref_table = data
+            .get(ref_start..r.o.min(data.len()))
+            .unwrap_or(&[])
+            .to_vec();
         let body = if body_comp == b'C' {
             let uncomp = r.u32() as usize;
             let csize = r.u32() as usize;
-            lzo_decompress(&data[r.o..r.o + csize], uncomp)
+            // CLAMP TO WHAT IS ACTUALLY THERE. `csize` is read FROM THE FILE,
+            // so a truncated or corrupt ghost names a compressed block longer
+            // than the bytes that follow and `&data[r.o..r.o + csize]` panics
+            // with "range end index N out of range". That turned every
+            // damaged file into a Rust panic (exit 101) instead of an honest
+            // refusal -- found by the exit-code test feeding `verify` a
+            // three-quarter-length fixture.
+            //
+            // Clamping keeps the decode attempt honest: lzo either produces
+            // the declared `uncomp` bytes from what we have or it does not,
+            // and the caller's gates judge the result. Nothing here decides
+            // the file is good.
+            let end = (r.o + csize).min(data.len());
+            lzo_decompress(&data[r.o..end], uncomp)
         } else {
-            data[r.o..].to_vec()
+            data.get(r.o..).unwrap_or(&[]).to_vec()
         };
         Gbx {
             version,

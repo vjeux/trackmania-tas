@@ -664,7 +664,8 @@ pub fn cmd(a: &[String]) {
         None => {
             eprintln!("--- last regenerator log ---");
             eprintln!("{}", lastlog);
-            die(format!(
+            // A verdict, not a usage error: exit 1 (see cli::refuse).
+            crate::cli::refuse(format!(
                 "no regeneration passed the gate in {} attempts. NOTHING was written to {}: a file \
                  that fails this gate is a frozen memory slot, not a car.",
                 tries, out
@@ -918,7 +919,10 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
             // 0x00 on all 416 samples" -- was reachable only by grepping the
             // log for words you had to already know. A gate that can delete
             // the output has to say which gate it was.
-            die(format!(
+            // EXIT 1, NOT 2 (see cli::refuse): the pipeline ran correctly and
+            // the answer is "not publishable". A caller must be able to tell
+            // that from "you called me wrong", which is exit 2.
+            crate::cli::refuse(format!(
                 "{} check(s) failed and {out} has been DELETED. Pass --force to keep the file \
                  anyway; it is not publishable.\n{}",
                 refused.len(),

@@ -886,9 +886,50 @@ pub fn cmd(a: &[String]) {
     let r = run(path, a);
     r.print();
     let n_fail = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
+    let n_pass = r.checks.iter().filter(|c| c.verdict == Verdict::Pass).count();
     if n_fail > 0 {
         println!("\nREFUSED: {} check(s) failed", n_fail);
-        std::process::exit(2);
+        // EXIT 1: the verification ran and the answer is NO. Exit 2 is
+        // reserved for "you called me wrong" -- see cli::refuse. This is the
+        // single most important place for that distinction, because `verify`
+        // is what a publish script branches on.
+        std::process::exit(1);
+    }
+    // NOTHING CHECKED IS NOT A PASS.
+    //
+    // Every gate here reports NA when it has nothing to work with -- no
+    // telemetry record, no tape, no server. A file that trips ALL of them
+    // therefore reached the end with zero failures and printed OK: 67 bytes of
+    // `GBX` + 0xFF verified clean. That is a false pass, and a false pass from
+    // a verifier is worse than the panic it replaced, because a panic at least
+    // stops the pipeline.
+    //
+    // Require at least one gate to have actually looked at something.
+    // SOME GATES ARE ABSENCE CHECKS AND PASS VACUOUSLY.
+    //
+    // V3 ("no account id in the body"), V4 ("no embedded map") and V10 (the
+    // raw-bytes backstop) are all of the form "this file does not contain
+    // something bad". A file with no body contains nothing bad, so all three
+    // pass -- and 67 bytes of `GBX` + 0xFF verified OK with every gate that
+    // looks at an actual RUN reporting NA.
+    //
+    // A pass has to mean a gate looked at a run and liked it. These are the
+    // gates that do: the tape, the declared time, the splits, the telemetry,
+    // tape/record agreement, and the oracle.
+    const SUBSTANTIVE: &[&str] = &["V1", "V2", "V5", "V6", "V7", "V12"];
+    let n_substantive = r
+        .checks
+        .iter()
+        .filter(|c| c.verdict == Verdict::Pass && SUBSTANTIVE.contains(&c.id))
+        .count();
+    if n_substantive == 0 {
+        println!(
+            "\nREFUSED: nothing could be checked -- {} gate(s) ran and none of them \
+             found a run to verify -- only absence checks passed, and those pass on \
+             any file. This is not a ghost.",
+            r.checks.len()
+        );
+        std::process::exit(1);
     }
     println!("\nOK");
 }
