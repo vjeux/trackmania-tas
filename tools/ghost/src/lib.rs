@@ -34,6 +34,7 @@ pub mod roundtrip;
 pub mod script;
 pub mod selftest;
 pub mod splice;
+pub mod synth;
 pub mod trim;
 pub mod verify;
 

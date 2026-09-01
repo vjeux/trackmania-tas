@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, trim, verify};
+use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -259,6 +259,7 @@ fn main() {
         "map" => cmd_map(rest),
         "trim" => trim::cmd(rest),
         "splice" => splice::cmd(rest),
+        "synth" => synth::cmd(rest),
         "declare" => declare::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
