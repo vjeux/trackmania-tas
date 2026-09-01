@@ -1366,6 +1366,35 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let n_final = done + missing.len();
     let cov = if n_final == 0 { 0.0 } else { 100.0 * done as f64 / n_final as f64 };
     println!("COVERAGE: {} of {} samples in the written record are ours ({:.2} %)", done, n_final, cov);
+    // COVERAGE IS NOT CORRECTNESS -- check the first sample against the source.
+    //
+    // 126859 shipped a file whose every position was one field late (source
+    // (1318,46,391) written as (46,391,0)) while this line read
+    // "469 of 469 samples ... are ours (100.00 %)". Coverage counts samples we
+    // WROTE, not bytes that are RIGHT, and the acceptance test measures a
+    // driven path, which a shifted path still is. Nothing between the engine
+    // and the file compared an absolute position against the source.
+    //
+    // The comparison costs one decode of each file. The first in-race sample
+    // is enough: a field-shift is systematic, so if sample 0 agrees the
+    // transcription is aligned. A map whose template is a rebuilt grid has no
+    // position to compare, and says so rather than failing.
+    if let (Ok(src), Ok(got)) = (
+        gbx::record::decode_ghost(&c.template),
+        gbx::record::decode_ghost(&outp),
+    ) {
+        if let (Some(a), Some(b)) = (src.samples.first(), got.samples.first()) {
+            let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+            if d > 1.0 {
+                println!(
+                    "WARNING: the written first sample is {:.1} m from the template's \
+                     ({:.0},{:.0},{:.0}) vs ({:.0},{:.0},{:.0}). A whole-field shift looks \
+                     exactly like this -- compare more samples before publishing.",
+                    d, b.x, b.y, b.z, a.x, a.y, a.z
+                );
+            }
+        }
+    }
     // THE READ-BACK. Does the FILE hold what the gather read?
     //
     // Every carrier report above is made from `carrier_vals` -- what came out
