@@ -178,12 +178,72 @@ IDENTITY  (operation 6)
         no replay header and says so.
 
 VERIFY
-  ghost verify FILE [--map MAP] [--expect-ms MS] [--server DIR]
+  ghost verify FILE [--map MAP] [--expect-ms MS] [--server DIR] [-o json]
         The acceptance gate: codec identity, tape/telemetry agreement, declared
         time census, container identity, and the plain oracle re-simulating THE
-        WRITTEN FILE.
+        WRITTEN FILE. `-o json` emits the same report for a caller; the verdict
+        and the exit code are identical either way.
   ghost selftest [--server DIR] [--data DIR]
         The whole test suite, from one command.
+
+PRODUCE
+  ghost film IN OUT --map MAP [--mixed-run] [--server DIR]
+        The full pipeline: regenerate, resegment and finish a ghost the game
+        will load. Emits the two-car-entity shape a freefall spawn needs.
+  ghost synth IN OUT [--zero-hashes]
+        Rebuild a container from PARSED VALUES rather than copying bytes:
+        every field re-emitted from what it means. Byte-identical on the whole
+        reference corpus (45 of 45).
+
+READ
+  ghost census FILE          every copy of the declared time, body and header
+  ghost phase FILE           the run's phase structure
+  ghost dump FILE            the raw body, for eyes
+  ghost engine FILE --map M  the engine's own trajectory for this file
+
+DEBUG (`ghost debug --help`)
+        Forensic probes. They answer one question each, carry no compatibility
+        promise, and are listed separately so they cannot be mistaken for the
+        tool's surface.
+"#;
+
+/// The probes, and what each one was built to answer.
+///
+/// These are kept because the questions recur, and documented because an
+/// undocumented probe is indistinguishable from dead code -- six of these were
+/// invisible in `ghost --help` until the release pass went looking.
+const DEBUG_HELP: &str = r#"ghost debug -- forensic probes
+
+  No compatibility promise. Each of these was built to answer one question,
+  and each is kept because that question recurs.
+
+  ghost debug split-car IN OUT --at MS
+        Split the car entity in two at a tick boundary. THE REPAIR for a
+        freefall recording the client refuses: 287431's run in one car entity
+        crashes the game on import, and the same samples in two load fine.
+        `ghost film` already emits the right shape; this fixes a raw recording.
+
+  ghost debug swap-samples IN OUT --donor D
+        Keep IN's container and entity list, take D's car samples. Separates
+        "the bytes are wrong" from "the wrapper is wrong" in one run -- it is
+        what proved 287431's crash lives in the container, not the telemetry.
+
+  ghost debug car-first IN OUT
+        Move the car entity to index 0. Tests whether entity ORDER matters
+        (it does not -- measured, and the theory died).
+
+  ghost debug set-u01 IN OUT --value N
+        Rewrite the car entity's u01 word.
+
+  ghost debug strip-events IN OUT --type N
+        Drop every deltas2 record of one type from the middle entity.
+
+  ghost debug codeccheck TAPE
+        Does a verbatim re-encode of every tick reproduce the file's own
+        bitstream?
+
+  ghost debug trajdiff A B
+        Sample-by-sample trajectory difference between two files.
 "#;
 
 fn main() {
@@ -206,8 +266,52 @@ fn main() {
         println!("{}", HELP);
         std::process::exit(if a.is_empty() { 2 } else { 0 });
     }
-    let sub = a[0].as_str();
-    let rest = &a[1..];
+
+    // TWO TIERS: the product verbs, and the forensic probes under `ghost debug`.
+    //
+    // `ghost` grew 30 top-level verbs, and 13 of them appear NOWHERE in the
+    // help -- including `film` and `synth`, which are real capabilities, and
+    // six probes built to answer one question each during an investigation.
+    // A flat namespace where a third of the entries are undiscoverable is not
+    // a namespace, and a probe sitting beside `verify` reads like a promise.
+    //
+    // The probes keep working under their old names for one release and say
+    // where they moved. Nothing is removed here; what changes is what the help
+    // presents as the tool's surface.
+    const PROBES: &[&str] = &[
+        "codeccheck",
+        "swap-samples",
+        "car-first",
+        "split-car",
+        "set-u01",
+        "strip-events",
+        "trajdiff",
+    ];
+    let (sub, rest, via_debug) = if a[0] == "debug" {
+        if a.len() < 2 {
+            println!("{}", DEBUG_HELP);
+            std::process::exit(2);
+        }
+        if a[1] == "-h" || a[1] == "--help" {
+            println!("{}", DEBUG_HELP);
+            std::process::exit(0);
+        }
+        (a[1].as_str(), &a[2..], true)
+    } else {
+        (a[0].as_str(), &a[1..], false)
+    };
+    if !via_debug && PROBES.contains(&sub) {
+        eprintln!(
+            "ghost: `{sub}` is a forensic probe and has moved to `ghost debug {sub}`; \
+             the old spelling still works for this release. `ghost debug --help` lists them."
+        );
+    }
+    if via_debug && !PROBES.contains(&sub) {
+        die(format!(
+            "`{sub}` is not a debug probe -- run it as `ghost {sub}`. \
+             `ghost debug --help` lists the probes."
+        ));
+    }
     match sub {
         "inspect" => cmd_inspect(rest),
         "codeccheck" => {
