@@ -600,13 +600,54 @@ pub fn run(path: &str, a: &[String]) -> Report {
         None => r.add("V6", Verdict::Na, "tape/record agreement: this file has no telemetry to compare"),
         Some((kappa, rate, lag, n)) => {
             let thr: f64 = flag(a, "--agree-thr").and_then(|v| v.parse().ok()).unwrap_or(0.60);
-            if kappa >= thr {
+            // THE BAND WHERE THIS GATE CANNOT DISCRIMINATE, and why it is a
+            // WARN rather than a PASS.
+            //
+            // Measured, by swapping one corpus ghost's telemetry for another's
+            // on the SAME map -- a forgery this gate exists to catch:
+            //
+            //     correct telemetry   kappa 0.938, 1.000, 1.000, 1.000
+            //     FOREIGN telemetry   kappa 0.584, 0.692, 0.703, 0.806
+            //
+            // Three of those four forgeries clear a 0.60 threshold. The gate
+            // caught one in four and said PASS to the rest.
+            //
+            // Raising the threshold is NOT the fix, and the note at V9 says
+            // why: this project's own `SEARCHTAPE_..._DO_NOT_PUBLISH` files
+            // score 0.83, the same as a genuine human recording. The
+            // distributions OVERLAP, so no threshold separates them -- the
+            // metric saturates, and only V9 (the engine re-simulating the
+            // tape) settles it.
+            //
+            // What CAN be fixed is the report. A bare "PASS V6 kappa 0.644"
+            // reads as "the telemetry is verified", and it is not: it means
+            // "not obviously foreign". Above HIGH the agreement is as good as
+            // a clean recording; between `thr` and HIGH it is a band that
+            // contains both honest files and known-bad ones, and the reader
+            // is told to run the engine.
+            const HIGH: f64 = 0.90;
+            if kappa >= HIGH {
                 r.add(
                     "V6",
                     Verdict::Pass,
                     format!(
                         "tape/record agreement: kappa {:.3} ({:.1}% of {} samples exact, best lag {} ms)",
                         kappa, 100.0 * rate, n, lag
+                    ),
+                );
+            } else if kappa >= thr {
+                r.add(
+                    "V6",
+                    Verdict::Warn,
+                    format!(
+                        "tape/record agreement: kappa {:.3} ({:.1}% of {} samples exact, best lag {} ms) \
+                         -- ABOVE the {:.2} floor but BELOW {:.2}, which is the band this gate cannot \
+                         see into. Foreign telemetry swapped between two runs of one map scores \
+                         0.58-0.81 here, and this project's own poisoned search tapes score 0.83, the \
+                         same as a clean human recording. Passing this is not evidence the telemetry \
+                         belongs to the tape. Run `ghost verify --engine --map M` (V9), which \
+                         re-simulates the tape and compares trajectories.",
+                        kappa, 100.0 * rate, n, lag, thr, HIGH
                     ),
                 );
             } else {
