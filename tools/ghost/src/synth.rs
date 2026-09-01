@@ -229,14 +229,17 @@ fn emit(parts: &[Part], zero_hashes: bool) -> Vec<u8> {
 }
 
 pub fn cmd(a: &[String]) {
-    let out = a
+    // IN OUT, like every other writing command. This shipped as
+    // `synth OUT --from DONOR`, which inverts the convention: the output was
+    // the positional and the input arrived as a flag, so `ghost synth a b`
+    // would have silently meant something different here than everywhere else.
+    let inp = a
         .first()
-        .unwrap_or_else(|| die("ghost synth OUT --from DONOR [--zero-hashes]"));
-    let from = a
-        .iter()
-        .position(|x| x == "--from")
-        .and_then(|i| a.get(i + 1))
-        .unwrap_or_else(|| die("ghost synth OUT --from DONOR [--zero-hashes]"));
+        .unwrap_or_else(|| die("ghost synth IN OUT [--zero-hashes]"));
+    let out = a
+        .get(1)
+        .unwrap_or_else(|| die("ghost synth IN OUT [--zero-hashes]"));
+    let from = inp;
     let zero_hashes = a.iter().any(|x| x == "--zero-hashes");
 
     let raw = std::fs::read(from).unwrap_or_else(|e| die(format!("{}: {}", from, e)));

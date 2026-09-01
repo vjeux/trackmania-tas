@@ -294,16 +294,26 @@ fn main() {
         // 287431 crashes with one car entity and the car LAST. The split that
         // "fixed" 287431 also put a car earlier in the list, so order is the
         // confound and this isolates it.
-        // `ghost swap-samples IN DONOR OUT` -- keep IN's container and entity
+        // `ghost swap-samples IN OUT --donor D` -- keep IN's container and entity
         // structure, but fill its car entity with DONOR's car samples
         // (truncated/padded to IN's sample count). Decides whether 287431's
         // crash lives in the SAMPLE BYTES or in the container: 294446's samples
         // are known to load, so if 287431 wearing them still crashes, the
         // sample data is innocent.
         "swap-samples" => {
-            let inp = rest.first().unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
-            let donor = rest.get(1).unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
-            let outp = rest.get(2).unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
+            // IN OUT, with every other input a named flag -- the convention
+            // `trim`, `splice`, `declare`, `regen`, `split-car` and the rest
+            // all follow. This command shipped as `IN DONOR OUT`, three
+            // positionals with the donor in the middle, which is the sort of
+            // signature you have to look up every time.
+            let inp = rest
+                .first()
+                .unwrap_or_else(|| die("ghost swap-samples IN OUT --donor D.Ghost.Gbx"));
+            let outp = rest
+                .get(1)
+                .unwrap_or_else(|| die("ghost swap-samples IN OUT --donor D.Ghost.Gbx"));
+            let donor = flag(rest, "--donor")
+                .unwrap_or_else(|| die("ghost swap-samples IN OUT --donor D.Ghost.Gbx"));
             // Read the donor's car samples by running the same rewrite over it
             // and capturing them; `decode_ghost` only reports summaries.
             let mut draw: Vec<u8> = Vec::new();
