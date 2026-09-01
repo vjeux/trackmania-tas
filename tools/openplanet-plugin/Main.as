@@ -91,6 +91,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/rrefresh") return HttpResponse(200, ReplayRefresh());
     if (r == "/camstate") return HttpResponse(200, CameraState());
     if (r == "/clipend") return HttpResponse(200, ClipEnd(Text::ParseInt(QArg(qs,"ms"))));
+    if (r == "/clipcam") return HttpResponse(200, ClipCam(Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/camset") return HttpResponse(200, CameraSet(Text::ParseInt(QArg(qs,"ent")), Text::ParseInt(QArg(qs,"cam"))));
     if (r == "/mt2") return HttpResponse(200, OpenMediaTracker());
     if (r == "/reload") return HttpResponse(200, ArmReload());

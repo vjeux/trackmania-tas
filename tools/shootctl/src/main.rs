@@ -980,7 +980,10 @@ fn main() {
              \n  shootctl launch [timeout_s]\
              \n  shootctl setup --map <map> [--cam N] <ghost...>\n        --cam: 2 External (default), 1 Internal, 6 Ext2, 3 Helico\
              \n  shootctl shoot [timeout_s] --name <out>\
-             \n  shootctl run --map <map> --name <out> [--cam N] <ghost...>\
+             \n  shootctl run --map <map> --name <out> [--cam N] [--keep-game] <ghost...>
+        closes the game when the render finishes; --keep-game leaves it up
+  shootctl quit
+        close the game (best effort; not-running is success)\
              \n  shootctl probe --map <map> [--how edit|play|editmap2|editghosts] [--timeout S]\
              \n        load ONE map and print everything the game says while it does\
              \n        or does not: ctx, IsReady, LatestResult, CustomResult, dialogs.\
@@ -1119,10 +1122,21 @@ fn main() {
                 if rc != 0 { rc }
                 else {
                     let rc = setup(&map, &gs, cam);
-                    if rc != 0 { rc } else { shoot(3600, &name) }
+                    let rc = if rc != 0 { rc } else { shoot(3600, &name) };
+                    // CLOSE THE GAME. It is a GPU process and a finished render
+                    // has no further use for it; leaving it up spins the box's
+                    // fans for nothing until the next render happens to reuse
+                    // it. Unconditional -- a FAILED render is the case that
+                    // most needs this, because the failure modes here are the
+                    // game hanging or dying mid-import and leaving a wedged
+                    // process behind. --keep-game opts out for anyone chaining
+                    // renders by hand.
+                    if !args.iter().any(|a| a == "--keep-game") { quit_game(); }
+                    rc
                 }
             }
         }
+        "quit" => { quit_game(); 0 }
         "shoot" => {
             // shoot [timeout_s] [--name NAME]
             let mut to = 3600u64;
@@ -1618,6 +1632,24 @@ fn to_menu() -> Result<(), String> {
 /// never loads. The mitigation is INHERITED, and every shell we have has it ON
 /// while Explorer has it OFF. `explorer.exe <path>` makes the running Explorer
 /// create the process, so it inherits OFF. (Measured 2026-08-21.)
+/// Close the game.
+///
+/// The render box's Trackmania is a Windows process, so this is `taskkill`
+/// rather than a signal -- and taskkill rather than the plugin's own quit
+/// route, because the case that most needs cleanup is the one where the plugin
+/// has stopped answering. Best effort by design: no game running is the
+/// desired end state, so "not found" is success.
+fn quit_game() {
+    for image in ["Trackmania.exe", "TmForever.exe"] {
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/IM", image, "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    println!("  game closed");
+}
+
 fn launch(timeout_s: u64, force: bool) -> i32 {
     let t0 = Instant::now();
     let el = |t: &Instant| t.elapsed().as_secs_f64();

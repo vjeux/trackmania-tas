@@ -76,6 +76,75 @@ string CameraSet(int ent, int cam) {
 // The argument is MILLISECONDS -- an integer, because `Text::ParseInt` is what
 // this plugin's query parser has and a float spelling would be one more thing
 // to get wrong at the wire. Block times are seconds, so it converts here.
+// EXTEND the camera to cover the car.
+//
+// ClipEnd below shortens, and its comment says why extending is dangerous: a
+// camera block that outlives its target's entity block follows a car that is
+// not there and drifts off the map. That is true, and this does not do it.
+//
+// The opposite defect is what this fixes. `/mktrack` writes a camera block of
+// about 3 s regardless of the run's length, so on a 21.99 s lap the camera
+// stops tracking at 3 s and the game falls back to its own view -- the car
+// flies the remaining 19 s unwatched and the finish is never on screen. Three
+// separate clips were published tonight before the cause was found, because
+// the symptom (an empty final frame) looks exactly like a bad camera angle.
+//
+// The safe bound is the car's own data: extend camera blocks to the longest
+// ENTITY block, never past it. So the invariant is unchanged -- a camera never
+// outlives its target -- and the gap in the other direction is closed.
+//
+// MemberOffset is resolved against the CONCRETE class. The abstract base
+// CGameCtnMediaBlock has no reflected `End` and returns 65535 ("could not
+// resolve"), which is what defeated the first attempt at this.
+string ClipCam(int endMs) {
+    auto api = MTApi();
+    if (api is null) return "not MT";
+    auto clip = api.Clip;
+    if (clip is null) return "no clip";
+
+    // The cap comes from the entity blocks, not from the argument: the caller
+    // asks for a length, the CAR decides what is honest.
+    float carEnd = 0;
+    for (uint i = 0; i < clip.Tracks.Length; i++) {
+        for (uint b = 0; b < clip.Tracks[i].Blocks.Length; b++) {
+            auto blk = cast<CGameCtnMediaBlockEntity>(clip.Tracks[i].Blocks[b]);
+            if (blk is null) continue;
+            if (blk.End > carEnd) carEnd = blk.End;
+        }
+    }
+    if (carEnd <= 0) return "no entity block to bound the camera by";
+
+    float want = (endMs > 0) ? (float(endMs) / 1000.0f) : carEnd;
+    if (want > carEnd) want = carEnd;   // never outlive the car
+
+    uint16 offEnd = MemberOffset("CGameCtnMediaBlockCameraGame", "End");
+    if (offEnd == 65535) return "could not resolve CGameCtnMediaBlockCameraGame::End";
+
+    int n = 0;
+    float before = 0;
+    for (uint i = 0; i < clip.Tracks.Length; i++) {
+        for (uint b = 0; b < clip.Tracks[i].Blocks.Length; b++) {
+            auto cam = cast<CGameCtnMediaBlockCameraGame>(clip.Tracks[i].Blocks[b]);
+            if (cam is null) continue;
+            if (cam.End > before) before = cam.End;
+            if (cam.End < want) { Dev::SetOffset(cam, offEnd, want); n++; }
+        }
+    }
+
+    // Read back through the normal property: a write that is not read back is
+    // a claim, not a result.
+    float after = 0;
+    for (uint i = 0; i < clip.Tracks.Length; i++) {
+        for (uint b = 0; b < clip.Tracks[i].Blocks.Length; b++) {
+            auto cam = cast<CGameCtnMediaBlockCameraGame>(clip.Tracks[i].Blocks[b]);
+            if (cam is null) continue;
+            if (cam.End > after) after = cam.End;
+        }
+    }
+    return "{\"carEnd\":" + carEnd + ",\"want\":" + want + ",\"extended\":" + n
+         + ",\"camBefore\":" + before + ",\"camAfter\":" + after + "}";
+}
+
 string ClipEnd(int endMs) {
     auto api = MTApi();
     if (api is null) return "not MT";
