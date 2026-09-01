@@ -281,6 +281,53 @@ fn main() {
         // 287431 crashes with one car entity and the car LAST. The split that
         // "fixed" 287431 also put a car earlier in the list, so order is the
         // confound and this isolates it.
+        // `ghost swap-samples IN DONOR OUT` -- keep IN's container and entity
+        // structure, but fill its car entity with DONOR's car samples
+        // (truncated/padded to IN's sample count). Decides whether 287431's
+        // crash lives in the SAMPLE BYTES or in the container: 294446's samples
+        // are known to load, so if 287431 wearing them still crashes, the
+        // sample data is innocent.
+        "swap-samples" => {
+            let inp = rest.first().unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
+            let donor = rest.get(1).unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
+            let outp = rest.get(2).unwrap_or_else(|| die("ghost swap-samples IN DONOR OUT"));
+            // Read the donor's car samples by running the same rewrite over it
+            // and capturing them; `decode_ghost` only reports summaries.
+            let mut draw: Vec<u8> = Vec::new();
+            let tmp = format!("{}.donor-read", outp);
+            gbx::recwrite::rewrite_ghost(donor, &tmp, |rd| {
+                let e = rd
+                    .ents
+                    .iter()
+                    .find(|e| e.sample_size == 116)
+                    .ok_or("donor has no car entity")?;
+                draw = e.raw.clone();
+                Ok(())
+            })
+            .unwrap_or_else(|e| die(format!("swap-samples: reading donor: {}", e)));
+            let _ = std::fs::remove_file(&tmp);
+            let mut note = String::new();
+            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                let e = rd
+                    .ents
+                    .iter_mut()
+                    .find(|e| e.sample_size == 116)
+                    .ok_or("no car entity")?;
+                let n = e.times.len();
+                let ss = e.sample_size;
+                let mut raw = Vec::with_capacity(n * ss);
+                for i in 0..n {
+                    let src = (i % (draw.len() / ss)) * ss;
+                    raw.extend_from_slice(&draw[src..src + ss]);
+                }
+                note = format!("{} samples replaced from {}", n, donor);
+                e.raw = raw;
+                Ok(())
+            }) {
+                Ok(_) => println!("{} -> {}", note, outp),
+                Err(e) => die(format!("swap-samples: {}", e)),
+            }
+        }
         "car-first" => {
             let inp = rest.first().unwrap_or_else(|| die("ghost car-first IN OUT"));
             let outp = rest.get(1).unwrap_or_else(|| die("ghost car-first IN OUT"));
