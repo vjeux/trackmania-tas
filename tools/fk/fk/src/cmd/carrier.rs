@@ -158,7 +158,7 @@ fn anchors_for(c: &Ctx, verbose: bool) -> Result<Vec<record::Anchors>, String> {
             anchors.append(&mut b);
         }
     }
-    anchors.dedup_by_key(|a| a.pos_delta);
+    anchors.dedup_by_key(|a| (a.chain.clone(), a.member));
     if anchors.is_empty() {
         return Err("the locate offered no anchor at any checkpoint".into());
     }
@@ -228,21 +228,21 @@ fn gather_wide(
         let two = match record::run_clean_anch(c, &g) {
             Ok(v) => v,
             Err(e) => {
-                println!("anchor base{:+}: {}", a.pos_delta, e);
+                println!("anchor {}: {}", a.chain, e);
                 last = e;
                 continue;
             }
         };
         println!(
-            "anchor base{:+}: {} instants ({} .. {} ms), reclen {}, validator Time {:?}, \
+            "anchor {}: {} instants ({} .. {} ms), reclen {}, validator Time {:?}, \
              region {:#x}..{:#x}",
-            a.pos_delta, two.instants, two.first_ms, two.last_ms, two.reclen, two.sim_time,
+            a.chain, two.instants, two.first_ms, two.last_ms, two.reclen, two.sim_time,
             two.pos_region.0, two.pos_region.1
         );
         match pair(c, &two, dump) {
             Ok(p) => return Ok(p),
             Err(e) => {
-                println!("anchor base{:+}: {}", a.pos_delta, e);
+                println!("anchor {}: {}", a.chain, e);
                 last = e;
             }
         }
