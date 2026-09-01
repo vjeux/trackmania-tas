@@ -265,6 +265,71 @@ fn main() {
         // does 287431's ghost kill the client on any map (17a29c8)? It carries
         // 7 type-80 records where every other ghost in the corpus carries 0 or
         // 1, and 294446 (which has 1) imports fine.
+        // `ghost set-u01 IN OUT --value N` -- rewrite the car entity's u01.
+        // 287431's crashing file has 0x02000009 on its single car entity; every
+        // ghost that imports has 0x02000006 on the FIRST car entity. One word,
+        // so it is worth testing on its own before the entity split.
+        // `ghost split-car IN OUT --at MS` -- split the single car entity into
+        // two at a tick boundary, the shape `ghost film` produces.
+        //
+        // This is the LAST difference between 287431's crashing original
+        // ([415,0,416], one car) and its film, which imports ([415,0,44,374],
+        // two cars split at the 2.13 s freefall handover). Everything else has
+        // been tested and cleared (297fd64, f763c27).
+        "split-car" => {
+            let inp = rest.first().unwrap_or_else(|| die("ghost split-car IN OUT --at MS"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost split-car IN OUT --at MS"));
+            let at: i32 = flag(rest, "--at")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| die("--at MS"));
+            let mut note = String::new();
+            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                let idx = rd
+                    .ents
+                    .iter()
+                    .position(|e| e.sample_size == 116 && e.times.len() > 1)
+                    .ok_or("no car entity with 116-byte samples")?;
+                let e = &rd.ents[idx];
+                let cut = e.times.iter().position(|t| *t >= at).ok_or("no tick at --at")?;
+                if cut == 0 || cut >= e.times.len() {
+                    return Err("--at is outside the run".into());
+                }
+                let ss = e.sample_size;
+                let mut a = e.clone();
+                let mut b = e.clone();
+                a.times = e.times[..cut].to_vec();
+                a.raw = e.raw[..cut * ss].to_vec();
+                b.times = e.times[cut..].to_vec();
+                b.raw = e.raw[cut * ss..].to_vec();
+                note = format!("{} + {} samples at {} ms", a.times.len(), b.times.len(), at);
+                rd.ents[idx] = a;
+                rd.ents.insert(idx + 1, b);
+                Ok(())
+            }) {
+                Ok(_) => println!("split the car entity: {} -> {}", note, outp),
+                Err(e) => die(format!("split-car: {}", e)),
+            }
+        }
+        "set-u01" => {
+            let inp = rest.first().unwrap_or_else(|| die("ghost set-u01 IN OUT --value N"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost set-u01 IN OUT --value N"));
+            let want: i32 = flag(rest, "--value")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| die("--value N"));
+            let mut hit = 0usize;
+            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                for e in rd.ents.iter_mut() {
+                    if e.u01 != 0 {
+                        e.u01 = want;
+                        hit += 1;
+                    }
+                }
+                Ok(())
+            }) {
+                Ok(_) => println!("set u01 = {} on {} entity(ies) -> {}", want, hit, outp),
+                Err(e) => die(format!("set-u01: {}", e)),
+            }
+        }
         "strip-events" => {
             let inp = rest.first().unwrap_or_else(|| die("ghost strip-events IN OUT --type N"));
             let outp = rest.get(1).unwrap_or_else(|| die("ghost strip-events IN OUT --type N"));
