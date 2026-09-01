@@ -1147,7 +1147,10 @@ fn engine_tier(s: &mut Suite) {
             for i in 0..n {
                 let (p, q) = (&x.samples[i], &y.samples[i]);
                 worst = worst.max(
-                    ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt(),
+                    (((p.x - q.x) as f64).powi(2)
+                        + ((p.y - q.y) as f64).powi(2)
+                        + ((p.z - q.z) as f64).powi(2))
+                    .sqrt(),
                 );
             }
             s.check(

@@ -301,7 +301,7 @@ pub fn telemetry_start_xz(path: &Path) -> Result<(f64, f64), String> {
         return Err("the vehicle entity is shorter than one sample".into());
     }
     let s = gbx::record::decode_vehicle_sample(&ent.raw[..ent.sample_size]);
-    Ok((s.x, s.z))
+    Ok((s.x as f64, s.z as f64))
 }
 
 #[cfg(test)]

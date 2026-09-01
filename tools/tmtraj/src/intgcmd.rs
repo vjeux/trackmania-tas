@@ -875,7 +875,7 @@ pub fn route_compare(ghost: &str, route: &str) -> Result<(usize, i64, f64, f64, 
         let mut ds: Vec<f64> = Vec::new();
         for s in &d.samples {
             if let Some(p) = rmap.get(&(s.time_ms as i64 + lag * 10)) {
-                ds.push(((s.x - p[0]).powi(2) + (s.y - p[1]).powi(2) + (s.z - p[2]).powi(2)).sqrt());
+                ds.push(((s.x as f64 - p[0]).powi(2) + (s.y as f64 - p[1]).powi(2) + (s.z as f64 - p[2]).powi(2)).sqrt());
             }
         }
         if ds.is_empty() { return None; }
@@ -1427,9 +1427,9 @@ pub fn gate_one(
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             let dpos =
-                ((sa.x - sb.x).powi(2) + (sa.y - sb.y).powi(2) + (sa.z - sb.z).powi(2)).sqrt();
+                (((sa.x - sb.x) as f64).powi(2) + ((sa.y - sb.y) as f64).powi(2) + ((sa.z - sb.z) as f64).powi(2)).sqrt();
             // rotation angle between two unit quaternions: 2 acos |a.b|
-            let dot = (sa.qx * sb.qx + sa.qy * sb.qy + sa.qz * sb.qz + sa.qw * sb.qw).abs();
+            let dot = (sa.qx as f64 * sb.qx as f64 + sa.qy as f64 * sb.qy as f64 + sa.qz as f64 * sb.qz as f64 + sa.qw as f64 * sb.qw as f64).abs();
             let dang = 2.0 * dot.min(1.0).acos() * 180.0 / std::f64::consts::PI;
             if dpos > 0.5 || dang > 5.0 {
                 hard += 1;

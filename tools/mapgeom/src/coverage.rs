@@ -104,7 +104,7 @@ pub fn motions(samples: &[Sample]) -> Vec<Motion> {
                 if dt <= 0.0 {
                     f32::NAN
                 } else {
-                    ((samples[i + 1].vy - samples[i - 1].vy) / dt) as f32
+                    ((samples[i + 1].vy - samples[i - 1].vy) as f64 / dt) as f32
                 }
             };
             let m = from_quat([s.qx as f32, s.qy as f32, s.qz as f32, s.qw as f32], [0.0; 3]);

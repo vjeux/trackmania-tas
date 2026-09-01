@@ -149,11 +149,11 @@ pub(crate) fn load(path: &str) -> Table {
             .iter()
             .map(|s| {
                 vec![
-                    s.time_ms as f64, s.x, s.y, s.z, s.speed_kmh, s.vx, s.vy, s.vz, s.yaw,
-                    s.pitch, s.roll, s.gear,
+                    s.time_ms as f64, s.x as f64, s.y as f64, s.z as f64, s.speed_kmh as f64, s.vx as f64, s.vy as f64, s.vz as f64, s.yaw as f64,
+                    s.pitch as f64, s.roll as f64, s.gear as f64,
                     if s.is_ground_contact { 1.0 } else { 0.0 },
                     if s.is_turbo { 1.0 } else { 0.0 },
-                    s.steer, s.gas, s.brake,
+                    s.steer as f64, s.gas as f64, s.brake as f64,
                 ]
             })
             .collect();

@@ -96,7 +96,7 @@ human recording is the answer key.
 ";
 
 fn dist(p: &Sample, q: &Sample) -> f64 {
-    ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt()
+    (((p.x - q.x) as f64).powi(2) + ((p.y - q.y) as f64).powi(2) + ((p.z - q.z) as f64).powi(2)).sqrt()
 }
 
 fn load(p: &str) -> Result<Decoded, String> {
@@ -531,7 +531,7 @@ pub fn cmd_spawn(argv: &[String]) -> i32 {
             continue;
         };
         let dp = dist(s0, r0);
-        let dot = quat_agreement([s0.qx, s0.qy, s0.qz, s0.qw], [r0.qx, r0.qy, r0.qz, r0.qw]);
+        let dot = quat_agreement([s0.qx as f64, s0.qy as f64, s0.qz as f64, s0.qw as f64], [r0.qx as f64, r0.qy as f64, r0.qz as f64, r0.qw as f64]);
         let verdict = spawn_verdict(dp, dot, pos_tol, ang_tol);
         if verdict != "SPAWN-OK" {
             worst = worst.max(2);

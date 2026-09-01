@@ -246,9 +246,32 @@ pub fn py_repr(v: f64) -> String {
     if v.is_infinite() {
         return if v > 0.0 { "Infinity".into() } else { "-Infinity".into() };
     }
-    // Rust's LowerExp with no precision gives the shortest round-tripping
-    // mantissa: exactly the digit string CPython's dtoa mode 0 produces.
-    let s = format!("{:e}", v); // e.g. "-1.234e-7", "0e0"
+    py_repr_exp(&format!("{:e}", v))
+}
+
+/// The same rendering for an `f32`, WITHOUT widening it first.
+///
+/// `py_repr(v as f64)` would be wrong here, not merely wasteful: widening asks
+/// for the shortest string that round-trips as an f64, and for a value that is
+/// really an f32 that is the full seventeen-digit expansion --
+/// `0.1f32 as f64` prints `0.10000000149011612`. Formatting the f32 directly
+/// asks for the shortest string that round-trips as an f32, which is `0.1`.
+/// Same number, and only this one is readable and stable.
+pub fn py_repr_f32(v: f32) -> String {
+    if v.is_nan() {
+        return "NaN".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "Infinity".into() } else { "-Infinity".into() };
+    }
+    py_repr_exp(&format!("{:e}", v))
+}
+
+/// Shared tail of `py_repr` / `py_repr_f32`: turn Rust's `{:e}` form (already
+/// the shortest round-tripping mantissa for whichever width produced it, and
+/// exactly the digit string CPython's dtoa mode 0 produces) into Python's
+/// `repr` layout.
+fn py_repr_exp(s: &str) -> String {
     let (mant, exp) = s.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let neg = mant.starts_with('-');

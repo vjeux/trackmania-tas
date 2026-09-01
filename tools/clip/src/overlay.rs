@@ -612,7 +612,7 @@ pub fn alignment(ghost: &str, span_ms: i64) -> Result<(i64, f64, f64), String> {
             let Some(i) = ins.get((t / 10) as usize) else { continue };
             // The record stores steer as `floor((steer_i8 + 127) * 255 / 254)`;
             // comparing in i8 space avoids re-deriving that here.
-            err += (s.steer * 127.0 - i.steer as f64).abs();
+            err += (s.steer as f64 * 127.0 - i.steer as f64).abs();
             n += 1;
         }
         if n > 20 {

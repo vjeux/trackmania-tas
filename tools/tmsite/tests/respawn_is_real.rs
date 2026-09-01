@@ -54,7 +54,7 @@ fn the_respawn_bit_coincides_with_a_teleport_in_the_telemetry() {
         .windows(2)
         .map(|w| {
             let (a, b) = (&w[0], &w[1]);
-            let m = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2) + (b.z - a.z).powi(2)).sqrt();
+            let m = (((b.x - a.x) as f64).powi(2) + ((b.y - a.y) as f64).powi(2) + ((b.z - a.z) as f64).powi(2)).sqrt();
             (b.time_ms, m)
         })
         .collect();

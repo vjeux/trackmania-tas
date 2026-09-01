@@ -243,7 +243,7 @@ fn main() {
                     let j = i as i64 + k;
                     if j < 0 || j >= b0.samples.len() as i64 { continue }
                     let (p, q) = (&a0.samples[i], &b0.samples[j as usize]);
-                    let d = ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt();
+                    let d = (((p.x - q.x) as f64).powi(2) + ((p.y - q.y) as f64).powi(2) + ((p.z - q.z) as f64).powi(2)).sqrt();
                     s += d; worst = worst.max(d); c += 1;
                 }
                 if c > 0 {

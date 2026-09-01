@@ -1080,9 +1080,9 @@ mod tests {
         let recorded =
             gbx::record::decode_ghost(&ghost.to_string_lossy()).expect("recorded control");
         let first = recorded.samples.first().expect("first sample");
-        assert!((initial.pos[0] as f64 - first.x).abs() < 0.01);
-        assert!((initial.pos[1] as f64 - first.y).abs() < 0.01);
-        assert!((initial.pos[2] as f64 - first.z).abs() < 0.01);
+        assert!((initial.pos[0] as f64 - first.x as f64).abs() < 0.01);
+        assert!((initial.pos[1] as f64 - first.y as f64).abs() < 0.01);
+        assert!((initial.pos[2] as f64 - first.z as f64).abs() < 0.01);
         assert_eq!(initial.roadtech_dir, Some(0));
     }
 

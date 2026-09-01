@@ -180,7 +180,7 @@ pub(crate) fn base(p: &str) -> &str {
 }
 
 fn dist(p: &Sample, q: &Sample) -> f64 {
-    ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt()
+    (((p.x - q.x) as f64).powi(2) + ((p.y - q.y) as f64).powi(2) + ((p.z - q.z) as f64).powi(2)).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +502,7 @@ fn qc(maps: &[MapDir]) -> i32 {
                             len += d3;
                         }
                         if s[i].speed_kmh.is_finite() {
-                            vmax = vmax.max(s[i].speed_kmh);
+                            vmax = vmax.max(s[i].speed_kmh as f64);
                         }
                     }
                     let f0 = s.first();

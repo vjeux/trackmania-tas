@@ -36,7 +36,7 @@ use gbx::record;
 fn rows_of(d: &record::Decoded) -> Vec<[f64; 8]> {
     d.samples
         .iter()
-        .map(|s| [s.time_ms as f64, s.vx, s.vy, s.vz, s.qx, s.qy, s.qz, s.qw])
+        .map(|s| [s.time_ms as f64, s.vx as f64, s.vy as f64, s.vz as f64, s.qx as f64, s.qy as f64, s.qz as f64, s.qw as f64])
         .collect()
 }
 
@@ -253,10 +253,10 @@ pub fn cmd_route(args: &[String]) -> i32 {
         let mut angs_perm: Vec<f64> = Vec::new();
         let mut dpos: Vec<f64> = Vec::new();
         for s in &d.samples {
-            let pos = [s.x, s.y, s.z];
+            let pos = [s.x as f64, s.y as f64, s.z as f64];
             let t = s.time_ms as i64 + shift;
             let Some((qr, pr)) = rq.get(&t) else { continue };
-            let qs = [s.qx, s.qy, s.qz, s.qw];
+            let qs = [s.qx as f64, s.qy as f64, s.qz as f64, s.qw as f64];
             let perm = [qs[1], qs[2], qs[3], qs[0]];
             let ang = |a: [f64; 4], b: &[f64; 4]| -> f64 {
                 let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]).sqrt();

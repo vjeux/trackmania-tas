@@ -214,9 +214,9 @@ pub fn path_stats(file: &str) -> Option<(f64, [f64; 3], usize, bool)> {
     let mut moved = false;
     for w in d.samples.windows(2) {
         let (a, b) = (&w[0], &w[1]);
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let dz = b.z - a.z;
+        let dx = (b.x - a.x) as f64;
+        let dy = (b.y - a.y) as f64;
+        let dz = (b.z - a.z) as f64;
         let s = (dx * dx + dy * dy + dz * dz).sqrt();
         if !s.is_finite() {
             finite = false;
@@ -228,7 +228,7 @@ pub fn path_stats(file: &str) -> Option<(f64, [f64; 3], usize, bool)> {
         len += s;
     }
     let f = &d.samples[0];
-    Some((len, [f.x, f.y, f.z], d.samples.len(), finite && moved))
+    Some((len, [f.x as f64, f.y as f64, f.z as f64], d.samples.len(), finite && moved))
 }
 
 pub fn cmd(a: &[String]) {
@@ -984,7 +984,10 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
             d.samples
                 .windows(2)
                 .map(|w| {
-                    ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2)).sqrt()
+                    (((w[1].x - w[0].x) as f64).powi(2)
+                        + ((w[1].y - w[0].y) as f64).powi(2)
+                        + ((w[1].z - w[0].z) as f64).powi(2))
+                    .sqrt()
                 })
                 .sum::<f64>()
                 > 5.0
@@ -1012,7 +1015,10 @@ fn gate(cand: &str, map: &str, a: &[String], template: &str) -> Result<String, S
             let tol: f64 = flag(a, "--spawn-tol").and_then(|v| v.parse().ok()).unwrap_or(1.0);
             match here {
                 Some((t, p)) if (t - t0.time_ms).abs() <= 60 => {
-                    let d = ((p[0] - t0.x).powi(2) + (p[1] - t0.y).powi(2) + (p[2] - t0.z).powi(2)).sqrt();
+                    let d = (((p[0] - t0.x) as f64).powi(2)
+                        + ((p[1] - t0.y) as f64).powi(2)
+                        + ((p[2] - t0.z) as f64).powi(2))
+                    .sqrt();
                     if d > tol {
                         return Err(format!(
                             "   G2 at {} ms the run is at ({:.2}, {:.2}, {:.2}), {:.1} m from where \
@@ -1139,7 +1145,10 @@ pub fn control(a: &[String]) {
     let mut exact = 0usize;
     for i in 0..n {
         let (a2, b) = (&d0.samples[i], &d1.samples[i]);
-        let dd = ((a2.x - b.x).powi(2) + (a2.y - b.y).powi(2) + (a2.z - b.z).powi(2)).sqrt();
+        let dd = (((a2.x - b.x) as f64).powi(2)
+            + ((a2.y - b.y) as f64).powi(2)
+            + ((a2.z - b.z) as f64).powi(2))
+        .sqrt();
         sum += dd;
         worst = worst.max(dd);
         if dd == 0.0 {
@@ -1163,7 +1172,10 @@ pub fn control(a: &[String]) {
                 continue;
             }
             let (a2, b) = (&d0.samples[i], &d1.samples[j as usize]);
-            s += ((a2.x - b.x).powi(2) + (a2.y - b.y).powi(2) + (a2.z - b.z).powi(2)).sqrt();
+            s += (((a2.x - b.x) as f64).powi(2)
+                + ((a2.y - b.y) as f64).powi(2)
+                + ((a2.z - b.z) as f64).powi(2))
+            .sqrt();
             c += 1;
         }
         if c == 0 {
@@ -1249,7 +1261,11 @@ pub fn engine_trajectory_agreement(path: &str, map: &str) -> Result<(f64, f64, u
     let d1 = gbx::record::decode_ghost(&out).map_err(|e| e.to_string())?;
     let n = d0.samples.len().min(d1.samples.len());
     let dist = |a: &gbx::record::Sample, b: &gbx::record::Sample| {
-        ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt()
+        // f64 for the accumulation: the samples are f32 (the precision the
+        // record carries), but summing thousands of distances wants the wider
+        // accumulator.
+        (((a.x - b.x) as f64).powi(2) + ((a.y - b.y) as f64).powi(2) + ((a.z - b.z) as f64).powi(2))
+            .sqrt()
     };
     let mut sum = 0.0;
     let mut worst = 0.0f64;

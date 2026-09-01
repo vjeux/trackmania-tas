@@ -427,7 +427,7 @@ fn seed_x(inp: &str, out: &str, dx: f32) -> Result<String, String> {
     })?;
     let back = gbx::record::decode_ghost(out)?;
     let got = back.samples.first().ok_or("written file has no first sample")?.x;
-    if (got - (before + dx) as f64).abs() > 1e-5 {
+    if (got as f64 - (before + dx) as f64).abs() > 1e-5 {
         let _ = std::fs::remove_file(out);
         return Err("first-sample x did not read back at the requested value".into());
     }
@@ -585,9 +585,9 @@ pub fn from_csv(inp: &str, out: &str, csv: &str, tol_ms: i32) -> Result<String, 
             .get(*k)
             .ok_or_else(|| format!("the written file has no sample {k}"))?;
         let w = &rows[*ri].1;
-        let d = ((s.x - w.pos[0] as f64).powi(2)
-            + (s.y - w.pos[1] as f64).powi(2)
-            + (s.z - w.pos[2] as f64).powi(2))
+        let d = ((s.x as f64 - w.pos[0] as f64).powi(2)
+            + (s.y as f64 - w.pos[1] as f64).powi(2)
+            + (s.z as f64 - w.pos[2] as f64).powi(2))
         .sqrt();
         if d > worst_m {
             worst_m = d;

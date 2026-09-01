@@ -57,12 +57,12 @@ pub fn census(path: &str, bar: f64, race_ms: Option<i64>) -> Result<Vec<Impact>,
         if !a.speed_kmh.is_finite() || !b.speed_kmh.is_finite() {
             continue;
         }
-        if a.speed_kmh - b.speed_kmh > bar {
+        if a.speed_kmh as f64 - b.speed_kmh as f64 > bar {
             out.push(Impact {
                 t_ms: b.time_ms,
-                before_kmh: a.speed_kmh,
-                after_kmh: b.speed_kmh,
-                pos: [b.x, b.y, b.z],
+                before_kmh: a.speed_kmh as f64,
+                after_kmh: b.speed_kmh as f64,
+                pos: [b.x as f64, b.y as f64, b.z as f64],
             });
         }
     }

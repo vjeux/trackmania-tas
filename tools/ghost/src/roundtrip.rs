@@ -45,7 +45,10 @@ fn compare(a: &str, b: &str) -> Result<(f64, f64, usize, usize), String> {
     let ss = x.sample_size.min(y.sample_size);
     for (i, s) in x.samples.iter().enumerate() {
         let Some(t) = by.get(&s.time_ms) else { continue };
-        let d = ((s.x - t.x).powi(2) + (s.y - t.y).powi(2) + (s.z - t.z).powi(2)).sqrt();
+        let d = (((s.x - t.x) as f64).powi(2)
+            + ((s.y - t.y) as f64).powi(2)
+            + ((s.z - t.z) as f64).powi(2))
+        .sqrt();
         if !d.is_finite() {
             return Err("the regenerated record has a non-finite position".into());
         }

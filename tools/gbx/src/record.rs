@@ -472,56 +472,81 @@ pub fn quat_to_ypr(q: [f64; 4]) -> (f64, f64, f64) {
 ///
 /// Field groups mirror `FIELD_CONFIDENCE`; the doc comment on each group says
 /// how much to trust it.
+/// A decoded vehicle sample.
+///
+/// **The floats are `f32` because the file's are.**
+///
+/// Position and velocity are stored as `f32` in the record. The orientation is
+/// not stored as a float at all: it comes from three PACKED INTEGERS (a `u16`
+/// rotation and two `i16` direction angles), so it carries roughly five
+/// decimal digits of real information. The trig that turns those angles into a
+/// quaternion runs in `f64` -- intermediate precision is worth having -- and
+/// the result is stored back at the precision the data actually has.
+///
+/// WHY THIS MATTERS, measured rather than assumed. Storing `f64` here printed
+/// seventeen digits, of which about twelve were manufactured by the trig, and
+/// that is exactly the region an optimising compiler may reassociate. It did:
+/// `golden_full_fields` PASSED IN DEBUG AND FAILED IN RELEASE on 17 of 45
+/// runs, differing in the last digit of a quaternion:
+///
+/// ```text
+/// debug    "qx": -0.0032502428177314854
+/// release  "qx": -0.003250242817731486
+/// ```
+///
+/// -- three bytes across a 454 KB render. Narrowing the two real decodes to
+/// `f32` makes them byte-identical (checked by narrowing both dumps and
+/// comparing: `identical = True`).
 #[derive(Debug, Clone, Default)]
 pub struct Sample {
     /// VERIFIED: sample time in ms from the record start (50 ms grid in TM2020)
     pub time_ms: i32,
     // --- VERIFIED ---
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub speed_ms: f64,
-    pub speed_kmh: f64,
-    pub vx: f64,
-    pub vy: f64,
-    pub vz: f64,
-    pub qx: f64,
-    pub qy: f64,
-    pub qz: f64,
-    pub qw: f64,
-    pub yaw: f64,
-    pub pitch: f64,
-    pub roll: f64,
-    pub gear: f64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub speed_ms: f32,
+    pub speed_kmh: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub vz: f32,
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub qw: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub gear: f32,
     pub rpm_raw: u8,
     // --- DERIVED (GBX.NET reference, self-consistent, not cross-checked) ---
-    pub side_speed: f64,
-    pub steer: f64,
-    pub brake: f64,
-    pub gas: f64,
+    pub side_speed: f32,
+    pub steer: f32,
+    pub brake: f32,
+    pub gas: f32,
     pub is_turbo: bool,
-    pub turbo_time: f64,
+    pub turbo_time: f32,
     pub is_ground_contact: bool,
     pub is_top_contact: bool,
-    pub wetness: f64,
-    pub sim_time_coef: f64,
-    pub fl_wheel_rot: f64,
-    pub fr_wheel_rot: f64,
-    pub rr_wheel_rot: f64,
-    pub rl_wheel_rot: f64,
-    pub fl_dampen: f64,
-    pub fr_dampen: f64,
-    pub rr_dampen: f64,
-    pub rl_dampen: f64,
+    pub wetness: f32,
+    pub sim_time_coef: f32,
+    pub fl_wheel_rot: f32,
+    pub fr_wheel_rot: f32,
+    pub rr_wheel_rot: f32,
+    pub rl_wheel_rot: f32,
+    pub fl_dampen: f32,
+    pub fr_dampen: f32,
+    pub rr_dampen: f32,
+    pub rl_dampen: f32,
     // --- GUESS (opaque byte semantics from names only) ---
-    pub fl_ice: f64,
-    pub fr_ice: f64,
-    pub rr_ice: f64,
-    pub rl_ice: f64,
-    pub fl_dirt: f64,
-    pub fr_dirt: f64,
-    pub rr_dirt: f64,
-    pub rl_dirt: f64,
+    pub fl_ice: f32,
+    pub fr_ice: f32,
+    pub rr_ice: f32,
+    pub rl_ice: f32,
+    pub fl_dirt: f32,
+    pub fr_dirt: f32,
+    pub rr_dirt: f32,
+    pub rl_dirt: f32,
     pub ground_mode_raw: u8,
     pub booster_air_control_raw: u8,
     pub vehicle_state_raw: u8,
@@ -535,55 +560,60 @@ pub fn decode_vehicle_sample(d: &[u8]) -> Sample {
     let (yaw, pitch, roll) = quat_to_ypr(quat);
     let gear_raw = d[91];
     let b = |i: usize| d[i] as f64;
+    // COMPUTE IN f64, STORE f32. Every arithmetic expression below stays in
+    // f64 so no intermediate is rounded twice; `n` narrows once, at the
+    // boundary, to the precision the record actually carries. See `Sample`.
+    let n = |v: f64| v as f32;
     Sample {
         time_ms: 0,
         // --- VERIFIED ---
-        x: pos[0],
-        y: pos[1],
-        z: pos[2],
-        speed_ms: speed,
-        speed_kmh: speed * 3.6,
-        vx: vel[0],
-        vy: vel[1],
-        vz: vel[2],
-        qx: quat[0],
-        qy: quat[1],
-        qz: quat[2],
-        qw: quat[3],
-        yaw,
-        pitch,
-        roll,
-        gear: (gear_raw as f64 - 1.0) / 4.0,
+        x: n(pos[0]),
+        y: n(pos[1]),
+        z: n(pos[2]),
+        speed_ms: n(speed),
+        speed_kmh: n(speed * 3.6),
+        vx: n(vel[0]),
+        vy: n(vel[1]),
+        vz: n(vel[2]),
+        qx: n(quat[0]),
+        qy: n(quat[1]),
+        qz: n(quat[2]),
+        qw: n(quat[3]),
+        yaw: n(yaw),
+        pitch: n(pitch),
+        roll: n(roll),
+        gear: n((gear_raw as f64 - 1.0) / 4.0),
         rpm_raw: d[5],
         // --- DERIVED ---
-        side_speed: ((u16::from_le_bytes(d[2..4].try_into().unwrap()) as f64 / 65536.0) - 0.5)
-            * 2000.0,
-        steer: ((b(14) / 255.0) - 0.5) * 2.0,
-        brake: b(18) / 255.0,
-        gas: (b(15) / 255.0) + (b(18) / 255.0),
+        side_speed: n(
+            ((u16::from_le_bytes(d[2..4].try_into().unwrap()) as f64 / 65536.0) - 0.5) * 2000.0,
+        ),
+        steer: n(((b(14) / 255.0) - 0.5) * 2.0),
+        brake: n(b(18) / 255.0),
+        gas: n((b(15) / 255.0) + (b(18) / 255.0)),
         is_turbo: (d[31] & 0x82) != 0,
-        turbo_time: b(21) / 255.0,
+        turbo_time: n(b(21) / 255.0),
         is_ground_contact: (d[89] & 0x1) != 0,
         is_top_contact: (d[76] & 0x20) != 0,
-        wetness: b(101) / 255.0,
-        sim_time_coef: b(102) / 255.0,
-        fl_wheel_rot: (b(6) / 255.0 * TAU) + b(7) * TAU,
-        fr_wheel_rot: (b(8) / 255.0 * TAU) + b(9) * TAU,
-        rr_wheel_rot: (b(10) / 255.0 * TAU) + b(11) * TAU,
-        rl_wheel_rot: (b(12) / 255.0 * TAU) + b(13) * TAU,
-        fl_dampen: ((b(23) / 255.0) - 0.5) * 4.0,
-        fr_dampen: ((b(25) / 255.0) - 0.5) * 4.0,
-        rr_dampen: ((b(27) / 255.0) - 0.5) * 4.0,
-        rl_dampen: ((b(29) / 255.0) - 0.5) * 4.0,
+        wetness: n(b(101) / 255.0),
+        sim_time_coef: n(b(102) / 255.0),
+        fl_wheel_rot: n((b(6) / 255.0 * TAU) + b(7) * TAU),
+        fr_wheel_rot: n((b(8) / 255.0 * TAU) + b(9) * TAU),
+        rr_wheel_rot: n((b(10) / 255.0 * TAU) + b(11) * TAU),
+        rl_wheel_rot: n((b(12) / 255.0 * TAU) + b(13) * TAU),
+        fl_dampen: n(((b(23) / 255.0) - 0.5) * 4.0),
+        fr_dampen: n(((b(25) / 255.0) - 0.5) * 4.0),
+        rr_dampen: n(((b(27) / 255.0) - 0.5) * 4.0),
+        rl_dampen: n(((b(29) / 255.0) - 0.5) * 4.0),
         // --- GUESS ---
-        fl_ice: b(81) / 255.0,
-        fr_ice: b(82) / 255.0,
-        rr_ice: b(83) / 255.0,
-        rl_ice: b(84) / 255.0,
-        fl_dirt: b(93) / 255.0,
-        fr_dirt: b(95) / 255.0,
-        rr_dirt: b(97) / 255.0,
-        rl_dirt: b(99) / 255.0,
+        fl_ice: n(b(81) / 255.0),
+        fr_ice: n(b(82) / 255.0),
+        rr_ice: n(b(83) / 255.0),
+        rl_ice: n(b(84) / 255.0),
+        fl_dirt: n(b(93) / 255.0),
+        fr_dirt: n(b(95) / 255.0),
+        rr_dirt: n(b(97) / 255.0),
+        rl_dirt: n(b(99) / 255.0),
         ground_mode_raw: d[89],
         booster_air_control_raw: d[90],
         vehicle_state_raw: d[76],

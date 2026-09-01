@@ -64,7 +64,7 @@ fn d3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 impl Ref {
     pub fn from(d: &Decoded) -> Ref {
         let p: Vec<[f64; 3]> =
-            d.samples.iter().filter(|s| s.time_ms >= 0).map(|s| [s.x, s.y, s.z]).collect();
+            d.samples.iter().filter(|s| s.time_ms >= 0).map(|s| [s.x as f64, s.y as f64, s.z as f64]).collect();
         let mut s = vec![0.0];
         for i in 1..p.len() {
             s.push(s[i - 1] + d3(&p[i - 1], &p[i]));
@@ -140,7 +140,7 @@ pub fn project_run(name: &str, d: &Decoded, r: &Ref) -> Run {
     if n < 2 || m < 2 {
         return Run { name: name.to_string(), s: vec![0.0], t: vec![0.0], median_miss: 0.0 };
     }
-    let q: Vec<[f64; 3]> = sm.iter().map(|x| [x.x, x.y, x.z]).collect();
+    let q: Vec<[f64; 3]> = sm.iter().map(|x| [x.x as f64, x.y as f64, x.z as f64]).collect();
     // the run's own cumulative arclength, as the alignment's prior
     let mut own = vec![0.0f64];
     for i in 1..n {

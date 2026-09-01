@@ -94,7 +94,7 @@ fn times(s: &[Sample]) -> Vec<f64> {
 fn interp_path(s: &[Sample], tq: f64) -> (f64, f64, f64) {
     let ts = times(s);
     let g = |f: fn(&Sample) -> f64| lerp(&ts, &s.iter().map(f).collect::<Vec<_>>(), tq);
-    (g(|p| p.x), g(|p| p.y), g(|p| p.z))
+    (g(|p| p.x as f64), g(|p| p.y as f64), g(|p| p.z as f64))
 }
 
 /// `_dense`: uniform 1 ms (or `step`) resample of the position track.
@@ -102,9 +102,9 @@ fn dense(s: &[Sample], step: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let ts = times(s);
     let (t0, t1) = (ts[0], *ts.last().unwrap());
     let n = ((t1 - t0) / step) as usize + 1;
-    let xs: Vec<f64> = s.iter().map(|p| p.x).collect();
-    let ys: Vec<f64> = s.iter().map(|p| p.y).collect();
-    let zs: Vec<f64> = s.iter().map(|p| p.z).collect();
+    let xs: Vec<f64> = s.iter().map(|p| p.x as f64).collect();
+    let ys: Vec<f64> = s.iter().map(|p| p.y as f64).collect();
+    let zs: Vec<f64> = s.iter().map(|p| p.z as f64).collect();
     let t: Vec<f64> = (0..n).map(|i| t0 + i as f64 * step).collect();
     let x = t.iter().map(|&q| lerp(&ts, &xs, q)).collect();
     let y = t.iter().map(|&q| lerp(&ts, &ys, q)).collect();
@@ -205,7 +205,7 @@ pub fn selftest(verbose: bool) -> SelfTest {
         // T2: start position == start block centre
         let s0 = &s[0];
         let (sx, sz) = geom("START");
-        let d0 = (s0.x - sx).hypot(s0.z - sz);
+        let d0 = (s0.x as f64 - sx).hypot(s0.z as f64 - sz);
         check(
             d0 < 1.0,
             format!(
@@ -248,7 +248,7 @@ pub fn selftest(verbose: bool) -> SelfTest {
         let (gx, gz) = geom("FINISH");
         let last = s.last().unwrap();
         let dt = (declared[3] - last.time_ms) as f64 / 1000.0;
-        let (ex, ez) = (last.x + last.vx * dt, last.z + last.vz * dt);
+        let (ex, ez) = (last.x as f64 + last.vx as f64 * dt, last.z as f64 + last.vz as f64 * dt);
         let inside = (ex - gx).abs() <= 16.0 && (ez - gz).abs() <= 16.0;
         check(
             inside,
@@ -273,7 +273,7 @@ pub fn selftest(verbose: bool) -> SelfTest {
         let mut mx: f64 = 0.0;
         for w in s.windows(2) {
             let (a, b) = (&w[0], &w[1]);
-            let dd = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2) + (b.z - a.z).powi(2)).sqrt();
+            let dd = (((b.x - a.x) as f64).powi(2) + ((b.y - a.y) as f64).powi(2) + ((b.z - a.z) as f64).powi(2)).sqrt();
             let dt = (b.time_ms - a.time_ms) as f64 / 1000.0;
             mx = mx.max(if dt != 0.0 { dd / dt } else { 0.0 });
         }
@@ -283,7 +283,7 @@ pub fn selftest(verbose: bool) -> SelfTest {
         );
 
         // T5: speed sanity
-        let sp: Vec<f64> = s.iter().map(|p| p.speed_kmh).collect();
+        let sp: Vec<f64> = s.iter().map(|p| p.speed_kmh as f64).collect();
         let peak = sp.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let peak_i = sp.iter().position(|&v| v == peak).unwrap();
         check(
@@ -299,12 +299,12 @@ pub fn selftest(verbose: bool) -> SelfTest {
         for i in 1..s.len() - 1 {
             let dt = (s[i + 1].time_ms - s[i - 1].time_ms) as f64 / 1000.0;
             let fd = [
-                (s[i + 1].x - s[i - 1].x) / dt,
-                (s[i + 1].y - s[i - 1].y) / dt,
-                (s[i + 1].z - s[i - 1].z) / dt,
+                (s[i + 1].x - s[i - 1].x) as f64 / dt,
+                (s[i + 1].y - s[i - 1].y) as f64 / dt,
+                (s[i + 1].z - s[i - 1].z) as f64 / dt,
             ];
             let fdm = (fd[0] * fd[0] + fd[1] * fd[1] + fd[2] * fd[2]).sqrt();
-            err.push((fdm - s[i].speed_ms).abs());
+            err.push((fdm - s[i].speed_ms as f64).abs());
         }
         let mut err_sorted = err.clone();
         let med = median(&mut err_sorted);
@@ -322,12 +322,12 @@ pub fn selftest(verbose: bool) -> SelfTest {
         for i in 1..s.len() - 1 {
             let dt = (s[i + 1].time_ms - s[i - 1].time_ms) as f64 / 1000.0;
             let fd = [
-                (s[i + 1].x - s[i - 1].x) / dt,
-                (s[i + 1].y - s[i - 1].y) / dt,
-                (s[i + 1].z - s[i - 1].z) / dt,
+                (s[i + 1].x - s[i - 1].x) as f64 / dt,
+                (s[i + 1].y - s[i - 1].y) as f64 / dt,
+                (s[i + 1].z - s[i - 1].z) as f64 / dt,
             ];
             let n1 = (fd[0] * fd[0] + fd[1] * fd[1] + fd[2] * fd[2]).sqrt();
-            let v = [s[i].vx, s[i].vy, s[i].vz];
+            let v = [s[i].vx as f64, s[i].vy as f64, s[i].vz as f64];
             let n2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
             if n1 > 5.0 && n2 > 5.0 {
                 dots.push((fd[0] * v[0] + fd[1] * v[1] + fd[2] * v[2]) / (n1 * n2));
@@ -348,10 +348,10 @@ pub fn selftest(verbose: bool) -> SelfTest {
         let mut qn = Vec::new();
         let mut fw = Vec::new();
         for i in 1..s.len() - 1 {
-            let q = [s[i].qx, s[i].qy, s[i].qz, s[i].qw];
+            let q = [s[i].qx as f64, s[i].qy as f64, s[i].qz as f64, s[i].qw as f64];
             qn.push((1.0 - (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt()).abs());
             let f = quat_rotate(q, [0.0, 0.0, 1.0]);
-            let v = [s[i].vx, s[i].vy, s[i].vz];
+            let v = [s[i].vx as f64, s[i].vy as f64, s[i].vz as f64];
             let n2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
             if n2 > 20.0 {
                 fw.push((f[0] * v[0] + f[1] * v[1] + f[2] * v[2]) / n2);

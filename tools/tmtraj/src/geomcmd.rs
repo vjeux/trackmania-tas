@@ -74,7 +74,7 @@ fn load(path: &str, race_cap: Option<i32>) -> Result<Line, String> {
             }
         }
         t.push(s.time_ms as f64 / 1000.0);
-        p.push([s.x, s.y, s.z]);
+        p.push([s.x as f64, s.y as f64, s.z as f64]);
     }
     if p.len() < 2 {
         return Err(format!("{}: {} usable samples", path, p.len()));
@@ -429,8 +429,8 @@ fn cmd_pace(args: &[String]) -> i32 {
                 continue;
             }
             t.push(sm.time_ms as f64 / 1000.0);
-            p.push([sm.x, sm.y, sm.z]);
-            v.push(sm.speed_kmh);
+            p.push([sm.x as f64, sm.y as f64, sm.z as f64]);
+            v.push(sm.speed_kmh as f64);
         }
         let s = arclen(&p);
         runs.push(R { name: f.rsplit('/').next().unwrap_or(f).to_string(), t, s, v });
@@ -498,7 +498,7 @@ fn cmd_at(args: &[String]) -> i32 {
             if sm.len() < 2 {
                 continue;
             }
-            let p: Vec<[f64; 3]> = sm.iter().map(|s| [s.x, s.y, s.z]).collect();
+            let p: Vec<[f64; 3]> = sm.iter().map(|s| [s.x as f64, s.y as f64, s.z as f64]).collect();
             let s = arclen(&p);
             let i = match s.binary_search_by(|x| x.partial_cmp(target).unwrap()) {
                 Ok(i) => i,
@@ -747,7 +747,7 @@ fn cmd_track(args: &[String]) -> i32 {
                 tr.iter().min_by(|a, b| (a.0 - t).abs().partial_cmp(&(b.0 - t).abs()).unwrap())
             {
                 if (tt - t).abs() <= 0.006 {
-                    v.push(dist(&[s.x, s.y, s.z], p));
+                    v.push(dist(&[s.x as f64, s.y as f64, s.z as f64], p));
                 }
             }
         }
@@ -784,7 +784,7 @@ fn cmd_track(args: &[String]) -> i32 {
         if (tt - t).abs() > 0.006 {
             continue;
         }
-        let dr = dist(&[s.x, s.y, s.z], &p);
+        let dr = dist(&[s.x as f64, s.y as f64, s.z as f64], &p);
         // SIGNED LATERAL OFFSET, left/right of where the recording was going.
         //
         // The magnitude says how far apart the two runs are; the sign says
@@ -795,12 +795,12 @@ fn cmd_track(args: &[String]) -> i32 {
         // all.
         let lat = {
             let j = (si + 1).min(samples.len() - 1);
-            let (hx, hz) = (samples[j].x - s.x, samples[j].z - s.z);
+            let (hx, hz) = ((samples[j].x - s.x) as f64, (samples[j].z - s.z) as f64);
             let n = (hx * hx + hz * hz).sqrt().max(1e-9);
             let (ux, uz) = (hx / n, hz / n);
             // left-normal of the heading in (x, z)
             let (nx, nz) = (-uz, ux);
-            (p[0] - s.x) * nx + (p[2] - s.z) * nz
+            (p[0] - s.x as f64) * nx + (p[2] - s.z as f64) * nz
         };
         if dr > thresh && first_over.is_none() {
             first_over = Some(t);

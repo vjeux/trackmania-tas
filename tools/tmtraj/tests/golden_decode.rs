@@ -146,12 +146,12 @@ fn reproduces_the_51_python_trajectories() {
         for (g, s) in gs.iter().zip(dec.samples.iter()) {
             for (key, full, rounded) in [
                 ("t", s.time_ms as f64, s.time_ms as f64),
-                ("x", s.x, json::py_round(s.x, 4)),
-                ("y", s.y, json::py_round(s.y, 4)),
-                ("z", s.z, json::py_round(s.z, 4)),
-                ("speed", s.speed_kmh, json::py_round(s.speed_kmh, 4)),
-                ("gear", s.gear, s.gear),
-                ("yaw", s.yaw, json::py_round(s.yaw, 6)),
+                ("x", s.x as f64, json::py_round(s.x as f64, 4)),
+                ("y", s.y as f64, json::py_round(s.y as f64, 4)),
+                ("z", s.z as f64, json::py_round(s.z as f64, 4)),
+                ("speed", s.speed_kmh as f64, json::py_round(s.speed_kmh as f64, 4)),
+                ("gear", s.gear as f64, s.gear as f64),
+                ("yaw", s.yaw as f64, json::py_round(s.yaw as f64, 6)),
             ] {
                 let gv = g.get(key).unwrap().num();
                 json_dev

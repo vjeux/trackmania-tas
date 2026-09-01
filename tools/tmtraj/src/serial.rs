@@ -17,7 +17,13 @@ use record::{Decoded, Sample, FIELD_CONFIDENCE};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Val {
-    F(f64),
+    /// `f32`, not `f64`, because `Sample`'s floats are f32 -- see the note on
+    /// `gbx::record::Sample`. Printing a WIDENED f32 is the trap here: the
+    /// shortest string that round-trips as f64 is long and ugly
+    /// (`0.10000000149011612`), while the same value printed as f32 is `0.1`.
+    /// Keeping the narrow type all the way to the formatter keeps the output
+    /// both short and exact.
+    F(f32),
     I(i64),
     B(bool),
 }
@@ -25,7 +31,7 @@ pub enum Val {
 impl Val {
     pub fn as_f64(self) -> f64 {
         match self {
-            Val::F(v) => v,
+            Val::F(v) => v as f64,
             Val::I(v) => v as f64,
             Val::B(v) => {
                 if v {
@@ -39,7 +45,7 @@ impl Val {
     /// Rendered exactly as `csv.writer` renders the Python value.
     pub fn csv(self) -> String {
         match self {
-            Val::F(v) => crate::json::fmt_g6(v),
+            Val::F(v) => crate::json::fmt_g6(v as f64),
             Val::I(v) => v.to_string(),
             Val::B(v) => (if v { "True" } else { "False" }).to_string(),
         }
@@ -176,17 +182,17 @@ pub fn path_json_string(dec: &Decoded) -> String {
         o.push_str("{\"t\": ");
         o.push_str(&s.time_ms.to_string());
         o.push_str(", \"x\": ");
-        o.push_str(&py_repr(py_round(s.x, 4)));
+        o.push_str(&py_repr(py_round(s.x as f64, 4)));
         o.push_str(", \"y\": ");
-        o.push_str(&py_repr(py_round(s.y, 4)));
+        o.push_str(&py_repr(py_round(s.y as f64, 4)));
         o.push_str(", \"z\": ");
-        o.push_str(&py_repr(py_round(s.z, 4)));
+        o.push_str(&py_repr(py_round(s.z as f64, 4)));
         o.push_str(", \"speed\": ");
-        o.push_str(&py_repr(py_round(s.speed_kmh, 4)));
+        o.push_str(&py_repr(py_round(s.speed_kmh as f64, 4)));
         o.push_str(", \"gear\": ");
-        o.push_str(&py_repr(s.gear));
+        o.push_str(&py_repr(s.gear as f64));
         o.push_str(", \"yaw\": ");
-        o.push_str(&py_repr(py_round(s.yaw, 6)));
+        o.push_str(&py_repr(py_round(s.yaw as f64, 6)));
         o.push('}');
     }
     o.push_str("]}");
@@ -252,7 +258,7 @@ pub fn full_json_string(dec: &Decoded) -> String {
             first = false;
             o.push_str(&format!("\"{}\": ", f.name));
             match s.field(f.name) {
-                Val::F(v) => o.push_str(&py_repr(v)),
+                Val::F(v) => o.push_str(&crate::json::py_repr_f32(v)),
                 Val::I(v) => o.push_str(&v.to_string()),
                 Val::B(v) => o.push_str(if v { "true" } else { "false" }),
             }

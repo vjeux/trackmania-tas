@@ -553,7 +553,7 @@ fn player_chain(rec: &gbx::record::RecordData) -> (Vec<usize>, Vec<(i32, [f64; 3
             .enumerate()
             .map(|(k, t)| {
                 let s = gbx::record::decode_vehicle_sample(&e.raw[k * ss..(k + 1) * ss]);
-                (*t, [s.x, s.y, s.z])
+                (*t, [s.x as f64, s.y as f64, s.z as f64])
             })
             .collect()
     };
@@ -730,12 +730,15 @@ pub fn life_csv(path: &str, life: usize, out: Option<&str>, shift_ms: i32) {
     for (k, t) in e.times.iter().enumerate() {
         let sm = gbx::record::decode_vehicle_sample(&e.raw[k * ss..(k + 1) * ss]);
         if let Some(p) = prev {
-            let d = ((p[0] - sm.x).powi(2) + (p[1] - sm.y).powi(2) + (p[2] - sm.z).powi(2)).sqrt();
+            let d = ((p[0] - sm.x as f64).powi(2)
+                + (p[1] - sm.y as f64).powi(2)
+                + (p[2] - sm.z as f64).powi(2))
+            .sqrt();
             if d <= 15.0 {
                 path += d;
             }
         }
-        prev = Some([sm.x, sm.y, sm.z]);
+        prev = Some([sm.x as f64, sm.y as f64, sm.z as f64]);
         s.push_str(&format!(
             "{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.3},{:.5},{:.5},{:.5},{:.4},{:.4},{:.4},{},{:.4},{:.3}\n",
             t + shift_ms, sm.x, sm.y, sm.z, sm.vx, sm.vy, sm.vz, sm.speed_kmh, sm.yaw, sm.pitch, sm.roll,

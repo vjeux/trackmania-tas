@@ -37,14 +37,14 @@ pub fn check(args: &[String]) -> Result<(), String> {
         .samples
         .first()
         .ok_or("recording has no vehicle sample")?;
-    let dx = got.x - expected.pos[0] as f64;
-    let dy = got.y - expected.pos[1] as f64;
-    let dz = got.z - expected.pos[2] as f64;
+    let dx = got.x as f64 - expected.pos[0] as f64;
+    let dy = got.y as f64 - expected.pos[1] as f64;
+    let dz = got.z as f64 - expected.pos[2] as f64;
     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-    let dot = (got.qx * expected.quat[0]
-        + got.qy * expected.quat[1]
-        + got.qz * expected.quat[2]
-        + got.qw * expected.quat[3])
+    let dot = (got.qx as f64 * expected.quat[0]
+        + got.qy as f64 * expected.quat[1]
+        + got.qz as f64 * expected.quat[2]
+        + got.qw as f64 * expected.quat[3])
         .abs()
         .clamp(-1.0, 1.0);
     let angle = 2.0 * dot.acos();
