@@ -189,6 +189,19 @@ fn main() {
         // `catch_unwind` and therefore never reaches this one.
         std::process::exit(3);
     }));
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("help");
     // Every MAP-taking subcommand reads `args[2]`, and with the argument

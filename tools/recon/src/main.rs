@@ -480,6 +480,30 @@ fn load_ref(a: &[String], path: &str, shift_ms: i64) -> wet::Wet {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        // Usage on STDOUT, exit 0 -- see gbx/tests/cli_contract.rs.
+        print!("{}", r#"
+recon -- grow an input tape forward for as long as it keeps matching
+
+  recon gas|left|right TRACE.csv [flags]
+        Extend a tape one input at a time and stop at the first tick whose
+        simulated state leaves the recorded trace.
+"#);
+        std::process::exit(0);
+    }
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.first().map(|x| x.as_str()) == Some("onsurface") {
         cmd_onsurface(&a[1..]);

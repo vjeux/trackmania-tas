@@ -515,6 +515,41 @@ fn pull(remote_path: &str, local: &str, jobs: usize) {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        // Usage on STDOUT, exit 0 -- see gbx/tests/cli_contract.rs.
+        print!("{}", r#"
+wsx -- files across the WhiteStick bridge, md5-checked at both ends
+
+wsx push LOCAL REMOTE   copy a local file to the render box
+wsx pull REMOTE LOCAL   copy a file back off it
+wsx sh 'CMD'            run one command there (no stdin, /bin/sh)
+
+--chunk N   base64 characters per bridge call (default 524288,
+            must be a multiple of 4; the box drops a command over
+            ~800000 bytes)
+--jobs N    chunks in flight at once (default 8)
+
+A leading ~ in a REMOTE path is expanded against the box's $HOME; every
+other character is passed through single-quoted, unexpanded.
+
+A push whose md5 already matches on the box sends nothing; a pull whose
+md5 already matches here fetches nothing.
+"#);
+        std::process::exit(0);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut chunk = DEFAULT_CHUNK;
     let mut jobs = DEFAULT_JOBS;

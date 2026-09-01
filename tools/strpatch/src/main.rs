@@ -13,6 +13,26 @@
 use gbx::{container::write_gbx, Gbx};
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        // Usage on STDOUT, exit 0 -- see gbx/tests/cli_contract.rs.
+        print!("{}", r#"
+usage: strpatch --in A --out B --old TEXT --new TEXT
+"#);
+        std::process::exit(0);
+    }
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (mut inp, mut out, mut old, mut new) =
         (String::new(), String::new(), String::new(), String::new());

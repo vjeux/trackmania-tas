@@ -1,6 +1,6 @@
 [package]
 name = "clip"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # No third-party dependencies: this has to build on the render box's WSL side

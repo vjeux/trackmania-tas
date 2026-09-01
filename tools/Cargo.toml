@@ -5,5 +5,22 @@ members = ["haul", "resim", "tmauto", "gbx", "asmshape", "asmdig", "ghost", "dsp
 # the engine paths); they are built from their own directories.
 exclude = ["fk", "forkoracle"]
 
+# ONE VERSION FOR THE WHOLE TOOLCHAIN.
+#
+# Every crate inherits this with `version.workspace = true`, so a release is a
+# single edit here and every binary's `--version` agrees. Before this, 19 of
+# the 24 crates were still at the `cargo new` default 0.1.0, which meant a bug
+# report could not say which build it came from.
+#
+# `fk` and `forkoracle` are separate workspaces and carry the same number by
+# hand -- keep them in step when this changes.
+#
+# NOTE the table order: `members` and `exclude` belong to [workspace], so they
+# must appear BEFORE [workspace.package] starts. Putting this table first
+# silently swallows them and cargo reports "the workspace has no members".
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+
 [profile.release]
 opt-level = 2

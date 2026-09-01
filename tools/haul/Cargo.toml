@@ -1,6 +1,6 @@
 [package]
 name = "haul"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # No third-party dependencies, on purpose: this crate is the thing a fresh box

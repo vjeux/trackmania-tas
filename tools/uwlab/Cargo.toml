@@ -1,6 +1,6 @@
 [package]
 name = "uwlab"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # `uwlab` is read-only trajectory analysis for the underwater map 173691. It

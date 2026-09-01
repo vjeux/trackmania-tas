@@ -15,6 +15,19 @@ fn main() {
     let mut passes = 0u64;
     let mut start_dev_max = 32.0f64;
 
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("maps") {
         std::process::exit(maps_cmd(&argv[1..]));

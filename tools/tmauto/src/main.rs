@@ -17,8 +17,18 @@ mod tailsearch;
 mod startprobe;
 
 fn usage() -> ! {
-    eprintln!(
-        r#"tmauto -- oracle, provenance and container layer
+    // usage() is the ERROR path: stderr, exit 2. `--help` wants the same
+    // text on stdout with exit 0, so both read one literal.
+    eprintln!("{}", USAGE_TEXT);
+    std::process::exit(2)
+}
+
+fn help() -> ! {
+    println!("{}", USAGE_TEXT);
+    std::process::exit(0)
+}
+
+const USAGE_TEXT: &str = r#"tmauto -- oracle, provenance and container layer
 
 RUNG 0  (synthesizing a container with no human provenance)
   tmauto synth probe --map MAP.Map.Gbx [--ticks N] [--out DIR] [--raw]
@@ -56,10 +66,7 @@ GATE
 AUDIT
   tmauto audit fs --clean DIR
   tmauto audit reads --clean DIR
-"#
-    );
-    std::process::exit(2)
-}
+"#;
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -89,6 +96,22 @@ fn parse_checksum256(s: &str) -> Result<[u8; 32], String> {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        help();
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         usage();

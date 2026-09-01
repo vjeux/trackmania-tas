@@ -70,6 +70,30 @@ fn head(path: &str) -> std::io::Result<(u32, u64, String)> {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        // Usage on STDOUT, exit 0 -- see gbx/tests/cli_contract.rs.
+        print!("{}", r#"
+dsprobe -- probe a dedicated-server endpoint through the forward proxy
+
+  dsprobe HOST PORT [PATH]
+        Open a connection and report what answers. Used to check a server is
+        reachable before a run blames the engine for a network failure.
+"#);
+        std::process::exit(0);
+    }
     let args: Vec<String> = std::env::args().collect();
     // usage: dsprobe <mode> ...
     //   dates <y0> <y1> <prefix> <dir>   -- sweep YYYY-MM-DD names

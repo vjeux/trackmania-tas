@@ -972,6 +972,49 @@ fn probe(map: &str, how: &str, mode: &str, timeout_s: u64) -> i32 {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        // Usage on STDOUT, exit 0 -- see gbx/tests/cli_contract.rs.
+        print!("{}", r#"
+usage:
+  shootctl lint <api.json> <file.as ...>
+  shootctl stamp <Main.as> <STAMP>
+  shootctl get <route>
+  shootctl wait --ctx N [--timeout S]
+  shootctl drive --map <path>
+  shootctl launch [timeout_s]
+  shootctl setup --map <map> [--cam N] <ghost...>
+        --cam: 2 External (default), 1 Internal, 6 Ext2, 3 Helico
+  shootctl shoot [timeout_s] --name <out>
+  shootctl run --map <map> --name <out> [--cam N] [--keep-game] <ghost...>
+        closes the game when the render finishes; --keep-game leaves it up
+  shootctl quit
+        close the game (best effort; not-running is success)
+  shootctl probe --map <map> [--how edit|play|editmap2|editghosts] [--timeout S]
+        load ONE map and print everything the game says while it does
+        or does not: ctx, IsReady, LatestResult, CustomResult, dialogs.
+        --how picks WHICH DOOR into the same file: EditMap (the track
+        editor), PlayMap, EditMap2 (--mode names the decoration), or
+        EditGhosts. 146612 hangs forever in the first and is in a
+        playground in 6.2 s through the second.
+  shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
+             
+        one game, one driver -- take this before setup/shoot
+"#);
+        std::process::exit(0);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!(

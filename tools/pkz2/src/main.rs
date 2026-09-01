@@ -21,8 +21,18 @@ mod jumps;
 mod tape;
 
 fn usage() -> ! {
-    eprintln!(
-        "pkz2 <cmd>
+    // usage() is the ERROR path: stderr, exit 2. `--help` wants the same
+    // text on stdout with exit 0, so both read one literal.
+    eprintln!("{}", USAGE_TEXT);
+    std::process::exit(2)
+}
+
+fn help() -> ! {
+    println!("{}", USAGE_TEXT);
+    std::process::exit(0)
+}
+
+const USAGE_TEXT: &str = "pkz2 <cmd>
 
   gravity <traj.csv> [--from S] [--to S]
         measure gravity from a recording's own free fall: the mode of the
@@ -37,10 +47,7 @@ fn usage() -> ! {
         MAKES energy; a coasting car cannot.
 
   traj <traj.csv> --from S --to S [--step S]
-        dump the window."
-    );
-    std::process::exit(2)
-}
+        dump the window.";
 
 fn flag(a: &[String], name: &str) -> Option<String> {
     let pre = format!("--{}", name);
@@ -60,6 +67,22 @@ fn fnum(a: &[String], name: &str, d: f64) -> f64 {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        help();
+    }
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.is_empty() {
         usage()

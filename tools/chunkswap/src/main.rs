@@ -15,13 +15,20 @@
 use gbx::{all_skip_chunks, container::write_gbx, Gbx};
 
 fn usage() -> ! {
-    eprintln!(
-        "usage: chunkswap --into A --from B --id 0xNNNNNNNN [--id ...] [--insert-missing] --out O\n\
-         \x20      chunkswap --list FILE\n\
-         \x20      chunkswap --show FILE 0xNNNNNNNN"
-    );
+    // usage() is the ERROR path: stderr, exit 2. `--help` wants the same
+    // text on stdout with exit 0, so both read one literal.
+    eprintln!("{}", USAGE_TEXT);
     std::process::exit(2)
 }
+
+fn help() -> ! {
+    println!("{}", USAGE_TEXT);
+    std::process::exit(0)
+}
+
+const USAGE_TEXT: &str = "usage: chunkswap --into A --from B --id 0xNNNNNNNN [--id ...] [--insert-missing] --out O\n\
+         \x20      chunkswap --list FILE\n\
+         \x20      chunkswap --show FILE 0xNNNNNNNN";
 
 fn parse_id(s: &str) -> u32 {
     u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16)
@@ -37,6 +44,22 @@ fn load(p: &str) -> Gbx {
 }
 
 fn main() {
+    // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
+    // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
+    // the git hash the release build sets. option_env! means an ordinary
+    // `cargo build` still works and simply reports "dev". No dependency.
+    if std::env::args().any(|x| x == "--version" || x == "-V") {
+        println!(
+            "{} {} ({})",
+            option_env!("CARGO_BIN_NAME").unwrap_or(env!("CARGO_PKG_NAME")),
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TAS_BUILD").unwrap_or("dev")
+        );
+        std::process::exit(0);
+    }
+    if std::env::args().any(|x| x == "--help" || x == "-h") {
+        help();
+    }
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (mut into, mut from, mut out) = (String::new(), String::new(), String::new());
     let mut insert_missing = false;
