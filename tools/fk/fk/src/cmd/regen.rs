@@ -490,6 +490,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         o.pos_off, o.quat_off, o.vel_off, o.reclen
     );
     println!("CAR AT {:#x}", o.pos);
+    // TRIED AND REVERTED: refusing a car whose address is not 16-byte aligned.
+    //
+    // 126859 writes every position shifted one f32 (source (1318,46,391) comes
+    // out (46,391,0)) and its car resolves to …114 -- four bytes past a
+    // boundary, where 203072 lands on …1b0 and 294446 on …1a0. An f32 of
+    // misalignment for an f32 of shift is a tidy story and it is FALSE:
+    //
+    //   286279 resolves to …8a4, ALSO misaligned, and its film carries
+    //   (912,34,784) against a source of (912,34,784) -- byte-correct.
+    //
+    // The gate refused a map that demonstrably works. Misalignment is also not
+    // stable per map: 126859 came back 4 bytes off in one process and 8 in the
+    // next. So the address's low bits say nothing about whether the fields are
+    // read correctly, and the shift has some other cause.
     let ss = raws[0].len();
     let recs = read_samples_pair(&dump, o.reclen);
     // `--recshift` USED TO LIVE HERE AND IT WAS WRONG. It shifted the pairing
