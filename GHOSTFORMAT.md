@@ -1,18 +1,20 @@
 # A ghost file, completely accounted for
 
-Every byte of a `.Ghost.Gbx` is identified. This replaces the working
-assumption that a ghost is ~27 chunks of which we understand six.
+Every byte of a `.Ghost.Gbx` is identified, and `ghost synth` proves it by
+re-emitting one: it decomposes a donor into named chunks and writes every byte
+back from parsed values and built-in constants. Byte-identical on all five
+staged maps, with ZERO unnamed bytes on four of them.
 
-## The classes (openplanet.dev, Trackmania Next API)
+## The classes (next.openplanet.dev/Game/<Class>)
 
-`next.openplanet.dev/Game/<Class>` documents the runtime nods, and their class
-IDs are exactly our chunk-id prefixes:
+The class ids are exactly our chunk-id prefixes:
 
     CGameGhost           0x0303F000
     CGameCtnGhost        0x03092000   inherits CGameGhost
     CPlugEntRecordData   0x0911F000   the telemetry record
 
-`CGameCtnGhost`'s full member list, from the 2026-01-26 build:
+`CGameCtnGhost`'s 28 documented members (2026-01-26 build) are what those
+chunks serialise:
 
     uint Duration            uint Size
     MwId ModelIdentName      MwId ModelIdentAuthor
@@ -34,70 +36,71 @@ IDs are exactly our chunk-id prefixes:
     string Validate_ExtraTool_Info
     uint Validate_OsKind     uint Validate_CpuKind
 
-Those map one-to-one onto the validation block we already read and write.
+That list decoded a chunk on sight: **0x03092010 is Validate_ChallengeUid**, and
+an MwId is a GBX lookback string -- a 0x40000000 marker, a length, then the map
+uid in the clear.
 
-## The file is ELEVEN PARTS, not 27 chunks
+## The structure
 
-`all_skip_chunks` byte-scans for the `PIKS` marker, so it finds skippable
-chunks AND false positives inside their payloads -- which is where the
-"27 chunks" came from. Several of those "payloads" decode to text fragments
-like `ic, ` and `d Ki`, i.e. slices landing mid-string.
+A ghost body is ~25 ordinary chunks: a run of skippable ones
+(`id | PIKS | len | payload`) and a handful of non-skippable ones between them.
+The notable pieces:
 
-Merging overlaps gives FIVE top-level spans covering 99.1-100.0 % of the body,
-and six gaps totalling 123 bytes. On 287431:
+    0x0303F006   28 B   CGameGhost -- a flag and a 12-byte zlib blob.
+                        BYTE-IDENTICAL in all five ghosts, so it is a constant
+                        of this build, not something a run determines.
+    0x0303F007    4 B
+    0x03092000  big     wraps CPlugEntRecordData -- the telemetry WE AUTHOR
+    0x0309200C/E  4 B   scalars; 0x0309200E is a hash we copy
+    0x0309200F    4 B
+    0x03092010   MwId   Validate_ChallengeUid = the map uid
+    0x03092013 … 0x0309202E   the metadata chunks, incl. the validation block
+    0x0309201C   32 B   a hash we copy
+    0x0309201D  big     the INPUT TAPE, which we also author
+    0xFACADE01    4 B   body end marker
 
-    gap    28 B   0x0303F006  CGameGhost -- flag + a 12-byte zlib blob;
-                              BYTE-IDENTICAL across all five test ghosts
-    span 10874 B  0x0303F007  CGameGhost -- wraps CPlugEntRecordData,
-                              the telemetry: WE AUTHOR THIS
-    gap    16 B   0x0309200C (u32 0) + 0x0309200E (u32, varies -- a hash)
-    gap     4 B   payload tail
-    span     4 B  0x0309200F
-    span     4 B  0x03092010
-    gap    35 B   u32 flag, u32 len=27, then the 27-char MAP UID
-                  ("En6ZbR6_Kun3gRufEymOOUo8DYm")
-    span   110 B  0x03092013
-    gap    36 B   0x0309201C + a 32-byte hash
-    span 17407 B  0x0309201D  the INPUT TAPE: WE AUTHOR THIS
-    gap     4 B   0xFACADE01  the GBX body end marker
+### Two analysis bugs worth remembering
 
-## Proof the model is complete
+An earlier version of this document claimed "27 chunks, five giant spans".
+Both halves were artefacts of our own tooling:
 
-Decompose the body at those boundaries, concatenate the parts back, compare:
+* `all_skip_chunks` byte-scans for `PIKS`, so it reports phantom chunks inside
+  non-skippable payloads. Several phantom "payloads" decode to text fragments
+  landing mid-string -- that was the "27 chunks, 21 opaque" picture.
+* Collapsing phantoms by merging overlapping spans, merging on `<=` also glues
+  ADJACENT chunks together: 0x0303F007 is 4 bytes, and the merge made it look
+  10874 bytes long by swallowing 0x03092000 behind it. Merge on `<` --
+  strictly inside is a phantom, adjacent is a real neighbour.
 
-    parts: 11   original md5 e09ca0c10d5c0b20d5a83c765445c2eb
-                 rebuilt md5 e09ca0c10d5c0b20d5a83c765445c2eb
-    BYTE-IDENTICAL: True
+The fix for both was to make the tool REPRODUCE THE BYTES. A structural theory
+that cannot re-emit its input is not a structure, it is a guess.
 
-Lossless decomposition is the precondition for synthesis: anything that can be
-taken apart into named parts and put back byte-for-byte can be rebuilt with
-different parts.
+## What is still not derivable
 
-## So why do we still transplant?
+Two values, both copied rather than computed:
 
-Not because the format is opaque -- it is not. Because of ONE MEASURED FACT:
-a container we assembled ourselves passed every offline gate and then CRASHED
-THE CLIENT on import:
+    the u32 after 0x0309200E
+    the 32 bytes after 0x0309201C
+
+`ghost synth --zero-hashes` zeroes both. The dedicated server does not care:
+
+    zeroed   20.756 cps=7
+    control  20.756 cps=7
+
+Flipping every bit of both in a donor also still validates.
+
+## So can we build one from scratch?
+
+For everything the SERVER checks: yes, and `ghost synth` is the tool.
+
+The untested surface is the CLIENT loader, and that is precisely where the
+historical failure was -- a container we assembled ourselves passed every
+offline gate and then crashed the game on import:
 
     staged 1 ghost(s) into _shoot
     read: Connection reset by peer (os error 104)
 
-The offline gates cannot see whatever the loader objects to. Until something
-reproduces that check offline, "it validates" is not evidence it will load.
-
-Two items in the list above are the honest remaining unknowns, and both are
-hashes we currently copy rather than compute: the u32 in 0x0309200E and the
-32 bytes after 0x0309201C. If the client verifies either, a synthesised ghost
-fails there -- and that is exactly the kind of thing the crash would look like.
-
-## What synthesis would take, concretely
-
-1. Emit the 0x0303F006 literal (constant across every ghost seen).
-2. Emit 0x0303F007 wrapping a CPlugEntRecordData we already build.
-3. Emit the scalars, the map UID string, and 0x03092013.
-4. COMPUTE the two hashes, or prove the client ignores them.
-5. Emit the tape chunk we already build, then 0xFACADE01.
-
-Steps 1-3 and 5 are mechanical. Step 4 is the whole risk, and it is testable
-in isolation: corrupt each hash in a known-good ghost, import it, and see
-which one the client rejects.
+No offline gate sees whatever the loader objects to. Until a synthesised ghost
+is imported by a running client, "we can synthesise a ghost" means "the server
+accepts it", not "the game will load it". That test needs the game up on the
+render box and is the next step.
