@@ -276,6 +276,28 @@ fn main() {
         // ([415,0,416], one car) and its film, which imports ([415,0,44,374],
         // two cars split at the 2.13 s freefall handover). Everything else has
         // been tested and cleared (297fd64, f763c27).
+        // `ghost car-first IN OUT` -- move the car entity to the head of the
+        // entity list. 294446 imports with ONE car entity and the car FIRST;
+        // 287431 crashes with one car entity and the car LAST. The split that
+        // "fixed" 287431 also put a car earlier in the list, so order is the
+        // confound and this isolates it.
+        "car-first" => {
+            let inp = rest.first().unwrap_or_else(|| die("ghost car-first IN OUT"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost car-first IN OUT"));
+            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                let idx = rd
+                    .ents
+                    .iter()
+                    .position(|e| e.sample_size == 116)
+                    .ok_or("no car entity")?;
+                let car = rd.ents.remove(idx);
+                rd.ents.insert(0, car);
+                Ok(())
+            }) {
+                Ok(_) => println!("moved the car entity to index 0 -> {}", outp),
+                Err(e) => die(format!("car-first: {}", e)),
+            }
+        }
         "split-car" => {
             let inp = rest.first().unwrap_or_else(|| die("ghost split-car IN OUT --at MS"));
             let outp = rest.get(1).unwrap_or_else(|| die("ghost split-car IN OUT --at MS"));
