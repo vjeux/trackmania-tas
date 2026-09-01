@@ -136,6 +136,16 @@ pub fn cmd(a: &[String]) {
     if has(a, "--expect-dnf") {
         rg.push("--expect-dnf".into());
     }
+    // FORWARD --server. film takes one and uses it for its own oracle calls,
+    // but never passed it to the regen it shells out to -- so the sub-regen
+    // fell back to a default server path while every standalone control I ran
+    // used the explicit one. That makes film's regen a DIFFERENT BINARY's
+    // memory layout, which is exactly the kind of difference that turns a good
+    // chain into "step 3 is a null pointer".
+    if let Some(sv) = flag(a, "--server") {
+        rg.push("--server".into());
+        rg.push(sv.to_string());
+    }
     run(&me, &rg, "regen");
 
     // ---- 3. BUILD IN THE REFERENCE'S OWN CONTAINER (traps 2, 3, and the
