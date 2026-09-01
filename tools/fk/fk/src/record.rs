@@ -943,6 +943,11 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // zeroed wheels. When the caller has named a signature, that path searches
     // too -- its quaternion and velocity offsets relative to the position are
     // the same -16 / +12 the anchored path uses.
+    // FK_NO_CHOOSER=1 keeps the ANCHOR's offset. Kept as a probe because it is
+    // how the 126859 corruption was pinned: with the chooser off, that map
+    // writes pos (1318, 46, 391) -- its source's value exactly -- and with it
+    // on, (46, 391, 0).
+    let choose_copy = choose_copy && std::env::var("FK_NO_CHOOSER").is_err();
     let (pos_off, quat_off, vel_off) = if choose_copy && anchors.is_some() && recs.len() > 20 {
         let g = |r: &Rec, o: usize| f32::from_le_bytes(r.bytes[o..o + 4].try_into().unwrap()) as f64;
         let step = 4usize;
@@ -1194,7 +1199,39 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                     cands.len()
                 );
             }
-            let best = return_choice.unwrap_or(best);
+            // WHEN THE CHOOSER ABSTAINS, TRUST THE ANCHOR -- do not let the
+            // live-copy rule guess.
+            //
+            // `return_choice` is set only when a candidate is within 5 cm of
+            // the FILE'S OWN recorded path, which is the one test here that
+            // consults ground truth. When nothing passes it the code fell
+            // through to `best`, chosen by forward projection alone -- a rule
+            // that asks "which copy moves along the velocity" and cannot tell
+            // the car from a copy 72 bytes away that also moves.
+            //
+            // 126859 is that case: "no candidate is within 5 cm of the file's
+            // own path (best 0.9400 m of 2) -- falling back to the live-copy
+            // rule", which then picked record +124 where the anchor said +196,
+            // and every position in the file came out one field late (source
+            // (1318,46,391) written as (46,391,0)). COVERAGE said 469 of 469.
+            //
+            // The anchor's offset is not a guess: it comes from a chain that
+            // passed the acceptance test on this map in this process. Between
+            // a measured anchor and an unvalidated projection, prefer the
+            // anchor -- and say so, because silently overriding it is what
+            // made this cost a session to find.
+            let best = match return_choice {
+                Some(c) => c,
+                None if best != pos_off => {
+                    println!(
+                        "chooser abstained; keeping the anchor's +{} rather than the live-copy \
+                         rule's +{} (an unvalidated projection)",
+                        pos_off, best
+                    );
+                    pos_off
+                }
+                None => best,
+            };
             (best, (best as i64 + qrel) as usize, (best as i64 + vrel) as usize)
         } else if cands.len() == 1 && cands[0] != pos_off {
             (
