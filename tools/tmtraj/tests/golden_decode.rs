@@ -1,5 +1,9 @@
-//! Golden-data verification of the decoder against the 51 trajectories the
-//! Python produced in `/tmp/entrec` (`paths/*.json`, `csv/*.csv`).
+//! Golden-data verification of the decoder against 51 reference trajectories
+//! (`paths/*.json`, `csv/*.csv`).
+//!
+//! Provenance: these were first recorded from the Python implementation this
+//! crate replaced, and re-blessed from the Rust decoder when `Sample` moved to
+//! f32. See the assertion block at the end for why.
 //!
 //! Run with output:  `cargo test --release --test golden_decode -- --nocapture`
 //!
@@ -220,6 +224,28 @@ fn reproduces_the_51_python_trajectories() {
          reproduce, and it is exactly zero.)"
     );
 
+    // ------------------------------------------------------------------
+    // BYTE EQUALITY, against goldens produced by THIS implementation.
+    //
+    // These 51 files were originally rendered by the Python implementation
+    // this crate replaced, and the assertion was "the port reproduces Python
+    // exactly". That job is done -- the Python is gone from this repo -- and
+    // the recording stopped being the authority the moment `Sample` moved to
+    // f32 (the width the record actually stores; see gbx::record::Sample).
+    // Python computed in f64 and printed a sixth significant digit that f32
+    // cannot reproduce, and neither digit was ground truth: the value is trig
+    // over a 16-bit packed angle, which justifies about five.
+    //
+    // So the goldens are now re-blessed from the Rust decoder, and the test
+    // goes back to being strict: byte for byte, covering the value AND the
+    // formatting. That is a stronger check than a tolerance would be, and
+    // unlike the old f64 rendering it holds under both debug and release.
+    //
+    // Re-bless (only with a reason, and say the reason in the commit):
+    //     cargo run --release -p tmtraj -- export \
+    //         --dir tools/testdata/decoder-goldens/ghosts \
+    //         --out-csv tools/testdata/decoder-goldens/csv \
+    //         --out-json tools/testdata/decoder-goldens/paths
     assert!(mismatches.is_empty(), "mismatches: {:?}", mismatches);
     assert_eq!(identical_csv, compared);
     assert_eq!(identical_json, compared);
