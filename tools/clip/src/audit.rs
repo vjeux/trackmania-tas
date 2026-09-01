@@ -143,9 +143,16 @@ fn audit_one(page: MapPage, root: &Path, store: &Path) -> Audited {
         .arg(&ghost)
         .arg("--map")
         .arg(&map)
+        // Ask for the MACHINE rendering. This used to read the human one and
+        // split on the literal strings "kappa ", "file: " and "re-simulated",
+        // so rewording any gate message silently produced `None` here instead
+        // of an error -- an audit that reports "unchecked" because a sentence
+        // changed is worse than one that fails.
+        .arg("-o")
+        .arg("json")
         .output();
     let text = match out {
-        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
         Err(e) => {
             return Audited {
                 page,
@@ -160,27 +167,45 @@ fn audit_one(page: MapPage, root: &Path, store: &Path) -> Audited {
     let mut kappa = None;
     let mut oracle = None;
     let mut verdict = "no verdict line".to_string();
-    for l in text.lines() {
-        let t = l.trim();
-        if t.contains("V6") {
-            if let Some(k) = t.split("kappa ").nth(1).and_then(|s| s.split_whitespace().next()) {
+    // The report is `{"checks": [{"id", "verdict", "message"}, ...], "pass": N,
+    // "fail": N, ...}`. Gate IDENTITY and VERDICT now come from the structure;
+    // only the two numbers still come out of a message, because they live
+    // nowhere else yet. Those two are the remaining fragility, and they are
+    // now confined to the gates that own them rather than to line scanning.
+    let checks = crate::audit_json::checks(&text);
+    for (id, v, msg) in &checks {
+        if id == "V6" {
+            if let Some(k) = msg.split("kappa ").nth(1).and_then(|s| s.split_whitespace().next())
+            {
                 kappa = k.parse().ok();
             }
         }
-        if t.contains("V7") {
-            oracle = Some(if t.contains("re-simulated") {
-                t.split("file: ").nth(1).unwrap_or("?").split_whitespace().next().unwrap_or("?").to_string()
-            } else if t.contains("DNF") {
-                "DNF".to_string()
-            } else {
-                "n/a".to_string()
+        if id == "V7" {
+            oracle = Some(match v.as_str() {
+                "na" => "n/a".to_string(),
+                _ if msg.contains("DNF") => "DNF".to_string(),
+                _ => msg
+                    .split("file: ")
+                    .nth(1)
+                    .unwrap_or("?")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("?")
+                    .to_string(),
             });
         }
-        if t == "OK" {
-            verdict = "OK".into();
-        } else if t.starts_with("REFUSED") {
-            verdict = t.to_string();
-        }
+    }
+    if !checks.is_empty() {
+        let fails: Vec<&String> = checks
+            .iter()
+            .filter(|(_, v, _)| v == "fail")
+            .map(|(id, _, _)| id)
+            .collect();
+        verdict = if fails.is_empty() {
+            "OK".into()
+        } else {
+            format!("REFUSED: {} failed", fails.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "))
+        };
     }
     Audited { page, ghost: Some(ghost), map: Some(map), kappa, oracle, verdict }
 }

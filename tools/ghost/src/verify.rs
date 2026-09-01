@@ -47,6 +47,63 @@ impl Report {
             println!("{} {:<4} {}", tag, c.id, c.msg);
         }
     }
+
+    /// The same report as JSON, for callers rather than people.
+    ///
+    /// The prose above is a human rendering and has always been treated as
+    /// one -- but `clip`'s audit was READING it, line by line, splitting on
+    /// the literal strings "kappa ", "file: " and "re-simulated" to recover
+    /// numbers this struct already holds. Reword a gate message and that
+    /// caller silently reports `None` instead of failing, which is the worst
+    /// way for a check to break.
+    ///
+    /// Emitted by hand: this workspace has one third-party dependency and a
+    /// serialiser is not worth becoming the second. Strings are escaped for
+    /// the characters a gate message can actually contain.
+    pub fn json(&self) -> String {
+        let esc = |s: &str| -> String {
+            let mut o = String::with_capacity(s.len() + 8);
+            for ch in s.chars() {
+                match ch {
+                    '"' => o.push_str("\\\""),
+                    '\\' => o.push_str("\\\\"),
+                    '\n' => o.push_str("\\n"),
+                    '\t' => o.push_str("\\t"),
+                    '\r' => {}
+                    c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => o.push(c),
+                }
+            }
+            o
+        };
+        let mut o = String::from("{\"checks\": [");
+        for (i, c) in self.checks.iter().enumerate() {
+            if i > 0 {
+                o.push_str(", ");
+            }
+            let v = match c.verdict {
+                Verdict::Pass => "pass",
+                Verdict::Fail => "fail",
+                Verdict::Na => "na",
+                Verdict::Warn => "warn",
+            };
+            o.push_str(&format!(
+                "{{\"id\": \"{}\", \"verdict\": \"{}\", \"message\": \"{}\"}}",
+                c.id,
+                v,
+                esc(&c.msg)
+            ));
+        }
+        let n = |v: Verdict| self.checks.iter().filter(|c| c.verdict == v).count();
+        o.push_str(&format!(
+            "], \"pass\": {}, \"fail\": {}, \"warn\": {}, \"na\": {}}}",
+            n(Verdict::Pass),
+            n(Verdict::Fail),
+            n(Verdict::Warn),
+            n(Verdict::Na)
+        ));
+        o
+    }
 }
 
 /// V6: does the RECORDING agree with the TAPE the same file carries?
@@ -881,14 +938,26 @@ fn b64_tokens(b: &[u8]) -> Vec<(usize, String)> {
 }
 
 pub fn cmd(a: &[String]) {
-    let path = a.first().unwrap_or_else(|| die("ghost verify FILE [--map M] [--server DIR]"));
-    println!("verifying {}", path);
+    let path = a.first().unwrap_or_else(|| die("ghost verify FILE [--map M] [--server DIR] [-o json]"));
+    // `-o human` (default) or `-o json`. The verdict and the exit code are
+    // identical either way -- this changes the rendering, not the judgement.
+    let json_out = matches!(flag(a, "-o"), Some("json"))
+        || matches!(flag(a, "--output"), Some("json"));
+    if !json_out {
+        println!("verifying {}", path);
+    }
     let r = run(path, a);
-    r.print();
+    if json_out {
+        println!("{}", r.json());
+    } else {
+        r.print();
+    }
     let n_fail = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
     let n_pass = r.checks.iter().filter(|c| c.verdict == Verdict::Pass).count();
     if n_fail > 0 {
-        println!("\nREFUSED: {} check(s) failed", n_fail);
+        if !json_out {
+            println!("\nREFUSED: {} check(s) failed", n_fail);
+        }
         // EXIT 1: the verification ran and the answer is NO. Exit 2 is
         // reserved for "you called me wrong" -- see cli::refuse. This is the
         // single most important place for that distinction, because `verify`
@@ -923,13 +992,17 @@ pub fn cmd(a: &[String]) {
         .filter(|c| c.verdict == Verdict::Pass && SUBSTANTIVE.contains(&c.id))
         .count();
     if n_substantive == 0 {
-        println!(
-            "\nREFUSED: nothing could be checked -- {} gate(s) ran and none of them \
-             found a run to verify -- only absence checks passed, and those pass on \
-             any file. This is not a ghost.",
-            r.checks.len()
-        );
+        if !json_out {
+            println!(
+                "\nREFUSED: nothing could be checked -- {} gate(s) ran and none of them \
+                 found a run to verify -- only absence checks passed, and those pass on \
+                 any file. This is not a ghost.",
+                r.checks.len()
+            );
+        }
         std::process::exit(1);
     }
-    println!("\nOK");
+    if !json_out {
+        println!("\nOK");
+    }
 }
