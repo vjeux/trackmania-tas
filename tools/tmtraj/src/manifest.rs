@@ -701,7 +701,7 @@ pub fn cmd(args: &[String]) {
     let flag = |n: &str| -> Option<String> {
         args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
     };
-    if args.is_empty() {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         print!(
             "\
 tmtraj intg manifest -- provenance that travels with a ghost
@@ -722,7 +722,9 @@ where the donor IS the reference, it can say nothing. The manifest records how
 the file was made, and `intg gate --manifest` checks the file against it.
 "
         );
-        std::process::exit(2);
+        // Exit 0 when help was ASKED FOR, 2 when the arguments were simply
+        // missing -- see the same split in intgcmd::cmd.
+        std::process::exit(if args.iter().any(|a| a == "--help" || a == "-h") { 0 } else { 2 });
     }
     match args[0].as_str() {
         "new" => {

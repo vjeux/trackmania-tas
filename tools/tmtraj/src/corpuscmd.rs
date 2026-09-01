@@ -61,6 +61,14 @@ a verdict from zero compared samples is reported as UNTESTED, never as clean.
 // ---------------------------------------------------------------------------
 
 pub fn cmd(argv: &[String]) -> i32 {
+    // `--help` BEFORE the subcommand check: this command reads the filesystem
+    // to decide what to do, so asking it for help used to walk the corpus and
+    // fail with "no <mapid>-<slug>/replays/*.Ghost.Gbx" instead of printing
+    // usage. Help must never depend on the state of the working directory.
+    if argv.iter().any(|s| s == "--help" || s == "-h") {
+        print!("{}", USAGE);
+        return 0;
+    }
     let Some(sub) = argv.first().map(|s| s.to_string()) else {
         eprint!("{}", USAGE);
         return 2;

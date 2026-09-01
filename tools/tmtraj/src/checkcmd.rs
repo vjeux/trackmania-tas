@@ -120,14 +120,21 @@ pub fn cmd(args: &[String]) {
     // ghost still carries from its donor. When the file's manifest declares it
     // inherited, C6 and C10 have no operand of their own to read.
     let contact_inherited = args.iter().any(|a| a == "--contact-inherited");
-    if files.is_empty() {
-        println!(
-            "usage: tmtraj check GHOST... [--race MS] [--quiet]\n\
+    // Asking for help is not a usage error. `--help` prints on stdout and
+    // exits 0; NO ARGUMENTS AT ALL is still exit 2, because that is someone
+    // who meant to check a file and forgot to name one.
+    let asked_for_help = args.iter().any(|a| a == "--help" || a == "-h");
+    if files.is_empty() || asked_for_help {
+        let usage = "usage: tmtraj check GHOST... [--race MS] [--quiet]\n\
              \n\
              Refuses a ghost whose telemetry is not its own. --race is the\n\
              file's validated time in milliseconds; without it the declared\n\
-             race time in the file is used and C4 is reported as unchecked."
-        );
+             race time in the file is used and C4 is reported as unchecked.\n";
+        if asked_for_help {
+            print!("{}", usage);
+            std::process::exit(0);
+        }
+        eprint!("{}", usage);
         std::process::exit(2);
     }
     let mut worst = 0;

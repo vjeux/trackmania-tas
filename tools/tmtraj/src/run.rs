@@ -108,6 +108,17 @@ pub fn run() {
         std::process::exit(2);
     }
     let rest = &argv[1..];
+    // `<subcommand> --help` for EVERY subcommand. Most route through
+    // `cli::finish`, which prints that command's OWN usage; but the ones that
+    // read a positional argument first fail in their own way before help is
+    // considered -- "unknown flag --help", "unknown manifest subcommand",
+    // even "--help: No such file or directory". Six of twenty behaved so.
+    //
+    // Dispatch normally FIRST, so a command with specific usage still prints
+    // it, and only fall back to the top-level text when the command answered
+    // with a usage error (exit 2) to a lone `--help`. That way the guard
+    // rescues the six without shadowing the fourteen.
+    let lone_help = rest.len() == 1 && (rest[0] == "--help" || rest[0] == "-h");
     let code = match argv[0].as_str() {
         "show" => cmd_show(rest),
         "export" => cmd_export(rest),
@@ -211,6 +222,14 @@ pub fn run() {
             2
         }
     };
+    // The fallback described above: a lone `--help` that the subcommand
+    // answered with a usage error gets the top-level text and exit 0. A
+    // command with its own help has already printed it and returned 0, so it
+    // never reaches here.
+    if lone_help && code == 2 {
+        print!("{}", USAGE);
+        std::process::exit(0);
+    }
     std::process::exit(code);
 }
 

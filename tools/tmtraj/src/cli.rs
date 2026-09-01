@@ -145,7 +145,16 @@ impl Args {
     /// Every flag this command understands must have been asked for by now.
     /// Anything else, and any accumulated parse error, exits 2 with a usage
     /// message. Call it once, after reading the flags and before doing work.
+    ///
+    /// `--help` / `-h` are handled HERE, for every subcommand at once: usage
+    /// on stdout, exit 0. No command asks for them, so before this they fell
+    /// through to the unknown-flag path and every `tmtraj <cmd> --help`
+    /// answered "unknown flag --help" while printing usage that lists it.
     pub fn finish(self, usage: &str) -> Args {
+        if self.seen.iter().any(|s| s == "help" || s == "h") {
+            print!("{}", usage);
+            std::process::exit(0);
+        }
         let known = self.asked.borrow().clone();
         for s in &self.seen {
             if !known.iter().any(|k| k == s) {

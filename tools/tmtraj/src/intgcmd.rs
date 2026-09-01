@@ -229,7 +229,13 @@ pub fn verdict(p: &Pair, minsep: f64) -> Verdict {
 ///   far that car travels in one 10 ms tick, and the first version of the check
 ///   convicted an honest file inside an hour.
 pub fn cmd(args: &[String]) {
-    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+    // Asking for help is exit 0; forgetting the arguments is exit 2. The two
+    // were collapsed into one branch, so `--help` looked like a usage error.
+    if args[0..].iter().any(|a| a == "-h" || a == "--help") {
+        print_usage();
+        std::process::exit(0);
+    }
+    if args.is_empty() {
         print_usage();
         std::process::exit(2);
     }
