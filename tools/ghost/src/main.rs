@@ -260,6 +260,31 @@ fn main() {
         "trim" => trim::cmd(rest),
         "splice" => splice::cmd(rest),
         "synth" => synth::cmd(rest),
+        // `ghost strip-events IN OUT --type N` -- drop every deltas2 record of
+        // one type from the middle entity. Built to answer ONE question: why
+        // does 287431's ghost kill the client on any map (17a29c8)? It carries
+        // 7 type-80 records where every other ghost in the corpus carries 0 or
+        // 1, and 294446 (which has 1) imports fine.
+        "strip-events" => {
+            let inp = rest.first().unwrap_or_else(|| die("ghost strip-events IN OUT --type N"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost strip-events IN OUT --type N"));
+            let want: i32 = flag(rest, "--type")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| die("--type N"));
+            let mut dropped = 0usize;
+            let r = gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                for e in rd.ents.iter_mut() {
+                    let before = e.deltas2.len();
+                    e.deltas2.retain(|(t, _, _)| *t != want);
+                    dropped += before - e.deltas2.len();
+                }
+                Ok(())
+            });
+            match r {
+                Ok(_) => println!("dropped {} deltas2 record(s) of type {} -> {}", dropped, want, outp),
+                Err(e) => die(format!("strip-events: {}", e)),
+            }
+        }
         "declare" => declare::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
