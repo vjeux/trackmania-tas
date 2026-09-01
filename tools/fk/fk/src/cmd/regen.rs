@@ -1379,8 +1379,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // is enough: a field-shift is systematic, so if sample 0 agrees the
     // transcription is aligned. A map whose template is a rebuilt grid has no
     // position to compare, and says so rather than failing.
+    // FK_FORCE_SHIFT_CHECK=<path> compares against an arbitrary file, so the
+    // warning's own branch can be exercised. Without it this guard had never
+    // fired in a test -- every attempt to produce a genuinely shifted file
+    // aborted earlier for unrelated reasons, and a guard whose firing path is
+    // unexercised is a guard on paper.
+    let cmp_against = std::env::var("FK_FORCE_SHIFT_CHECK").unwrap_or_else(|_| c.template.clone());
     if let (Ok(src), Ok(got)) = (
-        gbx::record::decode_ghost(&c.template),
+        gbx::record::decode_ghost(&cmp_against),
         gbx::record::decode_ghost(&outp),
     ) {
         if let (Some(a), Some(b)) = (src.samples.first(), got.samples.first()) {
