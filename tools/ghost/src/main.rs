@@ -45,7 +45,7 @@ INPUTS  (operation 1 and 2)
         every tick is writable.
   ghost tape diff A.gtape B.gtape
         Per-tick differences between two tapes.
-  ghost tape poke IN --out T.gtape --ticks A..B --set steer=..,accel=..,brake=..
+  ghost tape poke IN --out T.gtape --tick-range A..B --set steer=..,accel=..,brake=..
         Override the vehicle inputs over a half-open tick range and leave every
         other tick identical: the one-variable probe -- a brake pulse, a lifted
         throttle, a unit of steer -- without hand-editing `t=` lines, where an
@@ -657,16 +657,40 @@ fn cmd_tape(a: &[String]) {
             // `t=` lines, which is how an off-by-one gets into a measurement
             // nobody can reproduce.
             let inp = rest.first().unwrap_or_else(|| {
-                die("ghost tape poke IN[.gtape|.Ghost.Gbx] --out T.gtape --ticks A..B --set steer=..,accel=..,brake=..")
+                die("ghost tape poke IN[.gtape|.Ghost.Gbx] --out T.gtape --tick-range A..B --set steer=..,accel=..,brake=..")
             });
             let out = need(rest, "--out");
-            let range = need(rest, "--ticks");
+            // `--tick-range A..B`. This was `--ticks A..B`, which collided with
+            // a `--ticks N` that means a COUNT in thirteen other files
+            // (tmauto, tmmaps, uwlab) -- same name, same workspace, two
+            // incompatible grammars, so anyone who learns one carries it to
+            // the other and is silently wrong about what they asked for.
+            //
+            // The old spelling still works for one release and says so. It is
+            // accepted only where it is unambiguous: `--ticks` here has always
+            // wanted `A..B`.
+            let range = match flag(rest, "--tick-range") {
+                Some(v) => v.to_string(),
+                None => match flag(rest, "--ticks") {
+                    Some(v) => {
+                        eprintln!(
+                            "ghost: --ticks is deprecated here and will be removed; use \
+                             --tick-range {} (it takes a RANGE, while --ticks means a \
+                             COUNT everywhere else in the toolchain)",
+                            v
+                        );
+                        v.to_string()
+                    }
+                    None => die("ghost tape poke wants --tick-range A..B"),
+                },
+            };
+            let range = range.as_str();
             let (lo, hi) = range
                 .split_once("..")
                 .and_then(|(l, h)| Some((l.trim().parse::<usize>().ok()?, h.trim().parse::<usize>().ok()?)))
-                .unwrap_or_else(|| die("--ticks wants A..B, the half-open tick range to overwrite"));
+                .unwrap_or_else(|| die("--tick-range wants A..B, the half-open tick range to overwrite"));
             if hi <= lo {
-                die(format!("--ticks {}..{} is empty; B is exclusive and must exceed A", lo, hi));
+                die(format!("--tick-range {}..{} is empty; B is exclusive and must exceed A", lo, hi));
             }
             // The fields to set, parsed once so a typo fails before any file is
             // written rather than silently poking nothing.

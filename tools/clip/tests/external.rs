@@ -189,25 +189,64 @@ fn gate_runs_with_a_scrubbed_environment() {
     let (url, _) = stub_server(vec![(200, vec![1u8; 512])]);
     let dir = tempdir("gate-scrub");
 
+    // THE POISON IS A CONFIG FILE, NOT ONLY A PROXY -- and that is the fix for
+    // a control that could not fail.
+    //
+    // This used to poison `http_proxy`/`https_proxy` alone and assert the
+    // control fetch broke on them. It does not break on a normal box: a real
+    // `~/.curlrc` carries
+    //
+    //     noproxy = "...,localhost,127.0.0.1,..."
+    //
+    // so curl exempts the stub server from the proxy, the control SUCCEEDS,
+    // and the assertion that "the control must FAIL" fires -- reporting a
+    // scrubbing bug that does not exist. Reproduced outside the test: with
+    // both proxy variables pointed at a dead port, a 127.0.0.1 fetch still
+    // returns 200.
+    //
+    // `CURL_HOME` cannot be exempted that way: curl reads its config from
+    // there in preference to `$HOME`, so a `.curlrc` we write is the only one
+    // it sees. `max-filesize = 1` fails the 512-byte transfer for a reason
+    // that has nothing to do with networks, proxies or name resolution.
+    //
+    // It also tests something the proxy poison never did. `env_clear` drops
+    // CURL_HOME along with everything else, so the gate reads NO user config
+    // at all -- which is the actual promise: a box's own curlrc, cookie jar,
+    // netrc and tokens must not reach a published fetch.
+    let curl_home = dir.join("poisoned-curl-home");
+    std::fs::create_dir_all(&curl_home).expect("curl home");
+    std::fs::write(curl_home.join(".curlrc"), "max-filesize = 1\n").expect("poisoned curlrc");
+
     // control: the same fetch, inheriting an environment
     let control = Command::new(&curl)
         .env("http_proxy", &poison)
         .env("https_proxy", &poison)
+        .env("CURL_HOME", &curl_home)
         .args(ship::curl_argv(&dir.join("control.bin"), &url))
         .output()
         .expect("run curl");
-    let control_code = String::from_utf8_lossy(&control.stdout).trim().to_string();
-    assert_ne!(
-        control_code, "200",
-        "the control must FAIL, or this test proves nothing about scrubbing"
+    // Judge the EXIT STATUS, not the printed http_code: curl reports `200` as
+    // soon as the response line arrives and only then aborts the body, so the
+    // code is 200 on a transfer that failed. The old assertion compared the
+    // code and would have been fooled even where the poison did bite.
+    assert!(
+        !control.status.success(),
+        "the control must FAIL, or this test proves nothing about scrubbing \
+         (curl exited {:?})",
+        control.status.code()
     );
 
+    // NOTE: set_var mutates the whole process, and tests in this binary run in
+    // parallel threads. It is safe only because no other test here reads these
+    // names; a future test that does will need a different arrangement.
     std::env::set_var("http_proxy", &poison);
     std::env::set_var("https_proxy", &poison);
+    std::env::set_var("CURL_HOME", &curl_home);
     std::env::set_var("GH_TOKEN", "definitely-not-a-real-token");
     let passed = ship::gate(&gate_cfg(curl), &url, &dir.join("anon.bin"), |_| Ok(0.5));
     std::env::remove_var("http_proxy");
     std::env::remove_var("https_proxy");
+    std::env::remove_var("CURL_HOME");
     std::env::remove_var("GH_TOKEN");
     let passed = passed.expect("the scrubbed gate should reach the server");
     assert_eq!(passed.bytes, 512);
