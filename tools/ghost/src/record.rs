@@ -1933,24 +1933,56 @@ pub fn resample_opt(
     if !opt.mixed_run {
         let ti = gbx::tape::Tape::from_file(inp)?;
         let ts = gbx::tape::Tape::from_file(src)?;
+        // COMPARE THE INPUTS, NOT THE ENCODING.
+        //
+        // This compared whole encoded payloads, and an encoder is allowed to
+        // spend a different number of bits on the same drive. `ghost declare`
+        // re-encodes the tape it is only relabelling and emits ONE EXTRA
+        // PADDING BYTE, so on 286279 the declared container and the
+        // regenerated file differed at payload byte 24 -- the bitstream length
+        // -- while carrying identical inputs: same 25350 packets, same
+        // accel_on 17561, brake_on 1159, steer32 0, respawn 1, and the
+        // regenerated file matching the SOURCE bit for bit. The guard refused
+        // a faithful pair and the map needed --mixed-run, a flag that means
+        // "never publish this".
+        //
+        // What the guard is FOR is the KAPPA.md defect: a record of one run
+        // wearing another's inputs. That is a property of the input SEQUENCE,
+        // so compare the decoded steer/accel/brake/respawn per packet. Two
+        // encodings of one drive now pass; two different drives still fail,
+        // because their packets differ wherever the driving differs.
+        let keys = |t: &gbx::tape::Tape| -> Vec<(u32, u32, u32, bool)> {
+            t.archives
+                .iter()
+                .flat_map(|a| a.packets.iter())
+                .map(|p| (p.steer, p.accel, p.brake, p.respawn()))
+                .collect()
+        };
+        let (ki, ks) = (keys(&ti), keys(&ts));
         let (pi, ps) = (
             ti.to_payload(gbx::tape::Encoding::Verbatim),
             ts.to_payload(gbx::tape::Encoding::Verbatim),
         );
-        if pi != ps {
+        if ki != ks {
             // SAY WHAT ACTUALLY DIFFERS. The comparison is on the whole
             // encoded payload; reporting only tick counts produced
             // "do not carry the same input tape (25350 vs 25350 ticks)" on
             // 286279 -- a message that reads like a bug in itself and sent me
             // looking in the wrong place. Same length, different bytes, and
             // the first differing byte is the thing worth printing.
-            let first_diff = pi
+            let first_diff = ki
                 .iter()
-                .zip(ps.iter())
+                .zip(ks.iter())
                 .position(|(a, b)| a != b)
-                .map(|i| format!("first differing payload byte at {}", i))
+                .map(|i| format!("first differing INPUT at packet {}", i))
                 .unwrap_or_else(|| {
-                    format!("payloads are {} and {} bytes", pi.len(), ps.len())
+                    format!(
+                        "{} and {} packets ({} and {} payload bytes)",
+                        ki.len(),
+                        ks.len(),
+                        pi.len(),
+                        ps.len()
+                    )
                 });
             return Err(format!(
                 "{inp} and {src} do not carry the same input tape ({} vs {} ticks, {}). resample \
