@@ -1167,10 +1167,30 @@ fn engine_tier(s: &mut Suite) {
 }
 
 fn run_self(args: &[&str]) -> bool {
-    let st = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(args)
-        .output()
-        .unwrap();
+    // Spawn failure is REPORTED, not a panic. `current_exe()` is this binary's
+    // path, and a path can stop resolving underneath a long run -- rebuilding
+    // the workspace while a selftest is in flight makes cargo replace the file,
+    // so every later spawn fails with NotFound. That took down the whole engine
+    // tier through a bare `unwrap()`, with nothing said about why.
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("       (cannot find my own binary: {e})");
+            return false;
+        }
+    };
+    let st = match std::process::Command::new(&exe).args(args).output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "       (could not run `ghost {}`: {e} -- {} {})",
+                args[0],
+                exe.display(),
+                if exe.exists() { "exists" } else { "IS GONE (rebuilt mid-run?)" }
+            );
+            return false;
+        }
+    };
     if !st.status.success() {
         eprintln!("       (ghost {} failed: {})", args[0], String::from_utf8_lossy(&st.stderr).trim());
     }
