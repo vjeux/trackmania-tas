@@ -14,25 +14,25 @@ version = "1.0.0"
 
 [[package]]
 name = "asmshape"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "chunkswap"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
 ]
 
 [[package]]
 name = "clip"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
 ]
 
 [[package]]
 name = "dsprobe"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "gbx"
@@ -50,11 +50,11 @@ dependencies = [
 
 [[package]]
 name = "haul"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "mapgeom"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
  "miniz_oxide",
@@ -72,25 +72,25 @@ dependencies = [
 
 [[package]]
 name = "pkz2"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
 ]
 
 [[package]]
 name = "recon"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "rend"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "mapgeom",
 ]
 
 [[package]]
 name = "resim"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
@@ -100,18 +100,18 @@ dependencies = [
 
 [[package]]
 name = "shootctl"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "strpatch"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
 ]
 
 [[package]]
 name = "tmauto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "tmmaps"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "tmsite"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gbx",
 ]
@@ -143,19 +143,19 @@ dependencies = [
 
 [[package]]
 name = "uwlab"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "vidread"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "wincrash"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "wsx"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "miniz_oxide",
 ]

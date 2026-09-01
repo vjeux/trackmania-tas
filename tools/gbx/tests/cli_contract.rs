@@ -102,7 +102,18 @@ fn every_binary_answers_version_with_its_own_name() {
         "no workspace binaries found in {} -- run `cargo build --release --workspace` first",
         dir.display()
     );
-    assert!(bad.is_empty(), "binaries with a broken --version:\n  {}", bad.join("\n  "));
+    // STALE BINARIES LOOK EXACTLY LIKE BROKEN ONES. `cargo test -p gbx` does
+    // not rebuild the other crates' binaries, so this test happily runs
+    // whatever was in target/ from an older build -- which is how it first
+    // reported 14 broken tools that had already been fixed. Say so in the
+    // failure rather than making the next person work it out.
+    assert!(
+        bad.is_empty(),
+        "binaries with a broken --version:\n  {}\n\
+         (if these were just fixed, the binaries in target/ may be STALE: \
+         run `cargo build --release --workspace` and try again)",
+        bad.join("\n  ")
+    );
 }
 
 #[test]
@@ -134,5 +145,11 @@ fn every_binary_answers_help_without_failing() {
     }
 
     assert!(checked > 0, "no workspace binaries found in {}", dir.display());
-    assert!(bad.is_empty(), "binaries with broken --help:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "binaries with broken --help:\n  {}\n\
+         (if these were just fixed, the binaries in target/ may be STALE: \
+         run `cargo build --release --workspace` and try again)",
+        bad.join("\n  ")
+    );
 }
