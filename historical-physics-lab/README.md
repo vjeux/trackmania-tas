@@ -8,7 +8,7 @@ An Openplanet Developer-mode plugin exposing every behaviorally confirmed offici
 |---|---|---|
 | **January 2022** | Client build 105899 (2022-01-21); dynamic boundary anchor server build 112349 (2022-03-25) | **Selectable experimental native preview**; static closure complete, client semantics pending |
 | **Spring 2022** | Dynamic server builds 112449–113135; no matching full client in the public archive | Catalogued; blocked on an external/private Mar. 29–Sep. 20 client |
-| **Fall 2022** | Sep. 21 build shipped Sep. 30; Oct. 6 full profile is dynamically equivalent | **Selectable experimental native preview** |
+| **Fall 2022** | Sep. 21 build shipped Sep. 30; Oct. 6 full profile is dynamically equivalent | Catalogued; native adapter fail-closed while exhaustive field-layout remapping is completed |
 | **Summer 2023 / Current** | Earliest staged source build 121457 (2023-06-23) | **Selectable through the installed supported game**, no patch |
 
 Snow, Rally, and Desert are separate vehicle families, not Stadium behavior epochs, and are therefore not presented as extra versions of the Stadium engine.
@@ -31,7 +31,7 @@ This section records only deltas we actually localized. A changed hash is not tr
 |---|---|
 | **January 2022 representative** | The historical root is `0x1405EDEB0..0x1405EFF40`, with a separate initializer at `0x1405EDE00..0x1405EDEAC`. It reaches a removed helper (`0x1405EDCF0..0x1405EDE00`), a removed averaging helper (`0x1405E7730..0x1405E77F2`), and nine legacy curve wrappers (`0x1413BE660..0x1413BEAD5`). Those wrappers use the old output-pointer interpolation ABI. Four initializer defaults also differ: `5.0`, `5.0`, `25.0`, and disabled. The current-client payload copies 14 regions (12,876 bytes), performs 161 field, 105 call, and 83 RIP relocations, adds one ABI adapter, and resolves 41 current-image targets. |
 | **March 29, 2022** | The March 25 server returns `WRONG_SIMU` for Roevhaal while March 29–June 21 servers reproduce `63.546`, yet the March 25/29 builds share the same normalized top-level CarSport handler. The boundary therefore lives outside that normalized root. No complete client exists in the public archive for Mar. 29–Sep. 20, so Spring is intentionally catalog-only rather than borrowing the Fall-staged Sep. 21 closure. |
-| **Fall 2022 staged build / public October update** | The September 21 executable shipped in the September 30 archive and the October 6 full client are bit-identical at the deterministic canonical-trajectory layer (`5ed96a35…04323`) and both record no Roevhaal checkpoints. Their first 25 runtime tuning names/order/scalar/key metadata also match build 128130 exactly; current only appends three Wood tunings. The adapted 9,916-byte native island is therefore assigned to Fall. Sep./Oct. also share all 40 depth-1 callees, all 21 real ComputeForces switch targets/direct closures, 303 measured referenced scalars, ModelsSport/Stadium packs, and all private title payloads (the only plaintext difference is 115-byte build metadata). |
+| **Fall 2022 staged build / public October update** | The September 21 executable shipped in the September 30 archive and the October 6 full client are bit-identical at the deterministic canonical-trajectory layer (`5ed96a35…04323`) and both record no Roevhaal checkpoints. Their first 25 runtime tuning names/order/scalar/key metadata match build 128130 exactly; current only appends three Wood tunings. A matched press-forward ice-booster control proves that hiding those three entries is behaviorally identical to stock current (`198.962 → 294.848 km/h` across the booster, `337.568 km/h` at takeoff, `1.46540 s` airtime, `12.88075 s` finish-plane crossing). The copied 9,916-byte island crashed on its second simulation tick; audit found 14/14 immediate field carriers and at least nine ModRM field displacements missed by the first adapter. Fall is therefore fail-closed until the exhaustive remap runs crash-free and matches the exact Sep. 30 control. |
 | **June 23, 2023** | The CarSport handler and tracked packs both change between May and June; June 23 and July 10 then match each other. The exact causal split between native code and data is not yet localized. Current behavior is supplied by the installed supported game. |
 
 ### Snow
@@ -135,19 +135,19 @@ Open **Historical Physics Lab** in the Openplanet menu:
 
 Catalog-only entries remain visible with their representative builds, mechanism, and evidence. Selecting one explains the missing certification rather than silently substituting another profile.
 
-## Fall 2022 native payload
+## Fall 2022 native payload (disabled pending exhaustive remap)
 
 - 9,916 native bytes
-- 203 structure-field relocations
+- 203 originally generated structure-field rewrites; audit is rebuilding this manifest exhaustively
 - 155 rel32 relocations
 - 40 absolute current-image targets
 - current runtime tuning preimage: 28 named entries / active index 27
-- Fall runtime tuning view: first 25 measured entries / active index 24
+- Fall runtime tuning view: first 25 measured entries / active index 24; behaviorally identical to stock current on the booster control
 - one measured ABI adapter
-- zero unresolved direct calls
-- zero unresolved RIP-relative references
+- zero unresolved direct calls or RIP-relative references
+- known blocker: 14 missed immediate field carriers and at least nine missed ModRM displacements in the first adapter
 
-WhiteStick live testing found and fixed two real incompatibilities: an old `+0x118` field moved to `+0x110`, and one current helper gained an output-pointer argument. The adapted Fall-staged payload survives repeated launches and map transitions on **KEKL- SAUSAGE ICE**. It is not exposed as Spring: deterministic and runtime-graph controls showed the September 21/30 full client is already the Fall regime.
+WhiteStick live testing fixed two real incompatibilities—an old `+0x118` field moved to `+0x110`, and one helper gained an output-pointer argument—but the matched booster map then exposed a second-tick native crash. The crash is not trajectory evidence: the backend is disabled. The field audit showed that the first generator rewrote displacement operands but omitted immediate-carried fields and additional displacements. The release remains fail-closed until an independent verifier proves that no stale historical field reference remains and the patched current client matches the exact Sep. 30 booster trajectory.
 
 ## Live integration controls
 
@@ -160,6 +160,16 @@ On exact build 128130, automated main-menu tests passed all of these transitions
 - current Snow ellipsoids → release Snow spheres → exact ellipsoid restore.
 
 These prove the patch transactions and object layouts on the supported build. They do not substitute for trajectory certification.
+
+## Verification vocabulary
+
+Every claim names its verification level:
+
+1. **Static verified** — exact source/target hashes; complete relocation or patch manifest; expected-byte preimages; no unresolved references; independent verifier pass.
+2. **Live integration verified** — the plugin compiles on exact build 128130, installs, reads back every change, executes without fault, and restores the original state.
+3. **Behavior certified** — a deterministic input tape reproduces the reference trajectory and every checkpoint exactly in two fresh processes, while an adjacent negative control fails the same frozen gates.
+
+“Verified” without a qualifier never means behavior-certified. The implemented profiles below are static/live verified unless explicitly stated otherwise. **No historical client or transplanted profile is behavior-certified yet.**
 
 ## Certification boundary
 
