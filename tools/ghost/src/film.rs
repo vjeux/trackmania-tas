@@ -106,7 +106,34 @@ pub fn cmd(a: &[String]) {
         //
         // `declared_ms` reads the same number `verify`'s V2 census gates on,
         // which is the run's own time.
-        declared_ms(&me, &inp)
+        //
+        // BUT THE DECLARED TIME CAN BE WRONG, and when it is, everything
+        // downstream inherits a grid that is too short: `regen` FILLS the grid
+        // it is given, it never extends one. A search-created ghost that
+        // declares 21.450 for a 22.750 run produces 430 samples where the
+        // engine gathers 459, and the render simply stops before the finish
+        // with nothing in the output saying why. Warn, with the flag that
+        // fixes it, rather than let the operator discover it in the video.
+        let d = declared_ms(&me, &inp);
+        if let (Ok(dms), Some(last)) = (d.parse::<i64>(), last_sample_ms(&me, &inp)) {
+            // The last sample sits one tick before the finish, so a healthy
+            // file has `last` just under `declared`. `last` running PAST the
+            // declared time means the declaration is short.
+            if last > dms {
+                eprintln!(
+                    "ghost film: WARNING -- this file declares {} ms but its record runs to \
+                     {} ms. The grid is built from the DECLARED time, so everything after \
+                     this step will be {} ms short and the render will stop before the \
+                     finish. If the declared time is wrong, pass --span {} (the full width \
+                     of the run, from its first instant to its last).",
+                    dms,
+                    last,
+                    last - dms,
+                    last + 150
+                );
+            }
+        }
+        d
     });
 
     // ---- 1. Strip the donor's grid coverage (trap 1) ------------------------
@@ -659,6 +686,33 @@ fn ent_count(me: &str, f: &str) -> usize {
         .windows(2)
         .find_map(|w| (w[1] == "entities").then(|| w[0].parse::<usize>().ok()).flatten())
         .unwrap_or(0)
+}
+
+/// The last instant the record actually carries, in ms.
+///
+/// The counterpart to `declared_ms`, and the reason it exists: those two
+/// disagreeing is the failure this file's `--span` default cannot see. A
+/// healthy file's last sample lands one tick BEFORE its declared finish; a
+/// file whose record runs PAST what it declares has a wrong declaration, and
+/// building the grid from the declaration then truncates the run.
+///
+/// `None` when the record cannot be read at all -- the caller warns only on a
+/// number it actually has, rather than guessing from an absence.
+fn last_sample_ms(me: &str, f: &str) -> Option<i64> {
+    let c = run(me, &["manifest".into(), f.into()], "manifest");
+    // "last_ms": 22750  -- the largest across entities is the record's end.
+    let mut best: Option<i64> = None;
+    for part in c.split("\"last_ms\":").skip(1) {
+        let v: String = part
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        if let Ok(n) = v.parse::<i64>() {
+            best = Some(best.map_or(n, |b: i64| b.max(n)));
+        }
+    }
+    best
 }
 
 fn declared_ms(me: &str, f: &str) -> String {
