@@ -316,7 +316,32 @@ pub fn cmd(a: &[String]) {
         body.len(),
         same
     );
-    println!("bytes still unnamed: {}", unknown);
+    // ACCOUNT FOR THE EMBEDDED MAP before reporting what is unexplained.
+    //
+    // A bare count of unnamed bytes is alarming and usually wrong about what
+    // it means. A replay carries the whole .Map.Gbx inside it -- 771,380 of
+    // 781,044 bytes in this project's own replay fixture -- and synth does not
+    // parse maps, correctly: that is a different format with its own tooling.
+    // Reporting "bytes still unnamed: 774657" invites the reading that the
+    // container is 99 % unparseable and therefore broken, when the file is
+    // perfectly healthy and splices fine.
+    //
+    // That misreading cost a real investigation: a peer reported 443,299
+    // unnamed of 453,169 on a file they could not splice, I took it as an
+    // unparseable container, and it was an embedded map -- benign, and not the
+    // cause of their failure at all.
+    let embedded = gbx::container::embedded_map_in(&body).map(|(_, n)| n).unwrap_or(0);
+    let unexplained = unknown.saturating_sub(embedded);
+    if embedded > 0 {
+        println!(
+            "bytes still unnamed: {} -- of which {} are an EMBEDDED MAP (a whole .Map.Gbx \
+             inside this file, which synth does not parse and does not need to). \
+             Unexplained: {}.",
+            unknown, embedded, unexplained
+        );
+    } else {
+        println!("bytes still unnamed: {}", unknown);
+    }
     if !same {
         if let Some(k) = (0..nb.len().min(body.len())).find(|&k| nb[k] != body[k]) {
             println!(
