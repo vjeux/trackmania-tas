@@ -207,6 +207,29 @@ fn zlib_compress(raw: &[u8]) -> Vec<u8> {
 }
 
 /// Splice a new record payload into a body, fixing the enclosing chunk's size.
+///
+/// **When the record node has no enclosing skippable chunk, this ATTEMPTS the
+/// write and then PROVES it, rather than refusing outright.**
+///
+/// The refusal existed because a skippable chunk carries a byte count that has
+/// to absorb a payload-size change, and with no such chunk there is no count to
+/// fix. But that reasoning only covers the case where something downstream
+/// needs the count. A record node reached STRUCTURALLY -- version, uncompressed
+/// size, compressed size, then that many bytes -- needs no outer count at all,
+/// because every length it depends on is written inside the node itself, and
+/// this function writes all three.
+///
+/// Refusing unconditionally therefore blocked a class of container the tools
+/// could in fact write: search-created ghosts, whose record sits outside the
+/// five class-id prefixes `all_skip_chunks` recognises. Those files could be
+/// read, decoded and validated, but never spliced -- so `regen`, `split-car`
+/// and every repair path died on them with a framing error.
+///
+/// The honest version is to write it and check: re-parse the body we just
+/// produced, and require that the record we find is the record we intended. If
+/// it does not read back, we refuse exactly as before and say so. That follows
+/// the rule the rest of this toolchain runs on -- a command that writes a file
+/// runs a control first -- instead of declining to try.
 pub fn splice_record(body: &[u8], site: &RecSite, new_raw: &[u8]) -> Res<Vec<u8>> {
     let comp = zlib_compress(new_raw);
     let mut out = Vec::with_capacity(body.len() + comp.len());
@@ -223,11 +246,29 @@ pub fn splice_record(body: &[u8], site: &RecSite, new_raw: &[u8]) -> Res<Vec<u8>
         out[coff + 8..coff + 12].copy_from_slice(&nsz.to_le_bytes());
         let _ = (cid, poff);
     } else if comp.len() != site.csize {
-        return Err(
-            "record node is not inside a skippable chunk and the payload size changed: \
-             refusing to write a body whose framing would be wrong"
-                .into(),
-        );
+        // No enclosing count to fix. Prove the body still reads rather than
+        // assuming it cannot.
+        match find_rec_site(&out) {
+            Ok(back) if back.hdr == site.hdr && back.csize == comp.len() && back.usize_ == new_raw.len() => {}
+            Ok(back) => {
+                return Err(format!(
+                    "record node is not inside a skippable chunk, and after writing the new \
+                     payload the node no longer reads back as itself (found version {} at {} \
+                     with {} compressed bytes, expected {} at {} with {}): refusing to write a \
+                     body whose framing would be wrong",
+                    back.version, back.hdr, back.csize, site.version, site.hdr, comp.len()
+                )
+                .into());
+            }
+            Err(e) => {
+                return Err(format!(
+                    "record node is not inside a skippable chunk, and the body no longer parses \
+                     after writing the new payload ({e}): refusing to write a body whose framing \
+                     would be wrong"
+                )
+                .into());
+            }
+        }
     }
     Ok(out)
 }
