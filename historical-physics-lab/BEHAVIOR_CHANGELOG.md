@@ -40,7 +40,6 @@ input axes normalised to full scale = 1.0.
 
 | # | Boundary | Player-visible behavior | Numbers | Status |
 |---|---|---|---|---|
-| **S-0** | **Between 2020-07-23 and 2020-09-11** | A small number of recorded runs, replayed from identical inputs, finish at a **different lap time**; the rest are unaffected. Most of the affected runs shift by hundredths of a second, two by more than a fifth of a second. | Of **194** runs completing on both builds, **168 unchanged**, **26 changed** (6 slower, 20 faster). Magnitudes: **19 ≤ 0.020 s**, 5 between 0.021 and 0.200 s, **2 > 0.200 s**; largest **−1.954 s** on a 12.981 s run (14.935 → 12.981), next **−0.403 s**. Spread over **15 distinct maps**. | **Measured** |
 | **S-1** | **2021-06-08** (between server builds 105091 and the 2021-06-08 build) — the "new physics" release | **The biggest driving change in the game's history to date.** Replayed from identical inputs, **two thirds of all runs that still finish come back at a different lap time**, in both directions, across essentially the whole map corpus. This is not confined to one surface or feature: runs on maps recorded up to eleven months earlier, which contain none of the update's new elements, change too. | Of **139** runs completing on both builds, only **47 unchanged**; **54 slower**, **38 faster** — **92 of 139 (66%) change time**. Median change **0.016 s**, mean **0.109 s**, largest **+1.488 s** on a 25.470 s run (**+5.84%**), then **+0.962 s** on 15.036 s (**+6.40%**) and **+0.887 s** on 29.188 s (**+3.04%**). Changed runs span **40 distinct maps**; 10 maps carry both changed and unchanged runs. | **Measured** |
 | **S-2** | **2022-03-29** (between server builds 112349 and 112449) | An ice lap completable from 2022-03-29 onward is **not completable** before it, from identical recorded inputs. | Finish **63.546 s** on all 8 builds 2022-03-29 → 2022-06-21; no valid finish on all 16 builds 2021-12-02 → 2022-03-25. | **Measured** |
 | **S-3** | **2024-05-22** (global input path; all families) | Analog steering now lands **exactly** on the requested value once converged. Before, the smoothed value stopped inside a tolerance band and was never set equal to its target. | Snap fires when `\|stored − target\| ≤ max(1.0, max(\|stored\|,\|target\|)) × 1×10⁻⁵`. On an axis normalised to 1.0 the bound is **1×10⁻⁵ of full lock (0.001%)**: post-fix residual **0**, pre-fix **>0 and ≤1×10⁻⁵**. | **Measured** + **Derived** |
@@ -68,11 +67,7 @@ computed over the same corpus and both returning exactly zero:
 earlier — the change ships before the post. The post is *consistent with* S-1 and
 is not the evidence for it; the numbers above are.
 
-**S-0 caveat.** No archived server exists between 2020-07-23 and 2020-09-11, so
-the boundary is bracketed by those two dates, not pinned. With 26 of 194 runs
-changing it clears both negative controls above, but it is an order of magnitude
-weaker than S-1 and no official note describes it — the 2020-09-11 changelog
-covers netcode, UI, clubs and editors, with no driving statement.
+**Pre-S-1 control.** An independent 727-replay / 646-map reproduction refuted the previously published S-0 magnitude: July 23 → September 11 changes only **2 of 241** common completions, largest `0.003 s`; spanning July 23, 2020 → May 31, 2021 changes only **3 of 235** despite nine handler code states. The original S-0 row came from a validator parser that mistook quoted JSON and summary counters. It is removed rather than treated as an epoch.
 
 ### 1.2 Current-build reference measurements (build 128130)
 
@@ -110,7 +105,7 @@ run, and is deliberately **not** pre-empted here.
 | 2020-09-11 → 2021-05-31 | Fourteen adjacent boundaries measured. Every one changes **0 or 1** run; three single-run changes (0.958 s, 0.009 s, and one at 2021-06-08's predecessor). | Single-run boundaries do not clear the controls. The audit marks these **[thin]**; they are *distinguishable on this corpus*, not settled epochs. |
 | 2021-06-09 → 2022-01-21 | Seven adjacent boundaries measured after the big one: 06-09→06-11 changes 4 runs (max 0.200 s), 06-12→06-18 changes 4 (max 1.519 s), 06-18→07-01 changes 4 (max 0.190 s), 07-01→07-06 changes 2 (1.549 s), 07-07→09-29 changes 3 (max 0.104 s). 09-29 onward through 2022-01-21: **0 changes** across five boundaries. | These are 2-4 run boundaries. The **2021-09-29** step is the Fall 2021 update and is officially described ("new blocks and physics… interactions with water"), but 3 changed runs is below what the controls support as a physics epoch. **Unresolved magnitude.** |
 | 2022-03-29 → 2022-09-20 (Spring 2022) | Post-boundary behavior measured on servers through 2022-06-21. | No full client in the public archive for the 252-day window; no server after 2022-06-21. Client-side epoch end **Unresolved**. |
-| Staged 2022-09-21 / public 2022-10-01 (Fall 2022) | Sep. 30 and Oct. 6 share the canonical digest, so October 1 is not the executable boundary. A matched exact Sep. 30 / current stock / current+V5 control is now measured: exact vs stock exceeds 1 m at `3.840 s` with mean/max `6.109 / 10.016 m`; exact vs V5 exceeds 1 m at `3.700 s` with worse `7.135 / 11.200 m`; stock vs V5 mean/max is only `1.357 / 2.454 m`. Exact/stock/V5 peak speeds are `398.520 / 400.213 / 400.348 km/h`. | V5 is demonstrably closer to stock than exact Sep. 30 and is rejected. The historical endpoint difference is measured, but the responsible force-law component remains unresolved; Fall stays fail-closed. |
+| Staged 2022-09-21 / public 2022-10-01 (Fall 2022) | Sep. 30 and Oct. 6 share the canonical digest, so October 1 is not the executable boundary. The first three-way run used a semantically matched but `0.001 m`-quantized `Loc.translation` mirror (`+0x540` historical, `+0x538` current). Its multi-metre separation is real at coarse scale, but its 1 mm rung and fine timing are not acceptable certification evidence. Static closure analysis also shows V5 covered only 13% of the historical closure, while decrypted vehicle data differs. | Exact unquantized position candidates (`+0x1400` historical, `+0x12F0` scene layer, `[A2+64]+0x17e0/+0x1798` physics layer) and data-level Cells C/D are being reconciled. Fall remains fail-closed; no player-facing causal claim is made yet. |
 | Staged by 2023-06-23 (Summer 2023) | Handler and tracked packs both change between 2023-05-05 and 2023-06-23; 06-23 and 07-10 then match. | Causal split not localised; no dynamic oracle after 2022-06-21. Officially described ice change has **no measured magnitude**. |
 | 2023-06-23 → current (128130) | The 25 Stadium runtime tunings match by name, order, scalar and key metadata between the Fall-2022 client and 128130; current only appends three non-Stadium Wood entries. | No later Stadium force-law change is evidenced. Absence is **not** claimed. |
 
@@ -221,8 +216,8 @@ reason, as the audit itself does.
 11. **Behavior quantities never measured in any epoch:** steering response curve,
     grip/slip thresholds, wall repulsion impulse, reactor response, water bounce,
     bobsleigh steering, dirt/wet response, per-epoch acceleration curves. Lap
-    time is an *aggregate* — S-0 and S-1 prove the car behaves differently, not
-    which force law changed. `TEST_PLAN.md` specifies the micro-maps for each.
+    time is an *aggregate* — S-1 proves the car behaves differently, not which
+    force law changed. `TEST_PLAN.md` specifies the micro-maps for each.
 
 ---
 
