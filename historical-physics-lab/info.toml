@@ -1,0 +1,8 @@
+[meta]
+name = "Historical Physics Lab"
+author = "vjeux"
+category = "Developer"
+version = "0.9.0"
+
+[script]
+timeout = 0

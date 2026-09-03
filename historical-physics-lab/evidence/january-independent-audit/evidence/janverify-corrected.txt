@@ -1,0 +1,48 @@
+PASS  	payload.size	12876 bytes, matches declaration
+PASS  	counts	field: declared 177 == array length 177
+PASS  	counts	call: declared 105 == array length 105
+PASS  	counts	rip: declared 83 == array length 83
+PASS  	counts	regions: declared 14 == array length 14
+PASS  	manifest.parallel	field arrays all 177 entries
+PASS  	manifest.parallel	call arrays all 105 entries
+PASS  	manifest.parallel	rip arrays all 83 entries
+PASS  	manifest.parallel	reloc arrays all 188 entries
+PASS  	manifest.parallel	abs64 arrays all 41 entries
+PASS  	manifest.parallel	region arrays all 14 entries
+PASS  	manifest.parallel	init arrays all 4 entries
+PASS  	manifest.union	combined 188 == calls 105 + rips 83
+PASS  	init.count	4 copied initialization values
+PASS  	manifest.duplicate_offset	no offset claimed twice
+PASS  	manifest.byte_overlap	no patch/relocation byte ranges overlap
+PASS  	bounds	all patch sites inside the payload
+PASS  	region.overlap	14 copied regions, none overlapping in island space
+NOTE  	region.duplicate_source	1 source region(s) copied more than once: ["0x1413be660..0x1413be695x2"]
+PASS  	gate.handler	41-byte handler signature present and unique
+PASS  	gate.banner	build banner present and unique
+PASS  	entry.prologue	island entry prologue matches the current handler's first 12 bytes
+PASS  	thunk	41 absolute thunks well formed, all targets in executable sections
+PASS  	thunk.align	every thunk entry is 16-byte aligned
+PASS  	reloc.island_target	all in-island relocation targets are inside the payload
+PASS  	reloc.placement	no rel32 references from island to image survive; island is position independent
+PASS  	call.unique	no duplicated call relocation offsets
+PASS  	reloc.disjoint	call and RIP relocation sets are disjoint
+PASS  	cave.call	all 105 in-island call targets land on a thunk, a region entry, or the adapter
+PASS  	adapter.shape	interpolation adapter matches the documented 28-byte thunk
+PASS  	adapter.abi.alignment	sub rsp,0x38 keeps the Win64 16-byte alignment contract at the inner call
+WARN  	adapter.abi.r8	adapter forwards the caller's r8 (the old output pointer) unchanged into the current scalar helper; if that helper reads a third integer argument it receives an output pointer. Unverifiable without the January binary and the current helper's signature
+WARN  	adapter.abi.xmm_spill	adapter allocates 0x38 bytes but spills only r8; it saves no xmm register and preserves no argument beyond r8, so any current-helper clobber of xmm1-xmm5 that the old wrapper relied on is lost
+PASS  	adapter.reloc	adapter's inner call is relocated
+PASS  	init	all four January initialization values present in the shadow block
+PASS  	init.shadow_zeroed	shadow block of 0x7a4 bytes is zero except the four copied values
+WARN  	init.shadow_semantics	the shadow is a 0x7a4-byte ZERO block with four January values written into it; every other field the removed helper reads from that model block therefore reads 0.0, not the January value. Only four of the block's fields were shown to be initialized by January code
+DEFECT	fieldmap.function	January offset 0x118 maps to multiple current offsets ["0x110", "0x310"]
+WARN  	fieldmap.injective	current offset 0x1b88 is the image of several January offsets ["0x658", "0x1cc0"]
+NOTE  	fieldmap.identity	0 of 177 relocations map an offset onto itself
+PASS  	field.value	all 177 field patches present in the payload bytes
+PASS  	field.site_region	every field source VA lies inside a copied region
+PASS  	field.site_offset	every field patch lies within one instruction of its declared source site
+NOTE  	emit	wrote island-patched.bin, island-unpatched.bin, manifest.tsv to /tmp/janaudit/emit2
+WARN  	unverifiable.january_binary	Trackmania-2022-01-21.exe (sha256 e2255c415f0f7fc2d0a66512fa7609256c42cf639a5380b7a5bcdbb4486ab75b) is absent: island bytes cannot be compared against their January source, so copied-region fidelity, the field TSV's own correctness, and every hand-tabled old->new pair remain unverified
+WARN  	unverifiable.field_evidence	january-vs-current-fields.tsv and january-via-spring-fields.tsv are absent from the bundle: field-map COMPLETENESS (the omitted-carrier class) cannot be checked against the evidence that produced it
+
+SUMMARY defects=1 warnings=6 checks=46

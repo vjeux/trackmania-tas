@@ -1,0 +1,14 @@
+== unrelocated relative references in copied regions ==
+PASS: all 83 relative references inside copied regions carry a relocation
+
+== relative references outside the copied regions ==
+PASS: no unrelocated direct branch in the generated adapter/pool/thunk area
+
+== absolute thunk targets: function entry or mid-function? ==
+41 absolute thunks declared; 0 carry a non-zero imm64 placeholder (expected 0, filled at install)
+PASS: every absolute thunk target is aligned, padded, or opens with a recognised prologue
+
+== island entry vs current handler ==
+island and current handler share their first 13 bytes
+
+JANRELOC SUMMARY defects=0

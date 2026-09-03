@@ -15,13 +15,20 @@ For measured player-facing effects rather than implementation addresses, see [`B
 
 Snow, Rally, and Desert are separate vehicle families, not Stadium behavior epochs, and are therefore not presented as extra versions of the Stadium engine.
 
-## Why these are the four profiles
+## Confirmed Stadium boundaries and catalog coverage
+
+The player-facing changelog now includes two measured pre-2022 boundaries that are not yet implementable profiles:
+
+- **Between July 23 and September 11, 2020:** 26 of 194 identical-input runs that finish on both builds change lap time; 19 move by at most `0.020 s`, two by more than `0.200 s`, and the largest change is `−1.954 s`. No 2020 full client is publicly archived, so the launch-era side cannot be transplanted faithfully.
+- **June 8, 2021:** 92 of 139 common completions (66%) change lap time across 40 maps; median change `0.016 s`, largest `+1.488 s` on a `25.470 s` run. Stadium/shared/title packs are byte-identical, isolating this boundary to executable code. The only archived in-window client is July 8, 2021; closure/remap work has not started and remains fail-closed.
+
+The original 2022+ catalog is retained below while those earlier targets remain research-only:
 
 - The 2022-03-25 server rejects Roevhaal's 63.546 recording; the 2022-03-29 server reproduces it exactly. A 16-way executable/pack matrix makes that boundary follow the executable even though the two builds share the same normalized top-level CarSport handler.
 - The public October 2022 ice/water update is already staged in the September 21 executable distributed by the September 30 archive. Full September 30 and October 6 clients produce the same deterministic HPLTRC3 canonical trajectory digest (`5ed96a35…04323`) and no checkpoints on Roevhaal. Their direct closures, measured scalars, tracked physics packs, and decrypted title-pack payloads are also equivalent. Therefore October 1 is a release date, **not** the executable boundary; the exact client boundary lies in the unavailable March 29–September 20 full-client archive gap.
 - The Summer 2023 change is staged by June 23. Both the handler and tracked packs changed, so its causal split remains unresolved. No later Stadium force-law change is behaviorally confirmed.
 
-The January profile is named after its representative build rather than claiming every older build is homogeneous.
+The January profile is only a representative snapshot; the 2020–2021 audit disproved the old catch-all interpretation, and an independent native audit found its current adapter incomplete. It remains catalog-only.
 
 ## Observed code and data changes by version
 
@@ -33,7 +40,7 @@ This section records only deltas we actually localized. A changed hash is not tr
 |---|---|
 | **January 2022 representative** | The historical root is `0x1405EDEB0..0x1405EFF40`, with a separate initializer at `0x1405EDE00..0x1405EDEAC`. It reaches a removed helper (`0x1405EDCF0..0x1405EDE00`), a removed averaging helper (`0x1405E7730..0x1405E77F2`), and nine legacy curve wrappers (`0x1413BE660..0x1413BEAD5`). Those wrappers use the old output-pointer interpolation ABI. Four initializer defaults also differ: `5.0`, `5.0`, `25.0`, and disabled. The first generated payload copies 14 regions (12,876 bytes), performs 161 declared field, 105 call, and 83 RIP relocations, adds one ABI adapter, and resolves 41 current-image targets. An independent audit then found 16 additional provably wrong live-object accesses, 10 unresolved accesses, two unresolved ABI risks, and no behavior gate. January is fail-closed until the exact January executable/disassembly completes the audit and matched trajectories pass. |
 | **March 29, 2022** | The March 25 server returns `WRONG_SIMU` for Roevhaal while March 29–June 21 servers reproduce `63.546`, yet the March 25/29 builds share the same normalized top-level CarSport handler. The boundary therefore lives outside that normalized root. No complete client exists in the public archive for Mar. 29–Sep. 20, so Spring is intentionally catalog-only rather than borrowing the Fall-staged Sep. 21 closure. |
-| **Fall 2022 staged build / public October update** | The September 21 executable shipped in the September 30 archive and the October 6 full client are bit-identical at the deterministic canonical-trajectory layer (`5ed96a35…04323`) and both record no Roevhaal checkpoints. Their first 25 runtime tuning names/order/scalar/key metadata match build 128130 exactly; current only appends three Wood tunings. A matched press-forward ice-booster control proves that hiding those three entries is behaviorally identical to stock current (`198.962 → 294.848 km/h` across the booster, `337.568 km/h` at takeoff, `1.46540 s` airtime, `12.88075 s` finish-plane crossing). The first 9,916-byte adapter crashed because it contained wrong field mappings and an unadapted output-buffer ABI. Exhaustive remapping produced V5, which is crash-free for a full 22-second run, but V5 still matches stock on every listed longitudinal event. Fall therefore remains fail-closed until an equivalent map runs on the exact Sep. 30 client and V5 matches that historical trajectory. |
+| **Fall 2022 staged build / public October update** | The September 21 executable shipped in the September 30 archive and the October 6 full client are bit-identical at the canonical-trajectory layer; October 1 is a release date, not the executable boundary. The first adapter crashed; exhaustive field/ABI work produced crash-free V5. A three-way matched native-waypoint control then rejected V5 behaviorally: exact Sep. 30 vs stock current diverges beyond 1 m at `3.840 s` with mean/max error `6.109 / 10.016 m`; exact vs V5 diverges beyond 1 m earlier at `3.700 s` with worse `7.135 / 11.200 m`; stock vs V5 averages only `1.357 m`. Exact peak speed is `398.520 km/h`, stock `400.213`, V5 `400.348`. V5 is farther from historical than stock, so Fall remains fail-closed and no V6 was created. |
 | **June 23, 2023** | The CarSport handler and tracked packs both change between May and June; June 23 and July 10 then match each other. The exact causal split between native code and data is not yet localized. Current behavior is supplied by the installed supported game. |
 
 ### Snow
@@ -145,9 +152,9 @@ Open **Historical Physics Lab** in the Openplanet menu:
 - one measured ABI adapter
 - zero unresolved direct calls or RIP-relative references
 - V5 field/ABI remap: crash-free for map load, 10-second throttle gate, and full 22-second trajectory
-- behavior blocker: V5 matches stock current on all measured longitudinal booster events; no exact Sep. 30 equivalent-map target yet
+- matched-control verdict: V5 is crash-free but farther from exact Sep. 30 than stock current; certification bit remains false
 
-WhiteStick live testing first exposed a second-tick native crash, then a full audit corrected stale field mappings and adapted a current helper’s added output-buffer argument. The resulting V5 payload survives map load, a 10-second repeated-throttle gate, and a full 22-second run with no native fault. That is only live integration verification: V5’s measured booster, takeoff, airtime, landing, and finish-plane events equal stock current. The release therefore remains fail-closed until an equivalent control map runs in the exact Sep. 30 client and V5 reproduces that historical trajectory.
+WhiteStick live testing first exposed a second-tick native crash, then a full audit corrected stale field mappings and adapted a current helper’s added output-buffer argument. V5 survives a full 22-second run with no native fault. The matched historical control nevertheless rejects it: V5 diverges from exact Sep. 30 earlier and with greater mean/max error than unmodified current stock, while V5 remains much closer to stock. This is a measured behavioral mismatch, so `PROFILE_FALL2022_BEHAVIOR_CERTIFIED` remains false and the release exposes no Fall installer path.
 
 ## Live integration controls
 

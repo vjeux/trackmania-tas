@@ -1,0 +1,160 @@
+{
+  "_comment": [
+    "Proposed additions to historical-physics-lab profiles.json -> stadium_epochs.",
+    "These entries PRECEDE the existing STADIUM_PRE_2022_03_29, whose period must",
+    "be narrowed from 'through 2022-03-25' to '2022-01-01 through 2022-03-25' once",
+    "these land: the audit shows that interval is nine behavioral classes, not one.",
+    "Every status is fail-closed. Nothing here is selectable. No payload is generated.",
+    "Epochs were derived from a 43-build x 259-probe trajectory matrix over archived",
+    "official replays, never from hashes; hashes appear only to attribute causes."
+  ],
+  "_method": {
+    "instrument": "official dedicated-server /validatepath re-simulation of archived official replays; each replay embeds its own map (chunk 0x03093002) and names its recording client build in its plaintext header (exebuild=)",
+    "epoch_definition": "equivalence class of builds under identical verdict on every probe loaded by all compared builds",
+    "verdicts": ["EXACT (declared time AND checkpoint count reproduced, IsValid true)", "WRONG", "NOLOAD (container format, excluded from class computation)"],
+    "determinism_control": "two fresh processes, build 2020-10-02, 252 probes -> byte-identical verdicts",
+    "hash_change_negative_control": "2021-01-18->2021-01-20 and 2021-02-03->2021-02-08 each change the executable with identical Stadium pack and title pack, and land in the SAME behavioral class; executable hash change is not sufficient for an epoch",
+    "content_floor_control": "2020-10-02/10-12/11-04/11-16 share one executable and byte-identical dedicated_TMStadium.pak, dedicated.pak and resource.pak; only Trackmania.Title.Pack.Gbx differs, so their small verdict differences are campaign content, not car physics",
+    "positive_control": "runs first validate exactly on the build that recorded them (replays 17361, 37901, 8309 recorded 2020-07-23_20_22 validate from server 2020-07-23 onward and on no earlier build)"
+  },
+  "stadium_epochs_prepend": [
+    {
+      "id": "STADIUM_LAUNCH_2020_07_01",
+      "period": "2020-07-01 through 2020-07-02",
+      "status": "catalog_only_fail_closed",
+      "behavior": "reproduces 0 of 125 common probes; no archived probe of any era re-simulates on the launch executables",
+      "representative_server": { "date": "2020-07-01", "build": "Svn=105768", "sha256": "dd5af3928a475d8b1abea85a7430acc57867c40c3020513e5b4a2ec1c9d80c2f" },
+      "representative_client": null,
+      "blocking_reason": "no 2020 full client exists in the public archive; the oldest archived client is Trackmania 2021.7.8.1939. Generating a native island from a dedicated-server binary would alias a different image's code into a client profile.",
+      "evidence": "server dynamic validator, 43x259 matrix; result schema is the launch-era flat form (no ValidatedResult/DeclaredResult)"
+    },
+    {
+      "id": "STADIUM_2020_07_07",
+      "period": "2020-07-07 and 2020-07-17",
+      "status": "catalog_only_fail_closed",
+      "behavior": "17 of 125 common probes reproduce; boundary into this class is 17 probes",
+      "official_note": "2020-07-07 trackmania.com 'Trackmania post launch adjustments': 'Fixed an issue where frozen wheels would unfreeze instantly after leaving the ice.'",
+      "representative_server": { "date": "2020-07-07", "build": "Svn=105917", "sha256": "2c12ae87c83cb58ad726a9ddefed0e96d56a03a6c4e9ab3a2e67bc7422f945df" },
+      "representative_client": null,
+      "blocking_reason": "no 2020 full client in the public archive",
+      "evidence": "server dynamic validator + official changelog"
+    },
+    {
+      "id": "STADIUM_2020_07_10",
+      "period": "2020-07-10",
+      "status": "catalog_only_thin",
+      "behavior": "19 of 125 common probes; differs from the 07-07/07-17 class on 2 probes only",
+      "caveat": "THIN. Two probes is at or below the campaign-content floor established by the identical-binary control. Not asserted as a physics epoch.",
+      "representative_server": { "date": "2020-07-10", "build": "Svn=106013", "sha256": "30364af3372888ca09eb78ddcf1f60ff21363a02013888eb97540105a7696970" },
+      "representative_client": null,
+      "evidence": "server dynamic validator"
+    },
+    {
+      "id": "STADIUM_2020_07_23",
+      "period": "2020-07-23 through 2020-09-10",
+      "status": "catalog_only_fail_closed",
+      "behavior": "102 of 125 common probes reproduce. THE FIRST LARGE BOUNDARY IN THE WINDOW: 87 of 125 probes flip entering this class.",
+      "representative_server": { "date": "2020-07-23", "build": "Svn=106224", "sha256": "c07f0741be37ddca0990fcae6d5a40cd4cce0752520b504f3072d2c48b3d5edb" },
+      "representative_client": null,
+      "axis": "executable AND dedicated_TMStadium.pak both change here (f90e9ace7504 -> 0e7e01deb56d) - the first Stadium physics-pack change since launch; cause not isolated between code and data",
+      "blocking_reason": "no 2020 full client in the public archive",
+      "evidence": "server dynamic validator; three probes recorded on the 2020-07-23 client validate exactly here and on no earlier build (positive control)"
+    },
+    {
+      "id": "STADIUM_2020_09_11",
+      "period": "2020-09-11 through 2020-12-03",
+      "status": "catalog_only_fail_closed",
+      "behavior": "117 of 125 common probes; boundary into this class is 15 probes",
+      "official_note": "NONE. The 2020-09-11 official changelog covers netcode, UI, clubs, item/skin editor and replay editor and contains no driving-physics statement. This boundary is MEASURED BUT NOT ANNOUNCED.",
+      "in_binary_marker": "the string \"using known-flawed game exe '%s'\" is absent from all six July 2020 executables and present from 2020-09-11 onward - Nadeo's own machine-checked declaration that specific older client builds are behaviorally untrustworthy",
+      "representative_server": { "date": "2020-09-11", "build": "Svn=106847", "sha256": "f595b18b296ceb18838eb32c57cb495c634fcd8053bc258ab0fd224cca10cf27" },
+      "representative_client": null,
+      "blocking_reason": "no 2020 full client in the public archive",
+      "evidence": "server dynamic validator + in-binary marker"
+    },
+    {
+      "id": "STADIUM_2020_12_04",
+      "period": "2020-12-04 through 2021-01-17",
+      "status": "catalog_only_thin",
+      "behavior": "120 of 125 common probes; boundary into this class is 3 probes",
+      "caveat": "Small boundary. Also coincides with a container-format change (134 probes stop loading) and with the Svn->git build-id scheme change, so it is reported but not asserted as a force-law change.",
+      "representative_server": { "date": "2020-12-04", "build": "git=103967-1c8873cd54c", "sha256": "df52b0f6f874a51a23162dc862f610c3f1a9821e068fd76671ee30313289d359" },
+      "representative_client": null,
+      "evidence": "server dynamic validator"
+    },
+    {
+      "id": "STADIUM_2021_01_18",
+      "period": "2021-01-18 through 2021-05-18",
+      "status": "catalog_only_thin",
+      "behavior": "121 of 125 common probes; boundary into this class is 1 probe",
+      "caveat": "THIN, one probe. Contains 11 builds and several executable changes with no behavioral effect - the hash-change negative control lives here (2021-01-18 vs 2021-01-20; 2021-02-03 vs 2021-02-08).",
+      "representative_server": { "date": "2021-01-18", "build": "git=104316-1fc050ed07d", "sha256": "3afc98177abcdaf0079bb4e46a21b679b2e2c4abd22c3db220cf913ace0d9f23" },
+      "representative_client": null,
+      "evidence": "server dynamic validator"
+    },
+    {
+      "id": "STADIUM_2021_05_19",
+      "period": "2021-05-19 through 2021-06-07",
+      "status": "catalog_only_thin",
+      "behavior": "120 of 125 common probes; boundary into this class is 1 probe",
+      "caveat": "THIN, one probe.",
+      "representative_server": { "date": "2021-05-19", "build": "git=105011-1b5b286f0fb", "sha256": "dcc222fe5098e4f245454dd0a6dab8de12fc0b218e69b8c01d100c04af2aac21" },
+      "representative_client": null,
+      "evidence": "server dynamic validator"
+    },
+    {
+      "id": "STADIUM_ROYAL_2021_06_08",
+      "period": "2021-06-08 through 2021-09-28",
+      "status": "catalog_only_fail_closed",
+      "behavior": "23 of 125 common probes. THE LARGEST BOUNDARY IN THE WINDOW: 97 of 125 probes flip entering this class.",
+      "official_note": "2021-06-12 trackmania.com 'The new Royal mode is out': 'This new mode comes with new physics and innovations available throughout the game: Water, Plastic Blocks, Animated & Dynamic items'",
+      "axis": "ISOLATED TO CODE. Across 2021-05-31 -> 2021-06-08 the Stadium physics pack (2c4464fe95be), the shared pack (bac0b0d82978) and the title pack (6a59f546e735) are ALL byte-identical; only the executable differs, and 97 of 125 probes flip.",
+      "representative_server": { "date": "2021-06-08", "build": "git=105173-f60b3e272e2", "sha256": "405d86fc5d10eac36c0917f23eebc8d1f2a1014b848c9ab78352d05e1a50ff81" },
+      "representative_client": null,
+      "blocking_reason": "no full client archived between 2020-01 and 2021-07-08; the nearest archived client (2021.7.8.1939) belongs to the LATER sub-class 2021-07-06/07-07, so it is not an exact preimage for this one",
+      "sub_structure": [
+        { "builds": "2021-06-08, 2021-06-09", "exact_of_259": 109 },
+        { "builds": "2021-06-11", "exact_of_259": 111, "boundary_probes": 4 },
+        { "builds": "2021-06-12", "exact_of_259": 112, "boundary_probes": 1, "thin": true },
+        { "builds": "2021-06-18", "exact_of_259": 113, "boundary_probes": 1, "thin": true },
+        { "builds": "2021-07-01", "exact_of_259": 114, "boundary_probes": 3 }
+      ],
+      "evidence": "server dynamic validator + official changelog + isolated code/data axis"
+    },
+    {
+      "id": "STADIUM_SUMMER_2021_CLIENT_ANCHORED",
+      "period": "2021-07-06 through 2021-09-28",
+      "status": "implementation_target_not_started_fail_closed",
+      "behavior": "115 of 259 probes on the full post-Royal basis; boundary into this class is 5 probes",
+      "representative_server": { "dates": ["2021-07-06", "2021-07-07"], "build": "git=105481-88bf0d159f8", "sha256": "204a3fb5d8cb3af03ce8ad329ad9449eeb3d7293365a0caf56fff9bf9dc65613" },
+      "representative_client": {
+        "archive": "Trackmania 2021.7.8.1939.zip",
+        "archive_bytes": 1966239131,
+        "archive_md5": "b75e06df77c658798e0684959f50a2c9",
+        "archive_verified": "md5 match, size match, zip CRC clean",
+        "exe": "Trackmania.exe",
+        "exe_bytes": 43183896,
+        "exe_sha256": "aabfb5229589112797e4420c1978dae4ecdb7f0abb9d0936b0b6657e6edff61e",
+        "exe_banner": "2021-07-07_08_00",
+        "exe_build": "git=105481-88bf0d159f8"
+      },
+      "why_this_one": "THE ONLY EPOCH IN THE AUDITED WINDOW WITH AN EXACT CLIENT PREIMAGE. The archived client's build number equals the archived dedicated servers' build number, so the static preimage and the dynamic trajectory anchor are the same build.",
+      "implementation_status": {
+        "closure_enumeration": "NOT STARTED",
+        "field_call_rip_remap": "NOT STARTED",
+        "verifier": "NOT WRITTEN",
+        "perturbation_positive_control": "NOT RUN",
+        "fresh_process_matches": "NOT RUN",
+        "selectable": false,
+        "gate": "no generation until 100% of closure memory operands, LEAs, immediate field carriers, calls, RIP references and writes are enumerated and classified, register/object provenance is tracked, every helper identity and ABI is verified, and an independent verifier that trusts no generator manifest reports zero unclassified carriers; then a deliberate-perturbation positive control plus two fresh-process historical/current matches with adjacent negatives"
+      }
+    }
+  ],
+  "stadium_epochs_amend": [
+    {
+      "id": "STADIUM_PRE_2022_03_29",
+      "change": "narrow period from 'through 2022-03-25' to '2022-01-01 through 2022-03-25'",
+      "reason": "the audit shows 2020-07-01..2021-12-02 is nine behavioral classes, not part of this one. The 2022-01-21 server (git=105899) matches this profile's own January 2022 client build number, so the two corpora join at that date and the existing representative remains correct for the narrowed period."
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+component	boundary	function	target_rva	target_preimage	historical_bytes	historical_source	status
+smooth_steering	2024-05-22	Xi_GatherLatestInputs	0x2C360E	F3 0F 11 64 8D 74	90 90 90 90 90 90	2024-03-19 RVA 0x273E00 / 2024-04-30 RVA 0x274350	ready
+analog_action_keys	2024-02-27	CInputDeviceDx8Pad::GatherLatestInputs	0x2B8C4C	74 18	90 90	2024-01-10 RVA 0x268E70 / 2024-02-26 RVA 0x269350	ready
+delayed_adherence	2024-01-09	SetPlayer_Delayed_AdherenceCoef call	0x1342927	E8 24 FB FF FF	31 C0 90 90 90	2023-12-21 RVA 0x12DDA70 / 2024-01-10 RVA 0x12DD540	behavioral_shim_ready
+delayed_acceleration	2024-01-09	SetPlayer_Delayed_AccelCoef call	0x1342AB7	E8 94 F9 FF FF	31 C0 90 90 90	2023-12-21 RVA 0x12DDC10 / 2024-01-10 RVA 0x12DD6E0	behavioral_shim_ready
+delayed_control	2024-01-09	SetPlayer_Delayed_ControlCoef call	0x1342C47	E8 04 F8 FF FF	31 C0 90 90 90	2023-12-21 RVA 0x12DDDB0 / 2024-01-10 RVA 0x12DD880	behavioral_shim_ready
+collision	2024-02-27	Vehicles/Cars/CarSnow/SnowCar.Shape.Gbx (CPlugSurface 0x0900C000)	-	current size 1151	pre-Feb size 1123 / SHA256 82a0822220468e50f78b372c840fe2c01fee9cc017a712b3f926548668841661	2024-01-10 / 2024-02-26 ModelsSport entries	ready_prelaunch_overlay

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "purpose": "Machine-readable control record. Companion to measurements.json; prose in CONTROLS.md.",
+  "executed_utc": "2026-09-03T05:34:00Z",
+  "host": "devvm42752",
+  "control_types": {
+    "independent_verification": "the same value obtained by a second method that shares no code with the first",
+    "deliberate_perturbation": "change the input the reader claims to read; the reading must change with it",
+    "fresh_process_repeat": "same answer from a separate process invocation",
+    "adjacent_negative": "something at the same boundary that must NOT change, and does not",
+    "operand_classification": "every operand of the decisive instruction block identified"
+  },
+  "rows": [
+    {
+      "id": "SN-1",
+      "independent_verification": {"status": "pass", "detail": "raw little-endian f32 sweep, stride 1, no structural parsing, returns all 7 pre-Feb values and all 13 post-Feb values at the offsets listed in the changelog Appendix A"},
+      "deliberate_perturbation": {"status": "pass", "detail": "poked 2.0 into offset 0x31 of a copy; decoder reported radius=2.000000000 for member 0 and left members 1-3 unchanged"},
+      "fresh_process_repeat": {"status": "pass", "n": 2, "detail": "unmodified file re-decoded in a fresh process still reports 1.195428014"},
+      "adjacent_negative": {"status": "pass", "detail": "parent CarSnow.Item.Gbx byte-identical across the boundary (1900 B); four wheel spheres unchanged at 0.469999999 m"},
+      "operand_classification": {"status": "not_applicable", "detail": "pure data row, no native payload"},
+      "behavioral_confirmation": {"status": "not_done", "request": "RR-02"}
+    },
+    {
+      "id": "S-2",
+      "also_applies_to": ["SN-2", "RA-1"],
+      "operand_classification": {"status": "pass", "detail": "dest = stored smoothed slot rbp+rcx*4+0x74; src xmm4 = target slot +0x94; xmm7 = 0x7FFFFFFF abs mask; xmm8 = 1.0f floor; xmm9 = 1e-5f relative tolerance; comiss/setae comparison. No unclassified operand in the decisive block."},
+      "independent_verification": {"status": "pass", "detail": "constants located by objdump disassembly and read independently by direct byte scan; both agree. Section-delta correction (-0x1000 between .text and .rdata) controlled by the abs-mask reading exactly ff ff ff 7f at the corrected offset."},
+      "deliberate_perturbation": {"status": "pass", "detail": "poked 3.0 into 0x1d1d134 of a copy; reader returned 3 there while the original returns 1e-5"},
+      "fresh_process_repeat": {"status": "pass", "n": 2, "detail": "1e-5 in two separate invocations"},
+      "uniqueness": {"status": "pass", "detail": "the six-byte store pattern F3 0F 11 64 8D 74 occurs exactly once in the image"},
+      "adjacent_negative": {"status": "partial", "detail": "pre-May six-nop state carried from the source bundle (RVAs 0x273e00 / 0x274350); those builds were not re-read on this node", "request": "RR-03"},
+      "behavioral_confirmation": {"status": "not_done", "request": "RR-03"}
+    },
+    {
+      "id": "S-1",
+      "adjacent_negative": {"status": "pass", "detail": "2022-03-25 build 112349 WRONG_SIMU / -1 immediately before 2022-03-29 build 112449 EXACT 63.546"},
+      "independent_verification": {"status": "pass", "detail": "16 builds consistent on the failing side, 8 on the succeeding side"},
+      "deliberate_perturbation": {"status": "pass", "detail": "parser positive control: unit test asserts a ValidatedResult carrying Time: -1 parses as DNF_TIME_NEGATIVE and never as a finish; a second test asserts a real finish parses as one"},
+      "fresh_process_repeat": {"status": "not_satisfied", "detail": "bundled sweep is one run per build", "request": "RR-04"},
+      "operand_classification": {"status": "not_possible", "detail": "responsible code is outside the normalised CarSport handler and is not localised; the changelog states the outcome as Measured and the mechanism as Unresolved"}
+    },
+    {
+      "id": "REF-01",
+      "discrimination_floor": {"status": "pass", "value": 0.08, "unit": "km/h", "detail": "three patched variants of the same build agree to 5 decimals except finish-plane speed"},
+      "internal_consistency": {"status": "fail", "detail": "bundle prose 12.88075 s vs bundle table 12.79075 s for the same event", "request": "RR-01"},
+      "fresh_process_repeat": {"status": "not_satisfied", "request": "RR-01"}
+    }
+  ],
+  "harness_controls": {
+    "unit_tests": {"passed": 6, "total": 6, "names": ["tuning_name_recognition", "tuning_dates", "dnf_negative_time_is_not_a_finish", "finish_is_parsed", "checkpoint_count_is_parsed", "ascii_and_utf16_extraction"]},
+    "defect_found_by_control": {
+      "what": "f32 scanner stepped 4 bytes and so only ever saw one alignment phase",
+      "impact_if_unfixed": "silently missed 3 of 7 values in the Snow collision independent-read control",
+      "fix": "stride is now 1 by default, configurable",
+      "status": "fixed and control re-run clean before any number was published"
+    },
+    "negative_result_published": {
+      "what": "dedicated-server matrix produced no new epochs",
+      "measured": [
+        {"build": "2020-07-01", "result": "ghost parsed (1 replays parsed), then Can't load map for the ghost"},
+        {"build": "2021-07-01", "result": "validation of 0 ghosts (in 0 maps)"},
+        {"build": "2022-01-21", "result": "validation of 0 ghosts (in 0 maps)"}
+      ],
+      "cause": "map container format: a current-era .Map.Gbx cannot be loaded by 2020-2022 servers",
+      "remedy": "RR-04 — era-matched map plus era-matched recording"
+    }
+  },
+  "not_yet_satisfied": [
+    {"row": "S-1", "missing": "two fresh-process matches", "request": "RR-04"},
+    {"row": "REF-01", "missing": "two fresh-process matches and the 0.09 s discrepancy", "request": "RR-01"},
+    {"row": "S-2", "missing": "adjacent negative re-read on this node", "request": "RR-03"},
+    {"row": "SN-1", "missing": "behavioral confirmation", "request": "RR-02"},
+    {"row": "S-2", "missing": "behavioral confirmation", "request": "RR-03"}
+  ],
+  "invariant": "No primary-changelog row depends on an unsatisfied control for its stated claim; where a control is missing, the claim is narrowed to what the satisfied controls support and the remainder is named Unresolved."
+}

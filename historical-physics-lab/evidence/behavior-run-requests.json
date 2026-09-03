@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "purpose": "Exact, executable run requests for measurements this node cannot perform. Each request is self-contained: target build, map, input tape, readout, controls, acceptance.",
+  "why_this_node_cannot_run_them": {
+    "exact_client": "WhiteStick exact-client execution is not reachable from this node",
+    "server_oracle": "staged and working, but blocked on era-matched map+recording: a 2024/2026-era .Map.Gbx cannot be loaded by 2020-2022 servers (measured: 2020-07-01 'Can't load map for the ghost'; 2021-07-01 and 2022-01-21 'validation of 0 ghosts (in 0 maps)')"
+  },
+  "requests": [
+    {
+      "id": "RR-01",
+      "priority": 1,
+      "oracle": "exact_client",
+      "goal": "Resolve the open 0.09 s discrepancy in the current-build reference run",
+      "build": {"number": 128130, "exe_sha256": "3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda"},
+      "map": {"role": "ice booster + jump control", "sha256": "89a303c02a18d9f3973012f3921dc5fdab07c44c0b307f97a6e29ce6c66039e7"},
+      "input_tape": {"throttle": "full", "steer": "none", "keyhold_s": 22.0, "keydown_batches": 431},
+      "record": ["finish_plane_s", "finish_plane_kmh", "trace_record_count", "trace_sha256"],
+      "acceptance": "finish_plane_s reproduces either 12.79075 or 12.88075 to 1e-5 s; state which, and correct the losing document",
+      "controls": ["re-run twice; the two runs must agree bit-for-bit on the trace digest"]
+    },
+    {
+      "id": "RR-02",
+      "priority": 1,
+      "oracle": "exact_client",
+      "goal": "Confirm SN-1 (2024-02-27 Snow hitbox) behaviorally, not just as geometry",
+      "micro_map": "M-11",
+      "map_spec": "flat straight; one fixed rigid obstacle whose lower edge is at a swept height h above the road, h in [0.90, 1.30] m in 0.01 m steps; finish plane 60 m past the obstacle",
+      "builds": [
+        {"role": "pre-fix", "date": "2024-01-10", "shape_file_bytes": 1123, "shape_sha256": "82a0822220468e50f78b372c840fe2c01fee9cc017a712b3f926548668841661"},
+        {"role": "post-fix", "date": "2024-02-26", "shape_file_bytes": 1147, "shape_sha256": "ef0ebee29e98faec02c5e563c99688fb664b9b76314eee20c77aef8c9c048d9d"}
+      ],
+      "vehicle": "SnowCar",
+      "input_tape": {"throttle": "full", "steer": "none", "note": "press-forward straight into the obstacle"},
+      "record": ["contact_bool", "contact_time_s", "post_contact_speed_kmh", "obstacle_height_m"],
+      "prediction_to_test": "the contact/no-contact threshold height moves DOWN by 0.095428014 m on body member 1 and by 0.169449997 m on member 2 between pre-fix and post-fix",
+      "acceptance": "the measured threshold shift matches a predicted per-member delta to within one sweep step (0.01 m); report the shift in metres either way",
+      "controls": ["identical run with the four wheel spheres' contact geometry (unchanged, r = 0.469999999 m) as the negative control — its threshold must NOT move"]
+    },
+    {
+      "id": "RR-03",
+      "priority": 1,
+      "oracle": "exact_client",
+      "goal": "Confirm S-2/SN-2/RA-1 (2024-05-22 analog snap) behaviorally and bound the residual",
+      "micro_map": "M-09",
+      "builds": [
+        {"role": "pre-fix", "date": "2024-03-19", "site_rva": "0x273e00", "expected_bytes": "90 90 90 90 90 90"},
+        {"role": "post-fix", "date": "2024-04-30", "site_rva": "0x274350", "expected_bytes": "F3 0F 11 64 8D 74"},
+        {"role": "current", "build": 128130, "site_rva": "0x2c360e", "expected_bytes": "F3 0F 11 64 8D 74"}
+      ],
+      "input_tape": {"steer": "ramp the analog axis to a target and hold for 5 s", "targets": [0.25, 0.5, 0.75, 1.0], "throttle": "full"},
+      "record": ["stored_axis_value_per_tick", "target_value", "residual_at_convergence"],
+      "prediction_to_test": "post-fix residual is exactly 0; pre-fix residual is > 0 and <= 1e-5 * max(1.0, max(|stored|,|target|))",
+      "acceptance": "report the measured residual per target to full float precision",
+      "controls": ["same tape on the same build with the site NOPed and restored, verifying the value flips and returns"]
+    },
+    {
+      "id": "RR-04",
+      "priority": 2,
+      "oracle": "server",
+      "goal": "Resolve the 2020-2021 Stadium epoch grid",
+      "builds": "all 39 distinct dedicated-server executables among the 43 dated builds 2020-07-01 .. 2022-01-21, plus 2022-02-22 .. 2022-06-21",
+      "blocking_input": "one era-matched map + recording per era: a map saved by a 2020-era client and a recording made on it in that era",
+      "harness": "tmphys validate spec.tsv /work 180 — one spec row per build: build_id<TAB>server_dir<TAB>map<TAB>ghost",
+      "record": ["validated_ms", "verdict", "checkpoints_reached"],
+      "acceptance": "a boundary is declared only where the verdict or the validated time changes between two adjacent dated builds, with both neighbours reproducing their own side at least twice",
+      "controls": [
+        "identity: the era's own build must reproduce the recording exactly",
+        "negative: a build known to fail it (e.g. 2022-03-25 for the Roevhaal control) must fail"
+      ],
+      "note": "the 2022-03-29 boundary is already Measured this way (63.546 s vs no finish); this request extends the same method backwards"
+    },
+    {
+      "id": "RR-05",
+      "priority": 2,
+      "oracle": "exact_client",
+      "goal": "Measure the Fall 2022 behavior delta, currently fail-closed",
+      "builds": [
+        {"role": "historical", "date": "2022-09-30", "exe_sha256": "1f5ce9877e327d690cc9d6b5ab02fbe6157452e85e15e622ce46deeac91fe1be"},
+        {"role": "current", "build": 128130}
+      ],
+      "map_requirement": "a control map the 2022-09-30 client will actually load — the April-2026 map body used for REF-01 is rejected by that client, and metadata-only edits are not acceptable as an equivalent",
+      "input_tape": "the REF-01 tape: full throttle, no steer, 22.000 s keyhold",
+      "record": ["pre_booster_kmh", "post_booster_kmh", "takeoff_kmh", "takeoff_s", "airtime_s", "landing_s", "landing_z_m", "finish_plane_s", "finish_plane_kmh"],
+      "acceptance": "a claimed Fall-vs-current difference must exceed the measured discrimination floor of 0.080 km/h on finish-plane speed; timing differences are meaningful at 1e-5 s",
+      "controls": ["run stock current on the same map in the same session as the identity control"]
+    },
+    {
+      "id": "RR-06",
+      "priority": 3,
+      "oracle": "exact_client",
+      "goal": "Measure the Summer 2023 ice change magnitude",
+      "builds": [{"date": "2023-05-05", "role": "pre"}, {"date": "2023-06-23", "role": "post"}, {"date": "2023-07-10", "role": "post-confirm"}],
+      "micro_maps": ["M-01", "M-03", "M-02"],
+      "record": ["time_to_each_gate_s", "lateral_displacement_m", "exit_speed_kmh"],
+      "acceptance": "report the per-gate time delta in seconds and the exit-speed delta in km/h; if both are within the discrimination floor, report NO MEASURED DIFFERENCE rather than adopting the release note",
+      "controls": ["2023-06-23 and 2023-07-10 must match each other (they share handler and packs)"]
+    },
+    {
+      "id": "RR-07",
+      "priority": 3,
+      "oracle": "exact_client",
+      "goal": "Measure the Rally custom-ice fix magnitude (2024-04-02)",
+      "builds": [{"date": "2024-03-19", "role": "pre"}, {"date": "2024-04-30", "role": "post"}],
+      "micro_map": "M-12",
+      "vehicle": "RallyCar",
+      "record": ["lateral_displacement_m", "exit_speed_kmh", "yaw_rate_deg_s"],
+      "controls": ["the encrypted Rally physics-model payload is bit-identical across this boundary (stored size 5696, sha256 a0a4c1fe0e771ca75053badd1b0b78de0dfe0f98fedcd2cb73d583020700734e) — so any measured difference must be attributable to the item-path delta or the run is not understood"]
+    },
+    {
+      "id": "RR-08",
+      "priority": 3,
+      "oracle": "exact_client",
+      "goal": "Establish Desert and Snow control baselines, and the per-epoch acceleration curve for every family",
+      "micro_maps": ["M-01", "M-08", "M-13"],
+      "builds": ["2024-04-30", "current 128130"],
+      "record": ["time_to_each_gate_s", "top_speed_kmh", "yaw_rate_per_input_deg_s"],
+      "acceptance": "publishes the first per-family acceleration and steering-response numbers; no behavior row is written for any family without them"
+    }
+  ],
+  "reporting_contract": {
+    "every_returned_row_must_carry": ["build exe sha256", "map sha256", "input tape sha256", "raw trace sha256", "the value with its unit", "status: measured or unresolved"],
+    "forbidden": ["a value without a unit", "a value without a trace digest", "adopting a release note as a magnitude", "a claim below the discrimination floor"]
+  }
+}

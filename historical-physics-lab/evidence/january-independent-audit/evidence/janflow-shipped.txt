@@ -1,0 +1,166 @@
+root region: island 0..8336, source 0x1405edeb0..0x1405eff40
+decoded 1762 instructions in the root region
+
+== definitions of each base register inside the root region ==
+rdi: 2 definition(s)
+    island 30: mov    rdi,QWORD PTR [r8+0x8]
+    island 8325: pop    rdi
+rdx: 34 definition(s)
+    island 230: lea    rdx,[rdi+0x1904]
+    island 261: lea    rdx,[rdx+0xb8]
+    island 278: lea    rdx,[rdi+0x1360]
+    island 501: mov    rdx,rdi
+    island 514: mov    rdx,rdi
+    island 538: lea    rdx,[rsi+0x1c]
+    ... 28 more
+rax: 45 definition(s)
+    island 0: mov    rax,rsp
+    island 125: mov    rax,QWORD PTR [r8]
+    island 469: mov    rax,QWORD PTR [rsi+0x40]
+    island 744: lea    rax,[rbp+0x40]
+    island 772: lea    rax,[rbp-0x80]
+    island 784: lea    rax,[rsp+0x70]
+    ... 39 more
+rcx: 82 definition(s)
+    island 45: mov    rcx,r8
+    island 188: mov    rcx,r10
+    island 210: lea    rcx,[rdi+0x1280]
+    island 304: mov    rcx,rdi
+    island 414: lea    rcx,[rbp-0x50]
+    island 445: mov    rcx,QWORD PTR [r10+0x358]
+    ... 76 more
+rsi: 2 definition(s)
+    island 52: mov    rsi,r8
+    island 8326: pop    rsi
+r15: 9 definition(s)
+    island 81: lea    r15,[rdi+0x388]
+    island 1608: mov    r15,QWORD PTR [rsi+0x40]
+    island 2204: mov    r15,QWORD PTR [rsp+0x78]
+    island 2996: lea    r15,[rdi+0x388]
+    island 3014: lea    r15,[rdi+0x388]
+    island 4909: mov    r15,QWORD PTR [rbp-0x60]
+    ... 3 more
+r13: 8 definition(s)
+    island 63: lea    r13,[rdi+0x1780]
+    island 1594: mov    r13,QWORD PTR [rax+rcx*8+0x6c0]
+    island 3029: lea    r13,[rdi+0x1780]
+    island 3107: lea    r13,[rdi+0x1780]
+    island 3986: add    r13,0x70
+    island 4913: add    r13,0xb8
+    ... 2 more
+rbx: 14 definition(s)
+    island 34: mov    rbx,rcx
+    island 1476: mov    rbx,r9
+    island 3071: add    rbx,0xb8
+    island 3154: mov    rbx,QWORD PTR [rbp+0x180]
+    island 3994: lea    rbx,[rdi+0x18d0]
+    island 4988: mov    rbx,QWORD PTR [rbp+0x180]
+    ... 8 more
+r14: 8 definition(s)
+    island 963: mov    r14,QWORD PTR [rax+0x200]
+    island 1511: lea    r14,[rbx+r13*1]
+    island 4055: mov    r14,QWORD PTR [rsi+0x40]
+    island 5228: mov    r14,QWORD PTR [rsi+0x40]
+    island 5828: mov    r14,QWORD PTR [rdi+0x88]
+    island 6278: mov    r14,QWORD PTR [rsp+0x78]
+    ... 2 more
+r12: 8 definition(s)
+    island 176: lea    r12,[rsi+0x28]
+    island 1507: lea    r12,[rax+r15*1]
+    island 1934: lea    r12,[rsi+0x28]
+    island 3021: lea    r12,[rsi+0x28]
+    island 3979: lea    r12,[rdi+0x1d5c]
+    island 4934: add    r12,0x4
+    ... 2 more
+
+== every site of the contested displacements ==
+
+CONTESTED [rax+0x118]: 1 remapped, 1 left at the January offset
+    island   140 UNTOUCHED mov    r10,QWORD PTR [rax+0x118]
+    island  7758 REMAPPED  mulss  xmm2,DWORD PTR [rax+0x310]
+
+CONTESTED [rax+0xa64]: 1 remapped, 2 left at the January offset
+    island  2445 REMAPPED  movss  xmm2,DWORD PTR [rax+0xa5c]
+    island  4188 UNTOUCHED movss  xmm3,DWORD PTR [rax+0xa64]
+    island  4509 UNTOUCHED movss  xmm0,DWORD PTR [rax+0xa64]
+
+CONTESTED [rdi+0x1378]: 9 remapped, 2 left at the January offset
+    island   210 REMAPPED  lea    rcx,[rdi+0x1280]
+    island   854 REMAPPED  lea    r11,[rdi+0x1280]
+    island  1062 REMAPPED  lea    r11,[rdi+0x1280]
+    island  3044 REMAPPED  lea    r11,[rdi+0x1280]
+    island  3271 REMAPPED  lea    rcx,[rdi+0x1280]
+    island  5489 REMAPPED  lea    rcx,[rdi+0x1280]
+    island  6400 UNTOUCHED lea    rbx,[rdi+0x1378]
+    island  6692 REMAPPED  lea    rcx,[rdi+0x1280]
+    island  6867 UNTOUCHED lea    rbx,[rdi+0x1378]
+    island  8041 REMAPPED  lea    rcx,[rdi+0x1280]
+    island  8138 REMAPPED  lea    rcx,[rdi+0x1280]
+
+CONTESTED [rdi+0x14c4]: 1 remapped, 2 left at the January offset
+    island  4763 REMAPPED  movss  xmm1,DWORD PTR [rdi+0x1364]
+    island  6461 UNTOUCHED movss  xmm1,DWORD PTR [rdi+0x14c4]
+    island  6539 UNTOUCHED mulss  xmm0,DWORD PTR [rdi+0x14c4]
+
+CONTESTED [rdi+0x14ec]: 1 remapped, 1 left at the January offset
+    island   886 UNTOUCHED cmp    DWORD PTR [rdi+0x14ec],0x0
+    island  6369 REMAPPED  cmp    DWORD PTR [rdi+0x138c],0x0
+
+CONTESTED [rdi+0x1504]: 1 remapped, 3 left at the January offset
+    island  1026 UNTOUCHED movss  xmm1,DWORD PTR [rdi+0x1504]
+    island  1069 UNTOUCHED movss  DWORD PTR [rdi+0x1504],xmm1
+    island  2494 UNTOUCHED movss  xmm1,DWORD PTR [rdi+0x1504]
+    island  6769 REMAPPED  movss  xmm1,DWORD PTR [rdi+0x13a4]
+
+CONTESTED [rdi+0x15dc]: 1 remapped, 1 left at the January offset
+    island  1981 UNTOUCHED mulss  xmm13,DWORD PTR [rdi+0x15dc]
+    island  8229 REMAPPED  lea    r8,[rdi+0x147c]
+
+CONTESTED [rdi+0x1628]: 1 remapped, 1 left at the January offset
+    island  2842 UNTOUCHED mov    ecx,DWORD PTR [rdi+0x1628]
+    island  2913 REMAPPED  mov    DWORD PTR [rdi+0x14c8],ecx
+
+CONTESTED [rdi+0x1758]: 9 remapped, 5 left at the January offset
+    island  3335 REMAPPED  mov    DWORD PTR [rdi+0x1600],eax
+    island  3348 REMAPPED  mov    DWORD PTR [rdi+0x1600],eax
+    island  3408 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x1
+    island  3431 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x0
+    island  3499 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x1
+    island  3624 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x1
+    island  3683 UNTOUCHED mov    DWORD PTR [rdi+0x1758],0x0
+    island  3730 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x1
+    island  3742 UNTOUCHED mov    DWORD PTR [rdi+0x1758],0x0
+    island  3772 REMAPPED  mov    DWORD PTR [rdi+0x1600],0x0
+    island  4635 REMAPPED  cmp    DWORD PTR [rdi+0x1600],0x0
+    island  5149 UNTOUCHED cmp    DWORD PTR [rdi+0x1758],0x0
+    island  5526 UNTOUCHED cmp    DWORD PTR [rdi+0x1758],0x0
+    island  5963 UNTOUCHED cmp    DWORD PTR [rdi+0x1758],0x0
+
+CONTESTED [rdi+0x18d0]: 5 remapped, 1 left at the January offset
+    island    63 REMAPPED  lea    r13,[rdi+0x1780]
+    island  2388 REMAPPED  lea    rax,[rdi+0x1780]
+    island  3029 REMAPPED  lea    r13,[rdi+0x1780]
+    island  3107 REMAPPED  lea    r13,[rdi+0x1780]
+    island  3994 UNTOUCHED lea    rbx,[rdi+0x18d0]
+    island  5584 REMAPPED  lea    r13,[rdi+0x1780]
+
+CONTESTED [rdx+0x538]: 1 remapped, 1 left at the January offset
+    island  6725 REMAPPED  addss  xmm6,DWORD PTR [rdx+0x1798]
+    island  7209 UNTOUCHED movss  xmm6,DWORD PTR [rdx+0x538]
+
+CONTESTED [rdx+0x53c]: 1 remapped, 1 left at the January offset
+    island  6717 REMAPPED  mulss  xmm6,DWORD PTR [rdx+0x179c]
+    island  7220 UNTOUCHED mulss  xmm0,DWORD PTR [rdx+0x53c]
+
+CONTESTED [rdx+0x6a4]: 4 remapped, 5 left at the January offset
+    island  6630 REMAPPED  movss  xmm0,DWORD PTR [rdx+0x1cf4]
+    island  6648 REMAPPED  mulss  xmm0,DWORD PTR [rdx+0x1cf4]
+    island  6666 REMAPPED  mulss  xmm0,DWORD PTR [rdx+0x1cf4]
+    island  6684 REMAPPED  mulss  xmm0,DWORD PTR [rdx+0x1cf4]
+    island  7071 UNTOUCHED movss  xmm1,DWORD PTR [rdx+0x6a4]
+    island  7089 UNTOUCHED mulss  xmm1,DWORD PTR [rdx+0x6a4]
+    island  7107 UNTOUCHED mulss  xmm1,DWORD PTR [rdx+0x6a4]
+    island  7125 UNTOUCHED mulss  xmm1,DWORD PTR [rdx+0x6a4]
+    island  7159 UNTOUCHED mulss  xmm1,DWORD PTR [rdx+0x6a4]
+
+contested (base, offset) pairs: 13

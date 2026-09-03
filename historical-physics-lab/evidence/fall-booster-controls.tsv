@@ -1,0 +1,8 @@
+profile	build	exe_sha256	trace_sha256	trace_records	pre_booster_kmh	post_booster_kmh	takeoff_kmh	takeoff_s	airtime_s	landing_s	landing_z_m	finish_plane_s	finish_plane_kmh	result
+stock_current	128130	3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda	4b63b4fd052cbfa77f9445492a299cf4fde56c5878b1a9716d4b42f0dc9a32e2	4543	198.962	294.848	337.568	6.84517	1.46540	8.31057	677.47345	12.79075	345.488	crash_free
+current_fall_graph_only	128130	3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda	909f17e09586f328b6f3544d91edd6692373c0b4e3b031af9db0fab0429f9bba	4543	198.962	294.848	337.568	6.84517	1.46540	8.31057	677.47345	12.79075	345.437	crash_free
+current_fall_v5	128130	3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda	17d900d87af88787b08ebc743719208ba98905db56dacd414f55fdb3d02d8911	4543	198.962	294.848	337.568	6.84517	1.46540	8.31057	677.47345	12.79075	345.408	crash_free_fail_closed
+exact_sep30	Sep30	1f5ce9877e327d690cc9d6b5ab02fbe6157452e85e15e622ce46deeac91fe1be	-	0	-	-	-	-	-	-	-	-	-	blocked_equivalent_control_body_not_yet_valid
+# control_map_sha256=89a303c02a18d9f3973012f3921dc5fdab07c44c0b307f97a6e29ce6c66039e7
+# current keyhold: 22.000 s, 431 keydown batches, identical full-throttle/no-steer input
+# exact Sep.30 launches offline, but the April-2026 BlueBay map body is rejected by the old client; metadata-only edits are not accepted as equivalent evidence

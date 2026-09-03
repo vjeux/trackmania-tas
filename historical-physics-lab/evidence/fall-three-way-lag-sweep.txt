@@ -1,0 +1,3 @@
+SWEEP exact vs stock fixed_window_s=2..18 best_lag_ms=-90 best_mean_pos_m=3.151422725 best_max_pos_m=7.669566301 zero_lag_mean_pos_m=6.106041959 zero_lag_max_pos_m=10.016209469
+SWEEP exact vs v5 fixed_window_s=2..18 best_lag_ms=-100 best_mean_pos_m=3.776476577 best_max_pos_m=9.236946874 zero_lag_mean_pos_m=7.019777685 zero_lag_max_pos_m=11.199561025
+SWEEP stock vs v5 fixed_window_s=2..18 best_lag_ms=-10 best_mean_pos_m=0.874798248 best_max_pos_m=2.370423029 zero_lag_mean_pos_m=1.125807665 zero_lag_max_pos_m=2.409154994

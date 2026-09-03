@@ -1,0 +1,3 @@
+archive	exe_sha256	trace_format	canonical_digest_display	roe_vhaal_divergence	checkpoints	classification	source
+Trackmania 2022.9.30.1013	1f5ce9877e327d690cc9d6b5ab02fbe6157452e85e15e622ce46deeac91fe1be	HPLTRC3	5ed96a35…04323	>5mm@4.010;>0.1m@4.460;>1m@5.460;>10m@9.910	0	DETERMINISTIC_NEGATIVE	certification session 7bb7b9d3-0725-48aa-b27e-3612b53e2aae
+Trackmania 2022.10.6.2104	441b3aeb6b878f87b40c0994fcf2ab478e13ed2d1b1b47d341899b56cb931ad5	HPLTRC3	5ed96a35…04323	bit-identical to Sep.30	0	ADJACENT_EQUIVALENCE_NEGATIVE	certification session 7bb7b9d3-0725-48aa-b27e-3612b53e2aae

@@ -1,0 +1,39 @@
+# Fall 2022 runtime tuning graph — authoritative live capture
+# Sep. 30 source: exact client exe SHA-256 1f5ce9877e327d690cc9d6b5ab02fbe6157452e85e15e622ce46deeac91fe1be
+# Sep. 30 log: sep30-fall-tunings-v22.log SHA-256 42d92d7fedfccf952e900b7d716d0c72e0154055f2797dbdcce1fbe57f1db19f
+# Current target: build 128130 exe SHA-256 3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda
+# Current log: current-fall-tunings-v21.log SHA-256 28ee676d1ce5e626137d9a1694b928d165d31e7a5ab1de962cb449fb7e6935ab
+# Sep. 30 graph: CGameItemModel+0x288 -> CGameVehicleModel+0x28 -> _0x090EA000+0x20 -> _0x090EC000
+# Current graph: CGameItemModel+0x288 -> CGameVehicleModel+0x28 -> _0x090EA000+0x18 -> _0x090EC000
+# Sep. 30 header: count=25 capacity=25 class=0x090EB000 index=24
+# Current header: count=28 capacity=28 class=0x090EB000 index=27
+# Shared entries: aux=0x00007530, scalar=3.14, one key 0 -> 1; node layout shifts +8 bytes in current.
+index	sep30_name	current_name	result
+0	20fev2013	20fev2013	identical
+1	06/12/2019_TurboAirControl_Ice	06/12/2019_TurboAirControl_Ice	identical
+2	06/12/2019_TurboAirControl_Ice	06/12/2019_TurboAirControl_Ice	identical
+3	WallRepulse	WallRepulse	identical
+4	IceDrift	IceDrift	identical
+5	IceDriftV1	IceDriftV1	identical
+6	IceDriftV2	IceDriftV2	identical
+7	AirControlStab	AirControlStab	identical
+8	IceDriftV3	IceDriftV3	identical
+9	IceDriftV4	IceDriftV4	identical
+10	IceDriftV5	IceDriftV5	identical
+11	IceDriftV6	IceDriftV6	identical
+12	Reactors200605	Reactors200605	identical
+13	IceDrift200609	IceDrift200609	identical
+14	IceDrift200618	IceDrift200618	identical
+15	IceDrift200619	IceDrift200619	identical
+16	IceDrift200621	IceDrift200621	identical
+17	IceDrift200624	IceDrift200624	identical
+18	AntiWallHit201021	AntiWallHit201021	identical
+19	Water210115	Water210115	identical
+20	Water210208	Water210208	identical
+21	Water210415	Water210415	identical
+22	ExperimentalBobsleighSteer	ExperimentalBobsleighSteer	identical
+23	NoWiggle	NoWiggle	identical
+24	NoWiggleAjusté	NoWiggleAjusté	identical
+25	-	Wood0	current-only, non-Stadium
+26	-	Wood_20240101_MoreAccelForSlope	current-only, non-Stadium
+27	-	Wood_20240101_MoreAccelForSlope2	current-only, non-Stadium

@@ -1,0 +1,1781 @@
+//////////////////////////////////////////////////////////////////////
+// tmarc
+//////////////////////////////////////////////////////////////////////
+// tmarc — dependency-free archive prober/fetcher for official Trackmania build archives.
+// Speaks HTTP/1.1 through a plain HTTP forward proxy (fwdproxy) with no crates.
+//
+// Subcommands:
+//   probe  --host H --path-fmt F --from YYYY-MM-DD --to YYYY-MM-DD [--jobs N]
+//   head   --url http://host/path
+//   get    --url http://host/path --out FILE
+//
+// Everything writes TSV to stdout so downstream Rust tools can parse it.
+
+use std::collections::VecDeque;
+use std::fmt::Write as _;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const PROXY: &str = "fwdproxy:8080";
+
+#[derive(Debug, Clone)]
+struct Resp {
+    status: u16,
+    headers: Vec<(String, String)>,
+}
+
+impl Resp {
+    fn header(&self, k: &str) -> Option<&str> {
+        let kl = k.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(hk, _)| hk.to_ascii_lowercase() == kl)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+fn proxy_addr() -> String {
+    std::env::var("TMARC_PROXY").unwrap_or_else(|_| PROXY.to_string())
+}
+
+fn connect() -> std::io::Result<TcpStream> {
+    let addr = proxy_addr();
+    // Resolve + connect with a bounded timeout.
+    use std::net::ToSocketAddrs;
+    let mut last_err = None;
+    for sa in addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&sa, Duration::from_secs(15)) {
+            Ok(s) => {
+                s.set_read_timeout(Some(Duration::from_secs(120)))?;
+                s.set_write_timeout(Some(Duration::from_secs(60)))?;
+                return Ok(s);
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("no addr")))
+}
+
+fn read_head(r: &mut BufReader<TcpStream>) -> std::io::Result<Resp> {
+    let mut line = String::new();
+    r.read_line(&mut line)?;
+    if line.is_empty() {
+        return Err(std::io::Error::other("empty response"));
+    }
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let mut headers = Vec::new();
+    loop {
+        let mut h = String::new();
+        let n = r.read_line(&mut h)?;
+        if n == 0 {
+            break;
+        }
+        let t = h.trim_end_matches(['\r', '\n']);
+        if t.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = t.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    Ok(Resp { status, headers })
+}
+
+fn request(method: &str, url: &str) -> std::io::Result<(Resp, BufReader<TcpStream>)> {
+    let s = connect()?;
+    let mut w = s.try_clone()?;
+    let host = url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let mut req = String::new();
+    let _ = write!(
+        req,
+        "{method} {url} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: tmarc/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    );
+    w.write_all(req.as_bytes())?;
+    w.flush()?;
+    let mut r = BufReader::new(s);
+    let resp = read_head(&mut r)?;
+    Ok((resp, r))
+}
+
+fn days_between(from: &str, to: &str) -> Vec<(i32, u32, u32)> {
+    fn parse(d: &str) -> (i32, u32, u32) {
+        let p: Vec<&str> = d.split('-').collect();
+        (
+            p[0].parse().unwrap(),
+            p[1].parse().unwrap(),
+            p[2].parse().unwrap(),
+        )
+    }
+    fn leap(y: i32) -> bool {
+        (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    }
+    fn dim(y: i32, m: u32) -> u32 {
+        match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                if leap(y) {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => 0,
+        }
+    }
+    let (fy, fm, fd) = parse(from);
+    let (ty, tm, td) = parse(to);
+    let mut out = Vec::new();
+    let (mut y, mut m, mut d) = (fy, fm, fd);
+    loop {
+        out.push((y, m, d));
+        if (y, m, d) == (ty, tm, td) {
+            break;
+        }
+        d += 1;
+        if d > dim(y, m) {
+            d = 1;
+            m += 1;
+            if m > 12 {
+                m = 1;
+                y += 1;
+            }
+        }
+        if y > ty + 1 {
+            break;
+        }
+    }
+    out
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("usage: tmarc <probe|head|get> ...");
+        std::process::exit(2);
+    }
+    let get_flag = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    match args[1].as_str() {
+        "head" => {
+            let url = get_flag("--url").expect("--url");
+            match request("HEAD", &url) {
+                Ok((r, _)) => {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        r.status,
+                        r.header("content-length").unwrap_or("-"),
+                        r.header("last-modified").unwrap_or("-"),
+                        r.header("etag").unwrap_or("-")
+                    );
+                }
+                Err(e) => println!("ERR\t{e}"),
+            }
+        }
+        "get" => {
+            let url = get_flag("--url").expect("--url");
+            let out = get_flag("--out").expect("--out");
+            match request("GET", &url) {
+                Ok((r, mut body)) => {
+                    if r.status != 200 {
+                        eprintln!("status {}", r.status);
+                        std::process::exit(1);
+                    }
+                    let mut f = std::fs::File::create(&out).expect("create");
+                    let mut buf = vec![0u8; 1 << 20];
+                    let mut total: u64 = 0;
+                    loop {
+                        match body.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                f.write_all(&buf[..n]).expect("write");
+                                total += n as u64;
+                            }
+                            Err(e) => {
+                                eprintln!("read error after {total}: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    let declared = r
+                        .header("content-length")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    println!("{out}\t{total}\t{declared}\t{}", if declared == total { "COMPLETE" } else { "SHORT" });
+                }
+                Err(e) => {
+                    eprintln!("ERR {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "probe" => {
+            let host = get_flag("--host").expect("--host");
+            let fmt = get_flag("--path-fmt").expect("--path-fmt"); // e.g. /server/TrackmaniaServer_{}.zip
+            let from = get_flag("--from").expect("--from");
+            let to = get_flag("--to").expect("--to");
+            let jobs: usize = get_flag("--jobs")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16);
+            let dates = days_between(&from, &to);
+            let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(
+                dates
+                    .iter()
+                    .map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}"))
+                    .collect(),
+            ));
+            let results: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let mut handles = Vec::new();
+            for _ in 0..jobs {
+                let q = Arc::clone(&queue);
+                let res = Arc::clone(&results);
+                let host = host.clone();
+                let fmt = fmt.clone();
+                handles.push(std::thread::spawn(move || loop {
+                    let d = { q.lock().unwrap().pop_front() };
+                    let Some(d) = d else { break };
+                    let url = format!("http://{}{}", host, fmt.replace("{}", &d));
+                    let mut line = None;
+                    for attempt in 0..3 {
+                        match request("HEAD", &url) {
+                            Ok((r, _)) => {
+                                if r.status == 200 {
+                                    line = Some(format!(
+                                        "{d}\t200\t{}\t{}",
+                                        r.header("content-length").unwrap_or("-"),
+                                        r.header("last-modified").unwrap_or("-")
+                                    ));
+                                } else {
+                                    line = Some(format!("{d}\t{}\t-\t-", r.status));
+                                }
+                                break;
+                            }
+                            Err(e) => {
+                                if attempt == 2 {
+                                    line = Some(format!("{d}\tERR\t-\t{e}"));
+                                }
+                                std::thread::sleep(Duration::from_millis(300));
+                            }
+                        }
+                    }
+                    if let Some(l) = line {
+                        res.lock().unwrap().push(l);
+                    }
+                }));
+            }
+            for h in handles {
+                let _ = h.join();
+            }
+            let mut v = results.lock().unwrap().clone();
+            v.sort();
+            for l in v {
+                println!("{l}");
+            }
+        }
+        other => {
+            eprintln!("unknown subcommand {other}");
+            std::process::exit(2);
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmlab
+//////////////////////////////////////////////////////////////////////
+// tmlab — Rust-only evidence tooling for the historical physics epoch audit.
+//
+// Subcommands:
+//   hash <paths...>              sha256 + size, TSV
+//   hashdir <dir> [--ext .zip]   hash every matching file in a dir
+//   pemeta <file>                PE/ELF identity: type, size, sha256, build strings
+//   cmp <a> <b>                  byte-identity + first differing offset
+//
+// Pure std. SHA-256 implemented here so the verifier has no external dependency.
+
+use std::io::Read;
+
+// ---------------------------------------------------------------- sha256
+
+const K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+pub struct Sha256 {
+    h: [u32; 8],
+    buf: [u8; 64],
+    buflen: usize,
+    total: u64,
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    pub fn new() -> Self {
+        Sha256 {
+            h: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            buf: [0u8; 64],
+            buflen: 0,
+            total: 0,
+        }
+    }
+
+    fn block(&mut self, b: &[u8]) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b_, mut c, mut d, mut e, mut f, mut g, mut h) = (
+            self.h[0], self.h[1], self.h[2], self.h[3], self.h[4], self.h[5], self.h[6], self.h[7],
+        );
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b_) ^ (a & c) ^ (b_ & c);
+            let t2 = s0.wrapping_add(maj);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b_;
+            b_ = a;
+            a = t1.wrapping_add(t2);
+        }
+        self.h[0] = self.h[0].wrapping_add(a);
+        self.h[1] = self.h[1].wrapping_add(b_);
+        self.h[2] = self.h[2].wrapping_add(c);
+        self.h[3] = self.h[3].wrapping_add(d);
+        self.h[4] = self.h[4].wrapping_add(e);
+        self.h[5] = self.h[5].wrapping_add(f);
+        self.h[6] = self.h[6].wrapping_add(g);
+        self.h[7] = self.h[7].wrapping_add(h);
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total = self.total.wrapping_add(data.len() as u64);
+        if self.buflen > 0 {
+            let need = 64 - self.buflen;
+            let take = need.min(data.len());
+            self.buf[self.buflen..self.buflen + take].copy_from_slice(&data[..take]);
+            self.buflen += take;
+            data = &data[take..];
+            if self.buflen == 64 {
+                let b = self.buf;
+                self.block(&b);
+                self.buflen = 0;
+            }
+        }
+        while data.len() >= 64 {
+            let (blk, rest) = data.split_at(64);
+            self.block(blk);
+            data = rest;
+        }
+        if !data.is_empty() {
+            self.buf[..data.len()].copy_from_slice(data);
+            self.buflen = data.len();
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 32] {
+        let bitlen = self.total.wrapping_mul(8);
+        self.update(&[0x80]);
+        while self.buflen != 56 {
+            self.update(&[0]);
+        }
+        // update() bumped total; write length directly
+        let b = bitlen.to_be_bytes();
+        self.buf[56..64].copy_from_slice(&b);
+        let blk = self.buf;
+        self.block(&blk);
+        let mut out = [0u8; 32];
+        for i in 0..8 {
+            out[4 * i..4 * i + 4].copy_from_slice(&self.h[i].to_be_bytes());
+        }
+        out
+    }
+}
+
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn sha256_file(path: &str) -> std::io::Result<(String, u64)> {
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut total = 0u64;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        total += n as u64;
+    }
+    Ok((hex(&h.finalize()), total))
+}
+
+// ---------------------------------------------------------------- binary identity
+
+fn ascii_strings(data: &[u8], min: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = Vec::new();
+    for &b in data {
+        if (0x20..0x7f).contains(&b) {
+            cur.push(b);
+        } else {
+            if cur.len() >= min {
+                out.push(String::from_utf8_lossy(&cur).to_string());
+            }
+            cur.clear();
+        }
+    }
+    if cur.len() >= min {
+        out.push(String::from_utf8_lossy(&cur).to_string());
+    }
+    out
+}
+
+fn build_banner(data: &[u8]) -> Vec<String> {
+    let mut hits = Vec::new();
+    for s in ascii_strings(data, 8) {
+        let b = s.as_bytes();
+        // YYYY-MM-DD_HH_MM
+        if b.len() >= 16 {
+            for w in b.windows(16) {
+                if w[4] == b'-'
+                    && w[7] == b'-'
+                    && w[10] == b'_'
+                    && w[13] == b'_'
+                    && w[..4].iter().all(|c| c.is_ascii_digit())
+                {
+                    hits.push(String::from_utf8_lossy(w).to_string());
+                }
+            }
+        }
+    }
+    hits.sort();
+    hits.dedup();
+    hits
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("usage: tmlab <hash|hashdir|pemeta|cmp> ...");
+        std::process::exit(2);
+    }
+    match args[1].as_str() {
+        "hash" => {
+            for p in &args[2..] {
+                match sha256_file(p) {
+                    Ok((h, n)) => println!("{h}\t{n}\t{p}"),
+                    Err(e) => println!("ERR\t0\t{p}\t{e}"),
+                }
+            }
+        }
+        "hashdir" => {
+            let dir = &args[2];
+            let ext = args
+                .iter()
+                .position(|a| a == "--ext")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_default();
+            let mut paths: Vec<String> = std::fs::read_dir(dir)
+                .expect("readdir")
+                .filter_map(|e| e.ok())
+                .map(|e| e.path().to_string_lossy().to_string())
+                .filter(|p| ext.is_empty() || p.ends_with(&ext))
+                .collect();
+            paths.sort();
+            let n = paths.len();
+            let chunk = (n / 32).max(1);
+            let mut handles = Vec::new();
+            for c in paths.chunks(chunk) {
+                let c: Vec<String> = c.to_vec();
+                handles.push(std::thread::spawn(move || {
+                    let mut out = Vec::new();
+                    for p in c {
+                        match sha256_file(&p) {
+                            Ok((h, sz)) => out.push(format!("{h}\t{sz}\t{p}")),
+                            Err(e) => out.push(format!("ERR\t0\t{p}\t{e}")),
+                        }
+                    }
+                    out
+                }));
+            }
+            let mut all = Vec::new();
+            for h in handles {
+                all.extend(h.join().unwrap());
+            }
+            all.sort_by_key(|l| l.split('\t').nth(2).unwrap_or("").to_string());
+            for l in all {
+                println!("{l}");
+            }
+        }
+        "pemeta" => {
+            let p = &args[2];
+            let data = std::fs::read(p).expect("read");
+            let (h, n) = sha256_file(p).expect("hash");
+            let kind = if data.starts_with(&[0x7f, b'E', b'L', b'F']) {
+                "ELF"
+            } else if data.starts_with(b"MZ") {
+                "PE"
+            } else {
+                "?"
+            };
+            println!("path\t{p}");
+            println!("kind\t{kind}");
+            println!("size\t{n}");
+            println!("sha256\t{h}");
+            for b in build_banner(&data) {
+                println!("banner\t{b}");
+            }
+        }
+        "cmp" => {
+            let a = std::fs::read(&args[2]).expect("read a");
+            let b = std::fs::read(&args[3]).expect("read b");
+            if a == b {
+                println!("IDENTICAL\t{}", a.len());
+            } else {
+                let mut first = usize::MAX;
+                for i in 0..a.len().min(b.len()) {
+                    if a[i] != b[i] {
+                        first = i;
+                        break;
+                    }
+                }
+                if first == usize::MAX {
+                    first = a.len().min(b.len());
+                }
+                let diff = a
+                    .iter()
+                    .zip(b.iter())
+                    .filter(|(x, y)| x != y)
+                    .count();
+                println!(
+                    "DIFFER\tlen_a={}\tlen_b={}\tfirst_diff=0x{:x}\tdiff_bytes_in_overlap={}",
+                    a.len(),
+                    b.len(),
+                    first,
+                    diff
+                );
+            }
+        }
+        o => {
+            eprintln!("unknown {o}");
+            std::process::exit(2);
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmmatrix
+//////////////////////////////////////////////////////////////////////
+// tmmatrix — run every archived official dedicated-server build against every
+// archived replay, and record what each build says about each recording.
+//
+// This is the behavioral instrument for the physics-epoch audit. It does not
+// look at a single hash. For each (build, replay) pair it records the server's
+// own verdict: whether the build re-simulates the recorded inputs to the
+// recorded time, how far it got if not, and which client build recorded the
+// file (the server reports that itself).
+//
+// Epochs are then equivalence classes over the verdict vector, not over hashes.
+//
+// Pure std, no crates.
+//
+// usage:
+//   tmmatrix run --exe-dir DIR --packs-dir DIR --replays DIR --out FILE [--jobs N]
+//                [--builds a,b,c]
+//
+// Output TSV columns:
+//   build_date  build_banner  replay  recording_build  map_uid
+//   declared_ms declared_cps  validated_ms validated_cps is_valid desc
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+#[derive(Default, Clone, Debug)]
+struct Rec {
+    file: String,
+    recording_build: String,
+    map_uid: String,
+    declared_ms: Option<i64>,
+    declared_cps: Option<i64>,
+    validated_ms: Option<i64>,
+    validated_cps: Option<i64>,
+    is_valid: bool,
+    desc: String,
+    flat_ms: Option<i64>,
+    flat_cps: Option<i64>,
+    schema_flat: bool,
+}
+
+/// Which sub-object the parser is currently inside.
+#[derive(PartialEq, Clone, Copy)]
+enum Ctx {
+    None,
+    Validated,
+    Declared,
+}
+
+/// Pull `"key" : <rest>` out of a line, if the line is that key.
+fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let l = line.trim();
+    let pat = format!("\"{key}\"");
+    let rest = l.strip_prefix(&pat)?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix(':')?;
+    Some(rest.trim().trim_end_matches(',').trim())
+}
+
+fn unquote(s: &str) -> String {
+    let s = s.trim();
+    let s = s.strip_prefix('"').unwrap_or(s);
+    let s = s.strip_suffix('"').unwrap_or(s);
+    s.replace("\\n", " ").trim().to_string()
+}
+
+/// Parse a whole `/validatepath` stdout into one record per reported file.
+///
+/// The server interleaves `Validating X...` lines with JSON objects and writes
+/// `"ValidatedResult" : null` for a run it could not reproduce. A record is
+/// closed by its `"FileName"` line, which the server always emits last.
+fn parse(out: &str) -> Vec<Rec> {
+    let mut recs = Vec::new();
+    let mut cur = Rec::default();
+    let mut ctx = Ctx::None;
+    for line in out.lines() {
+        let t = line.trim();
+        if let Some(v) = field(t, "ValidatedResult") {
+            ctx = if v.starts_with('{') { Ctx::Validated } else { Ctx::None };
+            continue;
+        }
+        if let Some(v) = field(t, "DeclaredResult") {
+            ctx = if v.starts_with('{') { Ctx::Declared } else { Ctx::None };
+            continue;
+        }
+        if t == "}," || t == "}" {
+            ctx = Ctx::None;
+            continue;
+        }
+        if let Some(v) = field(t, "Time") {
+            let n = v.parse::<i64>().ok();
+            match ctx {
+                Ctx::Validated => cur.validated_ms = n,
+                Ctx::Declared => cur.declared_ms = n,
+                // THE LAUNCH-ERA BUILDS USE A DIFFERENT, FLAT SCHEMA.
+                // 2020-07-10 and earlier emit no ValidatedResult/DeclaredResult
+                // objects at all -- just top-level IsValid/Time/NbCheckpoints.
+                // Treating those as "no fields" silently scored the launch build
+                // 0-for-everything, which reads exactly like a physics epoch and
+                // is not one.
+                Ctx::None => cur.flat_ms = n,
+            }
+            continue;
+        }
+        if let Some(v) = field(t, "NbCheckpoints") {
+            let n = v.parse::<i64>().ok();
+            match ctx {
+                Ctx::Validated => cur.validated_cps = n,
+                Ctx::Declared => cur.declared_cps = n,
+                Ctx::None => cur.flat_cps = n,
+            }
+            continue;
+        }
+        if let Some(v) = field(t, "IsValid") {
+            cur.is_valid = v.starts_with("true");
+            continue;
+        }
+        if let Some(v) = field(t, "Desc") {
+            cur.desc = unquote(v);
+            continue;
+        }
+        if let Some(v) = field(t, "GameBuild") {
+            cur.recording_build = unquote(v);
+            continue;
+        }
+        if let Some(v) = field(t, "MapUid") {
+            cur.map_uid = unquote(v);
+            continue;
+        }
+        if let Some(v) = field(t, "FileName") {
+            cur.file = unquote(v);
+            // Flat-schema record: the top-level Time/NbCheckpoints ARE the
+            // declared result, and IsValid alone says whether this build
+            // reproduced it. Mark the schema so the verdict is never confused
+            // with a nested build's richer report.
+            if cur.declared_ms.is_none() {
+                if let Some(t) = cur.flat_ms {
+                    cur.schema_flat = true;
+                    cur.declared_ms = Some(t);
+                    cur.declared_cps = cur.flat_cps;
+                    if cur.is_valid {
+                        cur.validated_ms = Some(t);
+                        cur.validated_cps = cur.flat_cps;
+                    }
+                }
+            }
+            recs.push(std::mem::take(&mut cur));
+            ctx = Ctx::None;
+            continue;
+        }
+    }
+    recs
+}
+
+fn banner_of(out: &str) -> String {
+    out.lines()
+        .find(|l| l.starts_with("Starting Trackmania"))
+        .map(|l| {
+            l.trim_start_matches("Starting Trackmania")
+                .trim()
+                .trim_end_matches("...")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn run_build(
+    date: &str,
+    exe_dir: &Path,
+    packs_dir: &Path,
+    replays: &[PathBuf],
+    workroot: &Path,
+    port: u16,
+    timeout_s: u64,
+    real_build: Option<&str>,
+) -> Result<(String, Vec<Rec>), String> {
+    let bdir = real_build.unwrap_or(date);
+    let exe = exe_dir.join(bdir).join("TrackmaniaServer");
+    let packs = packs_dir.join(bdir).join("Packs");
+    if !exe.exists() {
+        return Err(format!("no executable for {date}"));
+    }
+    if !packs.exists() {
+        return Err(format!("no Packs for {date}"));
+    }
+    let w = workroot.join(date);
+    let _ = std::fs::remove_dir_all(&w);
+    std::fs::create_dir_all(w.join("UserData").join("Replays")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(w.join("UserData").join("Maps")).map_err(|e| e.to_string())?;
+    // The server needs its own data next to its own executable. Symlinks are
+    // enough and keep this from copying 400 MB per build.
+    let _ = std::os::unix::fs::symlink(&packs, w.join("Packs"));
+    let _ = std::os::unix::fs::symlink(&exe, w.join("TrackmaniaServer"));
+    for r in replays {
+        // Real copies: a dangling or unreadable link is reported by the server
+        // as "0 ghosts", which reads exactly like "this build cannot run it".
+        let dst = w.join("UserData").join("Replays").join(r.file_name().unwrap());
+        std::fs::copy(r, &dst).map_err(|e| format!("{}: {e}", r.display()))?;
+    }
+    // THE EARLY 2020 BUILDS STILL BIND THE XML-RPC PORT IN VALIDATE MODE.
+    // Ten concurrent servers on the default port 5000 collide: two builds wrote
+    // an EMPTY log (which reads exactly like "this build cannot run anything")
+    // and one hung for ten minutes. Give every run its own port, and never let
+    // a run block the batch forever.
+    let mut child = Command::new("./TrackmaniaServer")
+        .args([
+            "/nodaemon",
+            "/validatepath=.",
+            &format!("/xmlrpcport={port}"),
+        ])
+        .current_dir(&w)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("launch {date}: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no stdout")?;
+    // The server can DAEMONIZE: the process we spawned exits while a detached
+    // grandchild keeps the write end of this pipe open. read_to_end then never
+    // returns, so the reader must be joined with a deadline, not unconditionally
+    // -- one build (2020-07-07) hung the whole batch this way, twice.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut s = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut s);
+        let _ = tx.send(s);
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s);
+    let mut timed_out = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("wait {date}: {e}")),
+        }
+    }
+    let bytes = rx
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| Vec::new());
+    let mut text = String::from_utf8_lossy(&bytes).to_string();
+    if timed_out {
+        text.push_str("\n*** TMMATRIX: TIMED OUT ***\n");
+    }
+    if text.is_empty() {
+        text.push_str("\n*** TMMATRIX: NO OUTPUT (daemonized or port conflict) ***\n");
+    }
+    let banner = banner_of(&text);
+    let recs = parse(&text);
+    // Keep the raw log: a verdict nobody can re-read is not evidence.
+    let _ = std::fs::write(workroot.join(format!("{date}.log")), &text);
+    let _ = std::fs::remove_dir_all(&w);
+    Ok((banner, recs))
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |n: &str| -> Option<String> {
+        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
+    };
+    if args.len() < 2 || (args[1] != "run" && args[1] != "fromlogs") {
+        eprintln!("usage: tmmatrix run --exe-dir D --packs-dir D --replays D --out F [--jobs N] [--builds a,b]");
+        eprintln!("       tmmatrix fromlogs --work D --out F");
+        std::process::exit(2);
+    }
+    if args[1] == "fromlogs" {
+        // Every build's raw server stdout is banked as <date>.log while the
+        // batch runs, so a batch that dies on one hung build is still fully
+        // recoverable -- the evidence is on disk, not in the process.
+        let work = PathBuf::from(flag("--work").expect("--work"));
+        let out_path = flag("--out").expect("--out");
+        let mut logs: Vec<PathBuf> = std::fs::read_dir(&work)
+            .expect("work")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "log").unwrap_or(false))
+            .collect();
+        logs.sort();
+        let mut out = String::from(
+            "build_date\tbuild_banner\treplay\trecording_build\tmap_uid\tdeclared_ms\tdeclared_cps\tvalidated_ms\tvalidated_cps\tis_valid\tdesc\n",
+        );
+        let mut n = 0;
+        for l in &logs {
+            let date = l.file_stem().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(l).unwrap_or_default();
+            let banner = banner_of(&text);
+            let recs = parse(&text);
+            eprintln!("{date}: {} records", recs.len());
+            for r in &recs {
+                n += 1;
+                out.push_str(&format!(
+                    "{date}\t{banner}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    r.file,
+                    r.recording_build,
+                    r.map_uid,
+                    r.declared_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    r.declared_cps.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    r.validated_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    r.validated_cps.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                    if r.is_valid { "true" } else { "false" },
+                    r.desc
+                ));
+            }
+        }
+        std::fs::write(&out_path, out).expect("write");
+        eprintln!("wrote {out_path} ({n} rows from {} logs)", logs.len());
+        return;
+    }
+    let exe_dir = PathBuf::from(flag("--exe-dir").expect("--exe-dir"));
+    let packs_dir = PathBuf::from(flag("--packs-dir").expect("--packs-dir"));
+    let repl_dir = PathBuf::from(flag("--replays").expect("--replays"));
+    let out_path = flag("--out").expect("--out");
+    let jobs: usize = flag("--jobs").and_then(|v| v.parse().ok()).unwrap_or(8);
+    let workroot = PathBuf::from(
+        flag("--work").unwrap_or_else(|| "/tmp/tmepoch/matrixwork".to_string()),
+    );
+    std::fs::create_dir_all(&workroot).expect("workroot");
+
+    let mut replays: Vec<PathBuf> = std::fs::read_dir(&repl_dir)
+        .expect("replays dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "Gbx").unwrap_or(false))
+        .collect();
+    replays.sort();
+
+    let builds: Vec<String> = match flag("--builds") {
+        Some(s) => s.split(',').map(|x| x.trim().to_string()).collect(),
+        None => {
+            let mut v: Vec<String> = std::fs::read_dir(&exe_dir)
+                .expect("exe dir")
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            v.sort();
+            v
+        }
+    };
+
+    eprintln!("{} builds x {} replays", builds.len(), replays.len());
+    let portbase: u16 = flag("--port-base").and_then(|v| v.parse().ok()).unwrap_or(21000);
+    let timeout_s: u64 = flag("--timeout").and_then(|v| v.parse().ok()).unwrap_or(900);
+    let isolate = args.iter().any(|a| a == "--isolate");
+    let queue = Arc::new(Mutex::new(builds.clone()));
+    let results: Arc<Mutex<BTreeMap<String, (String, Vec<Rec>)>>> =
+        Arc::new(Mutex::new(BTreeMap::new()));
+    let done = Arc::new(AtomicUsize::new(0));
+    let total = builds.len();
+    let mut handles = Vec::new();
+    for _ in 0..jobs {
+        let q = Arc::clone(&queue);
+        let res = Arc::clone(&results);
+        let done = Arc::clone(&done);
+        let (ed, pd, wr) = (exe_dir.clone(), packs_dir.clone(), workroot.clone());
+        let reps = replays.clone();
+        let port_base = portbase;
+        let tmo = timeout_s;
+        handles.push(std::thread::spawn(move || loop {
+            let d = { q.lock().unwrap().pop() };
+            let Some(d) = d else { break };
+            // A distinct port per build: these servers bind xml-rpc even when
+            // they are only validating.
+            let mut hash: u32 = 0;
+            for b in d.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(b as u32);
+            }
+            let port = port_base + (hash % 3000) as u16;
+            // Isolation mode: one server process per PROBE. The launch-era
+            // builds hang deterministically on some containers, and a batch run
+            // loses every verdict after the first hang. Isolated, a hang is just
+            // another recorded verdict for that one probe.
+            if isolate {
+                let mut all: Vec<Rec> = Vec::new();
+                let mut ban = String::new();
+                for (k, r) in reps.iter().enumerate() {
+                    let one = vec![r.clone()];
+                    let p = port_base + ((hash as usize + k * 7) % 3000) as u16;
+                    let sub = format!("{d}__iso{k}");
+                    match run_build(&sub, &ed, &pd, &one, &wr, p, tmo, Some(&d)) {
+                        Ok((b, mut rs)) => {
+                            if ban.is_empty() && !b.is_empty() {
+                                ban = b;
+                            }
+                            if rs.is_empty() {
+                                // Nothing came back for this probe: the build
+                                // did not report on it at all.
+                                let mut miss = Rec::default();
+                                miss.file = r.file_name().unwrap().to_string_lossy().to_string();
+                                miss.desc = "TMMATRIX_NO_REPORT".to_string();
+                                all.push(miss);
+                            } else {
+                                all.append(&mut rs);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                eprintln!("[{n}/{total}] {d} (isolated): {} records", all.len());
+                res.lock().unwrap().insert(d, (ban, all));
+                continue;
+            }
+            match run_build(&d, &ed, &pd, &reps, &wr, port, tmo, None) {
+                Ok((b, r)) => {
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!("[{n}/{total}] {d}: {} records", r.len());
+                    res.lock().unwrap().insert(d, (b, r));
+                }
+                Err(e) => {
+                    done.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("!! {d}: {e}");
+                }
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let res = results.lock().unwrap();
+    let mut out = String::from(
+        "build_date\tbuild_banner\treplay\trecording_build\tmap_uid\tdeclared_ms\tdeclared_cps\tvalidated_ms\tvalidated_cps\tis_valid\tdesc\n",
+    );
+    for (date, (banner, recs)) in res.iter() {
+        for r in recs {
+            out.push_str(&format!(
+                "{date}\t{banner}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                r.file,
+                r.recording_build,
+                r.map_uid,
+                r.declared_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                r.declared_cps.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                r.validated_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                r.validated_cps.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                if r.is_valid { "true" } else { "false" },
+                r.desc
+            ));
+        }
+    }
+    std::fs::write(&out_path, out).expect("write out");
+    eprintln!("wrote {out_path}");
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmepochs
+//////////////////////////////////////////////////////////////////////
+// tmepochs — turn the (build x replay) verdict matrix into behavioral epochs.
+//
+// An epoch is NOT a hash change. It is an equivalence class of builds under
+// "gives the same verdict on every probe run". A probe is an archived replay
+// whose header names the exact client build that recorded it, so the matrix has
+// a built-in positive control: a build should reproduce a run recorded on
+// itself.
+//
+// Three verdicts are kept apart on purpose:
+//   EXACT     re-simulated to the declared time (and checkpoint count)
+//   WRONG     enumerated and simulated, but did not reach the declared time
+//   NOLOAD    never enumerated -- a FILE FORMAT fact, not a physics fact
+//
+// Mixing NOLOAD into the physics comparison is the easy way to invent epochs
+// that are really just container-format changes, so classes are computed over
+// the set of probes every build in the comparison actually loaded.
+//
+// usage: tmepochs --matrix FILE [--out-prefix P]
+
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum V {
+    Exact,
+    Wrong,
+    NoLoad,
+}
+
+impl V {
+    fn ch(self) -> char {
+        match self {
+            V::Exact => 'E',
+            V::Wrong => 'x',
+            V::NoLoad => '-',
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |n: &str| -> Option<String> {
+        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
+    };
+    let path = flag("--matrix").expect("--matrix");
+    let prefix = flag("--out-prefix").unwrap_or_else(|| "/tmp/tmepoch/out/epochs".into());
+    let text = std::fs::read_to_string(&path).expect("read matrix");
+    // Restrict the comparison to a date window. This matters: the common-probe
+    // basis is the intersection over the builds being compared, so comparing
+    // 40 builds at once throws away every probe any one of them cannot load.
+    // Windowing to a set of builds that all load the same corpus recovers the
+    // fine structure inside a region without weakening the basis.
+    let from = flag("--from").unwrap_or_else(|| "0000-00-00".into());
+    let to = flag("--to").unwrap_or_else(|| "9999-99-99".into());
+
+    let mut builds: BTreeSet<String> = BTreeSet::new();
+    let mut probes: BTreeSet<String> = BTreeSet::new();
+    let mut cell: BTreeMap<(String, String), V> = BTreeMap::new();
+    let mut banner: BTreeMap<String, String> = BTreeMap::new();
+    let mut rec_build: BTreeMap<String, String> = BTreeMap::new();
+    let mut declared: BTreeMap<String, i64> = BTreeMap::new();
+
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 11 {
+            continue;
+        }
+        let (b, ban, rp, rb) = (f[0].to_string(), f[1].to_string(), f[2].to_string(), f[3].to_string());
+        if b.as_str() < from.as_str() || b.as_str() > to.as_str() {
+            continue;
+        }
+        let dms: i64 = f[5].parse().unwrap_or(-1);
+        let vms: i64 = f[7].parse().unwrap_or(-1);
+        let dcp: i64 = f[6].parse().unwrap_or(-1);
+        let vcp: i64 = f[8].parse().unwrap_or(-1);
+        let ok = f[9] == "true";
+        builds.insert(b.clone());
+        probes.insert(rp.clone());
+        banner.insert(b.clone(), ban);
+        if !rb.is_empty() {
+            rec_build.insert(rp.clone(), rb);
+        }
+        if dms > 0 {
+            declared.insert(rp.clone(), dms);
+        }
+        // EXACT demands the time AND the checkpoint count, and the server's own
+        // validity flag. An old build reports a DNF as a present result with
+        // Time = -1, which a bare `vms == dms` test would never catch but a
+        // positive-time requirement does.
+        let v = if ok && vms > 0 && vms == dms && vcp == dcp {
+            V::Exact
+        } else {
+            V::Wrong
+        };
+        cell.insert((b, rp), v);
+    }
+
+    let builds: Vec<String> = builds.into_iter().collect();
+    let probes: Vec<String> = probes.into_iter().collect();
+    let get = |b: &str, p: &str| -> V {
+        *cell.get(&(b.to_string(), p.to_string())).unwrap_or(&V::NoLoad)
+    };
+
+    // Probes every build loaded: the only fair basis for a physics comparison.
+    let common: Vec<String> = probes
+        .iter()
+        .filter(|p| builds.iter().all(|b| get(b, p) != V::NoLoad))
+        .cloned()
+        .collect();
+
+    // Full grid, for the record.
+    let mut grid = String::from("build\tbanner\tn_exact\tn_wrong\tn_noload\tvector_common\n");
+    let mut sig: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for b in &builds {
+        let mut e = 0;
+        let mut w = 0;
+        let mut n = 0;
+        for p in &probes {
+            match get(b, p) {
+                V::Exact => e += 1,
+                V::Wrong => w += 1,
+                V::NoLoad => n += 1,
+            }
+        }
+        let vec: String = common.iter().map(|p| get(b, p).ch()).collect();
+        grid.push_str(&format!(
+            "{b}\t{}\t{e}\t{w}\t{n}\t{vec}\n",
+            banner.get(b).cloned().unwrap_or_default()
+        ));
+        sig.entry(vec).or_default().push(b.clone());
+    }
+    std::fs::write(format!("{prefix}-grid.tsv"), &grid).expect("write grid");
+
+    // Epoch classes, ordered by their earliest build.
+    let mut classes: Vec<(String, Vec<String>)> = sig.into_iter().collect();
+    classes.sort_by_key(|(_, v)| v.first().cloned().unwrap_or_default());
+    let mut out = String::from("epoch_index\tbuilds\tfirst\tlast\tn_builds\tn_exact_common\tvector\n");
+    for (i, (vec, bs)) in classes.iter().enumerate() {
+        let ne = vec.chars().filter(|c| *c == 'E').count();
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            i + 1,
+            bs.join(","),
+            bs.first().cloned().unwrap_or_default(),
+            bs.last().cloned().unwrap_or_default(),
+            bs.len(),
+            ne,
+            vec
+        ));
+    }
+    std::fs::write(format!("{prefix}-classes.tsv"), &out).expect("write classes");
+
+    // Positive control: does each probe validate on a build near its own
+    // recording build? A probe that validates NOWHERE is an instrument fault,
+    // not evidence about any epoch.
+    let mut pc = String::from("probe\trecording_build\tdeclared_ms\tn_builds_exact\tfirst_exact\tlast_exact\n");
+    let mut dead = 0;
+    for p in &probes {
+        let ex: Vec<&String> = builds.iter().filter(|b| get(b, p) == V::Exact).collect();
+        if ex.is_empty() {
+            dead += 1;
+        }
+        pc.push_str(&format!(
+            "{p}\t{}\t{}\t{}\t{}\t{}\n",
+            rec_build.get(p).cloned().unwrap_or_default(),
+            declared.get(p).copied().unwrap_or(-1),
+            ex.len(),
+            ex.first().map(|s| s.as_str()).unwrap_or("-"),
+            ex.last().map(|s| s.as_str()).unwrap_or("-")
+        ));
+    }
+    std::fs::write(format!("{prefix}-probes.tsv"), &pc).expect("write probes");
+
+    println!("builds={} probes={} common_probes={}", builds.len(), probes.len(), common.len());
+    println!("distinct behavioral classes over common probes: {}", classes.len());
+    println!("probes that validate on NO build (instrument check): {dead}");
+    for (i, (vec, bs)) in classes.iter().enumerate() {
+        let ne = vec.chars().filter(|c| *c == 'E').count();
+        println!(
+            "  class {}: {} builds  exact={}/{}  {} .. {}",
+            i + 1,
+            bs.len(),
+            ne,
+            common.len(),
+            bs.first().cloned().unwrap_or_default(),
+            bs.last().cloned().unwrap_or_default()
+        );
+    }
+
+    // BOUNDARY STRENGTH. Two classes that differ on ONE probe are a far weaker
+    // claim than two that differ on eighty, and the count is the honest way to
+    // say so. A boundary separated by a single probe is reported as thin rather
+    // than presented as an epoch on equal footing.
+    println!("\nboundary strength (probes whose verdict differs across the boundary):");
+    let mut bnd = String::from("boundary\tfrom_class\tto_class\tn_probes_differing\tn_common\tdiffering_probes\n");
+    for w in classes.windows(2) {
+        let (va, ba) = &w[0];
+        let (vb, bb) = &w[1];
+        let diffs: Vec<String> = va
+            .chars()
+            .zip(vb.chars())
+            .enumerate()
+            .filter(|(_, (x, y))| x != y)
+            .map(|(k, _)| common[k].clone())
+            .collect();
+        let label = format!(
+            "{} -> {}",
+            ba.last().cloned().unwrap_or_default(),
+            bb.first().cloned().unwrap_or_default()
+        );
+        println!(
+            "  {label}: {} of {} probes differ{}",
+            diffs.len(),
+            common.len(),
+            if diffs.len() <= 2 { "   [THIN]" } else { "" }
+        );
+        bnd.push_str(&format!(
+            "{label}\t{}\t{}\t{}\t{}\t{}\n",
+            ba.last().cloned().unwrap_or_default(),
+            bb.first().cloned().unwrap_or_default(),
+            diffs.len(),
+            common.len(),
+            diffs.join(",")
+        ));
+    }
+    std::fs::write(format!("{prefix}-boundaries.tsv"), &bnd).expect("write boundaries");
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmx
+//////////////////////////////////////////////////////////////////////
+// tmx — Rust-only harvester for the public map/replay archive.
+//
+// No crates: HTTP/1.1 over the forward proxy, and a small scanner for the few
+// JSON fields we need. Everything it prints is TSV so the rest of the
+// toolchain can consume it.
+//
+// usage:
+//   tmx maps    --before ID --count N                 -> mapid TSV
+//   tmx replays --mapids FILE --out FILE [--jobs N]   -> replay TSV
+//   tmx get     --url U --out F
+//   tmx fetch   --ids FILE --fmt URLFMT --dir D [--jobs N]
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+fn proxy() -> String {
+    std::env::var("TMX_PROXY").unwrap_or_else(|_| "fwdproxy:8080".to_string())
+}
+
+/// One HTTPS request through the proxy's CONNECT tunnel is not possible without
+/// TLS, so we speak plain HTTP to the proxy for http:// and use the system
+/// `curl` only where TLS is unavoidable. The archive serves plain HTTP on the
+/// api host, so this stays dependency-free.
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    use std::net::ToSocketAddrs;
+    let p = proxy();
+    let sa = p
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or("no proxy addr")?;
+    let s = TcpStream::connect_timeout(&sa, Duration::from_secs(15)).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(120))).ok();
+    let mut w = s.try_clone().map_err(|e| e.to_string())?;
+    let host = url.trim_start_matches("http://").split('/').next().unwrap_or("");
+    let req = format!(
+        "GET {url} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: tmx/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    );
+    w.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    w.flush().ok();
+    let mut r = BufReader::new(s);
+    let mut status = String::new();
+    r.read_line(&mut status).map_err(|e| e.to_string())?;
+    let code: u16 = status.split_whitespace().nth(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+    let mut chunked = false;
+    loop {
+        let mut h = String::new();
+        let n = r.read_line(&mut h).map_err(|e| e.to_string())?;
+        if n == 0 || h.trim().is_empty() {
+            break;
+        }
+        if h.to_ascii_lowercase().starts_with("transfer-encoding:") && h.contains("chunked") {
+            chunked = true;
+        }
+    }
+    let mut body = Vec::new();
+    if chunked {
+        loop {
+            let mut sz = String::new();
+            if r.read_line(&mut sz).map_err(|e| e.to_string())? == 0 {
+                break;
+            }
+            let n = usize::from_str_radix(sz.trim().split(';').next().unwrap_or("0"), 16).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            let mut buf = vec![0u8; n];
+            r.read_exact(&mut buf).map_err(|e| e.to_string())?;
+            body.extend_from_slice(&buf);
+            let mut crlf = [0u8; 2];
+            let _ = r.read_exact(&mut crlf);
+        }
+    } else {
+        r.read_to_end(&mut body).map_err(|e| e.to_string())?;
+    }
+    if code != 200 {
+        return Err(format!("HTTP {code}"));
+    }
+    Ok(body)
+}
+
+/// Every integer value of `"key":<n>` in order of appearance.
+fn ints_for(s: &str, key: &str) -> Vec<i64> {
+    let pat = format!("\"{key}\":");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(p) = s[i..].find(&pat) {
+        let start = i + p + pat.len();
+        let rest = &s[start..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+            .unwrap_or(rest.len());
+        if end > 0 {
+            if let Ok(v) = rest[..end].parse::<i64>() {
+                out.push(v);
+            }
+        }
+        i = start;
+    }
+    out
+}
+
+/// Every string value of `"key":"..."` in order of appearance.
+fn strs_for(s: &str, key: &str) -> Vec<String> {
+    let pat = format!("\"{key}\":\"");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(p) = s[i..].find(&pat) {
+        let start = i + p + pat.len();
+        let rest = &s[start..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        out.push(rest[..end].to_string());
+        i = start + end;
+    }
+    out
+}
+
+/// Split a results array into per-object slices so parallel keys stay aligned.
+fn objects(s: &str, anchor: &str) -> Vec<String> {
+    let pat = format!("\"{anchor}\":");
+    let mut idx: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while let Some(p) = s[i..].find(&pat) {
+        idx.push(i + p);
+        i = i + p + pat.len();
+    }
+    let mut out = Vec::new();
+    for (k, &st) in idx.iter().enumerate() {
+        let en = if k + 1 < idx.len() { idx[k + 1] } else { s.len() };
+        out.push(s[st..en].to_string());
+    }
+    out
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |n: &str| -> Option<String> {
+        args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned()
+    };
+    match args.get(1).map(|s| s.as_str()).unwrap_or("") {
+        "maps" => {
+            let before = flag("--before").unwrap_or_else(|| "2000".into());
+            let count = flag("--count").unwrap_or_else(|| "100".into());
+            let url = format!(
+                "http://trackmania.exchange/api/maps?fields=MapId%2CName%2CUploadedAt%2CMapUid&count={count}&before={before}"
+            );
+            match http_get(&url) {
+                Ok(b) => {
+                    let s = String::from_utf8_lossy(&b).to_string();
+                    let objs = objects(&s, "MapId");
+                    for o in objs {
+                        let id = ints_for(&o, "MapId").first().copied().unwrap_or(0);
+                        let up = strs_for(&o, "UploadedAt").first().cloned().unwrap_or_default();
+                        let nm = strs_for(&o, "Name").first().cloned().unwrap_or_default();
+                        if id > 0 {
+                            println!("{id}\t{up}\t{nm}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("ERR {e}"),
+            }
+        }
+        "replays" => {
+            let f = flag("--mapids").expect("--mapids");
+            let jobs: usize = flag("--jobs").and_then(|v| v.parse().ok()).unwrap_or(8);
+            let ids: Vec<String> = std::fs::read_to_string(&f)
+                .expect("mapids")
+                .lines()
+                .map(|l| l.split('\t').next().unwrap_or("").trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+            let q = Arc::new(Mutex::new(ids));
+            let out = Arc::new(Mutex::new(Vec::<String>::new()));
+            let mut hs = Vec::new();
+            for _ in 0..jobs {
+                let q = Arc::clone(&q);
+                let out = Arc::clone(&out);
+                hs.push(std::thread::spawn(move || loop {
+                    let m = { q.lock().unwrap().pop() };
+                    let Some(m) = m else { break };
+                    let url = format!(
+                        "http://trackmania.exchange/api/replays?fields=ReplayId&count=100&mapId={m}"
+                    );
+                    let Ok(b) = http_get(&url) else { continue };
+                    let s = String::from_utf8_lossy(&b).to_string();
+                    for o in objects(&s, "ReplayId") {
+                        let rid = ints_for(&o, "ReplayId").first().copied().unwrap_or(0);
+                        let t = ints_for(&o, "ReplayTime").first().copied().unwrap_or(-1);
+                        let at = strs_for(&o, "ReplayAt").first().cloned().unwrap_or_default();
+                        let has = o.contains("\"HasFile\":true");
+                        if rid > 0 && has {
+                            out.lock().unwrap().push(format!("{rid}\t{m}\t{t}\t{at}"));
+                        }
+                    }
+                }));
+            }
+            for h in hs {
+                let _ = h.join();
+            }
+            let mut v = out.lock().unwrap().clone();
+            v.sort();
+            v.dedup();
+            for l in v {
+                println!("{l}");
+            }
+        }
+        "fetch" => {
+            let f = flag("--ids").expect("--ids");
+            let fmt = flag("--fmt").expect("--fmt");
+            let dir = flag("--dir").expect("--dir");
+            let jobs: usize = flag("--jobs").and_then(|v| v.parse().ok()).unwrap_or(8);
+            std::fs::create_dir_all(&dir).ok();
+            let ids: Vec<String> = std::fs::read_to_string(&f)
+                .expect("ids")
+                .lines()
+                .map(|l| l.split('\t').next().unwrap_or("").trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+            let q = Arc::new(Mutex::new(ids));
+            let ok = Arc::new(Mutex::new(0usize));
+            let mut hs = Vec::new();
+            for _ in 0..jobs {
+                let q = Arc::clone(&q);
+                let ok = Arc::clone(&ok);
+                let (fmt, dir) = (fmt.clone(), dir.clone());
+                hs.push(std::thread::spawn(move || loop {
+                    let id = { q.lock().unwrap().pop() };
+                    let Some(id) = id else { break };
+                    let url = fmt.replace("{}", &id);
+                    let dst = format!("{dir}/{id}.Replay.Gbx");
+                    if std::fs::metadata(&dst).map(|m| m.len() > 1000).unwrap_or(false) {
+                        continue;
+                    }
+                    if let Ok(b) = http_get(&url) {
+                        if b.len() > 1000 && &b[..3] == b"GBX" {
+                            if std::fs::write(&dst, &b).is_ok() {
+                                *ok.lock().unwrap() += 1;
+                            }
+                        }
+                    }
+                }));
+            }
+            for h in hs {
+                let _ = h.join();
+            }
+            eprintln!("fetched {}", ok.lock().unwrap());
+        }
+        _ => {
+            eprintln!("usage: tmx <maps|replays|fetch> ...");
+            std::process::exit(2);
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmxclass
+//////////////////////////////////////////////////////////////////////
+// tmxclass — classify archived replays by the CLIENT BUILD THAT RECORDED THEM.
+//
+// A `.Replay.Gbx` header is uncompressed XML and carries `exebuild`, the exact
+// dated build stamp of the client that wrote the file, plus the declared time,
+// the map uid and whether the run is validable. That means the whole corpus can
+// be bucketed by recording era without decompressing a single body, and without
+// running a single server.
+//
+// This is what makes the epoch matrix affordable: pick a spanning subset by
+// recording build first, then spend server time only on that subset.
+//
+// usage: tmxclass <dir> [--min-per-build N] [--pick OUTDIR]
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::PathBuf;
+
+fn attr(s: &str, name: &str) -> Option<String> {
+    let pat = format!("{name}=\"");
+    let p = s.find(&pat)? + pat.len();
+    let rest = &s[p..];
+    let e = rest.find('"')?;
+    Some(rest[..e].to_string())
+}
+
+/// The header is plain text at the front of the file; 8 KB is far more than
+/// enough and keeps this to one short read per file.
+fn head_of(p: &PathBuf) -> Option<String> {
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut buf = vec![0u8; 8192];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    Some(String::from_utf8_lossy(&buf).to_string())
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let dir = args.get(1).cloned().expect("dir");
+    let pick = args
+        .iter()
+        .position(|a| a == "--pick")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let per: usize = args
+        .iter()
+        .position(|a| a == "--min-per-build")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".Gbx"))
+        .collect();
+    files.sort();
+
+    // build stamp -> rows
+    let mut by: BTreeMap<String, Vec<(String, String, String, String)>> = BTreeMap::new();
+    let mut noheader = 0usize;
+    for f in &files {
+        let Some(h) = head_of(f) else { continue };
+        let Some(b) = attr(&h, "exebuild") else {
+            noheader += 1;
+            continue;
+        };
+        let t = attr(&h, "best").unwrap_or_default();
+        let uid = attr(&h, "uid").unwrap_or_default();
+        let val = attr(&h, "validable").unwrap_or_default();
+        by.entry(b).or_default().push((
+            f.file_name().unwrap().to_string_lossy().to_string(),
+            t,
+            uid,
+            val,
+        ));
+    }
+
+    println!("recording_build\tn\tvalidable\tdistinct_maps");
+    for (b, v) in &by {
+        let nv = v.iter().filter(|r| r.3 == "1").count();
+        let mut maps: Vec<&String> = v.iter().map(|r| &r.2).collect();
+        maps.sort();
+        maps.dedup();
+        println!("{b}\t{}\t{}\t{}", v.len(), nv, maps.len());
+    }
+    eprintln!(
+        "{} files, {} distinct recording builds, {} without a header stamp",
+        files.len(),
+        by.len(),
+        noheader
+    );
+
+    if let Some(outdir) = pick {
+        std::fs::create_dir_all(&outdir).expect("outdir");
+        let mut picked = 0usize;
+        for (b, v) in &by {
+            // Prefer validable runs on distinct maps: a run the recording client
+            // itself marked non-validable can never be a positive control.
+            let mut seen_maps: Vec<String> = Vec::new();
+            let mut take = 0usize;
+            for (name, _t, uid, val) in v {
+                if val != "1" {
+                    continue;
+                }
+                if seen_maps.contains(uid) {
+                    continue;
+                }
+                seen_maps.push(uid.clone());
+                let src = PathBuf::from(&dir).join(name);
+                let tag = b.replace([':', ' '], "_");
+                let dst = PathBuf::from(&outdir).join(format!("{tag}__{name}"));
+                if std::fs::copy(&src, &dst).is_ok() {
+                    take += 1;
+                    picked += 1;
+                }
+                if take >= per {
+                    break;
+                }
+            }
+        }
+        eprintln!("picked {picked} into {outdir}");
+    }
+}
+
+//////////////////////////////////////////////////////////////////////
+// tmnews
+//////////////////////////////////////////////////////////////////////
+// tmnews — pull the ARTICLE BODY out of an archived official news page.
+//
+// The pages are WordPress/Elementor with megabytes of inlined CSS and JS, so a
+// naive tag strip buries the six lines that matter. The body always sits
+// between the author/date block and the "Tags:" block, and every changelog
+// bullet is a <li> inside that span.
+//
+// usage: tmnews <file.html>...
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0i32;
+    for c in s.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            _ if depth <= 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn entities(s: &str) -> String {
+    s.replace("&#8217;", "'")
+        .replace("&#8216;", "'")
+        .replace("&#8220;", "\"")
+        .replace("&#8221;", "\"")
+        .replace("&#8211;", "-")
+        .replace("&#8212;", "--")
+        .replace("&amp;", "&")
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+/// Everything between the first `<article` (or the title widget) and `Tags:`.
+fn body_span(html: &str) -> &str {
+    let start = html
+        .find("elementor-widget-theme-post-content")
+        .or_else(|| html.find("<article"))
+        .unwrap_or(0);
+    let rest = &html[start..];
+    let end = rest.find("Tags:").unwrap_or(rest.len());
+    &rest[..end]
+}
+
+fn main() {
+    for p in std::env::args().skip(1) {
+        let Ok(html) = std::fs::read_to_string(&p) else { continue };
+        let span = body_span(&html);
+        // Title from <title>
+        let title = html
+            .find("<title>")
+            .and_then(|i| html[i + 7..].find("</title>").map(|j| &html[i + 7..i + 7 + j]))
+            .unwrap_or("");
+        println!("######## {p}");
+        println!("TITLE: {}", entities(title).trim());
+        let mut printed = 0;
+        for chunk in span.split("<li").skip(0) {
+            let t = entities(&strip_tags(chunk));
+            for line in t.lines() {
+                let l = line.trim();
+                if l.len() < 12 {
+                    continue;
+                }
+                // Drop CSS/JS residue that survived the strip.
+                if l.contains('{') || l.contains('}') || l.contains("function(") || l.contains("://")
+                {
+                    continue;
+                }
+                if l.starts_with("var ") || l.starts_with("window.") || l.starts_with('.') {
+                    continue;
+                }
+                println!("  {l}");
+                printed += 1;
+                if printed > 60 {
+                    break;
+                }
+            }
+            if printed > 60 {
+                break;
+            }
+        }
+        println!();
+    }
+}
+

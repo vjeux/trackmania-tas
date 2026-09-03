@@ -1,0 +1,2 @@
+76:[   ScriptRuntime] [ TRAC] [00:23:33] [HistoricalPhysicsLabFallHold]  [HistoricalPhysics] ACTIVE Fall 2022 handler=0x00007FF6186A1F00 island=0x000002210FF30000 tunings=25/28
+77:[   ScriptRuntime] [ TRAC] [00:23:33] [HistoricalPhysicsLabFallHold]  [HistoricalPhysicsHold] READY active=Fall2022 count=25 index=24

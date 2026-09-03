@@ -1,0 +1,8 @@
+test	expected	observed	result
+build_gate	build 128130 handler and banner patterns present	accepted	pass
+current_graph_preimage	28 names in measured order; count=28; capacity=28; class=0x090EB000; index=27	accepted	pass
+fall_native_install	Sep. 30 island installs with all relocations resolved	installed	pass
+fall_graph_apply	count=25; index=24	count=25; index=24	pass
+fall_graph_rollback	count=28; index=27	count=28; index=27	pass
+handler_rollback	12-byte original entry restored	restored	pass
+source_log_sha256	7877ce47eb8a9b72c10d2963d507d917a0bc994f7223e2c09216037b73f95f0c	7877ce47eb8a9b72c10d2963d507d917a0bc994f7223e2c09216037b73f95f0c	pass

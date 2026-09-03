@@ -1,0 +1,57 @@
+== differential field-patch validation ==
+field patches validated as true displacement remaps: 161/161
+
+== field map by base register ==
+no base-register-local contradictions in the field map
+  0x118 site: field#12 island 1168 site 0x1405ee33d -> 0x110  base=`rcx`  `mov    rcx,QWORD PTR [rcx+0x110]`
+  0x118 site: field#118 island 7762 site 0x1405efcfe -> 0x310  base=`rax`  `mulss  xmm2,DWORD PTR [rax+0x310]`
+
+== unpatched structure displacements (omitted-remap candidates) ==
+DEFECT	omitted-remap	island 140: `mov    r10,QWORD PTR [rax+0x118]` keeps [rax+0x118] while the same January offset is remapped to ["0x110", "0x310"] elsewhere (SAME base register `rax`, expected 0x310)
+DEFECT	omitted-remap	island 886: `cmp    DWORD PTR [rdi+0x14ec],0x0` keeps [rdi+0x14ec] while the same January offset is remapped to ["0x138c"] elsewhere (SAME base register `rdi`, expected 0x138c)
+DEFECT	omitted-remap	island 1026: `movss  xmm1,DWORD PTR [rdi+0x1504]` keeps [rdi+0x1504] while the same January offset is remapped to ["0x13a4"] elsewhere (SAME base register `rdi`, expected 0x13a4)
+DEFECT	omitted-remap	island 1069: `movss  DWORD PTR [rdi+0x1504],xmm1` keeps [rdi+0x1504] while the same January offset is remapped to ["0x13a4"] elsewhere (SAME base register `rdi`, expected 0x13a4)
+WARN	omitted-remap	island 1092: `lea    rcx,[rdi+0x1910]` keeps [rdi+0x1910] while the same January offset is remapped to ["0x16c0"] elsewhere
+WARN	omitted-remap	island 1594: `mov    r13,QWORD PTR [rax+rcx*8+0x6c0]` keeps [rax+rcx*8+0x6c0] while the same January offset is remapped to ["0x6b8"] elsewhere
+WARN	omitted-remap	island 1938: `movss  xmm6,DWORD PTR [r15+0x690]` keeps [r15+0x690] while the same January offset is remapped to ["0x1ce0"] elsewhere
+DEFECT	omitted-remap	island 1981: `mulss  xmm13,DWORD PTR [rdi+0x15dc]` keeps [rdi+0x15dc] while the same January offset is remapped to ["0x147c"] elsewhere (SAME base register `rdi`, expected 0x147c)
+WARN	omitted-remap	island 2325: `mov    eax,DWORD PTR [rcx+0x714]` keeps [rcx+0x714] while the same January offset is remapped to ["0x1e84"] elsewhere
+DEFECT	omitted-remap	island 2494: `movss  xmm1,DWORD PTR [rdi+0x1504]` keeps [rdi+0x1504] while the same January offset is remapped to ["0x13a4"] elsewhere (SAME base register `rdi`, expected 0x13a4)
+WARN	omitted-remap	island 2603: `mulss  xmm2,DWORD PTR [r13+0x24]` keeps [r13+0x24] while the same January offset is remapped to ["0x20"] elsewhere
+DEFECT	omitted-remap	island 2842: `mov    ecx,DWORD PTR [rdi+0x1628]` keeps [rdi+0x1628] while the same January offset is remapped to ["0x14c8"] elsewhere (SAME base register `rdi`, expected 0x14c8)
+DEFECT	omitted-remap	island 3683: `mov    DWORD PTR [rdi+0x1758],0x0` keeps [rdi+0x1758] while the same January offset is remapped to ["0x1600"] elsewhere (SAME base register `rdi`, expected 0x1600)
+DEFECT	omitted-remap	island 3742: `mov    DWORD PTR [rdi+0x1758],0x0` keeps [rdi+0x1758] while the same January offset is remapped to ["0x1600"] elsewhere (SAME base register `rdi`, expected 0x1600)
+WARN	omitted-remap	island 3930: `subss  xmm6,DWORD PTR [rax+0xa4]` keeps [rax+0xa4] while the same January offset is remapped to ["0x24c"] elsewhere
+DEFECT	omitted-remap	island 3994: `lea    rbx,[rdi+0x18d0]` keeps [rdi+0x18d0] while the same January offset is remapped to ["0x1780"] elsewhere (SAME base register `rdi`, expected 0x1780)
+DEFECT	omitted-remap	island 4188: `movss  xmm3,DWORD PTR [rax+0xa64]` keeps [rax+0xa64] while the same January offset is remapped to ["0xa5c"] elsewhere (SAME base register `rax`, expected 0xa5c)
+WARN	omitted-remap	island 4257: `mulss  xmm2,DWORD PTR [rdi+0x1640]` keeps [rdi+0x1640] while the same January offset is remapped to ["0x14dc"] elsewhere
+DEFECT	omitted-remap	island 4509: `movss  xmm0,DWORD PTR [rax+0xa64]` keeps [rax+0xa64] while the same January offset is remapped to ["0xa5c"] elsewhere (SAME base register `rax`, expected 0xa5c)
+WARN	omitted-remap	island 5017: `movss  xmm0,DWORD PTR [r15+0x370]` keeps [r15+0x370] while the same January offset is remapped to ["0xd98"] elsewhere
+DEFECT	omitted-remap	island 5149: `cmp    DWORD PTR [rdi+0x1758],0x0` keeps [rdi+0x1758] while the same January offset is remapped to ["0x1600"] elsewhere (SAME base register `rdi`, expected 0x1600)
+DEFECT	omitted-remap	island 5526: `cmp    DWORD PTR [rdi+0x1758],0x0` keeps [rdi+0x1758] while the same January offset is remapped to ["0x1600"] elsewhere (SAME base register `rdi`, expected 0x1600)
+DEFECT	omitted-remap	island 5963: `cmp    DWORD PTR [rdi+0x1758],0x0` keeps [rdi+0x1758] while the same January offset is remapped to ["0x1600"] elsewhere (SAME base register `rdi`, expected 0x1600)
+DEFECT	omitted-remap	island 6400: `lea    rbx,[rdi+0x1378]` keeps [rdi+0x1378] while the same January offset is remapped to ["0x1280"] elsewhere (SAME base register `rdi`, expected 0x1280)
+DEFECT	omitted-remap	island 6461: `movss  xmm1,DWORD PTR [rdi+0x14c4]` keeps [rdi+0x14c4] while the same January offset is remapped to ["0x1364"] elsewhere (SAME base register `rdi`, expected 0x1364)
+DEFECT	omitted-remap	island 6539: `mulss  xmm0,DWORD PTR [rdi+0x14c4]` keeps [rdi+0x14c4] while the same January offset is remapped to ["0x1364"] elsewhere (SAME base register `rdi`, expected 0x1364)
+WARN	omitted-remap	island 6656: `cmp    DWORD PTR [r13+0x1e0],0x0` keeps [r13+0x1e0] while the same January offset is remapped to ["0x618"] elsewhere
+DEFECT	omitted-remap	island 6867: `lea    rbx,[rdi+0x1378]` keeps [rdi+0x1378] while the same January offset is remapped to ["0x1280"] elsewhere (SAME base register `rdi`, expected 0x1280)
+WARN	omitted-remap	island 6968: `comiss xmm0,DWORD PTR [r15+0x370]` keeps [r15+0x370] while the same January offset is remapped to ["0xd98"] elsewhere
+DEFECT	omitted-remap	island 7071: `movss  xmm1,DWORD PTR [rdx+0x6a4]` keeps [rdx+0x6a4] while the same January offset is remapped to ["0x1cf4"] elsewhere (SAME base register `rdx`, expected 0x1cf4)
+DEFECT	omitted-remap	island 7089: `mulss  xmm1,DWORD PTR [rdx+0x6a4]` keeps [rdx+0x6a4] while the same January offset is remapped to ["0x1cf4"] elsewhere (SAME base register `rdx`, expected 0x1cf4)
+WARN	omitted-remap	island 7097: `cmp    DWORD PTR [r13+0x1e0],0x0` keeps [r13+0x1e0] while the same January offset is remapped to ["0x618"] elsewhere
+DEFECT	omitted-remap	island 7107: `mulss  xmm1,DWORD PTR [rdx+0x6a4]` keeps [rdx+0x6a4] while the same January offset is remapped to ["0x1cf4"] elsewhere (SAME base register `rdx`, expected 0x1cf4)
+DEFECT	omitted-remap	island 7125: `mulss  xmm1,DWORD PTR [rdx+0x6a4]` keeps [rdx+0x6a4] while the same January offset is remapped to ["0x1cf4"] elsewhere (SAME base register `rdx`, expected 0x1cf4)
+DEFECT	omitted-remap	island 7159: `mulss  xmm1,DWORD PTR [rdx+0x6a4]` keeps [rdx+0x6a4] while the same January offset is remapped to ["0x1cf4"] elsewhere (SAME base register `rdx`, expected 0x1cf4)
+DEFECT	omitted-remap	island 7209: `movss  xmm6,DWORD PTR [rdx+0x538]` keeps [rdx+0x538] while the same January offset is remapped to ["0x1798"] elsewhere (SAME base register `rdx`, expected 0x1798)
+DEFECT	omitted-remap	island 7220: `mulss  xmm0,DWORD PTR [rdx+0x53c]` keeps [rdx+0x53c] while the same January offset is remapped to ["0x179c"] elsewhere (SAME base register `rdx`, expected 0x179c)
+WARN	omitted-remap	island 7345: `movss  xmm0,DWORD PTR [r15+0x370]` keeps [r15+0x370] while the same January offset is remapped to ["0xd98"] elsewhere
+WARN	omitted-remap	island 7770: `mulss  xmm1,DWORD PTR [rsi+0x24]` keeps [rsi+0x24] while the same January offset is remapped to ["0x20"] elsewhere
+WARN	omitted-remap	island 7983: `cmp    DWORD PTR [r13+0x1e0],0x0` keeps [r13+0x1e0] while the same January offset is remapped to ["0x618"] elsewhere
+
+== immediate carriers of January structure offsets ==
+none: no instruction carries a remapped January offset as an immediate
+
+== decode integrity of copied regions ==
+no undecodable bytes in the copied regions (2021 instructions)
+
+JANASM SUMMARY defects=26 warnings=14

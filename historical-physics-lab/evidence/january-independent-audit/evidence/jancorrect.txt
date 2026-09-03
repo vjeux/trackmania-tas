@@ -1,0 +1,30 @@
+== repairs applied (16) ==
+  island  6403 January 0x1405ef7b0: 0x1378 -> 0x1280   `lea    rbx,[rdi+0x1378]`
+  island  6870 January 0x1405ef983: 0x1378 -> 0x1280   `lea    rbx,[rdi+0x1378]`
+  island  6465 January 0x1405ef7ed: 0x14c4 -> 0x1364   `movss  xmm1,DWORD PTR [rdi+0x14c4]`
+  island  6543 January 0x1405ef83b: 0x14c4 -> 0x1364   `mulss  xmm0,DWORD PTR [rdi+0x14c4]`
+  island   888 January 0x1405ee226: 0x14ec -> 0x138c   `cmp    DWORD PTR [rdi+0x14ec],0x0`
+  island  1030 January 0x1405ee2b2: 0x1504 -> 0x13a4   `movss  xmm1,DWORD PTR [rdi+0x1504]`
+  island  1073 January 0x1405ee2dd: 0x1504 -> 0x13a4   `movss  DWORD PTR [rdi+0x1504],xmm1`
+  island  2498 January 0x1405ee86e: 0x1504 -> 0x13a4   `movss  xmm1,DWORD PTR [rdi+0x1504]`
+  island  1986 January 0x1405ee66d: 0x15dc -> 0x147c   `mulss  xmm13,DWORD PTR [rdi+0x15dc]`
+  island  2844 January 0x1405ee9ca: 0x1628 -> 0x14c8   `mov    ecx,DWORD PTR [rdi+0x1628]`
+  island  3685 January 0x1405eed13: 0x1758 -> 0x1600   `mov    DWORD PTR [rdi+0x1758],0x0`
+  island  3744 January 0x1405eed4e: 0x1758 -> 0x1600   `mov    DWORD PTR [rdi+0x1758],0x0`
+  island  5151 January 0x1405ef2cd: 0x1758 -> 0x1600   `cmp    DWORD PTR [rdi+0x1758],0x0`
+  island  5528 January 0x1405ef446: 0x1758 -> 0x1600   `cmp    DWORD PTR [rdi+0x1758],0x0`
+  island  5965 January 0x1405ef5fb: 0x1758 -> 0x1600   `cmp    DWORD PTR [rdi+0x1758],0x0`
+  island  3997 January 0x1405eee4a: 0x18d0 -> 0x1780   `lea    rbx,[rdi+0x18d0]`
+
+differentially re-verified: 16/16
+
+== deferred, evidence required (5) ==
+  region 0 [rax+0x118]: 1 site(s) left at the January offset, but `rax` has several definitions in the region, so the object identity is unproven; NOT repaired (needs the January binary)
+  region 0 [rax+0xa64]: 2 site(s) left at the January offset, but `rax` has several definitions in the region, so the object identity is unproven; NOT repaired (needs the January binary)
+  region 0 [rdx+0x538]: 1 site(s) left at the January offset, but `rdx` has several definitions in the region, so the object identity is unproven; NOT repaired (needs the January binary)
+  region 0 [rdx+0x53c]: 1 site(s) left at the January offset, but `rdx` has several definitions in the region, so the object identity is unproven; NOT repaired (needs the January binary)
+  region 0 [rdx+0x6a4]: 5 site(s) left at the January offset, but `rdx` has several definitions in the region, so the object identity is unproven; NOT repaired (needs the January binary)
+
+field relocations: 161 -> 177
+island size unchanged: 12876 bytes
+wrote /tmp/janaudit/corrected/Profile_Jan2022.as

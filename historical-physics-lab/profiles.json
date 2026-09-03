@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "target": {
+    "game_build": 128130,
+    "game_date": "2026-01-28",
+    "game_version": "3.3.0",
+    "exe_sha256": "3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda",
+    "carsport_rva": "0x851f00"
+  },
+  "stadium_epochs": [
+    {
+      "id": "STADIUM_PRE_2022_03_29",
+      "period": "through 2022-03-25",
+      "status": "catalog_only",
+      "behavior": "Roevhaal_63.546 => WRONG_SIMU; native payload disabled after incomplete field/ABI audit",
+      "representative_client": {
+        "archive": "Trackmania 2022.1.21.1554.zip",
+        "exe_sha256": "e2255c415f0f7fc2d0a66512fa7609256c42cf639a5380b7a5bcdbb4486ab75b",
+        "handler_sha256": "18fa8b69f86e2553a4062a7147d6d2f63da21013dacec8497e00f1b4a78184f9"
+      },
+      "representative_server": {
+        "date": "2022-03-25",
+        "build": 112349,
+        "sha256": "a5536ac7dc2426406321ab7c7a5f9d797fc2ed6f70f699c69142d9b2853e7656"
+      },
+      "mechanism": "fail-closed: independent audit found 16 provably wrong field accesses, 10 unresolved accesses, and two unresolved ABI risks; exact January executable/disassembly required"
+    },
+    {
+      "id": "STADIUM_2022_03_29_TO_PRE_FALL_STAGING",
+      "period": "2022-03-29 through at least 2022-06-21; exact end before the 2022-09-21 Fall-staged build",
+      "status": "catalog_only",
+      "behavior": "Roevhaal_63.546 => EXACT_63.546 on March 29–June 21 servers; no matching full client in archive",
+      "representative_client": {
+        "archive": "Trackmania-2022-09-30",
+        "exe_sha256": "1f5ce9877e327d690cc9d6b5ab02fbe6157452e85e15e622ce46deeac91fe1be",
+        "handler_sha256": "4e005fbe9b164cb2c595294ff60899e9012f46dbdd38e92a3e455e66c73aab53"
+      },
+      "representative_server": {
+        "date": "2022-06-21",
+        "build": 113135,
+        "sha256": "6623e71dad1ce1cf977bf12dbeb8c0cf0084da5311dda22310c0316a6125d079"
+      },
+      "mechanism": "catalog only; exact full-client source missing for 2022-03-29..2022-09-20; Sep30 direct island is reassigned to Fall"
+    },
+    {
+      "id": "STADIUM_FALL_STAGED_2022_09_21_TO_2023_SUMMER",
+      "period": "staged by the 2022-09-21 executable; public update 2022-10-01 through approximately 2023-06-22",
+      "status": "catalog_only",
+      "behavior": "Fall-staged bobsleigh steering and wiggle/water-bounce behavior",
+      "representative_client": {
+        "archive": "Trackmania-2022-10-06",
+        "exe_sha256": "441b3aeb6b878f87b40c0994fcf2ab478e13ed2d1b1b47d341899b56cb931ad5",
+        "handler_sha256": "4e005fbe9b164cb2c595294ff60899e9012f46dbdd38e92a3e455e66c73aab53"
+      },
+      "mechanism": "fail_closed_behavior_mismatch_proven: crash-free V5 is farther from exact Sep30 than stock current on a matched native-waypoint map (mean error 7.135 m vs 6.109 m; >1 m at 3.700 s vs 3.840 s); no V6 created"
+    },
+    {
+      "id": "STADIUM_SUMMER_2023_ONWARD",
+      "period": "2023-06-23 onward",
+      "status": "selectable_via_installed_game",
+      "behavior": "modern ice: slowdown/wiggle changes and slightly faster ice",
+      "representative_client": {
+        "archive": "Trackmania 2023.6.23.1627.7z",
+        "exe_sha256": "a3aea28d0dedfe15a71879288365216428e08e12773bdf8218c4c195a3ba8ac7",
+        "handler_sha256": "38edf9bb6ed4d9583067e73aa152d7c17539068d10b78c3426ebe987fa312aa2"
+      },
+      "mechanism": "provided directly by the installed supported client"
+    }
+  ],
+  "measured_behavior_boundaries": [
+    {
+      "id": "STADIUM_BRACKETED_2020_07_23_TO_2020_09_11",
+      "status": "measured_boundary_catalog_only",
+      "behavior": "26 of 194 common completions change lap time; 19 are <=0.020 s, two exceed 0.200 s, largest -1.954 s across 15 maps",
+      "blocking_reason": "no public 2020 full client; exact boundary is bracketed because no server exists between the two dates"
+    },
+    {
+      "id": "STADIUM_2021_06_08_NEW_PHYSICS",
+      "status": "measured_boundary_implementation_not_started",
+      "behavior": "92 of 139 common completions (66%) change lap time across 40 maps; median 0.016 s, largest +1.488 s",
+      "cause_axis": "executable code: Stadium, shared, and title packs are byte-identical across the boundary",
+      "implementation_target": "archived July 8 2021 client build 105481 is the nearest exact client preimage; exhaustive closure/remap has not started"
+    }
+  ],
+  "vehicle_families": {
+    "taxonomy": "official vehicle families, separate from Stadium physics epochs",
+    "official_current": ["StadiumCar", "SnowCar", "RallyCar", "DesertCar"]
+  },
+  "official_family_epochs": {
+    "SnowCar": [
+      {"id":"SNOW_RELEASE_2023","range":"2023-11-21..2024-01-08","status":"catalog_only","evidence":"measured release code/data delta; matched release-client trajectory pending","components":{"delayed_script":"target-call no-op payload ready","action_keys":"pre-Feb target branch rollback ready","smooth_steering":"pre-May target store rollback ready","collision":"in-memory sphere geometry transaction ready"}},
+      {"id":"SNOW_JANUARY_2024","range":"2024-01-09..2024-02-26","status":"catalog_only","evidence":"SetPlayer_Delayed_ code delta measured; matched January-client trajectory pending","components":{"delayed_script":"installed current behavior","action_keys":"pre-Feb target branch rollback ready","smooth_steering":"pre-May target store rollback ready","collision":"in-memory sphere geometry transaction ready"}},
+      {"id":"SNOW_FEBRUARY_2024","range":"2024-02-27..2024-05-21","status":"catalog_only","evidence":"action-key and collision deltas measured; matched February-client trajectory pending","components":{"delayed_script":"installed current behavior","action_keys":"installed current behavior","smooth_steering":"pre-May target store rollback","collision":"installed current behavior"}},
+      {"id":"SNOW_MAY_2024_CURRENT","range":"2024-05-22 onward","status":"selectable_via_installed_game","evidence":"analog smooth-steering 100% fix"}
+    ],
+    "RallyCar": [
+      {"id":"RALLY_RELEASE_2024","range":"2024-02-27..2024-04-01","status":"catalog_only","evidence":"release item/input deltas measured; matched release-client trajectory pending"},
+      {"id":"RALLY_APRIL_2024","range":"2024-04-02..2024-05-21","status":"catalog_only","evidence":"custom-ice item and analog deltas measured; matched April-client trajectory pending"},
+      {"id":"RALLY_MAY_2024_CURRENT","range":"2024-05-22 onward","status":"selectable_via_installed_game","evidence":"corrected item path plus analog snap-to-target fix"}
+    ],
+    "DesertCar": [
+      {"id":"DESERT_MAY_2024_CURRENT","range":"2024-05-22 onward","status":"selectable_via_installed_game","evidence":"release baseline; no confirmed later behavior change"}
+    ]
+  }
+}

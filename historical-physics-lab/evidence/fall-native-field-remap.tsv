@@ -1,0 +1,62 @@
+island_offset	class	old_bytes	new_bytes	evidence
+0x0119	field_immediate	49 81 C1 E0 12 00 00	49 81 C1 98 12 00 00	current 0x852048
+0x01b1	field_immediate	BA 30 0D 00 00	BA 40 0D 00 00	current 0x8520cb
+0x01b6	field_immediate	B9 E0 0C 00 00	B9 F0 0C 00 00	current 0x8520d0; first native fault
+0x02da	field_immediate	48 81 C2 F0 15 00 00	48 81 C2 A8 15 00 00	current 0x85220e
+0x03c6	field_immediate	48 81 C1 30 06 00 00	48 81 C1 38 06 00 00	current object band
+0x0880	field_immediate	48 81 C1 D8 1E 00 00	48 81 C1 90 1E 00 00	current 0x85272c
+0x0ec2	field_immediate	48 81 C1 50 1D 00 00	48 81 C1 08 1D 00 00	current 0x852d6e
+0x16f2	field_immediate	48 81 C1 E0 30 00 00	48 81 C1 98 2D 00 00	current 0x8537b9
+0x0352	field_modrm	83 BF 9C 14 00 00 00	83 BF 8C 13 00 00 00	current 0x85393c
+0x03d5	field_modrm	F3 0F 10 8F B4 14 00 00	F3 0F 10 8F A4 13 00 00	current 0x852824
+0x03f5	field_modrm	F3 0F 11 8F B4 14 00 00	F3 0F 11 8F A4 13 00 00	current state-object band
+0x076f	field_modrm	F3 0F 59 BF 8C 15 00 00	F3 0F 59 BF 7C 14 00 00	current 0x852623
+0x0850	field_modrm	F3 45 0F 59 86 38 1D 00 00	F3 45 0F 59 86 F0 1C 00 00	current 0x852c80; tuning-object band
+0x0f7a	field_modrm	48 8D 9F 1C 1D 00 00	48 8D 9F 2C 1C 00 00	current 0x852e09
+0x1076	field_modrm	F3 41 0F 59 A4 24 14 0A 00 00	F3 41 0F 59 A4 24 5C 0A 00 00	current 0x852f29
+0x11a4	field_modrm	F3 0F 59 99 14 0A 00 00	F3 0F 59 99 5C 0A 00 00	current 0x853045
+0x127d	field_modrm	F3 0F 59 BF 40 15 00 00	F3 0F 59 BF 30 14 00 00	current 0x853121
+0x13be	field_modrm	44 3B A7 1C 15 00 00	44 3B A7 0C 14 00 00	current 0x8534b9
+0x05da	field_modrm	4C 8B AC C8 70 06 00 00	4C 8B AC C8 B8 06 00 00	current 0x852479 material table
+0x0605	field_modrm	F3 41 0F 10 47 10	F3 41 0F 10 47 18	current 0x8524da contact struct
+0x0633	field_modrm	F3 41 0F 10 47 18	F3 41 0F 10 47 48	current 0x8524eb contact struct
+0x077b	field_modrm	F3 44 0F 59 9F 7C 14 00 00	F3 44 0F 59 9F 80 14 00 00	current 0x85262f
+0x0784	field_modrm	F3 0F 59 B7 94 15 00 00	F3 0F 59 B7 84 14 00 00	current 0x852637
+0x09e6	field_modrm	F3 45 0F 10 9E 70 19 00 00	F3 45 0F 10 9E 28 19 00 00	current 0x852891 tuning-object band
+0x09f1	field_modrm	F3 45 0F 10 86 40 1D 00 00	F3 45 0F 10 86 F8 1C 00 00	current 0x85289a tuning-object band
+0x10a6	field_modrm	F3 0F 59 97 EC 15 00 00	F3 0F 59 97 DC 14 00 00	current 0x14085068a
+0x1116	field_modrm	F3 41 0F 10 8E 3C 1A 00 00	F3 41 0F 10 8E F4 19 00 00	current 0x852fb8
+0x1203	field_modrm	F3 45 0F 10 9E 94 0D 00 00	F3 45 0F 10 9E A4 0D 00 00	current 0x8530a5
+0x120e	field_modrm	F3 45 0F 10 9E 90 0D 00 00	F3 45 0F 10 9E A0 0D 00 00	current 0x8530b0
+0x1235	field_modrm	F3 45 0F 10 86 C4 18 00 00	F3 45 0F 10 86 7C 18 00 00	current 0x8530d8
+0x12d3	field_modrm	F3 41 0F 10 84 24 08 0A 00 00	F3 41 0F 10 84 24 50 0A 00 00	current 0x852f29
+0x12dd	field_modrm	F3 0F 59 87 74 18 00 00	F3 0F 59 87 54 17 00 00	current 0x853178
+0x13da	field_modrm	F3 45 0F 5E BE D4 1C 00 00	F3 45 0F 5E BE 8C 1C 00 00	current 0x8534d6
+0x1508	field_modrm	F3 45 0F 10 9E D0 1E 00 00	F3 45 0F 10 9E 88 1E 00 00	current 0x853603
+0x155c	field_modrm	F3 45 0F 10 9E 2C 1F 00 00	F3 45 0F 10 9E E4 1E 00 00	current 0x853657
+0x1581	field_modrm	F3 45 0F 59 B6 38 1F 00 00	F3 45 0F 59 B6 F0 1E 00 00	current 0x85367c
+0x1710	field_modrm	F3 0F 10 8F E8 14 00 00	F3 0F 10 8F D8 13 00 00	current 0x8537d7
+0x1741	field_modrm	F3 41 0F 10 84 24 04 0A 00 00	F3 41 0F 10 84 24 4C 0A 00 00	current 0x853809
+0x174b	field_modrm	F3 0F 59 87 70 18 00 00	F3 0F 59 87 50 17 00 00	current 0x853813
+0x18c6	field_modrm	F3 0F 10 87 E8 14 00 00	F3 0F 10 87 D8 13 00 00	current 0x853974
+0x1bff	field_modrm	F3 0F 10 82 44 1D 00 00	F3 0F 10 82 FC 1C 00 00	current 0x853cb4
+0x1c09	field_modrm	F3 0F 10 82 48 1D 00 00	F3 0F 10 82 00 1D 00 00	current 0x853cbe
+0x2259	field_modrm	49 8D 90 C0 16 00 00	49 8D 90 C0 17 00 00	current 0x8417ed helper wheel array
+0x239c	helper_field	48 83 C1 78	48 81 C1 88 (via +0x2404 cave)	current material-curve layout at 0x140845a44
+0x0442	proven_unchanged_immediate	48 81 C1 B8 00 00 00	48 81 C1 B8 00 00 00	wheel stride
+0x0bed	proven_unchanged_immediate	48 81 C3 B8 00 00 00	48 81 C3 B8 00 00 00	wheel stride
+0x0f81	proven_unchanged_immediate	49 83 C5 70	49 83 C5 70	wheel member
+0x117c	proven_unchanged_immediate	3C 4A	3C 4A	surface id
+0x134f	proven_unchanged_immediate	49 81 C5 B8 00 00 00	49 81 C5 B8 00 00 00	wheel stride
+0x1bab	proven_unchanged_immediate	48 81 C1 B8 00 00 00	48 81 C1 B8 00 00 00	wheel stride
+0x01eb	proven_unchanged_modrm	F3 0F 10 5E 18	F3 0F 10 5E 18	current 0x852101
+0x0290	proven_unchanged_modrm	F3 0F 10 76 18	F3 0F 10 76 18	current 0x8521c8
+0x0a2e	proven_unchanged_modrm	F3 41 0F 59 4D 24	F3 41 0F 59 4D 24	current 0x8528d9
+0x1a3a	proven_unchanged_modrm	F3 41 0F 59 4B 18	F3 41 0F 59 4B 18	current 0x853ae7
+0x1ae3	proven_unchanged_modrm	F3 41 0F 10 43 18	F3 41 0F 10 43 18	current 0x853b98
+0x1c11	proven_unchanged_modrm	F3 45 0F 59 63 18	F3 45 0F 59 63 18	current 0x853ccb
+0x1c65	proven_unchanged_modrm	41 0F 2F 43 18	41 0F 2F 43 18	current 0x853d13
+0x1e07	proven_unchanged_modrm	F3 0F 59 4E 24	F3 0F 59 4E 24	current 0x853ea7
+0x1f87	proven_unchanged_modrm	F3 0F 10 46 18	F3 0F 10 46 18	current 0x854026
+0x00d5	abi_adapter	pointer at [rbp+0x60]	pointer at [rbp+0xa0]	current 0x1408456b0 output struct overwrites old +0x60 slot
+0x2430	abi_adapter	output in island tail	output at [rbp-0x30]	current helper gained an output-pointer argument

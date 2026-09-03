@@ -1,0 +1,221 @@
+{
+  "schema_version": 2,
+  "document": "Trackmania 2020 official vehicle behavior changelog — measurements manifest",
+  "generated_utc": "2026-09-03T07:01:00Z",
+  "status_vocabulary": {
+    "measured": "produced by executing the game/dedicated server, or read out of shipped bytes with a decoder",
+    "derived": "exact arithmetic on measured values, or direct reading of instruction semantics",
+    "officially_described": "stated by Nadeo; recorded only alongside an observed code/data delta, never as a magnitude",
+    "unresolved": "not established by available evidence"
+  },
+  "magnitude_channel": {
+    "what": "the only channel in the instrument that yields a magnitude rather than a verdict",
+    "how": "a run that COMPLETES on both builds and returns a different lap time; the server prints both numbers in its Desc, e.g. 'race finished, time is worse. (25470 < 26958)'",
+    "excluded_from_magnitudes": [
+      "using known-flawed game exe — validation policy, the run was never simulated",
+      "container-format NOLOAD transitions",
+      "respawn-rule rejections",
+      "wrong simu with no finish — real disagreement, but yields no number"
+    ]
+  },
+  "targets": {
+    "current_client": {"build": 128130, "banner": "2026-01-28_13_00", "exe_sha256": "3fc7d8cda542beda131c44306b123f4004d07d7e22f512b46b762afc29f6edda"},
+    "source_bundle": {"name": "tm-historical-physics-official-v5-failclosed.tar.zst", "sha256": "8cc088de3425697071dff85dd4527b0cb935b2a176f4cf28c2d8e53a172e6a42"},
+    "audit_2020_2021": {"path": "/home/vjeux/tm2020-audit", "matrix_sha256": "9eb13b537d64d6867805bbca8d81459d1ecfbc3f7443d95aa73f5bbf7adcfa2f", "corpus_sha256": "982b52a7adabf92c011268a2ad51df1e0c4e4cd4fc907a4736d90f784dd08ea4"}
+  },
+  "measurements": [
+    {
+      "id": "S-0",
+      "family": "stadium",
+      "boundary": "between 2020-07-23 and 2020-09-11",
+      "boundary_pinned": false,
+      "boundary_note": "no archived server exists between these dates",
+      "quantity": "lap time of recorded runs re-simulated from identical inputs",
+      "completing_on_both": 194,
+      "identical_time": 168,
+      "changed": 26,
+      "slower": 6,
+      "faster": 20,
+      "magnitude_bands_ms": {"le_20": 19, "21_to_200": 5, "gt_200": 2},
+      "largest_change": {"replay": "2021-12-14_16_24__74222.Replay.Gbx", "from_s": 14.935, "to_s": 12.981, "delta_s": -1.954},
+      "second_largest": {"replay": "2021-07-02_16_36__45249.Replay.Gbx", "from_s": 12.517, "to_s": 12.114, "delta_s": -0.403},
+      "distinct_maps_affected": 15,
+      "status": "measured",
+      "official_note": "none — the 2020-09-11 changelog covers netcode, UI, clubs, editors; no driving statement",
+      "mechanism_status": "unresolved"
+    },
+    {
+      "id": "S-1",
+      "family": "stadium",
+      "boundary": "2021-06-08",
+      "boundary_builds": ["2021-05-31 git=105091-b6879495a50", "2021-06-08"],
+      "quantity": "lap time of recorded runs re-simulated from identical inputs",
+      "completing_on_both": 139,
+      "identical_time": 47,
+      "changed": 92,
+      "changed_fraction": 0.662,
+      "slower": 54,
+      "faster": 38,
+      "median_abs_delta_s": 0.016,
+      "mean_abs_delta_s": 0.109,
+      "largest_changes": [
+        {"replay": "2020-10-09_10_58__10640.Replay.Gbx", "map_uid": "8TrzhmnV4NAY8x4LNqlVjbOa3og", "declared_s": 25.470, "resim_s": 26.958, "delta_s": 1.488, "pct": 5.84},
+        {"replay": "2020-09-25_18_53__19109.Replay.Gbx", "map_uid": "SsCdL6nGC__n8UrYnsX8xaqnjCh", "declared_s": 15.036, "resim_s": 15.998, "delta_s": 0.962, "pct": 6.40},
+        {"replay": "2021-03-30_19_17__33095.Replay.Gbx", "map_uid": "Yakz8xDlVWDfVCfXxW2_paCaHil", "declared_s": 29.188, "resim_s": 30.075, "delta_s": 0.887, "pct": 3.04}
+      ],
+      "distinct_maps_with_a_changed_run": 40,
+      "maps_with_both_changed_and_unchanged_runs": 10,
+      "globality_evidence": "changed runs include recordings up to eleven months older than the update, on maps containing none of its new elements; the change is not confined to one surface or feature",
+      "code_vs_data": {
+        "resolved": "code",
+        "detail": "dedicated_TMStadium.pak (2c4464fe95be), dedicated.pak (bac0b0d82978) and the title pack (6a59f546e735) are byte-identical across the boundary; only the executable differs"
+      },
+      "byte_level_cause": "unresolved",
+      "official_note": "2021-06-12 Royal post says the mode 'comes with new physics'; the measured boundary is 2021-06-08, four days earlier. Consistent with, not evidence for.",
+      "status": "measured",
+      "independently_reproduced_on_this_node": true
+    },
+    {
+      "id": "S-2",
+      "family": "stadium",
+      "boundary": "2022-03-29",
+      "boundary_builds": ["112349 (2022-03-25)", "112449 (2022-03-29)"],
+      "quantity": "completability and finish time of a fixed tape on an ice map",
+      "map": "KEKL- SAUSAGE ICE",
+      "value_after_s": 63.546,
+      "value_before": null,
+      "before_semantics": "no valid finish; WRONG_SIMU, validated time -1",
+      "n_builds_after": 8,
+      "n_builds_before": 16,
+      "status": "measured",
+      "mechanism_status": "unresolved"
+    },
+    {
+      "id": "S-3",
+      "family": "all (global input path)",
+      "boundary": "2024-05-22",
+      "quantity": "analog steering convergence residual",
+      "value_after": 0.0,
+      "value_before_bound": 1e-05,
+      "unit": "fraction of full-scale axis",
+      "predicate": "snap when |stored-target| <= max(1.0, max(|stored|,|target|)) * 1e-5",
+      "constants": {"relative_tolerance": 1e-05, "tolerance_floor": 1.0, "abs_mask": "0x7FFFFFFF"},
+      "site": {"instruction": "movss [rbp+rcx*4+0x74], xmm4", "bytes": "F3 0F 11 64 8D 74", "rva": "0x2c360e", "file_offset": "0x2c2a0e", "unique_in_image": true},
+      "constant_offsets": {"1e-5": "0x1d1d134", "1.0": "0x1d1d7c8", "abs_mask": "0x1d20000"},
+      "status": "measured",
+      "derived_part": "residual bound arithmetic",
+      "perceptibility": "unresolved"
+    },
+    {
+      "id": "SN-1",
+      "family": "snow",
+      "boundary": "2024-02-27",
+      "quantity": "body collision primitive geometry",
+      "file": "Vehicles/Cars/CarSnow/SnowCar.Shape.Gbx",
+      "gbx_class": "0x0900C000 (CPlugSurface)",
+      "compound_members": 7,
+      "unit": "m",
+      "members": [
+        {"index": 0, "before": {"type": "sphere", "radius": 1.195428014}, "after": {"type": "ellipsoid", "size": [1.195, 1.1, 1.195]}, "delta": [-0.000428014, -0.095428014, -0.000428014]},
+        {"index": 1, "before": {"type": "sphere", "radius": 0.969449997}, "after": {"type": "ellipsoid", "size": [0.969, 0.8, 1.2]}, "delta": [-0.000449997, -0.169449997, 0.230550003]},
+        {"index": 2, "before": {"type": "sphere", "radius": 1.119449973}, "after": {"type": "ellipsoid", "size": [1.119, 1.0, 1.119]}, "delta": [-0.000449973, -0.119449973, -0.000449973]},
+        {"index": 3, "before": {"type": "sphere", "radius": 0.469999999}, "after": {"type": "sphere", "radius": 0.469999999}, "changed": false},
+        {"index": 4, "before": {"type": "sphere", "radius": 0.469999999}, "after": {"type": "sphere", "radius": 0.469999999}, "changed": false},
+        {"index": 5, "before": {"type": "sphere", "radius": 0.469999999}, "after": {"type": "sphere", "radius": 0.469999999}, "changed": false},
+        {"index": 6, "before": {"type": "sphere", "radius": 0.469999999}, "after": {"type": "sphere", "radius": 0.469999999}, "changed": false}
+      ],
+      "status": "measured",
+      "derived_part": "extent deltas; axis labelling assumes Y-up",
+      "evidence": {
+        "pre_feb": {"bytes": 1123, "sha256": "82a0822220468e50f78b372c840fe2c01fee9cc017a712b3f926548668841661"},
+        "post_feb": {"bytes": 1147, "sha256": "ef0ebee29e98faec02c5e563c99688fb664b9b76314eee20c77aef8c9c048d9d"},
+        "current": {"bytes": 1151, "sha256": "7ea1385e37ecaa3005939bd1d38608f5a36e276da4f81d3efc9079cfa13a68cb"},
+        "negative_control": {"file": "CarSnow.Item.Gbx", "bytes": 1900, "sha256": "1f7b1bc03a67d7cfde6917857f81f6e4ef9046385cbe3dc9bccf093a0e65e64c", "identical_across_boundary": true}
+      },
+      "behavioral_confirmation": {"status": "not_done", "request": "RR-02"}
+    },
+    {"id": "SN-2", "family": "snow", "boundary": "2024-05-22", "same_as": "S-3", "status": "measured"},
+    {"id": "RA-1", "family": "rally", "boundary": "2024-05-22", "same_as": "S-3", "status": "measured"}
+  ],
+  "adjacent_boundary_sweep_2020_2022": {
+    "method": "for every adjacent pair of the 43 dated server builds, count runs completing on both and how many return a different lap time",
+    "note": "boundaries changing 0-4 runs are reported but NOT published as behavior rows; the negative controls below set that floor",
+    "boundaries_with_changed_runs": [
+      {"boundary": "2020-07-10->2020-07-17", "complete_both": 19, "changed": 2, "max_abs_ms": 9},
+      {"boundary": "2020-07-23->2020-09-11", "complete_both": 194, "changed": 26, "max_abs_ms": 1954, "published_as": "S-0"},
+      {"boundary": "2020-11-16->2020-12-04", "complete_both": 121, "changed": 1, "max_abs_ms": 958},
+      {"boundary": "2020-12-18->2021-01-18", "complete_both": 123, "changed": 1, "max_abs_ms": 9},
+      {"boundary": "2021-05-31->2021-06-08", "complete_both": 139, "changed": 92, "max_abs_ms": 1488, "published_as": "S-1"},
+      {"boundary": "2021-06-08->2021-06-09", "complete_both": 169, "changed": 1, "max_abs_ms": 2},
+      {"boundary": "2021-06-09->2021-06-11", "complete_both": 168, "changed": 4, "max_abs_ms": 200},
+      {"boundary": "2021-06-12->2021-06-18", "complete_both": 175, "changed": 4, "max_abs_ms": 1519},
+      {"boundary": "2021-06-18->2021-07-01", "complete_both": 173, "changed": 4, "max_abs_ms": 190},
+      {"boundary": "2021-07-01->2021-07-06", "complete_both": 116, "changed": 2, "max_abs_ms": 1549},
+      {"boundary": "2021-07-07->2021-09-29", "complete_both": 115, "changed": 3, "max_abs_ms": 104, "official_note": "Fall 2021 update; magnitude below control support"}
+    ],
+    "boundaries_with_zero_changed_runs": 30
+  },
+  "negative_controls": [
+    {
+      "id": "NC-1",
+      "claim_tested": "campaign content alone can change lap times",
+      "result": "refuted",
+      "detail": "builds 2020-10-02/10-12/11-04/11-16 share one executable and byte-identical physics packs, differing only in the title pack; across all three adjacent pairs 203-204 runs complete and 0 change time"
+    },
+    {
+      "id": "NC-2",
+      "claim_tested": "an executable hash change implies a behavior change",
+      "result": "refuted",
+      "detail": "2021-01-18->01-20 and 2021-02-03->02-08 each change the executable with packs identical; both 123 complete, 0 changed. 39 distinct server executables are not 39 epochs."
+    }
+  ],
+  "policy_vs_physics": {
+    "marker": "using known-flawed game exe",
+    "meaning": "the server refuses to validate a run because its RECORDING client build is blacklisted; the run is never simulated",
+    "rows_matrix_wide": 1211,
+    "rows_at_2021_06_08": 18,
+    "rows_at_2021_05_31": 2,
+    "presence": "absent from all six July 2020 server executables, present from 2020-09-11 onward",
+    "consequence": "counting these as physics flips would manufacture an epoch out of a validation-policy change; they are excluded from every magnitude"
+  },
+  "reference_run_current_build": {
+    "id": "REF-01",
+    "build": 128130,
+    "map_sha256": "89a303c02a18d9f3973012f3921dc5fdab07c44c0b307f97a6e29ce6c66039e7",
+    "input": "full throttle, no steering, 22.000 s keyhold, 431 keydown batches",
+    "trace_records": 4543,
+    "status": "measured",
+    "events": [
+      {"event": "pre_booster_speed", "value": 198.962, "unit": "km/h"},
+      {"event": "post_booster_speed", "value": 294.848, "unit": "km/h"},
+      {"event": "booster_speed_gain", "value": 95.886, "unit": "km/h", "status": "derived"},
+      {"event": "takeoff_speed", "value": 337.568, "unit": "km/h"},
+      {"event": "takeoff_time", "value": 6.84517, "unit": "s"},
+      {"event": "airtime", "value": 1.4654, "unit": "s"},
+      {"event": "landing_time", "value": 8.31057, "unit": "s"},
+      {"event": "landing_z", "value": 677.47345, "unit": "m"},
+      {"event": "finish_plane_time", "value": 12.79075, "unit": "s"},
+      {"event": "finish_plane_speed", "value": 345.488, "unit": "km/h"}
+    ],
+    "discrimination_floor": {"value": 0.08, "unit": "km/h", "quantity": "finish_plane_speed spread across three patched variants"},
+    "open_discrepancy": {"table_value": 12.79075, "prose_value": 12.88075, "unit": "s", "status": "unresolved", "resolution": "RR-01, to be reconciled against the newly banked exact Sep-30 trace"}
+  },
+  "epochs_without_behavior_rows": [
+    {"family": "stadium", "window": "2020-07-01..2020-07-23", "reason": "four boundaries measured, max 2 changed runs at 0.009 s; launch builds core-dump on later probes"},
+    {"family": "stadium", "window": "2020-09-11..2021-05-31", "reason": "fourteen boundaries, each 0-1 changed runs"},
+    {"family": "stadium", "window": "2021-06-09..2022-01-21", "reason": "seven boundaries, 0-4 changed runs each, including the officially described Fall 2021 step"},
+    {"family": "stadium", "window": "2022-03-29..2022-09-20", "reason": "no full client in the public archive"},
+    {"family": "stadium", "window": "Fall 2022", "reason": "no measured trajectory delta; fail-closed"},
+    {"family": "stadium", "window": "Summer 2023", "reason": "causal split not localised; no oracle after 2022-06-21"},
+    {"family": "snow", "window": "2024-01-09", "reason": "wrappers structurally identical; cause downstream"},
+    {"family": "snow", "window": "2024-02-27 action keys", "reason": "route change does not establish the announced semantics"},
+    {"family": "rally", "window": "2024-04-02", "reason": "path-string delta only; physics blob bit-identical"},
+    {"family": "desert", "window": "post 2024-05-22", "reason": "no officially described change; hash churn is not evidence"}
+  ],
+  "never_measured_quantities": [
+    "steering response curve", "grip and slip thresholds", "wall repulsion impulse",
+    "reactor response", "water bounce", "bobsleigh steering", "dirt and wet surface response",
+    "per-epoch straight-line acceleration curve", "collision geometry for Stadium, Rally, Desert",
+    "which force law changed at S-0 or S-1 (lap time is an aggregate)"
+  ]
+}

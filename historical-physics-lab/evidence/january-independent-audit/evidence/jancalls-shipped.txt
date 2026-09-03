@@ -1,0 +1,25 @@
+== call-target distribution ==
+total call relocations: 105
+  -> absolute thunk (external, current image): 82
+  -> copied region entry (in-island January code): 13
+  -> interpolation adapter: 10
+  -> anything else: 0
+
+== reachability of every copied region ==
+region  0: source 0x1405edeb0..0x1405eff40 island     0 len 8336  callers=0  root handler (entered by the patched CarSport entry)
+region  1: source 0x1405edcf0..0x1405ede00 island 10832 len  275  callers=1  copied helper
+region  2: source 0x1405e7730..0x1405e77f2 island 11120 len  194  callers=1  copied helper
+region  3: source 0x1405ede00..0x1405edeac island 11328 len  172  callers=1  copied helper
+region  4: source 0x1413be660..0x1413be695 island 11504 len   53  callers=1  copied helper
+region  5: source 0x1413be660..0x1413be695 island 11568 len   53  callers=1  copied helper
+region  6: source 0x1413be750..0x1413be785 island 11632 len   53  callers=1  copied helper
+region  7: source 0x1413be810..0x1413be845 island 11696 len   53  callers=1  copied helper
+region  8: source 0x1413be850..0x1413be893 island 11760 len   67  callers=1  copied helper
+region  9: source 0x1413be8a0..0x1413be8d5 island 11840 len   53  callers=1  copied helper
+region 10: source 0x1413be900..0x1413be955 island 11904 len   85  callers=1  copied helper
+region 11: source 0x1413be960..0x1413be995 island 12000 len   53  callers=1  copied helper
+region 12: source 0x1413bea20..0x1413bea55 island 12064 len   53  callers=1  copied helper
+region 13: source 0x1413beaa0..0x1413bead5 island 12128 len   53  callers=1  copied helper
+
+== thunk fan-in ==
+82 call sites leave through 41 thunks

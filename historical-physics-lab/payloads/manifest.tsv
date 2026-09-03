@@ -1,0 +1,4 @@
+axis	profile	path	sha256	size	semantic_preimage	semantic_value	evidence
+rally_custom_ice	release	payloads/rally-release/CarRally.Item.Gbx	a1d5cdcd21ed4b152ae18b9f94dd8fa4f3eb4375d0035a83c20923a251bccd9a	3056	Models\\CarRally\\	Models\\RallyCar\\	Official 2024-04-02 RallyCar custom-ice fix; release and 2024-03-19 payloads are identical
+rally_custom_ice	post_fix_current	payloads/rally-post-custom-ice/CarRally.Item.Gbx	7cf6976abe68c8910d2cda6b504aec4c40ec90fc1561e27446b97313c9c80868	3057	Models\\RallyCar\\	Models\\CarRally\\	Only Rally-specific 2024-03-19 to 2024-04-30 resource delta; encrypted physics-model payload is bit-identical across boundary
+shared_analog_input	pre_2024_05_22	Profile_RallyAnalog.as	-	-	F3 0F 11 64 8D 74	90 90 90 90 90 90	Xi_GatherLatestInputs snap-to-target store added by staged May 22 build; shared input behavior, not Rally physics

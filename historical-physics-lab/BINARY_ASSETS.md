@@ -1,0 +1,1 @@
+Raw Nadeo game assets, executable binaries, and derived binary payloads are intentionally omitted from the public source tree. Text manifests retain their hashes and provenance. The distributable Openplanet package keeps every historical emulation fail-closed.
