@@ -140,6 +140,8 @@ pub struct ItemRec {
     /// Absolute body range occupied by the waypoint node (a 4-byte null or the
     /// complete inline CGameWaypointSpecialProperty).
     pub waypoint_region: (usize, usize),
+    /// Entire CGameCtnAnchoredObject record, from class id through FACADE.
+    pub record_region: (usize, usize),
     pub waypoint_tag: Option<String>,
 }
 
@@ -230,6 +232,8 @@ pub struct MapFile {
     /// baked-blocks chunk header offset, for its skippable size field
     pub baked_chunk_off: Option<usize>,
     pub items_region: (usize, usize),
+    /// Absolute body offset of the item archive's `nbItems` word.
+    pub items_count_off: Option<usize>,
     pub item_ids: Vec<IdField>,
     pub items: Vec<ItemRec>,
     /// pending edits
@@ -611,7 +615,7 @@ impl MapFile {
         }
         let mut blocks = blocks;
         parse_free_positions(&body, &mut blocks, &mut baked, baked_parsed);
-        let (items_chunk_off, items_region, item_ids, items) = parse_items(&body);
+        let (items_chunk_off, items_region, items_count_off, item_ids, items) = parse_items(&body);
         MapFile {
             gbx,
             size,
@@ -623,6 +627,7 @@ impl MapFile {
             items_chunk_off,
             baked_chunk_off,
             items_region,
+            items_count_off,
             item_ids,
             items,
             renames: Vec::new(),
@@ -1239,12 +1244,20 @@ fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> O
     panic!("unhandled inline node class 0x{:08X} at {}", class, r.o - 4);
 }
 
-fn parse_items(body: &[u8]) -> (Option<usize>, (usize, usize), Vec<IdField>, Vec<ItemRec>) {
+fn parse_items(
+    body: &[u8],
+) -> (
+    Option<usize>,
+    (usize, usize),
+    Option<usize>,
+    Vec<IdField>,
+    Vec<ItemRec>,
+) {
     let chunks = crate::gbx::all_skip_chunks(body);
     let c = chunks.iter().find(|(cid, ..)| *cid == ITEMS_CHUNK);
     let (coff, payload, size) = match c {
         Some(&(_, off, poff, size)) => (off, poff, size),
-        None => return (None, (0, 0), Vec::new(), Vec::new()),
+        None => return (None, (0, 0), None, Vec::new(), Vec::new()),
     };
     let end = payload + size;
     let mut r = Reader::at(body, payload);
@@ -1253,11 +1266,13 @@ fn parse_items(body: &[u8]) -> (Option<usize>, (usize, usize), Vec<IdField>, Vec
     let _size_of_node = r.u32(); // = payload size - 12, rewritten on build
     let region_start = r.o;
     let _archive_version = r.u32();
+    let count_off = r.o;
     let nb = r.u32();
     let mut table: Vec<String> = Vec::new();
     let mut ids: Vec<IdField> = Vec::new();
     let mut items = Vec::new();
     for i in 0..nb {
+        let record_start = r.o;
         // each item is a "node with class id": class id, chunks, 0xFACADE01
         let class = r.u32();
         assert_eq!(
@@ -1361,12 +1376,15 @@ fn parse_items(body: &[u8]) -> (Option<usize>, (usize, usize), Vec<IdField>, Vec
                 scale,
                 scale_off,
                 waypoint_region,
+                record_region: (record_start, 0),
                 waypoint_tag: tag,
             });
         }
-        items.push(rec.expect("item without a 0x03101002 chunk"));
+        let mut rec = rec.expect("item without a 0x03101002 chunk");
+        rec.record_region.1 = r.o;
+        items.push(rec);
     }
-    (Some(coff), (region_start, end), ids, items)
+    (Some(coff), (region_start, end), Some(count_off), ids, items)
 }
 
 /// Re-export of the body chunk scanner, for the `chunks` debug subcommand.
@@ -1482,6 +1500,39 @@ impl MapFile {
         let it = self.items[item_index].clone();
         self.raw_patches
             .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+    }
+
+    pub fn append_item_clones(&mut self, total_items: usize) {
+        assert!(
+            total_items >= self.items.len(),
+            "cannot shrink item array from {} to {}",
+            self.items.len(),
+            total_items
+        );
+        let add = total_items - self.items.len();
+        if add == 0 {
+            return;
+        }
+        let donor = self
+            .items
+            .iter()
+            .find(|it| it.waypoint_tag.is_none())
+            .expect("map needs one non-waypoint item to clone");
+        let bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
+        let mut inserted = Vec::with_capacity(bytes.len() * add);
+        for _ in 0..add {
+            inserted.extend_from_slice(&bytes);
+        }
+        let count_off = self.items_count_off.expect("map has no item count");
+        self.raw_patches
+            .push((count_off, (total_items as u32).to_le_bytes().to_vec()));
+        let insert_off = self
+            .items
+            .last()
+            .expect("map has no item records")
+            .record_region
+            .1;
+        self.raw_splices.push(((insert_off, insert_off), inserted));
     }
 
     pub fn set_item_scale(&mut self, item_index: usize, scale: f32) {

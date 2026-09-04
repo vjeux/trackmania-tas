@@ -1,24 +1,25 @@
-//! Build a miniature, route-only copy of a map from half-scale block items.
-//!
-//! The reference U10S Tiny campaign does not scale native map blocks in-place:
-//! it replaces the authored route with custom Item.Gbx versions whose geometry
-//! is half size, spaces their placements at half distance, and leaves the
-//! stadium decoration behind. `tiny` applies the same recipe repeatably.
+//! Build miniature maps by replacing authored blocks with Item.Gbx models and
+//! scaling every authored item. Baked decoration/terrain is deliberately left
+//! alone: it is the map's foundation, just as the U10S Tiny reference maps keep
+//! their baked Grass floor at full size.
 
 use crate::{
     census, cli,
-    map::{Kind, MapFile, FREE_BLOCK_FLAG},
+    map::{MapFile, FREE_BLOCK_FLAG},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
-const LIBRARY_SCALE: f32 = 0.5;
+#[derive(Clone, Debug)]
+struct Mapping {
+    model: String,
+    model_scale: f32,
+}
 
 #[derive(Clone, Debug)]
 struct Spec {
-    source: String,
     model: String,
     pos: [f32; 3],
     yaw: f32,
@@ -39,7 +40,10 @@ fn vec3(s: &str, label: &str) -> [f32; 3] {
     [v[0], v[1], v[2]]
 }
 
-fn read_mapping(path: &Path) -> BTreeMap<String, String> {
+/// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`. MODEL_SCALE is the scale already baked
+/// into the item geometry: 1 for full-size block exports, 0.5 for the U10S
+/// pre-shrunk library. Placement scale is `requested / MODEL_SCALE`.
+fn read_mapping(path: &Path) -> BTreeMap<String, Mapping> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut out = BTreeMap::new();
     for (line_no, line) in text.lines().enumerate() {
@@ -47,24 +51,30 @@ fn read_mapping(path: &Path) -> BTreeMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let (block, item) = line.split_once('\t').unwrap_or_else(|| {
-            panic!(
-                "{}:{}: expected BLOCK<TAB>ITEM",
-                path.display(),
-                line_no + 1
-            )
-        });
+        let fields: Vec<&str> = line.split('\t').collect();
         assert!(
-            !block.is_empty() && !item.is_empty(),
-            "{}:{}: empty mapping field",
+            fields.len() == 2 || fields.len() == 3,
+            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]",
             path.display(),
             line_no + 1
         );
+        let model_scale = fields
+            .get(2)
+            .map_or(1.0, |s| s.parse::<f32>().expect("MODEL_SCALE number"));
+        assert!(model_scale.is_finite() && model_scale > 0.0);
         assert!(
-            out.insert(block.to_string(), item.to_string()).is_none(),
-            "{}:{}: duplicate block {block}",
+            out.insert(
+                fields[0].to_string(),
+                Mapping {
+                    model: fields[1].to_string(),
+                    model_scale,
+                },
+            )
+            .is_none(),
+            "{}:{}: duplicate block {}",
             path.display(),
-            line_no + 1
+            line_no + 1,
+            fields[0]
         );
     }
     out
@@ -118,7 +128,7 @@ pub fn cmd_batch(args: &[String]) {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map_or(false, |n| n.ends_with(".Map.Gbx"))
+                .is_some_and(|n| n.ends_with(".Map.Gbx"))
         })
         .collect();
     maps.sort();
@@ -151,7 +161,8 @@ pub fn cmd(args: &[String]) {
     let out = PathBuf::from(cli::flag(args, "--out").expect("tiny needs --out MAP"));
     let mapping_path =
         PathBuf::from(cli::flag(args, "--mapping").expect("tiny needs --mapping FILE.tsv"));
-    let library = cli::flag(args, "--library").map(PathBuf::from);
+    let library =
+        PathBuf::from(cli::flag(args, "--library").expect("tiny needs --library ITEMS.zip"));
     let scale: f32 = cli::flag(args, "--scale")
         .unwrap_or("0.5")
         .parse()
@@ -170,73 +181,61 @@ pub fn cmd(args: &[String]) {
     let spawn = source
         .waypoints()
         .into_iter()
-        .find(|w| w.kind == Kind::Block && w.tag == "Spawn")
+        .find(|w| w.kind == crate::map::Kind::Block && w.tag == "Spawn")
         .expect("map needs a block-carried Spawn");
     let source_anchor = block_pos(&source.blocks[spawn.index]);
 
-    let mut specs = Vec::new();
-    let mut skipped = BTreeSet::new();
+    // ALL authored blocks are required. A missing model is a refusal, never a
+    // silently omitted decoration that makes the output look "mostly tiny".
+    let missing: BTreeSet<&str> = source
+        .blocks
+        .iter()
+        .filter(|b| !mapping.contains_key(&b.name))
+        .map(|b| b.name.as_str())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "mapping is missing {} authored block model(s): {}",
+        missing.len(),
+        missing.into_iter().collect::<Vec<_>>().join(", ")
+    );
+
+    let mut specs = Vec::with_capacity(source.blocks.len() + source.items.len());
     for b in &source.blocks {
-        if let Some(model) = mapping.get(&b.name) {
-            specs.push(Spec {
-                source: format!("block#{} {}", b.index, b.name),
-                model: model.clone(),
-                pos: transform(block_pos(b), source_anchor, target_anchor, scale),
-                yaw: block_yaw(b),
-                scale: scale / LIBRARY_SCALE,
-                tag: b.waypoint_tag.clone(),
-            });
-        } else if b.waypoint_tag.is_some() {
-            // Waypoints may never disappear silently. A built-in gate is a safe
-            // fallback when the custom library lacks a checkpoint-shaped block.
-            let model = match b.waypoint_tag.as_deref() {
-                Some("Spawn") => "GateStart32m",
-                Some("Goal") => "GateFinish32m",
-                _ => "GateCheckpointLeft32m",
-            };
-            specs.push(Spec {
-                source: format!("block#{} {} (builtin fallback)", b.index, b.name),
-                model: model.to_string(),
-                pos: transform(block_pos(b), source_anchor, target_anchor, scale),
-                yaw: block_yaw(b),
-                scale,
-                tag: b.waypoint_tag.clone(),
-            });
-        } else if !b.name.starts_with("Land") && b.name != "Beach" {
-            skipped.insert(b.name.clone());
-        }
+        let map = &mapping[&b.name];
+        specs.push(Spec {
+            model: map.model.clone(),
+            pos: transform(block_pos(b), source_anchor, target_anchor, scale),
+            yaw: block_yaw(b),
+            scale: scale / map.model_scale,
+            tag: b.waypoint_tag.clone(),
+        });
     }
+    // Existing items need no replacement geometry: scale and position are
+    // native placement fields, so every decoration and item waypoint survives.
     for it in &source.items {
-        if let Some(tag) = &it.waypoint_tag {
-            specs.push(Spec {
-                source: format!("item#{} {}", it.index, it.model),
-                model: it.model.clone(),
-                pos: transform(it.pos, source_anchor, target_anchor, scale),
-                yaw: it.yaw,
-                scale: it.scale * scale,
-                tag: Some(tag.clone()),
-            });
-        }
+        specs.push(Spec {
+            model: it.model.clone(),
+            pos: transform(it.pos, source_anchor, target_anchor, scale),
+            yaw: it.yaw,
+            scale: it.scale * scale,
+            tag: it.waypoint_tag.clone(),
+        });
     }
-    assert!(
-        specs.len() <= source.items.len(),
-        "need {} donor item slots, map has {}",
-        specs.len(),
-        source.items.len()
-    );
-    assert!(
-        specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")),
-        "no Spawn in output"
-    );
-    assert!(
-        specs.iter().any(|s| s.tag.as_deref() == Some("Goal")),
-        "no Goal in output"
-    );
+    assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
+    assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
 
-    let tmp1 = out.with_extension(format!("tiny-{}.stage1.Map.Gbx", std::process::id()));
-    let tmp2 = out.with_extension(format!("tiny-{}.stage2.Map.Gbx", std::process::id()));
+    let tmp0 = out.with_extension(format!("tiny-{}.slots.Map.Gbx", std::process::id()));
+    let tmp1 = out.with_extension(format!("tiny-{}.models.Map.Gbx", std::process::id()));
+    let tmp2 = out.with_extension(format!("tiny-{}.waypoints.Map.Gbx", std::process::id()));
 
+    // Stage 0: grow the item array before any saved offsets are used.
     let mut m = MapFile::load(&src);
+    m.append_item_clones(specs.len());
+    m.write_to(&tmp0).expect("write item-slot stage");
+
+    // Stage 1: fixed-size placement edits and Id-table model changes.
+    let mut m = MapFile::load(&tmp0);
     let old_uid = m
         .body_ids
         .first()
@@ -255,39 +254,41 @@ pub fn cmd(args: &[String]) {
             m.set_block_name(i, "RoadTechStraight");
         }
     }
-    for i in 0..m.items.len() {
-        m.move_item_pos(i, [16.0, -1000.0, 16.0]);
-        m.set_item_scale(i, 0.001);
-    }
     for (i, s) in specs.iter().enumerate() {
         m.set_item_model(i, &s.model);
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         m.set_item_scale(i, s.scale);
     }
-    m.write_to(&tmp1).expect("write stage 1");
+    m.write_to(&tmp1).expect("write model stage");
 
+    // Stage 2: variable-length waypoint nodes.
     let mut m = MapFile::load(&tmp1);
-    for i in 0..m.items.len() {
-        m.set_item_waypoint_tag(i, specs.get(i).and_then(|s| s.tag.as_deref()));
+    for (i, s) in specs.iter().enumerate() {
+        m.set_item_waypoint_tag(i, s.tag.as_deref());
     }
-    m.write_to(&tmp2).expect("write stage 2");
+    m.write_to(&tmp2).expect("write waypoint stage");
 
+    // Stage 3: embed the converted block models. A non-empty source archive
+    // would also need merging; replacing it would silently drop custom items.
+    assert!(
+        crate::header::embedded_zip_data(&source.gbx.body).is_none(),
+        "source map already embeds custom objects; merge them into --library before converting"
+    );
+    let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+    assert!(
+        zip.starts_with(b"PK\x03\x04"),
+        "{} is not a ZIP archive",
+        library.display()
+    );
     let mut m = MapFile::load(&tmp2);
-    if let Some(library) = library {
-        let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
-        assert!(
-            zip.starts_with(b"PK\x03\x04"),
-            "{} is not a ZIP archive",
-            library.display()
-        );
-        m.replace_embedded_zip(&zip);
-    }
+    m.replace_embedded_zip(&zip);
     m.write_to(&out).expect("write output");
-    let _ = std::fs::remove_file(&tmp1);
-    let _ = std::fs::remove_file(&tmp2);
+    for p in [&tmp0, &tmp1, &tmp2] {
+        let _ = std::fs::remove_file(p);
+    }
 
     let check = MapFile::load(&out);
-    assert_eq!(check.items.len(), source.items.len(), "item count changed");
+    assert_eq!(check.items.len(), specs.len(), "item count changed");
     for (i, s) in specs.iter().enumerate() {
         let got = &check.items[i];
         assert_eq!(got.model, s.model, "item#{i} model");
@@ -301,36 +302,17 @@ pub fn cmd(args: &[String]) {
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
     println!(
-        "  route items: {} (from {} mapped blocks)",
-        specs.len(),
-        specs
-            .iter()
-            .filter(|s| s.source.starts_with("block#") && !s.source.contains("fallback"))
-            .count()
+        "  scaled every authored object: {} blocks + {} items = {} item placements",
+        source.blocks.len(),
+        source.items.len(),
+        specs.len()
+    );
+    println!(
+        "  baked foundation unchanged: {} generated terrain/decoration blocks",
+        source.baked.len()
     );
     println!(
         "  anchor: source {:?} -> target {:?}; scale {:.3}",
         source_anchor, target_anchor, scale
     );
-    println!(
-        "  parked: {} blocks and {} unused items",
-        source.blocks.len(),
-        source.items.len() - specs.len()
-    );
-    if !skipped.is_empty() {
-        println!(
-            "  skipped unmapped block models ({}): {}",
-            skipped.len(),
-            skipped.into_iter().collect::<Vec<_>>().join(", ")
-        );
-    }
-    for (i, s) in specs.iter().enumerate() {
-        println!(
-            "  item#{i}: {} -> {} {:?} tag={}",
-            s.source,
-            s.model,
-            s.pos,
-            s.tag.as_deref().unwrap_or("-")
-        );
-    }
 }
