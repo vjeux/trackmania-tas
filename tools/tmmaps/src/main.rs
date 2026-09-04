@@ -20,10 +20,12 @@
 //! milliseconds.
 
 use tmmaps::cli::{die, flag, flag_multi, has, jobs_of, server_of};
-use tmmaps::{census, controls, dropscan, gbx, header, map, oracle, rotate, secs, segments, splice, selftest};
+use tmmaps::{
+    census, controls, dropscan, gbx, header, map, oracle, rotate, secs, segments, selftest, splice,
+    tiny,
+};
 
 use std::path::{Path, PathBuf};
-
 
 fn fnv1a(b: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -127,10 +129,16 @@ fn parse_move(m: &str) -> Move {
             Some((p, y)) => (p, Some(y.trim().parse::<f32>().expect("yaw in radians"))),
             None => (rest, None),
         };
-        let v: Vec<f32> = p.split(',').map(|x| x.trim().parse().expect("x,y,z")).collect();
+        let v: Vec<f32> = p
+            .split(',')
+            .map(|x| x.trim().parse().expect("x,y,z"))
+            .collect();
         assert_eq!(v.len(), 3, "free position wants x,y,z in metres");
         if let Some(i) = b.strip_prefix('b') {
-            assert!(yaw.is_none(), "a baked free block takes a position, not a yaw");
+            assert!(
+                yaw.is_none(),
+                "a baked free block takes a position, not a yaw"
+            );
             return Move::BakedPos(i.parse().expect("baked block index"), [v[0], v[1], v[2]]);
         }
         if let Some(i) = b.strip_prefix('i') {
@@ -145,12 +153,14 @@ fn parse_move(m: &str) -> Move {
     }
     let b: usize = bs.parse().expect("block index");
     let c = it.next().expect("BLK:cx,cy,cz[:dir] or BLK@x,y,z");
-    let v: Vec<i32> = c.split(',').map(|x| x.trim().parse().expect("cx,cy,cz")).collect();
+    let v: Vec<i32> = c
+        .split(',')
+        .map(|x| x.trim().parse().expect("cx,cy,cz"))
+        .collect();
     assert_eq!(v.len(), 3, "cell wants cx,cy,cz");
     let d = it.next().map(|s| s.trim().parse::<u8>().expect("dir 0..3"));
     Move::Cell(b, (v[0], v[1], v[2]), d)
 }
-
 
 /// A tool whose census is 90 000 lines long will be piped into `head`, and a
 /// Rust binary ignores SIGPIPE by default — so the write fails, and the
@@ -208,9 +218,23 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints",
+        "census",
+        "region",
+        "clear",
+        "shift",
+        "segments",
+        "move",
+        "rotate",
+        "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks",
+        "embedded",
+        "tiny",
+        "tiny-batch",
+        "renamecheck",
+        "cporder",
+        "origin",
+        "chunks",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -240,7 +264,8 @@ fn main() {
         "segments" => {
             let src = PathBuf::from(&args[2]);
             let out = PathBuf::from(flag(&args, "--out").unwrap_or("/tmp/segmaps"));
-            let g = flag(&args, "--ref-ghost").expect("--ref-ghost is required (order is measured)");
+            let g =
+                flag(&args, "--ref-ghost").expect("--ref-ghost is required (order is measured)");
             let ord: Option<Vec<String>> = flag(&args, "--order")
                 .map(|s| s.split(',').map(|v| v.trim().to_string()).collect());
             let segs = match segments::make_all_ordered(
@@ -304,8 +329,11 @@ fn main() {
             }
 
             let m0 = map::MapFile::load(&src);
-            let mut movers: Vec<(bool, usize)> =
-                rungs.iter().flatten().map(|m| (m.is_item(), m.block())).collect();
+            let mut movers: Vec<(bool, usize)> = rungs
+                .iter()
+                .flatten()
+                .map(|m| (m.is_item(), m.block()))
+                .collect();
             movers.sort_unstable();
             movers.dedup();
             for (is_item, b) in &movers {
@@ -521,7 +549,10 @@ fn main() {
                         if let Some(y) = y {
                             m.set_item_yaw(ii, y);
                         }
-                        println!("  item#{} {} ITEM {:?} -> {:?} yaw {:?}", ii, model, home, p, y);
+                        println!(
+                            "  item#{} {} ITEM {:?} -> {:?} yaw {:?}",
+                            ii, model, home, p, y
+                        );
                     }
                     Move::Pos(bi, p, _y) => {
                         let name = m.blocks[bi].name.clone();
@@ -670,9 +701,11 @@ fn main() {
                     fails += 1;
                 }
             }
-            for (label, newname) in
-                [("same-length", &same), ("fresh", &fresh), ("existing", &other)]
-            {
+            for (label, newname) in [
+                ("same-length", &same),
+                ("fresh", &fresh),
+                ("existing", &other),
+            ] {
                 let mut m = map::MapFile::load(&src);
                 m.set_block_name(target, newname);
                 let tmp = std::env::temp_dir()
@@ -692,10 +725,18 @@ fn main() {
                 };
                 let mut bad: Vec<String> = Vec::new();
                 if m2.blocks.len() != m0.blocks.len() {
-                    bad.push(format!("block count {} -> {}", m0.blocks.len(), m2.blocks.len()));
+                    bad.push(format!(
+                        "block count {} -> {}",
+                        m0.blocks.len(),
+                        m2.blocks.len()
+                    ));
                 }
                 if m2.items.len() != m0.items.len() {
-                    bad.push(format!("item count {} -> {}", m0.items.len(), m2.items.len()));
+                    bad.push(format!(
+                        "item count {} -> {}",
+                        m0.items.len(),
+                        m2.items.len()
+                    ));
                 }
                 for (a, b) in m0.blocks.iter().zip(m2.blocks.iter()) {
                     if a.index == target {
@@ -751,8 +792,10 @@ fn main() {
             // require the control ghost's time to be unchanged. A table that
             // renumbered somebody else's name shows up as "Can't load map"
             // (no row at all) or as a different time.
-            let ghosts: Vec<PathBuf> =
-                flag_multi(&args, "--ghosts").into_iter().map(PathBuf::from).collect();
+            let ghosts: Vec<PathBuf> = flag_multi(&args, "--ghosts")
+                .into_iter()
+                .map(PathBuf::from)
+                .collect();
             if !ghosts.is_empty() {
                 let wpos: Vec<(i32, i32, i32)> =
                     wp.iter().map(|i| m0.blocks[*i].coords()).collect();
@@ -763,9 +806,7 @@ fn main() {
                     .max_by_key(|b| {
                         let (x, y, z) = b.coords();
                         wpos.iter()
-                            .map(|(a, c, d)| {
-                                (x - a).pow(2) + (y - c).pow(2) + (z - d).pow(2)
-                            })
+                            .map(|(a, c, d)| (x - a).pow(2) + (y - c).pow(2) + (z - d).pow(2))
                             .min()
                             .unwrap_or(0)
                     })
@@ -813,7 +854,11 @@ fn main() {
                     if bad > 0 {
                         fails += 1;
                     }
-                    println!("{}: renamecheck (with game check) {} failure(s)", src.display(), fails);
+                    println!(
+                        "{}: renamecheck (with game check) {} failure(s)",
+                        src.display(),
+                        fails
+                    );
                 }
             }
             if fails > 0 {
@@ -851,14 +896,25 @@ fn main() {
                 }
                 traj.push((
                     f[0].parse().unwrap(),
-                    [f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap()],
+                    [
+                        f[1].parse().unwrap(),
+                        f[2].parse().unwrap(),
+                        f[3].parse().unwrap(),
+                    ],
                 ));
             }
             let at = |t: f64| -> [f64; 3] {
-                let j = traj.partition_point(|(ts, _)| *ts <= t).max(1).min(traj.len() - 1);
+                let j = traj
+                    .partition_point(|(ts, _)| *ts <= t)
+                    .max(1)
+                    .min(traj.len() - 1);
                 let (t0, p0) = traj[j - 1];
                 let (t1, p1) = traj[j];
-                let f = if (t1 - t0).abs() < 1e-9 { 0.0 } else { (t - t0) / (t1 - t0) };
+                let f = if (t1 - t0).abs() < 1e-9 {
+                    0.0
+                } else {
+                    (t - t0) / (t1 - t0)
+                };
                 [
                     p0[0] + (p1[0] - p0[0]) * f,
                     p0[1] + (p1[1] - p0[1]) * f,
@@ -914,7 +970,14 @@ fn main() {
                 let d1 = d.get(1).map(|x| x.0).unwrap_or(f64::INFINITY);
                 println!(
                     "{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\t{:.1}\t{:.1}",
-                    secs::ms(*s as i64), c[0], c[1], c[2], wps[i0].0, wps[i0].2, d0, d1
+                    secs::ms(*s as i64),
+                    c[0],
+                    c[1],
+                    c[2],
+                    wps[i0].0,
+                    wps[i0].2,
+                    d0,
+                    d1
                 );
             }
         }
@@ -941,7 +1004,9 @@ fn main() {
             // A String, not a usize: a rung on THIS map is the Goal ITEM, spelled
             // `i0`, and the movers already understand that spelling. Parsing it as a
             // number made every item-gate ladder impossible to express.
-            let bidx: String = flag(&args, "--block").expect("--block N (or iN for an item)").to_string();
+            let bidx: String = flag(&args, "--block")
+                .expect("--block N (or iN for an item)")
+                .to_string();
             let also: Option<String> = flag(&args, "--also").map(|s| s.to_string());
             let off: [f32; 3] = match flag(&args, "--offset") {
                 Some(s) => {
@@ -969,7 +1034,11 @@ fn main() {
                 }
                 traj.push((
                     f[0].parse().unwrap(),
-                    [f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap()],
+                    [
+                        f[1].parse().unwrap(),
+                        f[2].parse().unwrap(),
+                        f[3].parse().unwrap(),
+                    ],
                 ));
             }
             assert!(traj.len() > 1, "trajectory has {} samples", traj.len());
@@ -977,10 +1046,17 @@ fn main() {
                 // linear interpolation between the bracketing samples; the
                 // decoder's period is 50 ms and the car moves up to 7 m in one,
                 // so interpolating is not optional at racing speed.
-                let j = traj.partition_point(|(ts, _)| *ts <= t).max(1).min(traj.len() - 1);
+                let j = traj
+                    .partition_point(|(ts, _)| *ts <= t)
+                    .max(1)
+                    .min(traj.len() - 1);
                 let (t0, p0) = traj[j - 1];
                 let (t1, p1) = traj[j];
-                let f = if (t1 - t0).abs() < 1e-9 { 0.0 } else { (t - t0) / (t1 - t0) };
+                let f = if (t1 - t0).abs() < 1e-9 {
+                    0.0
+                } else {
+                    (t - t0) / (t1 - t0)
+                };
                 [
                     p0[0] + (p1[0] - p0[0]) * f,
                     p0[1] + (p1[1] - p0[1]) * f,
@@ -1030,7 +1106,9 @@ fn main() {
                 Some(s) => s.split(',').map(|x| x.trim().to_string()).collect(),
                 None => vec![bidx.clone()],
             };
-            let win: f64 = flag(&args, "--window").map(|s| s.parse().unwrap()).unwrap_or(400.0);
+            let win: f64 = flag(&args, "--window")
+                .map(|s| s.parse().unwrap())
+                .unwrap_or(400.0);
             if cells {
                 for t in &times {
                     // the distinct (x, z) cells the reference occupies from
@@ -1088,9 +1166,19 @@ fn main() {
             }
         }
         "origin" => controls::cmd_origin(&args),
+        "tiny" => tiny::cmd(&args),
+        "tiny-batch" => tiny::cmd_batch(&args),
         "census" => census::cmd_census(&args),
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
+        "embedded" => {
+            let out = flag(&args, "--out").expect("embedded needs --out FILE.zip");
+            let g = gbx::Gbx::load(Path::new(&args[2])).unwrap();
+            let bytes = header::embedded_zip_data(&g.body)
+                .unwrap_or_else(|| panic!("{} has no embedded object ZIP", args[2]));
+            std::fs::write(out, bytes).expect("write embedded ZIP");
+            println!("wrote {} ({} bytes)", out, bytes.len());
+        }
         "chunks" => {
             // Every skippable chunk in the body, with its size. Needed to
             // reason about FREE blocks (0x0304305F) and to tell at a glance
@@ -1129,6 +1217,8 @@ READING A MAP
   tmmaps region MAP --box X0,Y0,Z0:X1,Y1,Z1 [--filter PAT] [--items] [--blocks]
         everything whose position lies inside a world box. A GATE IS A
         STRUCTURE, NOT A BLOCK: run this before and after any move.
+  tmmaps embedded MAP --out FILE.zip
+        extract the map's embedded object archive verbatim
   tmmaps chunks MAP
         every skippable body chunk with its size
   tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names]
@@ -1146,6 +1236,16 @@ READING A MAP
         trackmania.io; our own documents are not an independent check.
 
 CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume changes
+  tmmaps tiny MAP --out F --mapping FILE.tsv --library ITEMS.zip
+              [--scale 0.5] [--anchor X,Y,Z]
+  tmmaps tiny-batch MAP_DIR --out DIR --mapping FILE.tsv --library ITEMS.zip
+              [--scale 0.5] [--anchor X,Y,Z]
+        Build one route-only miniature, or every `.Map.Gbx` in a campaign in a safe elevated area. Native route blocks
+        are replaced by pre-scaled custom items named by the mapping; existing
+        item waypoints are scaled directly. Original blocks and unused items are
+        parked away, and every waypoint is rebuilt explicitly. The command
+        writes and reloads three controlled stages because lookback-table edits
+        and variable-length waypoint/ZIP edits cannot safely share offsets.
   tmmaps move MAP --out F --move SPEC [--move SPEC ...]
         SPEC is  N:cx,cy,cz[:dir]   a grid block, by world cell
                  N@x,y,z[/yaw]      a FREE block, in metres
@@ -1298,4 +1398,3 @@ env: TMMAPS_DEBUG=1 (lookback table sizes)
 exit: 0 ok · 1 a control failed · 2 usage · 3 refused (the command was wrong,
       and the message says what to do instead — never a backtrace)
 "#;
-

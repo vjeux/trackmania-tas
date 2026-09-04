@@ -59,7 +59,11 @@ pub fn user_chunks(ud: &[u8]) -> Option<Vec<HChunk>> {
     let mut out = Vec::with_capacity(n);
     let mut o = 4 + 8 * n;
     for (id, heavy, size) in spec {
-        out.push(HChunk { id, heavy, data: ud[o..o + size].to_vec() });
+        out.push(HChunk {
+            id,
+            heavy,
+            data: ud[o..o + size].to_vec(),
+        });
         o += size;
     }
     Some(out)
@@ -77,7 +81,6 @@ pub fn header_xml(chunks: &[HChunk]) -> Option<String> {
     }
     Some(String::from_utf8_lossy(&c.data[4..4 + n]).into_owned())
 }
-
 
 /// Strip ManiaPlanet markup from a name. The decoder lives in the format
 /// crate — see `gbx::name` for why there is exactly one of it.
@@ -183,14 +186,21 @@ fn zip_names(z: &[u8]) -> Vec<String> {
 }
 
 /// The embedded-objects chunk (`0x03043054`): the zip of custom items a map
-/// carries inside itself. Returns (zip bytes, entry names).
-pub fn embedded_zip(body: &[u8]) -> Option<(usize, Vec<String>)> {
+/// carries inside itself. Returns its raw ZIP bytes.
+pub fn embedded_zip_data(body: &[u8]) -> Option<&[u8]> {
     let (_, _, payload, size) = crate::gbx::all_skip_chunks(body)
         .into_iter()
         .find(|(cid, _, _, _)| *cid == 0x0304_3054)?;
     let seg = &body[payload..(payload + size).min(body.len())];
     let z = seg.windows(4).position(|w| w == b"PK\x03\x04")?;
-    Some((seg.len() - z, zip_names(&seg[z..])))
+    Some(&seg[z..])
+}
+
+/// The embedded-objects chunk (`0x03043054`): the zip of custom items a map
+/// carries inside itself. Returns (zip bytes, entry names).
+pub fn embedded_zip(body: &[u8]) -> Option<(usize, Vec<String>)> {
+    let zip = embedded_zip_data(body)?;
+    Some((zip.len(), zip_names(zip)))
 }
 
 /// One map's declared facts, in the order they are read out of the file.
@@ -245,7 +255,10 @@ impl MapHeader {
     /// items. A `.Block.Gbx` is a different thing from a `.Item.Gbx` to the
     /// editor, which is why it is counted separately.
     pub fn zip_blocks(&self) -> usize {
-        self.zip_entries.iter().filter(|z| z.ends_with(".Block.Gbx")).count()
+        self.zip_entries
+            .iter()
+            .filter(|z| z.ends_with(".Block.Gbx"))
+            .count()
     }
 }
 
@@ -266,7 +279,11 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
     models.sort_unstable();
     models.dedup();
     let (zip_bytes, zip_entries) = embedded_zip(&g.body).unwrap_or((0, Vec::new()));
-    let thumb = chunks.iter().find(|c| c.id == 0x0304_3007).map(|c| c.data.len()).unwrap_or(0);
+    let thumb = chunks
+        .iter()
+        .find(|c| c.id == 0x0304_3007)
+        .map(|c| c.data.len())
+        .unwrap_or(0);
     let get = |t: &str, a: &str| attr(&xml, t, a).unwrap_or_else(|| "-".into());
     Ok(MapHeader {
         path: path.to_string(),
@@ -347,7 +364,10 @@ pub fn cmd(args: &[String]) {
             };
             let chunks = user_chunks(&g.user_data).unwrap_or_default();
             println!("=== {p}");
-            println!("{}", header_xml(&chunks).unwrap_or_else(|| "(no XML chunk)".into()));
+            println!(
+                "{}",
+                header_xml(&chunks).unwrap_or_else(|| "(no XML chunk)".into())
+            );
         }
         return;
     }
@@ -366,7 +386,11 @@ pub fn cmd(args: &[String]) {
             match read(p) {
                 Ok(h) => println!(
                     "{}\t{}\t{}\t{}\t{}\t{}",
-                    h.path, h.uid, strip_fmt(&h.name), h.name, h.author,
+                    h.path,
+                    h.uid,
+                    strip_fmt(&h.name),
+                    h.name,
+                    h.author,
                     crate::secs::secs_str(&h.authortime)
                 ),
                 Err(e) => {
@@ -428,7 +452,10 @@ pub fn cmd(args: &[String]) {
             println!();
             println!("# distinct values across {} maps", hs.len());
             for (name, f) in [
-                ("gbxver", &(|h: &MapHeader| h.gbxver.to_string()) as &dyn Fn(&MapHeader) -> String),
+                (
+                    "gbxver",
+                    &(|h: &MapHeader| h.gbxver.to_string()) as &dyn Fn(&MapHeader) -> String,
+                ),
                 ("extrefs", &|h: &MapHeader| h.extrefs.to_string()),
                 ("hdrchunks", &|h: &MapHeader| h.chunks.len().to_string()),
                 ("title", &|h: &MapHeader| h.title.clone()),
@@ -441,7 +468,9 @@ pub fn cmd(args: &[String]) {
                 ("lightmap", &|h: &MapHeader| h.lightmap.clone()),
                 ("ghostblocks", &|h: &MapHeader| h.ghostblocks.clone()),
                 ("deps", &|h: &MapHeader| h.deps.len().to_string()),
-                ("zip_files", &|h: &MapHeader| h.zip_entries.len().to_string()),
+                ("zip_files", &|h: &MapHeader| {
+                    h.zip_entries.len().to_string()
+                }),
                 ("zip_blocks", &|h: &MapHeader| h.zip_blocks().to_string()),
             ] {
                 let v = col(f);
@@ -466,7 +495,10 @@ pub fn cmd(args: &[String]) {
         }
         println!();
         let plain = strip_fmt(&h.name);
-        println!("  ident       uid {}  author {}  name {}", h.uid, h.author, plain);
+        println!(
+            "  ident       uid {}  author {}  name {}",
+            h.uid, h.author, plain
+        );
         if plain != h.name {
             println!("              name (raw, with markup) {}", h.name);
         }

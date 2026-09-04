@@ -118,6 +118,9 @@ pub struct ItemRec {
     pub index: usize,
     pub model: String,
     pub model_field: usize,
+    pub collection_raw: u32,
+    pub author: Option<String>,
+    pub author_field: usize,
     /// offsets of the mutable fixed-size fields, absolute in the body
     pub yaw_off: usize,
     pub coord_off: usize,
@@ -132,6 +135,11 @@ pub struct ItemRec {
     /// pivots and only the placement says which point was used.
     pub pivot: [f32; 3],
     pub scale: f32,
+    /// Absolute body offset of the placement scale.
+    pub scale_off: usize,
+    /// Absolute body range occupied by the waypoint node (a 4-byte null or the
+    /// complete inline CGameWaypointSpecialProperty).
+    pub waypoint_region: (usize, usize),
     pub waypoint_tag: Option<String>,
 }
 
@@ -169,7 +177,11 @@ pub struct Waypoint {
 
 impl std::fmt::Display for Waypoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let k = if self.kind == Kind::Block { "block" } else { "item" };
+        let k = if self.kind == Kind::Block {
+            "block"
+        } else {
+            "item"
+        };
         let pos = match self.pos {
             Some(p) => format!("({}, {}, {})", p[0], p[1], p[2]),
             None => "None".to_string(),
@@ -223,6 +235,9 @@ pub struct MapFile {
     /// pending edits
     pub renames: Vec<(bool, usize, String)>, // (is_item, field index, new name)
     pub raw_patches: Vec<(usize, Vec<u8>)>,
+    /// Variable-length body replacements. Kept separate from fixed patches so
+    /// offsets stay in the source body's coordinate system.
+    pub raw_splices: Vec<((usize, usize), Vec<u8>)>,
 }
 
 fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
@@ -243,7 +258,14 @@ fn read_id(r: &mut Reader, table: &mut Vec<String>) -> IdField {
     let w = r.u32();
     if w == 0xFFFF_FFFF || (w >> 30) == 0 {
         // null, or a collection number -- neither touches the table
-        return IdField { off, len: 4, name: None, is_def: false, raw: w, slot: None };
+        return IdField {
+            off,
+            len: 4,
+            name: None,
+            is_def: false,
+            raw: w,
+            slot: None,
+        };
     }
     let idx = w & 0x3FFF_FFFF;
     if idx == 0 {
@@ -251,7 +273,14 @@ fn read_id(r: &mut Reader, table: &mut Vec<String>) -> IdField {
         let s = String::from_utf8_lossy(r.bytes(n)).into_owned();
         let slot = table.len();
         table.push(s.clone());
-        IdField { off, len: 8 + n, name: Some(s), is_def: true, raw: w, slot: Some(slot) }
+        IdField {
+            off,
+            len: 8 + n,
+            name: Some(s),
+            is_def: true,
+            raw: w,
+            slot: Some(slot),
+        }
     } else {
         let s = table
             .get(idx as usize - 1)
@@ -385,10 +414,16 @@ fn encode(
                     let own = f.slot.and_then(|s| new_index.get(s).copied().flatten());
                     match (f.slot, own) {
                         (Some(s), Some(i)) if slot_content[s] == name => Some(i),
-                        _ => emitted.iter().position(|t| *t == name).map(|p| p as u32 + 1),
+                        _ => emitted
+                            .iter()
+                            .position(|t| *t == name)
+                            .map(|p| p as u32 + 1),
                     }
                 }
-                Mode::Fresh => emitted.iter().position(|t| *t == name).map(|p| p as u32 + 1),
+                Mode::Fresh => emitted
+                    .iter()
+                    .position(|t| *t == name)
+                    .map(|p| p as u32 + 1),
             };
             match target {
                 Some(i) => out.extend_from_slice(&(0x4000_0000u32 | i).to_le_bytes()),
@@ -488,7 +523,11 @@ fn read_waypoint_node(r: &mut Reader) -> Option<String> {
             }
             continue;
         }
-        panic!("unknown chunk 0x{:08X} in waypoint node at {}", cid, r.o - 4);
+        panic!(
+            "unknown chunk 0x{:08X} in waypoint node at {}",
+            cid,
+            r.o - 4
+        );
     }
     tag
 }
@@ -507,15 +546,16 @@ impl MapFile {
     /// a rewrite of every call site.
     pub fn try_load(path: &std::path::Path) -> Result<MapFile, String> {
         let p = path.to_path_buf();
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || MapFile::load(&p)))
-            .map_err(|e| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || MapFile::load(&p))).map_err(
+            |e| {
                 let msg = e
                     .downcast_ref::<String>()
                     .cloned()
                     .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
                     .unwrap_or_else(|| "the map reader panicked".to_string());
                 format!("{}: {msg}", path.display())
-            })
+            },
+        )
     }
 
     pub fn load(path: &std::path::Path) -> MapFile {
@@ -554,15 +594,15 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let (blocks_region, mut body_ids, blocks, table, size, decoration_id) = parse_blocks(&body, &mut seen_nodes);
+        let (blocks_region, mut body_ids, blocks, table, size, decoration_id) =
+            parse_blocks(&body, &mut seen_nodes);
         let mut body_regions = vec![blocks_region];
         let mut baked_chunk_off = None;
         let mut baked: Vec<BlockRec> = Vec::new();
         let mut baked_parsed = false;
         if std::env::var("TMMAPS_NO_BAKED").is_err() {
             baked_parsed = true;
-            if let Some((off, s, e, bk)) =
-                parse_baked(&body, table, &mut body_ids, &mut seen_nodes)
+            if let Some((off, s, e, bk)) = parse_baked(&body, table, &mut body_ids, &mut seen_nodes)
             {
                 baked_chunk_off = Some(off);
                 body_regions.push((s, e));
@@ -587,6 +627,7 @@ impl MapFile {
             items,
             renames: Vec::new(),
             raw_patches: Vec::new(),
+            raw_splices: Vec::new(),
         }
     }
 
@@ -645,9 +686,37 @@ impl MapFile {
         self.renames.push((false, f, name.to_string()));
     }
 
+    pub fn set_map_uid(&mut self, uid: &str) {
+        let old = self
+            .body_ids
+            .first()
+            .and_then(|f| f.name.clone())
+            .expect("map uid Id");
+        assert_eq!(
+            old.len(),
+            uid.len(),
+            "replacement map uid must keep the {}-byte length",
+            old.len()
+        );
+        self.renames.push((false, 0, uid.to_string()));
+        let mut hits = 0;
+        for i in 0..=self.gbx.user_data.len().saturating_sub(old.len()) {
+            if &self.gbx.user_data[i..i + old.len()] == old.as_bytes() {
+                self.gbx.user_data[i..i + uid.len()].copy_from_slice(uid.as_bytes());
+                hits += 1;
+            }
+        }
+        assert!(hits > 0, "map uid was absent from the header chunks");
+    }
+
     pub fn set_item_model(&mut self, item_index: usize, name: &str) {
         let f = self.items[item_index].model_field;
         self.renames.push((true, f, name.to_string()));
+    }
+
+    pub fn set_item_author(&mut self, item_index: usize, author: &str) {
+        let f = self.items[item_index].author_field;
+        self.renames.push((true, f, author.to_string()));
     }
 
     /// w612: rotate a GRID block in place (the `dir` byte immediately before
@@ -669,7 +738,9 @@ impl MapFile {
     pub fn move_block_cell(&mut self, block_index: usize, cell: (i32, i32, i32)) {
         let b = self.blocks[block_index].clone();
         assert!(
-            (0..=254).contains(&cell.0) && (0..=255).contains(&cell.1) && (0..=254).contains(&cell.2),
+            (0..=254).contains(&cell.0)
+                && (0..=255).contains(&cell.1)
+                && (0..=254).contains(&cell.2),
             "cell {:?} out of the one-byte grid range",
             cell
         );
@@ -709,7 +780,10 @@ impl MapFile {
     pub fn set_block_free_rot(&mut self, block_index: usize, rot: [f32; 3]) {
         let b = self.blocks[block_index].clone();
         let off = b.free_off.unwrap_or_else(|| {
-            panic!("block#{} {} is a GRID block; use set_block_dir", block_index, b.name)
+            panic!(
+                "block#{} {} is a GRID block; use set_block_dir",
+                block_index, b.name
+            )
         });
         let mut p = Vec::new();
         for v in rot {
@@ -762,16 +836,15 @@ impl MapFile {
     /// declared to sit in.
     pub fn move_item(&mut self, item_index: usize, pos: [f32; 3], yaw: f32, cell: (i32, i32, i32)) {
         let it = self.items[item_index].clone();
-        self.raw_patches.push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+        self.raw_patches
+            .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
         let mut p = Vec::new();
         for v in pos {
             p.extend_from_slice(&v.to_le_bytes());
         }
         self.raw_patches.push((it.pos_off, p));
-        self.raw_patches.push((
-            it.coord_off,
-            vec![cell.0 as u8, cell.1 as u8, cell.2 as u8],
-        ));
+        self.raw_patches
+            .push((it.coord_off, vec![cell.0 as u8, cell.1 as u8, cell.2 as u8]));
     }
 
     /// Build the patched file bytes.
@@ -796,10 +869,56 @@ impl MapFile {
         for (off, bytes) in &self.raw_patches {
             body[*off..*off + bytes.len()].copy_from_slice(bytes);
         }
+        // Variable-length edits are deliberately a separate pass. Combining
+        // them with Id-table re-encoding would invalidate every saved offset;
+        // callers that need both write, reload, then perform this pass.
+        if !self.raw_splices.is_empty() {
+            assert!(
+                self.renames.is_empty(),
+                "variable-length body splices must be applied after model renames (write and reload first)"
+            );
+            let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+            let mut size_deltas: Vec<(usize, i64, bool)> = Vec::new();
+            for cid in [ITEMS_CHUNK, 0x0304_3054] {
+                if let Some(&(_, off, payload, size)) = chunks.iter().find(|(c, ..)| *c == cid) {
+                    let delta: i64 = self
+                        .raw_splices
+                        .iter()
+                        .filter(|((s, e), _)| *s >= payload && *e <= payload + size)
+                        .map(|((s, e), bytes)| bytes.len() as i64 - (*e - *s) as i64)
+                        .sum();
+                    if delta != 0 {
+                        size_deltas.push((off, delta, cid == ITEMS_CHUNK));
+                    }
+                }
+            }
+            for (off, delta, has_inner_size) in size_deltas {
+                let old = u32::from_le_bytes(body[off + 8..off + 12].try_into().unwrap());
+                let new = (old as i64 + delta) as u32;
+                body[off + 8..off + 12].copy_from_slice(&new.to_le_bytes());
+                if has_inner_size {
+                    let payload = off + 12;
+                    let inner =
+                        u32::from_le_bytes(body[payload + 8..payload + 12].try_into().unwrap());
+                    let new_inner = (inner as i64 + delta) as u32;
+                    body[payload + 8..payload + 12].copy_from_slice(&new_inner.to_le_bytes());
+                }
+            }
+            let mut edits = self.raw_splices.clone();
+            edits.sort_by_key(|((s, _), _)| std::cmp::Reverse(*s));
+            for ((s, e), bytes) in edits {
+                body.splice(s..e, bytes);
+            }
+            return body;
+        }
         let mut bf = self.body_ids.clone();
         let mut itf = self.item_ids.clone();
         for (is_item, field, name) in &self.renames {
-            let f = if *is_item { &mut itf[*field] } else { &mut bf[*field] };
+            let f = if *is_item {
+                &mut itf[*field]
+            } else {
+                &mut bf[*field]
+            };
             f.name = Some(name.clone());
         }
         // Collect every region's replacement, then splice from the back so
@@ -864,7 +983,11 @@ impl MapFile {
              re-encoder has not reproduced it, so every edit written here would silently \
              re-serialise the blocks chunk. Refusing to write.",
             (out.len() as i64 - self.gbx.body.len() as i64).abs(),
-            if out.len() > self.gbx.body.len() { "longer" } else { "shorter" },
+            if out.len() > self.gbx.body.len() {
+                "longer"
+            } else {
+                "shorter"
+            },
         );
         out
     }
@@ -1066,7 +1189,11 @@ fn parse_baked(
         nb_clips
     );
     if std::env::var("TMMAPS_DEBUG").is_ok() {
-        eprintln!("    [baked] {} blocks, {} of them FREE", baked.len(), n_free);
+        eprintln!(
+            "    [baked] {} blocks, {} of them FREE",
+            baked.len(),
+            n_free
+        );
     }
     assert_eq!(r.o, end, "baked-blocks parse ended at {} not {}", r.o, end);
     Some((off, payload, end, baked))
@@ -1112,9 +1239,7 @@ fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> O
     panic!("unhandled inline node class 0x{:08X} at {}", class, r.o - 4);
 }
 
-fn parse_items(
-    body: &[u8],
-) -> (Option<usize>, (usize, usize), Vec<IdField>, Vec<ItemRec>) {
+fn parse_items(body: &[u8]) -> (Option<usize>, (usize, usize), Vec<IdField>, Vec<ItemRec>) {
     let chunks = crate::gbx::all_skip_chunks(body);
     let c = chunks.iter().find(|(cid, ..)| *cid == ITEMS_CHUNK);
     let (coff, payload, size) = match c {
@@ -1152,7 +1277,14 @@ fn parse_items(
                 r.skip(n);
                 continue;
             }
-            assert_eq!(cid, 0x03101002, "unexpected item chunk 0x{:08X} at item {} off {}", cid, i, r.o - 4);
+            assert_eq!(
+                cid,
+                0x03101002,
+                "unexpected item chunk 0x{:08X} at item {} off {}",
+                cid,
+                i,
+                r.o - 4
+            );
             let version = r.u32();
             assert_eq!(version, 8, "unsupported CGameCtnAnchoredObject version");
             // this sub-archive keeps its OWN lookback state: the id version
@@ -1165,7 +1297,10 @@ fn parse_items(
             let model_field = ids.len() - 1;
             let model = ids[model_field].name.clone().unwrap_or_default();
             ids.push(read_id(&mut r, &mut table)); // collection (raw u32)
+            let collection_raw = ids.last().unwrap().raw;
             ids.push(read_id(&mut r, &mut table)); // author
+            let author_field = ids.len() - 1;
+            let author = ids[author_field].name.clone();
             let yaw_off = r.o;
             let yaw = r.f32();
             let pitch = r.f32();
@@ -1176,13 +1311,23 @@ fn parse_items(
             let pos_off = r.o;
             let pos = [r.f32(), r.f32(), r.f32()];
             // waypointSpecialProperty: written with its class id, no index
+            let waypoint_start = r.o;
             let w = r.u32();
             let tag = if w == 0xFFFF_FFFF {
                 None
             } else {
-                assert_eq!(w, WAYPOINT_CLASS, "unexpected item sub-node 0x{:08X} at item {} off {} model {}", w, i, r.o - 4, model);
+                assert_eq!(
+                    w,
+                    WAYPOINT_CLASS,
+                    "unexpected item sub-node 0x{:08X} at item {} off {} model {}",
+                    w,
+                    i,
+                    r.o - 4,
+                    model
+                );
                 read_waypoint_node(&mut r)
             };
+            let waypoint_region = (waypoint_start, r.o);
             // v8 tail: u16 flags, Vec3 pivot, f32 scale, [FileRef packDesc if
             // flags & 4], Vec3, Vec3
             let flags = r.u16();
@@ -1191,6 +1336,7 @@ fn parse_items(
             // (`InflatableTubeCurve4` has two) and nothing in the model says
             // which one a given placement used. This does.
             let pivot = [r.f32(), r.f32(), r.f32()];
+            let scale_off = r.o;
             let scale = r.f32();
             if flags & 4 != 0 {
                 read_file_ref(&mut r);
@@ -1200,6 +1346,9 @@ fn parse_items(
                 index: i as usize,
                 model,
                 model_field,
+                collection_raw,
+                author,
+                author_field,
                 yaw_off,
                 coord_off,
                 pos_off,
@@ -1210,6 +1359,8 @@ fn parse_items(
                 roll,
                 pivot,
                 scale,
+                scale_off,
+                waypoint_region,
                 waypoint_tag: tag,
             });
         }
@@ -1261,8 +1412,14 @@ fn parse_free_positions(
         .iter()
         .find(|(cid, ..)| *cid == FREE_POS_CHUNK)?;
     let end = payload + size;
-    let n_free_blocks = blocks.iter().filter(|b| b.flags & FREE_BLOCK_FLAG != 0).count();
-    let n_free_baked = baked.iter().filter(|b| b.flags & FREE_BLOCK_FLAG != 0).count();
+    let n_free_blocks = blocks
+        .iter()
+        .filter(|b| b.flags & FREE_BLOCK_FLAG != 0)
+        .count();
+    let n_free_baked = baked
+        .iter()
+        .filter(|b| b.flags & FREE_BLOCK_FLAG != 0)
+        .count();
     assert_eq!(
         (size - 4) % 24,
         0,
@@ -1323,6 +1480,48 @@ impl MapFile {
     /// `set_block_dir`.
     pub fn set_item_yaw(&mut self, item_index: usize, yaw: f32) {
         let it = self.items[item_index].clone();
-        self.raw_patches.push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+        self.raw_patches
+            .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+    }
+
+    pub fn set_item_scale(&mut self, item_index: usize, scale: f32) {
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "item scale must be positive and finite"
+        );
+        let it = self.items[item_index].clone();
+        self.raw_patches
+            .push((it.scale_off, scale.to_le_bytes().to_vec()));
+    }
+
+    pub fn set_item_waypoint_tag(&mut self, item_index: usize, tag: Option<&str>) {
+        let it = self.items[item_index].clone();
+        let mut bytes = Vec::new();
+        match tag {
+            None => bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()),
+            Some(tag) => {
+                bytes.extend_from_slice(&WAYPOINT_CLASS.to_le_bytes());
+                bytes.extend_from_slice(&WAYPOINT_CLASS.to_le_bytes());
+                bytes.extend_from_slice(&2u32.to_le_bytes());
+                bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(tag.as_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&FACADE.to_le_bytes());
+            }
+        }
+        self.raw_splices.push((it.waypoint_region, bytes));
+    }
+
+    pub fn replace_embedded_zip(&mut self, zip: &[u8]) {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body)
+            .into_iter()
+            .find(|(cid, ..)| *cid == 0x0304_3054)
+            .expect("map has no embedded-objects chunk 0x03043054");
+        assert!(
+            size >= 24,
+            "embedded-objects chunk is shorter than its 24-byte prefix"
+        );
+        self.raw_splices
+            .push(((payload + 24, payload + size), zip.to_vec()));
     }
 }

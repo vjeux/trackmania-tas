@@ -1,0 +1,15 @@
+# Native block model<TAB>half-scale Item.Gbx model.
+# Derived from Everios96's U10S Tiny campaigns. Unsupported route shapes are
+# explicit approximations so the generated map remains inspectable; extend this
+# table with exact items as they are identified.
+RoadTechStart	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_01.Item.Gbx
+RoadTechFinish	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_08.Item.Gbx
+RoadTechStraight	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_10.Item.Gbx
+RoadTechCurve1	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_04.Item.Gbx
+RoadTechCurve4	Tiny_Road_06.Item.Gbx
+RoadTechCurve5	Tiny_Road_06.Item.Gbx
+RoadTechSlopeBase2x1	TinyBlocks\Road\Tiny_Road_09.Item.Gbx
+RoadTechSpecialTurbo	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_17.Item.Gbx
+RoadTechOnLandHillSlopeBase	TinyBlocks\Road\Tiny_Road_09.Item.Gbx
+RoadTechBranchCross	ZZZ_TinyBlocks\Tiny\Road\Tiny_Road_10.Item.Gbx
+PlatformTechToRoadTech	ZZZ_TinyBlocks\Tiny\Platform\Tiny_Platform10.Item.Gbx
