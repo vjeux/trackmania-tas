@@ -331,8 +331,19 @@ pub fn cmd(args: &[String]) {
         .first()
         .and_then(|f| f.name.clone())
         .expect("map uid");
-    let new_uid = format!("Tiny{}", &old_uid[..23]);
+    let new_uid = format!("Race{}", &old_uid[..23]);
     m.set_map_uid(&new_uid);
+    // A parked start block would still be THE start (the car spawned in the
+    // map corner), and parked checkpoints would still count: every waypoint
+    // block becomes a plain road piece, and the race runs on the items.
+    let neutral = source
+        .blocks
+        .iter()
+        .map(|b| b.name.as_str())
+        .find(|n| *n == "RoadTechStraight")
+        .unwrap_or_else(|| source.blocks[0].name.as_str())
+        .to_string();
+    let mut neutralised = 0;
     for i in 0..m.blocks.len() {
         let b = m.blocks[i].clone();
         if b.flags & FREE_BLOCK_FLAG != 0 {
@@ -340,7 +351,12 @@ pub fn cmd(args: &[String]) {
         } else {
             m.move_block_cell(i, (0, 0, 0));
         }
+        if b.waypoint_tag.is_some() || b.name.contains("Start") || b.name.contains("Finish") || b.name.contains("Checkpoint") || b.name.contains("Multilap") {
+            m.set_block_name(i, &neutral);
+            neutralised += 1;
+        }
     }
+    println!("  {neutralised} parked waypoint blocks renamed to {neutral}");
     m.write_to(&tmp1).expect("write parked-block stage");
 
     // Stage 2: append new model slots while preserving every original slot.
