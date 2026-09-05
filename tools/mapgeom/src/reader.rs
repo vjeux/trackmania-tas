@@ -96,6 +96,14 @@ impl<'a> Reader<'a> {
         self.marks.push((self.o, n));
     }
 
+    /// Whether the body-wide lookback version word has been consumed.
+    pub fn lb_version_seen(&self) -> bool {
+        self.lb_ver
+    }
+    pub fn set_lb_version_seen(&mut self, seen: bool) {
+        self.lb_ver = seen;
+    }
+
     pub fn left(&self) -> usize {
         self.b.len().saturating_sub(self.o)
     }

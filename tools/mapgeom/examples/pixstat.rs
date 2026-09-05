@@ -7,13 +7,14 @@ fn main() {
     let (w, h, px) = img;
     let (x0, y0, x1, y1): (usize, usize, usize, usize) = if a.len() > 5 { (a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap(), a[5].parse().unwrap()) } else { (0, 0, w, h) };
     let (mut grey, mut green, mut blue, mut other, mut n) = (0, 0, 0, 0, 0);
+    let mut red = 0;
     for y in y0..y1.min(h) { for x in x0..x1.min(w) {
         let i = (y * w + x) * 4; let (r, g, b) = (px[i] as i32, px[i + 1] as i32, px[i + 2] as i32);
         n += 1;
         let mx = r.max(g).max(b); let mn = r.min(g).min(b);
-        if mx - mn < 18 && mx > 60 && mx < 200 { grey += 1 } else if g > r + 15 && g > b + 15 { green += 1 } else if b > r + 15 && b >= g { blue += 1 } else { other += 1 }
+        if r > 150 && g < 80 && b < 80 { red += 1 } else if mx - mn < 18 && mx > 60 && mx < 200 { grey += 1 } else if g > r + 15 && g > b + 15 { green += 1 } else if b > r + 15 && b >= g { blue += 1 } else { other += 1 }
     }}
-    println!("{}x{} region {}..{} x {}..{}: grey {:.1}% green {:.1}% blue {:.1}% other {:.1}%", w, h, x0, x1, y0, y1, 100.0 * grey as f64 / n as f64, 100.0 * green as f64 / n as f64, 100.0 * blue as f64 / n as f64, 100.0 * other as f64 / n as f64);
+    println!("{}x{} region {}..{} x {}..{}: red {:.2}% grey {:.1}% green {:.1}% blue {:.1}% other {:.1}%", w, h, x0, x1, y0, y1, 100.0 * red as f64 / n as f64, 100.0 * grey as f64 / n as f64, 100.0 * green as f64 / n as f64, 100.0 * blue as f64 / n as f64, 100.0 * other as f64 / n as f64);
 }
 fn png_decode(d: &[u8]) -> (usize, usize, Vec<u8>) {
     // minimal PNG: 8-bit RGB/RGBA, non-interlaced, zlib via miniz-free inflate
