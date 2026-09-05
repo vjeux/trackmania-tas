@@ -375,6 +375,16 @@ pub fn set_body_ident_insert(bytes: &[u8], name: &str) -> Vec<u8> {
 /// Stadium (a flat tint each; see crystal::material_for_physics_name_in).
 pub fn editors_link_for_stadium_material(name: &str) -> &'static str {
     match name {
+        // BlueBay terrain (measured on the 46 Summer 01 block models)
+        "Land" | "TransitionToSand" => "Editors\\MeshEditorMedia\\Materials\\Grass",
+        "SeaFloor" | "TransitionToSeaFloor" | "Beach" | "Sand" => "Editors\\MeshEditorMedia\\Materials\\Sand",
+        "HillPxz" | "CliffPxz" | "TransitionRocks" | "TransitionRocksToCliffPxz" | "Rock" => "Editors\\MeshEditorMedia\\Materials\\Rock",
+        "Water" => "Editors\\MeshEditorMedia\\Materials\\Ice",
+        // Stadium structure / screens
+        "Structure" | "Pylon" | "ScreenBack" | "Deco" | "TechnicsStep" | "TechnicsSpecials" => "Editors\\MeshEditorMedia\\Materials\\Metal",
+        "RaceAd6x1" | "Ad2x3Screen" | "Ad4x1Screen" | "Ad155Screen" | "Show4x1" | "CanopyGlass" => "Editors\\MeshEditorMedia\\Materials\\Ice",
+        "TechnicsTrimsColorize" => "Editors\\MeshEditorMedia\\Materials\\Metal",
+        "Speedometer" | "SpeedometerLight" | "ItemObstacleLightOn" | "SpecialSignTurbo" | "SpecialSignOff" | "SpecialFXTurbo" => "Editors\\MeshEditorMedia\\Materials\\Plastic",
         "RoadTech" | "RoadDirt" | "RoadIce" | "RoadBump" => "Editors\\MeshEditorMedia\\Materials\\Asphalt",
         "TrackBorders" | "TrackBordersOff" | "DecalPaint2Logo4x1" | "DecalPlatform" => "Editors\\MeshEditorMedia\\Materials\\Concrete",
         "Technics" | "TechnicsTrims" | "ItemPillar" | "ItemTrackBarrier" => "Editors\\MeshEditorMedia\\Materials\\Metal",
@@ -397,7 +407,12 @@ pub fn visual_material_for(label: &str, collection: u32) -> Option<crate::crysta
         return None;
     }
     let name = link.rsplit('\\').next().unwrap_or(link);
-    if matches!(name, "DecalPaint2Logo4x1" | "DecalPlatform" | "LightSpot" | "SpeedometerLight_Dyna") || name.starts_with("Decal") || name.starts_with("Light") {
+    if name.starts_with("Decal") || name.starts_with("LightSpot") || name == "SpeedometerLight_Dyna" {
+        return None;
+    }
+    // Water surfaces: the game's water is a separate system; a flat blue
+    // plate at sea level is what the tile draws and it is not the race.
+    if name == "Water" && std::env::var_os("TINY_KEEP_WATER").is_none() {
         return None;
     }
     if collection == 26 {
