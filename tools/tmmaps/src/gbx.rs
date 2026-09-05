@@ -32,10 +32,8 @@ type InitFn = unsafe extern "C" fn(
     c_int,
     c_int,
 ) -> c_int;
-type DecompFn =
-    unsafe extern "C" fn(*const u8, usize, *mut u8, *mut usize, *mut c_void) -> c_int;
-type CompFn =
-    unsafe extern "C" fn(*const u8, usize, *mut u8, *mut usize, *mut c_void) -> c_int;
+type DecompFn = unsafe extern "C" fn(*const u8, usize, *mut u8, *mut usize, *mut c_void) -> c_int;
+type CompFn = unsafe extern "C" fn(*const u8, usize, *mut u8, *mut usize, *mut c_void) -> c_int;
 
 static mut DECOMPRESS: Option<DecompFn> = None;
 static mut COMPRESS: Option<CompFn> = None;
@@ -273,6 +271,15 @@ impl Gbx {
         };
         let out = self.file_with_stream(new_body, &sp.stream);
         (out, sp)
+    }
+
+    /// Write a body through a fresh LZO stream. Asset wrappers use this because
+    /// their tiny bodies are intentionally rebuilt; map surgery keeps using the
+    /// locality-preserving splice path above.
+    pub fn write_body_recompressed(&self, new_body: &[u8]) -> Vec<u8> {
+        let stream = lzo_compress(new_body);
+        assert_eq!(lzo_decompress(&stream, new_body.len()), new_body);
+        self.file_with_stream(new_body, &stream)
     }
 
     /// The whole file: this container's header, then `stream` declared as the

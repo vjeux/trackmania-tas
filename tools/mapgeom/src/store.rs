@@ -45,24 +45,116 @@ fn parse_key(hex: &str) -> Result<[u8; 16], String> {
     Ok(k)
 }
 
+fn pak_encrypted_header_start(data: &[u8], version: i32) -> Result<usize, String> {
+    let mut o = 12usize;
+    let take = |o: &mut usize, n: usize| -> Result<(), String> {
+        if *o + n > data.len() {
+            return Err("pak public header ends early".into());
+        }
+        *o += n;
+        Ok(())
+    };
+    let string = |o: &mut usize| -> Result<(), String> {
+        if *o + 4 > data.len() {
+            return Err("pak string length ends early".into());
+        }
+        let n = u32::from_le_bytes(data[*o..*o + 4].try_into().unwrap()) as usize;
+        *o += 4;
+        if n > 1 << 20 || *o + n > data.len() {
+            return Err(format!("invalid pak public-header string length {n}"));
+        }
+        *o += n;
+        Ok(())
+    };
+    if version < 6 {
+        return Ok(12);
+    }
+    take(&mut o, 32)?; // content checksum
+    take(&mut o, 4)?; // header flags
+    if version >= 15 {
+        take(&mut o, 4)?; // header max size
+    }
+    if version >= 7 {
+        take(&mut o, 4)?; // author version
+        for _ in 0..4 {
+            string(&mut o)?;
+        }
+        if version < 9 {
+            string(&mut o)?;
+            take(&mut o, 16)?;
+            if version == 8 {
+                string(&mut o)?;
+                string(&mut o)?;
+            }
+        } else {
+            string(&mut o)?; // manialink URL
+            if version >= 13 {
+                string(&mut o)?; // download URL
+            }
+            take(&mut o, 8)?; // creation date
+            string(&mut o)?; // comments
+            if version >= 12 {
+                string(&mut o)?; // XML
+                string(&mut o)?; // title ID
+            }
+            string(&mut o)?; // usage subdir
+            string(&mut o)?; // creation build info
+            take(&mut o, 16)?;
+            if version >= 10 {
+                if o + 4 > data.len() {
+                    return Err("pak included-pack count ends early".into());
+                }
+                let n = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+                o += 4;
+                for _ in 0..n {
+                    take(&mut o, 32)?;
+                    string(&mut o)?;
+                    take(&mut o, 4)?;
+                    for _ in 0..5 {
+                        string(&mut o)?;
+                    }
+                    take(&mut o, 8)?;
+                    string(&mut o)?;
+                    if version >= 11 {
+                        take(&mut o, 4)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(o)
+}
+
 impl DataStore {
     pub fn open(paths: &[String], key_hex: &str) -> Result<DataStore, String> {
         let key = parse_key(key_hex)?;
-        let mut store = DataStore { paks: Vec::new(), index: HashMap::new(), cache: HashMap::new() };
+        let mut store = DataStore {
+            paks: Vec::new(),
+            index: HashMap::new(),
+            cache: HashMap::new(),
+        };
         for p in paths {
             let data = std::fs::read(p).map_err(|e| format!("{}: {}", p, e))?;
             if data.len() < 0x95 || &data[0..8] != b"NadeoPak" {
                 return Err(format!("{}: not a NadeoPak", p));
             }
             let version = i32::from_le_bytes(data[8..12].try_into().unwrap());
-            let header_max_size =
-                u32::from_le_bytes(data[0x30..0x34].try_into().unwrap()) as usize;
-            let pak = read_pak(&data, 0x8D, version, &key);
+            let header_max_size = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap()) as usize;
+            let enc_start = pak_encrypted_header_start(&data, version)?;
+            let pak = read_pak(&data, enc_start, version, &key);
             let pi = store.paks.len();
             for (ei, e) in pak.entries.iter().enumerate() {
-                store.index.entry(e.path().to_uppercase()).or_insert((pi, ei));
+                store
+                    .index
+                    .entry(e.path().to_uppercase())
+                    .or_insert((pi, ei));
             }
-            store.paks.push(OpenPak { data, pak, header_max_size, key });
+            store.paks.push(OpenPak {
+                data,
+                pak,
+                header_max_size,
+                key,
+            });
         }
         Ok(store)
     }
@@ -85,7 +177,9 @@ impl DataStore {
     pub fn read(&mut self, logical: &str) -> Result<Vec<u8>, String> {
         let key = logical.to_uppercase();
         if let Some(hit) = self.cache.get(&key) {
-            return hit.clone().ok_or_else(|| format!("{}: not in any pack", logical));
+            return hit
+                .clone()
+                .ok_or_else(|| format!("{}: not in any pack", logical));
         }
         let resolved = self.resolve(logical);
         let out = match resolved {
@@ -93,7 +187,13 @@ impl DataStore {
             Some(path) => {
                 let (pi, ei) = self.index[&path.to_uppercase()];
                 let p = &self.paks[pi];
-                Some(read_file(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version)?)
+                Some(read_file(
+                    &p.data,
+                    p.header_max_size,
+                    &p.pak.entries[ei],
+                    &p.key,
+                    p.pak.version,
+                )?)
             }
         };
         self.cache.insert(key, out.clone());
