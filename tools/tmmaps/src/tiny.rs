@@ -231,6 +231,10 @@ pub fn cmd(args: &[String]) {
         "--anchor",
     );
     let mapping = read_mapping(&mapping_path);
+    // --host HOST.Map.Gbx: build the copy INTO another map (e.g. an empty
+    // Stadium map, where real Stadium materials are accepted) instead of into
+    // the parked source. Placements still come from the source.
+    let host: Option<PathBuf> = cli::flag(args, "--host").map(PathBuf::from);
 
     let source = MapFile::load(&src);
     let spawn = source
@@ -318,7 +322,8 @@ pub fn cmd(args: &[String]) {
     let tmp2 = out.with_extension(format!("tiny-{}.waypoints.Map.Gbx", std::process::id()));
 
     // Stage 0: grow the item array before any saved offsets are used.
-    let mut m = MapFile::load(&src);
+    let base = host.clone().unwrap_or_else(|| src.clone());
+    let mut m = MapFile::load(&base);
     m.append_item_clones(specs.len());
     m.write_to(&tmp0).expect("write item-slot stage");
 
@@ -362,12 +367,13 @@ pub fn cmd(args: &[String]) {
     // Stage 2: append new model slots while preserving every original slot.
     let mut m = MapFile::load(&tmp1);
     for (i, s) in specs.iter().enumerate() {
-        if i >= original_items || mapping.items_by_index.contains_key(&i) {
+        if host.is_some() || i >= original_items || mapping.items_by_index.contains_key(&i) {
             // Embedded items carry their ident as their author too (their
             // body ident has no room for a second string, see mapgeom
             // `set_body_ident_nameless`); the placement must say the same.
             m.set_item_model(i, &s.model);
-            m.set_item_author(i, &s.model);
+            // Nadeo models kept as-is (vegetation, gates) keep author Nadeo.
+            m.set_item_author(i, if s.model.starts_with("AC0") { &s.model } else { "Nadeo" });
         }
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         if let Some((rot, pivot)) = s.frame {
@@ -403,6 +409,7 @@ pub fn cmd(args: &[String]) {
             .iter()
             .enumerate()
             .filter(|(i, _)| *i >= original_items || mapping.items_by_index.contains_key(i))
+            .filter(|(_, s)| s.model.starts_with("AC0"))
             .map(|(_, s)| s.model.clone())
             .collect();
         embedded_names.sort();

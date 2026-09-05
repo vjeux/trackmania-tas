@@ -617,7 +617,13 @@ pub fn build(
     assert!(scale.is_finite() && scale > 0.0, "scale must be positive");
     let source = MapFile::load(map);
     // The map's collection picks the material family (see crystal.rs).
-    let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
+    // TINY_HOST=MAP builds into that map (its collection picks the materials).
+    let host: Option<String> = std::env::var("TINY_HOST").ok();
+    let collection = match &host {
+        Some(h) => MapFile::load(Path::new(h)).items.first().map(|it| it.collection_raw).unwrap_or(26),
+        None => source.items.first().map(|it| it.collection_raw).unwrap_or(26),
+    };
+    println!("  target collection {collection:#x}{}", host.as_ref().map(|h| format!(" (host {h})")).unwrap_or_default());
     let mut catalog_map = BTreeMap::new();
     for (line_no, line) in fs::read_to_string(catalog).unwrap().lines().enumerate() {
         let line = line.trim();
@@ -870,12 +876,17 @@ pub fn build(
         // Sea level: the original's Land tops sit at y=-12 (block y -14, top
         // +2); with the start block (y -6) as source anchor, -9 puts the
         // half-scale tops at the same height. TINY_ANCHOR overrides.
-        std::env::var("TINY_ANCHOR").unwrap_or_else(|_| "1024,-9,1024".into()),
+        std::env::var("TINY_ANCHOR").unwrap_or_else(|_| if host.is_some() { "768,12,768".into() } else { "1024,-9,1024".into() }),
     ];
+    let mut args = args;
+    if let Some(h) = &host {
+        args.push("--host".into());
+        args.push(h.clone());
+    }
     tmmaps::tiny::cmd(&args);
     // The original's baked terrain would otherwise stay at full size under
     // the copy; the game regenerates Sea/clips from the (parked) blocks.
-    if std::env::var_os("TINY_KEEP_TERRAIN").is_none() {
+    if std::env::var_os("TINY_KEEP_TERRAIN").is_none() && host.is_none() {
         match tmmaps::map::MapFile::clear_genealogy_file(out_map) {
             Ok(n) => println!("  terrain genealogy cleared ({n} zone records): no island regenerates under the copy"),
             Err(e) => println!("  terrain genealogy NOT cleared: {e}"),
