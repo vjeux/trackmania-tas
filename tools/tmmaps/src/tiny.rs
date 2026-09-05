@@ -331,7 +331,7 @@ pub fn cmd(args: &[String]) {
         .first()
         .and_then(|f| f.name.clone())
         .expect("map uid");
-    let new_uid = format!("Race{}", &old_uid[..23]);
+    let new_uid = format!("Bare{}", &old_uid[..23]);
     m.set_map_uid(&new_uid);
     // A parked start block would still be THE start (the car spawned in the
     // map corner), and parked checkpoints would still count: every waypoint

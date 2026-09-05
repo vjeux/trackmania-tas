@@ -113,6 +113,8 @@ pub struct Collector<'a> {
     /// Material\RoadTech|16`, link and physics id) instead of by physics
     /// name: what a crystal item needs to reproduce the surface.
     pub link_labels: bool,
+    /// Keep only each Solid2Model's finest LOD level.
+    pub finest_lod_only: bool,
     material_cache: HashMap<String, u8>,
     /// `LINK|PHYS` of every material a collision surface named, in the order
     /// met: the look material of terrain whose visual shader is a shared id
@@ -132,6 +134,7 @@ impl<'a> Collector<'a> {
             scene: Scene::default(),
             stats: Stats::default(),
             link_labels: false,
+            finest_lod_only: false,
             material_cache: HashMap::new(),
             surface_links: Vec::new(),
             moving: false,
@@ -260,7 +263,13 @@ impl<'a> Collector<'a> {
             }
             Node::Solid2(s) => {
                 self.stats.visual_meshes += 1;
+                // Each shaded geom carries a LOD level; the crystal writer wants
+                // the finest one only (every level stacked = z-fighting).
+                let min_lod = s.geoms.iter().map(|g| g.lod).min().unwrap_or(0);
                 for g in &s.geoms {
+                    if self.finest_lod_only && g.lod != min_lod {
+                        continue;
+                    }
                     let vi = match s.visuals.get(g.visual as usize) {
                         Some(v) => *v,
                         None => continue,

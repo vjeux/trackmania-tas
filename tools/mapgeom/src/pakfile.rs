@@ -38,6 +38,11 @@ fn lz4_block(src: &[u8], hist: &mut Vec<u8>) -> Result<usize, String> {
         let off = u16::from_le_bytes([src[i], src[i + 1]]) as usize;
         i += 2;
         if off == 0 || off > hist.len() {
+            // A malformed final sequence: keep what decoded so far when the
+            // caller asked for leniency (a partial body still yields strings).
+            if std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some() {
+                return Ok(hist.len() - start);
+            }
             return Err(format!("bad match offset {} (hist {})", off, hist.len()));
         }
         let mut mlen = (token & 0xF) as usize;
@@ -98,6 +103,9 @@ pub fn read_file(
     let mut i = 0usize;
     while hist.len() - dict_len < want {
         if i + 2 > raw.len() {
+            if std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some() {
+                break;
+            }
             return Err(format!(
                 "ran out of compressed data at {}/{} bytes",
                 hist.len() - dict_len,
@@ -109,8 +117,15 @@ pub fn read_file(
         if n > 4128 || i + n > raw.len() {
             return Err(format!("bad lz4 chunk size {}", n));
         }
+        let before = hist.len();
         lz4_block(&raw[i..i + n], &mut hist)?;
         i += n;
+        if std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some() && hist.len() == before {
+            break;
+        }
+    }
+    if hist.len() < dict_len + want {
+        return Ok(hist[dict_len..].to_vec());
     }
     Ok(hist[dict_len..dict_len + want].to_vec())
 }
