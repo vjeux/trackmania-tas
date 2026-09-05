@@ -321,7 +321,20 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
         prefix[n - 2] = m.physics;
         w.0.extend_from_slice(&prefix);
         w.str(&m.link);
-        w.0.extend_from_slice(&t.mat_suffix);
+        // Experiment knob TINY_MAT_COLOR="r,g,b": fill the material node's
+        // `int[] Color` (the suffix starts Csts=0, Color=0, UvAnims=0, ids=0,
+        // UserTextures=0, HidingGroup=-1).
+        if let Ok(c) = std::env::var("TINY_MAT_COLOR") {
+            let vals: Vec<i32> = c.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            let mut suf = t.mat_suffix.clone();
+            assert_eq!(&suf[4..8], &[0, 0, 0, 0], "template Color array not empty");
+            let mut ins = (vals.len() as u32).to_le_bytes().to_vec();
+            for v in &vals { ins.extend_from_slice(&v.to_le_bytes()); }
+            suf.splice(4..8, ins);
+            w.0.extend_from_slice(&suf);
+        } else {
+            w.0.extend_from_slice(&t.mat_suffix);
+        }
     }
     }
     // ---- 0x09003004 verbatim

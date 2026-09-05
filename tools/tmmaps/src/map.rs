@@ -1606,10 +1606,16 @@ impl MapFile {
                 .try_into()
                 .unwrap(),
         );
-        assert_eq!(
-            version, 8,
-            "item-array append currently supports chunk 40 version 8"
+        assert!(
+            version == 7 || version == 8,
+            "item-array append supports chunk 40 versions 7 and 8 (got {version})"
         );
+        if version == 7 {
+            // v7 carries an Int2[] `itemsOnItem` before the five int arrays
+            // (dropped in v8); nothing to add for new items.
+            let n = r.u32() as usize;
+            r.skip(n * 8);
+        }
         for array_index in 0..5 {
             let count_off = r.o;
             let n = r.u32() as usize;
