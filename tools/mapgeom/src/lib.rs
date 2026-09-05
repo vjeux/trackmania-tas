@@ -44,5 +44,6 @@ pub mod render;
 pub mod scene;
 pub mod store;
 pub mod tables;
+pub mod tiny_assets;
 
 pub use store::{DataStore, Model};

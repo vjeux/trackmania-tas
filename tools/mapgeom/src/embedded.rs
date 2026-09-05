@@ -22,8 +22,9 @@ pub const EMBEDDED_CHUNK: u32 = 0x03043054;
 /// Every embedded file, keyed by its path inside the zip.
 pub fn files(m: &MapFile) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let body = &m.gbx.body;
-    let Some((_, _, payload, size)) =
-        tmmaps::map::skip_chunks(body).into_iter().find(|(id, ..)| *id == EMBEDDED_CHUNK)
+    let Some((_, _, payload, size)) = tmmaps::map::skip_chunks(body)
+        .into_iter()
+        .find(|(id, ..)| *id == EMBEDDED_CHUNK)
     else {
         return Ok(BTreeMap::new());
     };
@@ -49,7 +50,11 @@ pub fn files(m: &MapFile) -> Result<BTreeMap<String, Vec<u8>>, String> {
 pub fn items(m: &MapFile) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut out = BTreeMap::new();
     for (path, bytes) in files(m)? {
-        let base = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_lowercase();
+        let base = path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&path)
+            .to_lowercase();
         if base.ends_with(".item.gbx") {
             out.insert(base, bytes);
         }
@@ -64,7 +69,7 @@ pub fn items(m: &MapFile) -> Result<BTreeMap<String, Vec<u8>>, String> {
 /// Written rather than pulled in, because the whole toolchain has one
 /// third-party crate and `miniz_oxide` (already here through `gbx`) supplies
 /// the only hard part.
-fn unzip(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String> {
+pub fn unzip(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut out = BTreeMap::new();
     if data.len() < 22 {
         return Ok(out);
@@ -112,7 +117,12 @@ fn unzip(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String> {
             m => return Err(format!("{}: zip method {} is not understood", name, m)),
         };
         if bytes.len() != usize_ && usize_ != 0 {
-            return Err(format!("{}: inflated to {} bytes, header says {}", name, bytes.len(), usize_));
+            return Err(format!(
+                "{}: inflated to {} bytes, header says {}",
+                name,
+                bytes.len(),
+                usize_
+            ));
         }
         out.insert(name, bytes);
     }

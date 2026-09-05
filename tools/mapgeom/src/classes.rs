@@ -13,7 +13,11 @@ use crate::reader::R;
 fn tenb(v: u32) -> f32 {
     let v = v & 0x3FF;
     // 0x200 is -1.0, 0x1FF is +1.0; the game's own inverse of float_to_tenb.
-    let s = if v >= 0x200 { v as f32 - 1024.0 } else { v as f32 };
+    let s = if v >= 0x200 {
+        v as f32 - 1024.0
+    } else {
+        v as f32
+    };
     (s / 511.0).clamp(-1.0, 1.0)
 }
 
@@ -80,7 +84,13 @@ impl<'a> Graph<'a> {
                     crate::reader::trace(|| format!("    model {} at 0x{:x}", model, self.r.o));
                     let rot = self.r.quat().map_err(ctx)?;
                     let pos = self.r.vec3().map_err(ctx)?;
-                    crate::reader::trace(|| format!("    params at 0x{:x} id 0x{:08X}", self.r.o, self.r.peek_u32().unwrap_or(0)));
+                    crate::reader::trace(|| {
+                        format!(
+                            "    params at 0x{:x} id 0x{:08X}",
+                            self.r.o,
+                            self.r.peek_u32().unwrap_or(0)
+                        )
+                    });
                     self.prefab_ent_params().map_err(ctx)?;
                     let _u01 = self.r.bytes_pfx().map_err(ctx)?;
                     ents.push(PrefabEnt { model, rot, pos });
@@ -92,7 +102,11 @@ impl<'a> Graph<'a> {
                 let mesh = self.noderef()?;
                 let mesh_collidable = self.r.bool8()?;
                 let shape = if mesh_collidable { -1 } else { self.noderef()? };
-                Ok(Node::StaticObject(StaticObject { mesh, mesh_collidable, shape }))
+                Ok(Node::StaticObject(StaticObject {
+                    mesh,
+                    mesh_collidable,
+                    shape,
+                }))
             }
             // An item may hand out a LIST of entity models, one per tag set
             // (a gate has left, right and centre variants). Nothing here knows
@@ -171,7 +185,11 @@ impl<'a> Graph<'a> {
                 self.noderef()?; // LocAnim
                 self.r.take(8)?;
                 self.noderef()?; // WaterModel
-                Ok(Node::Dyna(DynaObject { mesh, dyna_shape, static_shape }))
+                Ok(Node::Dyna(DynaObject {
+                    mesh,
+                    dyna_shape,
+                    static_shape,
+                }))
             }
             // NPlugDyna_SConstraintModel: a spring, no geometry.
             0x2F074000 => {
@@ -180,7 +198,10 @@ impl<'a> Graph<'a> {
             }
             // The remaining body-less classes are placement metadata we do not
             // read; reaching one means the walk went somewhere unexpected.
-            c => Err(format!("class 0x{:08X} has no chunk framing and no reader", c)),
+            c => Err(format!(
+                "class 0x{:08X} has no chunk framing and no reader",
+                c
+            )),
         }
     }
 
@@ -211,7 +232,8 @@ impl<'a> Graph<'a> {
             0x2F0A9000 => {
                 let _v = self.r.u32()?;
                 let _layout = self.r.i32()?;
-                self.r.array(|r| r.array(|r| Ok((r.string()?, r.string()?))))?;
+                self.r
+                    .array(|r| r.array(|r| Ok((r.string()?, r.string()?))))?;
                 Ok(())
             }
             // NPlugItemPlacement_SPlacementGroup
@@ -241,7 +263,10 @@ impl<'a> Graph<'a> {
                 let _phase = self.r.f32()?;
                 Ok(())
             }
-            c => Err(format!("prefab entity params chunk 0x{:08X} has no reader", c)),
+            c => Err(format!(
+                "prefab entity params chunk 0x{:08X} has no reader",
+                c
+            )),
         }
     }
 
@@ -253,7 +278,11 @@ impl<'a> Graph<'a> {
                 acc.touched = true;
                 let version = self.r.u32()?;
                 let surf_version = if version < 2 { 0 } else { self.r.u32()? };
-                self.surf(surf_version, &mut acc.surface, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])?;
+                self.surf(
+                    surf_version,
+                    &mut acc.surface,
+                    &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                )?;
                 let n_mats = self.r.u32()? as usize;
                 for _ in 0..n_mats {
                     let has = self.r.bool32()?;
@@ -340,7 +369,10 @@ impl<'a> Graph<'a> {
                 let _v = self.r.u32()?;
                 let morph = self.r.u32()?;
                 if morph != 0 {
-                    return Err(format!("visual morph_count {} (only 0 is understood)", morph));
+                    return Err(format!(
+                        "visual morph_count {} (only 0 is understood)",
+                        morph
+                    ));
                 }
                 Ok(())
             }
@@ -378,7 +410,9 @@ impl<'a> Graph<'a> {
                                 // relative form is a delta chain from 0.
                                 acc.visual.index_is_absolute = flags & 2 != 0;
                             }
-                            c => return Err(format!("index buffer chunk 0x{:08X} has no reader", c)),
+                            c => {
+                                return Err(format!("index buffer chunk 0x{:08X} has no reader", c))
+                            }
                         }
                     }
                 }
@@ -389,6 +423,44 @@ impl<'a> Graph<'a> {
             0x09056000 => {
                 acc.touched = true;
                 self.vertex_stream(&mut acc.vstream)
+            }
+
+            // ------------------------------ CGameCtnBlockInfo
+            // NoRespawn, one 32-bit boolean. Present on the current 2026
+            // client/server block records; it carries no geometry itself.
+            0x0304E00F | 0x0304E013 | 0x0304E017 => {
+                self.r.bool32()?;
+                Ok(())
+            }
+            // CGameCtnBlockInfo: waypoint/podium metadata. The current
+            // MP4 chunk is version 8; all references are part of the node
+            // graph but carry no geometry themselves.
+            0x0304E020 => {
+                let v = self.r.u32()?;
+                self.noderef()?; // CharPhySpecialProperty
+                if v < 6 {
+                    self.noderef()?; // legacy WaypointSpecialProperty
+                }
+                if v >= 2 {
+                    self.noderef()?; // PodiumInfo
+                }
+                if v >= 3 {
+                    self.noderef()?; // IntroInfo
+                }
+                if v >= 4 {
+                    self.r.bool32()?; // CharPhySpecialPropertyCustomizable
+                }
+                if v == 5 {
+                    self.r.bool32()?;
+                }
+                if v >= 8 {
+                    let has_modifier = self.r.bool32()?;
+                    if has_modifier {
+                        self.r.string()?;
+                        self.r.string()?;
+                    }
+                }
+                Ok(())
             }
 
             // ------------------------------ CGameCtnCollector / item model
@@ -464,7 +536,10 @@ impl<'a> Graph<'a> {
             0x2E00201C => {
                 let v = self.r.u32()?;
                 if v != 5 {
-                    return Err(format!("item defaultPlacement chunk version {} (expected 5)", v));
+                    return Err(format!(
+                        "item defaultPlacement chunk version {} (expected 5)",
+                        v
+                    ));
                 }
                 self.noderef()?;
                 Ok(())
@@ -610,7 +685,10 @@ impl<'a> Graph<'a> {
                 self.r.lookback()?; // ArchetypeBlockInfoCollectionId
                 let n = self.r.u32()? as usize;
                 crate::reader::trace(|| {
-                    format!("    blockitem v{} {} variants at 0x{:x}", version, n, self.r.o)
+                    format!(
+                        "    blockitem v{} {} variants at 0x{:x}",
+                        version, n, self.r.o
+                    )
                 });
                 let mut first = -1;
                 for i in 0..n {
@@ -865,7 +943,10 @@ impl<'a> Graph<'a> {
     fn crystal(&mut self, material_count: usize) -> R<CrystalMesh> {
         let version = self.r.u32()?;
         if !(25..=37).contains(&version) {
-            return Err(format!("crystal version {} is outside the understood 25..37", version));
+            return Err(format!(
+                "crystal version {} is outside the understood 25..37",
+                version
+            ));
         }
         self.r.take(4 * 3)?; // u06..u08
         self.r.f32()?;
@@ -891,7 +972,11 @@ impl<'a> Graph<'a> {
             self.r.array(|r| r.i32())?;
             groups += 1;
         }
-        let _embedded = if version >= 34 { self.r.u8()? != 0 } else { self.r.bool32()? };
+        let _embedded = if version >= 34 {
+            self.r.u8()? != 0
+        } else {
+            self.r.bool32()?
+        };
         if version >= 33 {
             self.r.i32()?;
             self.r.i32()?;
@@ -990,7 +1075,10 @@ impl<'a> Graph<'a> {
             7 => {
                 let v = self.r.u32()?;
                 if v < 6 {
-                    return Err(format!("surface mesh version {} (only >= 6 is understood)", v));
+                    return Err(format!(
+                        "surface mesh version {} (only >= 6 is understood)",
+                        v
+                    ));
                 }
                 let verts = self.r.array(|r| r.vec3())?;
                 let tris = self.r.array(|r| {
@@ -1050,7 +1138,11 @@ impl<'a> Graph<'a> {
                         continue;
                     }
                     for k in 1..cnt - 1 {
-                        tris.push(([face_idx[off], face_idx[off + k], face_idx[off + k + 1]], 0u8, 0u8));
+                        tris.push((
+                            [face_idx[off], face_idx[off + k], face_idx[off + k + 1]],
+                            0u8,
+                            0u8,
+                        ));
                     }
                 }
                 let verts = verts.iter().map(|v| apply(xform, *v)).collect();
@@ -1086,7 +1178,11 @@ impl<'a> Graph<'a> {
             if version >= 32 {
                 r.i32()?;
             }
-            Ok(ShadedGeom { visual, material, lod })
+            Ok(ShadedGeom {
+                visual,
+                material,
+                lod,
+            })
         })?;
         if version >= 6 {
             let lv = self.r.u32()?;
@@ -1218,7 +1314,11 @@ impl<'a> Graph<'a> {
         if version >= 30 {
             self.r.i32()?;
         }
-        let n_custom = if version >= 29 { material_count } else { mat_count_lt29 };
+        let n_custom = if version >= 29 {
+            material_count
+        } else {
+            mat_count_lt29
+        };
         for _ in 0..n_custom {
             let name = self.r.string()?;
             let node = if name.is_empty() { self.noderef()? } else { -1 };
@@ -1244,7 +1344,10 @@ impl<'a> Graph<'a> {
         }
         let n_u18 = self.r.u32()?;
         if n_u18 != 0 {
-            return Err(format!("solid2 u18 array has {} elements (only 0 is understood)", n_u18));
+            return Err(format!(
+                "solid2 u18 array has {} elements (only 0 is understood)",
+                n_u18
+            ));
         }
         self.r.array(|r| r.i32())?;
         if version < 24 {
@@ -1298,7 +1401,11 @@ impl<'a> Graph<'a> {
         }
         for t in 0..tex_coord_count {
             let version = self.r.u32()?;
-            let count = if version >= 3 { self.r.u32()? } else { vertex_count };
+            let count = if version >= 3 {
+                self.r.u32()?
+            } else {
+                vertex_count
+            };
             let tflags = if version >= 3 { self.r.u32()? } else { 0 };
             for _ in 0..count {
                 let uv = self.r.vec2()?;
@@ -1322,7 +1429,8 @@ impl<'a> Graph<'a> {
             let has_weight = self.r.bool32()?;
             self.r.bool32()?;
             if has_weight {
-                self.r.take(4 * vertex_count as usize * flags.skin_index_count as usize)?;
+                self.r
+                    .take(4 * vertex_count as usize * flags.skin_index_count as usize)?;
             }
             self.r.array(|r| r.lookback())?;
             self.r.array(|r| r.i32())?;
@@ -1419,8 +1527,11 @@ impl<'a> Graph<'a> {
             // packing to a Position (which is Global3D) reads a mesh's
             // coordinates out of somebody else's bytes and still produces
             // numbers, so the space check is load-bearing.
-            let effective =
-                if d.ty == 2 && d.space == 1 && compress_local3d { 14 } else { d.ty };
+            let effective = if d.ty == 2 && d.space == 1 && compress_local3d {
+                14
+            } else {
+                d.ty
+            };
             match (d.name, effective) {
                 (0, 2) => {
                     for _ in 0..num {
@@ -1527,6 +1638,10 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x0906A000
             | 0x0906A001
             | 0x09056000
+            | 0x0304E00F
+            | 0x0304E013
+            | 0x0304E017
+            | 0x0304E020
             | 0x2E001009
             | 0x2E00100B
             | 0x2E00100C

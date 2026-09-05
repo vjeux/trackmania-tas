@@ -17,6 +17,10 @@ COMMANDS
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
+  tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
+      --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
+      --stadium-pak PAK
+                                build exact scalable wrappers and the tiny map
   extract <logical-path> <file>    one pack file, decrypted and decompressed
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
       [--ghost G]... [--png P] [--clip-y Y]
@@ -50,6 +54,9 @@ MAPGEOM_TRACE=1 prints every step of a body walk.
 
 struct Args {
     packs: String,
+    /// An explicit pack file. Set, it wins over the directory scan; the client
+    /// packs (`BlueBay.pak`, `Stadium.pak`) each need their own key.
+    pak: Option<String>,
     key: String,
     rest: Vec<String>,
 }
@@ -58,21 +65,26 @@ fn parse_args() -> Args {
     let mut packs = std::env::var("TM_SERVER")
         .map(|s| format!("{}/Packs", s))
         .unwrap_or_else(|_| "/tmp/tmoracle/server/Packs".to_string());
+    let mut pak = None;
     let mut key = STADIUM_KEY.to_string();
     let mut rest = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--packs" => packs = it.next().unwrap_or_default(),
+            "--pak" => pak = it.next(),
             "--key" => key = it.next().unwrap_or_default(),
             _ => rest.push(a),
         }
     }
-    Args { packs, key, rest }
+    Args { packs, pak, key, rest }
 }
 
 fn open(a: &Args) -> DataStore {
     let mut paths: Vec<String> = Vec::new();
+    if let Some(p) = &a.pak {
+        paths.push(p.clone());
+    }
     for name in ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"] {
         let p = format!("{}/{}", a.packs, name);
         if std::path::Path::new(&p).exists() {
@@ -80,7 +92,7 @@ fn open(a: &Args) -> DataStore {
         }
     }
     if paths.is_empty() {
-        eprintln!("no .pak files in {}", a.packs);
+        eprintln!("no .pak files in {} (pass --pak FILE for a client pack)", a.packs);
         std::process::exit(2);
     }
     match DataStore::open(&paths, &a.key) {
@@ -115,8 +127,11 @@ fn build(
     with_items: bool,
     deco: bool,
     verbose: bool,
-) -> (mapgeom::scene::Scene, mapgeom::geom::Stats, std::collections::BTreeMap<String, (usize, bool)>)
-{
+) -> (
+    mapgeom::scene::Scene,
+    mapgeom::geom::Stats,
+    std::collections::BTreeMap<String, (usize, bool)>,
+) {
     let mut asm = mapgeom::assemble::Assembler::new(store);
     match asm.with_embedded(m) {
         Ok(0) => {}
@@ -134,12 +149,20 @@ fn build(
         }
     }
     if verbose {
-        let mut miss: Vec<(&String, usize)> =
-            asm.used.iter().filter(|(_, (_, ok))| !*ok).map(|(k, (n, _))| (k, *n)).collect();
+        let mut miss: Vec<(&String, usize)> = asm
+            .used
+            .iter()
+            .filter(|(_, (_, ok))| !*ok)
+            .map(|(k, (n, _))| (k, *n))
+            .collect();
         miss.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         if !miss.is_empty() {
             let total: usize = miss.iter().map(|(_, n)| *n).sum();
-            println!("  {} placements of {} models had no geometry:", total, miss.len());
+            println!(
+                "  {} placements of {} models had no geometry:",
+                total,
+                miss.len()
+            );
             for (name, n) in miss.iter().take(15) {
                 println!("    {:>5} x {}", n, name);
             }
@@ -197,7 +220,10 @@ fn main() {
             for e in store.entries() {
                 let p = e.path();
                 if pat.is_empty() || p.to_uppercase().contains(&pat) {
-                    println!("{}\tclass 0x{:08X}\t{} bytes", p, e.class_id, e.uncompressed_size);
+                    println!(
+                        "{}\tclass 0x{:08X}\t{} bytes",
+                        p, e.class_id, e.uncompressed_size
+                    );
                     n += 1;
                 }
             }
@@ -221,7 +247,10 @@ fn main() {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let m = load_any(&mut store, &p);
-            println!("{}  class 0x{:08X}  {} nodes", m.path, m.class_id, m.num_nodes);
+            println!(
+                "{}  class 0x{:08X}  {} nodes",
+                m.path, m.class_id, m.num_nodes
+            );
             for (idx, path) in &m.externals {
                 let hit = store.resolve(path);
                 println!(
@@ -247,7 +276,10 @@ fn main() {
                 println!("wrote {} ({} bytes of body)", out, m.body.len());
             }
             let g = m.graph().unwrap_or_else(die);
-            println!("{}  class 0x{:08X}  {} nodes", m.path, m.class_id, m.num_nodes);
+            println!(
+                "{}  class 0x{:08X}  {} nodes",
+                m.path, m.class_id, m.num_nodes
+            );
             if let Some(root) = &g.root {
                 println!("  root: {}", describe(root));
             }
@@ -283,17 +315,48 @@ fn main() {
             if let Some(dir) = flag(&a.rest, "--out") {
                 std::fs::create_dir_all(&dir).ok();
                 for (name, bytes) in &files {
-                    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-                    std::fs::write(format!("{}/{}", dir, base), bytes)
-                        .unwrap_or_else(|e| die(e.to_string()));
+                    if name.ends_with(['/', '\\']) {
+                        continue;
+                    }
+                    let rel = name
+                        .strip_prefix("C:/Users/vjeux/Documents/Trackmania/")
+                        .unwrap_or(name);
+                    let path = std::path::Path::new(&dir).join(rel.replace('\\', "/"));
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).unwrap_or_else(|e| die(e.to_string()));
+                    }
+                    std::fs::write(&path, bytes).unwrap_or_else(|e| die(e.to_string()));
                 }
                 println!("extracted {} files to {}", files.len(), dir);
             }
         }
+        "tiny-assets" => {
+            let map = std::path::Path::new(a.rest.get(1).expect("tiny-assets needs MAP"));
+            let req = |name: &str| {
+                std::path::PathBuf::from(
+                    flag(&a.rest, name).unwrap_or_else(|| die(format!("tiny-assets needs {name}"))),
+                )
+            };
+            mapgeom::tiny_assets::build(
+                map,
+                &req("--catalog"),
+                &req("--footprints"),
+                &req("--nadeo-zip"),
+                &req("--empty-template"),
+                &req("--blue-pak"),
+                &req("--stadium-pak"),
+                &req("--library-out"),
+                &req("--out"),
+            );
+        }
         "extract" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
-            let out = a.rest.get(2).cloned().unwrap_or_else(|| "out.bin".to_string());
+            let out = a
+                .rest
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "out.bin".to_string());
             let bytes = store.read(&p).unwrap_or_else(die);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{} -> {} ({} bytes)", p, out, bytes.len());
@@ -302,11 +365,19 @@ fn main() {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| "map.glb".to_string());
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let yoff: f32 = flag(&a.rest, "--yoff")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             let with_items = !a.rest.iter().any(|x| x == "--no-items");
             let deco = !a.rest.iter().any(|x| x == "--no-deco");
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            println!("{}: {} blocks, {} items, yoff {}", p, m.blocks.len(), m.items.len(), yoff);
+            println!(
+                "{}: {} blocks, {} items, yoff {}",
+                p,
+                m.blocks.len(),
+                m.items.len(),
+                yoff
+            );
             let (mut scene, stats, _) = build(&mut store, &m, yoff, with_items, deco, true);
             for g in ghost_runs(&a.rest) {
                 scene.add_line(&g.name, g.points, g.colour);
@@ -316,8 +387,9 @@ fn main() {
             if let Some(png) = flag(&a.rest, "--png") {
                 // Clip just above the highest point the run reached, so the
                 // stadium roof does not become the picture.
-                let clip = flag(&a.rest, "--clip-y").and_then(|s| s.parse::<f32>().ok()).unwrap_or_else(
-                    || {
+                let clip = flag(&a.rest, "--clip-y")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or_else(|| {
                         scene
                             .lines
                             .iter()
@@ -325,8 +397,7 @@ fn main() {
                             .map(|p| p[1])
                             .fold(f32::NEG_INFINITY, f32::max)
                             + 8.0
-                    },
-                );
+                    });
                 let img = mapgeom::render::top_down(&scene, 1.0, 4000, clip);
                 std::fs::write(&png, mapgeom::render::png(&img))
                     .unwrap_or_else(|e| die(e.to_string()));
@@ -338,7 +409,9 @@ fn main() {
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let with_items = !a.rest.iter().any(|x| x == "--no-items");
             let deco = !a.rest.iter().any(|x| x == "--no-deco");
-            let reach: f32 = flag(&a.rest, "--reach").and_then(|s| s.parse().ok()).unwrap_or(6.0);
+            let reach: f32 = flag(&a.rest, "--reach")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(6.0);
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let runs = ghost_runs(&a.rest);
             if runs.is_empty() {
@@ -390,7 +463,12 @@ fn main() {
             let (scene, stats, used) = build(&mut store, &m, yoff, with_items, deco, true);
             let idx = mapgeom::probe::Index::build(&scene, 32.0);
             report(&stats, &scene);
-            println!("{}\n  yoff {}  ({} triangles indexed)", p, yoff, idx.triangle_count());
+            println!(
+                "{}\n  yoff {}  ({} triangles indexed)",
+                p,
+                yoff,
+                idx.triangle_count()
+            );
             for run in &runs {
                 let v = mapgeom::coverage::Verdict::of(&idx, &run.motions, reach);
                 grade(&run.name, &v);
@@ -405,8 +483,16 @@ fn main() {
                         println!(
                             "      model x {:.0}..{:.0}  y ..{:.0}  z {:.0}..{:.0}    \
                              run x {:.0}..{:.0}  y ..{:.0}  z {:.0}..{:.0}",
-                            c.model.0[0], c.model.1[0], c.model.1[1], c.model.0[2], c.model.1[2],
-                            c.run.0[0], c.run.1[0], c.run.1[1], c.run.0[2], c.run.1[2],
+                            c.model.0[0],
+                            c.model.1[0],
+                            c.model.1[1],
+                            c.model.0[2],
+                            c.model.1[2],
+                            c.run.0[0],
+                            c.run.1[0],
+                            c.run.1[1],
+                            c.run.0[2],
+                            c.run.1[2],
                         );
                     }
                 }
@@ -414,7 +500,11 @@ fn main() {
                 if b.total > 0 {
                     println!("    what the map has where the model does not:");
                     for (name, n) in b.ranked().iter().take(10) {
-                        let label = if name.is_empty() { "(no block or item in that cell)" } else { name };
+                        let label = if name.is_empty() {
+                            "(no block or item in that cell)"
+                        } else {
+                            name
+                        };
                         println!("      {:>6} samples  {}", n, label);
                     }
                 }
@@ -443,10 +533,15 @@ fn main() {
         "holes" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let reach: f32 = flag(&a.rest, "--reach").and_then(|s| s.parse().ok()).unwrap_or(6.0);
-            let radius: f32 =
-                flag(&a.rest, "--radius").and_then(|s| s.parse().ok()).unwrap_or(48.0);
+            let yoff: f32 = flag(&a.rest, "--yoff")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let reach: f32 = flag(&a.rest, "--reach")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(6.0);
+            let radius: f32 = flag(&a.rest, "--radius")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(48.0);
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let runs = ghost_runs(&a.rest);
             let (scene, _, used) = build(
@@ -464,8 +559,11 @@ fn main() {
                 let b = mapgeom::blame::of(&m, &used, &v, &run.points, yoff);
                 println!("  {} holes, by what the map has there:", b.total);
                 for (name, n) in b.ranked() {
-                    let label =
-                        if name.is_empty() { "(no block or item in that cell)" } else { name };
+                    let label = if name.is_empty() {
+                        "(no block or item in that cell)"
+                    } else {
+                        name
+                    };
                     println!("    {:>6} samples  {}", n, label);
                 }
                 // Consecutive missing samples are one hole; 525 lines is not
@@ -479,9 +577,7 @@ fn main() {
                         continue;
                     }
                     let start = i;
-                    while i < v.classes.len()
-                        && v.classes[i] == mapgeom::coverage::Class::Missing
-                    {
+                    while i < v.classes.len() && v.classes[i] == mapgeom::coverage::Class::Missing {
                         i += 1;
                     }
                     let mid = run.points[(start + i) / 2];
@@ -518,8 +614,9 @@ fn main() {
         "corpus" => {
             let root = flag(&a.rest, "--root").unwrap_or_else(|| die("corpus needs --root".into()));
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("corpus needs --out".into()));
-            let jobs_n: usize =
-                flag(&a.rest, "--jobs").and_then(|s| s.parse().ok()).unwrap_or(12);
+            let jobs_n: usize = flag(&a.rest, "--jobs")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(12);
             let only: Vec<String> = flag(&a.rest, "--maps")
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
@@ -579,7 +676,9 @@ fn main() {
         "where" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let yoff: f32 = flag(&a.rest, "--yoff")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             let at: Vec<f32> = flag(&a.rest, "--at")
                 .unwrap_or_default()
                 .split(',')
@@ -588,7 +687,11 @@ fn main() {
             // No --at lists every record the map places, which is how a
             // decoration's handful of enormous blocks gets looked at.
             let all = at.len() < 2;
-            let (x, z) = if all { (0.0, 0.0) } else { (at[0], at[at.len() - 1]) };
+            let (x, z) = if all {
+                (0.0, 0.0)
+            } else {
+                (at[0], at[at.len() - 1])
+            };
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let mut asm = mapgeom::assemble::Assembler::new(&mut store);
             asm.with_embedded(&m).ok();
@@ -596,7 +699,10 @@ fn main() {
             if all {
                 println!("every record the map places:");
             } else {
-                println!("records within one cell of x {} z {} (cell {},{}):", x, z, cx, cz);
+                println!(
+                    "records within one cell of x {} z {} (cell {},{}):",
+                    x, z, cx, cz
+                );
             }
             for b in &m.blocks {
                 let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
@@ -634,11 +740,17 @@ fn main() {
                 );
             }
             for it in &m.items {
-                let (ix, iz) = ((it.pos[0] / 32.0).floor() as i32, (it.pos[2] / 32.0).floor() as i32);
+                let (ix, iz) = (
+                    (it.pos[0] / 32.0).floor() as i32,
+                    (it.pos[2] / 32.0).floor() as i32,
+                );
                 if !all && ((ix - cx).abs() > 1 || (iz - cz).abs() > 1) {
                     continue;
                 }
-                let tris = asm.item_model(&it.model).map(|l| l.scene.tri_count()).unwrap_or(0);
+                let tris = asm
+                    .item_model(&it.model)
+                    .map(|l| l.scene.tri_count())
+                    .unwrap_or(0);
                 println!(
                     "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3} pivot {:?} scale {}  {} triangles",
                     it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pivot, it.scale, tris
@@ -648,7 +760,9 @@ fn main() {
         "plumb" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
-            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let yoff: f32 = flag(&a.rest, "--yoff")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let ats: Vec<[f32; 3]> = a
                 .rest
@@ -728,8 +842,11 @@ fn ghost_runs(args: &[String]) -> Vec<Run> {
     {
         match gbx::decode_ghost(p) {
             Ok(d) => {
-                let points: Vec<[f32; 3]> =
-                    d.samples.iter().map(|s| [s.x as f32, s.y as f32, s.z as f32]).collect();
+                let points: Vec<[f32; 3]> = d
+                    .samples
+                    .iter()
+                    .map(|s| [s.x as f32, s.y as f32, s.z as f32])
+                    .collect();
                 let name = std::path::Path::new(p)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
@@ -774,7 +891,10 @@ pub struct Containment {
     pub run: ([f32; 3], [f32; 3]),
 }
 
-pub fn containment(scene_bounds: Option<([f32; 3], [f32; 3])>, pts: &[[f32; 3]]) -> Option<Containment> {
+pub fn containment(
+    scene_bounds: Option<([f32; 3], [f32; 3])>,
+    pts: &[[f32; 3]],
+) -> Option<Containment> {
     let (lo, hi) = scene_bounds?;
     if pts.is_empty() {
         return None;
@@ -794,7 +914,11 @@ pub fn containment(scene_bounds: Option<([f32; 3], [f32; 3])>, pts: &[[f32; 3]])
             outside += 1;
         }
     }
-    Some(Containment { outside, model: (lo, hi), run: (rlo, rhi) })
+    Some(Containment {
+        outside,
+        model: (lo, hi),
+        run: (rlo, rhi),
+    })
 }
 
 /// The grading of one run against the model.
@@ -882,7 +1006,10 @@ fn grade(name: &str, v: &mapgeom::coverage::Verdict) {
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 /// What the walk found, and -- just as loudly -- what it could not open.
@@ -902,19 +1029,28 @@ fn report(s: &mapgeom::geom::Stats, scene: &mapgeom::scene::Scene) {
             lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]
         );
     }
-    let mut mats: Vec<(&String, usize)> =
-        scene.groups.iter().map(|(k, g)| (k, g.tris.len())).collect();
+    let mut mats: Vec<(&String, usize)> = scene
+        .groups
+        .iter()
+        .map(|(k, g)| (k, g.tris.len()))
+        .collect();
     mats.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     for (m, n) in mats.iter().take(12) {
         println!("  {:>9} {}", n, m);
     }
     if s.recovered > 0 {
-        println!("  {} nodes recovered past a layout with no reader", s.recovered);
+        println!(
+            "  {} nodes recovered past a layout with no reader",
+            s.recovered
+        );
     }
     if !s.unhandled.is_empty() {
         let mut u: Vec<(&u32, &usize)> = s.unhandled.iter().collect();
         u.sort();
-        let list: Vec<String> = u.iter().map(|(c, n)| format!("0x{:08X} x{}", c, n)).collect();
+        let list: Vec<String> = u
+            .iter()
+            .map(|(c, n)| format!("0x{:08X} x{}", c, n))
+            .collect();
         println!("  classes with no geometry reader: {}", list.join(", "));
     }
     if !s.missing.is_empty() {
@@ -935,8 +1071,13 @@ fn report(s: &mapgeom::geom::Stats, scene: &mapgeom::scene::Scene) {
 fn write_scene(scene: &mapgeom::scene::Scene, out: &str) {
     if out.to_lowercase().ends_with(".obj") {
         let mtl = format!("{}.mtl", out.trim_end_matches(".obj"));
-        let (o, m) = scene
-            .obj(std::path::Path::new(&mtl).file_name().unwrap().to_string_lossy().as_ref());
+        let (o, m) = scene.obj(
+            std::path::Path::new(&mtl)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
         std::fs::write(out, o).unwrap_or_else(|e| die(e.to_string()));
         std::fs::write(&mtl, m).unwrap_or_else(|e| die(e.to_string()));
         println!("wrote {} and {}", out, mtl);
@@ -976,7 +1117,11 @@ fn describe(n: &Node) -> String {
             v.vertex_streams.len()
         ),
         Node::VertexStream(v) => {
-            format!("CPlugVertexStream, {} positions, {} normals", v.positions.len(), v.normals.len())
+            format!(
+                "CPlugVertexStream, {} positions, {} normals",
+                v.positions.len(),
+                v.normals.len()
+            )
         }
         Node::Crystal(c) => format!(
             "CPlugCrystal, {} meshes, {} faces, materials [{}]",
@@ -984,7 +1129,11 @@ fn describe(n: &Node) -> String {
             c.meshes.iter().map(|m| m.faces.len()).sum::<usize>(),
             c.materials
                 .iter()
-                .map(|(n, i)| if n.is_empty() { format!("node{}", i) } else { n.clone() })
+                .map(|(n, i)| if n.is_empty() {
+                    format!("node{}", i)
+                } else {
+                    n.clone()
+                })
                 .collect::<Vec<_>>()
                 .join(" ")
         ),

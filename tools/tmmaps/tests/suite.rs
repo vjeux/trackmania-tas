@@ -10,6 +10,7 @@
 //! anyone reporting a result, should use `--strict`, where a skip is a
 //! failure.
 
+use std::path::Path;
 use std::process::Command;
 
 fn run(extra: &[&str]) -> (bool, String) {
@@ -22,6 +23,41 @@ fn run(extra: &[&str]) -> (bool, String) {
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), text)
+}
+
+#[test]
+fn fixed_length_item_model_patch_survives_write() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/map1.Map.Gbx");
+    let original = tmmaps::map::MapFile::load(&fixture);
+    let donor = original
+        .items
+        .iter()
+        .find(|it| original.item_ids[it.model_field].is_def)
+        .expect("inline item model");
+    let alias = "X".repeat(donor.model.len());
+    let mut changed = tmmaps::map::MapFile::load(&fixture);
+    changed.set_item_model_same_len(donor.index, &alias);
+    let out = std::env::temp_dir().join(format!("tmmaps-model-{}.Map.Gbx", std::process::id()));
+    changed.write_to(&out).expect("write model patch");
+    let reread = tmmaps::map::MapFile::load(&out);
+    let _ = std::fs::remove_file(out);
+    assert_eq!(reread.items[donor.index].model, alias);
+}
+
+#[test]
+fn item_array_can_grow_and_reparse() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/map1.Map.Gbx");
+    let original = tmmaps::map::MapFile::load(&fixture);
+    let want = original.items.len() + 7;
+    let mut grown = tmmaps::map::MapFile::load(&fixture);
+    grown.append_item_clones(want);
+    let out = std::env::temp_dir().join(format!("tmmaps-grow-{}.Map.Gbx", std::process::id()));
+    grown.write_to(&out).expect("write grown map");
+    let reread = tmmaps::map::MapFile::load(&out);
+    let _ = std::fs::remove_file(out);
+    assert_eq!(reread.items.len(), want);
+    assert_eq!(reread.blocks.len(), original.blocks.len());
+    assert_eq!(reread.baked.len(), original.baked.len());
 }
 
 #[test]
@@ -40,7 +76,12 @@ fn selftest_passes() {
 #[test]
 fn strict_is_not_vacuous() {
     let out = Command::new(env!("CARGO_BIN_EXE_tmmaps"))
-        .args(["selftest", "--strict", "--server", "/nonexistent/tmmaps-no-server"])
+        .args([
+            "selftest",
+            "--strict",
+            "--server",
+            "/nonexistent/tmmaps-no-server",
+        ])
         .output()
         .expect("run tmmaps selftest");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
