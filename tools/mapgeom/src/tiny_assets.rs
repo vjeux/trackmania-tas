@@ -50,6 +50,11 @@ pub fn nameless_ident(bytes: &[u8], ident: &str) -> Vec<u8> {
 /// walker's read of their index streams is not yet trustworthy (fragmented
 /// decks in game), so they are not used.
 pub fn crystal_from_model(store: &mut DataStore, logical: &str, template: &[u8], ident: &str) -> Result<(Vec<u8>, usize), String> {
+    crystal_from_model_in(store, logical, template, ident, 26)
+}
+
+/// `crystal_from_model` with the map's collection deciding the material family.
+pub fn crystal_from_model_in(store: &mut DataStore, logical: &str, template: &[u8], ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
     let m = store.load_model(logical)?;
     let mut c = crate::geom::Collector::new(store);
     c.model(&m, &crate::geom::IDENTITY, 0);
@@ -66,12 +71,32 @@ pub fn crystal_from_model(store: &mut DataStore, logical: &str, template: &[u8],
         if matches!(phys, "NotCollidable" | "Water") {
             continue;
         }
-        let spec = crate::crystal::material_for_physics_name(phys);
+        // Terrain prefabs' side and underside faces carry the default physics
+        // (Concrete, id 0) while being cliff in the game's own look.
+        let phys = if phys == "Concrete" && logical.contains("\\Zone") { "Rock" } else { phys };
+        let mut spec = crate::crystal::material_for_physics_name_in(phys, collection);
+        if let Ok(p) = std::env::var("TINY_FORCE_PHYS") { spec.physics = p.parse().unwrap(); }
         // Collision surfaces wind the opposite way from crystal faces: as read,
         // the item renders as an inside-out box (dark faces, one bright cap).
         let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
         mesh.add_tris(&g.verts, &tris, materials.len() as u32, 32.0);
         materials.push(spec);
+    }
+    if collection != 26 && std::env::var_os("TINY_NO_FLAT").is_none() {
+        // The mesh-editor materials are checker/tint textures: sampling one
+        // point of each gives clean flat colours instead of checkerboards.
+        mesh.flatten_uvs();
+    }
+    if std::env::var_os("TINY_BOUNDS").is_some() && !mesh.positions.is_empty() {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for p in &mesh.positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        println!("  bounds {ident} {logical}: x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1} ({} faces)", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], mesh.faces.len());
     }
     if mesh.faces.is_empty() {
         return Err("no visual geometry the walker can read (procedural or unparsed model)".into());
@@ -310,6 +335,59 @@ pub fn set_body_ident_insert(bytes: &[u8], name: &str) -> Vec<u8> {
     g.write_body_recompressed(&nb)
 }
 
+/// The mesh-editor material a Stadium item material stands in for, outside
+/// Stadium (a flat tint each; see crystal::material_for_physics_name_in).
+pub fn editors_link_for_stadium_material(name: &str) -> &'static str {
+    match name {
+        "RoadTech" | "RoadDirt" | "RoadIce" | "RoadBump" => "Editors\\MeshEditorMedia\\Materials\\Asphalt",
+        "TrackBorders" | "TrackBordersOff" | "DecalPaint2Logo4x1" | "DecalPlatform" => "Editors\\MeshEditorMedia\\Materials\\Concrete",
+        "Technics" | "TechnicsTrims" | "ItemPillar" | "ItemTrackBarrier" => "Editors\\MeshEditorMedia\\Materials\\Metal",
+        "LightSpot" | "SpeedometerLight_Dyna" => "Editors\\MeshEditorMedia\\Materials\\Plastic",
+        "PlatformTech" | "TrackWallClips" | "TrackWall" => "Editors\\MeshEditorMedia\\Materials\\Stone",
+        "Grass" => "Editors\\MeshEditorMedia\\Materials\\Grass",
+        _ => "Editors\\MeshEditorMedia\\Materials\\Concrete",
+    }
+}
+
+/// Replace every `Stadium\Media\Material\X` link string in an item body with
+/// its mesh-editor stand-in. Body strings are length-prefixed and nothing in
+/// a crystal item points at a body offset, so the body may grow or shrink.
+pub fn remap_stadium_links(bytes: &[u8]) -> Vec<u8> {
+    let mut g = Gbx::parse(bytes);
+    let body = g.body.clone();
+    let needle = b"Stadium\\Media\\Material\\";
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0usize;
+    while i < body.len() {
+        if i >= 4 && body[i..].starts_with(needle) {
+            let len = u32::from_le_bytes(body[i - 4..i].try_into().unwrap()) as usize;
+            if len >= needle.len() && i + len <= body.len() && body[i..i + len].iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
+                let name = std::str::from_utf8(&body[i + needle.len()..i + len]).unwrap_or("");
+                // The physics byte sits 2 bytes before the length prefix
+                // (phys, gameplay, len, link). Decals (28, NotCollidable) and
+                // lights (32) keep their link: culled here, they would
+                // otherwise become opaque plates.
+                let phys = body[i - 6];
+                if matches!(phys, 28 | 32) {
+                    out.push(body[i]);
+                    i += 1;
+                    continue;
+                }
+                let repl = editors_link_for_stadium_material(name);
+                out.truncate(out.len() - 4);
+                out.extend_from_slice(&(repl.len() as u32).to_le_bytes());
+                out.extend_from_slice(repl.as_bytes());
+                i += len;
+                continue;
+            }
+        }
+        out.push(body[i]);
+        i += 1;
+    }
+    g.body = out.clone();
+    g.write_body_recompressed(&out)
+}
+
 /// Rewrite the collection id in both idents (header 0x2E001003 and body
 /// 0x2E00100B). A BlueBay map places items in collection 0x1C; an item that
 /// says Stadium (0x1A) inside is dropped there.
@@ -538,6 +616,8 @@ pub fn build(
 ) {
     assert!(scale.is_finite() && scale > 0.0, "scale must be positive");
     let source = MapFile::load(map);
+    // The map's collection picks the material family (see crystal.rs).
+    let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     let mut catalog_map = BTreeMap::new();
     for (line_no, line) in fs::read_to_string(catalog).unwrap().lines().enumerate() {
         let line = line.trim();
@@ -628,10 +708,14 @@ pub fn build(
         // archive's waypoint crystals; a generated crystal would be decor.
         if let Some(src) = waypoint_archive_item(prefab) {
             let bytes = legacy.get(src).unwrap_or_else(|| panic!("{src} absent from Nadeo archive"));
-            files.insert(format!("Items/{ident}"), nameless_ident(bytes, &ident));
+            let item = nameless_ident(bytes, &ident);
+            // Outside Stadium the archive's Stadium material links are culled
+            // or red: swap the link strings for the environment's family.
+            let item = if collection == 26 || std::env::var_os("TINY_NO_REMAP").is_some() { item } else { remap_stadium_links(&item) };
+            files.insert(format!("Items/{ident}"), item);
             continue;
         }
-        let (item, faces) = crystal_from_model(&mut store, prefab, &template, &ident)
+        let (item, faces) = crystal_from_model_in(&mut store, prefab, &template, &ident, collection)
             .unwrap_or_else(|e| panic!("{prefab}: {e}"));
         faces_total += faces;
         files.insert(format!("Items/{ident}"), item);
@@ -653,7 +737,7 @@ pub fn build(
         }
         let alias = format!("AC{:08}", 200 + i);
         let ident = format!("{alias}.Item.Gbx");
-        match crystal_from_model(&mut store, &logical, &template, &ident) {
+        match crystal_from_model_in(&mut store, &logical, &template, &ident, collection) {
             Ok((item, faces)) => {
                 faces_total += faces;
                 files.insert(format!("Items/{ident}"), item);
@@ -696,9 +780,31 @@ pub fn build(
     );
     // Every item must claim the map's own collection inside (header and body
     // idents), or a BlueBay map drops it without a word.
-    let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     for bytes in files.values_mut() {
         *bytes = set_ident_collection(bytes, collection);
+    }
+    // Bisection aid: TINY_ONLY=lo-hi keeps only aliases AC000000lo..hi loadable
+    // (the rest get a foreign ident inside, which the game drops silently).
+    if let Ok(range) = std::env::var("TINY_ONLY") {
+        let (lo, hi) = range.split_once('-').expect("TINY_ONLY=lo-hi");
+        let (lo, hi): (usize, usize) = (lo.parse().unwrap(), hi.parse().unwrap());
+        let mut dropped = 0;
+        for (name, bytes) in files.iter_mut() {
+            let idx: usize = name.trim_start_matches("Items/AC").trim_end_matches(".Item.Gbx").parse().unwrap_or(usize::MAX);
+            if idx >= lo && idx <= hi {
+                continue;
+            }
+            // A known-good stand-in (a plain box) under the alias's own ident.
+            let ident = name.trim_start_matches("Items/");
+            let v = [[0.0, 0.0, 0.0], [32.0, 0.0, 0.0], [32.0, 0.0, 32.0], [0.0, 0.0, 32.0], [0.0, 2.0, 0.0], [32.0, 2.0, 0.0], [32.0, 2.0, 32.0], [0.0, 2.0, 32.0]];
+            let tris = [[4, 6, 5], [4, 7, 6], [0, 1, 2], [0, 2, 3], [0, 4, 5], [0, 5, 1], [3, 2, 6], [3, 6, 7], [0, 3, 7], [0, 7, 4], [1, 5, 6], [1, 6, 2]];
+            let mut mesh = crate::crystal::CrystalMesh::default();
+            mesh.add_tris(&v, &tris, 0, 32.0);
+            let mats = vec![crate::crystal::material_for_physics_name_in("Concrete", collection)];
+            *bytes = crate::crystal::build_item(&template, ident, ident, &mats, &mesh);
+            dropped += 1;
+        }
+        println!("  TINY_ONLY {lo}-{hi}: {dropped} items made undroppable-mismatched");
     }
     println!("  {} crystal items, {} faces, collection {:#x}", files.len(), faces_total, collection);
 

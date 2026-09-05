@@ -44,6 +44,18 @@ pub struct MaterialSpec {
 }
 
 impl CrystalMesh {
+    /// Squeeze every UV into a tiny patch around the texture centre: a flat
+    /// colour per material. NOT collapsed to one point -- a zero-area UV
+    /// mapping gives NaN tangents, and materials with a normal map (Dirt,
+    /// Wood, Rock, Stone) then crash the game once a map has enough faces.
+    pub fn flatten_uvs(&mut self) {
+        for f in &mut self.faces {
+            for uv in &mut f.uvs {
+                *uv = [0.5 + (uv[0] - 0.5) * 0.02, 0.5 + (uv[1] - 0.5) * 0.02];
+            }
+        }
+    }
+
     /// Add triangles with their own vertex list; positions are de-duplicated
     /// exactly. UVs are BOX-mapped: each face projects onto the plane of its
     /// dominant normal axis, tiled every `uv_scale` metres, and v is squeezed
@@ -250,6 +262,15 @@ pub fn build_item(template: &[u8], ident: &str, author: &str, materials: &[Mater
 /// 1 = materials, 2 = layers, 4 = lightmap, 8 = smoothing. Bisecting aid.
 pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[MaterialSpec], mesh: &CrystalMesh, keep: u8) -> Vec<u8> {
     assert!(!materials.is_empty() && !mesh.faces.is_empty(), "empty crystal");
+    // Two material slots with the same (link, physics) are FATAL in game:
+    // NGameItemUtils::CreateSolid2Model (0x140F558D0) deduplicates equal
+    // CPlugMaterialUserInsts when building the Solid2Model's CustomMaterials,
+    // then writes the per-slot index map into that shorter array with no
+    // bound check -- one garbage Release() per duplicate, so the crash is
+    // random (whatever lies past the array). Nadeo items never carry
+    // duplicates; merge ours and remap the faces.
+    let (materials, mesh) = dedupe_materials(materials, mesh);
+    let (materials, mesh) = (&materials[..], &mesh);
     let t = parse_template(template);
     let n_mat = materials.len();
     let delta = n_mat as i64 - t.n_materials as i64;
@@ -316,8 +337,12 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     w.u32(0xFFFF_FFFF); //   U04
     w.u32(0); //   no children
     w.u8(1); // embedded crystal
-    w.u32(7); // U02 (as template)
-    w.u32(1); // U03 = groups - 1
+    // U02 = max face material index, U03 = max face group index (the game
+    // reads them as width selectors for the per-face optimized ints;
+    // mesh archive 0x1413D0964).
+    let max_mat = mesh.faces.iter().map(|f| f.material).max().unwrap_or(0);
+    w.u32(max_mat);
+    w.u32(1);
     w.u32(mesh.positions.len() as u32);
     for p in &mesh.positions {
         w.f32(p[0]);
@@ -383,7 +408,10 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     w.u32(0x09003006);
     w.u32(2);
     let grid = (mesh.faces.len() as f64).sqrt().ceil().max(1.0) as usize;
-    let cell = 1.0 / grid as f64;
+    // TINY_LM_SCALE shrinks the atlas into a corner (experiment knob; the
+    // "lightmap budget" theory it served was the duplicate-material crash).
+    let lm_scale: f64 = std::env::var("TINY_LM_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let cell = lm_scale / grid as f64;
     let mut lms: Vec<[u16; 2]> = Vec::new();
     let mut corner_lm: Vec<u32> = Vec::new();
     for (fi, f) in mesh.faces.iter().enumerate() {
@@ -455,7 +483,49 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
 /// car feels is also what the eye should see. Unknown names get the road
 /// material with their own physics id, so the surface still drives right.
 pub fn material_for_physics_name(name: &str) -> MaterialSpec {
+    material_for_physics_name_in(name, 26)
+}
+
+/// Same, for a given map collection. Item material links are WHITELISTED per
+/// environment: Stadium (26) accepts `Stadium\Media\Material\*`; BlueBay (28)
+/// and the other 2026 environments cull every face set that names one, and
+/// only the mesh-editor family `Editors\MeshEditorMedia\Materials\*` draws
+/// there (flat tinted surfaces, no textures -- the best this build allows).
+pub fn material_for_physics_name_in(name: &str, collection: u32) -> MaterialSpec {
     let phys = crate::scene::physics_id(name).unwrap_or(16);
+    if collection != 26 {
+        // The mesh-editor family, one flat tint each (Asphalt slate grey,
+        // Concrete white, Grass mint, Sand cream, Rock/Metal grey, Dirt
+        // terracotta, Wood tan, Ice cyan, Snow white, Plastic yellow). The
+        // physics id is the surface's own -- the game compares link AND
+        // physics when deduplicating, so two slots may share a link.
+        let link = match name {
+            "Asphalt" | "WetAsphalt" => "Editors\\MeshEditorMedia\\Materials\\Asphalt",
+            "Rubber" | "SlidingRubber" => "Editors\\MeshEditorMedia\\Materials\\Concrete",
+            "Concrete" | "Pavement" | "WetPavement" => "Editors\\MeshEditorMedia\\Materials\\Concrete",
+            "Metal" | "ResonantMetal" | "MetalTrans" => "Editors\\MeshEditorMedia\\Materials\\Metal",
+            "Grass" | "WetGrass" => "Editors\\MeshEditorMedia\\Materials\\Grass",
+            "Dirt" | "DirtRoad" | "WetDirtRoad" => "Editors\\MeshEditorMedia\\Materials\\Dirt",
+            "Ice" => "Editors\\MeshEditorMedia\\Materials\\Ice",
+            "Sand" => "Editors\\MeshEditorMedia\\Materials\\Sand",
+            "Wood" => "Editors\\MeshEditorMedia\\Materials\\Wood",
+            "Rock" => "Editors\\MeshEditorMedia\\Materials\\Rock",
+            "Snow" => "Editors\\MeshEditorMedia\\Materials\\Snow",
+            "RoadSynthetic" => "Editors\\MeshEditorMedia\\Materials\\Plastic",
+            _ => "Editors\\MeshEditorMedia\\Materials\\Concrete",
+        };
+        let mut link = link.to_string();
+        if let Ok(ov) = std::env::var("TINY_LINK_OVERRIDE") {
+            for kv in ov.split(';') {
+                if let Some((k, v)) = kv.split_once('=') {
+                    if k == name {
+                        link = format!("Editors\\MeshEditorMedia\\Materials\\{v}");
+                    }
+                }
+            }
+        }
+        return MaterialSpec { link, physics: phys };
+    }
     let link = match name {
         "Asphalt" | "WetAsphalt" => "Stadium\\Media\\Material\\RoadTech",
         "Rubber" | "SlidingRubber" => "Stadium\\Media\\Material\\TrackBorders",
@@ -471,6 +541,28 @@ pub fn material_for_physics_name(name: &str) -> MaterialSpec {
         _ => "Stadium\\Media\\Material\\RoadTech",
     };
     MaterialSpec { link: link.to_string(), physics: phys }
+}
+
+/// Merge material slots that are equal for the game (same link and physics)
+/// and remap the faces onto the surviving slots, in first-seen order.
+pub fn dedupe_materials(materials: &[MaterialSpec], mesh: &CrystalMesh) -> (Vec<MaterialSpec>, CrystalMesh) {
+    let mut out: Vec<MaterialSpec> = Vec::new();
+    let mut remap: Vec<u32> = Vec::with_capacity(materials.len());
+    for m in materials {
+        let pos = out.iter().position(|o| o.link == m.link && o.physics == m.physics);
+        remap.push(match pos {
+            Some(p) => p as u32,
+            None => {
+                out.push(m.clone());
+                (out.len() - 1) as u32
+            }
+        });
+    }
+    let mut mesh = mesh.clone();
+    for f in &mut mesh.faces {
+        f.material = remap[f.material as usize];
+    }
+    (out, mesh)
 }
 
 /// A `LINK|PHYS` label from `Collector::link_labels` as a material spec. A
