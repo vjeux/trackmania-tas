@@ -32,6 +32,23 @@ fn main() {
     m.set_item_scale(arch[2], scale);
     m.set_item_model(arch[2], ident);
     m.set_item_author(arch[2], author);
+    // COPIES=N: N more placements of the item in a grid behind the pair, so a
+    // per-instance-count failure (a crash that needs hundreds of copies)
+    // reproduces in a one-item map.
+    if let Ok(n) = std::env::var("COPIES") {
+        let n: usize = n.parse().unwrap();
+        let used: std::collections::HashSet<usize> = arch.iter().copied().collect();
+        let mut free: Vec<usize> = (0..m.items.len()).filter(|i| !used.contains(i)).collect();
+        free.truncate(n);
+        for (k, &i) in free.iter().enumerate() {
+            let p = [anchor[0] + (k % 20) as f32 * 40.0, anchor[1], anchor[2] + 64.0 + (k / 20) as f32 * 40.0];
+            m.move_item(i, p, 0.0, cell(p));
+            m.set_item_scale(i, scale);
+            m.set_item_model(i, ident);
+            m.set_item_author(i, author);
+        }
+        eprintln!("{} extra copies placed", free.len());
+    }
     let stage = Path::new(out).with_extension("stage.Map.Gbx");
     m.write_to(&stage).unwrap();
     let mut m2 = MapFile::load(&stage);
