@@ -567,7 +567,11 @@ pub fn catalog_cmd(args: &[String]) {
             // --yaw-offset DEG turns the item relative to the block's yaw.
             let off: f32 = cli::flag(args, "--yaw-offset").unwrap_or("0").parse::<f32>().expect("--yaw-offset deg").to_radians();
             let rot = [rot[0] + off, rot[1], rot[2]];
-            specs.push(Spec { model: map.model.clone(), pos: origin, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
+            // --overlay-lift M raises the item a little so a coplanar match
+            // reads as covered instead of z-fighting with the block.
+            let lift: f32 = cli::flag(args, "--overlay-lift").unwrap_or("0").parse().expect("--overlay-lift m");
+            let pos = [origin[0], origin[1] + lift, origin[2]];
+            specs.push(Spec { model: map.model.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
             let bp = block_pos(&moved);
             tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\toverlay\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
             continue;
