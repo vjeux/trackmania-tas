@@ -274,6 +274,11 @@ impl<'a> Graph<'a> {
 
     /// One chunk of one node.
     pub fn chunk(&mut self, class_id: u32, cid: u32, acc: &mut Acc) -> R<()> {
+        // The block-info families live in blockinfo.rs; anything it knows it
+        // reads, anything else falls through to the table below.
+        if let Some(res) = self.bi_chunk(class_id, cid) {
+            return res;
+        }
         match cid {
             // ---------------------------------------------- CPlugSurface
             0x0900C003 => {
@@ -467,6 +472,128 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
 
+            // ------------------------------ CPlugSolid (inline, as a block
+            // variant's trigger solid) and its CPlugTree. Only what the block
+            // info files carry: GateSpecialBoost has the whole set.
+            0x09005000 => {
+                self.r.i32()?; // TypeAndIndex
+                Ok(())
+            }
+            0x09005010 => {
+                self.noderef()?;
+                Ok(())
+            }
+            0x09005011 => {
+                self.r.bool32()?;
+                if self.r.bool32()? {
+                    self.r.bool32()?;
+                }
+                acc.touched = true;
+                acc.entity_model = self.noderef()?; // Tree
+                Ok(())
+            }
+            0x09005017 => {
+                let v = self.r.u32()?;
+                if v >= 3 {
+                    if self.r.bool32()? {
+                        // PreLightGen: version, int, float, bool, 8 floats,
+                        // int2 sprite count, box[], v1+ uvgroup[].
+                        let pv = self.r.u32()?;
+                        self.r.take(4 + 4 + 4 + 8 * 4 + 8)?;
+                        self.r.array(|r| r.take(24).map(|_| ()))?;
+                        if pv >= 1 {
+                            self.r.array(|r| r.take(20).map(|_| ()))?;
+                        }
+                    }
+                } else {
+                    self.r.take(1 + 4 + 4 + 16 + 16 + 8)?;
+                    if v >= 1 {
+                        self.r.array(|r| r.take(24).map(|_| ()))?;
+                    }
+                }
+                if v >= 2 {
+                    self.r.take(8)?; // FileWriteTime (GateSpecialBoost: present at v3)
+                }
+                Ok(())
+            }
+            0x09005019 => {
+                let v = self.r.u32()?;
+                for _ in 0..2 {
+                    let lv = self.r.u32()?;
+                    if lv != 10 {
+                        return Err(format!("CPlugSolid 019 list version {} (expected 10)", lv));
+                    }
+                    let n = self.r.u32()? as usize;
+                    for _ in 0..n {
+                        self.noderef()?;
+                    }
+                }
+                for _ in 0..2 {
+                    self.r.array(|r| r.take(4 + 48).map(|_| ()))?; // LocatedInstance
+                }
+                if v >= 1 {
+                    self.r.i32()?;
+                }
+                if v >= 2 {
+                    self.r.array(|r| r.lookback())?;
+                    self.r.array(|r| r.iso4())?;
+                }
+                if v >= 3 {
+                    self.r.string()?;
+                }
+                // GBX.NET stops at v3. The BlueBay GateSpecial* files are v5
+                // and carry eight more bytes here (0x00019312, 0xFFFFFFFF on
+                // every one — looks like a word and a null node ref) right
+                // before chunk 0x0900501A.
+                if v >= 4 {
+                    self.r.take(8)?;
+                }
+                Ok(())
+            }
+            0x0904F006 => {
+                let lv = self.r.u32()?;
+                if lv != 10 {
+                    return Err(format!("CPlugTree children list version {} (expected 10)", lv));
+                }
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    self.noderef()?;
+                }
+                Ok(())
+            }
+            0x0904F00D => {
+                self.r.lookback()?;
+                self.r.lookback()?;
+                Ok(())
+            }
+            0x0904F011 | 0x0904F017 => {
+                self.noderef()?;
+                Ok(())
+            }
+            0x0904F016 => {
+                self.noderef()?; // Visual
+                self.noderef()?; // Shader
+                self.noderef()?; // Surface
+                self.noderef()?; // Generator
+                Ok(())
+            }
+            0x0904F01A => {
+                let flags = self.r.u32()?;
+                if flags & 4 != 0 {
+                    self.r.iso4()?;
+                }
+                Ok(())
+            }
+            // CPlugMediaClipList / CGamePodiumInfo: version, external clips.
+            0x09189000 | 0x03168000 => {
+                let _v = self.r.u32()?;
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    self.noderef()?;
+                }
+                Ok(())
+            }
+
             // ------------------------------ CGameCtnCollector / item model
             // An item's geometry hangs off `0x2E002019`'s EntityModel; the
             // rest of these exist only so the chunk walk reaches it.
@@ -482,7 +609,14 @@ impl<'a> Graph<'a> {
                 self.r.meta()?;
                 Ok(())
             }
-            0x2E00100C | 0x2E00100D => {
+            0x2E00100C => {
+                let name = self.r.string()?;
+                if self.bi_stack.len() <= 1 {
+                    self.collector_name = name;
+                }
+                Ok(())
+            }
+            0x2E00100D => {
                 self.r.string()?;
                 Ok(())
             }
@@ -1867,9 +2001,22 @@ fn compose(outer: &[f32; 12], inner: &[f32; 12]) -> [f32; 12] {
 }
 
 fn known(_class_id: u32, cid: u32) -> bool {
-    matches!(
+    crate::blockinfo::known(cid) || matches!(
         cid,
-        0x0900C003
+        0x09005000
+            | 0x09005010
+            | 0x09005011
+            | 0x09005017
+            | 0x09005019
+            | 0x0904F006
+            | 0x0904F00D
+            | 0x0904F011
+            | 0x0904F016
+            | 0x0904F017
+            | 0x0904F01A
+            | 0x09189000
+            | 0x03168000
+            | 0x0900C003
             | 0x090BB000
             | 0x09006001
             | 0x09006004

@@ -22,6 +22,15 @@ COMMANDS
       --stadium-pak PAK [--scale 0.5] [--keep-unscaled]
                                 build exact scalable wrappers and the tiny map
   extract <logical-path> <file>    one pack file, decrypted and decompressed
+  blockinfo <logical-path>...    a CGameCtnBlockInfo file, fully typed: kind,
+                                variants, units, clips per side, mobil prefabs
+  blockinfo-map <file.Map.Gbx> --out TSV [--no-baked] [--report TSV]
+      [--collection BlueBay]
+      [--collection BlueBay]
+                                every authored block with its picked variant,
+                                cells, prefabs and what each side faces
+  blockinfo-all [<substring>] [--out TSV]
+                                parse every block info in the packs and report
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
       [--ghost G]... [--png P] [--clip-y Y]
                                 a whole map, with any ghosts as polylines
@@ -556,6 +565,90 @@ fn main() {
                     .unwrap_or_else(|_| die("--scale number".into())),
                 a.rest.iter().any(|x| x == "--keep-unscaled"),
             );
+        }
+        "blockinfo" => {
+            let mut store = open(&a);
+            let paths: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--")).cloned().collect();
+            if paths.is_empty() {
+                die::<()>("blockinfo needs a logical path".into());
+            }
+            let mut bad = 0;
+            for p in &paths {
+                match mapgeom::blockinfo::load(&mut store, p) {
+                    Ok(b) => {
+                        print!("{}", b.render());
+                        if !b.parsed_to_end() {
+                            bad += 1;
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}\n  FAILED: {}", p, e);
+                        bad += 1;
+                    }
+                }
+            }
+            if bad > 0 {
+                std::process::exit(1);
+            }
+        }
+        "blockinfo-all" => {
+            let mut store = open(&a);
+            let pat = a.rest.get(1).filter(|x| !x.starts_with("--")).cloned().unwrap_or_default().to_uppercase();
+            let names: Vec<String> = store
+                .entries()
+                .map(|e| e.path())
+                .filter(|p| p.to_uppercase().contains("\\GAMECTNBLOCKINFO\\") && (pat.is_empty() || p.to_uppercase().contains(&pat)))
+                .collect();
+            let mut rows = String::from("path\tclass\tstatus\tconsumed\tbody\tkind\tvariants\tdetail\n");
+            let (mut ok, mut short, mut fail) = (0, 0, 0);
+            for p in &names {
+                match mapgeom::blockinfo::load(&mut store, p) {
+                    Ok(b) => {
+                        let st = if b.parsed_to_end() { ok += 1; "OK" } else { short += 1; "SHORT" };
+                        rows.push_str(&format!(
+                            "{}\t{:08X}\t{}\t{}\t{}\t{:?}\t{}\t{}\n",
+                            p, b.class_id, st, b.consumed.0, b.consumed.1, b.kind, b.all_variants().len(),
+                            if b.skipped_chunks.is_empty() { String::new() } else { format!("skipped {:?}", b.skipped_chunks) }
+                        ));
+                    }
+                    Err(e) => {
+                        fail += 1;
+                        rows.push_str(&format!("{}\t\tFAIL\t\t\t\t\t{}\n", p, e.replace('\t', " ")));
+                    }
+                }
+            }
+            if let Some(out) = flag(&a.rest, "--out") {
+                std::fs::write(&out, &rows).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {}", out);
+            } else {
+                print!("{}", rows);
+            }
+            println!("{} files: {} parsed to the end, {} short, {} failed", names.len(), ok, short, fail);
+        }
+        "blockinfo-map" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("blockinfo-map needs --out TSV".into()));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let with_baked = !a.rest.iter().any(|x| x == "--no-baked");
+            let collection = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".into());
+            let (placements, idx) = mapgeom::blockmap::walk(&mut store, &m, with_baked, &collection);
+            std::fs::write(&out, mapgeom::blockmap::tsv(&placements)).unwrap_or_else(|e| die(e.to_string()));
+            let authored = placements.iter().filter(|q| !q.baked).count();
+            let errs = placements.iter().filter(|q| !q.baked && q.error.is_some()).count();
+            println!("wrote {}: {} authored blocks ({} with errors), {} baked", out, authored, errs, placements.len() - authored);
+            print!("{}", mapgeom::blockmap::summary(&placements));
+            let rep = mapgeom::blockmap::parse_report(&idx);
+            if let Some(r) = flag(&a.rest, "--report") {
+                std::fs::write(&r, &rep).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {}", r);
+            }
+            let n_ok = rep.lines().filter(|l| l.contains("\tOK\t")).count();
+            let n_bad = rep.lines().count() - n_ok;
+            println!("{} block info files loaded: {} parsed to the end, {} did not", rep.lines().count(), n_ok, n_bad);
+            for l in rep.lines().filter(|l| !l.contains("\tOK\t")) {
+                println!("  {}", l);
+            }
         }
         "extract" => {
             let mut store = open(&a);
@@ -1349,6 +1442,30 @@ fn describe(n: &Node) -> String {
             format!("material {} ({})", n, mapgeom::scene::physics_name(*p))
         }
         Node::ItemModel(i) => format!("item model -> node {}", i),
+        Node::BlockInfo(b) => format!(
+            "CGameCtnBlockInfo, base variants ground={} air={}, additional ground {} air {}, waypoint {:?}{}",
+            b.variant_base_ground, b.variant_base_air, b.additional_ground.len(), b.additional_air.len(), b.waypoint_type,
+            if b.clip_type.is_some() || b.asym_clip_id.is_some() { " (CLIP)" } else { "" }
+        ),
+        Node::Variant(v) => format!(
+            "CGameCtnBlockInfoVariant {:?}, {} units, mobils {:?}, cardinal {}, sym {}",
+            v.name, v.block_units.len(), v.mobils, v.cardinal_dir, v.symmetrical_variant_index
+        ),
+        Node::BlockUnit(u) => format!(
+            "CGameCtnBlockUnitInfo offset {:?} clips N{:?} E{:?} S{:?} W{:?} T{:?} B{:?} terrain {:?}",
+            u.offset, u.clips[0], u.clips[1], u.clips[2], u.clips[3], u.clips[4], u.clips[5], u.terrain_modifier_id
+        ),
+        Node::Mobil(m) => format!(
+            "CGameCtnBlockInfoMobil v{} prefab=node {} solid=node {} translation {:?} rotation {:?} road chunks {:?} u16 {:?}",
+            m.version, m.prefab_fid, m.solid_fid, m.geom_translation, m.geom_rotation, m.road_chunks, m.u16
+        ),
+        Node::AutoTerrain(a) => format!("CGameCtnAutoTerrain offset {:?} genealogy=node {}", a.offset, a.genealogy),
+        Node::Genealogy(z) => format!("CGameCtnZoneGenealogy zones {:?} current {} dir {} id {:?}", z.zone_ids, z.current_index, z.dir, z.current_zone_id),
+        Node::RoadChunk(r) => format!(
+            "CPlugRoadChunk v{} {:?} points {}/{}/{}/{} id {:?}/{:?} left {:?}..{:?} right {:?}..{:?}",
+            r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
+            r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
+        ),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }
