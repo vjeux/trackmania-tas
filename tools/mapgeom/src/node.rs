@@ -227,6 +227,9 @@ pub struct Graph<'a> {
     /// Places where a layout this reader does not know forced a scan to the
     /// node terminator. Never silent: whatever was in the node is missing.
     pub recovered: Vec<String>,
+    /// Every node reference word read, as (body offset, index): what a
+    /// renumbering of the node table has to rewrite. Filled by `noderef`.
+    pub noderef_sites: Vec<(usize, i32)>,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -241,7 +244,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new() }
     }
 
     /// Parse a whole file body, rooted at `class_id`.
@@ -267,7 +270,9 @@ impl<'a> Graph<'a> {
 
     /// Read a node reference. Returns the node index, or -1 for null.
     pub fn noderef(&mut self) -> R<i32> {
+        let at = self.r.o;
         let idx = self.r.i32()?;
+        self.noderef_sites.push((at, idx));
         if idx <= 0 {
             return Ok(-1);
         }
