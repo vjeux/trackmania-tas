@@ -708,11 +708,37 @@ pub fn build(
         // archive's waypoint crystals; a generated crystal would be decor.
         if let Some(src) = waypoint_archive_item(prefab) {
             let bytes = legacy.get(src).unwrap_or_else(|| panic!("{src} absent from Nadeo archive"));
-            let item = nameless_ident(bytes, &ident);
-            // Outside Stadium the archive's Stadium material links are culled
-            // or red: swap the link strings for the environment's family.
-            let item = if collection == 26 || std::env::var_os("TINY_NO_REMAP").is_some() { item } else { remap_stadium_links(&item) };
-            files.insert(format!("Items/{ident}"), item);
+            if collection == 26 {
+                files.insert(format!("Items/{ident}"), nameless_ident(bytes, &ident));
+            } else {
+                // Outside Stadium the archive's Stadium material links are
+                // culled or red. Re-emit the mesh through our writer with the
+                // environment's family: it deduplicates the slots that then
+                // share a link (the game crashes on duplicates), and copies the
+                // waypoint trigger chunks outside the crystal verbatim. Decal
+                // and light slots (physics 28/32) are dropped with their faces.
+                let (mats, mesh) = crate::crystal::decode_template(bytes);
+                let keep: Vec<bool> = mats.iter().map(|m| !matches!(m.physics, 28 | 32)).collect();
+                let mut mesh2 = crate::crystal::CrystalMesh::default();
+                mesh2.positions = mesh.positions.clone();
+                for f in &mesh.faces {
+                    if keep[f.material as usize] {
+                        let mut f2 = f.clone();
+                        f2.uvs = f.uvs.iter().map(|uv| [0.25 + (uv[0] - 0.5) * 0.01, 0.25 + (uv[1] - 0.5) * 0.01]).collect();
+                        mesh2.faces.push(f2);
+                    }
+                }
+                let mats: Vec<_> = mats
+                    .iter()
+                    .map(|m| {
+                        let phys = crate::scene::physics_name(m.physics);
+                        crate::crystal::material_for_physics_name_in(phys, collection)
+                    })
+                    .collect();
+                let item = crate::crystal::build_item(bytes, &ident, &ident, &mats, &mesh2);
+                faces_total += mesh2.faces.len();
+                files.insert(format!("Items/{ident}"), item);
+            }
             continue;
         }
         let (item, faces) = crystal_from_model_in(&mut store, prefab, &template, &ident, collection)
@@ -840,8 +866,21 @@ pub fn build(
         out_zip.display().to_string(),
         "--scale".into(),
         scale.to_string(),
+        "--anchor".into(),
+        // Sea level: the original's Land tops sit at y=-12 (block y -14, top
+        // +2); with the start block (y -6) as source anchor, -9 puts the
+        // half-scale tops at the same height. TINY_ANCHOR overrides.
+        std::env::var("TINY_ANCHOR").unwrap_or_else(|_| "1024,-9,1024".into()),
     ];
     tmmaps::tiny::cmd(&args);
+    // The original's baked terrain would otherwise stay at full size under
+    // the copy; the game regenerates Sea/clips from the (parked) blocks.
+    if std::env::var_os("TINY_KEEP_TERRAIN").is_none() {
+        match tmmaps::map::MapFile::clear_genealogy_file(out_map) {
+            Ok(n) => println!("  terrain genealogy cleared ({n} zone records): no island regenerates under the copy"),
+            Err(e) => println!("  terrain genealogy NOT cleared: {e}"),
+        }
+    }
     println!(
         "  generated {} block items + {} item conversions",
         aliases.len() + 4,
