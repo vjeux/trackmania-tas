@@ -344,6 +344,24 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::Visual(_) | Node::VertexStream(_) => {}
+            // A block info file: its geometry is what the BASE GROUND variant
+            // draws (air when there is no ground one) — every mobil's prefab
+            // or solid, in place. Variants and units carry no geometry of
+            // their own.
+            Node::BlockInfo(b) => {
+                let vi = if b.variant_base_ground > 0 { b.variant_base_ground } else { b.variant_base_air };
+                if let Some(Slot::Node(Node::Variant(v))) = slots.get(vi.max(0) as usize) {
+                    for list in &v.mobils {
+                        for mi in list {
+                            if let Some(Slot::Node(Node::Mobil(m))) = slots.get((*mi).max(0) as usize) {
+                                let target = if m.prefab_fid > 0 { m.prefab_fid } else { m.solid_fid };
+                                self.slot(target, slots, at, depth);
+                            }
+                        }
+                    }
+                }
+            }
+            Node::Variant(_) | Node::BlockUnit(_) | Node::Mobil(_) | Node::AutoTerrain(_) | Node::Genealogy(_) | Node::RoadChunk(_) => {}
             Node::Other(c) => {
                 *self.stats.unhandled.entry(*c).or_insert(0) += 1;
             }

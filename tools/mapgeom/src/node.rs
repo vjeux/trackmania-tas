@@ -184,6 +184,18 @@ pub enum Node {
     /// A material: its name, and the physics id the car feels through it.
     Material(String, u8),
     ItemModel(i32),
+    /// `CGameCtnBlockInfo*`: a block model (or a clip), see `blockinfo.rs`.
+    BlockInfo(Box<crate::blockinfo::BlockInfoRaw>),
+    /// `CGameCtnBlockInfoVariant{Ground,Air}`.
+    Variant(Box<crate::blockinfo::VariantRaw>),
+    /// `CGameCtnBlockUnitInfo`: one cell of a variant and its clips.
+    BlockUnit(Box<crate::blockinfo::BlockUnitRaw>),
+    /// `CGameCtnBlockInfoMobil`: one drawn prefab/solid of a variant.
+    Mobil(Box<crate::blockinfo::MobilRaw>),
+    AutoTerrain(crate::blockinfo::AutoTerrainRaw),
+    Genealogy(crate::blockinfo::GenealogyRaw),
+    /// `CPlugRoadChunk` / `CPlugPlacementPatch`.
+    RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
     Other(u32),
 }
 
@@ -200,6 +212,13 @@ impl Node {
             Node::Crystal(_) => C_CRYSTAL,
             Node::Material(..) => C_MATERIAL_USER_INST,
             Node::ItemModel(_) => C_ITEM_MODEL,
+            Node::BlockInfo(_) => crate::blockinfo::C_BLOCK_INFO,
+            Node::Variant(_) => crate::blockinfo::C_VARIANT,
+            Node::BlockUnit(_) => crate::blockinfo::C_BLOCK_UNIT,
+            Node::Mobil(_) => crate::blockinfo::C_MOBIL,
+            Node::AutoTerrain(_) => crate::blockinfo::C_AUTO_TERRAIN,
+            Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
+            Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
             Node::Other(c) => *c,
         }
     }
@@ -230,6 +249,13 @@ pub struct Graph<'a> {
     /// Every node reference word read, as (body offset, index): what a
     /// renumbering of the node table has to rewrite. Filled by `noderef`.
     pub noderef_sites: Vec<(usize, i32)>,
+    /// Unknown skippable chunks stepped over, as (chunk id, size). What a
+    /// "complete" reader still does not read.
+    pub skipped: Vec<(u32, u32)>,
+    /// The collector name (chunk 0x2E00100C) of the root node, when it has one.
+    pub collector_name: String,
+    /// One block-info accumulator per node body being read, innermost last.
+    pub bi_stack: Vec<crate::blockinfo::BiAcc>,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -244,7 +270,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new() }
     }
 
     /// Parse a whole file body, rooted at `class_id`.
@@ -304,6 +330,16 @@ impl<'a> Graph<'a> {
             return self.plain_body(class_id);
         }
         let mut acc = Acc::new(class_id);
+        self.bi_stack.push(crate::blockinfo::BiAcc::default());
+        let walked = self.node_chunks(class_id, &mut acc);
+        let bi = self.bi_stack.pop().unwrap_or_default();
+        walked?;
+        Ok(acc.finish(class_id, bi))
+    }
+
+    /// The chunk loop of `node_body`, split out so the accumulator stack is
+    /// popped on every exit path.
+    fn node_chunks(&mut self, class_id: u32, acc: &mut Acc) -> R<()> {
         loop {
             if self.r.eof() {
                 // A body that ends without FACADE is legal for the outermost
@@ -330,22 +366,23 @@ impl<'a> Graph<'a> {
                             cid, size
                         ));
                     }
-                    self.chunk(class_id, cid, &mut acc)?;
+                    self.chunk(class_id, cid, acc)?;
                     // Trailing bytes inside a skippable chunk are normal (the
                     // game writes more than any one reader consumes); jump to
                     // the declared end rather than trusting our own cursor.
                     self.r.o = end;
                 } else {
+                    self.skipped.push((cid, size as u32));
                     self.r.take(size)?;
                 }
             } else {
-                self.chunk(class_id, cid, &mut acc).map_err(|e| {
+                self.chunk(class_id, cid, acc).map_err(|e| {
                     format!("class 0x{:08X} chunk 0x{:08X} at 0x{:x}: {}", class_id, cid, self.r.o, e)
                 })?;
             }
             *self.seen.entry((class_id, cid)).or_insert(0) += 1;
         }
-        Ok(acc.finish(class_id))
+        Ok(())
     }
 
 }
@@ -394,7 +431,10 @@ impl Acc {
             touched: false,
         }
     }
-    fn finish(self, class_id: u32) -> Node {
+    fn finish(self, class_id: u32, bi: crate::blockinfo::BiAcc) -> Node {
+        if let Some(n) = bi.finish(class_id) {
+            return n;
+        }
         if !self.touched {
             return Node::Other(class_id);
         }
@@ -425,4 +465,28 @@ pub fn is_visual(class_id: u32) -> bool {
         class_id,
         C_VISUAL_INDEXED_TRIANGLES | 0x0906A000 | 0x0902C000 | 0x09006000 | 0x0900F000
     )
+}
+
+/// A short name for a node's kind, for messages.
+pub fn node_kind_name(n: &Node) -> &'static str {
+    match n {
+        Node::Prefab(_) => "CPlugPrefab",
+        Node::StaticObject(_) => "CPlugStaticObjectModel",
+        Node::Dyna(_) => "CPlugDynaObjectModel",
+        Node::Surface(_) => "CPlugSurface",
+        Node::Solid2(_) => "CPlugSolid2Model",
+        Node::Visual(_) => "CPlugVisual",
+        Node::VertexStream(_) => "CPlugVertexStream",
+        Node::Crystal(_) => "CPlugCrystal",
+        Node::Material(..) => "material",
+        Node::ItemModel(_) => "item model",
+        Node::BlockInfo(_) => "CGameCtnBlockInfo",
+        Node::Variant(_) => "CGameCtnBlockInfoVariant",
+        Node::BlockUnit(_) => "CGameCtnBlockUnitInfo",
+        Node::Mobil(_) => "CGameCtnBlockInfoMobil",
+        Node::AutoTerrain(_) => "CGameCtnAutoTerrain",
+        Node::Genealogy(_) => "CGameCtnZoneGenealogy",
+        Node::RoadChunk(_) => "CPlugRoadChunk",
+        Node::Other(_) => "other",
+    }
 }
