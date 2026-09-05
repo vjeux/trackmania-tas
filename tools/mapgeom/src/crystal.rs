@@ -665,3 +665,56 @@ pub fn decode_template(bytes: &[u8]) -> (Vec<MaterialSpec>, CrystalMesh) {
     }
     (materials, mesh)
 }
+
+/// Scale an item's geometry in the file: every Geometry layer's positions,
+/// the Trigger layer's crystal, and the SpawnPosition, about the item origin.
+/// The game does not apply the placement's Scale field to items (measured:
+/// Nadeo's own road item at placement scale 0.5 renders full size), so the
+/// scale has to live in the mesh. Materials and every other layer are kept.
+pub fn scale_item(item: &[u8], s: f32) -> Vec<u8> {
+    let mut it = ItemCrystal::open(item).unwrap_or_else(|e| panic!("item: {e}"));
+    let (first_node, n_old) = it.material_node_range();
+    for l in &mut it.model.layers {
+        match &mut l.kind {
+            crate::crystal_model::LayerKind::Geometry { crystal, .. }
+            | crate::crystal_model::LayerKind::Trigger { crystal, .. } => {
+                for p in &mut crystal.positions {
+                    *p = [p[0] * s, p[1] * s, p[2] * s];
+                }
+            }
+            crate::crystal_model::LayerKind::SpawnPosition { position, .. } => {
+                *position = [position[0] * s, position[1] * s, position[2] * s];
+            }
+            _ => {}
+        }
+    }
+    it.close(first_node, n_old)
+}
+
+/// Rename an item's ident everywhere it is spelled (header ident chunk, body
+/// ident chunk, author when it equals the name) -- same-length names only, so
+/// no offset in either part moves.
+pub fn rename_ident_same_len(item: &[u8], from: &str, to: &str) -> Vec<u8> {
+    assert_eq!(from.len(), to.len(), "same-length rename only");
+    let mut g = Gbx::parse(item);
+    let replace = |buf: &mut Vec<u8>| {
+        let f = from.as_bytes();
+        let mut i = 0;
+        let mut n = 0;
+        while i + f.len() <= buf.len() {
+            if &buf[i..i + f.len()] == f {
+                buf[i..i + f.len()].copy_from_slice(to.as_bytes());
+                i += f.len();
+                n += 1;
+            } else {
+                i += 1;
+            }
+        }
+        n
+    };
+    let mut body = g.body.clone();
+    let nb = replace(&mut body);
+    let nh = replace(&mut g.user_data);
+    assert!(nb + nh > 0, "ident {from} not found");
+    g.write_body_recompressed(&body)
+}

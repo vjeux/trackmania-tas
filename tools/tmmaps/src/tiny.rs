@@ -112,8 +112,24 @@ fn read_mapping(path: &Path) -> Mappings {
     out
 }
 
+thread_local! {
+    /// World y of cell row 0 for the map being converted (see `map::ground_y`).
+    static GROUND_Y: std::cell::Cell<f32> = const { std::cell::Cell::new(-62.0) };
+}
+fn set_ground(collection: u32) {
+    GROUND_Y.with(|g| g.set(crate::map::ground_y(collection)));
+    println!("  ground: cell row 0 at y {} (collection {collection:#x})", crate::map::ground_y(collection));
+}
+fn ground() -> f32 {
+    GROUND_Y.with(|g| g.get())
+}
+
 fn block_pos(b: &crate::map::BlockRec) -> [f32; 3] {
-    b.free_pos.unwrap_or_else(|| census::cell_world(b))
+    b.free_pos.unwrap_or_else(|| {
+        let mut p = census::cell_world(b);
+        p[1] = p[1] + 62.0 + ground();
+        p
+    })
 }
 
 /// The world point a block's prefab geometry is authored from: the cell's
@@ -134,7 +150,7 @@ fn block_origin(b: &crate::map::BlockRec, footprint: (u32, u32)) -> [f32; 3] {
     };
     [
         cx as f32 * crate::map::CELL_XZ + shift[0],
-        cy as f32 * crate::map::CELL_Y - 62.0,
+        cy as f32 * crate::map::CELL_Y + ground(),
         cz as f32 * crate::map::CELL_XZ + shift[1],
     ]
 }
@@ -168,7 +184,7 @@ fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
     let c = |v: f32, divisor: f32| (v / divisor).floor().clamp(0.0, 255.0) as i32;
     (
         c(p[0], 32.0).min(254),
-        c(p[1] + 62.0, 8.0),
+        c(p[1] - ground(), 8.0),
         c(p[2], 32.0).min(254),
     )
 }
@@ -237,6 +253,7 @@ pub fn cmd(args: &[String]) {
     let host: Option<PathBuf> = cli::flag(args, "--host").map(PathBuf::from);
 
     let source = MapFile::load(&src);
+    set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
     let spawn = source
         .waypoints()
         .into_iter()
@@ -380,6 +397,9 @@ pub fn cmd(args: &[String]) {
             m.set_item_frame(i, rot, pivot);
         }
         m.set_item_scale(i, s.scale);
+        if s.model.starts_with("AC0") {
+            m.clear_item_variant(i);
+        }
     }
     m.write_to(&tmp2).expect("write model stage");
 
@@ -468,4 +488,192 @@ pub fn cmd(args: &[String]) {
         "  anchor: source {:?} -> target {:?}; scale {:.3}",
         source_anchor, target_anchor, scale
     );
+}
+
+/// Block-by-block verification map. For every distinct authored block model of
+/// the source map, one ORIGINAL block is kept and moved onto a grid cell; its
+/// generated item is placed beside it at scale 1 (+64 m in x) and again at the
+/// requested scale (+112 m in x). Every other block is parked, every original
+/// item is moved out of sight. A TSV of the grid (name, alias, cell, positions)
+/// is written next to the map for camera planning and for reading the shots.
+///
+///   tmmaps tiny-catalog SRC.Map.Gbx --mapping placements.tsv --library ITEMS.zip
+///       --out CATALOG.Map.Gbx [--scale 0.5] [--cols 7] [--host HOST.Map.Gbx]
+pub fn catalog_cmd(args: &[String]) {
+    let src = PathBuf::from(&args[2]);
+    let out = PathBuf::from(cli::flag(args, "--out").expect("tiny-catalog needs --out MAP"));
+    let mapping = read_mapping(&PathBuf::from(cli::flag(args, "--mapping").expect("--mapping FILE.tsv")));
+    let library = PathBuf::from(cli::flag(args, "--library").expect("--library ITEMS.zip"));
+    let scale: f32 = cli::flag(args, "--scale").unwrap_or("0.5").parse().expect("--scale");
+    let cols: i32 = cli::flag(args, "--cols").unwrap_or("7").parse().expect("--cols");
+    let host: Option<PathBuf> = cli::flag(args, "--host").map(PathBuf::from);
+    let only: Option<String> = cli::flag(args, "--only").map(String::from);
+    let source = MapFile::load(&src);
+    set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
+
+    // one representative per block name, grid-placed blocks only
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut reps: Vec<usize> = Vec::new();
+    for b in &source.blocks {
+        if b.flags & FREE_BLOCK_FLAG != 0 {
+            continue;
+        }
+        if !mapping.by_index.contains_key(&b.index) && !mapping.by_name.contains_key(&b.name) {
+            continue;
+        }
+        if let Some(o) = &only {
+            if !o.split(',').any(|n| n == b.name) {
+                continue;
+            }
+        }
+        if seen.insert(b.name.clone()) {
+            reps.push(b.index);
+        }
+    }
+    println!("  {} block models to verify", reps.len());
+
+    // grid: 6 cells per column (192 m), 3 cells per row (96 m)
+    let col_cells = 6;
+    let row_cells = 3;
+    let mut grid: Vec<(usize, (i32, i32, i32))> = Vec::new();
+    for (k, &bi) in reps.iter().enumerate() {
+        let col = k as i32 % cols;
+        let row = k as i32 / cols;
+        let (_, cy, _) = source.blocks[bi].coords();
+        // start well inside the grid: the map edge is the decoration's scenery
+        let origin: i32 = cli::flag(args, "--origin-cell").unwrap_or("20").parse().expect("--origin-cell");
+        let raise: i32 = cli::flag(args, "--raise").unwrap_or("0").parse().expect("--raise cells");
+        grid.push((bi, (origin + col * col_cells, cy + raise, origin + row * row_cells)));
+    }
+
+    let mut specs: Vec<Spec> = Vec::new();
+    let mut tsv = String::from("name\talias\tcell_x\tcell_y\tcell_z\tblock_x\tblock_y\tblock_z\titem1_x\titem1_z\titem_scaled_x\titem_scaled_z\n");
+    for &(bi, cell) in &grid {
+        let b = &source.blocks[bi];
+        let map = mapping.by_index.get(&bi).or_else(|| mapping.by_name.get(&b.name)).unwrap();
+        // the block's origin once moved: recompute from the new cell
+        let mut moved = b.clone();
+        moved.raw_coords = [(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8];
+        let origin = match map.footprint {
+            Some(fp) => block_origin(&moved, fp),
+            None => block_pos(&moved),
+        };
+        let rot = [block_yaw(b), 0.0, 0.0];
+        // --geometry-scaled: slot C uses the AS-prefixed library twin whose
+        // mesh already carries the scale (the game ignores placement scale).
+        let geom_scaled = args.iter().any(|a| a == "--geometry-scaled");
+        if args.iter().any(|a| a == "--overlay") {
+            // the scale-1 item exactly on the block: mismatches peek out.
+            // --yaw-offset DEG turns the item relative to the block's yaw.
+            let off: f32 = cli::flag(args, "--yaw-offset").unwrap_or("0").parse::<f32>().expect("--yaw-offset deg").to_radians();
+            let rot = [rot[0] + off, rot[1], rot[2]];
+            specs.push(Spec { model: map.model.clone(), pos: origin, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
+            let bp = block_pos(&moved);
+            tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\toverlay\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
+            continue;
+        }
+        if args.iter().any(|a| a == "--yaw-sweep") {
+            // four copies of the scale-1 item at yaw 0, 90, 180, 270 degrees
+            for k in 0..4 {
+                let pos = [origin[0] + 64.0 + 48.0 * k as f32, origin[1], origin[2]];
+                let yaw = k as f32 * std::f32::consts::FRAC_PI_2;
+                specs.push(Spec { model: map.model.clone(), pos, yaw, frame: Some(([yaw, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
+            }
+            let bp = block_pos(&moved);
+            tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\tsweep yaw 0/90/180/270 at x+64/+112/+160/+208\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
+            continue;
+        }
+        for (dx, s) in [(64.0f32, 1.0f32), (112.0, scale)] {
+            let pos = [origin[0] + dx, origin[1], origin[2]];
+            let (model, s) = if geom_scaled && s != 1.0 {
+                (map.model.replacen("AC", "AS", 1), 1.0)
+            } else {
+                (map.model.clone(), s / map.model_scale)
+            };
+            specs.push(Spec {
+                model,
+                pos,
+                yaw: rot[0],
+                frame: Some((rot, [0.0, 0.0, 0.0])),
+                scale: s,
+                tag: None,
+            });
+        }
+        let bp = block_pos(&moved);
+        tsv.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\n",
+            b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2], origin[0] + 64.0, origin[2], origin[0] + 112.0, origin[2]
+        ));
+    }
+
+    let base = host.clone().unwrap_or_else(|| src.clone());
+    let tmp0 = out.with_extension("cat0.Map.Gbx");
+    let tmp1 = out.with_extension("cat1.Map.Gbx");
+    let tmp2 = out.with_extension("cat2.Map.Gbx");
+    let mut m = MapFile::load(&base);
+    let n_existing = m.items.len();
+    m.append_item_clones(n_existing + specs.len());
+    m.write_to(&tmp0).expect("write slots");
+
+    let mut m = MapFile::load(&tmp0);
+    let old_uid = m.body_ids.first().and_then(|f| f.name.clone()).expect("map uid");
+    m.set_map_uid(&format!("Cat1{}", &old_uid[..23]));
+    if host.is_none() {
+        let keep: BTreeSet<usize> = grid.iter().map(|g| g.0).collect();
+        let neutral = "RoadTechStraight".to_string();
+        for i in 0..m.blocks.len() {
+            let b = m.blocks[i].clone();
+            if let Some(&(_, cell)) = grid.iter().find(|g| g.0 == i) {
+                m.move_block_cell(i, cell);
+                continue;
+            }
+            if b.flags & FREE_BLOCK_FLAG != 0 {
+                m.move_block_free(i, [16.0, -1000.0, 16.0]);
+            } else {
+                m.move_block_cell(i, (0, 0, 0));
+            }
+            if !keep.contains(&i) && (b.waypoint_tag.is_some() || b.name.contains("Start") || b.name.contains("Finish") || b.name.contains("Checkpoint")) {
+                m.set_block_name(i, &neutral);
+            }
+        }
+    }
+    // existing items out of sight
+    for i in 0..n_existing {
+        m.move_item(i, [8.0, -900.0, 8.0], 0.0, (0, 0, 0));
+    }
+    m.write_to(&tmp1).expect("write parked");
+
+    let mut m = MapFile::load(&tmp1);
+    for (k, s) in specs.iter().enumerate() {
+        let i = n_existing + k;
+        m.set_item_model(i, &s.model);
+        m.set_item_author(i, &s.model);
+        m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
+        if let Some((rot, pivot)) = s.frame {
+            m.set_item_frame(i, rot, pivot);
+        }
+        m.set_item_scale(i, s.scale);
+        m.clear_item_variant(i);
+    }
+    m.write_to(&tmp2).expect("write models");
+
+    let mut m = MapFile::load(&tmp2);
+    m.remove_password();
+    let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+    let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).collect();
+    names.sort();
+    names.dedup();
+    let manifest: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
+    m.replace_embedded_objects(&manifest, &zip);
+    m.write_to(&out).expect("write output");
+    for p in [&tmp0, &tmp1, &tmp2] {
+        let _ = std::fs::remove_file(p);
+    }
+    if host.is_none() {
+        // no regenerated island under the grid
+        let _ = MapFile::clear_genealogy_file(&out);
+    }
+    let tsv_path = out.with_extension("grid.tsv");
+    std::fs::write(&tsv_path, tsv).unwrap();
+    println!("wrote {} ({} blocks x [original, item x1, item x{}]); grid {}", out.display(), grid.len(), scale, tsv_path.display());
 }

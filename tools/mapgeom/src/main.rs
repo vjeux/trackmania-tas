@@ -396,7 +396,11 @@ fn main() {
                 // Terrain visuals shade through a shared id material; the look
                 // material is the one the collision surface names.
                 let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
-                let mut spec = mapgeom::crystal::material_for_link_label(label);
+                let coll: u32 = flag(&a.rest, "--collection").map(|c| c.parse().unwrap()).unwrap_or(26);
+                let Some(mut spec) = mapgeom::tiny_assets::visual_material_for(label, coll) else {
+                    println!("  dropped {} ({} tris: decal/light)", label, g.tris.len());
+                    continue;
+                };
                 if let Some(link) = flag(&a.rest, "--material") {
                     spec.link = link; // one known material for every face: isolates geometry from material lookups
                 }
@@ -412,11 +416,43 @@ fn main() {
                 materials.push(spec);
             }
             println!("  {} positions, {} faces, {} materials", mesh.positions.len(), mesh.faces.len(), materials.len());
+            let coll: u32 = flag(&a.rest, "--collection").map(|c| c.parse().unwrap()).unwrap_or(26);
             let item = mapgeom::crystal::build_item(&template, &ident, &author, &materials, &mesh);
+            let item = if coll == 26 { item } else { mapgeom::tiny_assets::set_ident_collection(&item, coll) };
             std::fs::write(&out, &item).unwrap();
             println!("wrote {out} ({} bytes)", item.len());
         }
         // A synthetic 32x32x2 m box in ONE material: the material probe.
+        "catalog-lib" => {
+            // catalog-lib LIB1.zip LIB0.5.zip --out OUT.zip : LIB1 as is, plus
+            // every item of the scaled library renamed AC->AS (same length).
+            let l1 = std::fs::read(a.rest.get(1).unwrap_or_else(|| die("catalog-lib LIB1 LIB2 --out OUT".into()))).expect("lib1");
+            let l2 = std::fs::read(a.rest.get(2).unwrap_or_else(|| die("catalog-lib LIB1 LIB2 --out OUT".into()))).expect("lib2");
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let mut files = mapgeom::embedded::unzip(&l1).expect("lib1 zip");
+            for (name, bytes) in mapgeom::embedded::unzip(&l2).expect("lib2 zip") {
+                let short = name.trim_start_matches("Items/");
+                if !short.starts_with("AC") { continue; }
+                let to = format!("AS{}", &short[2..]);
+                let renamed = mapgeom::crystal::rename_ident_same_len(&bytes, short, &to);
+                files.insert(format!("Items/{to}"), renamed);
+            }
+            let n = files.len();
+            std::fs::write(&out, mapgeom::tiny_assets::zip(&files)).expect("write");
+            println!("wrote {out} ({n} items)");
+        }
+        "scale-item" => {
+            // scale-item IN.Item.Gbx --out OUT --scale S : geometry-scaled copy
+            let inp = std::fs::read(a.rest.get(1).unwrap_or_else(|| die("scale-item IN.Item.Gbx".into()))).expect("read item");
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let s: f32 = flag(&a.rest, "--scale").unwrap_or_else(|| "0.5".into()).parse().expect("--scale");
+            let mut bytes = mapgeom::crystal::scale_item(&inp, s);
+            if let (Some(from), Some(to)) = (flag(&a.rest, "--from-ident"), flag(&a.rest, "--ident")) {
+                bytes = mapgeom::crystal::rename_ident_same_len(&bytes, &from, &to);
+            }
+            std::fs::write(&out, &bytes).expect("write");
+            println!("wrote {out} ({} bytes, geometry x{s})", bytes.len());
+        }
         "crystal-box" => {
             let template = std::fs::read(flag(&a.rest, "--template").unwrap_or_else(|| die("--template ITEM".into()))).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));

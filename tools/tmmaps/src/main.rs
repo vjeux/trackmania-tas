@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "region", "tiny-catalog", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
@@ -219,6 +219,7 @@ fn main() {
     match cmd {
         "selftest" => selftest::run(&args),
         "region" => census::cmd_region(&args),
+        "tiny-catalog" => tmmaps::tiny::catalog_cmd(&args),
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),
         "waypoints" => {

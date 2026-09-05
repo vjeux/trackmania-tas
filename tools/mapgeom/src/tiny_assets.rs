@@ -57,11 +57,43 @@ pub fn crystal_from_model(store: &mut DataStore, logical: &str, template: &[u8],
 pub fn crystal_from_model_in(store: &mut DataStore, logical: &str, template: &[u8], ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
     let m = store.load_model(logical)?;
     let mut c = crate::geom::Collector::new(store);
+    // Visual geometry (finest LOD) is the default: the collision mesh is a
+    // simplification that lacks kerbs, trims and end pieces (one-block test
+    // 2026-09-05). TINY_COLLISION=1 goes back to the collision surfaces.
+    let visual = std::env::var_os("TINY_COLLISION").is_none();
+    c.link_labels = visual;
+    c.finest_lod_only = visual;
     c.model(&m, &crate::geom::IDENTITY, 0);
+    let surface_links = c.surface_links.clone();
     let scene = c.scene;
     let mut mesh = crate::crystal::CrystalMesh::default();
     let mut materials = Vec::new();
+    if visual {
+        for (label, g) in &scene.groups {
+            if g.tris.is_empty() || !label.contains('|') {
+                continue;
+            }
+            // Terrain visuals shade through a shared id material; the look
+            // material is the one the collision surface names.
+            let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
+            let Some(spec) = visual_material_for(label, collection) else { continue };
+            // TINY_SWAP_XZ=1: mirror the mesh across the x=z diagonal
+            // (winding reversed to keep the normals outward) -- A/B knob for
+            // the block-vs-item axis convention.
+            if std::env::var_os("TINY_SWAP_XZ").is_some() {
+                let verts: Vec<[f32; 3]> = g.verts.iter().map(|v| [v[2], v[1], v[0]]).collect();
+                let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+                mesh.add_tris(&verts, &tris, materials.len() as u32, 32.0);
+            } else {
+                mesh.add_tris(&g.verts, &g.tris, materials.len() as u32, 32.0);
+            }
+            materials.push(spec);
+        }
+    }
     for (label, g) in &scene.groups {
+        if visual {
+            break;
+        }
         // Collision groups carry a bare physics name; visual groups are
         // named "Visual"/"CustomMesh"/material paths and are skipped.
         let phys = label.trim_end_matches(" (moving)");
@@ -76,9 +108,13 @@ pub fn crystal_from_model_in(store: &mut DataStore, logical: &str, template: &[u
         let phys = if phys == "Concrete" && logical.contains("\\Zone") { "Rock" } else { phys };
         let mut spec = crate::crystal::material_for_physics_name_in(phys, collection);
         if let Ok(p) = std::env::var("TINY_FORCE_PHYS") { spec.physics = p.parse().unwrap(); }
-        // Collision surfaces wind the opposite way from crystal faces: as read,
-        // the item renders as an inside-out box (dark faces, one bright cap).
-        let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+        // The collision mesh's own winding IS the crystal's (the physics
+        // engine needs outward normals). The reversal this used to apply came
+        // from an early "items are black" reading that was a lighting problem;
+        // with it the road deck was back-face culled from above (one-block
+        // test, 2026-09-05). TINY_REVERSE_WINDING=1 brings it back for A/B.
+        let rev = std::env::var_os("TINY_REVERSE_WINDING").is_some();
+        let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| if rev { [t[0], t[2], t[1]] } else { *t }).collect();
         mesh.add_tris(&g.verts, &tris, materials.len() as u32, 32.0);
         materials.push(spec);
     }
@@ -347,6 +383,27 @@ pub fn editors_link_for_stadium_material(name: &str) -> &'static str {
         "Grass" => "Editors\\MeshEditorMedia\\Materials\\Grass",
         _ => "Editors\\MeshEditorMedia\\Materials\\Concrete",
     }
+}
+
+/// Material for a VISUAL group label `LINK|PHYS` in the target collection.
+/// `None` = drop the faces: decals (physics 28, overlays that would become
+/// opaque plates) and lights (32). Stadium keeps the real links; elsewhere
+/// the name is mapped onto the mesh-editor family, which is all the
+/// environment accepts for embedded items.
+pub fn visual_material_for(label: &str, collection: u32) -> Option<crate::crystal::MaterialSpec> {
+    let (link, phys) = label.rsplit_once('|').unwrap_or((label, "16"));
+    let physics: u8 = phys.parse().unwrap_or(16);
+    if matches!(physics, 28 | 32) {
+        return None;
+    }
+    let name = link.rsplit('\\').next().unwrap_or(link);
+    if matches!(name, "DecalPaint2Logo4x1" | "DecalPlatform" | "LightSpot" | "SpeedometerLight_Dyna") || name.starts_with("Decal") || name.starts_with("Light") {
+        return None;
+    }
+    if collection == 26 {
+        return Some(crate::crystal::material_for_link_label(label));
+    }
+    Some(crate::crystal::MaterialSpec { link: editors_link_for_stadium_material(name).to_string(), physics })
 }
 
 /// Replace every `Stadium\Media\Material\X` link string in an item body with
@@ -815,6 +872,18 @@ pub fn build(
     for bytes in files.values_mut() {
         *bytes = set_ident_collection(bytes, collection);
     }
+    // The game does NOT apply the placement's Scale field to items (Nadeo's
+    // own road item at placement scale 0.5 rendered full size, one-block
+    // test 2026-09-05). The scale therefore lives in the geometry: every
+    // library item -- block wrappers, item conversions, waypoints -- is
+    // mesh-scaled here, and the mapping declares model_scale = scale so the
+    // placements go out at 1.
+    if (scale - 1.0).abs() > 1e-6 {
+        for bytes in files.values_mut() {
+            *bytes = crate::crystal::scale_item(bytes, scale);
+        }
+        println!("  library geometry scaled x{scale} (placement scale stays 1)");
+    }
     // Bisection aid: TINY_ONLY=lo-hi keeps only aliases AC000000lo..hi loadable
     // (the rest get a foreign ident inside, which the game drops silently).
     if let Ok(range) = std::env::var("TINY_ONLY") {
@@ -838,6 +907,26 @@ pub fn build(
         }
         println!("  TINY_ONLY {lo}-{hi}: {dropped} items made undroppable-mismatched");
     }
+    // Visual isolation: TINY_KEEP_NAMES=sub1,sub2 keeps only the block items
+    // whose prefab path contains one of the substrings; every other alias
+    // becomes the invisible stand-in (a tiny triangle far below ground).
+    if let Ok(keep) = std::env::var("TINY_KEEP_NAMES") {
+        let subs: Vec<&str> = keep.split(',').filter(|s| !s.is_empty()).collect();
+        let by_alias: BTreeMap<&str, &str> = aliases.iter().map(|(p, a)| (a.as_str(), p.as_str())).collect();
+        let mut hidden = 0;
+        for (name, bytes) in files.iter_mut() {
+            let alias = name.trim_start_matches("Items/").trim_end_matches(".Item.Gbx");
+            let Some(path) = by_alias.get(alias) else { continue };
+            if subs.iter().any(|s| path.contains(s)) {
+                continue;
+            }
+            let ident = format!("{alias}.Item.Gbx");
+            let hidden_item = crate::crystal::build_item(&template, &ident, &ident, &mat, &tiny);
+            *bytes = set_ident_collection(&hidden_item, collection);
+            hidden += 1;
+        }
+        println!("  TINY_KEEP_NAMES {keep}: {hidden} block items hidden");
+    }
     println!("  {} crystal items, {} faces, collection {:#x}", files.len(), faces_total, collection);
 
     let archive = zip(&files);
@@ -849,13 +938,13 @@ pub fn build(
         let (sx, sz) = footprint_map[&b.name];
         // Every item is authored at size 1; the placement carries the scale.
         mapping.push_str(&format!(
-            "@{}\t{}.Item.Gbx\t1\t{}\t{}\n",
-            b.index, alias, sx, sz
+            "@{}\t{}.Item.Gbx\t{}\t{}\t{}\n",
+            b.index, alias, scale, sx, sz
         ));
     }
     for it in &source.items {
         if let Some(alias) = item_aliases.get(&it.model) {
-            mapping.push_str(&format!("i@{}\t{}.Item.Gbx\t1\n", it.index, alias));
+            mapping.push_str(&format!("i@{}\t{}.Item.Gbx\t{}\n", it.index, alias, scale));
         }
     }
     let mapping_path = out_zip.with_extension("placements.tsv");
