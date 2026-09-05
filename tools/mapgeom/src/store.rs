@@ -275,6 +275,11 @@ impl Model {
         })
     }
 
+    /// The node indices the reference table defines (external files).
+    pub fn external_indices(&self) -> Vec<u32> {
+        self.externals.iter().map(|(i, _)| *i).collect()
+    }
+
     pub fn graph(&self) -> Result<Graph<'_>, String> {
         Graph::parse(&self.body, self.class_id, self.num_nodes, &self.externals)
             .map_err(|e| format!("{}: {}", self.path, e))
