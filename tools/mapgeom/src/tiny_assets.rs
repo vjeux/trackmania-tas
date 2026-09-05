@@ -708,7 +708,7 @@ pub fn build(
         // archive's waypoint crystals; a generated crystal would be decor.
         if let Some(src) = waypoint_archive_item(prefab) {
             let bytes = legacy.get(src).unwrap_or_else(|| panic!("{src} absent from Nadeo archive"));
-            if collection == 26 {
+            if collection == 26 || std::env::var_os("TINY_WAYPOINT_ORIGINAL").is_some() {
                 files.insert(format!("Items/{ident}"), nameless_ident(bytes, &ident));
             } else {
                 // Outside Stadium the archive's Stadium material links are

@@ -170,6 +170,9 @@ struct Template {
     /// The visual levels (int, float) and the smoothing group floats.
     visual_levels: Vec<(u32, f32)>,
     smoothing: Vec<f32>,
+    /// Non-geometry layers of the template (Trigger = 14, SpawnPosition = 15),
+    /// each as its verbatim bytes: a waypoint item is nothing without them.
+    extra_layers: Vec<Vec<u8>>,
     /// Verbatim spans of the template's chunks, for bisecting the writer.
     raw_003: Vec<u8>,
     raw_005: Vec<u8>,
@@ -248,9 +251,34 @@ fn parse_template(bytes: &[u8]) -> Template {
     let c6 = find(&b, &0x09003006u32.to_le_bytes(), o).expect("lightmap chunk");
     let raw_003 = b[start..c4].to_vec();
     let raw_005 = b[c5..c6].to_vec();
+    // Layer headers: type u32, version u32, u01 u32, 0x40000000, len, "LayerN".
+    // Layer k starts 20 bytes before its "LayerN" string; the last ends at c6.
+    let mut layer_starts: Vec<(usize, u32)> = Vec::new();
+    for k in 0..16u32 {
+        let name = format!("Layer{k}");
+        let mut probe = [0u8; 4];
+        probe.copy_from_slice(&(name.len() as u32).to_le_bytes());
+        let mut pat = vec![0u8, 0, 0, 0x40];
+        pat.extend_from_slice(&probe);
+        pat.extend_from_slice(name.as_bytes());
+        if let Some(p) = find(&b, &pat, c5) {
+            if p < c6 && p >= 12 {
+                let ltype = rd(p - 12);
+                layer_starts.push((p - 12, ltype));
+            }
+        }
+    }
+    layer_starts.sort();
+    let mut extra_layers = Vec::new();
+    for (i, (st, ltype)) in layer_starts.iter().enumerate() {
+        let en = layer_starts.get(i + 1).map(|x| x.0).unwrap_or(c6);
+        if matches!(*ltype, 14 | 15) {
+            extra_layers.push(b[*st..en].to_vec());
+        }
+    }
     let raw_006 = b[c6..c7].to_vec();
     let raw_007 = b[c7..end].to_vec();
-    Template { body: b, num_nodes: g.num_nodes, start, end, first_node, n_materials, mat_prefix, mat_suffix, chunk4, visual_levels, smoothing, raw_003, raw_005, raw_006, raw_007 }
+    Template { body: b, num_nodes: g.num_nodes, start, end, first_node, n_materials, mat_prefix, mat_suffix, chunk4, visual_levels, smoothing, extra_layers, raw_003, raw_005, raw_006, raw_007 }
 }
 
 /// Build the item: `template` bytes with the crystal replaced by `mesh` and
@@ -302,7 +330,7 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     if keep & 2 != 0 { w.0.extend_from_slice(&t.raw_005); } else {
     w.u32(0x09003005);
     w.u32(0); // chunk version
-    w.u32(1); // layer count
+    w.u32(1 + t.extra_layers.len() as u32); // geometry + trigger/spawn layers
     w.u32(0); // Geometry
     w.u32(2); // layer version
     w.u32(0); // crystalEnabled
@@ -400,6 +428,9 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     w.u32(1);
     w.u32(1); // IsVisible
     w.u32(1); // Collidable
+    for l in &t.extra_layers {
+        w.0.extend_from_slice(l); // Trigger / SpawnPosition layers verbatim
+    }
     }
     // ---- 0x09003006 lightmap coords: a non-overlapping atlas, one grid cell
     // per face with the corners spread on a circle inside it. Overlapping
