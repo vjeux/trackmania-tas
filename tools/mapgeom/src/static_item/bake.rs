@@ -32,6 +32,8 @@ pub fn normalize(v: [f32; 3]) -> [f32; 3] {
 }
 
 /// Fan-triangulate a face; corners carry the face normal and their UV.
+/// Quads (and n-gons) use the (v1,v3) diagonal: the editor's bake starts
+/// faces at v1 (measured: every reference quad splits v1-v3, never v0-v2).
 pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -> Vec<[Corner; 3]> {
     let pts: Vec<[f32; 3]> = f.verts.iter().map(|i| c.positions[*i as usize]).map(|p| [p[0] * scale, p[1] * scale, p[2] * scale]).collect();
     if pts.len() < 3 {
@@ -49,7 +51,11 @@ pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -
     }
     let n = normalize(n);
     let corner = |i: usize| Corner { pos: pts[i], normal: n, uv: uvs.get(i).copied().unwrap_or([0.0, 0.0]) };
-    (1..pts.len() - 1).map(|i| [corner(0), corner(i), corner(i + 1)]).collect()
+    if pts.len() == 3 {
+        return vec![[corner(0), corner(1), corner(2)]];
+    }
+    // Fan from v1: (v1,v2,v3), (v1,v3,v4), ...
+    (2..pts.len()).map(|i| [corner(1), corner(i), corner((i + 1) % pts.len())]).collect()
 }
 
 /// Tangent along +u of a triangle's UV mapping (falls back to any vector
@@ -110,9 +116,33 @@ pub fn reference_decls() -> Vec<Decl> {
     ]
 }
 
+/// Materials whose game definition is built on a `PyPxz` triplanar base get a
+/// flat white vertex-color layer and visual flags 0x78 from the editor's bake
+/// (measured on all 26 reference items: exactly TrackWall/DecoHill/DecoHill2
+/// carry it, and all three resolve to a `Tech3 Block PyPxz...` base while
+/// every other material resolves to TDSN/PDiff).
+pub fn material_has_vertex_color(link: &str) -> bool {
+    let name = link.rsplit('\\').next().unwrap_or(link);
+    matches!(name, "TrackWall" | "DecoHill" | "DecoHill2")
+}
+
+/// Color-layout decls: Color u32 slots between the normal and TexCoord0.
+pub fn color_decls() -> Vec<Decl> {
+    vec![
+        Decl::new(N_POSITION, T_FLOAT3, SPACE_GLOBAL3D, 0),
+        Decl::new(N_NORMAL, T_DEC3N, SPACE_LOCAL3D, 0xC),
+        Decl::new(N_COLOR0, T_COLOR, SPACE_GLOBAL2D, 0x10),
+        Decl::new(N_TEXCOORD0, T_FLOAT2, SPACE_GLOBAL2D, 0x14),
+        Decl::new(N_TEXCOORD0 + 1, T_FLOAT2, SPACE_GLOBAL2D, 0x1C),
+        Decl::new(N_TANGENT_U, T_DEC3N, SPACE_LOCAL3D, 0x24),
+        Decl::new(N_TANGENT_V, T_DEC3N, SPACE_LOCAL3D, 0x28),
+    ]
+}
+
 /// Visuals (at most 65000 vertices each) over triangles; identical corners
-/// share a vertex.
-pub fn make_visuals(tris: &[[Corner; 3]]) -> Vec<CPlugVisualIndexedTriangles> {
+/// share a vertex. `white_color` adds the flat-white Color layer (and the
+/// 0x78 flags) the editor's bake puts on Pxz-base materials.
+pub fn make_visuals(tris: &[[Corner; 3]], white_color: bool) -> Vec<CPlugVisualIndexedTriangles> {
     let mut out = Vec::new();
     let mut start = 0;
     while start < tris.len() {
@@ -156,13 +186,17 @@ pub fn make_visuals(tris: &[[Corner; 3]]) -> Vec<CPlugVisualIndexedTriangles> {
             count: n,
             flags: 1,
             base: super::null_ref(),
-            decls: reference_decls(),
+            decls: if white_color { color_decls() } else { reference_decls() },
             compress_local3d: Some(true),
-            elems: vec![Elem::Float3(pos), Elem::Word(nrm), Elem::Float2(uv.clone()), Elem::Float2(uv), Elem::Word(tu), Elem::Word(tv)],
+            elems: if white_color {
+                vec![Elem::Float3(pos), Elem::Word(nrm), Elem::Word(vec![0xFFFF_FFFF; n as usize]), Elem::Float2(uv.clone()), Elem::Float2(uv), Elem::Word(tu), Elem::Word(tv)]
+            } else {
+                vec![Elem::Float3(pos), Elem::Word(nrm), Elem::Float2(uv.clone()), Elem::Float2(uv), Elem::Word(tu), Elem::Word(tv)]
+            },
         };
         let main = VisualMain {
             version: 6,
-            chunk_flags: 0x38,
+            chunk_flags: if white_color { 0x78 } else { 0x38 },
             tex_coord_sets: Vec::new(),
             count: n,
             vertex_streams: vec![NodeRef { index: 0, inline: Some(Box::new(Node::VertexStream(stream))) }],
@@ -228,12 +262,18 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
             }
         }
     }
-    for (i, tris) in per_material.iter().enumerate() {
+    // The editor's bake orders materials by triangle count, most first
+    // (measured on every reference item).
+    let mut order: Vec<usize> = (0..per_material.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(per_material[i].len()));
+    for i in order {
+        let tris = &per_material[i];
         if tris.is_empty() {
             continue;
         }
         let slot = slots.get(i).copied().unwrap_or_else(|| m.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
-        for v in make_visuals(tris) {
+        let white = material_has_vertex_color(&m.materials[slot].link().unwrap_or("").to_string());
+        for v in make_visuals(tris, white) {
             m.visuals.push(MergedVisual { visual: v, material: slot });
         }
     }
