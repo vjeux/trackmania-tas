@@ -29,6 +29,7 @@ pub const C_SOLID2MODEL: u32 = 0x090BB000;
 pub const C_PREFAB: u32 = 0x09145000;
 pub const C_STATIC_OBJECT: u32 = 0x09159000;
 pub const C_MATERIAL_USER_INST: u32 = 0x090FD000;
+pub const C_MATERIAL: u32 = 0x09079000;
 pub const C_ITEM_MODEL: u32 = 0x2E002000;
 pub const C_VARIANT_LIST: u32 = 0x2F0BC000;
 pub const C_BLOCK_ITEM: u32 = 0x2E025000;
@@ -104,6 +105,10 @@ pub struct SurfMesh {
 #[derive(Clone, Debug, Default)]
 pub struct Surface {
     pub meshes: Vec<SurfMesh>,
+    /// Material nodes the surface names (one per material slot); for BlueBay
+    /// terrain this is where the real look material (`Land.Material.Gbx`)
+    /// is referenced.
+    pub materials: Vec<i32>,
     /// Shape types met that are not triangle meshes — spheres, boxes,
     /// cylinders. Reported rather than dropped: a block whose collision is a
     /// primitive is a real answer, not a failure.
@@ -354,6 +359,10 @@ pub struct Acc {
     /// `0x2E027000`). `-1` when the class carries none.
     pub entity_model: i32,
     pub crystal_materials: Vec<(String, i32)>,
+    /// Nodes a CPlugMaterial references (its custom material, shader, ...):
+    /// the external `.Material.Gbx` among them is the game material it stands
+    /// for. Surfaced as `Node::Material("@refs:a,b,c", phys)`.
+    pub material_refs: Vec<i32>,
     pub crystals: Vec<CrystalMesh>,
     pub material_name: String,
     pub physics_id: u8,
@@ -373,6 +382,7 @@ impl Acc {
             visual_flags: crate::classes::VisualFlags::default(),
             entity_model: -1,
             crystal_materials: Vec::new(),
+            material_refs: Vec::new(),
             crystals: Vec::new(),
             material_name: String::new(),
             physics_id: 0,
@@ -387,6 +397,10 @@ impl Acc {
             C_SURFACE => Node::Surface(self.surface),
             C_SOLID2MODEL => Node::Solid2(self.solid2),
             C_MATERIAL_USER_INST => Node::Material(self.material_name, self.physics_id),
+            C_MATERIAL => Node::Material(
+                format!("@refs:{}", self.material_refs.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",")),
+                self.physics_id,
+            ),
             C_CRYSTAL => Node::Crystal(Crystal {
                 materials: self.crystal_materials,
                 meshes: self.crystals,

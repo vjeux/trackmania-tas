@@ -83,6 +83,7 @@ impl<'a> Graph<'a> {
                     let model = self.noderef().map_err(ctx)?;
                     crate::reader::trace(|| format!("    model {} at 0x{:x}", model, self.r.o));
                     let rot = self.r.quat().map_err(ctx)?;
+                    self.r.mark(3);
                     let pos = self.r.vec3().map_err(ctx)?;
                     crate::reader::trace(|| {
                         format!(
@@ -251,6 +252,7 @@ impl<'a> Graph<'a> {
                 // the file, and the failure surfaces as "this prefab ends
                 // early" one entity later.
                 self.r.array(|r| {
+                    r.mark(3);
                     r.vec3()?;
                     r.quat()?;
                     Ok(())
@@ -287,7 +289,8 @@ impl<'a> Graph<'a> {
                 for _ in 0..n_mats {
                     let has = self.r.bool32()?;
                     if has {
-                        self.noderef()?;
+                        let m = self.noderef()?;
+                        acc.surface.materials.push(m);
                     } else {
                         self.r.take(2)?;
                     }
@@ -340,6 +343,7 @@ impl<'a> Graph<'a> {
                 self.r.array(|r| {
                     r.i32()?;
                     r.i32()?;
+                    r.mark(6);
                     r.boxf()
                 })?;
                 Ok(())
@@ -932,11 +936,301 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
 
+            // CPlugSpawnModel: where the car appears on a start/checkpoint
+            // gate. The location's translation is geometry; the gravity
+            // vector is a direction.
+            0x0917A000 => {
+                let _v = self.r.u32()?;
+                self.r.marks.push((self.r.o + 36, 3));
+                self.r.iso4()?;
+                self.r.take(4 + 4 + 12 + 4)?;
+                Ok(())
+            }
+
+            // ------------------------------- CPlugPath / CPlugPolyLine3
+            // A strip of points along a border (the turbo road's light line).
+            // Positions are geometry and are marked; `Lefts` are directions.
+            0x09119000 => {
+                let v = self.r.u32()?;
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    self.noderef()?;
+                }
+                if v >= 2 {
+                    self.r.bool32()?;
+                    self.r.u8()?;
+                    self.r.bytes_pfx()?;
+                }
+                Ok(())
+            }
+            0x09118000 => {
+                let v = self.r.u32()?;
+                self.r.array(|r| {
+                    r.mark(3);
+                    r.vec3()
+                })?;
+                if v >= 2 {
+                    self.r.array(|r| r.vec3())?;
+                }
+                if v == 3 {
+                    self.r.bool32()?;
+                    self.r.i32()?;
+                }
+                if v >= 4 {
+                    if v == 4 {
+                        self.r.bool32()?;
+                    }
+                    self.r.bool32()?;
+                    self.r.bool32()?;
+                    if v >= 5 {
+                        self.r.bool32()?;
+                    }
+                    if v >= 6 {
+                        self.r.i32()?;
+                    }
+                    if v >= 7 {
+                        self.r.u8()?;
+                    }
+                    if v >= 8 {
+                        self.r.u8()?;
+                        self.r.lookback()?;
+                    }
+                }
+                Ok(())
+            }
+
+            // ------------------------------------------- CPlugMaterial
+            // Met inline in the client BlueBay prefabs (`Zone\Land\Base`): a
+            // material with its own CPlugMaterialCustom nested, everything
+            // else external. Layouts follow GBX.NET's CPlugMaterial.chunkl and
+            // were checked against the bytes of that file.
+            0x09079001 | 0x09079007 => {
+                let n = self.noderef()?;
+                acc.touched = true;
+                acc.material_refs.push(n);
+                Ok(())
+            }
+            0x09079002 | 0x0907900A | 0x0907900F => {
+                self.r.u32()?;
+                Ok(())
+            }
+            0x09079004 => {
+                let refs = self.device_materials(4)?;
+                acc.material_refs.extend(refs);
+                Ok(())
+            }
+            0x09079009 => {
+                let shader = self.noderef()?;
+                acc.material_refs.push(shader);
+                if shader == -1 {
+                    let refs = self.device_materials(9)?;
+                    acc.material_refs.extend(refs);
+                }
+                Ok(())
+            }
+            0x0907900D => {
+                let shader = self.noderef()?;
+                acc.material_refs.push(shader);
+                if shader == -1 {
+                    let refs = self.device_materials(0xD)?;
+                    acc.material_refs.extend(refs);
+                    // Per-device material nodes: the external .Material.Gbx a
+                    // BlueBay terrain material stands for is listed here.
+                    let more = self.r.array(|r| r.i32())?;
+                    acc.material_refs.extend(more);
+                }
+                Ok(())
+            }
+            0x0907900E => {
+                // SurfaceId (the physics the car feels), U01: two shorts.
+                acc.touched = true;
+                acc.physics_id = self.r.u16()? as u8;
+                self.r.u16()?;
+                Ok(())
+            }
+            0x09079010 => {
+                self.r.f32()?;
+                Ok(())
+            }
+            0x09079011 => {
+                self.r.array(|r| r.lookback())?;
+                Ok(())
+            }
+            0x09079015 => {
+                let v = self.r.u32()?;
+                let shader = self.noderef()?;
+                acc.touched = true;
+                acc.material_refs.push(shader);
+                if shader == -1 {
+                    let refs = self.device_materials(0x15)?;
+                    acc.material_refs.extend(refs);
+                    self.r.array(|r| r.i32())?;
+                    if v >= 3 {
+                        self.r.i32()?;
+                    }
+                } else {
+                    let n = self.r.u32()? as usize;
+                    for _ in 0..n {
+                        self.noderef()?; // CPlugMaterialColorTargetTable
+                    }
+                    if v >= 7 {
+                        self.noderef()?;
+                    }
+                }
+                Ok(())
+            }
+            0x09079016 => {
+                self.r.take(8)?; // version, uint
+                Ok(())
+            }
+            0x09079017 => {
+                let v = self.r.u32()?;
+                self.r.u32()?;
+                if v >= 1 {
+                    self.r.take(8)?;
+                    self.r.string()?;
+                }
+                Ok(())
+            }
+
+            // ------------------------------------- CPlugMaterialCustom
+            0x0903A004 => {
+                self.r.array(|r| r.i32())?;
+                Ok(())
+            }
+            0x0903A006 => {
+                self.material_bitmaps(0)
+            }
+            0x0903A00A => {
+                for _ in 0..2 {
+                    let n = self.r.u32()? as usize;
+                    for _ in 0..n {
+                        // GpuFx: id, count1, count2, bool, count2 x count1 floats
+                        self.r.lookback()?;
+                        let c1 = self.r.u32()? as usize;
+                        let c2 = self.r.u32()? as usize;
+                        self.r.bool32()?;
+                        self.r.take(4 * c1 * c2)?;
+                    }
+                }
+                Ok(())
+            }
+            0x0903A00B => {
+                let u01 = self.r.u32()?;
+                self.r.take(8)?;
+                if u01 & 1 != 0 {
+                    self.r.take(4)?;
+                }
+                Ok(())
+            }
+            0x0903A00C => {
+                self.r.array(|r| {
+                    r.lookback()?;
+                    r.bool32()
+                })?;
+                Ok(())
+            }
+            // Skippable, but it DEFINES lookback ids (`cIndexPerVertex`,
+            // `VertexAlpha` on BlueBay's Land material) that the bitmap list
+            // two chunks later refers to by index. Skipping it by size, as the
+            // walk does with every other unknown skippable chunk, desyncs the
+            // id table and the next material's names come out one too far.
+            0x0903A00F => {
+                let v = self.r.u32()?;
+                self.r.take(8)?;
+                if v >= 1 {
+                    self.r.take(4)?;
+                }
+                if v >= 2 {
+                    self.r.array(|r| {
+                        r.lookback()?;
+                        r.i32()
+                    })?;
+                }
+                Ok(())
+            }
+            0x0903A00D | 0x0903A016 => {
+                let v = if cid == 0x0903A016 { self.r.u32()? } else { 0 };
+                let u01 = self.r.u32()?;
+                self.r.take(4 + 8)?;
+                if cid == 0x0903A016 && v >= 1 {
+                    self.r.i32()?;
+                }
+                if u01 & 1 != 0 {
+                    self.r.take(4)?;
+                }
+                Ok(())
+            }
+            0x0903A010 | 0x0903A012 => {
+                self.noderef()?;
+                Ok(())
+            }
+            0x0903A013 => {
+                let _v = self.r.u32()?;
+                self.material_bitmaps(1)
+            }
+            0x0903A014 => {
+                let _v = self.r.u32()?;
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    self.r.i32()?;
+                    self.r.bytes_pfx()?;
+                }
+                Ok(())
+            }
+            0x0903A015 => {
+                let v = self.r.u32()?;
+                let u01 = if v >= 1 { self.r.i32()? } else { 0 };
+                if u01 == 0 {
+                    self.r.string()?;
+                    self.r.string()?;
+                    if v >= 2 {
+                        self.r.string()?;
+                        self.r.string()?;
+                    }
+                }
+                Ok(())
+            }
+
             c => Err(format!(
                 "class 0x{:08X}: chunk 0x{:08X} has no reader (add it to classes.rs)",
                 class_id, c
             )),
         }
+    }
+
+    /// `CPlugMaterial::DeviceMat[]`, whose layout grew with the chunk version
+    /// that carries it.
+    fn device_materials(&mut self, version: u32) -> R<Vec<i32>> {
+        let n = self.r.u32()? as usize;
+        let mut refs = Vec::new();
+        for _ in 0..n {
+            self.r.take(4)?; // two shorts
+            if version >= 4 {
+                self.r.bool32()?;
+            }
+            refs.push(self.noderef()?); // Shader1
+            if version >= 9 {
+                refs.push(self.noderef()?); // Shader2
+                refs.push(self.noderef()?); // Shader3
+            }
+        }
+        Ok(refs)
+    }
+
+    /// `CPlugMaterialCustom::Bitmap[]`: id, int, texture ref, and two more
+    /// ints from version 1 (the chunk passes 1 whatever its own version).
+    fn material_bitmaps(&mut self, version: u32) -> R<()> {
+        let n = self.r.u32()? as usize;
+        for _ in 0..n {
+            self.r.lookback()?;
+            self.r.i32()?;
+            self.noderef()?;
+            if version >= 1 {
+                self.r.take(8)?;
+            }
+        }
+        Ok(())
     }
 
     /// One `GbxCrystal`: the vertices and n-gon faces of an editable mesh.
@@ -1080,7 +1374,10 @@ impl<'a> Graph<'a> {
                         v
                     ));
                 }
-                let verts = self.r.array(|r| r.vec3())?;
+                let verts = self.r.array(|r| {
+                    r.mark(3);
+                    r.vec3()
+                })?;
                 let tris = self.r.array(|r| {
                     let f = [r.i32()?, r.i32()?, r.i32()?];
                     let phys = r.u8()?;
@@ -1104,6 +1401,8 @@ impl<'a> Graph<'a> {
                 }
                 let mut locs = Vec::with_capacity(n);
                 for _ in 0..n {
+                    // translation is the last three of the twelve floats
+                    self.r.marks.push((self.r.o + 36, 3));
                     locs.push(self.r.iso4()?);
                 }
                 let _bones = self.r.array(|r| r.u16())?;
@@ -1125,8 +1424,12 @@ impl<'a> Graph<'a> {
                 if odd {
                     return Err("convex polyhedron with u01 = true has no reader".into());
                 }
+                self.r.mark(6);
                 let _aabb = self.r.boxf()?;
-                let verts = self.r.array(|r| r.vec3())?;
+                let verts = self.r.array(|r| {
+                    r.mark(3);
+                    r.vec3()
+                })?;
                 let face_idx = self.r.array(|r| r.i32())?;
                 let faces = self.r.array(|r| Ok([r.i32()?, r.i32()?]))?;
                 let _u03 = self.r.u16()?;
@@ -1150,10 +1453,12 @@ impl<'a> Graph<'a> {
             }
             // Primitives: sphere, ellipsoid, box, cylinder, capsule, ...
             0 => {
+                self.r.mark(1);
                 self.r.take(4 + 2)?;
                 out.primitives.push(ty);
             }
             1 => {
+                self.r.mark(3);
                 self.r.take(12 + 2)?;
                 out.primitives.push(ty);
             }
@@ -1265,6 +1570,7 @@ impl<'a> Graph<'a> {
             } else {
                 self.r.string()?;
             }
+            self.r.marks.push((self.r.o + 36, 3));
             self.r.iso4()?;
             self.r.take(12)?;
             if version >= 26 {
@@ -1435,6 +1741,7 @@ impl<'a> Graph<'a> {
             self.r.array(|r| r.lookback())?;
             self.r.array(|r| r.i32())?;
         }
+        self.r.mark(6);
         self.r.boxf()?; // BoundingBox
         Ok(())
     }
@@ -1452,6 +1759,7 @@ impl<'a> Graph<'a> {
         if acc.visual.vertex_streams.is_empty() {
             if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
                 for _ in 0..n {
+                    self.r.mark(3);
                     let p = self.r.vec3()?;
                     let nl = self.r.vec3()?;
                     self.r.take(16)?;
@@ -1460,6 +1768,7 @@ impl<'a> Graph<'a> {
                 }
             } else {
                 for _ in 0..n {
+                    self.r.mark(3);
                     let p = self.r.vec3()?;
                     let nl = if !f.bit22 || f.use_vertex_normal {
                         if f.compress_float3_local3d {
@@ -1534,11 +1843,15 @@ impl<'a> Graph<'a> {
             };
             match (d.name, effective) {
                 (0, 2) => {
+                    self.r.mark(3 * num);
                     for _ in 0..num {
                         out.positions.push(self.r.vec3()?);
                     }
                 }
                 (0, 14) => {
+                    // Packed positions cannot be rescaled in place; say so
+                    // rather than leave a mesh at full size.
+                    self.r.marks.push((usize::MAX, num));
                     for _ in 0..num {
                         out.positions.push(dec3n(self.r.u32()?));
                     }
@@ -1677,6 +1990,35 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x09051000
             | 0x2E025000
             | 0x2E027000
+            | 0x09119000
+            | 0x09118000
+            | 0x09079001
+            | 0x09079002
+            | 0x09079004
+            | 0x09079007
+            | 0x09079009
+            | 0x0907900A
+            | 0x0907900D
+            | 0x0907900E
+            | 0x0907900F
+            | 0x09079010
+            | 0x09079011
+            | 0x09079015
+            | 0x09079016
+            | 0x09079017
+            | 0x0903A004
+            | 0x0903A006
+            | 0x0903A00A
+            | 0x0903A00B
+            | 0x0903A00C
+            | 0x0903A00D
+            | 0x0903A00F
+            | 0x0903A010
+            | 0x0903A012
+            | 0x0903A013
+            | 0x0903A014
+            | 0x0903A015
+            | 0x0903A016
     )
 }
 

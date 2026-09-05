@@ -1736,10 +1736,10 @@ impl MapFile {
     /// The manifest lists item Idents only; support files (prefabs, materials)
     /// are ordinary ZIP entries and need no manifest row.
     pub fn replace_embedded_objects(&mut self, items: &[(&str, &str)], zip: &[u8]) {
-        assert!(
-            zip.starts_with(b"PK\x03\x04"),
-            "embedded object archive is not a ZIP"
-        );
+        // The manifest ident must match the placements' (name, collection,
+        // author) exactly: a BlueBay map places items in collection 0x1C, a
+        // Stadium map in 0x1A. Take it from the map's own items.
+        let collection = self.items.first().map(|it| it.collection_raw).unwrap_or(26);
         let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body)
             .into_iter()
             .find(|(cid, ..)| *cid == 0x0304_3054)
@@ -1748,33 +1748,52 @@ impl MapFile {
             size >= 24,
             "embedded-objects chunk is shorter than its fixed header"
         );
-        let mut b = Vec::new();
-        b.extend_from_slice(&(items.len() as u32).to_le_bytes());
-        if !items.is_empty() {
-            b.extend_from_slice(&3u32.to_le_bytes()); // lookback-id version
-            for (i, (name, author)) in items.iter().enumerate() {
-                b.extend_from_slice(&0x4000_0000u32.to_le_bytes());
-                let stem = name.trim_end_matches(".Item.Gbx");
-                let file = format!("{stem}.Item.Gbx");
-                b.extend_from_slice(&(file.len() as u32).to_le_bytes());
-                b.extend_from_slice(file.as_bytes());
-                b.extend_from_slice(&26u32.to_le_bytes()); // Stadium collection
-                if i == 0 {
-                    b.extend_from_slice(&0x4000_0000u32.to_le_bytes());
-                    b.extend_from_slice(&(author.len() as u32).to_le_bytes());
-                    b.extend_from_slice(author.as_bytes());
-                } else {
-                    // filename0, collection-name cache, author0
-                    b.extend_from_slice(&0x4000_0002u32.to_le_bytes());
-                }
-            }
-        }
-        b.extend_from_slice(&(zip.len() as u32).to_le_bytes());
-        b.extend_from_slice(zip);
-        b.extend_from_slice(&0u32.to_le_bytes());
-        self.raw_splices.push(((payload + 12, payload + size), b));
+        let b = embedded_objects_payload(items, zip, collection);
+        self.raw_splices.push(((payload + 12, payload + size), b[12..].to_vec()));
     }
+}
 
+/// The whole payload of chunk 0x03043054: version 1, a zero, the byte count
+/// of what follows, the manifest of (Ident, collection, author), the ZIP with
+/// its length, and a trailing zero. `items` are (item ident, author).
+pub fn embedded_objects_payload(items: &[(&str, &str)], zip: &[u8], collection: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes()); // byte count of the rest, patched below
+    b.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    if !items.is_empty() {
+        b.extend_from_slice(&3u32.to_le_bytes()); // lookback-id version
+        // One lookback string table for the whole manifest: a string is
+        // defined (0x40000000 + text) the first time and back-referenced
+        // (0x40000000 | 1-based index) after that, as the game writes it.
+        let mut table: Vec<String> = Vec::new();
+        let mut put = |b: &mut Vec<u8>, s: &str| match table.iter().position(|t| t == s) {
+            Some(i) => b.extend_from_slice(&(0x4000_0000u32 | (i as u32 + 1)).to_le_bytes()),
+            None => {
+                table.push(s.to_string());
+                b.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+                b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                b.extend_from_slice(s.as_bytes());
+            }
+        };
+        for (name, author) in items.iter() {
+            // The Ident is the file name relative to Items/, verbatim: it is
+            // what the placements name and what the ZIP entry is called.
+            put(&mut b, name);
+            b.extend_from_slice(&collection.to_le_bytes());
+            put(&mut b, author);
+        }
+    }
+    b.extend_from_slice(&(zip.len() as u32).to_le_bytes());
+    b.extend_from_slice(zip);
+    b.extend_from_slice(&0u32.to_le_bytes());
+    let n = (b.len() - 12) as u32;
+    b[8..12].copy_from_slice(&n.to_le_bytes());
+    b
+}
+
+impl MapFile {
     /// Replace only the ZIP tail. Prefer `replace_embedded_objects` when adding
     /// new item models, because a ZIP without its Ident manifest is invisible.
     pub fn replace_embedded_zip(&mut self, zip: &[u8]) {
