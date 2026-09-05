@@ -48,6 +48,19 @@ pub const FINISH_GATE: &str = "GateFinish32m";
 pub const CELL_XZ: f32 = 32.0;
 pub const CELL_Y: f32 = 8.0;
 
+/// World y of cell row 0, per collection: the map stores block heights as a
+/// cell index and item heights in metres, and the constant joining them is
+/// the environment's, not the file's. Stadium (0x1a): -62 (a cell-9 block
+/// top at y 10). BlueBay (0x1c): -40, measured on Summer 2026 - 01 (Land at
+/// cell 6, the palms standing on it at y 10.0 = 6*8 - 40 + 2 m block top;
+/// GateCheckpoint at y 10 on a cell-6 platform). Others: unmeasured, Stadium.
+pub fn ground_y(collection: u32) -> f32 {
+    match collection {
+        0x1c => -40.0,
+        _ => -62.0,
+    }
+}
+
 /// One lookback ("Id") field: where it sits, how long its original encoding
 /// was, and what string it holds (None = null or a collection number, which is
 /// copied through untouched).
@@ -1652,6 +1665,26 @@ impl MapFile {
         let item_refs_end = p69 + 4 + self.blocks.len() * 4 + self.items.len() * 4;
         self.raw_splices
             .push(((item_refs_end, item_refs_end), vec![0xFF; add * 4]));
+    }
+
+    /// The u16 placement flags right after the waypoint node. On Nadeo
+    /// vegetation the high byte is the SVariantList variant index; a cloned
+    /// record keeps its donor's value, which means nothing on a generated
+    /// crystal item and must be cleared.
+    pub fn set_item_flags(&mut self, item_index: usize, flags: u16) {
+        let it = self.items[item_index].clone();
+        self.raw_patches
+            .push((it.waypoint_region.1, flags.to_le_bytes().to_vec()));
+    }
+
+    /// Clear the variant byte (high byte) of the placement flags and keep the
+    /// low bits (bit 2 = the record carries a skin PackDesc, which the record
+    /// layout depends on).
+    pub fn clear_item_variant(&mut self, item_index: usize) {
+        let it = self.items[item_index].clone();
+        let o = it.waypoint_region.1;
+        let flags = u16::from_le_bytes(self.gbx.body[o..o + 2].try_into().unwrap());
+        self.raw_patches.push((o, (flags & 0x00FF).to_le_bytes().to_vec()));
     }
 
     pub fn set_item_scale(&mut self, item_index: usize, scale: f32) {
