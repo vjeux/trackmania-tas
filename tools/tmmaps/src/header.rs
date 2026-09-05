@@ -511,3 +511,155 @@ pub fn cmd(args: &[String]) {
         }
     }
 }
+
+/// The (ident, author) an item file declares in its header chunk 0x2E001003
+/// (collector ident: lookback id version, id string, collection, author).
+/// Read as the first two lookback strings of the user data after the ids
+/// version word -- enough for the items we embed (fresh lookback table).
+pub fn item_ident_author(bytes: &[u8]) -> Option<(String, String)> {
+    let g = Gbx::parse(bytes);
+    let ud = &g.user_data;
+    let n = u32::from_le_bytes(ud[0..4].try_into().ok()?) as usize;
+    let mut data = 4 + n * 8;
+    for i in 0..n {
+        let o = 4 + i * 8;
+        let id = u32::from_le_bytes(ud[o..o + 4].try_into().ok()?);
+        let size = (u32::from_le_bytes(ud[o + 4..o + 8].try_into().ok()?) & 0x7fff_ffff) as usize;
+        if id == 0x2E00_1003 {
+            let mut r = data;
+            let _ver = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?); r += 4;
+            let mut strings = Vec::new();
+            // ident: id (lookback), collection (u32 id), author (lookback)
+            for k in 0..3 {
+                let w = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?); r += 4;
+                if k == 1 { continue; } // collection: plain id
+                if w == 0x4000_0000 {
+                    let l = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?) as usize; r += 4;
+                    strings.push(String::from_utf8_lossy(&ud[r..r + l]).to_string()); r += l;
+                } else {
+                    strings.push(format!("#{w:x}"));
+                }
+            }
+            return Some((strings[0].clone(), strings[1].clone()));
+        }
+        data += size;
+    }
+    None
+}
+
+/// A stored (uncompressed) zip with one more file appended.
+pub fn zip_add(zip: &[u8], name: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    // parse local headers
+    let mut i = 0usize;
+    while i + 30 <= zip.len() && &zip[i..i + 4] == b"PK\x03\x04" {
+        let method = u16::from_le_bytes(zip[i + 8..i + 10].try_into().unwrap());
+        let csize = u32::from_le_bytes(zip[i + 18..i + 22].try_into().unwrap()) as usize;
+        let nlen = u16::from_le_bytes(zip[i + 26..i + 28].try_into().unwrap()) as usize;
+        let xlen = u16::from_le_bytes(zip[i + 28..i + 30].try_into().unwrap()) as usize;
+        let fname = String::from_utf8_lossy(&zip[i + 30..i + 30 + nlen]).to_string();
+        let start = i + 30 + nlen + xlen;
+        let data = match method {
+            0 => zip[start..start + csize].to_vec(),
+            8 => miniz_oxide::inflate::decompress_to_vec(&zip[start..start + csize]).expect("inflate"),
+            _ => panic!("zip method {method}"),
+        };
+        files.push((fname, data));
+        i = start + csize;
+    }
+    files.push((name.to_string(), bytes.to_vec()));
+    let map: std::collections::BTreeMap<String, Vec<u8>> = files.into_iter().collect();
+    deflated_zip(&map)
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// A zip with every entry deflated (method 8), as the game writes its own
+/// embedded-item archives.
+pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in files {
+        let off = out.len() as u32;
+        let crc = crc32(data);
+        let n = name.as_bytes();
+        let comp = miniz_oxide::deflate::compress_to_vec(data, 6);
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&[20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(n);
+        out.extend_from_slice(&comp);
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        central.extend_from_slice(&[0u8; 8]);
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&off.to_le_bytes());
+        central.extend_from_slice(n);
+    }
+    let cd_off = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_off.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+pub fn stored_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in files {
+        let off = out.len() as u32;
+        let crc = crc32(data);
+        let n = name.as_bytes();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(n);
+        out.extend_from_slice(data);
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        central.extend_from_slice(&[0u8; 8]);
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&off.to_le_bytes());
+        central.extend_from_slice(n);
+    }
+    let cd_off = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_off.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}

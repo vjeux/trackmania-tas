@@ -124,6 +124,7 @@ version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
+ "miniz_oxide",
 ]
 
 [[package]]

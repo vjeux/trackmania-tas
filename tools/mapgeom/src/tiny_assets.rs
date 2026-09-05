@@ -589,77 +589,11 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// "Deflate" is written as stored deflate blocks (BTYPE 00): a valid stream
 /// for any inflater, needing no compressor.
 pub fn zip(files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
-    fn relative(name: &str) -> String {
-        let n = name.replace('\\', "/");
-        match n.find("/Documents/Trackmania/") {
-            Some(i) => n[i + "/Documents/Trackmania/".len()..].to_string(),
-            None => n.trim_start_matches('/').to_string(),
-        }
-    }
-    fn deflate_stored(data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(data.len() + data.len() / 65535 * 5 + 5);
-        if data.is_empty() {
-            out.extend_from_slice(&[0x01, 0x00, 0x00, 0xFF, 0xFF]);
-            return out;
-        }
-        let mut chunks = data.chunks(65535).peekable();
-        while let Some(c) = chunks.next() {
-            let last = chunks.peek().is_none();
-            out.push(if last { 1 } else { 0 });
-            out.extend_from_slice(&(c.len() as u16).to_le_bytes());
-            out.extend_from_slice(&(!(c.len() as u16)).to_le_bytes());
-            out.extend_from_slice(c);
-        }
-        out
-    }
-    let mut out = Vec::new();
-    let mut central = Vec::new();
-    let mut count = 0u16;
-    for (name, data) in files {
-        let name = relative(name);
-        assert!(!name.ends_with('/'), "directory rows are not written: {name}");
-        let off = out.len() as u32;
-        let n = name.as_bytes();
-        let crc = crc32(data);
-        let comp = deflate_stored(data);
-        out.extend_from_slice(b"PK\x03\x04");
-        for x in [20u16, 0, 8, 0, 0] {
-            out.extend_from_slice(&x.to_le_bytes());
-        }
-        out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(n.len() as u16).to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(n);
-        out.extend_from_slice(&comp);
-
-        central.extend_from_slice(b"PK\x01\x02");
-        for x in [20u16, 20, 0, 8, 0, 0] {
-            central.extend_from_slice(&x.to_le_bytes());
-        }
-        central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&(comp.len() as u32).to_le_bytes());
-        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        central.extend_from_slice(&(n.len() as u16).to_le_bytes());
-        for x in [0u16, 0, 0, 0] {
-            central.extend_from_slice(&x.to_le_bytes());
-        }
-        central.extend_from_slice(&0u32.to_le_bytes());
-        central.extend_from_slice(&off.to_le_bytes());
-        central.extend_from_slice(n);
-        count += 1;
-    }
-    let cd_off = out.len() as u32;
-    out.extend_from_slice(&central);
-    out.extend_from_slice(b"PK\x05\x06");
-    for x in [0u16, 0, count, count] {
-        out.extend_from_slice(&x.to_le_bytes());
-    }
-    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
-    out.extend_from_slice(&cd_off.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out
+    // The game requires embedded item entries to be DEFLATED: a stored zip
+    // of Granady's own items crashed the loader, the same items deflated
+    // loaded (bisected on U10S_01 [Tiny], 2026-09-05). Small crystal items
+    // happened to survive stored, which hid this for a day.
+    tmmaps::header::deflated_zip(files)
 }
 
 fn fallback_alias(name: &str, flags: u32) -> Option<&'static str> {

@@ -547,6 +547,7 @@ pub fn catalog_cmd(args: &[String]) {
     }
 
     let mut specs: Vec<Spec> = Vec::new();
+    let mut ref_authors: BTreeMap<String, String> = BTreeMap::new();
     let mut tsv = String::from("name\talias\tcell_x\tcell_y\tcell_z\tblock_x\tblock_y\tblock_z\titem1_x\titem1_z\titem_scaled_x\titem_scaled_z\n");
     for &(bi, cell) in &grid {
         let b = &source.blocks[bi];
@@ -562,6 +563,16 @@ pub fn catalog_cmd(args: &[String]) {
         // --geometry-scaled: slot C uses the AS-prefixed library twin whose
         // mesh already carries the scale (the game ignores placement scale).
         let geom_scaled = args.iter().any(|a| a == "--geometry-scaled");
+        if let Some(refitem) = cli::flag(args, "--ref-item") {
+            // slot B: the reference item file, under ITS OWN ident and author
+            // (read from the header), placed at the block's origin + 64 m.
+            let bytes = std::fs::read(refitem).expect("--ref-item file");
+            let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
+            let pos = [origin[0] + 64.0, origin[1], origin[2]];
+            specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
+            ref_authors.insert(ident, author);
+            continue;
+        }
         if args.iter().any(|a| a == "--overlay") {
             // the scale-1 item exactly on the block: mismatches peek out.
             // --yaw-offset DEG turns the item relative to the block's yaw.
@@ -651,23 +662,34 @@ pub fn catalog_cmd(args: &[String]) {
     for (k, s) in specs.iter().enumerate() {
         let i = n_existing + k;
         m.set_item_model(i, &s.model);
-        m.set_item_author(i, &s.model);
+        m.set_item_author(i, ref_authors.get(&s.model).map(|a| a.as_str()).unwrap_or(&s.model));
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         if let Some((rot, pivot)) = s.frame {
             m.set_item_frame(i, rot, pivot);
         }
         m.set_item_scale(i, s.scale);
         m.clear_item_variant(i);
+        if let Ok(f) = std::env::var("TINY_ITEM_FLAGS") {
+            m.set_item_flags(i, u16::from_str_radix(f.trim_start_matches("0x"), 16).expect("TINY_ITEM_FLAGS hex"));
+        }
     }
     m.write_to(&tmp2).expect("write models");
 
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
-    let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+    let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+    if let Some(refitem) = cli::flag(args, "--ref-item") {
+        let bytes = std::fs::read(refitem).unwrap();
+        let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
+        zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
+    }
     let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).collect();
     names.sort();
     names.dedup();
-    let manifest: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
+    let manifest: Vec<(&str, &str)> = names
+        .iter()
+        .map(|n| (n.as_str(), ref_authors.get(n).map(|a| a.as_str()).unwrap_or(n.as_str())))
+        .collect();
     m.replace_embedded_objects(&manifest, &zip);
     m.write_to(&out).expect("write output");
     for p in [&tmp0, &tmp1, &tmp2] {
