@@ -43,23 +43,34 @@ pub fn nameless_ident(bytes: &[u8], ident: &str) -> Vec<u8> {
     set_body_ident_nameless(&out, ident)
 }
 
-/// A crystal item from a pack model's visual geometry: (item bytes, faces).
+/// A crystal item from a pack model's COLLISION geometry: (item bytes, faces).
+/// The collision surface is exact (verified against every prefab's bounds),
+/// consistently wound, and carries the physics the car feels; each physics
+/// group becomes one material. The visual meshes would look richer, but the
+/// walker's read of their index streams is not yet trustworthy (fragmented
+/// decks in game), so they are not used.
 pub fn crystal_from_model(store: &mut DataStore, logical: &str, template: &[u8], ident: &str) -> Result<(Vec<u8>, usize), String> {
     let m = store.load_model(logical)?;
     let mut c = crate::geom::Collector::new(store);
-    c.link_labels = true;
     c.model(&m, &crate::geom::IDENTITY, 0);
-    let surface_links = c.surface_links.clone();
     let scene = c.scene;
     let mut mesh = crate::crystal::CrystalMesh::default();
     let mut materials = Vec::new();
     for (label, g) in &scene.groups {
-        if g.tris.is_empty() || !label.contains('|') {
+        // Collision groups carry a bare physics name; visual groups are
+        // named "Visual"/"CustomMesh"/material paths and are skipped.
+        let phys = label.trim_end_matches(" (moving)");
+        if g.tris.is_empty() || crate::scene::physics_id(phys).is_none() {
             continue;
         }
-        let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
-        let spec = crate::crystal::material_for_link_label(label);
-        mesh.add_tris(&g.verts, &g.tris, materials.len() as u32, 8.0);
+        if matches!(phys, "NotCollidable" | "Water") {
+            continue;
+        }
+        let spec = crate::crystal::material_for_physics_name(phys);
+        // Collision surfaces wind the opposite way from crystal faces: as read,
+        // the item renders as an inside-out box (dark faces, one bright cap).
+        let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+        mesh.add_tris(&g.verts, &tris, materials.len() as u32, 32.0);
         materials.push(spec);
     }
     if mesh.faces.is_empty() {
@@ -523,6 +534,7 @@ pub fn build(
     out_zip: &Path,
     out_map: &Path,
     scale: f32,
+    keep_unscaled: bool,
 ) {
     assert!(scale.is_finite() && scale > 0.0, "scale must be positive");
     let source = MapFile::load(map);
@@ -647,7 +659,18 @@ pub fn build(
                 files.insert(format!("Items/{ident}"), item);
                 item_aliases.insert(model.clone(), alias);
             }
-            Err(e) => println!("  NOT rescaled ({n} placements): {model} -- {e}"),
+            Err(e) => {
+                // Procedural vegetation cannot be shrunk and would tower over
+                // the half-scale terrain at full size: those placements point
+                // at the invisible item instead (the tiny look wins over a
+                // full-size palm). `--keep-unscaled` leaves them in place.
+                if keep_unscaled {
+                    println!("  KEPT FULL SIZE ({n} placements): {model} -- {e}");
+                } else {
+                    println!("  REMOVED ({n} placements): {model} -- {e}");
+                    item_aliases.insert(model.clone(), "AC00000104".to_string());
+                }
+            }
         }
     }
 
