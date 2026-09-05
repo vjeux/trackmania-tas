@@ -109,7 +109,7 @@ impl<'a> Rd<'a> {
     pub fn new(b: &'a [u8], o: usize, lb: LookbackState) -> Rd<'a> {
         Rd { b, o, lb }
     }
-    fn take(&mut self, n: usize) -> R<&'a [u8]> {
+    pub fn take(&mut self, n: usize) -> R<&'a [u8]> {
         let end = self.o.checked_add(n).ok_or("length overflow")?;
         if end > self.b.len() {
             return Err(format!("read {} bytes at 0x{:x} past the end (0x{:x})", n, self.o, self.b.len()));
@@ -123,6 +123,9 @@ impl<'a> Rd<'a> {
     }
     pub fn u16(&mut self) -> R<u16> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    pub fn i16(&mut self) -> R<i16> {
+        Ok(self.u16()? as i16)
     }
     pub fn u32(&mut self) -> R<u32> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
@@ -256,6 +259,12 @@ impl<'a> Wr<'a> {
     }
     pub fn u16(&mut self, v: u16) {
         self.w.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn i16(&mut self, v: i16) {
+        self.u16(v as u16);
+    }
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.w.extend_from_slice(b);
     }
     pub fn u32(&mut self, v: u32) {
         self.w.extend_from_slice(&v.to_le_bytes());

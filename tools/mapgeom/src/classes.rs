@@ -1870,7 +1870,13 @@ impl<'a> Graph<'a> {
     // ------------------------------------------------------ vertex stream
 
     fn vertex_stream(&mut self, out: &mut VertexStream) -> R<()> {
-        let _version = self.r.u32()?;
+        // The full declaration layout, shared with `static_item::vstream`:
+        // a declaration is (flags1, flags2) and, when `flags2 & 0xFFC` is
+        // set, a u16 pair carrying the element's byte offset in the vertex.
+        // Every declared element has a fixed stored size, so the whole
+        // stream is walked without a recovery scan.
+        use crate::static_item::vstream::{type_size, Decl, N_NORMAL, N_POSITION, N_TEXCOORD0, SPACE_LOCAL3D, T_DEC3N, T_FLOAT2, T_FLOAT3};
+        let version = self.r.u32()?;
         let num = self.r.i32()?;
         let _flags = self.r.u32()?;
         let base = self.noderef()?;
@@ -1878,45 +1884,36 @@ impl<'a> Graph<'a> {
             return Ok(());
         }
         let num = num as usize;
-        struct Decl {
-            name: u32,
-            ty: u32,
-            space: u32,
-        }
         let mut decls = Vec::new();
         let n_decl = self.r.u32()? as usize;
         for _ in 0..n_decl {
-            let lo = self.r.u32()? as u64;
-            let hi = self.r.u32()? as u64;
-            let w = lo | (hi << 32);
-            let name = (w & 0x1FF) as u32;
-            let ty = ((w >> 9) & 0x1FF) as u32;
-            let space = ((w >> 28) & 0xF) as u32;
-            let ptr_offset = ((w >> 34) & 0x3FF) as u32;
-            if ptr_offset != 0 {
+            let flags1 = self.r.u32()?;
+            let flags2 = self.r.u32()?;
+            let d = Decl { flags1, flags2, extra: None, v0_data: Vec::new() };
+            if flags2 & 0xFFC == 0 {
+                if version == 0 {
+                    let per = ((flags1 >> 0x12) & 0x3FF) as usize;
+                    self.r.take(per * num)?;
+                }
+            } else {
                 self.r.take(4)?;
             }
-            decls.push(Decl { name, ty, space });
+            decls.push(d);
+        }
+        if version == 0 {
+            return Ok(());
         }
         let compress_local3d = self.r.bool32()?;
         for d in &decls {
-            // Float3 is packed to Dec3N only in LOCAL 3D space. Applying the
-            // packing to a Position (which is Global3D) reads a mesh's
-            // coordinates out of somebody else's bytes and still produces
-            // numbers, so the space check is load-bearing.
-            let effective = if d.ty == 2 && d.space == 1 && compress_local3d {
-                14
-            } else {
-                d.ty
-            };
-            match (d.name, effective) {
-                (0, 2) => {
+            let stored = d.stored_type(compress_local3d);
+            match (d.name(), stored) {
+                (N_POSITION, T_FLOAT3) => {
                     self.r.mark(3 * num);
                     for _ in 0..num {
                         out.positions.push(self.r.vec3()?);
                     }
                 }
-                (0, 14) => {
+                (N_POSITION, T_DEC3N) => {
                     // Packed positions cannot be rescaled in place; say so
                     // rather than leave a mesh at full size.
                     self.r.marks.push((usize::MAX, num));
@@ -1924,18 +1921,28 @@ impl<'a> Graph<'a> {
                         out.positions.push(dec3n(self.r.u32()?));
                     }
                 }
-                _ => {
-                    // Everything after the positions is normals, colours and
-                    // UVs, and the layout between the arrays has one field
-                    // this reader does not account for: on a 54-vertex stream
-                    // the normals start 4 bytes later than the declarations
-                    // predict. Rather than guess it and read a mesh out of the
-                    // wrong bytes, stop here and let the node terminator put
-                    // the cursor back — `recover_to_facade` says so out loud.
-                    return self.recover_to_facade("CPlugVertexStream layout after Position");
+                (N_NORMAL, T_DEC3N) => {
+                    for _ in 0..num {
+                        out.normals.push(dec3n(self.r.u32()?));
+                    }
+                }
+                (N_NORMAL, T_FLOAT3) => {
+                    for _ in 0..num {
+                        out.normals.push(self.r.vec3()?);
+                    }
+                }
+                (N_TEXCOORD0, T_FLOAT2) => {
+                    for _ in 0..num {
+                        out.uv0.push(self.r.vec2()?);
+                    }
+                }
+                (_, t) => {
+                    let size = type_size(t).ok_or_else(|| format!("vertex element type {t} has no size"))?;
+                    self.r.take(size * num)?;
                 }
             }
         }
+        let _ = SPACE_LOCAL3D;
         Ok(())
     }
 
@@ -1947,6 +1954,7 @@ impl<'a> Graph<'a> {
     /// node's remaining content is lost and the caller counts it, because a
     /// mesh quietly missing from a model is the failure this whole tool exists
     /// to avoid.
+    #[allow(dead_code)]
     fn recover_to_facade(&mut self, what: &str) -> R<()> {
         let mut i = self.r.o;
         while i + 4 <= self.r.b.len() {

@@ -16,6 +16,10 @@ COMMANDS
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
+  static-item <prefab-or-item> --out F --ident NAME.Item.Gbx --author X
+      [--scale 0.5] [--collection 26]
+                                a static-object item from every static object
+                                of a pack prefab, or from a static/crystal item
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
       --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
@@ -495,6 +499,10 @@ fn main() {
             println!("wrote {out} ({} bytes) reverse={reverse}", item.len());
         }
         // Round-trip oracle: the template's own crystal, re-emitted by our writer.
+        "static-item" => {
+            let mut open_store = || open(&a);
+            mapgeom::static_item::cli::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
         "crystal-roundtrip" => {
             let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));

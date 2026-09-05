@@ -50,5 +50,6 @@ pub mod crystal_model;
 pub mod rescale;
 pub mod tables;
 pub mod tiny_assets;
+pub mod static_item;
 
 pub use store::{DataStore, Model};
