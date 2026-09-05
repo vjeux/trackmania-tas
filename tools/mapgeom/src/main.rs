@@ -19,7 +19,7 @@ COMMANDS
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
       --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
-      --stadium-pak PAK [--scale 0.5]
+      --stadium-pak PAK [--scale 0.5] [--keep-unscaled]
                                 build exact scalable wrappers and the tiny map
   extract <logical-path> <file>    one pack file, decrypted and decompressed
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
@@ -368,11 +368,19 @@ fn main() {
             let template = std::fs::read(flag(&a.rest, "--template").unwrap_or_else(|| die("--template ITEM".into()))).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
+            if !a.rest.iter().any(|x| x == "--visual") {
+                // Default: the generator's own path (collision geometry).
+                let (item, faces) = mapgeom::tiny_assets::crystal_from_model(&mut store, &p, &template, &ident).unwrap_or_else(die);
+                std::fs::write(&out, &item).unwrap();
+                println!("wrote {out} ({} bytes, {faces} faces from collision surfaces)", item.len());
+                return;
+            }
             let author = flag(&a.rest, "--author").unwrap_or_else(|| mapgeom::tiny_assets::AUTHOR.to_string());
             let scale: f32 = flag(&a.rest, "--scale").unwrap_or_else(|| "1".into()).parse().unwrap_or_else(|_| die("--scale number".into()));
             let m = store.load_model(&p).unwrap_or_else(die);
             let mut c = mapgeom::geom::Collector::new(&mut store);
             c.link_labels = true;
+            c.finest_lod_only = !a.rest.iter().any(|x| x == "--all-lods");
             c.model(&m, &mapgeom::geom::IDENTITY, 0);
             let surface_links = c.surface_links.clone();
             let scene = c.scene;
@@ -391,7 +399,13 @@ fn main() {
                     spec.link = link; // one known material for every face: isolates geometry from material lookups
                 }
                 let verts: Vec<[f32; 3]> = g.verts.iter().map(|v| [v[0] * scale, v[1] * scale, v[2] * scale]).collect();
-                mesh.add_tris(&verts, &g.tris, materials.len() as u32, 8.0 * scale);
+                let reversed: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+                let tris: &[[u32; 3]] = if a.rest.iter().any(|x| x == "--keep-winding") { &g.tris } else { &reversed };
+                mesh.add_tris(&verts, tris, materials.len() as u32, 8.0 * scale);
+                if a.rest.iter().any(|x| x == "--flip") {
+                    let flipped: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+                    mesh.add_tris(&verts, &flipped, materials.len() as u32, 8.0 * scale);
+                }
                 println!("  material {} <- {} ({} tris, physics {})", materials.len(), label, g.tris.len(), spec.physics);
                 materials.push(spec);
             }
@@ -399,6 +413,33 @@ fn main() {
             let item = mapgeom::crystal::build_item(&template, &ident, &author, &materials, &mesh);
             std::fs::write(&out, &item).unwrap();
             println!("wrote {out} ({} bytes)", item.len());
+        }
+        // A synthetic 32x32x2 m box in ONE material: the material probe.
+        "crystal-box" => {
+            let template = std::fs::read(flag(&a.rest, "--template").unwrap_or_else(|| die("--template ITEM".into()))).unwrap();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
+            let link = flag(&a.rest, "--material").unwrap_or_else(|| "Stadium\\Media\\Material\\RoadTech".into());
+            let phys: u8 = flag(&a.rest, "--physics").unwrap_or_else(|| "16".into()).parse().unwrap();
+            let reverse = a.rest.iter().any(|x| x == "--reverse");
+            let (sx, sy, sz) = (32.0f32, 2.0f32, 32.0f32);
+            let v = [[0.0, 0.0, 0.0], [sx, 0.0, 0.0], [sx, 0.0, sz], [0.0, 0.0, sz], [0.0, sy, 0.0], [sx, sy, 0.0], [sx, sy, sz], [0.0, sy, sz]];
+            // counter-clockwise seen from outside (right-handed, +y up)
+            let mut tris: Vec<[u32; 3]> = vec![
+                [4, 6, 5], [4, 7, 6], // top
+                [0, 1, 2], [0, 2, 3], // bottom
+                [0, 4, 5], [0, 5, 1], // -z side
+                [3, 2, 6], [3, 6, 7], // +z side
+                [0, 3, 7], [0, 7, 4], // -x side
+                [1, 5, 6], [1, 6, 2], // +x side
+            ];
+            if reverse { for t in &mut tris { t.swap(1, 2); } }
+            let mut mesh = mapgeom::crystal::CrystalMesh::default();
+            mesh.add_tris(&v, &tris, 0, 32.0);
+            let materials = vec![mapgeom::crystal::MaterialSpec { link, physics: phys }];
+            let item = mapgeom::crystal::build_item(&template, &ident, &ident, &materials, &mesh);
+            std::fs::write(&out, &item).unwrap();
+            println!("wrote {out} ({} bytes) reverse={reverse}", item.len());
         }
         // Round-trip oracle: the template's own crystal, re-emitted by our writer.
         "crystal-roundtrip" => {
@@ -469,6 +510,7 @@ fn main() {
                     .unwrap_or_else(|| "0.5".into())
                     .parse()
                     .unwrap_or_else(|_| die("--scale number".into())),
+                a.rest.iter().any(|x| x == "--keep-unscaled"),
             );
         }
         "extract" => {

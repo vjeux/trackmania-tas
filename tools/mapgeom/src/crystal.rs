@@ -45,7 +45,10 @@ pub struct MaterialSpec {
 
 impl CrystalMesh {
     /// Add triangles with their own vertex list; positions are de-duplicated
-    /// exactly, UVs are planar (x, z) in metres / `uv_scale`.
+    /// exactly. UVs are BOX-mapped: each face projects onto the plane of its
+    /// dominant normal axis, tiled every `uv_scale` metres, and v is squeezed
+    /// into the texture's lit band (0.06..0.94 — Nadeo's RoadTech deck uses
+    /// exactly that range; outside it the atlases are black).
     pub fn add_tris(&mut self, verts: &[[f32; 3]], tris: &[[u32; 3]], material: u32, uv_scale: f32) {
         let mut map: HashMap<[u32; 3], u32> = HashMap::new();
         for (i, p) in self.positions.iter().enumerate() {
@@ -64,7 +67,23 @@ impl CrystalMesh {
                 continue; // degenerate
             }
             let idx: Vec<u32> = ps.iter().map(|p| index(*p, &mut self.positions)).collect();
-            let uvs: Vec<[f32; 2]> = ps.iter().map(|p| [p[0] / uv_scale, p[2] / uv_scale]).collect();
+            let e1 = [ps[1][0] - ps[0][0], ps[1][1] - ps[0][1], ps[1][2] - ps[0][2]];
+            let e2 = [ps[2][0] - ps[0][0], ps[2][1] - ps[0][1], ps[2][2] - ps[0][2]];
+            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let (ax, ay, az) = (n[0].abs(), n[1].abs(), n[2].abs());
+            let squeeze = |v: f32| 0.06 + 0.88 * v.rem_euclid(1.0);
+            let uvs: Vec<[f32; 2]> = ps
+                .iter()
+                .map(|p| {
+                    if ay >= ax && ay >= az {
+                        [p[0] / uv_scale, squeeze(p[2] / uv_scale)]
+                    } else if ax >= az {
+                        [p[2] / uv_scale, squeeze(p[1] / uv_scale)]
+                    } else {
+                        [p[0] / uv_scale, squeeze(p[1] / uv_scale)]
+                    }
+                })
+                .collect();
             self.faces.push(Face { verts: idx, uvs, material });
         }
     }
@@ -356,22 +375,26 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     w.u32(1); // IsVisible
     w.u32(1); // Collidable
     }
-    // ---- 0x09003006 lightmap coords: one per corner, from the uvs wrapped to [0,1)
+    // ---- 0x09003006 lightmap coords: a non-overlapping atlas, one grid cell
+    // per face with the corners spread on a circle inside it. Overlapping
+    // lightmap UVs (the texture UVs reused) made the editor draw the item as
+    // a translucent bounding box instead of a mesh.
     if keep & 4 != 0 { w.0.extend_from_slice(&t.raw_006); } else {
     w.u32(0x09003006);
     w.u32(2);
-    let mut lm_index: HashMap<[u16; 2], u32> = HashMap::new();
+    let grid = (mesh.faces.len() as f64).sqrt().ceil().max(1.0) as usize;
+    let cell = 1.0 / grid as f64;
     let mut lms: Vec<[u16; 2]> = Vec::new();
     let mut corner_lm: Vec<u32> = Vec::new();
-    for f in &mesh.faces {
-        for uv in &f.uvs {
-            let q = |v: f32| ((v.rem_euclid(1.0)) * 65535.0) as u16;
-            let k = [q(uv[0]), q(uv[1])];
-            let i = *lm_index.entry(k).or_insert_with(|| {
-                lms.push(k);
-                (lms.len() - 1) as u32
-            });
-            corner_lm.push(i);
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        let (cx, cy) = ((fi % grid) as f64 * cell, (fi / grid) as f64 * cell);
+        let n = f.verts.len();
+        for k in 0..n {
+            let ang = std::f64::consts::TAU * k as f64 / n as f64;
+            let u = cx + cell * (0.5 + 0.4 * ang.cos());
+            let v = cy + cell * (0.5 + 0.4 * ang.sin());
+            lms.push([(u * 65535.0) as u16, (v * 65535.0) as u16]);
+            corner_lm.push((lms.len() - 1) as u32);
         }
     }
     w.u32(lms.len() as u32);
@@ -392,9 +415,11 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     for s in &t.smoothing {
         w.f32(*s);
     }
+    // Every Nadeo/community crystal read marks each face with group 2 (the
+    // third of the three floats 0,1,2); 0 smoothed a box into a black blob.
     w.u32(mesh.faces.len() as u32);
     for _ in &mesh.faces {
-        w.u32(0);
+        w.u32(2);
     }
     }
     // ---- splice; inline nodes after the materials move by `delta`
@@ -424,6 +449,28 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
     let out = g.write_body_recompressed(&body);
     let out = crate::tiny_assets::set_header_ident(&out, ident, author);
     crate::tiny_assets::set_body_ident_nameless(&out, ident)
+}
+
+/// The game material a collision surface's physics name stands for: what the
+/// car feels is also what the eye should see. Unknown names get the road
+/// material with their own physics id, so the surface still drives right.
+pub fn material_for_physics_name(name: &str) -> MaterialSpec {
+    let phys = crate::scene::physics_id(name).unwrap_or(16);
+    let link = match name {
+        "Asphalt" | "WetAsphalt" => "Stadium\\Media\\Material\\RoadTech",
+        "Rubber" | "SlidingRubber" => "Stadium\\Media\\Material\\TrackBorders",
+        "Concrete" | "Pavement" | "WetPavement" => "Stadium\\Media\\Material\\PlatformTech",
+        "Metal" | "ResonantMetal" => "Stadium\\Media\\Material\\Technics",
+        "Grass" | "WetGrass" => "Stadium\\Media\\Material\\Grass",
+        "Dirt" | "DirtRoad" | "WetDirtRoad" => "Stadium\\Media\\Material\\RoadDirt",
+        "Ice" => "Stadium\\Media\\Material\\RoadIce",
+        "Sand" => "Stadium\\Media\\Material\\Sand",
+        "Wood" => "Stadium\\Media\\Material\\PlatformWood",
+        "Rock" => "Stadium\\Media\\Material\\Rock",
+        "Snow" => "Stadium\\Media\\Material\\Snow",
+        _ => "Stadium\\Media\\Material\\RoadTech",
+    };
+    MaterialSpec { link: link.to_string(), physics: phys }
 }
 
 /// A `LINK|PHYS` label from `Collector::link_labels` as a material spec. A
