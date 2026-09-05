@@ -12,6 +12,7 @@ name = "tmmaps"
 path = "src/main.rs"
 
 [dependencies]
+miniz_oxide = "0.9.1"
 # `tools/ghost` owns the ghost/replay format for the whole toolchain. tmmaps
 # needs exactly one thing out of it -- the checkpoint splits a reference ghost
 # declares -- and calls in for it rather than keeping a second reader.
