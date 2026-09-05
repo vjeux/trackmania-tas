@@ -109,6 +109,15 @@ pub struct Collector<'a> {
     pub store: &'a mut DataStore,
     pub scene: Scene,
     pub stats: Stats,
+    /// Name visual groups by the game material they LINK (`Stadium\Media\
+    /// Material\RoadTech|16`, link and physics id) instead of by physics
+    /// name: what a crystal item needs to reproduce the surface.
+    pub link_labels: bool,
+    material_cache: HashMap<String, u8>,
+    /// `LINK|PHYS` of every material a collision surface named, in the order
+    /// met: the look material of terrain whose visual shader is a shared id
+    /// material (`Techno3\...`).
+    pub surface_links: Vec<String>,
     /// Inside a moving block: triangles collected now are named `(moving)`.
     moving: bool,
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
@@ -122,6 +131,9 @@ impl<'a> Collector<'a> {
             store,
             scene: Scene::default(),
             stats: Stats::default(),
+            link_labels: false,
+            material_cache: HashMap::new(),
+            surface_links: Vec::new(),
             moving: false,
             max_depth: 24,
         }
@@ -218,6 +230,19 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::Surface(s) => {
+                if self.link_labels {
+                    for m in &s.materials {
+                        if let Some(Slot::External(p)) = slots.get((*m).max(0) as usize) {
+                            if p.to_ascii_lowercase().ends_with(".material.gbx") {
+                                let phys = self.material_phys(p);
+                                let l = format!("{}|{phys}", strip_material_ext(p));
+                                if !self.surface_links.contains(&l) {
+                                    self.surface_links.push(l);
+                                }
+                            }
+                        }
+                    }
+                }
                 self.stats.surfaces += 1;
                 for m in &s.meshes {
                     let verts: Vec<[f32; 3]> = m.verts.iter().map(|v| apply(at, *v)).collect();
@@ -240,7 +265,11 @@ impl<'a> Collector<'a> {
                         Some(v) => *v,
                         None => continue,
                     };
-                    let mat = material_label(s, g.material, slots);
+                    let mat = if self.link_labels {
+                        self.material_link(s, g.material, slots)
+                    } else {
+                        material_label(s, g.material, slots)
+                    };
                     if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
                         let mut positions = v.inline_positions.clone();
                         for si in &v.vertex_streams {
@@ -253,6 +282,9 @@ impl<'a> Collector<'a> {
                         let verts: Vec<[f32; 3]> =
                             positions.iter().map(|p| apply(at, *p)).collect();
                         let idx = decode_indices(&v.indices, v.index_is_absolute, verts.len());
+                        if std::env::var_os("MAPGEOM_TRACE").is_some() {
+                            eprintln!("solid2 geom: visual {} material idx {} -> {:?}: {} inline pos, {} streams, {} verts, {} indices -> {} tris; verts {:?} idx {:?}", vi, g.material, mat, v.inline_positions.len(), v.vertex_streams.len(), verts.len(), v.indices.len(), idx.len(), &verts[..verts.len().min(9)], &idx[..idx.len().min(8)]);
+                        }
                         self.scene.add_tris(&mat, &verts, idx.into_iter());
                     }
                 }
@@ -343,6 +375,9 @@ fn as_node(s: &Slot) -> Option<&Node> {
 /// A GBX index buffer is either absolute indices or a delta chain from 0.
 fn decode_indices(raw: &[u32], absolute: bool, n: usize) -> Vec<[i32; 3]> {
     let mut flat: Vec<i32> = Vec::with_capacity(raw.len());
+    // The flag is not always trustworthy: an "absolute" stream whose values
+    // exceed the vertex count is a delta stream (0xFFFF is -1).
+    let absolute = absolute && (n == 0 || raw.iter().all(|v| (*v as usize) < n));
     if absolute || n == 0 {
         flat.extend(raw.iter().map(|v| *v as i32));
     } else {
@@ -353,6 +388,90 @@ fn decode_indices(raw: &[u32], absolute: bool, n: usize) -> Vec<[i32; 3]> {
         }
     }
     flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+impl<'a> Collector<'a> {
+    /// `LINK|PHYS` for a shaded geometry's material: the pack material file
+    /// it references (extension dropped) and that material's surface id, read
+    /// from the material file itself. Inline materials use their own name.
+    fn material_link(&mut self, s: &crate::node::Solid2, idx: i32, slots: &[Slot]) -> String {
+        let i = idx.max(0) as usize;
+        if std::env::var_os("MAPGEOM_TRACE").is_some() {
+            eprintln!(
+                "material_link idx {idx}: names {:?} nodes {:?} -> slot {:?}",
+                s.material_names,
+                s.material_nodes,
+                s.material_nodes.get(i).and_then(|n| slots.get((*n).max(0) as usize)).map(|sl| match sl {
+                    Slot::External(p) => format!("External({p})"),
+                    Slot::Node(Node::Material(n, p)) => format!("Material({n:?}, {p})"),
+                    Slot::Node(n) => format!("Node({:?})", std::mem::discriminant(n)),
+                    _ => "other".to_string(),
+                })
+            );
+        }
+        if let Some(n) = s.material_names.get(i) {
+            if !n.is_empty() {
+                return format!("{}|16", n.trim_end_matches(".Material.Gbx").trim_end_matches(".Material.gbx"));
+            }
+        }
+        match s.material_nodes.get(i).and_then(|n| slots.get((*n).max(0) as usize)) {
+            Some(Slot::External(path)) => {
+                let link = strip_material_ext(path);
+                let phys = self.material_phys(path);
+                format!("{link}|{phys}")
+            }
+            Some(Slot::Node(Node::Material(name, phys))) if name.starts_with("@refs:") => {
+                // An inline CPlugMaterial: the game material is the external
+                // .Material.Gbx it references (first one wins).
+                let link = name["@refs:".len()..]
+                    .split(',')
+                    .filter_map(|t| t.parse::<i32>().ok())
+                    .filter(|i| *i >= 0)
+                    .find_map(|i| match slots.get(i as usize) {
+                        Some(Slot::External(p)) if p.to_ascii_lowercase().ends_with(".material.gbx") => Some(strip_material_ext(p)),
+                        _ => None,
+                    });
+                match link {
+                    Some(l) => format!("{l}|{phys}"),
+                    None => format!("|{phys}"),
+                }
+            }
+            Some(Slot::Node(Node::Material(name, phys))) if !name.is_empty() => format!("{}|{phys}", strip_material_ext(name)),
+            Some(Slot::Node(Node::Material(_, phys))) => format!("|{phys}"),
+            _ => "|16".to_string(),
+        }
+    }
+}
+
+impl<'a> Collector<'a> {
+    /// The surface physics id a pack material file carries (cached).
+    fn material_phys(&mut self, path: &str) -> u8 {
+        if let Some(p) = self.material_cache.get(path) {
+            return *p;
+        }
+        let p = match self.store.load_model(path) {
+            Ok(m) => match m.graph() {
+                Ok(g) => match g.slots.first().and_then(as_node) {
+                    Some(Node::Material(_, phys)) => *phys,
+                    _ => 16,
+                },
+                Err(_) => 16,
+            },
+            Err(_) => 16,
+        };
+        self.material_cache.insert(path.to_string(), p);
+        p
+    }
+}
+
+fn strip_material_ext(p: &str) -> String {
+    let lower = p.to_ascii_lowercase();
+    for ext in [".material.gbx"] {
+        if lower.ends_with(ext) {
+            return p[..p.len() - ext.len()].to_string();
+        }
+    }
+    p.to_string()
 }
 
 /// What to call a shaded geometry's material: the physics id the car feels

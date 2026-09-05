@@ -19,7 +19,7 @@ COMMANDS
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
       --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
-      --stadium-pak PAK
+      --stadium-pak PAK [--scale 0.5]
                                 build exact scalable wrappers and the tiny map
   extract <logical-path> <file>    one pack file, decrypted and decompressed
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
@@ -54,9 +54,11 @@ MAPGEOM_TRACE=1 prints every step of a body walk.
 
 struct Args {
     packs: String,
-    /// An explicit pack file. Set, it wins over the directory scan; the client
-    /// packs (`BlueBay.pak`, `Stadium.pak`) each need their own key.
-    pak: Option<String>,
+    /// Explicit pack files, each `PATH` or `PATH:KEYHEX` (`--pak`, repeatable).
+    /// Set, they win over the directory scan; the client packs (`BlueBay.pak`,
+    /// `Stadium.pak`) each need their own key, and a BlueBay prefab can name a
+    /// Stadium file, so both are usually given together.
+    paks: Vec<String>,
     key: String,
     rest: Vec<String>,
 }
@@ -65,26 +67,34 @@ fn parse_args() -> Args {
     let mut packs = std::env::var("TM_SERVER")
         .map(|s| format!("{}/Packs", s))
         .unwrap_or_else(|_| "/tmp/tmoracle/server/Packs".to_string());
-    let mut pak = None;
+    let mut paks = Vec::new();
     let mut key = STADIUM_KEY.to_string();
     let mut rest = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--packs" => packs = it.next().unwrap_or_default(),
-            "--pak" => pak = it.next(),
+            "--pak" => paks.push(it.next().unwrap_or_default()),
             "--key" => key = it.next().unwrap_or_default(),
             _ => rest.push(a),
         }
     }
-    Args { packs, pak, key, rest }
+    Args { packs, paks, key, rest }
 }
 
 fn open(a: &Args) -> DataStore {
-    let mut paths: Vec<String> = Vec::new();
-    if let Some(p) = &a.pak {
-        paths.push(p.clone());
+    if !a.paks.is_empty() {
+        let mut store = DataStore::empty();
+        for spec in &a.paks {
+            let (path, key) = match spec.rsplit_once(':') {
+                Some((p, k)) if k.len() == 32 => (p.to_string(), k.to_string()),
+                _ => (spec.clone(), a.key.clone()),
+            };
+            store.add_pak(&path, &key).unwrap_or_else(|e| die(e));
+        }
+        return store;
     }
+    let mut paths: Vec<String> = Vec::new();
     for name in ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"] {
         let p = format!("{}/{}", a.packs, name);
         if std::path::Path::new(&p).exists() {
@@ -294,6 +304,114 @@ fn main() {
                 println!("  RECOVERED past an unknown layout: {}", r);
             }
         }
+        // Bake a scale into copies of a prefab tree and prove it: the copies
+        // re-walk identically with every marked float scaled, and their
+        // collision bounds are the original's times the factor.
+        "rescale" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let factor: f32 = flag(&a.rest, "--factor").unwrap_or_else(|| "0.5".into()).parse().unwrap_or_else(|_| die("--factor number".into()));
+            let suffix = flag(&a.rest, "--suffix").unwrap_or_else(|| "_half".into());
+            let out_dir = flag(&a.rest, "--out-dir");
+            let mut rs = mapgeom::rescale::Rescale::new(factor, &suffix);
+            let top = rs.file(&mut store, &p).unwrap_or_else(die);
+            for rep in &rs.reports {
+                println!("{} -> {}: {} marks, {} floats, {} nested", rep.logical, rep.out, rep.marks, rep.floats, rep.nested);
+            }
+            // Re-walk every copy against its source.
+            for rep in &rs.reports {
+                let orig = store.read(&rep.logical).unwrap_or_else(die);
+                let n = mapgeom::rescale::verify(&orig, &rs.files[&rep.out], &rep.logical, factor).unwrap_or_else(die);
+                println!("  verified {}: {} floats re-read at x{}", rep.out, n, factor);
+            }
+            // Collision bounds before and after, for the top file.
+            let bounds = |bytes: &[u8], logical: &str, store: &mut DataStore| -> Option<[f32; 6]> {
+                let m = mapgeom::store::Model::parse(bytes, logical).ok()?;
+                let mut c = mapgeom::geom::Collector::new(store);
+                c.model(&m, &mapgeom::geom::IDENTITY, 0);
+                if c.scene.tri_count() == 0 {
+                    return None;
+                }
+                let (lo, hi) = c.scene.bounds()?;
+                Some([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]])
+            };
+            let orig = store.read(&p).unwrap_or_else(die);
+            let b0 = bounds(&orig, &p, &mut store);
+            for (name, bytes) in &rs.files {
+                store.add_overlay(name, bytes.clone());
+            }
+            let b1 = bounds(&rs.files[&top], &p, &mut store);
+            println!("  bounds before {:?}", b0);
+            println!("  bounds after  {:?}", b1);
+            if let (Some(x), Some(y)) = (b0, b1) {
+                for i in 0..6 {
+                    if (y[i] - x[i] * factor).abs() > 1e-3 * x[i].abs().max(1.0) {
+                        die::<()>(format!("bounds component {} is {} not {}", i, y[i], x[i] * factor));
+                    }
+                }
+                println!("  bounds scaled exactly by {}", factor);
+            }
+            if let Some(dir) = out_dir {
+                for (name, bytes) in &rs.files {
+                    let path = std::path::Path::new(&dir).join(name.replace('\\', "/"));
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, bytes).unwrap();
+                    println!("  wrote {}", path.display());
+                }
+            }
+        }
+        // A crystal item from a pack prefab's visual geometry, written around a
+        // known-good crystal item as template.
+        "crystal-item" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let template = std::fs::read(flag(&a.rest, "--template").unwrap_or_else(|| die("--template ITEM".into()))).unwrap();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| mapgeom::tiny_assets::AUTHOR.to_string());
+            let scale: f32 = flag(&a.rest, "--scale").unwrap_or_else(|| "1".into()).parse().unwrap_or_else(|_| die("--scale number".into()));
+            let m = store.load_model(&p).unwrap_or_else(die);
+            let mut c = mapgeom::geom::Collector::new(&mut store);
+            c.link_labels = true;
+            c.model(&m, &mapgeom::geom::IDENTITY, 0);
+            let surface_links = c.surface_links.clone();
+            let scene = c.scene;
+            let mut mesh = mapgeom::crystal::CrystalMesh::default();
+            let mut materials = Vec::new();
+            for (label, g) in &scene.groups {
+                // Visual groups only (`LINK|PHYS`); collision groups carry a bare physics name.
+                if g.tris.is_empty() || !label.contains('|') {
+                    continue;
+                }
+                // Terrain visuals shade through a shared id material; the look
+                // material is the one the collision surface names.
+                let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
+                let mut spec = mapgeom::crystal::material_for_link_label(label);
+                if let Some(link) = flag(&a.rest, "--material") {
+                    spec.link = link; // one known material for every face: isolates geometry from material lookups
+                }
+                let verts: Vec<[f32; 3]> = g.verts.iter().map(|v| [v[0] * scale, v[1] * scale, v[2] * scale]).collect();
+                mesh.add_tris(&verts, &g.tris, materials.len() as u32, 8.0 * scale);
+                println!("  material {} <- {} ({} tris, physics {})", materials.len(), label, g.tris.len(), spec.physics);
+                materials.push(spec);
+            }
+            println!("  {} positions, {} faces, {} materials", mesh.positions.len(), mesh.faces.len(), materials.len());
+            let item = mapgeom::crystal::build_item(&template, &ident, &author, &materials, &mesh);
+            std::fs::write(&out, &item).unwrap();
+            println!("wrote {out} ({} bytes)", item.len());
+        }
+        // Round-trip oracle: the template's own crystal, re-emitted by our writer.
+        "crystal-roundtrip" => {
+            let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
+            let (materials, mesh) = mapgeom::crystal::decode_template(&template);
+            println!("  {} materials, {} positions, {} faces", materials.len(), mesh.positions.len(), mesh.faces.len());
+            let keep: u8 = flag(&a.rest, "--keep").unwrap_or_else(|| "0".into()).parse().unwrap();
+            let item = mapgeom::crystal::build_item_with(&template, &ident, &ident, &materials, &mesh, keep);
+            std::fs::write(&out, &item).unwrap();
+            println!("wrote {out} ({} bytes) keep={keep}", item.len());
+        }
         "model" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
@@ -347,6 +465,10 @@ fn main() {
                 &req("--stadium-pak"),
                 &req("--library-out"),
                 &req("--out"),
+                flag(&a.rest, "--scale")
+                    .unwrap_or_else(|| "0.5".into())
+                    .parse()
+                    .unwrap_or_else(|_| die("--scale number".into())),
             );
         }
         "extract" => {

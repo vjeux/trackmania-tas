@@ -32,6 +32,10 @@ pub struct DataStore {
     /// UPPERCASE path -> (pak index, entry index).
     index: HashMap<String, (usize, usize)>,
     cache: HashMap<String, Option<Vec<u8>>>,
+    /// Files that shadow the packs, by UPPERCASE logical path: the scaled
+    /// copies a rescale produced, so a walk that follows their renamed
+    /// references finds them. Nothing here is ever a pack file.
+    overlay: HashMap<String, Vec<u8>>,
 }
 
 fn parse_key(hex: &str) -> Result<[u8; 16], String> {
@@ -127,13 +131,29 @@ fn pak_encrypted_header_start(data: &[u8], version: i32) -> Result<usize, String
 
 impl DataStore {
     pub fn open(paths: &[String], key_hex: &str) -> Result<DataStore, String> {
-        let key = parse_key(key_hex)?;
-        let mut store = DataStore {
+        let mut store = DataStore::empty();
+        for p in paths {
+            store.add_pak(p, key_hex)?;
+        }
+        Ok(store)
+    }
+
+    /// A store with no packs yet; `add_pak` one at a time, each with its own
+    /// key (the client's BlueBay and Stadium packs are keyed differently and
+    /// a BlueBay prefab can name a Stadium file).
+    pub fn empty() -> DataStore {
+        DataStore {
             paks: Vec::new(),
             index: HashMap::new(),
             cache: HashMap::new(),
-        };
-        for p in paths {
+            overlay: HashMap::new(),
+        }
+    }
+
+    pub fn add_pak(&mut self, p: &str, key_hex: &str) -> Result<(), String> {
+        let key = parse_key(key_hex)?;
+        let store = self;
+        {
             let data = std::fs::read(p).map_err(|e| format!("{}: {}", p, e))?;
             if data.len() < 0x95 || &data[0..8] != b"NadeoPak" {
                 return Err(format!("{}: not a NadeoPak", p));
@@ -156,7 +176,7 @@ impl DataStore {
                 key,
             });
         }
-        Ok(store)
+        Ok(())
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &PakEntry> {
@@ -173,9 +193,17 @@ impl DataStore {
         None
     }
 
+    /// Shadow a logical path with these bytes (see `overlay`).
+    pub fn add_overlay(&mut self, logical: &str, bytes: Vec<u8>) {
+        self.overlay.insert(logical.to_uppercase(), bytes);
+    }
+
     /// Read a file by logical path, resolving the hash if needed.
     pub fn read(&mut self, logical: &str) -> Result<Vec<u8>, String> {
         let key = logical.to_uppercase();
+        if let Some(b) = self.overlay.get(&key) {
+            return Ok(b.clone());
+        }
         if let Some(hit) = self.cache.get(&key) {
             return hit
                 .clone()

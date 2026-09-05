@@ -37,7 +37,13 @@ pub struct Reader<'a> {
     pub b: &'a [u8],
     pub o: usize,
     /// The lookback table, in write order. Index 1 is the first string.
-    lb: Vec<String>,
+    pub lb: Vec<String>,
+    /// Byte offsets of position-like floats met during the walk, as
+    /// (offset, float count): what an in-place rescale must multiply. Filled
+    /// only at the reads `classes.rs` marks; a scan that recovers past an
+    /// unknown layout adds nothing here, which is why the rescaler refuses
+    /// any recovery it has not vetted.
+    pub marks: Vec<(usize, usize)>,
     /// Whether the one-per-body lookback version word has been consumed.
     lb_ver: bool,
 }
@@ -63,7 +69,7 @@ pub type R<T> = Result<T, String>;
 
 impl<'a> Reader<'a> {
     pub fn new(b: &'a [u8]) -> Reader<'a> {
-        Reader { b, o: 0, lb: Vec::new(), lb_ver: false }
+        Reader { b, o: 0, lb: Vec::new(), lb_ver: false, marks: Vec::new() }
     }
 
     /// A reader over a sub-slice that SHARES this reader's lookback table.
@@ -75,12 +81,19 @@ impl<'a> Reader<'a> {
         if end > self.b.len() {
             return Err(format!("sub-chunk of {} bytes past end of body", n));
         }
-        let mut r = Reader { b: &self.b[self.o..end], o: 0, lb: std::mem::take(&mut self.lb), lb_ver: self.lb_ver };
+        let mut r = Reader { b: &self.b[self.o..end], o: 0, lb: std::mem::take(&mut self.lb), lb_ver: self.lb_ver, marks: Vec::new() };
+        let base = self.o;
         let out = f(&mut r);
         self.lb = std::mem::take(&mut r.lb);
         self.lb_ver = r.lb_ver;
+        self.marks.extend(r.marks.into_iter().map(|(o, n)| (o + base, n)));
         self.o = end;
         out
+    }
+
+    /// Mark the next `n` floats as positions to rescale.
+    pub fn mark(&mut self, n: usize) {
+        self.marks.push((self.o, n));
     }
 
     pub fn left(&self) -> usize {

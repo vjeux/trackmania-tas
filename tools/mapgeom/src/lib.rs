@@ -43,6 +43,8 @@ pub mod reader;
 pub mod render;
 pub mod scene;
 pub mod store;
+pub mod crystal;
+pub mod rescale;
 pub mod tables;
 pub mod tiny_assets;
 
