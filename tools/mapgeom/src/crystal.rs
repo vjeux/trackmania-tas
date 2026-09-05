@@ -51,7 +51,8 @@ impl CrystalMesh {
     pub fn flatten_uvs(&mut self) {
         for f in &mut self.faces {
             for uv in &mut f.uvs {
-                *uv = [0.5 + (uv[0] - 0.5) * 0.02, 0.5 + (uv[1] - 0.5) * 0.02];
+                // Centre of ONE checker cell, not (0.5,0.5) where four meet.
+                *uv = [0.25 + (uv[0] - 0.5) * 0.01, 0.25 + (uv[1] - 0.5) * 0.01];
             }
         }
     }
@@ -546,14 +547,31 @@ pub fn material_for_physics_name_in(name: &str, collection: u32) -> MaterialSpec
 /// Merge material slots that are equal for the game (same link and physics)
 /// and remap the faces onto the surviving slots, in first-seen order.
 pub fn dedupe_materials(materials: &[MaterialSpec], mesh: &CrystalMesh) -> (Vec<MaterialSpec>, CrystalMesh) {
+    // Keyed on the LINK alone: the map still crashed at F5633C with slots
+    // that differed only in physics (Concrete for both rubber borders and
+    // concrete decks), so the game's equality ignores the physics byte at
+    // this point. The surviving slot takes the physics of whichever slot
+    // covers the most faces.
+    let mut faces_per: Vec<usize> = vec![0; materials.len()];
+    for f in &mesh.faces {
+        faces_per[f.material as usize] += 1;
+    }
     let mut out: Vec<MaterialSpec> = Vec::new();
+    let mut out_faces: Vec<usize> = Vec::new();
     let mut remap: Vec<u32> = Vec::with_capacity(materials.len());
-    for m in materials {
-        let pos = out.iter().position(|o| o.link == m.link && o.physics == m.physics);
+    for (i, m) in materials.iter().enumerate() {
+        let pos = out.iter().position(|o| o.link == m.link);
         remap.push(match pos {
-            Some(p) => p as u32,
+            Some(p) => {
+                if faces_per[i] > out_faces[p] {
+                    out[p].physics = m.physics;
+                    out_faces[p] = faces_per[i];
+                }
+                p as u32
+            }
             None => {
                 out.push(m.clone());
+                out_faces.push(faces_per[i]);
                 (out.len() - 1) as u32
             }
         });
