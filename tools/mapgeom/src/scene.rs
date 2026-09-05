@@ -21,6 +21,11 @@ use std::collections::BTreeMap;
 /// 27 `RoadIce` when 27 is `Bumper_Deprecated` and RoadIce is 74, and — worse
 /// — it called **28 `Bumper` when 28 is `NotCollidable`**, so triangles the
 /// car cannot touch were being counted as surface underneath it.
+/// The physics id a name stands for, if it is one of the game's.
+pub fn physics_id(name: &str) -> Option<u8> {
+    (0u8..=255).find(|&i| physics_name(i) == name && name != "Unknown")
+}
+
 pub fn physics_name(id: u8) -> &'static str {
     match id {
         0 => "Concrete",

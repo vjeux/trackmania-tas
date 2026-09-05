@@ -51,11 +51,15 @@ fn vec3(s: &str, label: &str) -> [f32; 3] {
 struct Mappings {
     by_name: BTreeMap<String, Mapping>,
     by_index: BTreeMap<usize, Mapping>,
+    /// Original ITEM placements re-pointed at an embedded copy of their own
+    /// model (`i@INDEX` rows). Items without a row keep their model.
+    items_by_index: BTreeMap<usize, Mapping>,
 }
 
-/// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact
-/// placement. Index rows win over block-name rows. MODEL_SCALE is the scale
-/// already baked into the item geometry.
+/// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
+/// placement, or `i@INDEX<TAB>...` for an existing item placement. Index rows
+/// win over block-name rows. MODEL_SCALE is the scale already baked into the
+/// item geometry.
 fn read_mapping(path: &Path) -> Mappings {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut out = Mappings::default();
@@ -88,7 +92,10 @@ fn read_mapping(path: &Path) -> Mappings {
             model_scale,
             footprint,
         };
-        let prev = if let Some(index) = fields[0].strip_prefix('@') {
+        let prev = if let Some(index) = fields[0].strip_prefix("i@") {
+            out.items_by_index
+                .insert(index.parse().expect("i@INDEX number"), mapping)
+        } else if let Some(index) = fields[0].strip_prefix('@') {
             out.by_index
                 .insert(index.parse().expect("@INDEX number"), mapping)
         } else {
@@ -253,15 +260,31 @@ pub fn cmd(args: &[String]) {
     let mut specs = Vec::with_capacity(source.blocks.len() + source.items.len());
     // Preserve original item records and their lookback IDs in place. They only
     // need fixed-size placement edits.
+    let mut repointed_items = 0usize;
     for it in &source.items {
-        specs.push(Spec {
-            model: it.model.clone(),
-            pos: transform(it.pos, source_anchor, target_anchor, scale),
-            yaw: it.yaw,
-            frame: None,
-            scale: it.scale * scale,
-            tag: it.waypoint_tag.clone(),
-        });
+        match mapping.items_by_index.get(&it.index) {
+            // Re-pointed at an embedded copy whose geometry already carries
+            // the scale: the placement stays where it is at scale 1.
+            Some(map) => {
+                repointed_items += 1;
+                specs.push(Spec {
+                    model: map.model.clone(),
+                    pos: transform(it.pos, source_anchor, target_anchor, scale),
+                    yaw: it.yaw,
+                    frame: None,
+                    scale: it.scale * scale / map.model_scale,
+                    tag: it.waypoint_tag.clone(),
+                });
+            }
+            None => specs.push(Spec {
+                model: it.model.clone(),
+                pos: transform(it.pos, source_anchor, target_anchor, scale),
+                yaw: it.yaw,
+                frame: None,
+                scale: it.scale * scale,
+                tag: it.waypoint_tag.clone(),
+            }),
+        }
     }
     let original_items = specs.len();
     // Authored blocks occupy appended clones. Each mapped model name is exactly
@@ -308,7 +331,7 @@ pub fn cmd(args: &[String]) {
         .first()
         .and_then(|f| f.name.clone())
         .expect("map uid");
-    let new_uid = format!("Grid{}", &old_uid[..23]);
+    let new_uid = format!("Tiny{}", &old_uid[..23]);
     m.set_map_uid(&new_uid);
     for i in 0..m.blocks.len() {
         let b = m.blocks[i].clone();
@@ -323,9 +346,12 @@ pub fn cmd(args: &[String]) {
     // Stage 2: append new model slots while preserving every original slot.
     let mut m = MapFile::load(&tmp1);
     for (i, s) in specs.iter().enumerate() {
-        if i >= original_items {
+        if i >= original_items || mapping.items_by_index.contains_key(&i) {
+            // Embedded items carry their ident as their author too (their
+            // body ident has no room for a second string, see mapgeom
+            // `set_body_ident_nameless`); the placement must say the same.
             m.set_item_model(i, &s.model);
-            m.set_item_author(i, "KTaOsd-lTR2zkoskETSfPA");
+            m.set_item_author(i, &s.model);
         }
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         if let Some((rot, pivot)) = s.frame {
@@ -357,15 +383,17 @@ pub fn cmd(args: &[String]) {
             "{} is not a ZIP archive",
             library.display()
         );
-        let mut embedded_names: Vec<String> = specs[original_items..]
+        let mut embedded_names: Vec<String> = specs
             .iter()
-            .map(|s| s.model.clone())
+            .enumerate()
+            .filter(|(i, _)| *i >= original_items || mapping.items_by_index.contains_key(i))
+            .map(|(_, s)| s.model.clone())
             .collect();
         embedded_names.sort();
         embedded_names.dedup();
         let manifest: Vec<(&str, &str)> = embedded_names
             .iter()
-            .map(|name| (name.as_str(), "KTaOsd-lTR2zkoskETSfPA"))
+            .map(|name| (name.as_str(), name.as_str()))
             .collect();
         m.replace_embedded_objects(&manifest, &zip);
     }
@@ -402,6 +430,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
+    println!("  {} existing items re-pointed at scaled copies", repointed_items);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),
