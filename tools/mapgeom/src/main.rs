@@ -370,7 +370,9 @@ fn main() {
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
             if !a.rest.iter().any(|x| x == "--visual") {
                 // Default: the generator's own path (collision geometry).
-                let (item, faces) = mapgeom::tiny_assets::crystal_from_model(&mut store, &p, &template, &ident).unwrap_or_else(die);
+                let coll: u32 = flag(&a.rest, "--collection").map(|c| c.parse().unwrap()).unwrap_or(26);
+                let (item, faces) = mapgeom::tiny_assets::crystal_from_model_in(&mut store, &p, &template, &ident, coll).unwrap_or_else(die);
+                let item = if coll == 26 { item } else { mapgeom::tiny_assets::set_ident_collection(&item, coll) };
                 std::fs::write(&out, &item).unwrap();
                 println!("wrote {out} ({} bytes, {faces} faces from collision surfaces)", item.len());
                 return;
@@ -436,7 +438,13 @@ fn main() {
             if reverse { for t in &mut tris { t.swap(1, 2); } }
             let mut mesh = mapgeom::crystal::CrystalMesh::default();
             mesh.add_tris(&v, &tris, 0, 32.0);
-            let materials = vec![mapgeom::crystal::MaterialSpec { link, physics: phys }];
+            let mut materials = vec![mapgeom::crystal::MaterialSpec { link, physics: phys }];
+            // --unused N: N extra materials no face refers to (remap-loop probe).
+            if let Some(n) = flag(&a.rest, "--unused") {
+                for _ in 0..n.parse::<usize>().unwrap() {
+                    materials.push(mapgeom::crystal::MaterialSpec { link: "Editors\\MeshEditorMedia\\Materials\\Concrete".into(), physics: 0 });
+                }
+            }
             let item = mapgeom::crystal::build_item(&template, &ident, &ident, &materials, &mesh);
             std::fs::write(&out, &item).unwrap();
             println!("wrote {out} ({} bytes) reverse={reverse}", item.len());
