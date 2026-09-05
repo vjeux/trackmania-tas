@@ -647,6 +647,60 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
             // The bridge from an item to a static object or a prefab.
+            // CGameCommonItemEntityModelEdition: the mesh-modeler item, whose
+            // geometry is the MeshCrystal. Layout per GBX.NET's chunkl; the
+            // inventory strings and the trailing nodes are read so the walk
+            // (and its node-reference sites) stays exact to the FACADE.
+            0x2E026000 => {
+                acc.touched = true;
+                let v = self.r.u32()?;
+                let item_type = self.r.u32()?;
+                acc.entity_model = self.noderef()?; // MeshCrystal
+                self.r.string()?; // U01
+                self.noderef()?; // U02 CPlugSolid
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    self.noderef()?; // U03 CPlugFileImg
+                }
+                let n = self.r.u32()? as usize;
+                self.r.take(n * (12 + 4 + 4))?; // SpriteParams
+                self.noderef()?; // U04 particle emitter
+                self.noderef()?; // U05 anim loc
+                let n = self.r.u32()? as usize;
+                self.r.take(n * 32)?; // LightBallStateSimple: int, 7 floats
+                self.r.take(7 * 4)?; // U07..U13
+                self.r.iso4()?; // U14
+                if v >= 3 && item_type == 2 {
+                    self.r.f32()?; // Mass (PickUp)
+                }
+                let u15 = self.r.bool32()?;
+                if !u15 {
+                    self.noderef()?; // U16 CPlugCrystal
+                }
+                if item_type != 1 {
+                    return Err(format!("item entity model edition type {} (only Ornament is read)", item_type));
+                }
+                if self.r.bool32()? {
+                    self.r.i32()?; // U18
+                    self.r.iso4()?; // U19
+                }
+                self.r.i32()?; // U20
+                if v >= 1 {
+                    self.r.string()?; // InventoryName
+                    self.r.string()?; // InventoryDescription
+                    self.r.i32()?; // InventoryItemClass
+                    self.r.i32()?; // InventoryOccupation
+                    if v >= 6 {
+                        if v <= 7 {
+                            self.noderef()?; // U21
+                        }
+                        if v >= 7 && item_type == 2 {
+                            self.r.bool32()?; // U22
+                        }
+                    }
+                }
+                Ok(())
+            }
             0x2E027000 => {
                 acc.touched = true;
                 let v = self.r.u32()?;
@@ -783,40 +837,45 @@ impl<'a> Graph<'a> {
             }
             0x09003005 => {
                 acc.touched = true;
-                let _v = self.r.u32()?;
-                let layers = self.r.u32()? as usize;
-                for _ in 0..layers {
-                    let ty = self.r.u32()?;
-                    let lv = self.r.u32()?;
-                    self.r.bool32()?;
-                    self.r.lookback()?; // id
-                    self.r.string()?; // name
-                    if lv >= 1 {
-                        self.r.bool32()?; // is_enabled
+                // The complete layer model lives in `crystal_model`; this walk
+                // hands it the reader's state (lookback table, defined nodes)
+                // and takes the meshes of the drivable geometry layers back.
+                let mut defined = std::collections::HashSet::new();
+                for (i, s) in self.slots.iter().enumerate() {
+                    if !matches!(s, Slot::Unset) {
+                        defined.insert(i as u32);
                     }
-                    let _type_version = self.r.u32()?;
-                    match ty {
-                        // Geometry, Trigger: a crystal, then a little tail.
-                        0 | 14 => {
-                            let mesh = self.crystal(acc.crystal_materials.len())?;
-                            self.r.array(|r| r.i32())?;
-                            let (visible, collidable) = if ty == 0 {
-                                (self.r.bool32()?, self.r.bool32()?)
-                            } else {
-                                (false, true)
-                            };
-                            // A trigger layer is a volume, not a surface; keep
-                            // it out of the drivable geometry.
-                            if ty == 0 && (visible || collidable) {
-                                acc.crystals.push(mesh);
-                            }
+                }
+                let lb = crate::crystal_model::LookbackState {
+                    table: self.r.lb.clone(),
+                    version_seen: self.r.lb_version_seen(),
+                    defined_nodes: defined,
+                };
+                let mut rd = crate::crystal_model::Rd::new(self.r.b, self.r.o, lb);
+                let (_version, layers) = crate::crystal_model::read_layers_chunk(&mut rd, acc.crystal_materials.len())?;
+                self.r.o = rd.o;
+                self.r.lb = rd.lb.table;
+                self.r.set_lb_version_seen(rd.lb.version_seen);
+                for i in rd.lb.defined_nodes {
+                    if let Some(s) = self.slots.get_mut(i as usize) {
+                        if matches!(s, Slot::Unset) {
+                            *s = Slot::Node(Node::Other(0));
                         }
-                        t => {
-                            return Err(format!(
-                                "crystal layer type {} has no reader (only Geometry and Trigger \
-                                 carry a mesh; the rest are edit operations)",
-                                t
-                            ))
+                    }
+                }
+                for l in &layers {
+                    if let crate::crystal_model::LayerKind::Geometry { crystal, is_visible, collidable, .. } = &l.kind {
+                        // A trigger layer is a volume, not a surface; keep
+                        // it out of the drivable geometry.
+                        if *is_visible || *collidable {
+                            acc.crystals.push(CrystalMesh {
+                                verts: crystal.positions.clone(),
+                                faces: crystal
+                                    .faces
+                                    .iter()
+                                    .map(|f| (f.verts.iter().map(|v| *v as i32).collect(), f.material.max(0) as usize))
+                                    .collect(),
+                            });
                         }
                     }
                 }
@@ -1231,131 +1290,6 @@ impl<'a> Graph<'a> {
             }
         }
         Ok(())
-    }
-
-    /// One `GbxCrystal`: the vertices and n-gon faces of an editable mesh.
-    fn crystal(&mut self, material_count: usize) -> R<CrystalMesh> {
-        let version = self.r.u32()?;
-        if !(25..=37).contains(&version) {
-            return Err(format!(
-                "crystal version {} is outside the understood 25..37",
-                version
-            ));
-        }
-        self.r.take(4 * 3)?; // u06..u08
-        self.r.f32()?;
-        self.r.i32()?;
-        self.r.f32()?;
-        self.r.i32()?;
-        self.r.f32()?;
-        self.r.i32()?;
-        let mut groups = 0usize;
-        let n_groups = self.r.u32()? as usize;
-        for _ in 0..n_groups {
-            if version >= 31 {
-                self.r.i32()?;
-            }
-            if version >= 36 {
-                self.r.u8()?;
-            } else {
-                self.r.i32()?;
-            }
-            self.r.i32()?;
-            self.r.string()?;
-            self.r.i32()?;
-            self.r.array(|r| r.i32())?;
-            groups += 1;
-        }
-        let _embedded = if version >= 34 {
-            self.r.u8()? != 0
-        } else {
-            self.r.bool32()?
-        };
-        if version >= 33 {
-            self.r.i32()?;
-            self.r.i32()?;
-        }
-        let verts = self.r.array(|r| r.vec3())?;
-        let edges_count = self.r.u32()? as usize;
-        if version >= 35 {
-            let unfaced = self.r.u32()? as usize;
-            self.r.take(opt_int_size(unfaced * 2) * unfaced * 2)?;
-        } else {
-            self.r.take(8 * edges_count)?;
-        }
-        let faces_count = self.r.u32()? as usize;
-        if version >= 37 {
-            self.r.array(|r| r.vec2())?; // uvsCoords
-            let corners = self.r.u32()? as usize;
-            self.r.take(opt_int_size(corners) * corners)?;
-        }
-        let mut faces = Vec::with_capacity(faces_count);
-        for _ in 0..faces_count {
-            let n = if version >= 35 {
-                self.r.u8()? as usize + 3
-            } else {
-                self.r.u32()? as usize
-            };
-            let mut inds = Vec::with_capacity(n);
-            if version >= 34 {
-                let w = opt_int_size(verts.len());
-                for _ in 0..n {
-                    inds.push(match w {
-                        1 => self.r.u8()? as i32,
-                        2 => self.r.u16()? as i32,
-                        _ => self.r.i32()?,
-                    });
-                }
-            } else {
-                for _ in 0..n {
-                    inds.push(self.r.i32()?);
-                }
-            }
-            if version < 37 {
-                self.r.take(8 * n)?; // per-corner uv
-            }
-            let mut material = 0usize;
-            if version >= 25 {
-                material = if version >= 33 {
-                    if material_count == 0 {
-                        self.r.u32()? as usize
-                    } else {
-                        match opt_int_size(material_count) {
-                            1 => self.r.u8()? as usize,
-                            2 => self.r.u16()? as usize,
-                            _ => self.r.u32()? as usize,
-                        }
-                    }
-                } else {
-                    self.r.i32()?.max(0) as usize
-                };
-            }
-            if version >= 33 {
-                match opt_int_size(groups) {
-                    1 => {
-                        self.r.u8()?;
-                    }
-                    2 => {
-                        self.r.u16()?;
-                    }
-                    _ => {
-                        self.r.u32()?;
-                    }
-                }
-            } else {
-                self.r.u32()?;
-            }
-            faces.push((inds, material));
-        }
-        self.r.i32()?; // u22
-        if version < 36 {
-            let nf = self.r.i32()? as usize;
-            let ne = self.r.i32()? as usize;
-            let nv = self.r.i32()? as usize;
-            self.r.take(4 * (nf + ne + nv))?;
-            self.r.i32()?;
-        }
-        Ok(CrystalMesh { verts, faces })
     }
 
     // ------------------------------------------------------------ surface
