@@ -308,12 +308,27 @@ fn tri_area_of(t: &[Corner; 3]) -> f32 {
     (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt() / 2.0
 }
 
+/// Corner angle at corner k of a tri (radians): the standard
+/// angle-weight for vertex-normal averaging (wavtest: angle-weighted
+/// beats uniform TB 98.1% vs 61.9%, Technics 69.8% vs 29.2%, TSpecials
+/// 68.7% vs 59.6%; area loses to uniform everywhere).
+fn corner_angle(t: &[Corner; 3], k: usize) -> f32 {
+    let p = t[k].pos;
+    let a = t[(k + 1) % 3].pos;
+    let b = t[(k + 2) % 3].pos;
+    let v1 = [a[0] - p[0], a[1] - p[1], a[2] - p[2]];
+    let v2 = [b[0] - p[0], b[1] - p[1], b[2] - p[2]];
+    let l1 = (v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2]).sqrt().max(1e-30);
+    let l2 = (v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2]).sqrt().max(1e-30);
+    ((v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (l1 * l2)).clamp(-1.0, 1.0).acos()
+}
+
 /// Average face normals at shared positions within a crease angle (in
 /// place): faces sharing a position whose normals agree within `max_deg`
 /// share one smoothed normal; harder creases stay split. Full smoothing
 /// (`max_deg=180`) over-shares (Road_17: 9750 vs his 14030); flat normals
 /// (`max_deg=0`) split everything (35184). Default 30 deg.
-pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32) {
+pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool) {
     use std::collections::BTreeMap;
     if max_deg <= 0.0 {
         return;
@@ -417,7 +432,8 @@ pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32) {
             // one cluster: value by cluster_normal_value
             let ns: Vec<[f32; 3]> = corners.iter().map(|&(ti, k)| tris[ti][k].normal).collect();
             let areas: Vec<f32> = corners.iter().map(|&(ti, _)| tri_area_of(&tris[ti])).collect();
-            let n = cluster_normal_value(&ns, &areas);
+            let angles: Vec<f32> = corners.iter().map(|&(ti, k)| corner_angle(&tris[ti], k)).collect();
+            let n = cluster_normal_value(&ns, &areas, &angles, angle_weight);
             for &(ti, k) in &corners {
                 tris[ti][k].normal = n;
             }
@@ -430,7 +446,8 @@ pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32) {
                 }
                 let ns: Vec<[f32; 3]> = members.iter().map(|&(ti, k)| tris[ti][k].normal).collect();
                 let areas: Vec<f32> = members.iter().map(|&(ti, _)| tri_area_of(&tris[ti])).collect();
-                let n = cluster_normal_value(&ns, &areas);
+                let angles: Vec<f32> = members.iter().map(|&(ti, k)| corner_angle(&tris[ti], k)).collect();
+                let n = cluster_normal_value(&ns, &areas, &angles, angle_weight);
                 for &(ti, k) in &members {
                     tris[ti][k].normal = n;
                 }
@@ -442,7 +459,7 @@ pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32) {
 /// Cluster normal value: uniform (default), area-weighted
 /// (TINY_AREA_WEIGHT), seed/largest-face value (TINY_NORM_SEEDVAL), or
 /// component median (TINY_NORM_MEDIAN).
-fn cluster_normal_value(ns: &[[f32; 3]], areas: &[f32]) -> [f32; 3] {
+fn cluster_normal_value(ns: &[[f32; 3]], areas: &[f32], angles: &[f32], use_angle: bool) -> [f32; 3] {
     if std::env::var("TINY_NORM_SEEDVAL").is_ok() {
         // largest-area member's normal (areas parallel to ns)
         let mut bi = 0;
@@ -466,7 +483,13 @@ fn cluster_normal_value(ns: &[[f32; 3]], areas: &[f32]) -> [f32; 3] {
     let mut acc = [0.0f64; 3];
     let mut wsum = 0.0f64;
     for (i, n) in ns.iter().enumerate() {
-        let w = if area_w { areas[i] as f64 } else { 1.0 };
+        let w = if use_angle {
+            angles[i] as f64
+        } else if area_w {
+            areas[i] as f64
+        } else {
+            1.0
+        };
         for d in 0..3 {
             acc[d] += n[d] as f64 * w;
         }
@@ -589,7 +612,7 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
 /// average to his single frame, while 180°-opposed coil frames stay split.
 /// Gated by TINY_USMOOTH=1; runs after VPRIM, before welding. Key (UKEYQ)
 /// consumes the smoothed quantized U.
-pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32) {
+pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool) {
     use std::collections::BTreeMap;
     if max_deg <= 0.0 {
         return;
@@ -638,16 +661,17 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32) {
                 continue;
             }
             let mut acc = [0.0f64; 3];
+            let mut wsum = 0.0f64;
             for &oi in &members {
                 let (ti, k) = corners[oi];
+                let w = if angle_weight { corner_angle(&tris[ti], k) as f64 } else { 1.0 };
                 for d in 0..3 {
-                    acc[d] += tris[ti][k].tan_u[d] as f64;
+                    acc[d] += tris[ti][k].tan_u[d] as f64 * w;
                 }
+                wsum += w;
             }
-            let n = members.len() as f64;
             let lavg = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt().max(1e-30);
             let uavg = [(acc[0] / lavg) as f32, (acc[1] / lavg) as f32, (acc[2] / lavg) as f32];
-            let _ = n;
             for &oi in &members {
                 let (ti, k) = corners[oi];
                 tris[ti][k].tan_u = uavg;
@@ -1774,7 +1798,22 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         // TINY_CREASE_MAP per material, else TINY_CREASE_DEG (default 30).
         // Must run before lightmap UVs/welding.
         let crease = crease_map.get(&crease_stems[i]).copied().unwrap_or(crease_global);
-        smooth_normals_angle(&mut per_material[i], crease);
+        // Normal average weight law (TINY_WEIGHT_MAP="Stem:angle,...",
+        // else uniform; Road/Sign stay uniform -- already 100% bit-exact
+        // with uniform, and any reweighting risks boundary-word flips).
+        // (Parsed each material; cheap small map. Could hoist.)
+        let angle_w = std::env::var("TINY_WEIGHT_MAP")
+            .ok()
+            .map(|s| {
+                s.split(',').any(|kv| {
+                    let mut it = kv.split(':');
+                    it.next().map(|k| k.trim()).unwrap_or("")
+                        == crease_stems[i]
+                        && it.next().map(|v| v.trim()) == Some("angle")
+                })
+            })
+            .unwrap_or(false);
+        smooth_normals_angle(&mut per_material[i], crease, angle_w);
         // Lightmap UVs, weld-preserving (global planar per material).
         // TINY_NO_PACK=1 leaves uv1 as a copy of the diffuse uv (full
         // welding): diagnostic for the grey-road bisection 2026-09-05.
@@ -1851,7 +1890,20 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                 .copied()
                 .or_else(|| std::env::var("TINY_TAN_DEG").ok().and_then(|v| v.parse().ok()))
                 .unwrap_or(40.0);
-            smooth_u_vprim(&mut per_material[i], tangle);
+            // Same weight law as normals (TINY_WEIGHT_MAP): U-cluster
+            // averages are angle-weighted too (standard algorithm).
+            let angle_w = std::env::var("TINY_WEIGHT_MAP")
+                .ok()
+                .map(|s| {
+                    s.split(',').any(|kv| {
+                        let mut it = kv.split(':');
+                        it.next().map(|k| k.trim()).unwrap_or("")
+                            == crease_stems[i]
+                            && it.next().map(|v| v.trim()) == Some("angle")
+                    })
+                })
+                .unwrap_or(false);
+            smooth_u_vprim(&mut per_material[i], tangle, angle_w);
         }
         if std::env::var("TINY_TAN_SMOOTH").is_ok() {
             let tan_map: std::collections::BTreeMap<String, f32> = std::env::var("TINY_TAN_MAP")
