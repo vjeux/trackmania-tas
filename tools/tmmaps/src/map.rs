@@ -1696,6 +1696,25 @@ impl MapFile {
         self.raw_patches.push((o, (flags & 0x00FF).to_le_bytes().to_vec()));
     }
 
+    /// Chunk 0x03043062 — one colour byte per unbaked block, then per baked
+    /// block, then per item (0 Default, 1 White, 2 Green, 3 Blue, 4 Red,
+    /// 5 Black). `None` when the map has no such chunk.
+    pub fn colors(&self) -> Option<Colors> {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3062)?;
+        Some(Colors { bytes: self.gbx.body[payload + 4..payload + size].to_vec(), n_blocks: self.blocks.len(), n_baked: self.baked.len() })
+    }
+
+    /// Set an item's colour byte in chunk 0x03043062 (see [`Self::colors`]).
+    /// Must run on a file whose item array is already its final size.
+    pub fn set_item_color(&mut self, item_index: usize, color: u8) {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3062).expect("colour chunk 0x03043062");
+        let off = payload + 4 + self.blocks.len() + self.baked.len() + item_index;
+        assert!(off < payload + size, "item {item_index} past the colour chunk ({} bytes)", size - 4);
+        self.raw_patches.push((off, vec![color]));
+    }
+
     pub fn set_item_scale(&mut self, item_index: usize, scale: f32) {
         assert!(
             scale.is_finite() && scale > 0.0,
@@ -1986,5 +2005,24 @@ impl MapFile {
         );
         self.raw_splices
             .push(((payload + 24, payload + size), zip.to_vec()));
+    }
+}
+
+/// The per-placement colour bytes of chunk 0x03043062 (see [`MapFile::colors`]).
+pub struct Colors {
+    pub bytes: Vec<u8>,
+    pub n_blocks: usize,
+    pub n_baked: usize,
+}
+
+impl Colors {
+    pub fn block(&self, index: usize) -> u8 {
+        self.bytes.get(index).copied().unwrap_or(0)
+    }
+    pub fn baked(&self, index: usize) -> u8 {
+        self.bytes.get(self.n_blocks + index).copied().unwrap_or(0)
+    }
+    pub fn item(&self, index: usize) -> u8 {
+        self.bytes.get(self.n_blocks + self.n_baked + index).copied().unwrap_or(0)
     }
 }

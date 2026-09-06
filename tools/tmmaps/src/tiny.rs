@@ -27,6 +27,11 @@ struct Spec {
     model: String,
     pos: [f32; 3],
     yaw: f32,
+    /// Placement colour (chunk 0x03043062: 0 Default, 1 White, 2 Green, 3 Blue,
+    /// 4 Red, 5 Black). Carried over from the source block or item: Default
+    /// on a BlueBay item paints the colourisable parts (TrackBorders shoulders)
+    /// green where the source blocks, all White, show white (2026-09-06).
+    color: u8,
     /// `Some` re-bases the whole placement frame (yaw, pitch, roll, pivot).
     /// Original items keep their own frame and use `None`.
     frame: Option<([f32; 3], [f32; 3])>,
@@ -259,6 +264,7 @@ pub fn cmd(args: &[String]) {
     let host: Option<PathBuf> = cli::flag(args, "--host").map(PathBuf::from);
 
     let source = MapFile::load(&src);
+    let colors = source.colors().unwrap_or(crate::map::Colors { bytes: Vec::new(), n_blocks: 0, n_baked: 0 });
     set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
     let spawn = source
         .waypoints()
@@ -295,7 +301,7 @@ pub fn cmd(args: &[String]) {
             // cannot shrink); the slot is parked far below the map.
             Some(map) if map.model == "-" => {
                 dropped_items += 1;
-                specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None });
+                specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, color: 0 });
             }
             // Re-pointed at an embedded copy whose geometry already carries
             // the scale: the placement stays where it is at scale 1.
@@ -308,6 +314,7 @@ pub fn cmd(args: &[String]) {
                     frame: None,
                     scale: it.scale * scale / map.model_scale,
                     tag: it.waypoint_tag.clone(),
+                    color: colors.item(it.index),
                 });
             }
             None => specs.push(Spec {
@@ -317,6 +324,7 @@ pub fn cmd(args: &[String]) {
                 frame: None,
                 scale: it.scale * scale,
                 tag: it.waypoint_tag.clone(),
+                color: colors.item(it.index),
             }),
         }
     }
@@ -347,6 +355,7 @@ pub fn cmd(args: &[String]) {
             frame: Some((rot, [0.0, 0.0, 0.0])),
             scale: scale / map.model_scale,
             tag: b.waypoint_tag.clone(),
+            color: colors.block(b.index),
         });
     }
     // Baked (generated) non-Sea blocks -- the FC clip fillers that finish the
@@ -369,6 +378,7 @@ pub fn cmd(args: &[String]) {
             pos: transform(origin, source_anchor, target_anchor, scale),
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
+            color: colors.baked(b.index),
             scale: scale / map.model_scale,
             tag: None,
         });
@@ -454,6 +464,7 @@ pub fn cmd(args: &[String]) {
         if s.model.ends_with(".Item.Gbx") {
             m.clear_item_variant(i);
         }
+        m.set_item_color(i, s.color);
     }
     m.write_to(&tmp2).expect("write model stage");
 
@@ -636,7 +647,7 @@ pub fn catalog_cmd(args: &[String]) {
                 let bytes = std::fs::read(refitem).unwrap_or_else(|e| panic!("--ref-item {refitem}: {e}"));
                 let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
                 let pos = [origin[0] + 160.0 + 48.0 * ri as f32, origin[1], origin[2]];
-                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 1 });
                 ref_authors.insert(ident, author);
             }
         }
@@ -648,7 +659,7 @@ pub fn catalog_cmd(args: &[String]) {
                 let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("--lineup {file}: {e}"));
                 let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
                 let pos = [origin[0] + 64.0 + 48.0 * ri as f32, origin[1], origin[2]];
-                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 1 });
                 ref_authors.insert(ident, author);
             }
             let bp = block_pos(&moved);
@@ -664,7 +675,7 @@ pub fn catalog_cmd(args: &[String]) {
             // reads as covered instead of z-fighting with the block.
             let lift: f32 = cli::flag(args, "--overlay-lift").unwrap_or("0").parse().expect("--overlay-lift m");
             let pos = [origin[0], origin[1] + lift, origin[2]];
-            specs.push(Spec { model: map.model.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
+            specs.push(Spec { model: map.model.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, color: 1 });
             let bp = block_pos(&moved);
             tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\toverlay\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
             continue;
@@ -674,7 +685,7 @@ pub fn catalog_cmd(args: &[String]) {
             for k in 0..4 {
                 let pos = [origin[0] + 64.0 + 48.0 * k as f32, origin[1], origin[2]];
                 let yaw = k as f32 * std::f32::consts::FRAC_PI_2;
-                specs.push(Spec { model: map.model.clone(), pos, yaw, frame: Some(([yaw, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None });
+                specs.push(Spec { model: map.model.clone(), pos, yaw, frame: Some(([yaw, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, color: 1 });
             }
             let bp = block_pos(&moved);
             tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\tsweep yaw 0/90/180/270 at x+64/+112/+160/+208\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
@@ -694,6 +705,7 @@ pub fn catalog_cmd(args: &[String]) {
                 frame: Some((rot, [0.0, 0.0, 0.0])),
                 scale: s,
                 tag: None,
+                color: 1,
             });
         }
         let bp = block_pos(&moved);
@@ -754,6 +766,7 @@ pub fn catalog_cmd(args: &[String]) {
         }
         m.set_item_scale(i, s.scale);
         m.clear_item_variant(i);
+        m.set_item_color(i, s.color);
         if let Ok(f) = std::env::var("TINY_ITEM_FLAGS") {
             m.set_item_flags(i, u16::from_str_radix(f.trim_start_matches("0x"), 16).expect("TINY_ITEM_FLAGS hex"));
         }
