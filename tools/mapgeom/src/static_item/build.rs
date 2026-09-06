@@ -492,7 +492,7 @@ impl Merged {
                         }
                         parts.push(p);
                     }
-                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {} || chunks {:x?} tcs {} subvis {} splits {} tangents {} idx {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | "), v.chunks, v.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), v.sub_visuals.len(), v.splits.len(), v.tangents.is_some(), v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0)));
+                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {} || chunks {:x?} uvg {} u02 {} u03 {} u04 {:x?} tcs {} subvis {} splits {} tangents {:?} idx {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | "), v.chunks, v.main.as_ref().map(|m| m.uv_groups.len()).unwrap_or(0), v.main.as_ref().map(|m| m.u02).unwrap_or(0), v.main.as_ref().map(|m| m.u03).unwrap_or(0), v.main.as_ref().map(|m| m.u04.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect::<Vec<u32>>()).unwrap_or_default(), v.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), v.sub_visuals.len(), v.splits.len(), v.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0)));
                 }
             }
             // A voted (shared Techno3 id) material has no look of its own: the
@@ -832,7 +832,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     }
     let mut next = 4i32;
     let mut s2 = CPlugSolid2Model::new_v34();
-    let visuals = coalesce(&m.visuals);
+    let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { m.visuals.clone() } else { coalesce(&m.visuals) };
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).
     let mut used: Vec<usize> = Vec::new();
@@ -841,6 +841,14 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             used.push(mv.material);
         }
     }
+    // Geoms in material order: the game reads the shaded-geom list as
+    // material-sorted runs (every Nadeo item and every item that ever loaded
+    // here is non-decreasing in material index; the first split terrain items
+    // with (0,1,2,0,1,2,3,4) crashed the client at 0x140456507 reading a
+    // garbage material index, 2026-09-06). Stable, so same-material visuals
+    // keep their relative order.
+    let mut visuals = visuals;
+    visuals.sort_by_key(|mv| used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX));
     for mv in &visuals {
         let mut v = mv.visual.clone();
         let main = v.main.as_mut().unwrap();

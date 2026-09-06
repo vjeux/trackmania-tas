@@ -46,6 +46,40 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         super::surface::Surf::Mesh { triangles, vertices, .. } => (vertices.len(), triangles.len()),
         _ => (0, 0),
     });
+    // Structural consistency of every visual (what the game trips over).
+    for (vi, vr) in s2.visuals.iter().enumerate() {
+        let Some(super::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+        let Some(m) = v.main.as_ref() else { continue };
+        let count = m.count.max(0) as usize;
+        let per = (((!(m.flags() >> 17)) & 8) | 4) as usize;
+        if let Some(s) = v.stream() {
+            if s.count.max(0) as usize != count {
+                return Err(format!("visual {vi}: stream count {} != visual count {count}", s.count));
+            }
+            for (d, e) in s.decls.iter().zip(s.elems.iter()) {
+                if e.len() != count {
+                    return Err(format!("visual {vi}: element name{} has {} entries for {count} vertices", d.name(), e.len()));
+                }
+            }
+        }
+        if let Some((a, b)) = v.tangents.as_ref() {
+            for t in [a, b] {
+                if !t.is_empty() && t.len() != count * per {
+                    return Err(format!("visual {vi}: tangent array {} bytes != {count} x {per}", t.len()));
+                }
+            }
+        }
+        if let Some(ib) = v.index_buffer.as_ref() {
+            if ib.indices.len() % 3 != 0 {
+                return Err(format!("visual {vi}: {} indices is not a triangle list", ib.indices.len()));
+            }
+            if let Some(mx) = ib.indices.iter().max() {
+                if *mx as usize >= count {
+                    return Err(format!("visual {vi}: index {mx} past {count} vertices"));
+                }
+            }
+        }
+    }
     let nverts: usize = s2
         .visuals
         .iter()
