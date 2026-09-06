@@ -1,0 +1,36 @@
+//! Per-visual position / uv0 / uv1 ranges of a static item. Usage: uvdump ITEM [--verts]
+use mapgeom::static_item::vstream::Elem;
+fn main() {
+    let a: Vec<String> = std::env::args().skip(1).collect();
+    let verbose = a.iter().any(|x| x == "--verts");
+    let p = &a[0];
+    let data = std::fs::read(p).unwrap();
+    let f = mapgeom::static_item::file::parse_file(&data).unwrap();
+    let so = f.item.static_object().unwrap();
+    let s2 = so.solid2().unwrap();
+    for g in &s2.shaded_geoms {
+        let vi = g.visual_index.max(0) as usize;
+        let mi = g.material_index.max(0) as usize;
+        let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("").rsplit('\\').next().unwrap_or("").to_string()).unwrap_or("?".into());
+        let Some(vref) = s2.visuals.get(vi) else { continue };
+        let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() else { continue };
+        let st = vis.stream().unwrap();
+        println!("visual {vi} material {mat}");
+        for (d, e) in st.decls.iter().zip(st.elems.iter()) {
+            match e {
+                Elem::Float3(pos) => {
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for v in pos { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+                    println!("  {:<10} x {:8.3}..{:8.3}  y {:8.3}..{:8.3}  z {:8.3}..{:8.3}", format!("{:?}", d.name()), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                }
+                Elem::Float2(uv) => {
+                    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for v in uv { for k in 0..2 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+                    println!("  {:<10} u {:8.4}..{:8.4}  v {:8.4}..{:8.4}", format!("{:?}", d.name()), lo[0], hi[0], lo[1], hi[1]);
+                    if verbose { for (i, v) in uv.iter().enumerate().take(24) { println!("     [{i}] {:.4} {:.4}", v[0], v[1]); } }
+                }
+                _ => {}
+            }
+        }
+    }
+}

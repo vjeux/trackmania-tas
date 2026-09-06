@@ -33,13 +33,15 @@ pub struct Outcome {
     pub result: Result<String, String>,
 }
 
-/// Legacy (prefab-less, CPlugSolid) block models and their converted items in
-/// the public Nadeo archive.
-const LEGACY: &[(&str, &str)] = &[
-    ("PlatformBase", "Walls/DecoWall/Platform/Platform/PlatformBase.Item.Gbx"),
-    ("DecoWallSlope2Straight", "Walls/DecoWall/Unnamed_1/SlopeStraight/DecoWallSlope2Straight.Item.Gbx"),
-    ("DecoWallBasePillar", "Walls/DecoWall/Platform/Platform/DecoWallBase.Item.Gbx"),
-];
+/// Block models whose picked variant has neither a prefab nor a solid draw
+/// NOTHING of their own: the DecoWall / Platform family is rendered entirely
+/// by the generated face-clip fillers (`DecoWallSlope2StraightFCT`,
+/// `PlatformBaseFCB`, `DecoWallBaseVFC`... -- baked blocks, re-emitted here as
+/// items). An archive item in their place drew a wall that is not there
+/// (2026-09-06: brown TrackWall slabs under the stands). Optional overrides
+/// from a converted-item archive, keyed by block name, for a model that
+/// really has legacy CPlugSolid geometry:
+const LEGACY: &[(&str, &str)] = &[];
 
 /// Smaller stock species for the procedural vegetation the map places (the
 /// game ignores placement scale for VegetTreeModel items, measured
@@ -169,12 +171,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             let mut m = crate::static_item::build::Merged::default();
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
             let mut err = None;
+            // Terrain (Flat/Frontier/Transition zone blocks) is lowered by
+            // TERRAIN_DROP (full-scale metres): the Land plane and a road deck
+            // in the same cell are coplanar in the source (the game resolves
+            // that in its terrain pass), and as two items they z-fight into
+            // grass stripes across the road (2026-09-06).
+            let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
+            let drop: f32 = std::env::var("TINY_TERRAIN_DROP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.2);
             for (p, tr, rot) in &prefabs {
                 let mut at = crate::geom::IDENTITY;
                 if let Some(t) = tr {
                     at[9] = t[0];
                     at[10] = t[1];
                     at[11] = t[2];
+                }
+                if terrain {
+                    at[10] -= drop;
                 }
                 if rot.map(|r| r.iter().any(|v| v.abs() > 1e-6)).unwrap_or(false) {
                     m.notes.push(format!("mobil rotation {:?} ignored for {p}", rot));
