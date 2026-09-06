@@ -44,6 +44,30 @@ fn pos_key(p: &[f32; 3]) -> (i32, i32, i32) {
     ((p[0] * 1000.0).round() as i32, (p[1] * 1000.0).round() as i32, (p[2] * 1000.0).round() as i32)
 }
 
+/// Raw position list (with duplicates) of a reference item.
+fn ref_pos_list(path: &str) -> Vec<[f32; 3]> {
+    let data = std::fs::read(path).unwrap();
+    let f = mapgeom::static_item::file::parse_file(&data).unwrap();
+    let so = f.item.static_object().unwrap();
+    let s2 = so.solid2().unwrap();
+    let mut out = Vec::new();
+    for v in &s2.visuals {
+        if let Some(mapgeom::static_item::Node::Visual(vis)) = v.inline.as_deref() {
+            if let Some(st) = vis.stream() {
+                for (d, e) in st.decls.iter().zip(st.elems.iter()) {
+                    if let mapgeom::static_item::vstream::Elem::Float3(p) = e {
+                        if d.name() == 0 {
+                            out.extend_from_slice(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 fn ref_positions(path: &str) -> BTreeSet<(i32, i32, i32)> {
     let data = std::fs::read(path).unwrap();
     let f = mapgeom::static_item::file::parse_file(&data).unwrap();
@@ -72,6 +96,10 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.iter().any(|x| x == "--geom") {
         geom_main(&a);
+        return;
+    }
+    if a.iter().any(|x| x == "--geom2") {
+        geom2_main(&a);
         return;
     }
     let zip = std::fs::read(&a[1]).expect("nadeo zip");
@@ -207,6 +235,59 @@ fn geom_main(a: &[String]) {
                     Err(e) => println!("    BAKE {n}: build failed: {e}"),
                 }
             }
+        }
+    }
+}
+
+/// `--geom2`: translation+scale-invariant matching. For each ref, center both
+/// point sets at centroid and compare at scale x2 (ref units -> src).
+fn geom2_main(a: &[String]) {
+    let zip = std::fs::read(&a[1]).expect("nadeo zip");
+    let refdir = &a[3];
+    let files = mapgeom::embedded::unzip(&zip).expect("zip");
+    let mut nadeo_pos: BTreeMap<String, (BTreeSet<(i32, i32, i32)>, usize)> = BTreeMap::new();
+    for (name, bytes) in &files {
+        if !name.ends_with(".Item.Gbx") {
+            continue;
+        }
+        let (_, mesh) = mapgeom::crystal::decode_template(bytes);
+        let n = mesh.positions.len().max(1) as f32;
+        let c = mesh.positions.iter().fold([0.0f32; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
+        let c = [c[0] / n, c[1] / n, c[2] / n];
+        let set: BTreeSet<(i32, i32, i32)> = mesh.positions.iter().map(|p| pos_key(&[(p[0] - c[0] as f32), (p[1] - c[1] as f32), (p[2] - c[2] as f32)])).collect();
+        nadeo_pos.insert(name.clone(), (set, mesh.positions.len()));
+    }
+    println!("nadeo items: {}", nadeo_pos.len());
+    let mut refs: Vec<String> = std::fs::read_dir(refdir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().to_string_lossy().to_string())
+        .filter(|p| p.ends_with(".Item.Gbx"))
+        .collect();
+    refs.sort();
+    for r in &refs {
+        let short = r.rsplit('/').next().unwrap();
+        let rp = ref_pos_list(r);
+        if rp.is_empty() {
+            continue;
+        }
+        let n = rp.len() as f32;
+        let c = rp.iter().fold([0.0f32; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
+        let c = [c[0] / n, c[1] / n, c[2] / n];
+        let rset: BTreeSet<(i32, i32, i32)> = rp.iter().map(|p| pos_key(&[(p[0] - c[0] as f32) * 2.0, (p[1] - c[1] as f32) * 2.0, (p[2] - c[2] as f32) * 2.0])).collect();
+        let mut scored: Vec<(f64, String)> = Vec::new();
+        for (name, (np, _)) in &nadeo_pos {
+            let inter = rset.intersection(np).count();
+            let uni = rset.union(np).count().max(1);
+            let j = inter as f64 / uni as f64;
+            if j > 0.05 {
+                scored.push((j, name.clone()));
+            }
+        }
+        scored.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+        println!("{short}: ref_verts={}", rp.len());
+        for (j, name) in scored.iter().take(4) {
+            println!("    jaccard={j:.3} {name}");
         }
     }
 }
