@@ -528,16 +528,38 @@ pub fn item_ident_author(bytes: &[u8]) -> Option<(String, String)> {
         if id == 0x2E00_1003 {
             let mut r = data;
             let _ver = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?); r += 4;
+            // ident / author are lookback ids: 0x40000000 + inline string
+            // pushes to the table, 0x40000001+ back-refs it. The old code
+            // only accepted inline strings, so our own files (author ==
+            // ident, written as back-ref 0x40000001 by Wr::id) came back as
+            // the literal "#40000001" -- which the catalog then wrote into
+            // the manifest/placement author, and the game instantiates such
+            // items but never renders them (quads, grafts, T1-T4, 2026-09-05).
+            // Resolve back-refs through the table like Rd::id does.
+            let mut table: Vec<String> = Vec::new();
             let mut strings = Vec::new();
             // ident: id (lookback), collection (u32 id), author (lookback)
             for k in 0..3 {
                 let w = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?); r += 4;
                 if k == 1 { continue; } // collection: plain id
-                if w == 0x4000_0000 {
-                    let l = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?) as usize; r += 4;
-                    strings.push(String::from_utf8_lossy(&ud[r..r + l]).to_string()); r += l;
-                } else {
+                if w == 0xFFFF_FFFF {
+                    strings.push(String::new());
+                } else if (w >> 30) == 0 {
                     strings.push(format!("#{w:x}"));
+                } else {
+                    let idx = (w & 0x3FFF_FFFF) as usize;
+                    if idx == 0 {
+                        let l = u32::from_le_bytes(ud[r..r + 4].try_into().ok()?) as usize; r += 4;
+                        let s = String::from_utf8_lossy(&ud[r..r + l]).to_string(); r += l;
+                        table.push(s.clone());
+                        strings.push(s);
+                    } else if idx == 0x3FFF_FFFF {
+                        strings.push(format!("#{w:x}"));
+                    } else if let Some(s) = table.get(idx - 1) {
+                        strings.push(s.clone());
+                    } else {
+                        strings.push(format!("#{w:x}"));
+                    }
                 }
             }
             return Some((strings[0].clone(), strings[1].clone()));
