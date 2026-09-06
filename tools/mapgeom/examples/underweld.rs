@@ -13,7 +13,7 @@ fn main() {
             let vi = g.visual_index.max(0) as usize;
             let mi = g.material_index.max(0) as usize;
             let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("").to_string()).unwrap_or("".into());
-            if !mat.contains(&a[3]) { continue; }
+            let stem = mat.rsplit('\\').next().unwrap_or(&mat).to_string(); if stem != a[3] { continue; }
             if let Some(vref) = s2.visuals.get(vi) {
                 if let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() {
                     let st = vis.stream().unwrap();
