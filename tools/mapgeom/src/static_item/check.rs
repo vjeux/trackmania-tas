@@ -120,6 +120,9 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             problems.push(format!("visual {vi}: element name{} has {} entries for {count} vertices", d.name(), e.len()));
                         }
                         decl_desc.push_str(&format!(" n{}t{}", d.name(), d.stored_type(compress)));
+                        if facts && rest.iter().any(|a| a == "--decls") {
+                            decl_desc.push_str(&format!("[{:x}/{:x}/{:?}]", d.flags1, d.flags2, d.extra));
+                        }
                     }
                     if s.decls.len() != s.elems.len() {
                         problems.push(format!("visual {vi}: {} decls but {} element arrays", s.decls.len(), s.elems.len()));

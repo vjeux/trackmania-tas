@@ -15,7 +15,7 @@
 use super::solid2::{CPlugSolid2Model, Material, PreLightGen, ShadedGeom};
 use super::surface::{CPlugSurface, Surf, Triangle};
 use super::visual::CPlugVisualIndexedTriangles;
-use super::vstream::{Elem, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, T_DEC3N, T_FLOAT3};
+use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0, T_DEC3N, T_FLOAT3};
 use super::{Node, NodeRef, Ref, R};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -657,6 +657,93 @@ pub fn effective_layer_ids(v: &CPlugVisualIndexedTriangles) -> Option<Vec<u32>> 
     )
 }
 
+/// Every visual of one material gets the same vertex declaration.
+///
+/// The client merges same-material visuals into one draw using the FIRST
+/// visual's declaration and fetches each element from every other visual by
+/// name; a visual missing an element the first one has hands it a null
+/// pointer (crash at 0x140456c35, 2026-09-06: two TransitionToLand pieces,
+/// 71 vertices with tangents + 29 without). Nadeo's prefabs never mix
+/// layouts under one material; the per-layer split does. So per material,
+/// take the union of the declarations and synthesise what a visual lacks:
+/// colour = opaque white, a second texcoord set = copy of the first, layer
+/// ids = 0, tangents = an orthonormal frame around the normal.
+/// Declarations are rebuilt in ascending name order with cumulative offsets
+/// (the order every pack visual uses).
+pub fn harmonize_layouts(visuals: &mut [MergedVisual]) {
+    use super::vstream::{Decl, T_FLOAT2};
+    use std::collections::BTreeMap;
+    // material -> union of (name -> donor decl, stored type)
+    let mut unions: BTreeMap<usize, BTreeMap<u32, (Decl, u32)>> = BTreeMap::new();
+    for mv in visuals.iter() {
+        let Some(s) = mv.visual.stream() else { continue };
+        let compress = s.compress_local3d.unwrap_or(false);
+        let u = unions.entry(mv.material).or_default();
+        for d in &s.decls {
+            u.entry(d.name()).or_insert((d.clone(), d.stored_type(compress)));
+        }
+    }
+    for mv in visuals.iter_mut() {
+        let Some(union) = unions.get(&mv.material) else { continue };
+        let Some(m) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(s)) = m.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = s.compress_local3d.unwrap_or(false);
+        let have: Vec<u32> = s.decls.iter().map(|d| d.name()).collect();
+        if union.keys().all(|n| have.contains(n)) {
+            continue;
+        }
+        let n = s.count.max(0) as usize;
+        let by_name: BTreeMap<u32, (Decl, Elem)> = s.decls.iter().zip(s.elems.iter()).map(|(d, e)| (d.name(), (d.clone(), e.clone()))).collect();
+        let uv0 = by_name.get(&N_TEXCOORD0).map(|(_, e)| e.clone());
+        let normals: Option<Vec<[f32; 3]>> = by_name.get(&N_NORMAL).map(|(_, e)| match e {
+            Elem::Word(w) => w.iter().map(|x| dec3n_unpack(*x)).collect(),
+            Elem::Float3(p) => p.clone(),
+            _ => vec![[0.0, 1.0, 0.0]; n],
+        });
+        let mut decls: Vec<Decl> = Vec::new();
+        let mut elems: Vec<Elem> = Vec::new();
+        let mut offset = 0u32;
+        // stride first (bits 20..27 of every decl)
+        let stride: u32 = union.values().map(|(_, st)| super::vstream::type_size(*st).unwrap_or(4) as u32).sum();
+        for (name, (donor, stored)) in union {
+            let elem = match by_name.get(name) {
+                Some((_, e)) => e.clone(),
+                None => match (*name, *stored) {
+                    (N_COLOR0, _) => Elem::Word(vec![0xFFFF_FFFF; n]),
+                    (11, T_FLOAT2) => match &uv0 {
+                        Some(Elem::Float2(v)) => Elem::Float2(v.clone()),
+                        _ => Elem::Float2(vec![[0.0, 0.0]; n]),
+                    },
+                    (N_TANGENT_U | N_TANGENT_V, T_DEC3N) => {
+                        let frame = |nrm: [f32; 3]| -> ([f32; 3], [f32; 3]) {
+                            let up = if nrm[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                            let mut u = [nrm[1] * up[2] - nrm[2] * up[1], nrm[2] * up[0] - nrm[0] * up[2], nrm[0] * up[1] - nrm[1] * up[0]];
+                            let l = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-6);
+                            u = [u[0] / l, u[1] / l, u[2] / l];
+                            let v = [nrm[1] * u[2] - nrm[2] * u[1], nrm[2] * u[0] - nrm[0] * u[2], nrm[0] * u[1] - nrm[1] * u[0]];
+                            (u, v)
+                        };
+                        let def = vec![[0.0, 1.0, 0.0]; n];
+                        let nrms = normals.as_ref().unwrap_or(&def);
+                        Elem::Word(nrms.iter().map(|nr| { let (u, v) = frame(*nr); dec3n_pack(if *name == N_TANGENT_U { u } else { v }) }).collect())
+                    }
+                    (_, T_FLOAT2) => Elem::Float2(vec![[0.0, 0.0]; n]),
+                    (_, T_FLOAT3) => Elem::Float3(vec![[0.0, 0.0, 0.0]; n]),
+                    (_, st) if super::vstream::type_size(st) == Some(4) => Elem::Word(vec![0; n]),
+                    (_, st) => Elem::Raw { size: super::vstream::type_size(st).unwrap_or(4), bytes: vec![0; n * super::vstream::type_size(st).unwrap_or(4)] },
+                },
+            };
+            let size = super::vstream::type_size(*stored).unwrap_or(4) as u32;
+            decls.push(Decl::with_stride(donor.name(), donor.ty(), donor.space(), offset, stride / 4));
+            offset += size;
+            elems.push(elem);
+        }
+        let _ = compress;
+        s.decls = decls;
+        s.elems = elems;
+    }
+}
+
 /// The visual restricted to the triangles flagged in `keep` (one flag per
 /// triangle): the index buffer is filtered, the vertices it no longer uses are
 /// dropped from every stream element and both tangent arrays, and the counts
@@ -852,7 +939,11 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     }
     let mut next = 4i32;
     let mut s2 = CPlugSolid2Model::new_v34();
-    let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { m.visuals.clone() } else { coalesce(&m.visuals) };
+    let mut pre = m.visuals.clone();
+    if std::env::var_os("TINY_NO_HARMONIZE").is_none() {
+        harmonize_layouts(&mut pre);
+    }
+    let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { pre } else { coalesce(&pre) };
     // TINY_ONLY_MATS=a,b: keep only the visuals whose material link ends with one of these (minimising a crasher)
     let visuals: Vec<MergedVisual> = match std::env::var("TINY_ONLY_MATS") {
         Ok(list) => visuals.into_iter().filter(|mv| { let l = m.materials[mv.material].link().unwrap_or(""); list.split(',').any(|s| !s.is_empty() && l.ends_with(s)) }).collect(),

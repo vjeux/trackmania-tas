@@ -173,7 +173,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;
             // minimal repro var-m1, open bug).
-            let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_else(|_| "DecoBeachMangrove".into());
+            let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_default();
             m.no_split = no_split_for.split(',').any(|s| !s.is_empty() && s == name);
             let mut err = None;
             // Terrain (Flat/Frontier/Transition zone blocks) is lowered by
