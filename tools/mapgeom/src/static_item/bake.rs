@@ -1217,10 +1217,10 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
                 // float U is bit-unique almost everywhere (explodes); his
                 // weld keys on storable quantized values (welds near-equal,
                 // splits truly-different).
-                // (umode=off skips U-key: U-twins there coincide with
+                // (umode=off/duoff skips U-key: U-twins there coincide with
                 // det/normal splits, and U-key only over-splits from
                 // residual value errors.)
-                let ukey = std::env::var("TINY_UKEY").is_ok() && umode != "off";
+                let ukey = std::env::var("TINY_UKEY").is_ok() && umode != "off" && umode != "duoff";
                 let ukeyq = std::env::var("TINY_UKEYQ").is_ok();
                 let (uu, vv) = if want_tan && ukey {
                     let du1 = t[1].uv[0] - t[0].uv[0];
@@ -1817,11 +1817,15 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                     .collect()
             })
             .unwrap_or_default();
-        // (umode=off still computes range frames for VALUES; it only
-        // skips the U-key splits in make_visuals.)
+        // Per-material U mode (TINY_UMODE_MAP="Stem:du|range|off|duoff"):
+        // du/range select the primary gradient for VPRIM frames (du was
+        // proven for Road/TB/Technics coils; range mis-picks dv there);
+        // off computes range frames but skips U-key splits; duoff computes
+        // du frames but skips U-key splits (TB: du values are right but
+        // U-key over-splits det-coincident twins).
         let umode = umode_map.get(&crease_stems[i]).map(|s| s.as_str()).unwrap_or("range");
         if std::env::var("TINY_VPRIM").is_ok() {
-            tangents_vprim(&mut per_material[i], umode == "du");
+            tangents_vprim(&mut per_material[i], umode == "du" || umode == "duoff");
         }
         // U-cluster smoothing of V-primary frames (TINY_USMOOTH=1):
         // averages agreeing U (bevels), splits opposed (coils). Angle from
