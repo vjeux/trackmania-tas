@@ -442,7 +442,7 @@ impl Dump {
             );
         }
         if self.offset(va, 1).is_some() {
-            "in dump (no region info)".into()
+            "heap / data window (in dump)".into()
         } else {
             "not mapped in dump".into()
         }
@@ -1149,6 +1149,52 @@ impl Session {
 
     // ---- memory tools
 
+    /// A captured range: the module, or the thread stacks it overlaps, or a heap window.
+    fn describe_range(&self, r: &Range) -> String {
+        let d = &self.dump;
+        if let Some(m) = d.module_of(r.va) {
+            return format!("{}+0x{:x}", m.short(), r.va - m.base);
+        }
+        let stacks: Vec<String> = d
+            .threads
+            .iter()
+            .filter(|t| r.va < t.stack_start + t.stack_size as u64 && t.stack_start < r.va + r.len)
+            .map(|t| format!("0x{:x}", t.tid))
+            .collect();
+        if !stacks.is_empty() {
+            return format!("stack(s) of thread(s) {}", stacks.join(" "));
+        }
+        "heap / data window".to_string()
+    }
+
+    /// What the dump captured: the largest ranges, labelled.
+    pub fn ranges_report(&self, out: &mut String, n: usize) {
+        let d = &self.dump;
+        let total: u64 = d.ranges.iter().map(|r| r.len).sum();
+        let _ = writeln!(out, "\n=== captured memory: {} ranges, {} bytes ({} MiB) ===", d.ranges.len(), total, total >> 20);
+        let mut by_size: Vec<&Range> = d.ranges.iter().collect();
+        by_size.sort_by(|a, b| b.len.cmp(&a.len));
+        let mut in_modules = 0u64;
+        let mut in_stacks = 0u64;
+        for r in &d.ranges {
+            if d.module_of(r.va).is_some() {
+                in_modules += r.len;
+            } else if d.threads.iter().any(|t| r.va < t.stack_start + t.stack_size as u64 && t.stack_start < r.va + r.len) {
+                in_stacks += r.len;
+            }
+        }
+        let _ = writeln!(
+            out,
+            "  inside modules {} KiB, thread stacks {} KiB, other (heap windows, data) {} KiB",
+            in_modules >> 10,
+            in_stacks >> 10,
+            (total - in_modules - in_stacks) >> 10
+        );
+        for r in by_size.iter().take(n) {
+            let _ = writeln!(out, "  0x{:016x} +0x{:<8x} {:>9} B  {}", r.va, r.len, r.len, self.describe_range(r));
+        }
+    }
+
     pub fn read_report(&self, out: &mut String, addr: u64, len: usize) {
         let va = self.resolve_addr(addr);
         match self.dump.read(va, len) {
@@ -1251,9 +1297,14 @@ impl Session {
             pats.push(("utf16".into(), spec.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()));
         }
         let _ = writeln!(out, "\n=== find {spec:?} ===");
-        for (kind, pat) in pats {
-            let hits = self.find_bytes(&pat, limit);
+        let mut any = false;
+        for (kind, pat) in &pats {
+            let hits = self.find_bytes(pat, limit);
+            any |= !hits.is_empty();
             let _ = writeln!(out, "{kind} ({} bytes): {} hit(s){}", pat.len(), hits.len(), if hits.len() >= limit { " (limit)" } else { "" });
+            if hits.is_empty() && !any && std::ptr::eq(kind, &pats.last().unwrap().0) {
+                let _ = writeln!(out, "  (none -- the dump captured {} MiB: stacks, data segments and memory pointed to from them; a WER default dump has no heap.\n   For heap strings set HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\Trackmania.exe DumpType=2 (full) before the next crash; --ranges shows what was captured)", self.dump.ranges.iter().map(|r| r.len).sum::<u64>() >> 20);
+            }
             for h in hits {
                 let _ = writeln!(out, "  0x{h:016x}  [{}]", self.dump.describe(h));
                 // context: the containing bytes, a little before and after
@@ -1421,6 +1472,8 @@ pub fn hexdump_into(out: &mut String, base: u64, b: &[u8], s: Option<&Session>) 
                     let v = u64at(chunk, k);
                     if s.in_exe(v) {
                         let _ = write!(line, "  q{}: {}", k / 8, s.fmt_exe(v));
+                    } else if v > 0x10000 && s.dump.offset(v, 8).is_some() {
+                        let _ = write!(line, "  q{}: -> {}", k / 8, s.dump.describe(v));
                     }
                 }
             }
@@ -1443,6 +1496,7 @@ mapgeom crash <DUMP.dmp> [--exe Trackmania.exe] [options]
     --no-stack           skip the stack walk
     --all-frames         also list the stale return addresses the chain skipped
     --quiet              skip the dump summary (modules, threads)
+    --ranges [N]         the N largest captured memory ranges, and what they are
 ";
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -1456,6 +1510,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut no_stack = false;
     let mut all_frames = false;
     let mut quiet = false;
+    let mut ranges: Option<usize> = None;
     let mut i = 2;
     let next = |i: &mut usize, what: &str| -> Result<String, String> {
         *i += 1;
@@ -1487,6 +1542,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--no-stack" => no_stack = true,
             "--all-frames" => all_frames = true,
             "--quiet" => quiet = true,
+            "--ranges" => {
+                let mut n = 60;
+                if let Some(v) = args.get(i + 1) {
+                    if let Ok(k) = v.parse::<usize>() {
+                        n = k;
+                        i += 1;
+                    }
+                }
+                ranges = Some(n);
+            }
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
         i += 1;
@@ -1506,7 +1571,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     let s = Session::open(dump_path, exe.as_deref())?;
-    let targeted = !reads.is_empty() || !finds.is_empty() || !disasms.is_empty();
+    let targeted = !reads.is_empty() || !finds.is_empty() || !disasms.is_empty() || ranges.is_some();
     let mut out = String::new();
     if !targeted {
         if !quiet {
@@ -1523,6 +1588,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     for f in finds {
         s.find_report(&mut out, &f, limit);
+    }
+    if let Some(n) = ranges {
+        s.ranges_report(&mut out, n);
     }
     for (a, n) in disasms {
         let _ = writeln!(out, "\n=== disasm 0x{a:x} ===");
