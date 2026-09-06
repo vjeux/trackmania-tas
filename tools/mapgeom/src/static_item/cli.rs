@@ -23,6 +23,10 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     let (bytes, merged) = if is_file {
         let data = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;
         build::static_item_from_item_report(&data, &ident, &author, scale, collection)?
+    } else if src.to_ascii_lowercase().ends_with(".item.gbx") {
+        // a pack ITEM: baked through its external prefab / static-object files
+        let mut store = open();
+        build::static_item_from_pack_item_report(&mut store, &src, &ident, &author, scale, collection)?
     } else {
         let mut store = open();
         build::static_item_from_prefab_report(&mut store, &src, &ident, &author, scale, collection)?

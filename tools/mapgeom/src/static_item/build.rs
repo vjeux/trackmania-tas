@@ -362,6 +362,15 @@ impl Merged {
                 self.notes.push(format!("id-pass visual {} dropped", self.materials[mat].link().unwrap_or("")));
                 continue;
             }
+            // TINY_DROP_MATS=sub1,sub2: drop visuals whose material link contains
+            // a substring (bisecting which material makes the game drop an item)
+            if let Ok(drop) = std::env::var("TINY_DROP_MATS") {
+                let link = self.materials.get(mat).and_then(|m| m.link()).unwrap_or("").to_string();
+                if drop.split(',').any(|s| !s.is_empty() && link.contains(s)) {
+                    self.notes.push(format!("visual {link} dropped (TINY_DROP_MATS)"));
+                    continue;
+                }
+            }
             let mut v = vis.clone();
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
@@ -543,7 +552,8 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         next += 2;
     }
     for inst in used.iter().map(|u| &m.materials[*u]) {
-        s2.custom_materials.push(Material { name: String::new(), node: Some(inline(next, Node::Material(inst.clone()))) });
+        let inst = skinned_material(inst, opts.collection);
+        s2.custom_materials.push(Material { name: String::new(), node: Some(inline(next, Node::Material(inst))) });
         next += 1;
     }
     s2.pre_light_gen = Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight));
@@ -551,7 +561,8 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     let surface = CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0]);
     let surface_index = next;
     next += 1;
-    let trigger = match &m.trigger {
+    let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
+    let trigger = match m.trigger.as_ref().filter(|_| !no_wp) {
         Some(t) => {
             next += 1;
             inline(next - 1, Node::Surface(t.clone()))
@@ -608,7 +619,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
+        ItemChunk::Waypoint { version: 12, waypoint_type: if no_wp { 3 } else { m.waypoint_type.unwrap_or(3) }, disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),
@@ -716,14 +727,18 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                             lb.defined_nodes.extend(sm.external_indices().iter().copied());
                             let mut r = super::Rd::new(&sm.body, 0, lb);
                             match super::surface::CPlugSurface::parse(&mut r) {
-                                Ok(mut sf) => {
-                                    if let super::surface::Surf::Mesh { vertices, .. } = &mut sf.surf {
-                                        for v in vertices.iter_mut() {
-                                            let t = apply(&iso, *v);
-                                            *v = [t[0] * scale, t[1] * scale, t[2] * scale];
-                                        }
-                                    }
-                                    m.trigger = Some(sf);
+                                Ok(sf) => {
+                                    // re-emitted in the canonical form the box
+                                    // triggers use: the pack shape kept verbatim
+                                    // (its materials/ids) made the game drop the
+                                    // whole item (GateCheckpointLeft32m, 2026-09-06)
+                                    let super::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf else {
+                                        m.notes.push(format!("{path} entity {i}: trigger shape {sp} is not a mesh surface; skipped"));
+                                        continue;
+                                    };
+                                    let verts: Vec<[f32; 3]> = vertices.iter().map(|v| { let t = apply(&iso, *v); [t[0] * scale, t[1] * scale, t[2] * scale] }).collect();
+                                    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: 0, u03: 0, surface_index: 0 }).collect();
+                                    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0]));
                                     m.waypoint_type = Some(wtype);
                                     m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} from {sp}"));
                                 }
@@ -1091,4 +1106,41 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
+}
+
+/// The "StadiumOnTerrain" game skin: in a BlueBay map every Stadium-family
+/// block draws some of its materials through
+/// `BlueBay\Media\Modifier\StadiumOnTerrain\<slot>.Material.Gbx` instead of
+/// `Stadium\Media\Material\<name>` (the slot table is
+/// `Stadium\GameSkin\StadiumOnTerrain.GameSkin.gbx`). Items know nothing of
+/// skins, so the link is remapped here: without it the wall faces under the
+/// stands drew Stadium's wooden `TrackWallClips` where the original shows
+/// BlueBay's concrete `TrackWallClipsInWorld` (2026-09-06).
+/// `TINY_NO_SKIN=1` disables the remap.
+pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
+    const SKIN: &[(&str, &str)] = &[
+        ("TrackWallClips", "TrackWallClipsInWorld"),
+        ("TrackWall", "TrackWallInWorld"),
+        ("TrackBorders", "TrackBordersInWorld"),
+        ("TrackBordersOff", "TrackBordersOffInWorld"),
+        ("Structure", "StructureInWorld"),
+        ("Deco", "Deco"),
+        ("DecoHill", "DecoHill"),
+        ("DecoHill2", "DecoHill2"),
+        ("DecalPaintSponsor4x1D", "DecalPaintSponsor4x1D"),
+        ("DecalPaint2Sponsor4x1D", "DecalPaint2Sponsor4x1D"),
+        ("DecalPaint2Sponsor4x1NoColorizeD", "DecalPaint2Sponsor4x1NoColorizeD"),
+        ("DecalPaintSponsor4x1NoColorizeD", "DecalPaintSponsor4x1NoColorizeD"),
+    ];
+    if collection != 28 || std::env::var_os("TINY_NO_SKIN").is_some() {
+        return inst.clone();
+    }
+    let Some(link) = inst.link() else { return inst.clone() };
+    let Some(stem) = link.strip_prefix("Stadium\\Media\\Material\\") else { return inst.clone() };
+    let Some((_, slot)) = SKIN.iter().find(|(name, _)| *name == stem) else { return inst.clone() };
+    let mut owned = inst.clone();
+    if let Some(main) = owned.main.as_mut() {
+        main.link = crate::crystal_model::Id::Str(format!("BlueBay\\Media\\Modifier\\StadiumOnTerrain\\{slot}"));
+    }
+    owned
 }
