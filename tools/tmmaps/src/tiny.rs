@@ -698,11 +698,16 @@ pub fn catalog_cmd(args: &[String]) {
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
     let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+    // Foreign items claim the MAP's collection inside (header + body idents):
+    // a BlueBay map drops a Stadium-collection item silently (Lineup7,
+    // 2026-09-06: both tiny items absent, no dialog, probe listed none).
+    let map_collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
     for flag in ["--ref-item", "--lineup"] {
         if let Some(refitems) = cli::flag(args, flag) {
             for refitem in refitems.split(',') {
                 let bytes = std::fs::read(refitem).unwrap();
                 let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
+                let bytes = crate::header::set_ident_collection(&bytes, map_collection);
                 zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
             }
         }
