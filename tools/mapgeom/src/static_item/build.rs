@@ -65,6 +65,9 @@ pub struct Merged {
     /// Things skipped, for the report.
     pub notes: Vec<String>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
+    /// Do not split shared-id visuals by layer for this model (the Mangrove
+    /// split crashes the client — open bug, minimal repro in var-m1).
+    pub no_split: bool,
     pub editors: bool,
     /// The crystal bake built `surf_vertices`/`surf_triangles`/`surf_ids`
     /// itself (per-slot entries, trigger synthesis); skip the shared
@@ -376,7 +379,7 @@ impl Merged {
         // layer in every visual of the prefab (Beach: 0 Land, 1 SeaFloor,
         // 2 Sand; LandHill: 1 HillPxz; LandCliff: 1 CliffPxz).
         let mut layer_votes: std::collections::BTreeMap<u32, std::collections::BTreeMap<usize, usize>> = Default::default();
-        if !smap.is_empty() && std::env::var_os("TINY_NO_SPLIT").is_none() {
+        if !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
             for g in &s2.shaded_geoms {
                 if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() {
                     continue;
@@ -492,7 +495,7 @@ impl Merged {
                         }
                         parts.push(p);
                     }
-                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {} || chunks {:x?} uvg {} u02 {} u03 {} u04 {:x?} tcs {} subvis {} splits {} tangents {:?} idx {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | "), v.chunks, v.main.as_ref().map(|m| m.uv_groups.len()).unwrap_or(0), v.main.as_ref().map(|m| m.u02).unwrap_or(0), v.main.as_ref().map(|m| m.u03).unwrap_or(0), v.main.as_ref().map(|m| m.u04.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect::<Vec<u32>>()).unwrap_or_default(), v.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), v.sub_visuals.len(), v.splits.len(), v.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0)));
+                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {} || chunks {:x?} uvg {} u02 {} u03 {} u04 {:x?} sflags {:x} cflags {:x} sver {} tcs {} subvis {} splits {} tangents {:?} idx {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | "), v.chunks, v.main.as_ref().map(|m| m.uv_groups.len()).unwrap_or(0), v.main.as_ref().map(|m| m.u02).unwrap_or(0), v.main.as_ref().map(|m| m.u03).unwrap_or(0), v.main.as_ref().map(|m| m.u04.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect::<Vec<u32>>()).unwrap_or_default(), s.flags, v.main.as_ref().map(|m| m.chunk_flags).unwrap_or(0), s.version, v.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), v.sub_visuals.len(), v.splits.len(), v.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0)));
                 }
             }
             // A voted (shared Techno3 id) material has no look of its own: the
@@ -507,7 +510,7 @@ impl Merged {
             // sub-visual per coincident surface material, unmatched triangles
             // staying with the voted majority. `TINY_NO_SPLIT=1` disables.
             let mi = g.material_index.max(0) as usize;
-            if voted.get(mi).copied().unwrap_or(false) && !smap.is_empty() && std::env::var_os("TINY_NO_SPLIT").is_none() {
+            if voted.get(mi).copied().unwrap_or(false) && !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
                 let (pos, idx) = visual_triangles(&v);
                 let ntri = idx.len() / 3;
                 // Per-triangle collision material (None where no collision
@@ -561,6 +564,23 @@ impl Merged {
                         let mut sv = sub_visual(&v, &keep)?;
                         transform_visual(&mut sv, iso, scale)?;
                         self.notes.push(format!("visual {} split: {} triangles -> {}", g.visual_index, keep.iter().filter(|k| **k).count(), self.materials[gm].link().unwrap_or("?")));
+                        // TINY_SPLIT_KEEPMAT=1: split the geometry but keep the voted material (bisecting a crash)
+                        let gm = if std::env::var_os("TINY_SPLIT_KEEPMAT").is_some() { mat } else { gm };
+                        // TINY_SPLIT_MATS=a,b: only pieces whose new material link contains one of these take it (bisecting)
+                        let gm = match std::env::var("TINY_SPLIT_MATS") {
+                            Ok(list) => {
+                                let link = self.materials[gm].link().unwrap_or("").to_string();
+                                if list.split(',').any(|s| !s.is_empty() && link.ends_with(s)) { gm } else { mat }
+                            }
+                            Err(_) => gm,
+                        };
+                        // TINY_SPLIT_MINVERTS / TINY_SPLIT_MAXVERTS: pieces outside the range keep the voted material (bisecting)
+                        let nv = sv.main.as_ref().map(|m| m.count).unwrap_or(0);
+                        let lo: i32 = std::env::var("TINY_SPLIT_MINVERTS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+                        let hi: i32 = std::env::var("TINY_SPLIT_MAXVERTS").ok().and_then(|s| s.parse().ok()).unwrap_or(i32::MAX);
+                        let gm = if nv < lo || nv > hi { mat } else { gm };
+                        let skip: Vec<i32> = std::env::var("TINY_SPLIT_SKIPVERTS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+                        let gm = if skip.contains(&nv) { mat } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
                         self.visuals.push(MergedVisual { visual: sv, material: gm });
                     }
@@ -833,6 +853,14 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     let mut next = 4i32;
     let mut s2 = CPlugSolid2Model::new_v34();
     let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { m.visuals.clone() } else { coalesce(&m.visuals) };
+    // TINY_ONLY_MATS=a,b: keep only the visuals whose material link ends with one of these (minimising a crasher)
+    let visuals: Vec<MergedVisual> = match std::env::var("TINY_ONLY_MATS") {
+        Ok(list) => visuals.into_iter().filter(|mv| { let l = m.materials[mv.material].link().unwrap_or(""); list.split(',').any(|s| !s.is_empty() && l.ends_with(s)) }).collect(),
+        Err(_) => visuals,
+    };
+    if visuals.is_empty() {
+        return Err("TINY_ONLY_MATS left no visual".into());
+    }
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).
     let mut used: Vec<usize> = Vec::new();
@@ -849,21 +877,42 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // keep their relative order.
     let mut visuals = visuals;
     visuals.sort_by_key(|mv| used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX));
+    let per_visual = std::env::var_os("TINY_MAT_PER_VISUAL").is_some();
     for mv in &visuals {
         let mut v = mv.visual.clone();
         let main = v.main.as_mut().unwrap();
+        // TINY_STRIP_U04=1: drop the version-6 trailing blob (u02/u03/u04) the pack visuals carry;
+        // the reference items have none. TINY_SFLAGS=N: force the vertex stream flags word.
+        if std::env::var_os("TINY_STRIP_U04").is_some() {
+            main.u02 = 0;
+            main.u03 = 0;
+            main.u04.clear();
+        }
+        // TINY_STRIP_TANGENT_CHUNK=1: drop the empty CPlugVisual3D tangent-array chunk 0x0902C004
+        if std::env::var_os("TINY_STRIP_TANGENT_CHUNK").is_some() {
+            v.tangents = None;
+            v.chunks.retain(|c| *c != 0x0902C004);
+        }
+        if let Ok(f) = std::env::var("TINY_SFLAGS") {
+            if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                s.flags = f.parse().unwrap_or(s.flags);
+            }
+        }
         // the stream sits right after its visual
         for r in main.vertex_streams.iter_mut() {
             if r.inline.is_some() {
                 r.index = next + 1;
             }
         }
-        let material_index = used.iter().position(|u| *u == mv.material).unwrap() as i32;
+        // TINY_MAT_PER_VISUAL=1: one custom material entry per visual (duplicating the
+        // inst), the way the reference items are built.
+        let material_index = if per_visual { s2.visuals.len() as i32 } else { used.iter().position(|u| *u == mv.material).unwrap() as i32 };
         s2.shaded_geoms.push(ShadedGeom { visual_index: s2.visuals.len() as i32, material_index, u01: -1, lod_mask: 1, u02: 0 });
         s2.visuals.push(inline(next, Node::Visual(v)));
         next += 2;
     }
-    for inst in used.iter().map(|u| &m.materials[*u]) {
+    let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
+    for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(next, Node::Material(inst))) });
         next += 1;

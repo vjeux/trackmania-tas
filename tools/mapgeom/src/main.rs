@@ -508,6 +508,10 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::cli::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        "item-check" => {
+            let mut open_store = || open(&a);
+            mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
         "crystal-roundtrip" => {
             let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
