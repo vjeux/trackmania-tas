@@ -575,6 +575,21 @@ pub fn catalog_cmd(args: &[String]) {
                 ref_authors.insert(ident, author);
             }
         }
+        // --lineup F[,G...]: the block alone, then each listed item file
+        // under its OWN ident and author at +64 m, +112 m, ... (48 m pitch),
+        // no library slots: "original block, our tiny, his tiny" in one frame.
+        if let Some(files) = cli::flag(args, "--lineup") {
+            for (ri, file) in files.split(',').enumerate() {
+                let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("--lineup {file}: {e}"));
+                let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
+                let pos = [origin[0] + 64.0 + 48.0 * ri as f32, origin[1], origin[2]];
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
+                ref_authors.insert(ident, author);
+            }
+            let bp = block_pos(&moved);
+            tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\tlineup {} at x+64/+112/...\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2], files));
+            continue;
+        }
         if args.iter().any(|a| a == "--overlay") {
             // the scale-1 item exactly on the block: mismatches peek out.
             // --yaw-offset DEG turns the item relative to the block's yaw.
@@ -683,11 +698,13 @@ pub fn catalog_cmd(args: &[String]) {
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
     let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
-    if let Some(refitems) = cli::flag(args, "--ref-item") {
-        for refitem in refitems.split(',') {
-            let bytes = std::fs::read(refitem).unwrap();
-            let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
-            zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
+    for flag in ["--ref-item", "--lineup"] {
+        if let Some(refitems) = cli::flag(args, flag) {
+            for refitem in refitems.split(',') {
+                let bytes = std::fs::read(refitem).unwrap();
+                let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
+                zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
+            }
         }
     }
     let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).collect();
