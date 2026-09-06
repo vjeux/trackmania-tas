@@ -106,6 +106,10 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_MATERIAL_CUSTOM => Node::OldCustom(oldmat::OldCustom::parse(r)?),
         C_SURFACE => Node::Surface(surface::CPlugSurface::parse(r)?),
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
+        // Trigger-side and path classes of the gate / special prefabs: no
+        // geometry, unskippable bodies. Read as the generic walker
+        // (`classes.rs`) does and kept raw so the entity list stays walkable.
+        0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         other => Node::Opaque(read_opaque(r, other)?),
     })
 }
@@ -183,6 +187,100 @@ fn read_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
         } else {
             return Err(format!("class 0x{:08X} has no reader and chunk 0x{:08X} is not skippable", class_id, cid));
         }
+    }
+    Ok(OpaqueNode { class_id, raw: r.b[start..r.o].to_vec() })
+}
+
+/// Bodies of the trigger/path classes met inside prefabs (read off the gate
+/// and turbo files, same layouts as `classes.rs`):
+/// * `NPlugTrigger_SWaypoint` 0x09178000: version, TriggerShape ref, 8 bytes;
+/// * `NPlugTrigger_SSpecial` 0x0917A000: CHUNKED -- chunk 0x0917A000 = version,
+///   Iso4 (48 bytes), 24 bytes; then FACADE;
+/// * 0x0917B000: 8 bytes;
+/// * `CPlugPath` 0x09119000: version, N refs (polylines), v>=2: bool32, u8,
+///   length-prefixed bytes.
+/// The plain bodies (0x09178000, 0x0917B000) have NO chunk framing and no
+/// FACADE: the class IS the struct (as `classes.rs::plain_body`).
+fn read_fixed_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
+    let start = r.o;
+    match class_id {
+        // plain bodies: the class IS the struct, nothing follows it
+        0x09178000 => {
+            r.u32()?;
+            r.noderef(read_node)?;
+            r.take(8)?;
+        }
+        0x0917B000 => {
+            r.take(8)?;
+        }
+        // chunked bodies: chunk ids up to FACADE
+        0x09119000 | 0x09118000 | 0x0917A000 => loop {
+            let cid = r.u32()?;
+            if cid == FACADE {
+                break;
+            }
+            match cid {
+                // NPlugTrigger_SSpecial: version, Iso4, 24 bytes
+                0x0917A000 => {
+                    r.u32()?;
+                    r.take(48 + 4 + 4 + 12 + 4)?;
+                }
+                0x09119000 => {
+                    let v = r.u32()?;
+                    let n = r.u32()? as usize;
+                    for _ in 0..n {
+                        r.noderef(read_node)?;
+                    }
+                    if v >= 2 {
+                        r.bool32()?;
+                        r.u8()?;
+                        let k = r.u32()? as usize;
+                        r.take(k)?;
+                    }
+                }
+                0x09118000 => {
+                    let v = r.u32()?;
+                    let n = r.u32()? as usize;
+                    r.take(n * 12)?;
+                    if v >= 2 {
+                        let n2 = r.u32()? as usize;
+                        r.take(n2 * 12)?;
+                    }
+                    if v == 3 {
+                        r.bool32()?;
+                        r.i32()?;
+                    }
+                    if v >= 4 {
+                        if v == 4 {
+                            r.bool32()?;
+                        }
+                        r.bool32()?;
+                        r.bool32()?;
+                        if v >= 5 {
+                            r.bool32()?;
+                        }
+                        if v >= 6 {
+                            r.i32()?;
+                        }
+                        if v >= 7 {
+                            r.u8()?;
+                        }
+                        if v >= 8 {
+                            r.u8()?;
+                            r.id()?;
+                        }
+                    }
+                }
+                _ => {
+                    if is_skippable_here(r) {
+                        read_skippable_payload(r, cid)?;
+                    } else {
+                        return Err(format!("class 0x{class_id:08X}: chunk 0x{cid:08X} has no reader and is not skippable"));
+                    }
+                }
+            }
+        },
+        _ => unreachable!(),
     }
     Ok(OpaqueNode { class_id, raw: r.b[start..r.o].to_vec() })
 }

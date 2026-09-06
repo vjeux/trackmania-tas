@@ -11,8 +11,10 @@ W='/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania'
 WSX=/home/vjeux/bin/wsx
 # game up?
 $WSX sh 'S="$HOME/trackmania-tas/tools/target/release/shootctl"; if ! timeout 8 "$S" get /ping >/dev/null 2>&1; then echo "game not responding: relaunching"; /mnt/c/Windows/System32/taskkill.exe /F /IM Trackmania.exe >/dev/null 2>&1; sleep 4; "$S" launch 180 2>&1 | tail -1; fi; exit 0' 2>&1 | grep -v "^$" | tail -2
-# push (md5-checked by wsx)
-$WSX push "$MAP" "$W/Maps/_shoot/$NAME.Map.Gbx" 2>&1 | grep -v chunk | tail -1
+# push (md5-checked by wsx) -- via the WSL home first: OneDrive locks the
+# chunk files of a big transfer ("mv: Permission denied" on a 9 MB map)
+$WSX push "$MAP" "/home/vjeux/shoot/_stage/$NAME.Map.Gbx" 2>&1 | grep -v chunk | tail -1
+$WSX sh "mkdir -p '$W/Maps/_shoot'; cp /home/vjeux/shoot/_stage/$NAME.Map.Gbx '$W/Maps/_shoot/$NAME.Map.Gbx' && md5sum '$W/Maps/_shoot/$NAME.Map.Gbx' | cut -c1-32; exit 0" 2>&1 | tail -1
 # back to the menu, then open the map in the editor
 $WSX sh 'S="$HOME/trackmania-tas/tools/target/release/shootctl"; seen=0; for k in 1 2 3 4 5 6 7 8; do c=$("$S" get /ctx); case "$c" in *\"ctx\":0*\"dialog\":null*) break;; *FrameDialogSaveAs*) "$S" get /dismiss >/dev/null; seen=1;; *FrameAskYesNo*) if [ $seen = 1 ]; then "$S" get /yes >/dev/null; else "$S" get /no >/dev/null; fi;; *\"dialog\":null*) "$S" get /back >/dev/null;; *) "$S" get /dismiss >/dev/null;; esac; sleep 2; done; rm -f /mnt/c/Users/vjeux/OpenplanetNext/probe.txt /mnt/c/Users/vjeux/OpenplanetNext/probe-out.tsv; printf "%s" "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/'"$NAME"'.Map.Gbx" > /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter/editmap.txt; "$S" get /editmap >/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do sleep 7; c=$("$S" get /ctx); case "$c" in *\"ctx\":1*) break;; *FrameAskYesNo*) echo "DIALOG: missing items"; "$S" get /yes >/dev/null; sleep 2; "$S" get /yes >/dev/null;; esac; done; echo "ctx: $c"; exit 0' 2>&1 | tail -2
 # camera + probe + screenshot

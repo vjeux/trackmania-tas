@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "tiny-catalog", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "region", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
@@ -220,6 +220,8 @@ fn main() {
         "selftest" => selftest::run(&args),
         "region" => census::cmd_region(&args),
         "tiny-catalog" => tmmaps::tiny::catalog_cmd(&args),
+        "tiny" => tmmaps::tiny::cmd(&args),
+        "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),
         "waypoints" => {
@@ -1145,6 +1147,17 @@ READING A MAP
         one row per map — for auditing what this repo publishes a map as
         against what the map calls itself. Join it on uid against
         trackmania.io; our own documents are not an independent check.
+
+TINY MAPS (half-scale campaign: every authored block/item -> an embedded static item)
+  tmmaps tiny MAP --mapping placements.tsv --library ITEMS.zip --out F [--scale 0.5]
+      [--anchor x,y,z] [--host HOST.Map.Gbx]
+        replace every authored block by its library item (mapping rows
+        `@index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz`; `-` = intentionally
+        nothing) and re-point/drop items (`i@index<TAB>ITEM|stock model|-`);
+        the baked foundation stays. Inputs come from `mapgeom tiny-library`.
+  tmmaps tiny-batch DIR --out DIR [same flags]      every .Map.Gbx of a directory
+  tmmaps tiny-catalog MAP --mapping T --library Z --out F [--only NAME] [--lineup A,B]
+        one block per model beside its items (or the listed item files), for a look
 
 CHANGING A MAP — position and ROTATION; no model swap, so no trigger volume changes
   tmmaps move MAP --out F --move SPEC [--move SPEC ...]

@@ -49,6 +49,9 @@ fn vec3(s: &str, label: &str) -> [f32; 3] {
 
 #[derive(Default)]
 struct Mappings {
+    /// `b@index`: a BAKED (generated) block -- the FC clip fillers -- that the
+    /// tiny build re-emits as an item like an authored block.
+    baked_by_index: BTreeMap<usize, Mapping>,
     by_name: BTreeMap<String, Mapping>,
     by_index: BTreeMap<usize, Mapping>,
     /// Original ITEM placements re-pointed at an embedded copy of their own
@@ -95,6 +98,9 @@ fn read_mapping(path: &Path) -> Mappings {
         let prev = if let Some(index) = fields[0].strip_prefix("i@") {
             out.items_by_index
                 .insert(index.parse().expect("i@INDEX number"), mapping)
+        } else if let Some(index) = fields[0].strip_prefix("b@") {
+            out.baked_by_index
+                .insert(index.parse().expect("b@INDEX number"), mapping)
         } else if let Some(index) = fields[0].strip_prefix('@') {
             out.by_index
                 .insert(index.parse().expect("@INDEX number"), mapping)
@@ -282,8 +288,15 @@ pub fn cmd(args: &[String]) {
     // Preserve original item records and their lookback IDs in place. They only
     // need fixed-size placement edits.
     let mut repointed_items = 0usize;
+    let mut dropped_items = 0usize;
     for it in &source.items {
         match mapping.items_by_index.get(&it.index) {
+            // "-": intentionally gone (procedural vegetation the tiny map
+            // cannot shrink); the slot is parked far below the map.
+            Some(map) if map.model == "-" => {
+                dropped_items += 1;
+                specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None });
+            }
             // Re-pointed at an embedded copy whose geometry already carries
             // the scale: the placement stays where it is at scale 1.
             Some(map) => {
@@ -308,15 +321,20 @@ pub fn cmd(args: &[String]) {
         }
     }
     let original_items = specs.len();
-    // Authored blocks occupy appended clones. Each mapped model name is exactly
-    // ten bytes, matching the clone donor `PalmForest`, so changing it does not
-    // rebuild or renumber the lookback table.
+    let mut empty_blocks = 0usize;
+    // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping
             .by_index
             .get(&b.index)
             .or_else(|| mapping.by_name.get(&b.name))
             .expect("mapping checked above");
+        // "-": the picked variant has no geometry (an intentionally empty
+        // pillar mobil): no item, on purpose.
+        if map.model == "-" {
+            empty_blocks += 1;
+            continue;
+        }
         let rot = b.free_rot.unwrap_or([block_yaw(b), 0.0, 0.0]);
         let origin = match map.footprint {
             Some(fp) => block_origin(b, fp),
@@ -329,6 +347,30 @@ pub fn cmd(args: &[String]) {
             frame: Some((rot, [0.0, 0.0, 0.0])),
             scale: scale / map.model_scale,
             tag: b.waypoint_tag.clone(),
+        });
+    }
+    // Baked (generated) non-Sea blocks -- the FC clip fillers that finish the
+    // authored structures (pillar feet, screen caps, wall faces) -- become
+    // items too; the baked chunk itself is rewritten to all-Sea below.
+    let mut baked_items = 0usize;
+    for b in &source.baked {
+        let Some(map) = mapping.baked_by_index.get(&b.index) else { continue };
+        if map.model == "-" {
+            continue;
+        }
+        let rot = [block_yaw(b), 0.0, 0.0];
+        let origin = match map.footprint {
+            Some(fp) => block_origin(b, fp),
+            None => block_pos(b),
+        };
+        baked_items += 1;
+        specs.push(Spec {
+            model: map.model.clone(),
+            pos: transform(origin, source_anchor, target_anchor, scale),
+            yaw: rot[0],
+            frame: Some((rot, [0.0, 0.0, 0.0])),
+            scale: scale / map.model_scale,
+            tag: None,
         });
     }
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
@@ -379,6 +421,16 @@ pub fn cmd(args: &[String]) {
         }
     }
     println!("  {neutralised} parked waypoint blocks renamed to {neutral}");
+    // the generated non-Sea fillers are parked too (re-emitted as items above);
+    // the Sea records stay: they are the water
+    let mut parked_baked = 0usize;
+    for i in 0..m.baked.len() {
+        if m.baked[i].name != "Sea" {
+            m.move_baked_cell(i, (0, 0, 0));
+            parked_baked += 1;
+        }
+    }
+    println!("  {parked_baked} generated (baked) non-Sea blocks parked");
     m.write_to(&tmp1).expect("write parked-block stage");
 
     // Stage 2: append new model slots while preserving every original slot.
@@ -390,14 +442,16 @@ pub fn cmd(args: &[String]) {
             // `set_body_ident_nameless`); the placement must say the same.
             m.set_item_model(i, &s.model);
             // Nadeo models kept as-is (vegetation, gates) keep author Nadeo.
-            m.set_item_author(i, if s.model.starts_with("AC0") { &s.model } else { "Nadeo" });
+            // an embedded library item (any *.Item.Gbx) is its own author; a
+            // stock model (vegetation substitute) is Nadeo's
+            m.set_item_author(i, if s.model.ends_with(".Item.Gbx") { &s.model } else { "Nadeo" });
         }
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         if let Some((rot, pivot)) = s.frame {
             m.set_item_frame(i, rot, pivot);
         }
         m.set_item_scale(i, s.scale);
-        if s.model.starts_with("AC0") {
+        if s.model.ends_with(".Item.Gbx") {
             m.clear_item_variant(i);
         }
     }
@@ -429,7 +483,7 @@ pub fn cmd(args: &[String]) {
             .iter()
             .enumerate()
             .filter(|(i, _)| *i >= original_items || mapping.items_by_index.contains_key(i))
-            .filter(|(_, s)| s.model.starts_with("AC0"))
+            .filter(|(_, s)| s.model.ends_with(".Item.Gbx"))
             .map(|(_, s)| s.model.clone())
             .collect();
         embedded_names.sort();
@@ -443,6 +497,16 @@ pub fn cmd(args: &[String]) {
     m.write_to(&out).expect("write output");
     for p in [&tmp0, &tmp1, &tmp2] {
         let _ = std::fs::remove_file(p);
+    }
+    // Genealogies (chunk 0x03043043) are the per-cell terrain zones the game
+    // regenerates Land/Beach/Hill/Cliff blocks from at load: with the authored
+    // terrain parked they rebuilt the full-size island under the tiny one
+    // (2026-09-06). Cleared, the floor cells without a block are plain sea.
+    // (Rewriting the baked chunk to all-Sea -- `all_sea_file` -- is NOT
+    // needed and makes the game refuse the map: "Couldn't load map!".)
+    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() {
+        let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
+        println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
     }
 
     let check = MapFile::load(&out);
@@ -473,7 +537,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies", repointed_items);
+    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants)", repointed_items, dropped_items, empty_blocks);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),
@@ -481,8 +545,9 @@ pub fn cmd(args: &[String]) {
         specs.len()
     );
     println!(
-        "  baked foundation unchanged: {} generated terrain/decoration blocks",
-        source.baked.len()
+        "  baked foundation: {} generated blocks in the source ({} re-emitted as items)",
+        source.baked.len(),
+        baked_items
     );
     println!(
         "  anchor: source {:?} -> target {:?}; scale {:.3}",

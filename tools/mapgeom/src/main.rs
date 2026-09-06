@@ -21,8 +21,9 @@ COMMANDS
                                 a static-object item from every static object
                                 of a pack prefab, or from a static/crystal item
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
-  tiny-library <file.Map.Gbx> --catalog TSV --footprints TSV --library-out ZIP
-      --mapping-out TSV [--report TSV] [--scale 0.5] [--items-dir DIR] [--only N,..]
+  tiny-library <file.Map.Gbx> --library-out ZIP --mapping-out TSV [--report TSV]
+      [--scale 0.5] [--legacy-zip Nadeo.zip] [--items-dir DIR] [--veget substitute|keep|drop]
+      [--collection BlueBay] [--only N,..]
                                 every block/item model of the map as a half-scale
                                 STATIC item (stage-1 path) + tmmaps tiny mapping
   tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
@@ -561,16 +562,20 @@ fn main() {
             let report = flag(&a.rest, "--report").map(std::path::PathBuf::from);
             let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
             let only = flag(&a.rest, "--only");
+            let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
+            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "substitute".into());
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".into());
             mapgeom::tiny_library::build(
                 &mut store,
                 map,
-                &req("--catalog"),
-                &req("--footprints"),
                 &req("--library-out"),
                 &req("--mapping-out"),
                 report.as_deref(),
                 flag(&a.rest, "--scale").unwrap_or_else(|| "0.5".into()).parse().unwrap_or_else(|_| die("--scale number".into())),
+                legacy.as_deref(),
                 items_dir.as_deref(),
+                &veget,
+                &coll,
                 only.as_deref(),
             );
         }

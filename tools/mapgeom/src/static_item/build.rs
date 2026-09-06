@@ -55,7 +55,13 @@ pub struct Merged {
     /// A trigger surface carried over from a source item (scaled), and its
     /// waypoint type (chunk 2E00201F; 3 = none).
     pub trigger: Option<CPlugSurface>,
-    pub waypoint_type: i32,
+    /// Explicit waypoint type (0 start, 1 finish, 2 checkpoint, 4 start+finish);
+    /// None writes 3 (not a waypoint). A start has a type and NO trigger.
+    pub waypoint_type: Option<i32>,
+    /// Entity-model iso translation: the spawn point for waypoint items
+    /// (Granady: block spawn_loc x scale, e.g. RoadTechStart [16,2,16] ->
+    /// [8,1,8]). Zero = identity.
+    pub spawn: [f32; 3],
     /// Things skipped, for the report.
     pub notes: Vec<String>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
@@ -348,6 +354,14 @@ impl Merged {
                 }
             };
             let mat = slots.get(g.material_index as usize).copied().flatten().unwrap_or_else(|| self.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
+            // Techno3 "_Ids" materials are the terrain id/mask pass (Land Base
+            // carries a 4-vertex `Tech3 Block PyPxz_Ids` quad over its Land
+            // quad): no look of their own, and as an item material they draw
+            // flat grey and z-fight the real surface into stripes (2026-09-06).
+            if self.materials.get(mat).and_then(|m| m.link()).map(|l| l.contains("_Ids")).unwrap_or(false) {
+                self.notes.push(format!("id-pass visual {} dropped", self.materials[mat].link().unwrap_or("")));
+                continue;
+            }
             let mut v = vis.clone();
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
@@ -551,7 +565,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         v3_strings: None,
         static_object: inline(2, Node::StaticObject(so)),
         trigger_shape: trigger,
-        iso: IDENTITY,
+        iso: { let mut i = IDENTITY; i[9] = m.spawn[0]; i[10] = m.spawn[1]; i[11] = m.spawn[2]; i },
         particle_emitter: super::null_ref(),
         actions: Vec::new(),
         u_node: super::null_ref(),
@@ -594,7 +608,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: 12, waypoint_type: if m.trigger.is_some() { m.waypoint_type } else { 3 }, disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
+        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),
@@ -687,10 +701,51 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 };
                 m.add_static_object(so, &iso, scale, &mut resolve).map_err(|err| format!("{path} entity {i}: {err}"))?;
             }
+            // NPlugTrigger_SWaypoint: { version, waypoint type, trigger shape ref,
+            // u32 } (read off Items\Gate\CheckpointLeft32m: 01 00 00 00 | 02 00 00
+            // 00 = checkpoint | 1d 00 00 00 = node 29, the external
+            // *_Trigger.Shape.Gbx | 00 00 00 00). The item gets that type and the
+            // shape, transformed like the geometry.
+            Some(Node::Opaque(o)) if o.class_id == 0x09178000 && o.raw.len() >= 16 => {
+                let wtype = i32::from_le_bytes(o.raw[4..8].try_into().unwrap());
+                let shape_idx = i32::from_le_bytes(o.raw[8..12].try_into().unwrap());
+                match ext_name(shape_idx) {
+                    Some(sp) if sp.to_ascii_lowercase().ends_with(".shape.gbx") => match store.load_model(&sp) {
+                        Ok(sm) => {
+                            let mut lb = super::LookbackState::default();
+                            lb.defined_nodes.extend(sm.external_indices().iter().copied());
+                            let mut r = super::Rd::new(&sm.body, 0, lb);
+                            match super::surface::CPlugSurface::parse(&mut r) {
+                                Ok(mut sf) => {
+                                    if let super::surface::Surf::Mesh { vertices, .. } = &mut sf.surf {
+                                        for v in vertices.iter_mut() {
+                                            let t = apply(&iso, *v);
+                                            *v = [t[0] * scale, t[1] * scale, t[2] * scale];
+                                        }
+                                    }
+                                    m.trigger = Some(sf);
+                                    m.waypoint_type = Some(wtype);
+                                    m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} from {sp}"));
+                                }
+                                Err(e) => m.notes.push(format!("{path} entity {i}: trigger shape {sp} failed: {e}")),
+                            }
+                        }
+                        Err(e) => m.notes.push(format!("{path} entity {i}: trigger shape {sp} failed: {e}")),
+                    },
+                    _ => m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} with shape node {shape_idx} (not an external shape) skipped")),
+                }
+            }
             Some(other) => m.notes.push(format!("{path} entity {i}: model class 0x{:08X} skipped", other.class_id())),
             None if e.model.index < 0 => {}
             None => match ext_name(e.model.index) {
                 Some(p) if p.to_ascii_lowercase().ends_with(".prefab.gbx") => add_prefab(store, &p, &iso, scale, m, depth + 1)?,
+                // an external static object (gate speedometer lights, road
+                // signs): its own file, mesh and shape external again
+                Some(p) if p.to_ascii_lowercase().ends_with(".staticobject.gbx") => {
+                    if let Err(e) = add_static_object_file(store, &p, &iso, scale, m) {
+                        m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
+                    }
+                }
                 Some(p) => m.notes.push(format!("{path} entity {i}: external {p} skipped")),
                 None => m.notes.push(format!("{path} entity {i}: external node {} unnamed", e.model.index)),
             },
@@ -736,6 +791,15 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
             };
             let mut m2 = Merged::default();
             m2.add_static_object(so, &IDENTITY, scale, &mut resolve)?;
+            // waypoint type from the item chunk (3 = none), trigger + spawn iso
+            // from the entity model, all scaled
+            let wt = f.item.chunks.iter().find_map(|c| match c {
+                super::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+                _ => None,
+            });
+            if let Some(t) = wt.filter(|t| *t != 3) {
+                m2.waypoint_type = Some(t);
+            }
             if let Some(ent) = f.item.model().and_then(|mc| mc.entity_model()) {
                 if let Some(Node::Surface(t)) = ent.trigger_shape.inline.as_deref() {
                     let mut t = t.clone();
@@ -745,16 +809,8 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
                         }
                     }
                     m2.trigger = Some(t);
-                    m2.waypoint_type = f
-                        .item
-                        .chunks
-                        .iter()
-                        .find_map(|c| match c {
-                            super::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
-                            _ => None,
-                        })
-                        .unwrap_or(3);
                 }
+                m2.spawn = [ent.iso[9] * scale, ent.iso[10] * scale, ent.iso[11] * scale];
             }
             m2.editors = std::env::var_os("TINY_EDITORS").is_some();
             m2.notes.extend(m.notes.drain(..));
@@ -917,4 +973,122 @@ fn append_visual(dst: &mut CPlugVisualIndexedTriangles, src: &CPlugVisualIndexed
         Some(ib) => ib.indices.extend(src_idx.iter().map(|i| i + base)),
         None => dst.index_buffer = Some(super::visual::IndexBuffer::delta(src_idx.iter().map(|i| i + base).collect())),
     }
+}
+
+/// A `.StaticObject.Gbx` pack file (a bare `CPlugStaticObjectModel` body):
+/// parse it with the typed reader, pull its EXTERNAL mesh (`.Mesh.Gbx`, a
+/// `CPlugSolid2Model` file) and shape (`.HitShape.Gbx`/`.Shape.Gbx`, a
+/// `CPlugSurface` file) inline, and merge it placed by `at`. Material refs
+/// of the three files live in three index spaces; they are offset here
+/// (mesh +100000, shape +200000) so one resolver serves all of them.
+pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
+    const MESH_OFF: i32 = 100_000;
+    const SHAPE_OFF: i32 = 200_000;
+    let model = store.load_model(path)?;
+    if model.class_id != super::C_STATIC_OBJECT_MODEL {
+        return Err(format!("{path}: class 0x{:08X} is not CPlugStaticObjectModel", model.class_id));
+    }
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(model.external_indices().iter().copied());
+    let mut r = super::Rd::new(&model.body, 0, lb);
+    let mut so = super::item::CPlugStaticObjectModel::parse(&mut r).map_err(|e| format!("{path}: {e}"))?;
+    let so_ext = model.externals.clone();
+    let mut mesh_ext: Vec<(u32, String)> = Vec::new();
+    let mut shape_ext: Vec<(u32, String)> = Vec::new();
+    let name_in = |tbl: &[(u32, String)], i: i32| tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
+    if so.mesh.inline.is_none() && so.mesh.index >= 0 {
+        let mp = name_in(&so_ext, so.mesh.index).ok_or_else(|| format!("{path}: mesh node {} is neither inline nor external", so.mesh.index))?;
+        let mm = store.load_model(&mp)?;
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(mm.external_indices().iter().copied());
+        let mut r = super::Rd::new(&mm.body, 0, lb);
+        let mut s2 = super::solid2::CPlugSolid2Model::parse(&mut r).map_err(|e| format!("{mp}: {e}"))?;
+        for mr in s2.materials.iter_mut() {
+            if mr.inline.is_none() && mr.index >= 0 {
+                mr.index += MESH_OFF;
+            }
+        }
+        for cm in s2.custom_materials.iter_mut() {
+            if let Some(nr) = cm.node.as_mut() {
+                if nr.inline.is_none() && nr.index >= 0 {
+                    nr.index += MESH_OFF;
+                }
+            }
+        }
+        mesh_ext = mm.externals.clone();
+        so.mesh.inline = Some(Box::new(Node::Solid2(s2)));
+    }
+    if !so.is_mesh_collidable && so.shape.inline.is_none() && so.shape.index >= 0 {
+        let sp = name_in(&so_ext, so.shape.index).ok_or_else(|| format!("{path}: shape node {} is neither inline nor external", so.shape.index))?;
+        let sm = store.load_model(&sp)?;
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(sm.external_indices().iter().copied());
+        let mut r = super::Rd::new(&sm.body, 0, lb);
+        let mut sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{sp}: {e}"))?;
+        for sm_ in sf.materials.iter_mut() {
+            if let super::surface::SurfMaterial::Node(nr) = sm_ {
+                if nr.inline.is_none() && nr.index >= 0 {
+                    nr.index += SHAPE_OFF;
+                }
+            }
+        }
+        shape_ext = sm.externals.clone();
+        so.shape.inline = Some(Box::new(Node::Surface(sf)));
+    }
+    let common = most_common_physics(&so);
+    let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        let p = if idx >= SHAPE_OFF {
+            name_in(&shape_ext, idx - SHAPE_OFF)?
+        } else if idx >= MESH_OFF {
+            name_in(&mesh_ext, idx - MESH_OFF)?
+        } else {
+            name_in(&so_ext, idx)?
+        };
+        let link = material_link(&p);
+        let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
+        Some((p, link, phys))
+    };
+    m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))
+}
+
+/// A pack ITEM (`CGameItemModel` wrapper whose entity model -- a static
+/// object, a prefab, or a variant list of them -- lives in EXTERNAL files):
+/// bake the geometry those externals point at. Variant lists (RoadSignC,
+/// Flag16m...) contribute their FIRST prefab/static-object external only
+/// (the placement's variant index is not consulted). Vegetation
+/// (`.VegetTreeModel.Gbx`) has no mesh and is reported, not baked.
+pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
+    let model = store.load_model(item_path)?;
+    let mut m = Merged::default();
+    m.editors = std::env::var_os("TINY_EDITORS").is_some();
+    let mut geometry_externals: Vec<String> = Vec::new();
+    let mut veget = 0usize;
+    for (_, p) in &model.externals {
+        let low = p.to_ascii_lowercase();
+        if low.ends_with(".prefab.gbx") || low.ends_with(".staticobject.gbx") {
+            geometry_externals.push(p.clone());
+        } else if low.ends_with(".vegettreemodel.gbx") {
+            veget += 1;
+        }
+    }
+    if geometry_externals.is_empty() {
+        if veget > 0 {
+            return Err(format!("procedural vegetation ({veget} VegetTreeModel refs, no mesh)"));
+        }
+        return Err(format!("no prefab/static-object external (externals: {})", model.externals.iter().map(|(_, p)| p.rsplit('\\').next().unwrap_or(p).to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    // first geometry external = variant 0 (others are alternative variants,
+    // usually the same block at other sizes/angles)
+    let first = geometry_externals[0].clone();
+    if first.to_ascii_lowercase().ends_with(".prefab.gbx") {
+        add_prefab(store, &first, &IDENTITY, scale, &mut m, 0)?;
+    } else {
+        add_static_object_file(store, &first, &IDENTITY, scale, &mut m)?;
+    }
+    if geometry_externals.len() > 1 {
+        m.notes.push(format!("{} geometry variants; baked the first ({})", geometry_externals.len(), first.rsplit('\\').next().unwrap_or(&first)));
+    }
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
+    let f = assemble(&m, &opts)?;
+    Ok((super::write_file(&f), m))
 }

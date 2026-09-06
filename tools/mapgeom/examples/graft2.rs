@@ -83,7 +83,7 @@ fn main() {
             waypoint_type = *w;
         }
     }
-    m.waypoint_type = waypoint_type;
+    m.waypoint_type = if waypoint_type == 3 { None } else { Some(waypoint_type) };
     let mut collection = 26u32;
     for c in &f.item.chunks {
         if let mapgeom::static_item::item::ItemChunk::Ident { collection: coll, .. } = c {

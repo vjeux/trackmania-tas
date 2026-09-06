@@ -776,6 +776,15 @@ impl MapFile {
     /// volume is exactly the one the block always had
     /// (FLEET_NOTICE_origin_control_insufficient_v1). `cell` is in gbx-py /
     /// world-grid coordinates; the file stores x and z one higher.
+    /// Move a BAKED (generated) block record the same way -- three coord bytes
+    /// in chunk 0x03043048, fixed size. A tiny map parks the generated FC
+    /// fillers this way (it re-emits them as items).
+    pub fn move_baked_cell(&mut self, baked_index: usize, cell: (i32, i32, i32)) {
+        let b = self.baked[baked_index].clone();
+        assert!((0..=254).contains(&cell.0) && (0..=255).contains(&cell.1) && (0..=254).contains(&cell.2), "cell {:?} out of the one-byte grid range", cell);
+        self.raw_patches.push((b.coord_off, vec![(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8]));
+    }
+
     pub fn move_block_cell(&mut self, block_index: usize, cell: (i32, i32, i32)) {
         let b = self.blocks[block_index].clone();
         assert!(
@@ -1725,6 +1734,13 @@ impl MapFile {
     /// cell, then every non-Sea record verbatim (their ids and any string they
     /// define stay valid for later chunks). Returns (sea cells, kept records).
     pub fn all_sea_file(path: &std::path::Path) -> Result<(usize, usize), String> {
+        Self::all_sea_file_keeping(path, true)
+    }
+
+    /// `all_sea_file` with a switch for the non-Sea baked records (the FC
+    /// clip fillers): a tiny map drops them -- they belong to the full-size
+    /// structures that are parked, and the tiny build re-emits them as items.
+    pub fn all_sea_file_keeping(path: &std::path::Path, keep_non_sea: bool) -> Result<(usize, usize), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let m = MapFile::load(path);
         let g = Gbx::parse(&bytes);
@@ -1757,13 +1773,14 @@ impl MapFile {
         let mut n = 0usize;
         recs.extend_from_slice(first_rec);
         n += 1;
-        for x in 0..64u8 {
-            for z in 0..64u8 {
+        // raw coords are cell + (1, 0, 1): cells 0..63 are raw 1..=64
+        for x in 1..=64u8 {
+            for z in 1..=64u8 {
                 if x == first.raw_coords[0] && z == first.raw_coords[2] {
                     continue;
                 }
-                // the parked blocks' column stays free of generated terrain
-                if x == 0 && z == 0 {
+                // the parked blocks' column (cell 0,0) stays free of generated terrain
+                if x == 1 && z == 1 {
                     continue;
                 }
                 recs.extend_from_slice(&sea_ref_word);
@@ -1781,7 +1798,14 @@ impl MapFile {
             }
             let s0 = starts[i];
             let s1 = starts.get(i + 1).copied().unwrap_or(recs_end);
-            recs.extend_from_slice(&body[s0..s1]);
+            let mut rec = body[s0..s1].to_vec();
+            if !keep_non_sea {
+                // kept for its lookback words (a dropped definition would
+                // renumber every later string), parked at cell (0,0,0)
+                let c = b.coord_off - s0;
+                rec[c..c + 3].copy_from_slice(&[1, 0, 1]);
+            }
+            recs.extend_from_slice(&rec);
             n += 1;
             kept += 1;
         }

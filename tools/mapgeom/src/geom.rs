@@ -120,6 +120,9 @@ pub struct Collector<'a> {
     /// met: the look material of terrain whose visual shader is a shared id
     /// material (`Techno3\...`).
     pub surface_links: Vec<String>,
+    /// Every VegetTreeModel reference met, with the world position of its
+    /// entity (procedural vegetation: no mesh, but a place and a species).
+    pub veget_places: Vec<(String, [f32; 3])>,
     /// Inside a moving block: triangles collected now are named `(moving)`.
     moving: bool,
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
@@ -137,6 +140,7 @@ impl<'a> Collector<'a> {
             finest_lod_only: false,
             material_cache: HashMap::new(),
             surface_links: Vec::new(),
+            veget_places: Vec::new(),
             moving: false,
             max_depth: 24,
         }
@@ -383,6 +387,10 @@ impl<'a> Collector<'a> {
                 // things that can carry geometry are worth opening.
                 let up = path.to_uppercase();
                 if up.ends_with(".MATERIAL.GBX") || up.ends_with(".TEXTURE.GBX") || up.ends_with(".FXSYS.GBX") || up.ends_with(".LIGHT.GBX") || up.ends_with(".SOUND.GBX") {
+                    return;
+                }
+                if up.ends_with(".VEGETTREEMODEL.GBX") {
+                    self.veget_places.push((path.clone(), [at[9], at[10], at[11]]));
                     return;
                 }
                 self.file(&path, at, depth + 1);
