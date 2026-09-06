@@ -71,8 +71,14 @@ impl Decl {
     }
     /// A declaration as the game writes it: `offset` is the byte offset of the
     /// element inside a vertex.
+    /// `stride_words` is the vertex stride in 4-byte words (stride_bytes/4):
+    /// it lands in flags1 bits 20..27 (measured: 40B->0xA, 44B->0xB,
+    /// 36B->0x9, 28B->0x7, 24B->0x6 across all 26 reference items).
     pub fn new(name: u32, ty: u32, space: u32, offset: u32) -> Decl {
-        let flags1 = name | (ty << 9) | (space << 28) | 0x00A0_0000;
+        Self::with_stride(name, ty, space, offset, 10)
+    }
+    pub fn with_stride(name: u32, ty: u32, space: u32, offset: u32, stride_words: u32) -> Decl {
+        let flags1 = name | (ty << 9) | (stride_words << 20) | (space << 28);
         let flags2 = offset << 2;
         let extra = if flags2 & 0xFFC != 0 { Some((0, offset as u16)) } else { None };
         Decl { flags1, flags2, extra, v0_data: Vec::new() }

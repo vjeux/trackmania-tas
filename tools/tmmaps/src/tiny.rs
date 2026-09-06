@@ -563,15 +563,17 @@ pub fn catalog_cmd(args: &[String]) {
         // --geometry-scaled: slot C uses the AS-prefixed library twin whose
         // mesh already carries the scale (the game ignores placement scale).
         let geom_scaled = args.iter().any(|a| a == "--geometry-scaled");
-        if let Some(refitem) = cli::flag(args, "--ref-item") {
-            // slot B: the reference item file, under ITS OWN ident and author
-            // (read from the header), placed at the block's origin + 64 m.
-            let bytes = std::fs::read(refitem).expect("--ref-item file");
-            let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
-            let pos = [origin[0] + 64.0, origin[1], origin[2]];
-            specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
-            ref_authors.insert(ident, author);
-            continue;
+        // --ref-item F[,G...]: foreign item files, under their OWN idents
+        // and authors, placed at +160 m, +208 m, ... Falls through to the
+        // normal slots below (side-by-side needs both).
+        if let Some(refitems) = cli::flag(args, "--ref-item") {
+            for (ri, refitem) in refitems.split(',').enumerate() {
+                let bytes = std::fs::read(refitem).unwrap_or_else(|e| panic!("--ref-item {refitem}: {e}"));
+                let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
+                let pos = [origin[0] + 160.0 + 48.0 * ri as f32, origin[1], origin[2]];
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None });
+                ref_authors.insert(ident, author);
+            }
         }
         if args.iter().any(|a| a == "--overlay") {
             // the scale-1 item exactly on the block: mismatches peek out.
@@ -631,8 +633,11 @@ pub fn catalog_cmd(args: &[String]) {
     m.write_to(&tmp0).expect("write slots");
 
     let mut m = MapFile::load(&tmp0);
-    let old_uid = m.body_ids.first().and_then(|f| f.name.clone()).expect("map uid");
-    m.set_map_uid(&format!("Cat1{}", &old_uid[..23]));
+    // Fresh UID per build: the game caches embedded items and lightmaps by
+    // map UID, so reusing the host's UID shows stale items (empty grass
+    // where new items should be -- graft tests 2026-09-05).
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    m.set_map_uid(&format!("Cat1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000));
     if host.is_none() {
         let keep: BTreeSet<usize> = grid.iter().map(|g| g.0).collect();
         let neutral = "RoadTechStraight".to_string();
@@ -678,10 +683,12 @@ pub fn catalog_cmd(args: &[String]) {
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
     let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
-    if let Some(refitem) = cli::flag(args, "--ref-item") {
-        let bytes = std::fs::read(refitem).unwrap();
-        let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
-        zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
+    if let Some(refitems) = cli::flag(args, "--ref-item") {
+        for refitem in refitems.split(',') {
+            let bytes = std::fs::read(refitem).unwrap();
+            let (ident, _) = crate::header::item_ident_author(&bytes).unwrap();
+            zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes); // zip_add re-emits deflated
+        }
     }
     let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).collect();
     names.sort();

@@ -60,6 +60,10 @@ pub struct Merged {
     pub notes: Vec<String>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     pub editors: bool,
+    /// The crystal bake built `surf_vertices`/`surf_triangles`/`surf_ids`
+    /// itself (per-slot entries, trigger synthesis); skip the shared
+    /// dedup-and-weld tail in `add_crystal`.
+    pub surface_built: bool,
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {
@@ -170,6 +174,21 @@ impl Merged {
             return i;
         }
         self.materials.push(inst.clone());
+        self.materials.len() - 1
+    }
+
+    /// Slot for a crystal material instance with the editor-resolved link
+    /// ([`resolve_crystal_link`]; deduplicated by resolved link + physics).
+    pub fn resolved_inst_slot(&mut self, inst: &CPlugMaterialUserInst) -> usize {
+        let link = resolve_crystal_link(inst.link().unwrap_or("")).to_string();
+        if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link.as_str()) && m.physics() == inst.physics()) {
+            return i;
+        }
+        let mut owned = inst.clone();
+        if let Some(main) = owned.main.as_mut() {
+            main.link = crate::crystal_model::Id::Str(link);
+        }
+        self.materials.push(owned);
         self.materials.len() - 1
     }
 
@@ -748,6 +767,26 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
+}
+
+/// Crystal virtual links resolved to the real game-material paths the
+/// editor's bake writes (harvested against Granady's items + pak
+/// existence). A crystal `Material\Special<Kind><Mod>` link has no
+/// `.Material.Gbx` of its own; the baked item carries the existing
+/// `Modifier\<Mod>\<Kind>` file instead (both the 2025.7.4 and the current
+/// pak contain `Modifier\Turbo\{Sign,SignOff,Decal}.Material.Gbx`; tri-count
+/// correspondence on Road_17 is exact: Sign 654idx/218tris, SignOff 54/18,
+/// Decal 384/128). `SpecialFXTurbo` has no `Modifier\Turbo\SpecialFX` file,
+/// so it stays virtual -- matching all 26 references.
+pub const MATERIAL_LINK_RESOLVE: &[(&str, &str)] = &[
+    ("Stadium\\Media\\Material\\SpecialSignTurbo", "Stadium\\Media\\Modifier\\Turbo\\Sign"),
+    ("Stadium\\Media\\Material\\SpecialSignOff", "Stadium\\Media\\Modifier\\Turbo\\SignOff"),
+    ("Stadium\\Media\\Material\\DecalSpecialTurbo", "Stadium\\Media\\Modifier\\Turbo\\Decal"),
+];
+
+/// The editor-resolved link for a crystal material link.
+pub fn resolve_crystal_link(link: &str) -> &str {
+    MATERIAL_LINK_RESOLVE.iter().find(|(v, _)| *v == link).map(|(_, r)| *r).unwrap_or(link)
 }
 
 /// Physics id the game gives a library material (harvested from the 26
