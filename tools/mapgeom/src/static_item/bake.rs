@@ -308,6 +308,27 @@ fn tri_area_of(t: &[Corner; 3]) -> f32 {
     (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt() / 2.0
 }
 
+/// |du-gradient| of a tri (unnormalized MikkTSpace-style magnitude):
+/// weight for U-cluster averaging (uweight: mag-weighted beats uniform
+/// 88.8% vs 85.0% on TSpecials, ties elsewhere). Slivers (|det|->0)
+/// dominate, matching his pipeline.
+fn du_grad_mag(t: &[Corner; 3]) -> f64 {
+    let e1 = sub(t[1].pos, t[0].pos);
+    let e2 = sub(t[2].pos, t[0].pos);
+    let du1 = t[1].uv[0] - t[0].uv[0];
+    let dv1 = t[1].uv[1] - t[0].uv[1];
+    let du2 = t[2].uv[0] - t[0].uv[0];
+    let dv2 = t[2].uv[1] - t[0].uv[1];
+    let det = du1 * dv2 - du2 * dv1;
+    if det.abs() < 1e-12 {
+        return 1.0;
+    }
+    let r = 1.0 / det;
+    let tx = (e1[0] * dv2 - e2[0] * dv1) * r;
+    let ty = (e1[1] * dv2 - e2[1] * dv1) * r;
+    let tz = (e1[2] * dv2 - e2[2] * dv1) * r;
+    ((tx * tx + ty * ty + tz * tz) as f64).sqrt().max(1e-30)
+}
 /// Corner angle at corner k of a tri (radians): the standard
 /// angle-weight for vertex-normal averaging (wavtest: angle-weighted
 /// beats uniform TB 98.1% vs 61.9%, Technics 69.8% vs 29.2%, TSpecials
@@ -507,7 +528,7 @@ fn cluster_normal_value(ns: &[[f32; 3]], areas: &[f32], angles: &[f32], use_angl
 /// (0.002,-0.387,-0.920)), i.e. V is primary (from dv), U derived --
 /// not du-gradient + Gram-Schmidt. Degenerate (det~=0) corners keep
 /// zero tangents (fallback downstream).
-pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
+pub fn tangents_vprim(tris: &mut [[Corner; 3]], mode: u8) {
     for t in tris.iter_mut() {
         let e1 = sub(t[1].pos, t[0].pos);
         let e2 = sub(t[2].pos, t[0].pos);
@@ -544,14 +565,12 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
             continue;
         }
         let r = 1.0 / det;
-        // Primary gradient by uv-range stability (force_du param forces
-        // du): du-range >= dv-range uses du (U=GS(du,N), V=sgn*NxU), else
-        // dv (U=NxVg, V=sgn*NxU). Per-material mode via UMODE_MAP at caller.
-        let du_min = t[0].uv[0].min(t[1].uv[0]).min(t[2].uv[0]);
-        let du_max = t[0].uv[0].max(t[1].uv[0]).max(t[2].uv[0]);
-        let dv_min = t[0].uv[1].min(t[1].uv[1]).min(t[2].uv[1]);
-        let dv_max = t[0].uv[1].max(t[1].uv[1]).max(t[2].uv[1]);
-        if force_du || (du_max - du_min) >= (dv_max - dv_min) {
+        // Primary gradient by mode (1 = forced du, 2 = forced dv,
+        // 0 = uv-range stability): du uses U=GS(du,N), V=sgn*NxU; dv uses
+        // U=sgn*NxVg under USGN else NxVg, V=NxU under USGN else sgn*NxU.
+        // Per-material mode via UMODE_MAP at caller. Branch MUST equal
+        // tri_primary_du (U-cluster purity recomputes it).
+        if tri_primary_du(t, mode) {
             // du-primary: U = GS(du-grad, N), V = sgn(det)*(NxU).
             // (TINY_VPRIM_F64=1: f64 intermediates for 1ulp bit-exactness.)
             let f64m = std::env::var("TINY_VPRIM_F64").is_ok();
@@ -568,6 +587,7 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
                 let oy = tg[1] - dd * n[1];
                 let oz = tg[2] - dd * n[2];
                 let ol = (ox * ox + oy * oy + oz * oz).sqrt().max(1e-30);
+                // (du-branch U is unsigned; sign lives on V. See dv branch.)
                 let u = [ox / ol, oy / ol, oz / ol];
                 let wx = sdet * (n[1] * u[2] - n[2] * u[1]);
                 let wy = sdet * (n[2] * u[0] - n[0] * u[2]);
@@ -593,11 +613,18 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
             let uy = n[2] * vg[0] - n[0] * vg[2];
             let uz = n[0] * vg[1] - n[1] * vg[0];
             let ul = (ux * ux + uy * uy + uz * uz).sqrt().max(1e-30);
-            let u = [ux / ul, uy / ul, uz / ul];
-            // V = sgn(det) * (N x U)
-            let wx = sdet * (n[1] * u[2] - n[2] * u[1]);
-            let wy = sdet * (n[2] * u[0] - n[0] * u[2]);
-            let wz = sdet * (n[0] * u[1] - n[1] * u[0]);
+            // TINY_USGN=1: dv-branch U carries sgn(det) (measured: his U
+            // = sgn(det)·(N×Vg) -- -N×Vg on det<0 slivers, +N×Vg on det>0;
+            // V = N×U below then matches with no extra sign). du-branch U
+            // stays unsigned (single-face spots: +du half-exact, both signs).
+            let usgn = if std::env::var("TINY_USGN").is_ok() { sdet } else { 1.0 };
+            let u = [usgn * ux / ul, usgn * uy / ul, usgn * uz / ul];
+            // V = (USGN ? 1 : sgn(det)) * (N x U): with signed U the extra
+            // sign would cancel (sdet*sdet=1) and break V.
+            let vs = if std::env::var("TINY_USGN").is_ok() { 1.0 } else { sdet };
+            let wx = vs * (n[1] * u[2] - n[2] * u[1]);
+            let wy = vs * (n[2] * u[0] - n[0] * u[2]);
+            let wz = vs * (n[0] * u[1] - n[1] * u[0]);
             let wl = (wx * wx + wy * wy + wz * wz).sqrt().max(1e-30);
             c.tan_u = u;
             c.tan_v = [wx / wl, wy / wl, wz / wl];
@@ -605,6 +632,22 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
     }
 }
 
+/// Primary mode: 0 = range (du iff du-range >= dv-range), 1 = forced du,
+/// 2 = forced dv (TSpecials: his U = sgn(det)·(N×Vg) even where du-range
+/// wins -- per-face range + signed-dv exploded +1327 from mixed clusters).
+fn tri_primary_du(t: &[Corner; 3], mode: u8) -> bool {
+    if mode == 1 {
+        return true;
+    }
+    if mode == 2 {
+        return false;
+    }
+    let du_min = t[0].uv[0].min(t[1].uv[0]).min(t[2].uv[0]);
+    let du_max = t[0].uv[0].max(t[1].uv[0]).max(t[2].uv[0]);
+    let dv_min = t[0].uv[1].min(t[1].uv[1]).min(t[2].uv[1]);
+    let dv_max = t[0].uv[1].max(t[1].uv[1]).max(t[2].uv[1]);
+    (du_max - du_min) >= (dv_max - dv_min)
+}
 /// Smooth V-primary U within angle clusters (per position, seed-largest
 /// by tri area, TINY_TAN_DEG else 40): averages Corner.tan_u (set by
 /// [`tangents_vprim`]) where frames agree, keeps creases split. Re-derives
@@ -612,12 +655,17 @@ pub fn tangents_vprim(tris: &mut [[Corner; 3]], force_du: bool) {
 /// average to his single frame, while 180°-opposed coil frames stay split.
 /// Gated by TINY_USMOOTH=1; runs after VPRIM, before welding. Key (UKEYQ)
 /// consumes the smoothed quantized U.
-pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool) {
+pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool, mag_weight: bool, mode: u8) {
     use std::collections::BTreeMap;
     if max_deg <= 0.0 {
         return;
     }
     let cos_max = (max_deg.to_radians()).cos();
+    // U clusters group by position only (primary-purity by (pos,primary)
+    // was tested: it only ADDS splits on range materials, helping nothing
+    // -- Sign/SignOff regressed +4 each with zero gains elsewhere. The
+    // 56deg TSpecials spot is a primary disagreement (his -dv vs our du),
+    // not a mixed-cluster artifact: TSpecials is forced-du, already pure.)
     let mut by_pos: BTreeMap<[u32; 3], Vec<(usize, usize)>> = BTreeMap::new();
     for (ti, t) in tris.iter().enumerate() {
         for (k, c) in t.iter().enumerate() {
@@ -664,7 +712,13 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool
             let mut wsum = 0.0f64;
             for &oi in &members {
                 let (ti, k) = corners[oi];
-                let w = if angle_weight { corner_angle(&tris[ti], k) as f64 } else { 1.0 };
+                let w = if mag_weight {
+                    du_grad_mag(&tris[ti])
+                } else if angle_weight {
+                    corner_angle(&tris[ti], k) as f64
+                } else {
+                    1.0
+                };
                 for d in 0..3 {
                     acc[d] += tris[ti][k].tan_u[d] as f64 * w;
                 }
@@ -687,7 +741,17 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool
                 let du2 = t[2].uv[0] - t[0].uv[0];
                 let dv2 = t[2].uv[1] - t[0].uv[1];
                 let det = du1 * dv2 - du2 * dv1;
-                let s = if det.is_sign_negative() { -1.0 } else { 1.0 };
+                // V re-derive sign follows the corner's primary: dv corners
+                // carry sgn in U already (USGN) so s=1; du corners need
+                // s=sgn(det) as stored. (No USGN: all s=sgn(det).)
+                let dup = tri_primary_du(&tris[ti], mode);
+                let s = if std::env::var("TINY_USGN").is_ok() && !dup {
+                    1.0
+                } else if det.is_sign_negative() {
+                    -1.0
+                } else {
+                    1.0
+                };
                 let nn = tris[ti][k].normal;
                 let wx = s * (nn[1] * uavg[2] - nn[2] * uavg[1]);
                 let wy = s * (nn[2] * uavg[0] - nn[0] * uavg[2]);
@@ -1863,8 +1927,12 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         // du frames but skips U-key splits (TB: du values are right but
         // U-key over-splits det-coincident twins).
         let umode = umode_map.get(&crease_stems[i]).map(|s| s.as_str()).unwrap_or("range");
+        // Primary mode shared by tangents_vprim (frame branch) and
+        // smooth_u_vprim (primary-pure clusters + V re-derive recompute
+        // it): du|duoff = 1, dv = 2, else range = 0.
+        let umode_n: u8 = if umode == "du" || umode == "duoff" { 1 } else if umode == "dv" { 2 } else { 0 };
         if std::env::var("TINY_VPRIM").is_ok() {
-            tangents_vprim(&mut per_material[i], umode == "du" || umode == "duoff");
+            tangents_vprim(&mut per_material[i], umode_n);
         }
         // U-cluster smoothing of V-primary frames (TINY_USMOOTH=1):
         // averages agreeing U (bevels), splits opposed (coils). Angle from
@@ -1903,7 +1971,15 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                     })
                 })
                 .unwrap_or(false);
-            smooth_u_vprim(&mut per_material[i], tangle, angle_w);
+            // U magnitude weights (TINY_UMAG_MAP="Stem,..."): MikkTSpace-style
+            // |du-grad| weights (uweight: TSpecials 88.8% vs 85.0%).
+            let mag_w = std::env::var("TINY_UMAG_MAP")
+                .ok()
+                .map(|s| {
+                    s.split(',').any(|kv| kv.trim() == crease_stems[i])
+                })
+                .unwrap_or(false);
+            smooth_u_vprim(&mut per_material[i], tangle, angle_w, mag_w, umode_n);
         }
         if std::env::var("TINY_TAN_SMOOTH").is_ok() {
             let tan_map: std::collections::BTreeMap<String, f32> = std::env::var("TINY_TAN_MAP")
