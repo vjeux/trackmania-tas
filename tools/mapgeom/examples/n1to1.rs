@@ -46,7 +46,13 @@ fn main() {
     };
     let r = load(&a[1]);
     let m = load(&a[2]);
-    let (mut n11, mut n11ok, mut u11ok, mut v11ok, mut dot_sum, mut maxang) = (0usize, 0usize, 0usize, 0usize, 0.0f64, 0.0f32);
+    let (mut n11, mut n11ok, mut u11ok, mut v11ok) = (0usize, 0usize, 0usize, 0usize);
+    let (mut ndot, mut udot, mut vdot, mut nmax, mut umax, mut vmax) = (0.0f64, 0.0f64, 0.0f64, 0.0f32, 0.0f32, 0.0f32);
+    let tang = |a: [f32;3], b: [f32;3]| {
+        let la = (a[0]*a[0]+a[1]*a[1]+a[2]*a[2]).sqrt().max(1e-30);
+        let lb = (b[0]*b[0]+b[1]*b[1]+b[2]*b[2]).sqrt().max(1e-30);
+        ((a[0]*b[0]+a[1]*b[1]+a[2]*b[2])/(la*lb)).clamp(-1.0,1.0).acos().to_degrees()
+    };
     for (k, rvs) in &r {
         if rvs.len() != 1 { continue; }
         if let Some(mvs) = m.get(k) {
@@ -58,11 +64,13 @@ fn main() {
             if ru[0].to_bits()==mu[0].to_bits() && ru[1].to_bits()==mu[1].to_bits() && ru[2].to_bits()==mu[2].to_bits() { u11ok += 1; }
             let (rv, mv) = (rvs[0].2, mvs[0].2);
             if rv[0].to_bits()==mv[0].to_bits() && rv[1].to_bits()==mv[1].to_bits() && rv[2].to_bits()==mv[2].to_bits() { v11ok += 1; }
-            let d = (rn[0]*mn[0]+rn[1]*mn[1]+rn[2]*mn[2]).clamp(-1.0,1.0).acos().to_degrees();
-            dot_sum += d as f64;
-            maxang = maxang.max(d);
+            let dn = tang(rn, mn);
+            let du = tang(ru, mu);
+            let dv = tang(rv, mv);
+            ndot += dn as f64; udot += du as f64; vdot += dv as f64;
+            nmax = nmax.max(dn); umax = umax.max(du); vmax = vmax.max(dv);
         }
     }
-    println!("{}: 1-1 pos n={n11} Nbit={n11ok} ({:.1}%) Ubit={u11ok} ({:.1}%) Vbit={v11ok} ({:.1}%) meanNang={:.4}deg maxNang={:.2}deg",
-        a[3], 100.0*n11ok as f32/n11.max(1) as f32, 100.0*u11ok as f32/n11.max(1) as f32, 100.0*v11ok as f32/n11.max(1) as f32, dot_sum/n11.max(1) as f64, maxang);
+    println!("{}: 1-1 pos n={n11} Nbit={n11ok} ({:.1}%) Ubit={u11ok} ({:.1}%) Vbit={v11ok} ({:.1}%) meanN={:.4}deg meanU={:.4}deg meanV={:.4}deg maxN={:.2} maxU={:.2} maxV={:.2}",
+        a[3], 100.0*n11ok as f32/n11.max(1) as f32, 100.0*u11ok as f32/n11.max(1) as f32, 100.0*v11ok as f32/n11.max(1) as f32, ndot/n11.max(1) as f64, udot/n11.max(1) as f64, vdot/n11.max(1) as f64, nmax, umax, vmax);
 }

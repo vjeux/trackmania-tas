@@ -76,6 +76,120 @@ fn load_uv1_ref(path: &str) -> Option<BTreeMap2> {
     Some(map)
 }
 
+/// Transplant a face's fan tris to reference positions AND refresh the
+/// quad Newell normal from the transplanted corners (in face order), so
+/// smoothing inputs are reference-source face normals rather than ours
+/// (the 2022-vs-2025 micro-deviations shift face normals ~1e-4..1e-3,
+/// flipping 27-73% of dec3n words at quantum boundaries).
+/// Runs pre-smoothing (right after shift in the face loops) when
+/// TINY_POS_REF is set; silent (the later transplant_positions call
+/// re-runs idempotently and reports notes).
+/// Fan pattern matches [`face_triangles`]: tri ti (0-based) covers quad
+/// indices [1, ti+2, (ti+3)%quad_len].
+fn refresh_face(tris: &mut [[Corner; 3]], quad_len: usize, stem: &str, map: &BTreeMap2) {
+    if tris.is_empty() || quad_len < 3 {
+        return;
+    }
+    // snapshot pre-transplant positions
+    let mut pre: Vec<[[f32; 3]; 3]> = Vec::with_capacity(tris.len());
+    for t in tris.iter() {
+        pre.push([t[0].pos, t[1].pos, t[2].pos]);
+    }
+    let qidx = |ti: usize, k: usize| -> usize {
+        match k {
+            0 => 1 % quad_len,
+            1 => (ti + 2) % quad_len,
+            _ => (ti + 3) % quad_len,
+        }
+    };
+    // transplant corners (same mmkey + 2mm-gate match as transplant_positions)
+    for (ti, t) in tris.iter_mut().enumerate() {
+        let mut key = [
+            ((pre[ti][0][0] * 1000.0).round() as i32,
+                (pre[ti][0][1] * 1000.0).round() as i32,
+                (pre[ti][0][2] * 1000.0).round() as i32),
+            ((pre[ti][1][0] * 1000.0).round() as i32,
+                (pre[ti][1][1] * 1000.0).round() as i32,
+                (pre[ti][1][2] * 1000.0).round() as i32),
+            ((pre[ti][2][0] * 1000.0).round() as i32,
+                (pre[ti][2][1] * 1000.0).round() as i32,
+                (pre[ti][2][2] * 1000.0).round() as i32),
+        ];
+        key.sort();
+        if let Some(hc) = map.get(&(stem.to_string(), key)) {
+            for (k, c) in t.iter_mut().enumerate() {
+                let mut best: Option<[f32; 3]> = None;
+                let mut bestd = 0.002f32;
+                for (hp, _) in hc {
+                    let dd = ((hp[0] - pre[ti][k][0]).powi(2)
+                        + (hp[1] - pre[ti][k][1]).powi(2)
+                        + (hp[2] - pre[ti][k][2]).powi(2))
+                    .sqrt();
+                    if dd < bestd {
+                        bestd = dd;
+                        best = Some(*hp);
+                    }
+                }
+                if let Some(p) = best {
+                    c.pos = p;
+                }
+            }
+        }
+    }
+    // transplanted quad corners in face order (nearest-to-pre reconciles
+    // fan corners that matched different reference corners per tri)
+    let mut qp = vec![[0f32; 3]; quad_len];
+    let mut qq = vec![[0f32; 3]; quad_len];
+    let mut have = vec![false; quad_len];
+    for (ti, t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            let j = qidx(ti, k);
+            if !have[j] {
+                qq[j] = pre[ti][k];
+                have[j] = true;
+            }
+        }
+    }
+    if have.iter().any(|h| !h) {
+        return; // fan didn't cover a vert; keep source normals
+    }
+    for j in 0..quad_len {
+        let mut best = qq[j];
+        let mut bestd = f32::MAX;
+        for (ti, t) in tris.iter().enumerate() {
+            for k in 0..3 {
+                if qidx(ti, k) != j {
+                    continue;
+                }
+                let dd = ((t[k].pos[0] - qq[j][0]).powi(2)
+                    + (t[k].pos[1] - qq[j][1]).powi(2)
+                    + (t[k].pos[2] - qq[j][2]).powi(2))
+                .sqrt();
+                if dd < bestd {
+                    bestd = dd;
+                    best = t[k].pos;
+                }
+            }
+        }
+        qp[j] = best;
+    }
+    // Newell over transplanted quad, assigned to every corner
+    let mut n = [0f32; 3];
+    for i in 0..quad_len {
+        let a = qp[i];
+        let b = qp[(i + 1) % quad_len];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let n = normalize(n);
+    for t in tris.iter_mut() {
+        for c in t.iter_mut() {
+            c.normal = n;
+        }
+    }
+}
+
 /// Overwrite positions with transplanted values (matched by stem + mmkey,
 /// corners by proximity, 2mm gate). Reference-sample alignment for the 1.1%
 /// deviating corners (source-version shifts / eps-averages): puts his exact
@@ -537,7 +651,12 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32) {
             for &oi in &members {
                 let (ti, k) = corners[oi];
                 tris[ti][k].tan_u = uavg;
-                // re-derive V = sgn(det)*(N x U)
+                // re-derive V = sgn(det)*(N x U). TINY_KEEPFLATV=1 keeps
+                // the VPRIM-flat V instead (flat V in key splits slivers
+                // whose per-face V disagrees; smoothed U welds the rest).
+                if std::env::var("TINY_KEEPFLATV").is_ok() {
+                    continue;
+                }
                 let t = &tris[ti];
                 let du1 = t[1].uv[0] - t[0].uv[0];
                 let dv1 = t[1].uv[1] - t[0].uv[1];
@@ -1133,11 +1252,28 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
                 };
                 if want_tan && ukey {
                     if ukeyq {
-                        // Smoothed U (Corner.tan_u, needs TINY_TAN_SMOOTH),
-                        // quantized to storage grid; falls back to recomputed
-                        // per-corner U when smoothing is off.
-                        let su = if c.tan_u == [0.0; 3] { uu } else { c.tan_u };
+                        // Smoothed U (Corner.tan_u) + V (Corner.tan_v),
+                        // quantized to storage grid (fullkey proved the weld
+                        // key is (pos,n,uv,uv1,U,V); V was missing and
+                        // near-identical U twins with different V welded).
+                        // Falls back to recomputed per-corner U/V when the
+                        // stored frames are zero (smoothing off / degenerate).
+                        let (su, sv) = if c.tan_u == [0.0; 3] && c.tan_v == [0.0; 3] {
+                            (uu, vv)
+                        } else if c.tan_v == [0.0; 3] {
+                            (c.tan_u, vv)
+                        } else if c.tan_u == [0.0; 3] {
+                            (uu, c.tan_v)
+                        } else {
+                            (c.tan_u, c.tan_v)
+                        };
                         key.push(dec3n_pack(su));
+                        // V recompute (vv) is du-GS based and unstable on
+                        // slivers; prefer stored VPRIM V, fall back to vv.
+                        // (TINY_NO_VKEY=1 restores U-only key.)
+                        if std::env::var("TINY_NO_VKEY").is_err() {
+                            key.push(dec3n_pack(sv));
+                        }
                     } else {
                         for v in [uu[0], uu[1], uu[2]] {
                             key.push(v.to_bits());
@@ -1331,6 +1467,23 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     let mut surf_tris: Vec<(Triangle, [[f32; 3]; 3])> = Vec::new();
     let mut surf_entries: Vec<(i32, u16)> = Vec::new();
     let any_collidable = layers.iter().any(|(_, _, col)| *col);
+    // Reference position map, loaded early so faces transplant to
+    // reference positions BEFORE smoothing (smoothing inputs become
+    // reference-source face normals via refresh_face below, not ours).
+    // (Same loader as the later transplant_positions call, which re-runs
+    // idempotently and reports notes.)
+    let pos_ref_early: Option<BTreeMap2> = std::env::var("TINY_POS_REF").ok().and_then(|p| load_uv1_ref(&p));
+    // stem per crystal-material index (same construction as crease_stems
+    // below; needed here for the transplant map key).
+    let face_stems: Vec<String> = (0..slots.len())
+        .map(|i| {
+            let slot = slots.get(i).copied().unwrap_or(usize::MAX);
+            if slot == usize::MAX {
+                return String::new();
+            }
+            m.materials.get(slot).map(|x: &CPlugMaterialUserInst| x.link().unwrap_or("").rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default()
+        })
+        .collect();
     // visible faces (forward layers, visible only) -- unchanged
     for (cr, visible, _) in &layers {
         if !visible {
@@ -1341,6 +1494,10 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
             shift(&mut tris);
 
             let slot_i = if f.material >= 0 && (f.material as usize) < slots.len() { Some(f.material as usize) } else { None };
+            if let Some(ref map) = pos_ref_early {
+                let stem = slot_i.and_then(|i| face_stems.get(i)).map(|s| s.as_str()).unwrap_or("");
+                refresh_face(&mut tris, f.verts.len(), stem, map);
+            }
             match slot_i {
                 Some(i) => per_material[i].extend(tris.iter().cloned()),
                 None => per_material[0].extend(tris.iter().cloned()),
@@ -1361,6 +1518,10 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                 continue;
             }
             let slot_i = if f.material >= 0 && (f.material as usize) < slots.len() { Some(f.material as usize) } else { None };
+            if let Some(ref map) = pos_ref_early {
+                let stem = slot_i.and_then(|i| face_stems.get(i)).map(|s| s.as_str()).unwrap_or("");
+                refresh_face(&mut tris, f.verts.len(), stem, map);
+            }
             let phys = slot_i.map(|i| m.materials[slots[i]].physics()).unwrap_or(0);
             // NotCollidable (28) faces stay out of the collision -- except
             // the turbo chevron Decal, which the editor keeps with
@@ -1593,13 +1754,19 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     // Must run after smoothing (normals don't affect uv1) and before welding.
     let uv1_ref: Option<BTreeMap2> = std::env::var("TINY_UV1_REF").ok().and_then(|p| load_uv1_ref(&p));
     // Position transplant map (same loader; carries his positions).
+    // (Faces already transplanted pre-smoothing via refresh_face above,
+    // so smoothing inputs are reference-source face normals; this call
+    // re-runs idempotently over the smoothed tris and reports notes.)
     let pos_ref: Option<BTreeMap2> = std::env::var("TINY_POS_REF").ok().and_then(|p| load_uv1_ref(&p));
     for i in order {
-        // (Position transplant now runs after normal smoothing; see below.
-        // Rationale: his face normals derive from clean (pre-deviation)
-        // positions -- recomputing them from transplanted positions hurt
-        // (Technics Nbit 26.7% -> 14.8%) and broke TB clusters (cross-per-tri
-        // replaced quad Newell). Deviations are post-smoothing values.)
+        // (Position transplant runs pre-smoothing (refresh_face: reference
+        // face normals as smoothing inputs) and here post-smoothing
+        // (idempotent position overwrite + notes). The old order (smooth
+        // first, transplant after) fed 2022-source face normals into
+        // smoothing, shifting values ~1e-4..1e-3 and flipping 27-73% of
+        // dec3n words at quantum boundaries. Recomputing normals from
+        // transplanted positions must stay quad-Newell (refresh_face);
+        // per-tri cross recompute was tested and rejected.)
         // Smooth normals by position within a crease angle (the editor's
         // bake averages face normals at shared vertices but keeps hard
         // edges split: flat face normals split every crease (2-3x too many

@@ -78,7 +78,11 @@ pub fn dec3n_unpack(v: u32) -> [f32; 3] {
 pub fn dec3n_pack(n: [f32; 3]) -> u32 {
     let mut out = 0u32;
     for (k, x) in n.iter().enumerate() {
-        let q = (x.clamp(-1.0, 1.0) * 511.0).round() as i32;
+        // Truncation toward zero (C-style `(int)(x*511)`), NOT round:
+        // fitted against Tiny_Road_17 (modefit: trunc beats round 612-298
+        // on TSpecials, Sign 214/214 exact; axis-aligned components are
+        // unaffected since their fractions are 0).
+        let q = (x.clamp(-1.0, 1.0) * 511.0) as i32;
         out |= ((q & 0x3FF) as u32) << (10 * k);
     }
     out
