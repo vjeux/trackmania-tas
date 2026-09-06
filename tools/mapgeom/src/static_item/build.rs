@@ -179,6 +179,28 @@ impl Merged {
         self.material_slot(&link, physics)
     }
 
+    /// The plain (`_Ids`, no decal) variant of a BlueBay terrain layer material:
+    /// `…\TransitionToLand` / `…\TransitionRocksToLand` -> `…\Land`, likewise
+    /// Sand, SeaFloor, CliffPxz, RocksTop. Anything else is returned as is.
+    pub fn plain_variant_slot(&mut self, slot: usize) -> usize {
+        let Some(link) = self.materials.get(slot).and_then(|m| m.link()).map(|s| s.to_string()) else { return slot };
+        let phys = self.materials[slot].physics();
+        let (dir, stem) = match link.rfind('\\') {
+            Some(i) => (&link[..=i], &link[i + 1..]),
+            None => ("", link.as_str()),
+        };
+        if !stem.starts_with("Transition") {
+            return slot;
+        }
+        let Some(i) = stem.rfind("To") else { return slot };
+        let layer = &stem[i + 2..];
+        if !matches!(layer, "Land" | "Sand" | "SeaFloor" | "CliffPxz" | "RocksTop" | "HillPxz") {
+            return slot;
+        }
+        let plain = format!("{dir}{layer}");
+        self.material_slot(&plain, phys)
+    }
+
     /// Slot of a material instance copied from a source (deduplicated by
     /// link + physics like the rest).
     pub fn material_inst_slot(&mut self, inst: &CPlugMaterialUserInst) -> usize {
@@ -581,6 +603,14 @@ impl Merged {
                         let gm = if nv < lo || nv > hi { mat } else { gm };
                         let skip: Vec<i32> = std::env::var("TINY_SPLIT_SKIPVERTS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
                         let gm = if skip.contains(&nv) { mat } else { gm };
+                        // A piece without vertex colours takes the PLAIN variant of its layer
+                        // (Land, not TransitionToLand): the Transition* materials are the
+                        // `_Ids_Tex` shader whose decal is driven by the vertex colour, and a
+                        // colourless visual under it paints the decal everywhere (grass
+                        // plateaus came out sand, 2026-09-06). The prefab does the same: its
+                        // colourless visuals use the plain `_Ids` shader.
+                        let has_color = sv.stream().map(|s| s.decls.iter().any(|d| d.name() == N_COLOR0)).unwrap_or(false);
+                        let gm = if !has_color { self.plain_variant_slot(gm) } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
                         self.visuals.push(MergedVisual { visual: sv, material: gm });
                     }
@@ -709,7 +739,8 @@ pub fn harmonize_layouts(visuals: &mut [MergedVisual]) {
             let elem = match by_name.get(name) {
                 Some((_, e)) => e.clone(),
                 None => match (*name, *stored) {
-                    (N_COLOR0, _) => Elem::Word(vec![0xFFFF_FFFF; n]),
+                    // the value the prefab gives its uniform Transition* visuals: decal off
+                    (N_COLOR0, _) => Elem::Word(vec![0xFFFF_00FF; n]),
                     (11, T_FLOAT2) => match &uv0 {
                         Some(Elem::Float2(v)) => Elem::Float2(v.clone()),
                         _ => Elem::Float2(vec![[0.0, 0.0]; n]),
