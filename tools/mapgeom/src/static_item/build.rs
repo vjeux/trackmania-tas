@@ -345,7 +345,29 @@ impl Merged {
             }
         }
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
+        if std::env::var_os("TINY_DUMP_DECLS").is_some() {
+            self.notes.push(format!(
+                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?}",
+                s2.version,
+                s2.material_ids,
+                s2.materials_folder,
+                s2.u03,
+                s2.u04,
+                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>()
+            ));
+        }
         for g in &s2.shaded_geoms {
+            // A geom's lod mask says which detail levels draw it (bit 0 =
+            // nearest). The item is emitted with no lod distances, so every
+            // geom it carries draws at every distance: taking every level made
+            // the terrain tiles draw LOD0 and LOD1 coplanar (Beach: a coarse
+            // 22-vertex LOD1 sheet voted SeaFloor over the LOD0 grass — the
+            // "wide bright beaches with hard seams", 2026-09-06). Keep the
+            // nearest level only; `TINY_ALL_LODS=1` restores the old behaviour.
+            if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() {
+                self.notes.push(format!("visual {} (lod mask {}) skipped: not the nearest level", g.visual_index, g.lod_mask));
+                continue;
+            }
             let vis = match s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) {
                 Some(Node::Visual(v)) => v,
                 _ => {
@@ -372,6 +394,32 @@ impl Merged {
                 }
             }
             let mut v = vis.clone();
+            // TINY_DUMP_DECLS=1: one note per visual with its vertex
+            // declarations and the distinct values of every one-word element
+            // (colour / int32 ids), for reading a shader's per-vertex inputs.
+            if std::env::var_os("TINY_DUMP_DECLS").is_some() {
+                if let Some(Node::VertexStream(s)) = v.main.as_ref().and_then(|m| m.vertex_streams.first()).and_then(|r| r.inline.as_deref()) {
+                    let compress = s.compress_local3d.unwrap_or(false);
+                    let mut parts = Vec::new();
+                    for (d, e) in s.decls.iter().zip(s.elems.iter()) {
+                        let mut p = format!("name{} type{} space{}", d.name(), d.stored_type(compress), d.space());
+                        if let Elem::Word(w) = e {
+                            let mut u: Vec<u32> = w.clone();
+                            u.sort_unstable();
+                            u.dedup();
+                            p.push_str(&format!(" values[{}]", u.iter().take(12).map(|x| format!("{x:08x}")).collect::<Vec<_>>().join(",")));
+                        }
+                        if let Elem::Float4(f) = e {
+                            p.push_str(&format!(" f4[{:?}..]", f.first()));
+                        }
+                        if let Elem::Float2(f) = e {
+                            p.push_str(&format!(" f2[{:?}..]", f.first()));
+                        }
+                        parts.push(p);
+                    }
+                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | ")));
+                }
+            }
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
             self.visuals.push(MergedVisual { visual: v, material: mat });
