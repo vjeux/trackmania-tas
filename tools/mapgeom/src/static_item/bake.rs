@@ -256,6 +256,12 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
             }
             if *collidable || (!any_collidable && *visible) {
                 let phys = slot_i.map(|i| m.materials[slots[i]].physics()).unwrap_or(0);
+                // The editor's bake drops NotCollidable (28) faces from the
+                // collision (measured: his turbo collision is ours minus
+                // exactly the 728 phys-28 tris; lights/32 stay).
+                if phys == 28 {
+                    continue;
+                }
                 for t in &tris {
                     surf_tris.push((Triangle { indices: [0; 3], material_id: phys, u03: 0, surface_index: 0 }, [t[0].pos, t[1].pos, t[2].pos]));
                 }
