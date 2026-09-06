@@ -35,6 +35,7 @@ pub mod embedded;
 pub mod geom;
 pub mod lz4dict;
 pub mod md5;
+pub mod minidump;
 pub mod names;
 pub mod node;
 pub mod pak;

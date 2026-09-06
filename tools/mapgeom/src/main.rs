@@ -21,6 +21,11 @@ COMMANDS
                                 a static-object item from every static object
                                 of a pack prefab, or from a static/crystal item
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
+  crash <DUMP.dmp> [--exe Trackmania.exe] [--read ADDR LEN] [--find PAT]
+      [--disasm ADDR [N]] [--no-stack] [--quiet]
+                                a client crash minidump: exception, registers,
+                                faulting instruction, heuristic stack walk as
+                                exe RVAs / objdump addresses (CRASH.md)
   tiny-library <file.Map.Gbx> --library-out ZIP --mapping-out TSV [--report TSV]
       [--scale 0.5] [--legacy-zip Nadeo.zip] [--items-dir DIR] [--veget substitute|keep|drop]
       [--collection BlueBay] [--only N,..]
@@ -511,6 +516,10 @@ fn main() {
         "item-check" => {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
+        // A client crash dump: where it died, in objdump addresses. CRASH.md.
+        "crash" => {
+            mapgeom::minidump::run(&a.rest).unwrap_or_else(die);
         }
         "crystal-roundtrip" => {
             let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
