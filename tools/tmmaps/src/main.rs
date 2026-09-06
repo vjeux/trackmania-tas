@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "region", "colors", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
@@ -1102,6 +1102,39 @@ fn main() {
             println!("chunk\toff\tpayload\tsize");
             for (cid, off, payload, size) in map::skip_chunks(&g.body) {
                 println!("0x{:08X}\t{}\t{}\t{}", cid, off, payload, size);
+            }
+        }
+        "colors" => {
+            // Chunk 0x03043062: version, then one colour byte per block
+            // (unbaked, then baked) and per item — 0 Default, 1 White, 2 Green,
+            // 3 Blue, 4 Red, 5 Black. Prints a histogram and, with --filter,
+            // the colour of every matching block.
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let chunks = map::skip_chunks(&m.gbx.body);
+            let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3062).expect("no colour chunk");
+            let bytes = &m.gbx.body[payload + 4..payload + size];
+            let nb = m.blocks.len();
+            let nbaked = m.baked.len();
+            let ni = m.items.len();
+            eprintln!("{} colour bytes for {} blocks + {} baked + {} items", bytes.len(), nb, nbaked, ni);
+            let filter = tmmaps::cli::flag(&args, "--filter");
+            let mut hist = std::collections::BTreeMap::new();
+            for (i, b) in m.blocks.iter().enumerate() {
+                let c = bytes.get(i).copied().unwrap_or(255);
+                *hist.entry(("block", c)).or_insert(0) += 1;
+                if filter.as_deref().map(|f| b.name.contains(f)).unwrap_or(false) {
+                    println!("block\t{}\t{}\tcolor {}", i, b.name, c);
+                }
+            }
+            for (i, it) in m.items.iter().enumerate() {
+                let c = bytes.get(nb + nbaked + i).copied().unwrap_or(255);
+                *hist.entry(("item", c)).or_insert(0) += 1;
+                if filter.as_deref().map(|f| it.model.contains(f)).unwrap_or(false) {
+                    println!("item\t{}\t{}\tcolor {}", i, it.model, c);
+                }
+            }
+            for ((k, c), n) in hist {
+                println!("{k}\tcolor {c}\t{n}");
             }
         }
         "help" | "--help" | "-h" => println!("{}", USAGE),
