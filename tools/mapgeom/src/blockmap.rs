@@ -106,7 +106,17 @@ impl BlockInfoIndex {
     /// Every block info path a map block NAME could refer to, best first:
     /// the preferred collection wins, then Classic, Pillar, other, Clip.
     pub fn paths_for(&self, name: &str) -> Vec<String> {
-        let Some(cands) = self.by_stem.get(&name.to_uppercase()) else { return Vec::new() };
+        let up = name.to_uppercase();
+        // A BlueBay map names a Stadium-family clip block with the collection
+        // folded into the name (`StadiumStructurePillarToFlatACB` is
+        // `GameCtnBlockInfoClip\Stadium\StructurePillarToFlatACB.EDClip.Gbx`).
+        let cands: Vec<String> = match self.by_stem.get(&up) {
+            Some(c) => c.clone(),
+            None => match up.strip_prefix("STADIUM").and_then(|rest| self.by_stem.get(rest)) {
+                Some(c) => c.iter().filter(|p| p.to_uppercase().contains("\\STADIUM\\")).cloned().collect(),
+                None => return Vec::new(),
+            },
+        };
         let rank = |p: &str| -> (u32, u32) {
             let u = p.to_uppercase();
             let coll = if u.starts_with(&format!("{}\\", self.collection)) { 0 } else { 1 };
