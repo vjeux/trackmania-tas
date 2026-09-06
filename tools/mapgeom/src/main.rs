@@ -21,6 +21,10 @@ COMMANDS
                                 a static-object item from every static object
                                 of a pack prefab, or from a static/crystal item
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
+  tiny-library <file.Map.Gbx> --catalog TSV --footprints TSV --library-out ZIP
+      --mapping-out TSV [--report TSV] [--scale 0.5] [--items-dir DIR] [--only N,..]
+                                every block/item model of the map as a half-scale
+                                STATIC item (stage-1 path) + tmmaps tiny mapping
   tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
       --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
       --stadium-pak PAK [--scale 0.5] [--keep-unscaled]
@@ -549,6 +553,26 @@ fn main() {
                 }
                 println!("extracted {} files to {}", files.len(), dir);
             }
+        }
+        "tiny-library" => {
+            let mut store = open(&a);
+            let map = std::path::Path::new(a.rest.get(1).expect("tiny-library needs MAP"));
+            let req = |name: &str| std::path::PathBuf::from(flag(&a.rest, name).unwrap_or_else(|| die(format!("tiny-library needs {name}"))));
+            let report = flag(&a.rest, "--report").map(std::path::PathBuf::from);
+            let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
+            let only = flag(&a.rest, "--only");
+            mapgeom::tiny_library::build(
+                &mut store,
+                map,
+                &req("--catalog"),
+                &req("--footprints"),
+                &req("--library-out"),
+                &req("--mapping-out"),
+                report.as_deref(),
+                flag(&a.rest, "--scale").unwrap_or_else(|| "0.5".into()).parse().unwrap_or_else(|_| die("--scale number".into())),
+                items_dir.as_deref(),
+                only.as_deref(),
+            );
         }
         "tiny-assets" => {
             let map = std::path::Path::new(a.rest.get(1).expect("tiny-assets needs MAP"));

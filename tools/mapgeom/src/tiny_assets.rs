@@ -464,40 +464,7 @@ pub fn remap_stadium_links(bytes: &[u8]) -> Vec<u8> {
 /// 0x2E00100B). A BlueBay map places items in collection 0x1C; an item that
 /// says Stadium (0x1A) inside is dropped there.
 pub fn set_ident_collection(bytes: &[u8], collection: u32) -> Vec<u8> {
-    use tmmaps::gbx::Reader;
-    let mut g = Gbx::parse(bytes);
-    // header
-    let ud = g.user_data.clone();
-    let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
-    let mut off = 4 + n * 8;
-    let mut new_ud = ud.clone();
-    for i in 0..n {
-        let id = u32::from_le_bytes(ud[4 + i * 8..8 + i * 8].try_into().unwrap());
-        let size = (u32::from_le_bytes(ud[8 + i * 8..12 + i * 8].try_into().unwrap()) & 0x7FFF_FFFF) as usize;
-        if id == 0x2E001003 {
-            let mut r = Reader::new(&ud[off..off + size]);
-            r.u32(); // lbver
-            let w = r.u32();
-            if (w & 0x3FFF_FFFF) == 0 && w != 0xFFFF_FFFF { r.string(); }
-            let at = off + r.o;
-            new_ud[at..at + 4].copy_from_slice(&collection.to_le_bytes());
-        }
-        off += size;
-    }
-    g.user_data = new_ud;
-    // body
-    let mut body = g.body.clone();
-    let pos = body.windows(4).position(|w| w == 0x2E00100Bu32.to_le_bytes()).expect("body ident chunk");
-    let mut o = pos + 4;
-    let w = u32::from_le_bytes(body[o..o + 4].try_into().unwrap());
-    o += 4;
-    if (w & 0x3FFF_FFFF) == 0 && w != 0xFFFF_FFFF {
-        let l = u32::from_le_bytes(body[o..o + 4].try_into().unwrap()) as usize;
-        o += 4 + l;
-    }
-    body[o..o + 4].copy_from_slice(&collection.to_le_bytes());
-    g.body = body.clone();
-    g.write_body_recompressed(&body)
+    tmmaps::header::set_ident_collection(bytes, collection)
 }
 
 pub fn wrapper(template: &[u8], alias: &str, prefab: &str) -> Vec<u8> {
