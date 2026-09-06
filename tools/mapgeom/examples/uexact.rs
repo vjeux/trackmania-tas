@@ -62,9 +62,9 @@ fn main() {
                     let cr = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
                     let l = (cr[0]*cr[0]+cr[1]*cr[1]+cr[2]*cr[2]).sqrt().max(1e-30);
                     let fn_ = [cr[0]/l, cr[1]/l, cr[2]/l];
-                    let c = [Corner { pos: p[0], normal: fn_, uv: u[0], uv1: u[0], tan_u: [0.0; 3], tan_v: [0.0; 3] },
-                             Corner { pos: p[1], normal: fn_, uv: u[1], uv1: u[1], tan_u: [0.0; 3], tan_v: [0.0; 3] },
-                             Corner { pos: p[2], normal: fn_, uv: u[2], uv1: u[2], tan_u: [0.0; 3], tan_v: [0.0; 3] }];
+                    let c = [Corner { pos: p[0], normal: fn_, uv: u[0], uv1: u[0], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 },
+                             Corner { pos: p[1], normal: fn_, uv: u[1], uv1: u[1], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 },
+                             Corner { pos: p[2], normal: fn_, uv: u[2], uv1: u[2], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }];
                     let (fu, _) = tangent(&c);
                     for k in 0..3 {
                         corners.push((p[k], fu));
