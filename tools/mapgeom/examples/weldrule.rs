@@ -1,111 +1,148 @@
-//! Measure his weld rule: flat-face dihedral angles tolerated vs refused.
-//! Usage: weldrule REF.HIS [SUBSTR] [CELLMM]
-use mapgeom::static_item::vstream::Elem;
+//! Per-position: face-normal span, uv/det unanimity, his vs my vert counts. Usage: weldrule HIS.ITEM MINE.ITEM SUBSTR
 use std::collections::BTreeMap;
-
+use mapgeom::static_item::vstream::Elem;
 fn dec(v: u32) -> [f32; 3] {
     let x = ((v & 0x3FF) as i32) << 22 >> 22;
     let y = ((v >> 10 & 0x3FF) as i32) << 22 >> 22;
     let z = ((v >> 20 & 0x3FF) as i32) << 22 >> 22;
     [x as f32 / 511.0, y as f32 / 511.0, z as f32 / 511.0]
 }
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0]-b[0], a[1]-b[1], a[2]-b[2]] }
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[2]]
-}
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
-fn norm(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt();
-    if l < 1e-12 { [0.0, 1.0, 0.0] } else { [v[0]/l, v[1]/l, v[2]/l] }
-}
-
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let substr = a.get(2).map(|s| s.as_str()).unwrap_or("");
-    let cell: f32 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.25);
-    let data = std::fs::read(&a[1]).unwrap();
-    let f = mapgeom::static_item::file::parse_file(&data).unwrap();
-    let so = f.item.static_object().unwrap();
-    let s2 = so.solid2().unwrap();
-    let mut tol: BTreeMap<String, f32> = BTreeMap::new();
-    let mut refus: BTreeMap<String, f32> = BTreeMap::new();
-    let mut ncells: BTreeMap<String, usize> = BTreeMap::new();
-    for g in &s2.shaded_geoms {
-        let vi = g.visual_index.max(0) as usize;
-        let mi = g.material_index.max(0) as usize;
-        let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("?").rsplit('\\').next().unwrap_or("?").to_string()).unwrap_or("?".into());
-        if !substr.is_empty() && !mat.contains(substr) { continue; }
-        let short = mat.rsplit('\\').next().unwrap_or(&mat).to_string();
-        if let Some(vref) = s2.visuals.get(vi) {
-            if let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() {
-                let st = vis.stream().unwrap();
-                let (mut pos, mut nrm) = (Vec::new(), Vec::new());
-                for (d, e) in st.decls.iter().zip(st.elems.iter()) {
-                    match e {
-                        Elem::Float3(p) if d.name() == 0 => pos = p.clone(),
-                        Elem::Word(w) if d.name() == 5 => nrm = w.iter().map(|v| dec(*v)).collect(),
-                        _ => {}
+    // my tris (face order): pos + uv per corner, face normals recomputed
+    let load_tris = |path: &str| -> Vec<[[f32;3];3]> {
+        let data = std::fs::read(path).unwrap();
+        let f = mapgeom::static_item::file::parse_file(&data).unwrap();
+        let so = f.item.static_object().unwrap();
+        let s2 = so.solid2().unwrap();
+        let mut out = Vec::new();
+        for g in &s2.shaded_geoms {
+            let vi = g.visual_index.max(0) as usize;
+            let mi = g.material_index.max(0) as usize;
+            let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("").to_string()).unwrap_or("".into());
+            if !mat.contains(&a[3]) { continue; }
+            if let Some(vref) = s2.visuals.get(vi) {
+                if let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() {
+                    let st = vis.stream().unwrap();
+                    let (mut pos, mut uv) = (Vec::new(), Vec::new());
+                    for (d, e) in st.decls.iter().zip(st.elems.iter()) {
+                        match e {
+                            Elem::Float3(p) if d.name() == 0 => pos = p.clone(),
+                            Elem::Float2(u) if d.name() == 10 => uv = u.clone(),
+                            _ => {}
+                        }
+                    }
+                    let idx = vis.index_buffer.as_ref().map(|b| b.indices.clone()).unwrap_or_default();
+                    for t in idx.chunks(3) {
+                        if t.len() < 3 { continue; }
+                        out.push([pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]]);
                     }
                 }
-                let idx = vis.index_buffer.as_ref().map(|b| b.indices.clone()).unwrap_or_default();
-                let mut cells: BTreeMap<(i32, i32, i32), Vec<([f32; 3], [f32; 3])>> = BTreeMap::new();
-                for t in idx.chunks(3) {
-                    if t.len() < 3 { continue; }
-                    let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
-                    let fn_ = norm(cross(sub(p[1], p[0]), sub(p[2], p[0])));
-                    for k in 0..3 {
-                        let ck = ((p[k][0]/cell).round() as i32, (p[k][1]/cell).round() as i32, (p[k][2]/cell).round() as i32);
-                        cells.entry(ck).or_default().push((fn_, nrm[t[k] as usize]));
-                    }
-                }
-                for (_, corners) in &cells {
-                    if corners.len() < 2 { continue; }
-                    *ncells.entry(short.clone()).or_insert(0) += 1;
-                    // cluster by stored normal
-                    let mut cl: Vec<Vec<[f32; 3]>> = Vec::new(); // flat normals
-                    let mut sn: Vec<[f32; 3]> = Vec::new(); // representative stored
-                    for (fn_, s) in corners {
-                        let mut done = false;
-                        for (ci, r) in sn.iter().enumerate() {
-                            if dot(*r, *s) > 0.9999 {
-                                cl[ci].push(*fn_);
-                                done = true;
-                                break;
+            }
+        }
+        out
+    };
+    // vert counts per position (exact bits)
+    let load_vc = |path: &str| -> BTreeMap<[u32;3], usize> {
+        let data = std::fs::read(path).unwrap();
+        let f = mapgeom::static_item::file::parse_file(&data).unwrap();
+        let so = f.item.static_object().unwrap();
+        let s2 = so.solid2().unwrap();
+        let mut out = BTreeMap::new();
+        for g in &s2.shaded_geoms {
+            let vi = g.visual_index.max(0) as usize;
+            let mi = g.material_index.max(0) as usize;
+            let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("").to_string()).unwrap_or("".into());
+            if !mat.contains(&a[3]) { continue; }
+            if let Some(vref) = s2.visuals.get(vi) {
+                if let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() {
+                    let st = vis.stream().unwrap();
+                    for (d, e) in st.decls.iter().zip(st.elems.iter()) {
+                        if let Elem::Float3(p) = e {
+                            if d.name() == 0 {
+                                for q in p { *out.entry([q[0].to_bits(), q[1].to_bits(), q[2].to_bits()]).or_insert(0) += 1; }
                             }
-                        }
-                        if !done {
-                            sn.push(*s);
-                            cl.push(vec![*fn_]);
-                        }
-                    }
-                    // tolerated: max flat-angle within a cluster
-                    for c in &cl {
-                        for x in 0..c.len() {
-                            for y in (x+1)..c.len() {
-                                let ang = dot(c[x], c[y]).clamp(-1.0, 1.0).acos().to_degrees();
-                                let e = tol.entry(short.clone()).or_insert(0.0);
-                                if ang > *e { *e = ang; }
-                            }
-                        }
-                    }
-                    // refused: min flat-angle across clusters
-                    for x in 0..cl.len() {
-                        for y in (x+1)..cl.len() {
-                            let mut m = 180.0f32;
-                            for fx in &cl[x] {
-                                for fy in &cl[y] {
-                                    m = m.min(dot(*fx, *fy).clamp(-1.0, 1.0).acos().to_degrees());
-                                }
-                            }
-                            let e = refus.entry(short.clone()).or_insert(180.0);
-                            if m < *e { *e = m; }
                         }
                     }
                 }
             }
         }
+        out
+    };
+    // his UVs per position (for unanimity + det we need his tri uvs; use HIS file tris)
+    let data = std::fs::read(&a[1]).unwrap();
+    let f = mapgeom::static_item::file::parse_file(&data).unwrap();
+    let so = f.item.static_object().unwrap();
+    let s2 = so.solid2().unwrap();
+    // per position: incident face normals (from his tris), corner uvs, tri dets
+    let mut pos_faces: BTreeMap<[u32;3], Vec<[f32;3]>> = BTreeMap::new();
+    let mut pos_uvs: BTreeMap<[u32;3], Vec<[f32;2]>> = BTreeMap::new();
+    let mut pos_dets: BTreeMap<[u32;3], Vec<f32>> = BTreeMap::new();
+    for g in &s2.shaded_geoms {
+        let vi = g.visual_index.max(0) as usize;
+        let mi = g.material_index.max(0) as usize;
+        let mat = s2.custom_materials.get(mi).and_then(|m| m.inst()).map(|i| i.link().unwrap_or("").to_string()).unwrap_or("".into());
+        if !mat.contains(&a[3]) { continue; }
+        if let Some(vref) = s2.visuals.get(vi) {
+            if let Some(mapgeom::static_item::Node::Visual(vis)) = vref.inline.as_deref() {
+                let st = vis.stream().unwrap();
+                let (mut pos, mut uv) = (Vec::new(), Vec::new());
+                for (d, e) in st.decls.iter().zip(st.elems.iter()) {
+                    match e {
+                        Elem::Float3(p) if d.name() == 0 => pos = p.clone(),
+                        Elem::Float2(u) if d.name() == 10 => uv = u.clone(),
+                        _ => {}
+                    }
+                }
+                if pos.is_empty() { continue; }
+                let idx = vis.index_buffer.as_ref().map(|b| b.indices.clone()).unwrap_or_default();
+                for t in idx.chunks(3) {
+                    if t.len() < 3 { continue; }
+                    let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
+                    let u = [uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]];
+                    let e1 = [p[1][0]-p[0][0], p[1][1]-p[0][1], p[1][2]-p[0][2]];
+                    let e2 = [p[2][0]-p[0][0], p[2][1]-p[0][1], p[2][2]-p[0][2]];
+                    let cr = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
+                    let l = (cr[0]*cr[0]+cr[1]*cr[1]+cr[2]*cr[2]).sqrt().max(1e-30);
+                    let fn_ = [cr[0]/l, cr[1]/l, cr[2]/l];
+                    let det = (u[1][0]-u[0][0])*(u[2][1]-u[0][1])-(u[2][0]-u[0][0])*(u[1][1]-u[0][1]);
+                    for k in 0..3 {
+                        let key = [p[k][0].to_bits(), p[k][1].to_bits(), p[k][2].to_bits()];
+                        pos_faces.entry(key).or_default().push(fn_);
+                        pos_uvs.entry(key).or_default().push(u[k]);
+                        pos_dets.entry(key).or_default().push(det);
+                    }
+                }
+            }
+        }
     }
-    for (m, _) in &ncells {
-        println!("{m}: cells={} max_tolerated={:.1} min_refused={:.1}", ncells[m], tol.get(m).unwrap_or(&-1.0), refus.get(m).unwrap_or(&-1.0));
+    let hvc = load_vc(&a[1]);
+    let mvc = load_vc(&a[2]);
+    let _ = load_tris;
+    // report positions with span>30deg: span, uv_unanimous, det_unanimous, his_n, my_n
+    println!("pos(span>30deg): span_deg uv1 det1 his_n my_n");
+    let mut n = 0;
+    for (key, fns) in &pos_faces {
+        if fns.len() < 2 { continue; }
+        let mut mind = 1.0f32;
+        for i in 0..fns.len() {
+            for j in (i+1)..fns.len() {
+                let d = fns[i][0]*fns[j][0]+fns[i][1]*fns[j][1]+fns[i][2]*fns[j][2];
+                mind = mind.min(d);
+            }
+        }
+        let span = mind.clamp(-1.0,1.0).acos().to_degrees();
+        if span > 30.0 {
+            let uvs = &pos_uvs[key];
+            let uv1 = uvs.iter().all(|u| u[0].to_bits()==uvs[0][0].to_bits() && u[1].to_bits()==uvs[0][1].to_bits());
+            let dets = &pos_dets[key];
+            let det1 = dets.iter().all(|d| (*d>=0.0)==(dets[0]>=0.0));
+            let hn = hvc.get(key).unwrap_or(&0);
+            let mn = mvc.get(key).unwrap_or(&0);
+            println!("  {:x}{:x}{:x} span={:.1} uv1={} det1={} his={} mine={}", key[0],key[1],key[2], span, uv1 as u8, det1 as u8, hn, mn);
+            n += 1;
+            if n > 40 { break; }
+        }
     }
+    let _ = dec;
 }

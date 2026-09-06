@@ -17,7 +17,7 @@ fn main() {
     tris.push([corner(0), corner(3), corner(2)]);
     tris.push([corner(0), corner(2), corner(1)]);
     assign_lightmap_uvs(&mut tris);
-    for v in make_visuals(&tris, visual_layout("Stadium\\Media\\Material\\RoadTech")) {
+    for v in make_visuals(&tris, visual_layout("Stadium\\Media\\Material\\RoadTech"), "range") {
         m.visuals.push(MergedVisual { visual: v, material: slot });
     }
     // collision: same two tris
