@@ -298,6 +298,9 @@ pub struct Corner {
     /// face share it). 0 when unknown. Used for one-vote-per-face normal
     /// averaging (`smooth_normals_corner` under TINY_NDEDUP=face).
     pub face: u32,
+    /// Source crystal group (`Face::group`); lightmap charts never cross
+    /// groups (measured on every Tiny_Road_17 material). 0 when unknown.
+    pub group: u32,
 }
 
 /// Triangle area (for area-weighted smoothing): borrows one tri only.
@@ -1068,6 +1071,472 @@ pub fn assign_lightmap_uvs(tris: &mut [[Corner; 3]]) {
     }
 }
 
+/// Item-global lightmap atlas, the way the editor's bake lays one out
+/// (measured on Tiny_Road_17 with `uv1charts`/`uv1seg`/`uv1rule`/`uv1cross`):
+///
+/// * ONE atlas per item: the charts of every visual with a uv1 stream are
+///   packed together into [0.001, 0.999]^2 (cross-material overlaps: none
+///   beyond bbox artifacts); a single uniform scale (0.01892 uv/m on
+///   Road_17, i.e. shrink-to-fit -- coverage 0.21..0.74 across references).
+/// * Charts never cross source groups; a uv0 seam always splits; dihedral
+///   >= 50 deg always splits; charts stay within ~45-50 deg of a seed normal
+///   (max tri-vs-chart-mean 35-53 deg per material), so a planar projection
+///   along the chart normal cannot fold over.
+/// * Charts are rotated freely (min-area box) and placed axis-aligned with
+///   a small gutter (min bbox gap 0.0004).
+///
+/// Corners at one position inside a chart share uv1 (projection is a
+/// function of position); chart borders split, like his weld structure.
+/// The exact unwrapper is unknown: this reproduces the STRUCTURE (coverage,
+/// non-overlap, uniform density, seam rules), not his bytes -- use
+/// TINY_UV1_REF to transplant his uv1 when a reference exists.
+/// Knobs: TINY_LM_DIH (default 45), TINY_LM_SEED (50), TINY_LM_GUTTER
+/// (0.001), TINY_LM_MARGIN (0.001).
+pub fn assign_lightmap_atlas(per_material: &mut [Vec<[Corner; 3]>], has_uv1: &[bool]) {
+    use std::collections::{BTreeMap, VecDeque};
+    let envf = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let dih_max = envf("TINY_LM_DIH", 45.0).to_radians().cos();
+    let seed_max = envf("TINY_LM_SEED", 50.0).to_radians().cos();
+    let gutter = envf("TINY_LM_GUTTER", 0.001);
+    let margin = envf("TINY_LM_MARGIN", 0.001);
+    let pk = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+    // A chart: material index, tri indices, and its 2D frame.
+    struct Chart {
+        mat: usize,
+        tris: Vec<usize>,
+        ex: [f32; 3],
+        ey: [f32; 3],
+        min: [f32; 2],
+        w: f32,
+        h: f32,
+        // placement (atlas units), set by the packer
+        x: f32,
+        y: f32,
+        rot90: bool,
+    }
+    let mut charts: Vec<Chart> = Vec::new();
+    for (mi, tris) in per_material.iter().enumerate() {
+        if !has_uv1.get(mi).copied().unwrap_or(false) || tris.is_empty() {
+            continue;
+        }
+        let fnorm: Vec<[f32; 3]> = tris.iter().map(|t| normalize(cross(sub(t[1].pos, t[0].pos), sub(t[2].pos, t[0].pos)))).collect();
+        // edges by position pair -> (tri, k)
+        let mut edges: BTreeMap<([u32; 3], [u32; 3]), Vec<(usize, usize)>> = BTreeMap::new();
+        for (ti, t) in tris.iter().enumerate() {
+            for k in 0..3 {
+                let (p, q) = (pk(t[k].pos), pk(t[(k + 1) % 3].pos));
+                let key = if p < q { (p, q) } else { (q, p) };
+                edges.entry(key).or_default().push((ti, k));
+            }
+        }
+        // adjacency with the merge rules (group, uv0 continuity, dihedral)
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); tris.len()];
+        for (_, es) in &edges {
+            for i in 0..es.len() {
+                for j in i + 1..es.len() {
+                    let (ti, ki) = es[i];
+                    let (tj, kj) = es[j];
+                    if tris[ti][0].group != tris[tj][0].group {
+                        continue;
+                    }
+                    let n1 = fnorm[ti];
+                    let n2 = fnorm[tj];
+                    if n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] < dih_max {
+                        continue;
+                    }
+                    // uv0 continuity across the shared edge
+                    let (a1, b1) = (&tris[ti][ki], &tris[ti][(ki + 1) % 3]);
+                    let (a2, b2) = (&tris[tj][kj], &tris[tj][(kj + 1) % 3]);
+                    let (a2, b2) = if pk(a1.pos) == pk(a2.pos) { (a2, b2) } else { (b2, a2) };
+                    if a1.uv != a2.uv || b1.uv != b2.uv {
+                        continue;
+                    }
+                    adj[ti].push(tj);
+                    adj[tj].push(ti);
+                }
+            }
+        }
+        // seed-based BFS region growing
+        let mut chart_of: Vec<usize> = vec![usize::MAX; tris.len()];
+        for seed in 0..tris.len() {
+            if chart_of[seed] != usize::MAX {
+                continue;
+            }
+            let id = charts.len();
+            let sn = fnorm[seed];
+            let mut members = vec![seed];
+            chart_of[seed] = id;
+            let mut q: VecDeque<usize> = VecDeque::from(vec![seed]);
+            while let Some(t) = q.pop_front() {
+                for &u in &adj[t] {
+                    if chart_of[u] != usize::MAX {
+                        continue;
+                    }
+                    let n = fnorm[u];
+                    if sn[0] * n[0] + sn[1] * n[1] + sn[2] * n[2] < seed_max {
+                        continue;
+                    }
+                    chart_of[u] = id;
+                    members.push(u);
+                    q.push_back(u);
+                }
+            }
+            charts.push(Chart { mat: mi, tris: members, ex: [0.0; 3], ey: [0.0; 3], min: [0.0; 2], w: 0.0, h: 0.0, x: 0.0, y: 0.0, rot90: false });
+        }
+    }
+    // 2D frame per chart: mean normal, then min-area bounding box over the
+    // convex hull of the projected positions.
+    let frame = |c: &mut Chart, per_material: &[Vec<[Corner; 3]>]| {
+        let tris = &per_material[c.mat];
+        let mut nacc = [0.0f32; 3];
+        for &ti in &c.tris {
+            let t = &tris[ti];
+            let cr = cross(sub(t[1].pos, t[0].pos), sub(t[2].pos, t[0].pos));
+            for k in 0..3 {
+                nacc[k] += cr[k];
+            }
+        }
+        let n = normalize(nacc);
+        let ax = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let ex0 = normalize(cross(ax, n));
+        let ey0 = cross(n, ex0);
+        let mut pts: Vec<[f32; 2]> = Vec::new();
+        let mut seen: std::collections::BTreeSet<[u32; 3]> = Default::default();
+        for &ti in &c.tris {
+            for k in 0..3 {
+                let p = tris[ti][k].pos;
+                if seen.insert(pk(p)) {
+                    pts.push([p[0] * ex0[0] + p[1] * ex0[1] + p[2] * ex0[2], p[0] * ey0[0] + p[1] * ey0[1] + p[2] * ey0[2]]);
+                }
+            }
+        }
+        // convex hull (monotone chain)
+        pts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let crs = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        let mut hull: Vec<[f32; 2]> = Vec::new();
+        for &p in &pts {
+            while hull.len() >= 2 && crs(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        let lower_len = hull.len() + 1;
+        for &p in pts.iter().rev().skip(1) {
+            while hull.len() >= lower_len && crs(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+        // best rotation among hull edge directions
+        let mut best = (f32::MAX, 0.0f32);
+        let angles: Vec<f32> = if hull.len() >= 2 { (0..hull.len()).map(|i| { let a = hull[i]; let b = hull[(i + 1) % hull.len()]; (b[1] - a[1]).atan2(b[0] - a[0]) }).collect() } else { vec![0.0] };
+        for th in angles {
+            let (cs, sn) = (th.cos(), th.sin());
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in &pts {
+                let x = p[0] * cs + p[1] * sn;
+                let y = -p[0] * sn + p[1] * cs;
+                lo[0] = lo[0].min(x);
+                lo[1] = lo[1].min(y);
+                hi[0] = hi[0].max(x);
+                hi[1] = hi[1].max(y);
+            }
+            let area = (hi[0] - lo[0]) * (hi[1] - lo[1]);
+            if area < best.0 {
+                best = (area, th);
+            }
+        }
+        let th = best.1;
+        let (cs, sn) = (th.cos(), th.sin());
+        // rotated basis: ex = cos*ex0 + sin*ey0 ; ey = -sin*ex0 + cos*ey0
+        c.ex = [cs * ex0[0] + sn * ey0[0], cs * ex0[1] + sn * ey0[1], cs * ex0[2] + sn * ey0[2]];
+        c.ey = [-sn * ex0[0] + cs * ey0[0], -sn * ex0[1] + cs * ey0[1], -sn * ex0[2] + cs * ey0[2]];
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for &ti in &c.tris {
+            for k in 0..3 {
+                let p = tris[ti][k].pos;
+                let x = p[0] * c.ex[0] + p[1] * c.ex[1] + p[2] * c.ex[2];
+                let y = p[0] * c.ey[0] + p[1] * c.ey[1] + p[2] * c.ey[2];
+                lo[0] = lo[0].min(x);
+                lo[1] = lo[1].min(y);
+                hi[0] = hi[0].max(x);
+                hi[1] = hi[1].max(y);
+            }
+        }
+        c.min = lo;
+        c.w = hi[0] - lo[0];
+        c.h = hi[1] - lo[1];
+    };
+    for c in charts.iter_mut() {
+        frame(c, per_material);
+    }
+    // Injectivity: a chart whose projection self-overlaps (source geometry
+    // with stacked coplanar layers, e.g. RoadTechRampMed's top: 1.1% of the
+    // texels double-booked) cannot share one lightmap region. Eject the
+    // most-conflicting tris into singleton charts until no two tris of a
+    // chart that share no position intersect in 2D.
+    {
+        let proj = |c: &Chart, p: [f32; 3]| [p[0] * c.ex[0] + p[1] * c.ex[1] + p[2] * c.ex[2], p[0] * c.ey[0] + p[1] * c.ey[1] + p[2] * c.ey[2]];
+        let mut extra: Vec<Chart> = Vec::new();
+        for ci in 0..charts.len() {
+            for _round in 0..4 {
+                let c = &charts[ci];
+                if c.tris.len() < 2 {
+                    break;
+                }
+                let tris = &per_material[c.mat];
+                let q: Vec<[[f32; 2]; 3]> = c.tris.iter().map(|&ti| [proj(c, tris[ti][0].pos), proj(c, tris[ti][1].pos), proj(c, tris[ti][2].pos)]).collect();
+                let keys: Vec<[[u32; 3]; 3]> = c.tris.iter().map(|&ti| [pk(tris[ti][0].pos), pk(tris[ti][1].pos), pk(tris[ti][2].pos)]).collect();
+                let bb: Vec<[[f32; 2]; 2]> = q.iter().map(|t| [[t[0][0].min(t[1][0]).min(t[2][0]), t[0][1].min(t[1][1]).min(t[2][1])], [t[0][0].max(t[1][0]).max(t[2][0]), t[0][1].max(t[1][1]).max(t[2][1])]]).collect();
+                let mut conflicts = vec![0usize; c.tris.len()];
+                let mut any = false;
+                for i in 0..q.len() {
+                    for j in i + 1..q.len() {
+                        if bb[i][1][0] <= bb[j][0][0] || bb[j][1][0] <= bb[i][0][0] || bb[i][1][1] <= bb[j][0][1] || bb[j][1][1] <= bb[i][0][1] {
+                            continue;
+                        }
+                        if keys[i].iter().any(|k| keys[j].contains(k)) {
+                            continue;
+                        }
+                        if tri2d_overlap(&q[i], &q[j]) {
+                            conflicts[i] += 1;
+                            conflicts[j] += 1;
+                            any = true;
+                        }
+                    }
+                }
+                if !any {
+                    break;
+                }
+                // eject every tri with conflicts, worst first, re-checking
+                // cheaply: ejecting all conflicting tris at once is safe
+                // (singletons cannot overlap anything).
+                let mut ejected: Vec<usize> = Vec::new();
+                let c = &mut charts[ci];
+                let mut keep: Vec<usize> = Vec::new();
+                for (k, &ti) in c.tris.iter().enumerate() {
+                    if conflicts[k] > 0 {
+                        ejected.push(ti);
+                    } else {
+                        keep.push(ti);
+                    }
+                }
+                c.tris = keep;
+                for ti in ejected {
+                    let mut nc = Chart { mat: c.mat, tris: vec![ti], ex: [0.0; 3], ey: [0.0; 3], min: [0.0; 2], w: 0.0, h: 0.0, x: 0.0, y: 0.0, rot90: false };
+                    frame(&mut nc, per_material);
+                    extra.push(nc);
+                }
+                if charts[ci].tris.is_empty() {
+                    break;
+                }
+                frame(&mut charts[ci], per_material);
+            }
+        }
+        charts.retain(|c| !c.tris.is_empty());
+        charts.extend(extra);
+    }
+    // Hollow charts (arcs, L-shapes: world area << bbox area) waste atlas
+    // space -- GateCheckpoint's arch charts filled 12% of their boxes and
+    // the item got 9% texel coverage. Split any chart with fill < TINY_LM_FILL
+    // (0.4) and > 4 tris in two along its longer box axis (projected
+    // centroid), up to 4 levels, then re-frame the halves.
+    {
+        let fill_min = envf("TINY_LM_FILL", 0.4);
+        let proj = |c: &Chart, p: [f32; 3]| [p[0] * c.ex[0] + p[1] * c.ex[1] + p[2] * c.ex[2], p[0] * c.ey[0] + p[1] * c.ey[1] + p[2] * c.ey[2]];
+        let mut queue: Vec<(Chart, u8)> = charts.drain(..).map(|c| (c, 0u8)).collect();
+        let mut done: Vec<Chart> = Vec::new();
+        while let Some((c, depth)) = queue.pop() {
+            let tris = &per_material[c.mat];
+            let area3: f32 = c.tris.iter().map(|&ti| tri_area_of(&tris[ti])).sum();
+            let box_area = c.w * c.h;
+            if depth >= 4 || c.tris.len() <= 4 || box_area <= 1e-12 || area3 / box_area >= fill_min {
+                done.push(c);
+                continue;
+            }
+            // split along the longer axis at the median centroid coordinate
+            let axis = if c.w >= c.h { 0 } else { 1 };
+            let mut cents: Vec<(f32, usize)> = c
+                .tris
+                .iter()
+                .map(|&ti| {
+                    let t = &tris[ti];
+                    let q = [proj(&c, t[0].pos), proj(&c, t[1].pos), proj(&c, t[2].pos)];
+                    ((q[0][axis] + q[1][axis] + q[2][axis]) / 3.0, ti)
+                })
+                .collect();
+            cents.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let half = cents.len() / 2;
+            let (a, b): (Vec<usize>, Vec<usize>) = (cents[..half].iter().map(|x| x.1).collect(), cents[half..].iter().map(|x| x.1).collect());
+            if a.is_empty() || b.is_empty() {
+                done.push(c);
+                continue;
+            }
+            for part in [a, b] {
+                let mut nc = Chart { mat: c.mat, tris: part, ex: [0.0; 3], ey: [0.0; 3], min: [0.0; 2], w: 0.0, h: 0.0, x: 0.0, y: 0.0, rot90: false };
+                frame(&mut nc, per_material);
+                queue.push((nc, depth + 1));
+            }
+        }
+        charts = done;
+    }
+    if charts.is_empty() {
+        return;
+    }
+    let avail = 1.0 - 2.0 * margin;
+    let mut order: Vec<usize> = (0..charts.len()).collect();
+    let dims = |c: &Chart| if c.w >= c.h { (c.w, c.h, false) } else { (c.h, c.w, true) };
+    order.sort_by(|&a, &b| {
+        let ha = dims(&charts[a]).1;
+        let hb = dims(&charts[b]).1;
+        hb.partial_cmp(&ha).unwrap().then(dims(&charts[b]).0.partial_cmp(&dims(&charts[a]).0).unwrap())
+    });
+    // Skyline bottom-left packing at scale s (items by height desc, long
+    // side horizontal): each item goes where the skyline is lowest among
+    // the positions it fits, ties to the left. Returns false when an item
+    // cannot be placed inside the unit square minus margins.
+    // (Shelf rows were tried first: 9% texel coverage on GateCheckpoint's
+    // 2737 arc charts; skyline lifts the bbox fill.)
+    let try_pack = |s: f32, charts: &mut Vec<Chart>| -> bool {
+        // skyline: sorted list of (x_start, height); segment ends at the next x_start
+        let mut sky: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+        for &ci in &order {
+            let (w, h, r) = dims(&charts[ci]);
+            let (w, h) = (w * s + gutter, h * s + gutter);
+            if w > avail + 1e-6 || h > avail + 1e-6 {
+                return false;
+            }
+            // candidate x positions: every segment start
+            let mut best: Option<(f32, f32, usize)> = None; // (y, x, seg index)
+            for i in 0..sky.len() {
+                let x0 = sky[i].0;
+                if x0 + w > avail + 1e-6 {
+                    break;
+                }
+                // max height over segments covering [x0, x0+w)
+                let mut y = 0.0f32;
+                let mut j = i;
+                while j < sky.len() && sky[j].0 < x0 + w - 1e-9 {
+                    y = y.max(sky[j].1);
+                    j += 1;
+                }
+                if y + h > avail + 1e-6 {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some((by, bx, _)) => y < by - 1e-9 || (y <= by + 1e-9 && x0 < bx),
+                };
+                if better {
+                    best = Some((y, x0, i));
+                }
+            }
+            let Some((y, x0, _)) = best else { return false };
+            charts[ci].x = margin + x0;
+            charts[ci].y = margin + y;
+            charts[ci].rot90 = r;
+            // update skyline: remove segments fully covered, clip the one
+            // straddling the right edge, insert the new plateau
+            let x1 = x0 + w;
+            let mut newsky: Vec<(f32, f32)> = Vec::with_capacity(sky.len() + 2);
+            let mut inserted = false;
+            for i in 0..sky.len() {
+                let (sx, sh) = sky[i];
+                let sx_end = if i + 1 < sky.len() { sky[i + 1].0 } else { avail };
+                if sx_end <= x0 + 1e-9 || sx >= x1 - 1e-9 {
+                    // untouched segment (left or right of the item)
+                    if sx >= x1 - 1e-9 && !inserted {
+                        newsky.push((x0, y + h));
+                        inserted = true;
+                    }
+                    newsky.push((sx, sh));
+                    continue;
+                }
+                // overlapping segment
+                if sx < x0 - 1e-9 {
+                    newsky.push((sx, sh)); // left remainder keeps its height
+                }
+                if !inserted {
+                    newsky.push((x0, y + h));
+                    inserted = true;
+                }
+                if sx_end > x1 + 1e-9 {
+                    newsky.push((x1, sh)); // right remainder
+                }
+            }
+            if !inserted {
+                newsky.push((x0, y + h));
+            }
+            // merge equal-height neighbours
+            let mut merged: Vec<(f32, f32)> = Vec::with_capacity(newsky.len());
+            for seg in newsky {
+                if let Some(last) = merged.last() {
+                    if (last.1 - seg.1).abs() < 1e-9 {
+                        continue;
+                    }
+                }
+                merged.push(seg);
+            }
+            sky = merged;
+        }
+        true
+    };
+    // bracket: halve until it fits, then bisect between the last failure
+    // and the first success
+    let (mut lo, mut hi) = (1.0f32, 2.0f32);
+    while !try_pack(lo, &mut charts) {
+        hi = lo;
+        lo *= 0.5;
+        if lo < 1e-6 {
+            break;
+        }
+    }
+    for _ in 0..40 {
+        let mid = (lo + hi) * 0.5;
+        if try_pack(mid, &mut charts) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let s = lo;
+    try_pack(s, &mut charts);
+    // assign uv1
+    for c in &charts {
+        let tris = &mut per_material[c.mat];
+        for &ti in &c.tris {
+            for k in 0..3 {
+                let p = tris[ti][k].pos;
+                let lx = p[0] * c.ex[0] + p[1] * c.ex[1] + p[2] * c.ex[2] - c.min[0];
+                let ly = p[0] * c.ey[0] + p[1] * c.ey[1] + p[2] * c.ey[2] - c.min[1];
+                let (u, v) = if c.rot90 { (c.x + ly * s, c.y + lx * s) } else { (c.x + lx * s, c.y + ly * s) };
+                tris[ti][k].uv1 = [u, v];
+            }
+        }
+    }
+    if std::env::var("TINY_LM_NOTE").is_ok() {
+        let mut per_mat: BTreeMap<usize, usize> = BTreeMap::new();
+        for c in &charts {
+            *per_mat.entry(c.mat).or_insert(0) += 1;
+        }
+        let (mut maxw, mut maxh, mut bbsum) = (0.0f32, 0.0f32, 0.0f64);
+        let mut rows = 0usize;
+        let mut last_y = -1.0f32;
+        for c in &charts {
+            let (w, h, _) = dims(c);
+            maxw = maxw.max(w);
+            maxh = maxh.max(h);
+            bbsum += (w as f64 * s as f64) * (h as f64 * s as f64);
+            if c.y != last_y {
+                rows += 1;
+                last_y = c.y;
+            }
+        }
+        eprintln!("  note: lightmap atlas: {} charts, scale {:.5} uv/m, per material {:?}; largest chart {:.2}x{:.2} m, bbox fill {:.3}, ~{} rows", charts.len(), s, per_mat, maxw, maxh, bbsum, rows);
+    }
+}
+
 /// Per-triangle grid packing (splits every face): diagnostic only behind
 /// `TINY_PACK_GRID=1`. Inflates vertex counts 2-3x vs the editor's bake.
 pub fn assign_lightmap_uvs_grid(tris: &mut [[Corner; 3]]) {
@@ -1146,7 +1615,7 @@ pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -
     let n = normalize(n);
     let corner = |i: usize| {
         let uv = uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-        Corner { pos: pts[i], normal: n, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }
+        Corner { pos: pts[i], normal: n, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0, group: 0 }
     };
     if pts.len() == 3 {
         return vec![[corner(0), corner(1), corner(2)]];
@@ -1164,7 +1633,7 @@ pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -
             let tn = normalize(cross(e1, e2));
             let mk = |p: [f32; 3], ui: usize| {
                 let uv = uvs.get(ui).copied().unwrap_or([0.0, 0.0]);
-                Corner { pos: p, normal: tn, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }
+                Corner { pos: p, normal: tn, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0, group: 0 }
             };
             [mk(a, 1), mk(b, i), mk(cc, (i + 1) % pts.len())]
         })
@@ -1674,6 +2143,7 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
             for t in tris.iter_mut() {
                 for c in t.iter_mut() {
                     c.face = face_id;
+                    c.group = f.group;
                 }
             }
 
@@ -1942,6 +2412,21 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     // so smoothing inputs are reference-source face normals; this call
     // re-runs idempotently over the smoothed tris and reports notes.)
     let pos_ref: Option<BTreeMap2> = std::env::var("TINY_POS_REF").ok().and_then(|p| load_uv1_ref(&p));
+    // Item-global lightmap atlas (generated) when no reference uv1 is
+    // transplanted (TINY_UV1_REF unset) and TINY_NO_PACK/TINY_UV1_PLANAR are
+    // unset (TINY_UV1_PLANAR=1 keeps the old per-material planar projection).
+    // Runs before smoothing (position-only), per_material order = slots.
+    let has_uv1: Vec<bool> = (0..per_material.len())
+        .map(|i| {
+            let slot = slots.get(i).copied();
+            let link = slot.and_then(|s| m.materials.get(s)).and_then(|x: &CPlugMaterialUserInst| x.link().map(|l| l.to_string())).unwrap_or_default();
+            layout_decls(visual_layout(&link)).iter().any(|d| d.name() == N_TEXCOORD0 + 1)
+        })
+        .collect();
+    let atlas_done = uv1_ref.is_none() && std::env::var("TINY_NO_PACK").is_err() && std::env::var("TINY_UV1_PLANAR").is_err() && {
+        assign_lightmap_atlas(&mut per_material, &has_uv1);
+        true
+    };
     for i in order {
         // (Position transplant runs pre-smoothing (refresh_face: reference
         // face normals as smoothing inputs) and here post-smoothing
@@ -1994,7 +2479,7 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         // Lightmap UVs, weld-preserving (global planar per material).
         // TINY_NO_PACK=1 leaves uv1 as a copy of the diffuse uv (full
         // welding): diagnostic for the grey-road bisection 2026-09-05.
-        if std::env::var("TINY_NO_PACK").is_err() {
+        if std::env::var("TINY_NO_PACK").is_err() && !atlas_done {
             assign_lightmap_uvs(&mut per_material[i]);
         }
         if let Some(ref map) = uv1_ref {
@@ -2149,7 +2634,12 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     {
         let (mut mnx, mut mxx, mut mny, mut mxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
         let (mut aworld, mut auv1) = (0.0f64, 0.0f64);
-        for tris in per_material.iter() {
+        // Only visuals that carry a uv1 stream count (others hold the uv0
+        // copy, which pollutes the bounds and the density).
+        for (mi, tris) in per_material.iter().enumerate() {
+            if !has_uv1.get(mi).copied().unwrap_or(false) {
+                continue;
+            }
             for t in tris {
                 for c in t {
                     mnx = mnx.min(c.uv1[0]);
@@ -2169,8 +2659,11 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                 aworld += aw;
             }
         }
+        // TINY_U02 (his measured value) applies to transplanted uv1 only; a
+        // generated atlas gets its own texel scale.
         let u02 = std::env::var("TINY_U02")
             .ok()
+            .filter(|_| !atlas_done)
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or_else(|| {
                 if auv1 > 1e-12 {
@@ -2197,4 +2690,31 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     }
     m.notes.push(format!("crystal baked: {} layers, {} triangles, {} collision triangles, {} surface entries", layers.len(), per_material.iter().map(|v| v.len()).sum::<usize>(), m.surf_triangles.len(), m.surf_ids.len()));
     Ok(())
+}
+
+/// Do two 2D triangles overlap with positive area (separating-axis test over
+/// the six edge normals)? Touching along an edge or at a vertex is not an
+/// overlap.
+fn tri2d_overlap(a: &[[f32; 2]; 3], b: &[[f32; 2]; 3]) -> bool {
+    let axes = |t: &[[f32; 2]; 3]| -> [[f32; 2]; 3] {
+        let mut out = [[0.0f32; 2]; 3];
+        for i in 0..3 {
+            let p = t[i];
+            let q = t[(i + 1) % 3];
+            out[i] = [-(q[1] - p[1]), q[0] - p[0]];
+        }
+        out
+    };
+    let eps = 1e-7f32;
+    for ax in axes(a).iter().chain(axes(b).iter()) {
+        let pa: Vec<f32> = a.iter().map(|p| p[0] * ax[0] + p[1] * ax[1]).collect();
+        let pb: Vec<f32> = b.iter().map(|p| p[0] * ax[0] + p[1] * ax[1]).collect();
+        let (amin, amax) = (pa.iter().cloned().fold(f32::MAX, f32::min), pa.iter().cloned().fold(f32::MIN, f32::max));
+        let (bmin, bmax) = (pb.iter().cloned().fold(f32::MAX, f32::min), pb.iter().cloned().fold(f32::MIN, f32::max));
+        let scale = (amax - amin).max(bmax - bmin).max(1e-12);
+        if amax <= bmin + eps * scale || bmax <= amin + eps * scale {
+            return false;
+        }
+    }
+    true
 }
