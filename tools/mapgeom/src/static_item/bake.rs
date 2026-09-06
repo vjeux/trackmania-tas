@@ -763,6 +763,13 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout) -> Vec<CPlugVisu
         let mut end = start;
         while end < tris.len() && pos.len() + 3 <= 65000 {
             let t = &tris[end];
+            // UV determinant sign (mirroring): his weld splits verts
+            // shared by normal-det and mirrored-det tris (measured: 87-100%
+            // of tangent-only splits are det-mixed; welded verts are NEVER
+            // det-mixed). Robust 1-bit splitter, no float issues.
+            let det = (t[1].uv[0] - t[0].uv[0]) * (t[2].uv[1] - t[0].uv[1])
+                - (t[2].uv[0] - t[0].uv[0]) * (t[1].uv[1] - t[0].uv[1]);
+            let det_sign = if det >= 0.0 { 1u32 } else { 0u32 };
             for c in t {
                 let mut key = Vec::with_capacity(18);
                 for v in [c.pos[0], c.pos[1], c.pos[2], c.normal[0], c.normal[1], c.normal[2]] {
@@ -776,6 +783,15 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout) -> Vec<CPlugVisu
                 if want_uv1 {
                     key.push(c.uv1[0].to_bits());
                     key.push(c.uv1[1].to_bits());
+                }
+                // UV determinant sign (mirroring): his weld splits verts
+                // shared by normal-det and mirrored-det tris (measured: 87-100%
+                // of tangent-only splits are det-mixed; welded verts are NEVER
+                // det-mixed). Only for tangent-carrying layouts (Full/White/
+                // Decal): without stored tangents there's nothing for mirroring
+                // to split (SFX/stripped weld mixed-det). Robust 1-bit splitter.
+                if want_tan {
+                    key.push(det_sign);
                 }
                 // Smoothed tangents (Corner.tan_u/tan_v, set by
                 // smooth_tangents_angle; per-face fallback via tangent()).
