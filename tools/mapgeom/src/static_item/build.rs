@@ -1601,6 +1601,26 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 /// BlueBay's concrete `TrackWallClipsInWorld` (2026-09-06).
 /// `TINY_NO_SKIN=1` disables the remap.
 pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
+    // TINY_MAT_SUBST="Stem=Other,…": rewrite a material link stem (any family) before the skin remap — experiments.
+    let inst = &match std::env::var("TINY_MAT_SUBST") {
+        Ok(list) => {
+            let mut owned = inst.clone();
+            if let Some(link) = inst.link().map(|s| s.to_string()) {
+                let (dir, stem) = match link.rfind('\\') { Some(i) => (&link[..=i], &link[i + 1..]), None => ("", link.as_str()) };
+                for pair in list.split(',') {
+                    if let Some((from, to)) = pair.split_once('=') {
+                        if from == stem {
+                            if let Some(main) = owned.main.as_mut() {
+                                main.link = crate::crystal_model::Id::Str(format!("{dir}{to}"));
+                            }
+                        }
+                    }
+                }
+            }
+            owned
+        }
+        Err(_) => inst.clone(),
+    };
     const SKIN: &[(&str, &str)] = &[
         ("TrackWallClips", "TrackWallClipsInWorld"),
         ("TrackWall", "TrackWallInWorld"),
