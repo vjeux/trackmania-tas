@@ -232,13 +232,23 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     if layers.is_empty() {
         return Err("crystal has no geometry layer".into());
     }
-    // material slot per crystal material index
+    // material slot per crystal material index (editors mode remaps onto
+    // the mesh-editor family, like the prefab path).
+    let editors = m.editors;
     let slots: Vec<usize> = c
         .materials
         .iter()
         .map(|mat| match mat.inst() {
-            Some(inst) => m.material_inst_slot(inst),
-            None => m.material_slot(&mat.name, 0),
+            Some(inst) => {
+                if editors {
+                    let link = inst.link().unwrap_or("").to_string();
+                    let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
+                    m.material_slot(crate::tiny_assets::editors_link_for_stadium_material(&stem), inst.physics())
+                } else {
+                    m.material_inst_slot(inst)
+                }
+            }
+            None => m.link_slot(&mat.name, 0, editors),
         })
         .collect();
     let mut per_material: Vec<Vec<[Corner; 3]>> = vec![Vec::new(); slots.len().max(1)];

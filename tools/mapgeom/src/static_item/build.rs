@@ -703,6 +703,7 @@ pub fn static_item_from_item(item_bytes: &[u8], ident: &str, author: &str, scale
 
 pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
+    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     match super::parse_file(item_bytes) {
         Ok(f) => {
             let so = f.item.static_object().ok_or("item has no CPlugStaticObjectModel (and is not a crystal item)")?;
