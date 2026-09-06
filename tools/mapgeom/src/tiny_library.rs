@@ -170,6 +170,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         } else {
             let mut m = crate::static_item::build::Merged::default();
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
+            // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
+            // without the per-layer split (the Mangrove split crashes the client;
+            // minimal repro var-m1, open bug).
+            let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_else(|_| "DecoBeachMangrove".into());
+            m.no_split = no_split_for.split(',').any(|s| !s.is_empty() && s == name);
             let mut err = None;
             // Terrain (Flat/Frontier/Transition zone blocks) is lowered by
             // TERRAIN_DROP (full-scale metres): the Land plane and a road deck

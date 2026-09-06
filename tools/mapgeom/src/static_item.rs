@@ -35,6 +35,7 @@ pub mod file;
 pub mod prefab;
 pub mod build;
 pub mod bake;
+pub mod check;
 pub mod cli;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
