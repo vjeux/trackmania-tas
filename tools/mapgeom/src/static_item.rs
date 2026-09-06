@@ -25,6 +25,7 @@
 //! * `prefab`   — `CPlugPrefab` read with the same model (S2/S3)
 //! * `build`    — constructing an item from prefab / item geometry (S3)
 
+pub mod oldmat;
 pub mod vstream;
 pub mod visual;
 pub mod solid2;
@@ -50,6 +51,8 @@ pub const C_INDEX_BUFFER: u32 = 0x09057000;
 pub const C_SURFACE: u32 = 0x0900C000;
 pub const C_ITEM_PLACEMENT_PARAM: u32 = 0x2E020000;
 pub const C_MATERIAL_USER_INST: u32 = crate::crystal_model::C_MATERIAL_USER_INST;
+pub const C_MATERIAL: u32 = 0x09079000;
+pub const C_MATERIAL_CUSTOM: u32 = 0x0903A000;
 
 const SKIP: &[u8; 4] = b"PIKS";
 
@@ -62,6 +65,10 @@ pub enum Node {
     Visual(visual::CPlugVisualIndexedTriangles),
     VertexStream(vstream::CPlugVertexStream),
     Material(crate::crystal_model::CPlugMaterialUserInst),
+    /// Pre-UserInst material (BlueBay terrain prefabs): read-only source.
+    OldMaterial(oldmat::OldMaterial),
+    /// Its nested custom node: read-only source.
+    OldCustom(oldmat::OldCustom),
     Surface(surface::CPlugSurface),
     Placement(item::CGameItemPlacementParam),
     /// A class with no reader here, made only of skippable chunks.
@@ -77,6 +84,8 @@ impl Node {
             Node::Visual(_) => C_VISUAL_INDEXED_TRIANGLES,
             Node::VertexStream(_) => C_VERTEX_STREAM,
             Node::Material(_) => C_MATERIAL_USER_INST,
+            Node::OldMaterial(_) => C_MATERIAL,
+            Node::OldCustom(_) => C_MATERIAL_CUSTOM,
             Node::Surface(_) => C_SURFACE,
             Node::Placement(_) => C_ITEM_PLACEMENT_PARAM,
             Node::Opaque(o) => o.class_id,
@@ -93,6 +102,8 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_VISUAL_INDEXED_TRIANGLES => Node::Visual(visual::CPlugVisualIndexedTriangles::parse(r)?),
         C_VERTEX_STREAM => Node::VertexStream(vstream::CPlugVertexStream::parse(r)?),
         C_MATERIAL_USER_INST => Node::Material(crate::crystal_model::CPlugMaterialUserInst::parse(r)?),
+        C_MATERIAL => Node::OldMaterial(oldmat::OldMaterial::parse(r)?),
+        C_MATERIAL_CUSTOM => Node::OldCustom(oldmat::OldCustom::parse(r)?),
         C_SURFACE => Node::Surface(surface::CPlugSurface::parse(r)?),
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
         other => Node::Opaque(read_opaque(r, other)?),
@@ -108,6 +119,8 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::Visual(x) => x.write(w),
         Node::VertexStream(x) => x.write(w),
         Node::Material(x) => x.write(w),
+        Node::OldMaterial(x) => x.write(w),
+        Node::OldCustom(x) => x.write(w),
         Node::Surface(x) => x.write(w),
         Node::Placement(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),

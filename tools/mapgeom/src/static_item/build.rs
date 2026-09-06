@@ -29,6 +29,9 @@ pub struct BuildOpts {
     pub scale: f32,
     /// Collection id (26 = Stadium).
     pub collection: u32,
+    /// Remap every material link onto the mesh-editor family (BlueBay
+    /// embedded items: only `Editors\...` links are known to render there).
+    pub editors: bool,
 }
 
 /// One source visual + the material slot it draws with.
@@ -55,6 +58,8 @@ pub struct Merged {
     pub waypoint_type: i32,
     /// Things skipped, for the report.
     pub notes: Vec<String>,
+    /// Remap every material link onto the mesh-editor family (BlueBay).
+    pub editors: bool,
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {
@@ -151,6 +156,12 @@ impl Merged {
         self.materials.len() - 1
     }
 
+    /// Slot of a link, remapped onto the editor family when asked.
+    pub fn link_slot(&mut self, link: &str, physics: u8, editors: bool) -> usize {
+        let link = if editors { crate::tiny_assets::editors_link_for_stadium_material(link.rsplit('\\').next().unwrap_or(link)).to_string() } else { link.to_string() };
+        self.material_slot(&link, physics)
+    }
+
     /// Slot of a material instance copied from a source (deduplicated by
     /// link + physics like the rest).
     pub fn material_inst_slot(&mut self, inst: &CPlugMaterialUserInst) -> usize {
@@ -186,10 +197,46 @@ impl Merged {
     }
 }
 
-/// Resolves an external material node (by node index) to (link, physics).
-pub type MaterialResolver<'a> = dyn FnMut(i32) -> Option<(String, u8)> + 'a;
+/// Resolves an external node (by node index) to (path, link, physics).
+pub type MaterialResolver<'a> = dyn FnMut(i32) -> Option<(String, String, u8)> + 'a;
 
 impl Merged {
+    /// Slot for a pre-UserInst material: the first non-shared
+    /// `.Material.Gbx` it stands for gives the link (shared Techno3 id bases
+    /// match first in file order); its SurfaceId, the library table, then the
+    /// object's most common collision physics give the physics.
+    pub fn old_material_slot(&mut self, om: &super::oldmat::OldMaterial, resolve: &mut MaterialResolver, common: Option<u8>) -> Option<usize> {
+        let mut found = None;
+        let mut shared = None;
+        for ri in &om.refs {
+            if let Some((path, _, _)) = resolve(*ri) {
+                if path.to_ascii_lowercase().ends_with(".material.gbx") {
+                    if path.to_ascii_lowercase().contains("techno3") {
+                        if shared.is_none() {
+                            shared = Some(material_link(&path));
+                        }
+                    } else {
+                        found = Some(material_link(&path));
+                        break;
+                    }
+                }
+            }
+        }
+        match found.or(shared) {
+            Some(link) => {
+                let mut phys = if om.physics != 0 { om.physics } else { 0 };
+                if phys == 0 {
+                    phys = physics_for_link(&link).or(common).unwrap_or(0);
+                }
+                Some(self.link_slot(&link, phys, self.editors))
+            }
+            None => {
+                self.notes.push("old material with no .Material.Gbx ref".into());
+                None
+            }
+        }
+    }
+
     /// Add every visual and the collision shape of one static object, placed
     /// by `iso` and scaled.
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
@@ -200,20 +247,67 @@ impl Merged {
         if self.file_write_time == 0 {
             self.file_write_time = s2.file_write_time;
         }
-        // Material slot per source material index.
+        // Material slot per source material index. Surface votes only ever
+        // replace pre-UserInst (old) materials: shared Techno3 id bases
+        // carry no look, so the coincident surface material wins over direct
+        // resolution. UserInst links are never overridden (validated 1:1).
+        let votes = surface_votes(so, s2, resolve);
         let mut slots: Vec<Option<usize>> = Vec::new();
         if !s2.custom_materials.is_empty() {
-            for m in &s2.custom_materials {
+            for (mi, m) in s2.custom_materials.iter().enumerate() {
+                let is_old = matches!(m.node.as_ref().and_then(|r| r.inline.as_deref()), Some(super::Node::OldMaterial(_))) && m.inst().is_none() && m.name.is_empty();
+                if is_old {
+                    if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
+                        slots.push(Some(self.link_slot(&link, phys, self.editors)));
+                        continue;
+                    }
+                }
                 slots.push(match m.inst() {
-                    Some(inst) => Some(self.material_inst_slot(inst)),
-                    None if !m.name.is_empty() => Some(self.material_slot(&m.name, 0)),
-                    None => None,
+                    Some(inst) => {
+                        if self.editors {
+                            let link = inst.link().unwrap_or("").to_string();
+                            let stem = link.rsplit('\\').next().unwrap_or(&link);
+                            Some(self.material_slot(crate::tiny_assets::editors_link_for_stadium_material(stem), inst.physics()))
+                        } else {
+                            Some(self.material_inst_slot(inst))
+                        }
+                    }
+                    None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0, self.editors)),
+                    None => match m.node.as_ref().and_then(|r| r.inline.as_deref()) {
+                        Some(super::Node::OldMaterial(om)) => {
+                            let om = om.clone();
+                            let common = most_common_physics(so);
+                            self.old_material_slot(&om, resolve, common)
+                        }
+                        _ => None,
+                    },
                 });
             }
         } else {
-            for r in &s2.materials {
-                slots.push(match resolve(r.index) {
-                    Some((link, phys)) => Some(self.material_slot(&link, phys)),
+            for (mi, r) in s2.materials.iter().enumerate() {
+                let is_old = matches!(r.inline.as_deref(), Some(super::Node::OldMaterial(_)));
+                if is_old {
+                    if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
+                        slots.push(Some(self.link_slot(&link, phys, self.editors)));
+                        continue;
+                    }
+                }
+                // Inline pre-UserInst materials (BlueBay terrain) resolve
+                // through their own `.Material.Gbx` refs, like above.
+                let inline_old = match r.inline.as_deref() {
+                    Some(super::Node::OldMaterial(om)) => {
+                        let om = om.clone();
+                        let common = most_common_physics(so);
+                        self.old_material_slot(&om, resolve, common)
+                    }
+                    _ => None,
+                };
+                if inline_old.is_some() {
+                    slots.push(inline_old);
+                    continue;
+                }
+                slots.push(match resolve(r.index).map(|(_, l, p)| (l, p)) {
+                    Some((link, phys)) => Some(self.link_slot(&link, phys, self.editors)),
                     None => {
                         self.notes.push(format!("material node {} unresolved", r.index));
                         None
@@ -267,6 +361,70 @@ pub fn visual_triangles(v: &CPlugVisualIndexedTriangles) -> (Vec<[f32; 3]>, Vec<
     };
     let idx = v.index_buffer.as_ref().map(|b| b.indices.clone()).unwrap_or_default();
     (pos, idx)
+}
+
+fn mm(p: &[f32; 3]) -> (i32, i32, i32) {
+    ((p[0] * 1000.0).round() as i32, (p[1] * 1000.0).round() as i32, (p[2] * 1000.0).round() as i32)
+}
+
+/// Per source-material-index vote: visuals whose link came out shared-id
+/// (Techno3) get the surface material most of their triangles coincide
+/// with. Triangle lookup is by sorted mm vertex keys in prefab space.
+fn surface_votes(
+    so: &super::item::CPlugStaticObjectModel,
+    s2: &super::solid2::CPlugSolid2Model,
+    resolve: &mut MaterialResolver,
+) -> Vec<Option<(String, u8)>> {
+    use std::collections::{BTreeMap, HashMap};
+    let sf = match so.surface() {
+        Some(sf) => sf,
+        None => return Vec::new(),
+    };
+    let (verts, tris) = match &sf.surf {
+        super::surface::Surf::Mesh { vertices, triangles, .. } => (vertices, triangles),
+        _ => return Vec::new(),
+    };
+    // surface tri -> (material path, physics)
+    let mut smap: HashMap<[(i32, i32, i32); 3], (String, u8)> = HashMap::new();
+    for t in tris {
+        let mut k = [mm(&verts[t.indices[0] as usize]), mm(&verts[t.indices[1] as usize]), mm(&verts[t.indices[2] as usize])];
+        k.sort();
+        let si = t.surface_index.max(0) as usize;
+        let (link, phys) = match sf.materials.get(si) {
+            Some(super::surface::SurfMaterial::Node(r)) => match resolve(r.index) {
+                Some((path, _, _)) => {
+                    let phys = sf.material_ids.get(si).map(|id| (id & 0xFF) as u8).unwrap_or(t.material_id);
+                    (material_link(&path), phys)
+                }
+                None => continue,
+            },
+            _ => continue,
+        };
+        smap.insert(k, (link, phys));
+    }
+    // votes per source material index
+    let mut votes: Vec<BTreeMap<(String, u8), usize>> = vec![BTreeMap::new(); s2.shaded_geoms.iter().map(|g| g.material_index.max(0) as usize + 1).max().unwrap_or(0)];
+    for g in &s2.shaded_geoms {
+        let mi = g.material_index.max(0) as usize;
+        let vis = match s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) {
+            Some(super::Node::Visual(v)) => v,
+            _ => continue,
+        };
+        let (pos, idx) = visual_triangles(vis);
+        for t in idx.chunks(3) {
+            if t.len() < 3 {
+                continue;
+            }
+            let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
+            k.sort();
+            if let Some(vote) = smap.get(&k) {
+                if mi < votes.len() {
+                    *votes[mi].entry(vote.clone()).or_default() += 1;
+                }
+            }
+        }
+    }
+    votes.into_iter().map(|v| v.into_iter().max_by_key(|(_, n)| *n).map(|(lp, _)| lp)).collect()
 }
 
 fn inline(index: i32, node: Node) -> Ref {
@@ -498,11 +656,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 // own surface id (usually 0) next, else the object's most
                 // common collision physics.
                 let common = most_common_physics(so);
-                let mut resolve = |idx: i32| -> Option<(String, u8)> {
+                let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
                     let p = ext_name(idx)?;
                     let link = material_link(&p);
                     let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
-                    Some((link, phys))
+                    Some((p, link, phys))
                 };
                 m.add_static_object(so, &iso, scale, &mut resolve).map_err(|err| format!("{path} entity {i}: {err}"))?;
             }
@@ -528,8 +686,9 @@ pub fn static_item_from_prefab(store: &mut crate::store::DataStore, prefab: &str
 /// Same, also returning the merge notes.
 pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefab: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
+    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
 }
@@ -547,7 +706,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     match super::parse_file(item_bytes) {
         Ok(f) => {
             let so = f.item.static_object().ok_or("item has no CPlugStaticObjectModel (and is not a crystal item)")?;
-            let mut resolve = |idx: i32| -> Option<(String, u8)> {
+            let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
                 m.notes.push(format!("external material node {idx} in a standalone item"));
                 None
             };
@@ -573,6 +732,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
                         .unwrap_or(3);
                 }
             }
+            m2.editors = std::env::var_os("TINY_EDITORS").is_some();
             m2.notes.extend(m.notes.drain(..));
             m = m2;
         }
@@ -584,7 +744,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
             super::bake::add_crystal(&crystal, scale, &mut m)?;
         }
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
 }
