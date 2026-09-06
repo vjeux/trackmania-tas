@@ -294,6 +294,10 @@ pub struct Corner {
     /// Defaults to per-face tangent (set by [`face_triangles`]).
     pub tan_u: [f32; 3],
     pub tan_v: [f32; 3],
+    /// Source polygon id (per material stream; the fan tris of one crystal
+    /// face share it). 0 when unknown. Used for one-vote-per-face normal
+    /// averaging (`smooth_normals_corner` under TINY_NDEDUP=face).
+    pub face: u32,
 }
 
 /// Triangle area (for area-weighted smoothing): borrows one tri only.
@@ -349,6 +353,91 @@ fn corner_angle(t: &[Corner; 3], k: usize) -> f32 {
 /// share one smoothed normal; harder creases stay split. Full smoothing
 /// (`max_deg=180`) over-shares (Road_17: 9750 vs his 14030); flat normals
 /// (`max_deg=0`) split everything (35184). Default 30 deg.
+/// Per-CORNER threshold averaging (non-transitive, no clustering): each
+/// corner's normal is the weighted mean of the face normals at its position
+/// whose angle to ITS OWN face normal is <= max_deg. Corners with the same
+/// set weld; corners whose sets differ split even when their faces are
+/// nearly coplanar. Read off his Tiny_Road_17 TSpecials partitions with
+/// `partdiff` (2026-09-06): at one vertex three near-coplanar tris (1-4deg
+/// apart) split 1+2 because only two of them sit within theta of the flat
+/// faces; the cluster model cannot produce that.
+pub fn smooth_normals_corner(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool) {
+    use std::collections::BTreeMap;
+    if max_deg <= 0.0 {
+        return;
+    }
+    let cos_max = (max_deg.to_radians()).cos();
+    let mut by_pos: BTreeMap<[u32; 3], Vec<(usize, usize)>> = BTreeMap::new();
+    for (ti, t) in tris.iter().enumerate() {
+        for (k, c) in t.iter().enumerate() {
+            by_pos.entry([c.pos[0].to_bits(), c.pos[1].to_bits(), c.pos[2].to_bits()]).or_default().push((ti, k));
+        }
+    }
+    for (_, corners) in by_pos {
+        if corners.len() < 2 {
+            continue;
+        }
+        let ns: Vec<[f32; 3]> = corners.iter().map(|&(ti, k)| tris[ti][k].normal).collect();
+        let areas: Vec<f32> = corners.iter().map(|&(ti, _)| tri_area_of(&tris[ti])).collect();
+        let angles: Vec<f32> = corners.iter().map(|&(ti, k)| corner_angle(&tris[ti], k)).collect();
+        let mut out: Vec<[f32; 3]> = Vec::with_capacity(corners.len());
+        let dedup = std::env::var("TINY_NDEDUP").ok();
+        // TINY_NUV_EPS=e: a face only joins a corner's average when its
+        // corner uv is within e (max-norm) of this corner's uv -- a UV seam
+        // blocks smoothing (his TB verts at the 12.0/0.0 tile wrap average
+        // only their own side although the faces are 37deg apart).
+        let uv_eps: Option<f32> = std::env::var("TINY_NUV_EPS").ok().and_then(|v| v.parse().ok());
+        let uvs: Vec<[f32; 2]> = corners.iter().map(|&(ti, k)| tris[ti][k].uv).collect();
+        for i in 0..corners.len() {
+            let me = ns[i];
+            let mut sel: Vec<usize> = (0..corners.len())
+                .filter(|&j| me[0] * ns[j][0] + me[1] * ns[j][1] + me[2] * ns[j][2] >= cos_max)
+                .filter(|&j| match uv_eps {
+                    Some(e) => (uvs[i][0] - uvs[j][0]).abs() <= e && (uvs[i][1] - uvs[j][1]).abs() <= e,
+                    None => true,
+                })
+                .collect();
+            match dedup.as_deref() {
+                Some("face") => {
+                    // one vote per source polygon (Corner::face)
+                    let mut seen: Vec<u32> = Vec::new();
+                    sel.retain(|&j| {
+                        let f = tris[corners[j].0][corners[j].1].face;
+                        if seen.contains(&f) {
+                            false
+                        } else {
+                            seen.push(f);
+                            true
+                        }
+                    });
+                }
+                Some(_) => {
+                    // one vote per distinct face normal (a quad's two tris share
+                    // one Newell normal): TINY_NDEDUP=1
+                    let mut seen: Vec<[u32; 3]> = Vec::new();
+                    sel.retain(|&j| {
+                        let b = [ns[j][0].to_bits(), ns[j][1].to_bits(), ns[j][2].to_bits()];
+                        if seen.contains(&b) {
+                            false
+                        } else {
+                            seen.push(b);
+                            true
+                        }
+                    });
+                }
+                None => {}
+            }
+            let sn: Vec<[f32; 3]> = sel.iter().map(|&j| ns[j]).collect();
+            let sa: Vec<f32> = sel.iter().map(|&j| areas[j]).collect();
+            let sg: Vec<f32> = sel.iter().map(|&j| angles[j]).collect();
+            out.push(cluster_normal_value(&sn, &sa, &sg, angle_weight));
+        }
+        for (i, &(ti, k)) in corners.iter().enumerate() {
+            tris[ti][k].normal = out[i];
+        }
+    }
+}
+
 pub fn smooth_normals_angle(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool) {
     use std::collections::BTreeMap;
     if max_deg <= 0.0 {
@@ -1057,7 +1146,7 @@ pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -
     let n = normalize(n);
     let corner = |i: usize| {
         let uv = uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-        Corner { pos: pts[i], normal: n, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3] }
+        Corner { pos: pts[i], normal: n, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }
     };
     if pts.len() == 3 {
         return vec![[corner(0), corner(1), corner(2)]];
@@ -1075,7 +1164,7 @@ pub fn face_triangles(c: &Crystal, f: &crate::crystal_model::Face, scale: f32) -
             let tn = normalize(cross(e1, e2));
             let mk = |p: [f32; 3], ui: usize| {
                 let uv = uvs.get(ui).copied().unwrap_or([0.0, 0.0]);
-                Corner { pos: p, normal: tn, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3] }
+                Corner { pos: p, normal: tn, uv, uv1: uv, tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }
             };
             [mk(a, 1), mk(b, i), mk(cc, (i + 1) % pts.len())]
         })
@@ -1573,6 +1662,7 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         })
         .collect();
     // visible faces (forward layers, visible only) -- unchanged
+    let mut face_id: u32 = 0;
     for (cr, visible, _) in &layers {
         if !visible {
             continue;
@@ -1580,6 +1670,12 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         for f in &cr.faces {
             let mut tris = face_triangles(cr, f, scale);
             shift(&mut tris);
+            face_id += 1;
+            for t in tris.iter_mut() {
+                for c in t.iter_mut() {
+                    c.face = face_id;
+                }
+            }
 
             let slot_i = if f.material >= 0 && (f.material as usize) < slots.len() { Some(f.material as usize) } else { None };
             if let Some(ref map) = pos_ref_early {
@@ -1877,7 +1973,24 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                 })
             })
             .unwrap_or(false);
-        smooth_normals_angle(&mut per_material[i], crease, angle_w);
+        // TINY_NMODE_MAP="Stem:corner,..." (or TINY_NMODE=corner for all)
+        // selects per-corner threshold averaging (smooth_normals_corner)
+        // instead of clustering.
+        let corner_mode = std::env::var("TINY_NMODE").map(|v| v == "corner").unwrap_or(false)
+            || std::env::var("TINY_NMODE_MAP")
+                .ok()
+                .map(|s| {
+                    s.split(',').any(|kv| {
+                        let mut it = kv.split(':');
+                        it.next().map(|k| k.trim()).unwrap_or("") == crease_stems[i] && it.next().map(|v| v.trim()) == Some("corner")
+                    })
+                })
+                .unwrap_or(false);
+        if corner_mode {
+            smooth_normals_corner(&mut per_material[i], crease, angle_w);
+        } else {
+            smooth_normals_angle(&mut per_material[i], crease, angle_w);
+        }
         // Lightmap UVs, weld-preserving (global planar per material).
         // TINY_NO_PACK=1 leaves uv1 as a copy of the diffuse uv (full
         // welding): diagnostic for the grey-road bisection 2026-09-05.
