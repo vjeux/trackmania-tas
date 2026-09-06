@@ -280,7 +280,7 @@ impl Merged {
         // replace pre-UserInst (old) materials: shared Techno3 id bases
         // carry no look, so the coincident surface material wins over direct
         // resolution. UserInst links are never overridden (validated 1:1).
-        let votes = surface_votes(so, s2, resolve);
+        let (votes, smap) = surface_votes(so, s2, resolve);
         let mut slots: Vec<Option<usize>> = Vec::new();
         if !s2.custom_materials.is_empty() {
             for (mi, m) in s2.custom_materials.iter().enumerate() {
@@ -344,17 +344,70 @@ impl Merged {
                 });
             }
         }
+        // Per source material index: the slot came from a surface vote, i.e. a
+        // shared Techno3 id material whose look the collision surface decides
+        // per triangle (see the split below).
+        let voted: Vec<bool> = (0..slots.len())
+            .map(|mi| {
+                let is_old = if !s2.custom_materials.is_empty() {
+                    s2.custom_materials.get(mi).map(|m| matches!(m.node.as_ref().and_then(|r| r.inline.as_deref()), Some(super::Node::OldMaterial(_))) && m.inst().is_none() && m.name.is_empty()).unwrap_or(false)
+                } else {
+                    s2.materials.get(mi).map(|r| matches!(r.inline.as_deref(), Some(super::Node::OldMaterial(_)))).unwrap_or(false)
+                };
+                is_old && votes.get(mi).map(|v| v.is_some()).unwrap_or(false)
+            })
+            .collect();
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
         if std::env::var_os("TINY_DUMP_DECLS").is_some() {
             self.notes.push(format!(
-                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?}",
+                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?} material refs {:?}",
                 s2.version,
                 s2.material_ids,
                 s2.materials_folder,
                 s2.u03,
                 s2.u04,
-                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>()
+                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>(), s2.materials.iter().map(|r| r.index).collect::<Vec<_>>()
             ));
+        }
+        // Prefab-wide layer table for the voted (shared Techno3 id) materials:
+        // vertex layer id -> material slot, voted from the collision material
+        // under the triangles whose three vertices carry that id (see the
+        // split below). One table per static object: an id means the same
+        // layer in every visual of the prefab (Beach: 0 Land, 1 SeaFloor,
+        // 2 Sand; LandHill: 1 HillPxz; LandCliff: 1 CliffPxz).
+        let mut layer_votes: std::collections::BTreeMap<u32, std::collections::BTreeMap<usize, usize>> = Default::default();
+        if !smap.is_empty() && std::env::var_os("TINY_NO_SPLIT").is_none() {
+            for g in &s2.shaded_geoms {
+                if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() {
+                    continue;
+                }
+                let mi = g.material_index.max(0) as usize;
+                if !voted.get(mi).copied().unwrap_or(false) {
+                    continue;
+                }
+                let Some(Node::Visual(vis)) = s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) else { continue };
+                let Some(eff) = effective_layer_ids(vis) else { continue };
+                let (pos, idx) = visual_triangles(vis);
+                for t in idx.chunks(3) {
+                    if t.len() < 3 {
+                        continue;
+                    }
+                    let (a, b, c) = (eff[t[0] as usize], eff[t[1] as usize], eff[t[2] as usize]);
+                    if a != b || b != c {
+                        continue;
+                    }
+                    let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
+                    k.sort();
+                    if let Some((link, phys)) = smap.get(&k) {
+                        let slot = self.link_slot(link, *phys, self.editors);
+                        *layer_votes.entry(a).or_default().entry(slot).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let layer_table: std::collections::BTreeMap<u32, usize> = layer_votes.into_iter().filter_map(|(id, votes)| votes.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| (id, m))).collect();
+        if !layer_table.is_empty() {
+            self.notes.push(format!("layer table {}", layer_table.iter().map(|(id, m)| format!("{id:x}->{}", self.materials[*m].link().unwrap_or("?").rsplit('\\').next().unwrap_or("?"))).collect::<Vec<_>>().join(" ")));
         }
         for g in &s2.shaded_geoms {
             // A geom's lod mask says which detail levels draw it (bit 0 =
@@ -403,11 +456,33 @@ impl Merged {
                     let mut parts = Vec::new();
                     for (d, e) in s.decls.iter().zip(s.elems.iter()) {
                         let mut p = format!("name{} type{} space{}", d.name(), d.stored_type(compress), d.space());
+                        if d.name() == N_POSITION {
+                            if let Elem::Float3(pts) = e {
+                                // y histogram in 0.5 m bins (prefab space, before scaling)
+                                let mut bins: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+                                for q in pts {
+                                    *bins.entry((q[1] * 2.0).floor() as i32).or_default() += 1;
+                                }
+                                p.push_str(&format!(" y{{{}}}", bins.iter().map(|(b, n)| format!("{}:{}", *b as f32 / 2.0, n)).collect::<Vec<_>>().join(" ")));
+                            }
+                        }
                         if let Elem::Word(w) = e {
                             let mut u: Vec<u32> = w.clone();
                             u.sort_unstable();
                             u.dedup();
                             p.push_str(&format!(" values[{}]", u.iter().take(12).map(|x| format!("{x:08x}")).collect::<Vec<_>>().join(",")));
+                            // per distinct word: the y histogram of the vertices carrying it
+                            if let Some(Elem::Float3(pts)) = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == N_POSITION).map(|(_, e)| e) {
+                                for val in u.iter().take(6) {
+                                    let mut bins: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+                                    for (q, x) in pts.iter().zip(w.iter()) {
+                                        if x == val {
+                                            *bins.entry((q[1] * 2.0).floor() as i32).or_default() += 1;
+                                        }
+                                    }
+                                    p.push_str(&format!(" {val:x}@y{{{}}}", bins.iter().map(|(b, n)| format!("{}:{}", *b as f32 / 2.0, n)).collect::<Vec<_>>().join(" ")));
+                                }
+                            }
                         }
                         if let Elem::Float4(f) = e {
                             p.push_str(&format!(" f4[{:?}..]", f.first()));
@@ -417,7 +492,90 @@ impl Merged {
                         }
                         parts.push(p);
                     }
-                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | ")));
+                    self.notes.push(format!("visual {} mat#{} ({} verts) material {}: {} || chunks {:x?} tcs {} subvis {} splits {} tangents {} idx {}", g.visual_index, g.material_index, s.elems.first().map(|e| e.len()).unwrap_or(0), self.materials[mat].link().unwrap_or("?"), parts.join(" | "), v.chunks, v.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), v.sub_visuals.len(), v.splits.len(), v.tangents.is_some(), v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0)));
+                }
+            }
+            // A voted (shared Techno3 id) material has no look of its own: the
+            // prefab paints its layers per VERTEX (Beach: id 0 = Land on the
+            // plateau, 2 = Sand on the slope, 1 = SeaFloor under water; hills
+            // and cliffs likewise switch to HillPxz/CliffPxz on the steep part)
+            // and the collision surface is partitioned the same way. A single
+            // linkable pak material is uniform, so one material per visual
+            // painted a whole tile with one layer (the 2026-09-06 beaches: sand
+            // and sea floor where the original shows grass). Split the visual
+            // by the collision material under each triangle instead — one
+            // sub-visual per coincident surface material, unmatched triangles
+            // staying with the voted majority. `TINY_NO_SPLIT=1` disables.
+            let mi = g.material_index.max(0) as usize;
+            if voted.get(mi).copied().unwrap_or(false) && !smap.is_empty() && std::env::var_os("TINY_NO_SPLIT").is_none() {
+                let (pos, idx) = visual_triangles(&v);
+                let ntri = idx.len() / 3;
+                // Per-triangle collision material (None where no collision
+                // triangle coincides).
+                let surf_mat: Vec<Option<usize>> = idx
+                    .chunks(3)
+                    .take(ntri)
+                    .map(|t| {
+                        let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
+                        k.sort();
+                        smap.get(&k).map(|(link, phys)| self.link_slot(link, *phys, self.editors))
+                    })
+                    .collect();
+                // The prefab's own painting: vertex element 4 (Int32) is the
+                // layer id — one byte, or two bytes `hi:lo` on a blend visual
+                // whose vertex colour's G byte picks lo (G < 128) or hi. The
+                // id -> material table is voted from the collision material
+                // under the single-id triangles, so the split lands where the
+                // original changes layer (the blend's midpoint), not where the
+                // physics zone happens to change.
+                let eff_ids = effective_layer_ids(&v);
+                let mut tri_mat: Vec<usize> = Vec::with_capacity(ntri);
+                match eff_ids {
+                    Some(eff) if !layer_table.is_empty() && std::env::var_os("TINY_SPLIT_SURFACE").is_none() => {
+                        let table = &layer_table;
+                        for (ti, t) in idx.chunks(3).take(ntri).enumerate() {
+                            let (a, b, c) = (eff[t[0] as usize], eff[t[1] as usize], eff[t[2] as usize]);
+                            let m = if a == b && b == c {
+                                table.get(&a).copied().or(surf_mat[ti]).unwrap_or(mat)
+                            } else {
+                                // a triangle straddling two layers: the collision
+                                // material under it, else the majority id
+                                let maj = if a == b || a == c { a } else if b == c { b } else { a.max(b).max(c) };
+                                surf_mat[ti].or_else(|| table.get(&maj).copied()).unwrap_or(mat)
+                            };
+                            tri_mat.push(m);
+                        }
+                    }
+                    _ => {
+                        for sm in &surf_mat {
+                            tri_mat.push(sm.unwrap_or(mat));
+                        }
+                    }
+                }
+                let mut groups: Vec<usize> = tri_mat.clone();
+                groups.sort_unstable();
+                groups.dedup();
+                if groups.len() > 1 {
+                    for gm in groups {
+                        let keep: Vec<bool> = tri_mat.iter().map(|m| *m == gm).collect();
+                        let mut sv = sub_visual(&v, &keep)?;
+                        transform_visual(&mut sv, iso, scale)?;
+                        self.notes.push(format!("visual {} split: {} triangles -> {}", g.visual_index, keep.iter().filter(|k| **k).count(), self.materials[gm].link().unwrap_or("?")));
+                        visual_slots.push((self.visuals.len(), gm));
+                        self.visuals.push(MergedVisual { visual: sv, material: gm });
+                    }
+                    continue;
+                }
+                if let Some(&only) = tri_mat.first() {
+                    if only != mat {
+                        // every matched triangle disagrees with the majority
+                        // vote (cannot happen — the vote is over these same
+                        // triangles — but keep the per-triangle answer)
+                        transform_visual(&mut v, iso, scale)?;
+                        visual_slots.push((self.visuals.len(), only));
+                        self.visuals.push(MergedVisual { visual: v, material: only });
+                        continue;
+                    }
                 }
             }
             transform_visual(&mut v, iso, scale)?;
@@ -447,6 +605,101 @@ impl Merged {
     }
 }
 
+/// The prefab's own terrain painting, per vertex: element 4 (Int32) is the
+/// layer id — one byte, or two bytes `hi:lo` on a blend visual whose vertex
+/// colour's G byte picks lo (G < 128) or hi (measured on Beach\Base1A: 0x200
+/// vertices at the plateau edge read Land at the top ring and Sand below it,
+/// 0x201 at the water line read SeaFloor below and Sand above). `None` when
+/// the stream has no such element.
+pub fn effective_layer_ids(v: &CPlugVisualIndexedTriangles) -> Option<Vec<u32>> {
+    let s = v.stream()?;
+    let compress = s.compress_local3d.unwrap_or(false);
+    let ids = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == 4 && d.stored_type(compress) == super::vstream::T_INT32).and_then(|(_, e)| match e {
+        Elem::Word(w) => Some(w),
+        _ => None,
+    })?;
+    let colors = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_COLOR0).and_then(|(_, e)| match e {
+        Elem::Word(w) => Some(w),
+        _ => None,
+    });
+    Some(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                if *id < 0x100 {
+                    *id
+                } else {
+                    let g = colors.and_then(|c| c.get(i)).map(|c| (c >> 8) & 0xFF).unwrap_or(0);
+                    if g < 128 { id & 0xFF } else { (id >> 8) & 0xFF }
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The visual restricted to the triangles flagged in `keep` (one flag per
+/// triangle): the index buffer is filtered, the vertices it no longer uses are
+/// dropped from every stream element and both tangent arrays, and the counts
+/// follow. Vertex order is preserved. The bounding box is left to
+/// `transform_visual`, which recomputes it.
+pub fn sub_visual(v: &CPlugVisualIndexedTriangles, keep: &[bool]) -> R<CPlugVisualIndexedTriangles> {
+    let mut out = v.clone();
+    let idx = v.index_buffer.as_ref().map(|b| b.indices.clone()).unwrap_or_default();
+    let nverts = v.main.as_ref().map(|m| m.count.max(0) as usize).unwrap_or(0);
+    let mut used = vec![false; nverts];
+    let mut new_idx: Vec<u32> = Vec::new();
+    for (ti, t) in idx.chunks(3).enumerate() {
+        if t.len() == 3 && keep.get(ti).copied().unwrap_or(false) {
+            for &i in t {
+                *used.get_mut(i as usize).ok_or("sub_visual: index past the vertex count")? = true;
+            }
+            new_idx.extend_from_slice(t);
+        }
+    }
+    let mut remap = vec![u32::MAX; nverts];
+    let mut n = 0u32;
+    for (i, u) in used.iter().enumerate() {
+        if *u {
+            remap[i] = n;
+            n += 1;
+        }
+    }
+    for i in new_idx.iter_mut() {
+        *i = remap[*i as usize];
+    }
+    let m = out.main.as_mut().ok_or("sub_visual: visual without chunk 0x0900600F")?;
+    let per = (((!(m.flags() >> 17)) & 8) | 4) as usize;
+    m.count = n as i32;
+    let stream = match m.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+        Some(Node::VertexStream(s)) => s,
+        _ => return Err("sub_visual: visual without an inline vertex stream".into()),
+    };
+    stream.count = n as i32;
+    for e in stream.elems.iter_mut() {
+        *e = match e {
+            Elem::Float2(a) => Elem::Float2(a.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect()),
+            Elem::Float3(a) => Elem::Float3(a.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect()),
+            Elem::Float4(a) => Elem::Float4(a.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect()),
+            Elem::Word(a) => Elem::Word(a.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect()),
+            Elem::Raw { size, bytes } => {
+                let size = *size;
+                Elem::Raw { size, bytes: bytes.chunks(size.max(1)).zip(&used).filter(|(_, u)| **u).flat_map(|(c, _)| c.iter().copied()).collect() }
+            }
+        };
+    }
+    if let Some((a, b)) = out.tangents.as_mut() {
+        for t in [a, b] {
+            if !t.is_empty() {
+                *t = t.chunks(per).zip(&used).filter(|(_, u)| **u).flat_map(|(c, _)| c.iter().copied()).collect();
+            }
+        }
+    }
+    if let Some(ib) = out.index_buffer.as_mut() {
+        ib.indices = new_idx;
+    }
+    Ok(out)
+}
+
 /// A visual's (already transformed) positions and triangle indices.
 pub fn visual_triangles(v: &CPlugVisualIndexedTriangles) -> (Vec<[f32; 3]>, Vec<u32>) {
     let pos = match v.stream().and_then(|s| s.elems.first()) {
@@ -464,22 +717,25 @@ fn mm(p: &[f32; 3]) -> (i32, i32, i32) {
 /// Per source-material-index vote: visuals whose link came out shared-id
 /// (Techno3) get the surface material most of their triangles coincide
 /// with. Triangle lookup is by sorted mm vertex keys in prefab space.
+/// Collision triangle (sorted mm vertex keys) -> (material link, physics).
+pub type SurfMap = std::collections::HashMap<[(i32, i32, i32); 3], (String, u8)>;
+
 fn surface_votes(
     so: &super::item::CPlugStaticObjectModel,
     s2: &super::solid2::CPlugSolid2Model,
     resolve: &mut MaterialResolver,
-) -> Vec<Option<(String, u8)>> {
-    use std::collections::{BTreeMap, HashMap};
+) -> (Vec<Option<(String, u8)>>, SurfMap) {
+    use std::collections::BTreeMap;
     let sf = match so.surface() {
         Some(sf) => sf,
-        None => return Vec::new(),
+        None => return (Vec::new(), SurfMap::new()),
     };
     let (verts, tris) = match &sf.surf {
         super::surface::Surf::Mesh { vertices, triangles, .. } => (vertices, triangles),
-        _ => return Vec::new(),
+        _ => return (Vec::new(), SurfMap::new()),
     };
     // surface tri -> (material path, physics)
-    let mut smap: HashMap<[(i32, i32, i32); 3], (String, u8)> = HashMap::new();
+    let mut smap: SurfMap = SurfMap::new();
     for t in tris {
         let mut k = [mm(&verts[t.indices[0] as usize]), mm(&verts[t.indices[1] as usize]), mm(&verts[t.indices[2] as usize])];
         k.sort();
@@ -518,7 +774,7 @@ fn surface_votes(
             }
         }
     }
-    votes.into_iter().map(|v| v.into_iter().max_by_key(|(_, n)| *n).map(|(lp, _)| lp)).collect()
+    (votes.into_iter().map(|v| v.into_iter().max_by_key(|(_, n)| *n).map(|(lp, _)| lp)).collect(), smap)
 }
 
 fn inline(index: i32, node: Node) -> Ref {
