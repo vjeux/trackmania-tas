@@ -14,7 +14,7 @@ PACKS=${5:-/tmp}
 export TINY_SEED_LARGEST=1 TINY_VPRIM=1 TINY_USMOOTH=1 TINY_UKEY=1 TINY_UKEYQ=1
 export TINY_UMODE_MAP="${TINY_UMODE_MAP:-TechnicsSpecials:du,TechnicsTrims:du,Technics:du,TrackBorders:duoff,RoadTech:range}"
 export TINY_TAN_MAP="${TINY_TAN_MAP:-Technics:12,TechnicsSpecials:60}"
-export TINY_WEIGHT_MAP="${TINY_WEIGHT_MAP:-TrackBorders:angle,Technics:angle,TechnicsSpecials:angle,TechnicsTrims:angle}"
+export TINY_WEIGHT_MAP="${TINY_WEIGHT_MAP:-TrackBorders:angle,Technics:angle,TechnicsTrims:angle}"
 export TINY_UMAG_MAP="${TINY_UMAG_MAP:-TechnicsSpecials}"
 export TINY_POS_REF="${TINY_POS_REF:-$REF}"
 export TINY_CREASE_MAP="${TINY_CREASE_MAP:-TrackBorders:65,TechnicsTrims:45,TechnicsSpecials:55,Technics:52,RoadTech:20,SpecialFXTurbo:55}"
