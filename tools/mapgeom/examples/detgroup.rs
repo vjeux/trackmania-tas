@@ -57,9 +57,9 @@ fn main() {
                     let dv2 = u[2][1]-u[0][1];
                     let det = du1*dv2-du2*dv1;
                     let sgn = det >= 0.0;
-                    let c = [Corner { pos: p[0], normal: fn_, uv: u[0], uv1: u[0], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 },
-                             Corner { pos: p[1], normal: fn_, uv: u[1], uv1: u[1], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 },
-                             Corner { pos: p[2], normal: fn_, uv: u[2], uv1: u[2], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0 }];
+                    let c = [Corner { pos: p[0], normal: fn_, uv: u[0], uv1: u[0], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0, group: 0 },
+                             Corner { pos: p[1], normal: fn_, uv: u[1], uv1: u[1], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0, group: 0 },
+                             Corner { pos: p[2], normal: fn_, uv: u[2], uv1: u[2], tan_u: [0.0; 3], tan_v: [0.0; 3], face: 0, group: 0 }];
                     let (fu, _) = tangent(&c);
                     for k in 0..3 {
                         let pb = format!("{:x}{:x}{:x}", p[k][0].to_bits(), p[k][1].to_bits(), p[k][2].to_bits());
