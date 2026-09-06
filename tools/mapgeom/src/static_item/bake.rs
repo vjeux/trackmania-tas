@@ -1650,15 +1650,17 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
                     .collect()
             })
             .unwrap_or_default();
+        // (umode=off still computes range frames for VALUES; it only
+        // skips the U-key splits in make_visuals.)
         let umode = umode_map.get(&crease_stems[i]).map(|s| s.as_str()).unwrap_or("range");
-        if std::env::var("TINY_VPRIM").is_ok() && umode != "off" {
+        if std::env::var("TINY_VPRIM").is_ok() {
             tangents_vprim(&mut per_material[i], umode == "du");
         }
         // U-cluster smoothing of V-primary frames (TINY_USMOOTH=1):
         // averages agreeing U (bevels), splits opposed (coils). Angle from
         // TINY_TAN_DEG (default 40). Needs VPRIM frames; key (UKEYQ) uses
         // the smoothed quantized U.
-        if std::env::var("TINY_USMOOTH").is_ok() {
+        if std::env::var("TINY_USMOOTH").is_ok() && umode != "off" {
             // (Per-material TINY_TAN_MAP="Stem:deg" else TINY_TAN_DEG/40.)
             let umap: std::collections::BTreeMap<String, f32> = std::env::var("TINY_TAN_MAP")
                 .ok()
