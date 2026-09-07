@@ -576,7 +576,11 @@ pub fn cmd(args: &[String]) {
         if map.model == "-" {
             continue;
         }
-        let rot = [block_yaw(b), 0.0, 0.0];
+        // A generated filler of a FREE block is free too, with the parent's
+        // full rotation (Summer 11's inverted ramp: 57 TrackWallSlopeStraightFCB
+        // bottom plates pitched by 178° under upside-down roads; yaw alone
+        // stood them up as thin bars and the ramp vanished).
+        let rot = b.free_rot.unwrap_or([block_yaw(b), 0.0, 0.0]);
         let origin = match map.footprint {
             Some(fp) => block_origin(b, fp),
             None => block_pos(b),

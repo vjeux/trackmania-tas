@@ -273,15 +273,15 @@ pub fn cmd_region(args: &[String]) {
     // [skin], the two trailing words) as hex — the bytes an item VARIANT index
     // would live in, for reading a layout off real placements.
     if crate::cli::has(args, "--raw") {
-        println!("id\tflags\tvariant\tpivot\tscale\ttail_hex");
+        println!("id\tflags\tvariant\tyaw,pitch,roll\tpivot\tscale\ttail_hex");
         for e in found.iter().filter(|e| e.item) {
             let i: usize = e.id[1..].parse().unwrap();
             let rec = &m.items[i];
             let tail = &m.gbx.body[rec.waypoint_region.1..rec.record_region.1];
             let rest: String = tail[2 + 12 + 4..].iter().map(|b| format!("{b:02x}")).collect();
             println!(
-                "{}\t{:#06x}\t{}\t{:.3},{:.3},{:.3}\t{:.3}\t{}",
-                e.id, rec.flags, rec.variant(), rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, rest
+                "{}\t{:#06x}\t{}\t{:.4},{:.4},{:.4}\t{:.3},{:.3},{:.3}\t{:.3}\t{}",
+                e.id, rec.flags, rec.variant(), rec.yaw, rec.pitch, rec.roll, rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, rest
             );
         }
     }
