@@ -194,7 +194,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let solids: Vec<String> = pk.mobils.iter().filter_map(|mb| mb.solid.clone()).collect();
         let legacy_item = LEGACY.iter().find(|(n, _)| n == name).map(|(_, p)| *p);
         // recipe key: what gets baked (prefab set or legacy item) + waypoint
-        let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units) };
+        // + the block's material modifier — PlatformGrass*/PlatformDirt*/
+        // PlatformIce* share the PlatformTech prefabs and differ ONLY by the
+        // modifier folder their materials are taken from (Summer 03: the tech
+        // slopes next to the first checkpoint came out grass, keyed to the
+        // PlatformGrassSlope2Straight item built first).
+        let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, bi.material_modifier) };
         if prefabs.is_empty() && legacy_item.is_none() {
             if solids.is_empty() {
                 // intentionally empty variant (e.g. the hidden pillar)

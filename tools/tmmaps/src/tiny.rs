@@ -400,6 +400,32 @@ pub fn cmd(args: &[String]) {
     }
     let original_items = specs.len();
     let mut empty_blocks = 0usize;
+    // Zone (terrain) blocks REPLACED by a block designed for that terrain: a
+    // `PlatformGrassOnLandHillSlopeBase` / `PlatformGrassBaseOnLandHill2` /
+    // `RoadTechStraightOnWaterShore1` shares its cell with the LandHill /
+    // WaterShore tile it stands in for, and the game draws only the
+    // replacement. Both as items (Summer 03, cells (37,17,22) and (38,17,22):
+    // LandHill1 Deadend under the OnLandHill slope base) the hill's bumps poke
+    // through the deck — a snow blob in the grass. Zone names come from the
+    // genealogy chunk; a replacement block names its zone after "On", with or
+    // without the zone's trailing digit (OnLandHill covers LandHill1/2).
+    let zones: BTreeSet<String> = crate::gbx::all_skip_chunks(&source.gbx.body)
+        .iter()
+        .find(|(cid, ..)| *cid == 0x0304_3043)
+        .and_then(|&(_, _, payload, size)| crate::map::genealogy_records(&source.gbx.body[payload..payload + size]).ok())
+        .map(|recs| recs.into_iter().map(|r| r.2).collect())
+        .unwrap_or_default();
+    let replaces = |name: &str, zone: &str| {
+        let stem = zone.trim_end_matches(|c: char| c.is_ascii_digit());
+        name.contains(&format!("On{zone}")) || (!stem.is_empty() && name.contains(&format!("On{stem}")))
+    };
+    let mut replaced_cells: BTreeSet<[u8; 3]> = BTreeSet::new();
+    for b in &source.blocks {
+        if !zones.contains(&b.name) && zones.iter().any(|z| replaces(&b.name, z)) {
+            replaced_cells.insert(b.raw_coords);
+        }
+    }
+    let mut replaced_terrain = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping
@@ -411,6 +437,10 @@ pub fn cmd(args: &[String]) {
         // pillar mobil): no item, on purpose.
         if map.model == "-" {
             empty_blocks += 1;
+            continue;
+        }
+        if zones.contains(&b.name) && replaced_cells.contains(&b.raw_coords) {
+            replaced_terrain += 1;
             continue;
         }
         let rot = b.free_rot.unwrap_or([block_yaw(b), 0.0, 0.0]);
@@ -664,7 +694,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants)", repointed_items, dropped_items, empty_blocks);
+    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them", repointed_items, dropped_items, empty_blocks, replaced_terrain);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

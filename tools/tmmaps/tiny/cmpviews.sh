@@ -29,10 +29,10 @@ shoot_all() { # MAP SIDE(o|t)
     fi
     local out="$OUTDIR/cmp-$TAG$name-$SIDE.png"
     if [ $first = 1 ]; then
-      "$T/shootmap.sh" "$M" "$out" "$cam" "$([ $SIDE = t ] && echo Tiny || echo Orig)$TAG" 2>&1 | grep "DIALOG\|not responding\|^ctx\|dead" | head -3
+      "$T/shootmap.sh" "$M" "$out" "$cam" "$([ $SIDE = t ] && echo Tiny || echo Orig)$TAG" 2>&1 </dev/null | grep "DIALOG\|not responding\|^ctx\|dead" | head -3
       first=0
     else
-      "$T/shootcam.sh" "$out" "$cam" 2>&1 | grep "not responding" | head -1
+      "$T/shootcam.sh" "$out" "$cam" 2>&1 </dev/null | grep "not responding" | head -1
     fi
     echo "  $SIDE $name cam $cam -> $(stat -c %s "$out" 2>/dev/null) B"
   done < "$VIEWS"
@@ -44,6 +44,6 @@ while IFS=$'\t' read -r name rest; do
   [ -z "$name" ] && continue; case "$name" in \#*) continue;; esac
   o="$OUTDIR/cmp-$TAG$name-o.png"; t="$OUTDIR/cmp-$TAG$name-t.png"
   [ -s "$o" ] && [ -s "$t" ] || { echo "cmp-$TAG$name: missing side"; continue; }
-  ~/bin/ffmpeg -y -loglevel error -i "$o" -i "$t" -filter_complex "[0:v]scale=960:-1[a];[1:v]scale=960:-1[b];[a][b]hstack" -q:v 4 "$OUTDIR/cmp-$TAG$name.jpg"
+  ~/bin/ffmpeg -nostdin -y -loglevel error -i "$o" -i "$t" -filter_complex "[0:v]scale=960:-1[a];[1:v]scale=960:-1[b];[a][b]hstack" -q:v 4 "$OUTDIR/cmp-$TAG$name.jpg"
   echo "$OUTDIR/cmp-$TAG$name.jpg"
 done < "$VIEWS"
