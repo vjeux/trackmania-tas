@@ -551,7 +551,9 @@ pub fn cmd(args: &[String]) {
             // rotated by pitch/roll — fell apart into a straight tube).
             Some(map) => {
                 repointed_items += 1;
-                let scaled_copy = map.model.ends_with(".Item.Gbx") && (map.model_scale - 1.0).abs() > 1e-6;
+                // a stock half-size variant (RaceScreen6x1Small) is a scaled
+                // copy too: its mapping row says model_scale 0.5
+                let scaled_copy = (map.model_scale - 1.0).abs() > 1e-6;
                 let frame = if scaled_copy && it.pivot.iter().any(|v| v.abs() > 1e-6) {
                     Some(([it.yaw, it.pitch, it.roll], [it.pivot[0] * map.model_scale, it.pivot[1] * map.model_scale, it.pivot[2] * map.model_scale]))
                 } else {

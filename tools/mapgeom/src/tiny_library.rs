@@ -136,6 +136,68 @@ fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
     hits.into_iter().next()
 }
 
+/// The stock item that is exactly the HALF of `model` — Nadeo's `Small`
+/// screens (measured 2026-09-07 on the pack: every pair halves both width and
+/// height; the frame depth stays 0.86 m on all of them). `TINY_STOCK_HALF=0`
+/// turns the table off; `=gates` adds the gate families' half-WIDTH member
+/// (same 11 m posts — twice the tiny height; the 24 m gates have no 12 m twin
+/// and the `Special`/`Gameplay` 4 m ends have nothing below them).
+pub fn stock_half_variant(model: &str) -> Option<&'static str> {
+    let mode = std::env::var("TINY_STOCK_HALF").unwrap_or_default();
+    if mode == "0" {
+        return None;
+    }
+    const SCREENS: &[(&str, &str)] = &[
+        ("RaceScreen6x1", "RaceScreen6x1Small"),
+        ("Screen16x9", "Screen16x9Small"),
+        ("Screen2x3Big", "Screen2x3"),
+        ("Screen2x3", "Screen2x3Small"),
+        ("Screen4x1", "Screen4x1Small"),
+        ("Screen2x1", "Screen2x1Small"),
+        ("Screen1x1", "Screen1x1Small"),
+        ("Screen155", "Screen155Small"),
+    ];
+    if let Some((_, small)) = SCREENS.iter().find(|(big, _)| *big == model) {
+        return Some(small);
+    }
+    if mode != "gates" {
+        return None;
+    }
+    // gates: <Family><Size>m[<Suffix>] -> the same family one size down
+    for (from, to) in [("32m", "16m"), ("16m", "8m"), ("8m", "4m")] {
+        if let Some(i) = model.find(from) {
+            let (head, tail) = (&model[..i], &model[i + from.len()..]);
+            if head.starts_with("Gate") && head.chars().last().map(|c| !c.is_ascii_digit()).unwrap_or(false) {
+                // 4 m exists only for the Special / Gameplay families
+                if to == "4m" && !(head.starts_with("GateSpecial") || head.starts_with("GateGameplay")) {
+                    return None;
+                }
+                let name = format!("{head}{to}{tail}");
+                return GATE_NAMES.iter().find(|g| **g == name).copied();
+            }
+        }
+    }
+    None
+}
+
+/// Every gate item of the Stadium pack (the target of the gate ladder must be
+/// a real file; `find_item_file` confirms it again against the store).
+const GATE_NAMES: &[&str] = &[
+    "GateCheckpointCenter16m", "GateCheckpointCenter16mv2", "GateCheckpointCenter8m", "GateCheckpointCenter8mv2",
+    "GateCheckpointLeft16m", "GateCheckpointLeft8m", "GateCheckpointRight16m", "GateCheckpointRight8m",
+    "GateFinish16m", "GateFinish8m", "GateFinishCenter16m", "GateFinishCenter16mv2", "GateFinishCenter8m", "GateFinishCenter8mv2",
+    "GateMultilapCenter16m", "GateMultilapCenter8m", "GateMultilapLeft16m", "GateMultilapLeft8m", "GateMultilapRight16m", "GateMultilapRight8m",
+    "GateStartCenter16m", "GateStartCenter8m", "GateStartLeft16m", "GateStartLeft8m", "GateStartRight16m", "GateStartRight8m",
+    "GateSpecial16mBoost", "GateSpecial16mBoost2", "GateSpecial16mCruise", "GateSpecial16mFragile", "GateSpecial16mNoBrake", "GateSpecial16mNoEngine",
+    "GateSpecial16mNoSteering", "GateSpecial16mReset", "GateSpecial16mSlowMotion", "GateSpecial16mTurbo", "GateSpecial16mTurbo2", "GateSpecial16mTurboRoulette",
+    "GateSpecial8mBoost", "GateSpecial8mBoost2", "GateSpecial8mCruise", "GateSpecial8mFragile", "GateSpecial8mNoBrake", "GateSpecial8mNoEngine",
+    "GateSpecial8mNoSteering", "GateSpecial8mReset", "GateSpecial8mSlowMotion", "GateSpecial8mTurbo", "GateSpecial8mTurbo2", "GateSpecial8mTurboRoulette",
+    "GateSpecial4mBoost", "GateSpecial4mBoost2", "GateSpecial4mCruise", "GateSpecial4mFragile", "GateSpecial4mNoBrake", "GateSpecial4mNoEngine",
+    "GateSpecial4mNoSteering", "GateSpecial4mReset", "GateSpecial4mSlowMotion", "GateSpecial4mTurbo", "GateSpecial4mTurbo2", "GateSpecial4mTurboRoulette",
+    "GateGameplayDesert16m", "GateGameplayDesert8m", "GateGameplayDesert4m", "GateGameplayRally16m", "GateGameplayRally8m", "GateGameplayRally4m",
+    "GateGameplaySnow16m", "GateGameplaySnow8m", "GateGameplaySnow4m", "GateGameplayStadium16m", "GateGameplayStadium8m", "GateGameplayStadium4m",
+];
+
 /// The stock vegetation item standing in for a prefab's `.VegetTreeModel.Gbx`
 /// entity: `…\TreeBigA1.VegetTreeModel.Gbx` -> the pack item `TreeBigA` (an
 /// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`),
@@ -593,6 +655,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut item_alias_n = 0usize;
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
+    // stock half-size variants used as targets: their mapping rows carry
+    // model_scale = scale like an embedded half-size copy
+    let mut half_stock: std::collections::BTreeSet<String> = Default::default();
     for ((model, variant), n) in &item_counts {
         if model.is_empty() || !wanted(model) {
             continue;
@@ -600,6 +665,27 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if let Some(target) = single_variant.get(model) {
             item_map.insert((model.clone(), *variant), target.clone());
             continue;
+        }
+        // Stock HALF-SIZE variants (2026-09-07): Nadeo ships every screen in a
+        // `Small` version that is exactly half in both dimensions
+        // (RaceScreen6x1 24×4 m → RaceScreen6x1Small 12×2 m; Screen2x3Big →
+        // Screen2x3 → Screen2x3Small). A stock item keeps the game's own
+        // behaviour — the live in-game advertisement on its panel — which no
+        // baked copy can have (the skin remap needs the model's own texture
+        // file). The mapping row carries model_scale = scale so the placement
+        // is treated like a half-size copy (scale 1, pivot halved).
+        // TINY_STOCK_HALF=0 bakes them instead; TINY_STOCK_HALF=gates also
+        // maps the gates to their half-WIDTH family member (32 m → 16 m: the
+        // same 11 m posts, so twice the tiny height — a visible mismatch).
+        if let Some(small) = stock_half_variant(model) {
+            if find_item_file(store, small).is_some() {
+                let key = (model.clone(), *variant);
+                single_variant.insert(model.clone(), small.to_string());
+                item_map.insert(key, small.to_string());
+                half_stock.insert(small.to_string());
+                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, its screen keeps the live advertisement")) });
+                continue;
+            }
         }
         let alias = format!("AI{item_alias_n:08}");
         let ident = format!("{alias}.Item.Gbx");
@@ -747,7 +833,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for it in &source.items {
         match item_map.get(&(it.model.clone(), it.variant())) {
             Some(target) => {
-                let ms = if target.ends_with(".Item.Gbx") { scale } else { 1.0 };
+                let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
             }
