@@ -37,9 +37,11 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         start / every checkpoint / finish looked at along the gate, the
         whole map from above and its four quadrants; the anchor as a comment
   tinyctl shoot --orig SRC --tiny TINY --views VIEWS.tsv --tag sNN --anchor A
-                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [-v]
+                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [-v]
         push, one editor load per side on the render box (shootctl shootset),
         compare there, pull the sheets: cmpdiff-sNN-crops.png / -overview.png
+        (--ab: --orig is a tiny build too — an A/B of two tiny outputs — and is
+        shot through the anchor like the tiny side)
   tinyctl compare --views VIEWS.tsv --dir DIR --tag sNN [--color 50] [--edge 16] [--keep-hud]
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]

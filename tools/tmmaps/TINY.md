@@ -45,7 +45,7 @@ The command:
 2. refuses unless every authored block model has an Item.Gbx mapping;
 3. replaces all authored blocks with mapped item models and scales every existing item;
 4. preserves every waypoint explicitly;
-5. parks the original authored blocks below the map;
+5. DELETES the original authored blocks and the generated (baked) non-foundation fillers from the block chunks — `MapFile::remove_blocks` re-serialises 0x0304301F and 0x03043048 with the shared lookback table re-encoded, and rewrites everything that lists blocks (0x0304305F free positions, 0x03043062 colours, 0x03043068 lightmap quality, 0x03043069 macroblock refs, the snapped-on tables of 0x03043040); `TINY_KEEP_BAKED=Sea` (default) names the baked records that stay, `TINY_PARK_BLOCKS=1` restores the old way (every record moved to cell 0,0,0 and renamed to a neutral road);
 6. embeds the supplied converted-item archive;
 7. assigns a distinct 27-byte map UID (`Tiny` + the first 23 source UID bytes);
 8. reloads the written map and verifies every generated item model, position, scale, and waypoint tag.

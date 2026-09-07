@@ -42,6 +42,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let anchor = f("--anchor").ok_or("shoot needs --anchor sx,sy,sz:tx,ty,tz (tinyctl views prints it)")?;
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/tmp/tiny3".into()));
     let only = f("--only");
+    // --ab: BOTH maps are tiny builds (an A/B of two `tmmaps tiny` outputs,
+    // e.g. parked vs deleted blocks), so the orig side is shot through the
+    // anchor as well and the views file stays in source coordinates.
+    let ab = tmmaps::cli::has(args, "--ab");
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     let tinyctl = f("--box-tinyctl").unwrap_or_else(|| format!("{BOX_TOOLS}/tinyctl"));
     let ffmpeg_local = f("--ffmpeg").unwrap_or_else(|| format!("{}/bin/ffmpeg", std::env::var("HOME").unwrap_or_else(|_| "/home/vjeux".into())));
@@ -73,18 +77,28 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     };
     for side in &sides {
         let map = if *side == "o" { &r_orig } else { &r_tiny };
-        let anchor_arg = if *side == "t" { format!(" --anchor {anchor}") } else { String::new() };
+        // shootset maps the camera through the anchor for --side t only, so
+        // an --ab orig is shot AS side t (own tag, own dir) and its frames
+        // are then moved under the compare's -o names.
+        let as_t = *side == "o" && ab;
+        let (shoot_side, shoot_tag, shoot_dir) = if as_t { ("t", format!("{tag}A"), format!("{remote_dir}A")) } else { (*side, tag.clone(), remote_dir.clone()) };
+        let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}") } else { String::new() };
         // --shadows Q: compute the lightmap on both sides before shooting
         let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
-        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {side} --tag {tag} --outdir {remote_dir}{anchor_arg}{shadows_arg}");
-        eprintln!("shooting side {side} …");
+        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}");
+        eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {
             eprintln!("{}", started.trim());
         }
-        let done = wsx.wait_done(&format!("{remote_dir}/done-{side}.txt"), &format!("{remote_dir}/shootset-{side}.log"), Duration::from_secs(1800), &format!("shootset {side}"))?;
+        let done = wsx.wait_done(&format!("{shoot_dir}/done-{shoot_side}.txt"), &format!("{shoot_dir}/shootset-{shoot_side}.log"), Duration::from_secs(1800), &format!("shootset {side}"))?;
         for l in done.lines() {
             eprintln!("  {l}");
+        }
+        if as_t {
+            let names = crate::compare_view_names(&views)?;
+            let mvs: Vec<String> = names.iter().map(|n| format!("mv -f {shoot_dir}/cmp-{shoot_tag}{n}-t.png {remote_dir}/cmp-{tag}{n}-o.png")).collect();
+            wsx.sh(&format!("mkdir -p {remote_dir}; {}; cp -f {shoot_dir}/shootset-t.log {remote_dir}/shootset-o.log", mvs.join("; ")))?;
         }
     }
     // One side re-shot (a fix on the tiny side): the other side's frames are

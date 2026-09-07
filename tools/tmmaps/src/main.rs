@@ -210,7 +210,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -1101,10 +1101,92 @@ fn main() {
             // Every skippable chunk in the body, with its size. Needed to
             // reason about FREE blocks (0x0304305F) and to tell at a glance
             // whether a map even has a baked-blocks chunk (0x03043048).
+            // `--only 0x0304305D --hex N` dumps the head of one chunk's payload.
             let g = gbx::Gbx::load(Path::new(&args[2])).unwrap();
+            let only: Option<u32> = flag(&args, "--only").map(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).expect("--only CHUNKID (hex)"));
+            let hex: usize = flag(&args, "--hex").and_then(|s| s.parse().ok()).unwrap_or(0);
             println!("chunk\toff\tpayload\tsize");
             for (cid, off, payload, size) in map::skip_chunks(&g.body) {
+                if only.map(|c| c != cid).unwrap_or(false) {
+                    continue;
+                }
                 println!("0x{:08X}\t{}\t{}\t{}", cid, off, payload, size);
+                if has(&args, "--words") {
+                    // the payload as little-endian i32 words, one per line (for a histogram)
+                    for w in g.body[payload..payload + size - size % 4].chunks(4) {
+                        println!("{}", i32::from_le_bytes(w.try_into().unwrap()));
+                    }
+                }
+                if hex > 0 {
+                    let b = &g.body[payload..payload + size.min(hex)];
+                    for (i, row) in b.chunks(16).enumerate() {
+                        println!("  {:06x}: {:<48} {}", i * 16, row.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "), row.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
+                    }
+                }
+            }
+        }
+        "blockrefs" => {
+            // Everything in the file that lists blocks by INDEX or per block,
+            // against the parsed block and item counts — the audit behind
+            // `MapFile::remove_blocks` (2026-09-07): the snapped-on tables of
+            // 0x03043040, the free-block entries of 0x0304305F, the per-block
+            // bytes of 0x03043062/0x03043068, the macroblock refs of 0x03043069.
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let nb = m.blocks.len();
+            let nk = m.baked.len();
+            let ni = m.items.len();
+            let placeholders = m.blocks.iter().filter(|b| b.flags == 0xFFFF_FFFF).count();
+            println!("blocks {nb} (placeholders {placeholders})  baked {nk}  items {ni}  lookback slots {}", m.body_ids.iter().filter(|f| f.is_def).count());
+            println!("block records {:?} ({} bytes), baked records {:?}", m.blocks_records, m.blocks_records.1 - m.blocks_records.0, m.baked_records);
+            let free_b = m.blocks.iter().filter(|b| b.free_off.is_some()).count();
+            let free_k = m.baked.iter().filter(|b| b.free_off.is_some()).count();
+            println!("free blocks {free_b} + free baked {free_k} (0x0304305F entries)");
+            let chunks = map::skip_chunks(&m.gbx.body);
+            for cid in [0x0304_3062u32, 0x0304_3068] {
+                match chunks.iter().find(|(c, ..)| *c == cid) {
+                    Some(&(_, _, _, size)) => println!("chunk {cid:#010x}: {size} bytes = 4 + {nb} + {nk} + {ni} -> {}", if size == 4 + nb + nk + ni { "ok" } else { "MISMATCH" }),
+                    None => println!("chunk {cid:#010x}: absent"),
+                }
+            }
+            match m.macroblock_refs() {
+                Some(mb) => println!("chunk 0x03043069: {} bytes; blocks with a macroblock ref {}, items {}, tail {} bytes", mb.size, mb.blocks.iter().filter(|v| **v != -1).count(), mb.items.iter().filter(|v| **v != -1).count(), mb.tail.len()),
+                None => println!("chunk 0x03043069: absent"),
+            }
+            // the removal re-serialises both block chunks: with nothing dropped it must reproduce the body
+            {
+                let mut same = map::MapFile::load(Path::new(&args[2]));
+                same.remove_blocks(|_| false, |_| false);
+                let body = same.patched_body();
+                match body.iter().zip(&m.gbx.body).position(|(a, b)| a != b) {
+                    None if body.len() == m.gbx.body.len() => println!("no-op block rewrite: byte-identical"),
+                    first => println!("no-op block rewrite: DIFFERS ({} -> {} bytes, first at {:?})", m.gbx.body.len(), body.len(), first),
+                }
+            }
+            match chunks.iter().find(|(c, ..)| *c == 0x0304_305D) {
+                Some(&(_, _, payload, size)) => match map::octree_chunk_summary(&m.gbx.body[payload..payload + size]) {
+                    Ok(None) => println!("chunk 0x0304305D: empty (no tree)"),
+                    Ok(Some((grid, origin, n, hist))) => println!("chunk 0x0304305D: octree grid {grid} origin {origin:?}, {n} nodes, leaf flags {hist:?} — node indices only, no block refs"),
+                    Err(e) => println!("chunk 0x0304305D: {size} bytes, NOT the octree layout: {e}"),
+                },
+                None => println!("chunk 0x0304305D: absent"),
+            }
+            match m.snap_tables() {
+                Some(st) => {
+                    let bg = st.block_indexes.iter().filter(|v| **v != -1).count();
+                    let tagged = st.block_indexes.iter().filter(|v| **v != -1 && (**v as u32) >> 24 != 0).count();
+                    let ig = st.item_indexes.iter().filter(|v| **v >= 0).count();
+                    let both = st.block_indexes.iter().zip(&st.item_indexes).filter(|(b, i)| **b != -1 && **i >= 0).count();
+                    let snapped = st.snapped.iter().filter(|v| **v >= 0).count();
+                    println!("chunk 0x03043040 snapped-on tables: {} groups ({bg} name a block — {tagged} with a tag byte —, {ig} an item, {both} both), snap_groups {:?}.., u07 all -1: {}, {snapped} of {} items snapped", st.block_indexes.len(), st.snap_groups.iter().take(6).collect::<Vec<_>>(), st.u07.iter().all(|v| *v == -1), st.snapped.len());
+                    if has(&args, "--groups") {
+                        for k in 0..st.block_indexes.len() {
+                            let users: Vec<usize> = st.snapped.iter().enumerate().filter(|(_, s)| **s == k as i32).map(|(i, _)| i).collect();
+                            let target = if st.block_indexes[k] != -1 { let w = st.block_indexes[k] as u32; let idx = (w & 0x00FF_FFFF) as usize; format!("block {idx}{} {}", if w >> 24 != 0 { format!(" (tag {:#04x})", w >> 24) } else { String::new() }, m.blocks.get(idx).map(|b| format!("{} {:?}", b.name, b.coords())).unwrap_or("?".into())) } else { format!("item {} {}", st.item_indexes[k], m.items.get(st.item_indexes[k] as usize).map(|i| i.model.as_str()).unwrap_or("?")) };
+                            println!("  group {k}: {target} group {} <- items {:?}", st.snap_groups[k], users);
+                        }
+                    }
+                }
+                None => println!("chunk 0x03043040 snapped-on tables: none"),
             }
         }
         "genealogy" => {
@@ -1199,8 +1281,12 @@ READING A MAP
   tmmaps region MAP --box X0,Y0,Z0:X1,Y1,Z1 [--filter PAT] [--items] [--blocks]
         everything whose position lies inside a world box. A GATE IS A
         STRUCTURE, NOT A BLOCK: run this before and after any move.
-  tmmaps chunks MAP
-        every skippable body chunk with its size
+  tmmaps chunks MAP [--only 0xCHUNK --hex N]
+        every skippable body chunk with its size (--only/--hex: one chunk, head dump)
+  tmmaps blockrefs MAP [--groups]
+        every place the file lists blocks by index or per block (the snapped-on
+        tables, free-block entries, colour/lightmap bytes, macroblock refs) —
+        the audit behind `remove_blocks`
   tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names]
         what the file DECLARES about itself before any block is read: container
         version, node count, EXTERNAL references, the header chunk table, the

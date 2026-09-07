@@ -295,6 +295,18 @@ pub struct MapFile {
     pub items_region: (usize, usize),
     /// Absolute body offset of the item archive's `nbItems` word.
     pub items_count_off: Option<usize>,
+    /// Absolute body offset of the blocks chunk's `nbBlocks` word.
+    pub blocks_count_off: usize,
+    /// Absolute body range of the authored block RECORDS (from the first
+    /// record's name word to the end of the last record, extras past
+    /// `nbBlocks` included). Record i starts at `body_ids[blocks[i].name_field].off`
+    /// and ends where record i+1 starts (`block_spans`).
+    pub blocks_records: (usize, usize),
+    /// Baked chunk: absolute offsets of its `nbBakedBlocks` word and of its
+    /// record range (`payload + 12` .. the word after the last record, where
+    /// the chunk's `U01` and the baked-clip list begin).
+    pub baked_count_off: Option<usize>,
+    pub baked_records: Option<(usize, usize)>,
     pub item_ids: Vec<IdField>,
     pub items: Vec<ItemRec>,
     /// pending edits
@@ -659,19 +671,24 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let (blocks_region, mut body_ids, blocks, table, size, decoration_id) =
+        let (blocks_region, mut body_ids, blocks, table, size, decoration_id, blocks_count_off, records_start) =
             parse_blocks(&body, &mut seen_nodes);
+        let blocks_records = (records_start, blocks_region.1);
         let mut body_regions = vec![blocks_region];
         let mut baked_chunk_off = None;
+        let mut baked_count_off = None;
+        let mut baked_records = None;
         let mut baked: Vec<BlockRec> = Vec::new();
         let mut baked_parsed = false;
         if std::env::var("TMMAPS_NO_BAKED").is_err() {
             baked_parsed = true;
-            if let Some((off, s, e, bk)) = parse_baked(&body, table, &mut body_ids, &mut seen_nodes)
+            if let Some((off, s, e, bk, recs_end)) = parse_baked(&body, table, &mut body_ids, &mut seen_nodes)
             {
                 baked_chunk_off = Some(off);
                 body_regions.push((s, e));
                 baked = bk;
+                baked_count_off = Some(s + 8);
+                baked_records = Some((s + 12, recs_end));
             }
         }
         let mut blocks = blocks;
@@ -689,6 +706,10 @@ impl MapFile {
             baked_chunk_off,
             items_region,
             items_count_off,
+            blocks_count_off,
+            blocks_records,
+            baked_count_off,
+            baked_records,
             item_ids,
             items,
             renames: Vec::new(),
@@ -994,7 +1015,9 @@ impl MapFile {
             let mut size_deltas: Vec<(usize, i64, bool)> = Vec::new();
             for cid in [
                 ITEMS_CHUNK,
+                0x0304_3048,
                 0x0304_3054,
+                FREE_POS_CHUNK,
                 0x0304_3062,
                 0x0304_3063,
                 0x0304_3065,
@@ -1148,6 +1171,8 @@ fn parse_blocks(
     Vec<String>,
     [i32; 3],
     String,
+    usize,
+    usize,
 ) {
     let hits = find_all(body, &BLOCKS_CHUNK.to_le_bytes());
     let start = *hits
@@ -1180,7 +1205,9 @@ fn parse_blocks(
     let size = [r.u32() as i32, r.u32() as i32, r.u32() as i32];
     let _need_unlock = r.u32();
     let _version = r.u32();
+    let count_off = r.o;
     let nb = r.u32();
+    let records_start = r.o;
 
     let mut blocks = Vec::new();
     let mut count = 0u32;
@@ -1238,7 +1265,7 @@ fn parse_blocks(
         });
         count += 1;
     }
-    ((start, r.o), ids, blocks, table, size, decoration_id)
+    ((start, r.o), ids, blocks, table, size, decoration_id, count_off, records_start)
 }
 
 /// Chunk 0x03043048 -- the BAKED blocks (the terrain the editor bakes into the
@@ -1252,7 +1279,7 @@ fn parse_baked(
     mut table: Vec<String>,
     ids: &mut Vec<IdField>,
     seen_nodes: &mut std::collections::HashSet<u32>,
-) -> Option<(usize, usize, usize, Vec<BlockRec>)> {
+) -> Option<(usize, usize, usize, Vec<BlockRec>, usize)> {
     let (_, off, payload, size) = *crate::gbx::all_skip_chunks(body)
         .iter()
         .find(|(cid, ..)| *cid == 0x03043048)?;
@@ -1305,6 +1332,7 @@ fn parse_baked(
     }
     // tail: u32, then a count of "baked clips additional data" -- entries there
     // would carry Idents, so refuse rather than silently mis-encode.
+    let records_end = r.o;
     let _u02 = r.u32();
     let nb_clips = r.u32();
     assert_eq!(
@@ -1320,7 +1348,7 @@ fn parse_baked(
         );
     }
     assert_eq!(r.o, end, "baked-blocks parse ended at {} not {}", r.o, end);
-    Some((off, payload, end, baked))
+    Some((off, payload, end, baked, records_end))
 }
 
 fn plausible_blocks(body: &[u8], h: usize) -> bool {
@@ -2243,4 +2271,542 @@ impl MapFile {
         std::fs::write(path, g.write_body_recompressed(&out)).map_err(|e| e.to_string())?;
         Ok((zone, n))
     }
+}
+
+// ------------------------------------------------------------ block removal
+
+/// Chunk 0x03043040's tail, after the anchored-object records (GBX.NET
+/// `Chunk03043040`, versions 7 and 8): the "snapped on" tables. An item
+/// placed ON a block or on another item in the editor is deleted with it; the
+/// file records that as groups — group k is BLOCK `block_indexes[k]` (an
+/// index into the authored blocks list) or, when that is -1, ITEM
+/// `item_indexes[k]`; `snap_groups[k]` and `u07[k]` (always -1) ride along;
+/// `snapped[i]`, one per item, is the group item i hangs off, or -1.
+#[derive(Clone, Debug)]
+pub struct SnapTables {
+    /// Absolute body range of the five int arrays (the v7 Int2 list before
+    /// them is not part of it).
+    pub span: (usize, usize),
+    pub block_indexes: Vec<i32>,
+    pub item_indexes: Vec<i32>,
+    pub snap_groups: Vec<i32>,
+    pub u07: Vec<i32>,
+    pub snapped: Vec<i32>,
+}
+
+impl SnapTables {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::new();
+        for arr in [&self.block_indexes, &self.item_indexes, &self.snap_groups, &self.u07, &self.snapped] {
+            b.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+            for v in arr {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+}
+
+/// Chunk 0x03043069: one macroblock-instance index per authored block, then
+/// one per item, then the instance (id, flags) pairs.
+#[derive(Clone, Debug)]
+pub struct MacroblockRefs {
+    pub payload: usize,
+    pub size: usize,
+    pub blocks: Vec<i32>,
+    pub items: Vec<i32>,
+    /// The trailing `Int2[]` (count + pairs), verbatim.
+    pub tail: Vec<u8>,
+}
+
+/// One authored/baked block record's layout, walked from its first byte with
+/// the same rules as `parse_blocks`. `node_refs` are the skin and waypoint
+/// node-ref words: (offset of the index word, node index, the node body's
+/// byte range when it is written inline here — from its class id through its
+/// FACADE — or None for a back-reference).
+struct RecordLayout {
+    end: usize,
+    node_refs: Vec<(usize, u32, Option<(usize, usize)>)>,
+}
+
+fn walk_record(body: &[u8], start: usize, seen: &mut std::collections::HashSet<u32>) -> RecordLayout {
+    let mut r = Reader::at(body, start);
+    let mut scratch: Vec<String> = Vec::new();
+    read_id(&mut r, &mut scratch); // name (its length is all that is needed here)
+    r.u8(); // dir
+    r.skip(3); // coords
+    let flags = r.u32();
+    let mut node_refs = Vec::new();
+    if flags != 0xFFFF_FFFF {
+        if flags & 0x8000 != 0 {
+            read_id(&mut r, &mut scratch); // author
+            walk_node_ref(&mut r, seen, &mut node_refs);
+        }
+        if flags & 0x100000 != 0 {
+            walk_node_ref(&mut r, seen, &mut node_refs);
+        }
+    }
+    RecordLayout { end: r.o, node_refs }
+}
+
+fn walk_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>, out: &mut Vec<(usize, u32, Option<(usize, usize)>)>) {
+    let off = r.o;
+    let idx = r.u32();
+    if idx == 0xFFFF_FFFF {
+        return;
+    }
+    if !seen.insert(idx) {
+        out.push((off, idx, None));
+        return;
+    }
+    let body_start = r.o;
+    let class = r.u32();
+    match class {
+        0x03059000 => read_skin_node(r),
+        WAYPOINT_CLASS => {
+            read_waypoint_node(r);
+        }
+        _ => panic!("unhandled inline node class 0x{:08X} at {}", class, r.o - 4),
+    }
+    out.push((off, idx, Some((body_start, r.o))));
+}
+
+/// What `remove_blocks` took out, for the caller's report.
+#[derive(Clone, Debug, Default)]
+pub struct Removed {
+    pub blocks: usize,
+    pub baked: usize,
+    pub free_entries: usize,
+    pub snap_groups: usize,
+    pub snapped_items_cleared: usize,
+    pub table_before: usize,
+    pub table_after: usize,
+    /// Shared nodes (skins) whose defining record went and that were written
+    /// inline again at their first surviving reference.
+    pub reinlined_nodes: usize,
+}
+
+impl MapFile {
+    /// Byte span of every authored block record, in `blocks` order.
+    pub fn block_spans(&self) -> Vec<(usize, usize)> {
+        let starts: Vec<usize> = self.blocks.iter().map(|b| self.body_ids[b.name_field].off).collect();
+        spans_from_starts(&starts, self.blocks_records.1)
+    }
+
+    /// Byte span of every baked block record, in `baked` order.
+    pub fn baked_spans(&self) -> Vec<(usize, usize)> {
+        let Some((_, end)) = self.baked_records else { return Vec::new() };
+        let starts: Vec<usize> = self.baked.iter().map(|b| self.body_ids[b.name_field].off).collect();
+        spans_from_starts(&starts, end)
+    }
+
+    /// The snapped-on tables at the end of chunk 0x03043040 (None: no items
+    /// chunk, or a version without them).
+    pub fn snap_tables(&self) -> Option<SnapTables> {
+        let coff = self.items_chunk_off?;
+        let body = &self.gbx.body;
+        let version = u32::from_le_bytes(body[coff + 12..coff + 16].try_into().unwrap());
+        if version < 7 {
+            return None;
+        }
+        let mut o = match self.items.last() {
+            Some(it) => it.record_region.1,
+            None => self.items_count_off? + 4,
+        };
+        let mut r = Reader::at(body, o);
+        if version == 7 {
+            let n = r.u32() as usize;
+            r.skip(n * 8);
+            o = r.o;
+        }
+        let mut arr = |r: &mut Reader| -> Vec<i32> {
+            let n = r.u32() as usize;
+            (0..n).map(|_| r.i32()).collect()
+        };
+        let block_indexes = arr(&mut r);
+        let item_indexes = arr(&mut r);
+        let snap_groups = arr(&mut r);
+        let u07 = arr(&mut r);
+        let snapped = arr(&mut r);
+        assert_eq!(
+            r.o, self.items_region.1,
+            "chunk 0x03043040 v{version}: the five snapped-on arrays end at {} not at the chunk end {}",
+            r.o, self.items_region.1
+        );
+        Some(SnapTables { span: (o, r.o), block_indexes, item_indexes, snap_groups, u07, snapped })
+    }
+
+    /// Chunk 0x03043069 decoded against the current block and item counts.
+    pub fn macroblock_refs(&self) -> Option<MacroblockRefs> {
+        let &(_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3069)?;
+        let body = &self.gbx.body;
+        let need = 4 + 4 * (self.blocks.len() + self.items.len());
+        assert!(size >= need + 4, "chunk 0x03043069 is {size} bytes, shorter than version + {} blocks + {} items + a count", self.blocks.len(), self.items.len());
+        let mut r = Reader::at(body, payload + 4);
+        let blocks = (0..self.blocks.len()).map(|_| r.i32()).collect();
+        let items = (0..self.items.len()).map(|_| r.i32()).collect();
+        let tail = body[r.o..payload + size].to_vec();
+        Some(MacroblockRefs { payload, size, blocks, items, tail })
+    }
+
+    /// DELETE block records — the authored blocks `drop_block` selects and the
+    /// baked (generated) blocks `drop_baked` selects — from the file, as a
+    /// rewrite of everything that lists blocks:
+    ///
+    ///   * chunk 0x0304301F: the kept records verbatim, `nbBlocks` fixed;
+    ///   * chunk 0x03043048: likewise, `nbBakedBlocks` fixed, chunk size fixed;
+    ///   * the lookback table both chunks share is re-encoded first-use-defines
+    ///     over the kept records (a dropped record may have carried the only
+    ///     definition of a name every later record referenced by index);
+    ///   * chunk 0x0304305F: only the kept FREE blocks' six floats;
+    ///   * chunks 0x03043062 (colour) and 0x03043068 (lightmap quality): the
+    ///     per-block bytes of the dropped records go, the per-item bytes stay;
+    ///   * chunk 0x03043069: the per-block macroblock refs go;
+    ///   * chunk 0x03043040's snapped-on tables: a group naming a dropped block
+    ///     is removed and the items that hung off it are un-snapped; block
+    ///     indices are renumbered.
+    ///
+    /// Node indices: a record's skin/waypoint node is written inline at its
+    /// first reference; a kept record that only BACK-references a node some
+    /// dropped record carried is a refusal (never seen — every block owns its
+    /// nodes — but the check is cheap). Gaps in the node numbering are fine:
+    /// the reader fills its node table by index as nodes appear.
+    ///
+    /// Variable-length: the edit is staged as `raw_splices`, so it cannot be
+    /// combined with a rename in one write. Write, reload, then continue —
+    /// `blocks`, `baked` and every saved offset describe the OLD file.
+    pub fn remove_blocks<F, G>(&mut self, drop_block: F, drop_baked: G) -> Removed
+    where
+        F: Fn(&BlockRec) -> bool,
+        G: Fn(&BlockRec) -> bool,
+    {
+        assert!(self.renames.is_empty(), "remove_blocks cannot share a write with renames (write and reload first)");
+        assert!(self.raw_splices.is_empty(), "remove_blocks wants a fresh load (other variable-length edits are pending)");
+        let body = &self.gbx.body;
+        let keep_block: Vec<bool> = self.blocks.iter().map(|b| !drop_block(b)).collect();
+        let keep_baked: Vec<bool> = self.baked.iter().map(|b| !drop_baked(b)).collect();
+        let mut removed = Removed::default();
+
+        // --- the lookback stream: header fields define the first slots
+        let mut table: Vec<String> = Vec::new();
+        for f in self.body_ids.iter().filter(|f| f.off < self.blocks_records.0) {
+            if f.is_def {
+                table.push(f.name.clone().unwrap_or_default());
+            }
+        }
+        removed.table_before = self.body_ids.iter().filter(|f| f.is_def).count();
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // Node bodies written inline by DROPPED records, by node index: a kept
+        // record that only back-referenced one gets the body re-inlined after
+        // its index word (the reader writes a node the first time its index
+        // appears). Blocks do share nodes — 267460's signs share one skin.
+        let mut dropped_nodes: std::collections::HashMap<u32, Vec<u8>> = std::collections::HashMap::new();
+        let mut reinlined = 0usize;
+        let rec_fields: Vec<IdField> = self.body_ids.iter().filter(|f| f.off >= self.blocks_records.0).cloned().collect();
+        let mut fields = rec_fields.iter().peekable();
+
+        // Re-encode one record: its Id fields through `table`, a dropped
+        // shared node re-inlined after the word that back-references it, every
+        // other byte verbatim.
+        let mut emit = |out: &mut Vec<u8>,
+                        (s, e): (usize, usize),
+                        lay: &RecordLayout,
+                        fields: &mut std::iter::Peekable<std::slice::Iter<IdField>>,
+                        table: &mut Vec<String>,
+                        dropped: &mut std::collections::HashMap<u32, Vec<u8>>| {
+            // (offset after which to insert, bytes) — a back-referenced dropped node
+            let mut inserts: Vec<(usize, Vec<u8>)> = Vec::new();
+            for (off, idx, inline) in &lay.node_refs {
+                if inline.is_none() {
+                    if let Some(node) = dropped.remove(idx) {
+                        inserts.push((*off + 4, node));
+                        reinlined += 1;
+                    }
+                }
+            }
+            let mut cur = s;
+            let mut copy_to = |out: &mut Vec<u8>, cur: &mut usize, to: usize| {
+                // copy body[cur..to], dropping in any pending insert at its point
+                while *cur < to {
+                    let next = inserts.iter().filter(|(p, _)| *p > *cur && *p <= to).map(|(p, _)| *p).min().unwrap_or(to);
+                    out.extend_from_slice(&body[*cur..next]);
+                    *cur = next;
+                    if let Some(pos) = inserts.iter().position(|(p, _)| *p == next) {
+                        let (_, bytes) = inserts.remove(pos);
+                        out.extend_from_slice(&bytes);
+                    }
+                }
+            };
+            while let Some(f) = fields.peek() {
+                if f.off >= e {
+                    break;
+                }
+                let f = fields.next().unwrap();
+                copy_to(out, &mut cur, f.off);
+                cur = f.off + f.len;
+                match &f.name {
+                    None => out.extend_from_slice(&f.raw.to_le_bytes()),
+                    Some(name) => match table.iter().position(|t| t == name) {
+                        Some(i) => out.extend_from_slice(&(0x4000_0000u32 | (i as u32 + 1)).to_le_bytes()),
+                        None => {
+                            table.push(name.clone());
+                            out.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+                            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                            out.extend_from_slice(name.as_bytes());
+                        }
+                    },
+                }
+            }
+            copy_to(out, &mut cur, e);
+            assert!(inserts.is_empty(), "a re-inlined node fell outside its record");
+        };
+        let skip_fields = |fields: &mut std::iter::Peekable<std::slice::Iter<IdField>>, e: usize| {
+            while fields.peek().map(|f| f.off < e).unwrap_or(false) {
+                fields.next();
+            }
+        };
+        let note_dropped = |lay: &RecordLayout, dropped: &mut std::collections::HashMap<u32, Vec<u8>>| {
+            for (_, idx, inline) in &lay.node_refs {
+                if let Some((a, b)) = inline {
+                    dropped.insert(*idx, body[*a..*b].to_vec());
+                }
+            }
+        };
+
+        let mut new_blocks = Vec::new();
+        let mut kept_blocks = 0u32;
+        for (i, span) in self.block_spans().into_iter().enumerate() {
+            let lay = walk_record(body, span.0, &mut seen);
+            assert_eq!(lay.end, span.1, "block record {i} walks to {} but its span ends at {}", lay.end, span.1);
+            if keep_block[i] {
+                emit(&mut new_blocks, span, &lay, &mut fields, &mut table, &mut dropped_nodes);
+                if self.blocks[i].flags != 0xFFFF_FFFF {
+                    kept_blocks += 1;
+                }
+            } else {
+                note_dropped(&lay, &mut dropped_nodes);
+                skip_fields(&mut fields, span.1);
+                removed.blocks += 1;
+            }
+        }
+        let mut new_baked = Vec::new();
+        let mut kept_baked = 0u32;
+        if let Some((rs, _)) = self.baked_records {
+            // the fields between the two regions (none expected) stay as they are
+            skip_fields(&mut fields, rs);
+            for (i, span) in self.baked_spans().into_iter().enumerate() {
+                let lay = walk_record(body, span.0, &mut seen);
+                assert_eq!(lay.end, span.1, "baked record {i} walks to {} but its span ends at {}", lay.end, span.1);
+                if keep_baked[i] {
+                    emit(&mut new_baked, span, &lay, &mut fields, &mut table, &mut dropped_nodes);
+                    if self.baked[i].flags != 0xFFFF_FFFF {
+                        kept_baked += 1;
+                    }
+                } else {
+                    note_dropped(&lay, &mut dropped_nodes);
+                    skip_fields(&mut fields, span.1);
+                    removed.baked += 1;
+                }
+            }
+        }
+        removed.table_after = table.len();
+        removed.reinlined_nodes = reinlined;
+
+        let mut patches: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut splices: Vec<((usize, usize), Vec<u8>)> = Vec::new();
+        patches.push((self.blocks_count_off, kept_blocks.to_le_bytes().to_vec()));
+        splices.push((self.blocks_records, new_blocks));
+        if let (Some(coff), Some(recs)) = (self.baked_count_off, self.baked_records) {
+            patches.push((coff, kept_baked.to_le_bytes().to_vec()));
+            splices.push((recs, new_baked));
+        }
+
+        // --- 0x0304305F: the kept free blocks' entries, blocks then baked
+        let chunks = crate::gbx::all_skip_chunks(body);
+        if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == FREE_POS_CHUNK) {
+            let mut entries = Vec::new();
+            for (b, keep) in self.blocks.iter().zip(&keep_block).chain(self.baked.iter().zip(&keep_baked)) {
+                let Some(off) = b.free_off else { continue };
+                if *keep {
+                    entries.extend_from_slice(&body[off..off + 24]);
+                } else {
+                    removed.free_entries += 1;
+                }
+            }
+            splices.push(((payload + 4, payload + size), entries));
+        }
+
+        // --- per-block bytes: colours (0x62) and lightmap quality (0x68)
+        let nb = self.blocks.len();
+        let nk = self.baked.len();
+        let ni = self.items.len();
+        for cid in [0x0304_3062u32, 0x0304_3068] {
+            let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == cid) else { continue };
+            assert_eq!(size, 4 + nb + nk + ni, "chunk {cid:#010x} has {size} bytes, not 4 + {nb} blocks + {nk} baked + {ni} items");
+            let mut kept = Vec::with_capacity(nb + nk);
+            for (j, keep) in keep_block.iter().chain(keep_baked.iter()).enumerate() {
+                if *keep {
+                    kept.push(body[payload + 4 + j]);
+                }
+            }
+            splices.push(((payload + 4, payload + 4 + nb + nk), kept));
+        }
+
+        // --- 0x03043069: the per-block macroblock refs
+        if let Some(mb) = self.macroblock_refs() {
+            let mut kept = Vec::with_capacity(nb * 4);
+            for (v, keep) in mb.blocks.iter().zip(&keep_block) {
+                if *keep {
+                    kept.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            splices.push(((mb.payload + 4, mb.payload + 4 + 4 * nb), kept));
+        }
+
+        // --- 0x03043040: snapped-on groups naming a dropped block go
+        if let Some(st) = self.snap_tables() {
+            let g = st.block_indexes.len();
+            assert!(
+                st.item_indexes.len() == g && st.snap_groups.len() == g && st.u07.len() == g,
+                "snapped-on tables disagree on the group count: {} blocks, {} items, {} groups, {} u07",
+                g, st.item_indexes.len(), st.snap_groups.len(), st.u07.len()
+            );
+            assert_eq!(st.snapped.len(), ni, "snapped-on table has {} entries for {ni} items", st.snapped.len());
+            let mut new_index: Vec<i32> = Vec::with_capacity(nb);
+            let mut next = 0i32;
+            for keep in &keep_block {
+                new_index.push(if *keep { next } else { -1 });
+                if *keep {
+                    next += 1;
+                }
+            }
+            let mut group_map: Vec<i32> = vec![-1; g];
+            let mut out = SnapTables { span: st.span, block_indexes: vec![], item_indexes: vec![], snap_groups: vec![], u07: vec![], snapped: vec![] };
+            for k in 0..g {
+                // The block word is (u8 tag, u24 block index): Summer 02 snaps
+                // its lake-shore vegetation on Water / WaterHill ZONE blocks
+                // with tag 0xFF (`0xff000ce1` = block 3297); every other
+                // group seen has tag 0. -1 alone means "an item, see
+                // item_indexes".
+                let bi = st.block_indexes[k];
+                let new_bi = if bi == -1 {
+                    -1
+                } else {
+                    let word = bi as u32;
+                    let old = (word & 0x00FF_FFFF) as usize;
+                    assert!(old < nb, "snapped-on group {k} names block {old} (word {word:#010x}), past the {nb} blocks");
+                    match new_index[old] {
+                        -1 => -1,
+                        n => ((word & 0xFF00_0000) | n as u32) as i32,
+                    }
+                };
+                if bi != -1 && new_bi == -1 {
+                    removed.snap_groups += 1;
+                    continue;
+                }
+                group_map[k] = out.block_indexes.len() as i32;
+                out.block_indexes.push(new_bi);
+                out.item_indexes.push(st.item_indexes[k]);
+                out.snap_groups.push(st.snap_groups[k]);
+                out.u07.push(st.u07[k]);
+            }
+            for &s in &st.snapped {
+                if s < 0 {
+                    out.snapped.push(-1);
+                } else {
+                    assert!((s as usize) < g, "an item is snapped on group {s}, past the {g} groups");
+                    let m = group_map[s as usize];
+                    if m < 0 {
+                        removed.snapped_items_cleared += 1;
+                    }
+                    out.snapped.push(m);
+                }
+            }
+            splices.push((st.span, out.encode()));
+        }
+
+        self.raw_patches.extend(patches);
+        self.raw_splices.extend(splices);
+        removed
+    }
+}
+
+fn spans_from_starts(starts: &[usize], end: usize) -> Vec<(usize, usize)> {
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, starts.get(i + 1).copied().unwrap_or(end)))
+        .collect()
+}
+
+/// Chunk 0x0304305D decoded (2026-09-07, read off Summer 03/08/15; GBX.NET
+/// lists it as "ignore"): `version 1`, a tree count (0 or 1), then per tree
+/// `grid size` (a power of two: 32, 64, 128), an `Int3`, a node count and the
+/// nodes in index order. An INTERNAL node is `i32 parent` + 8 child node
+/// indices (-1 = none); a node at the leaf level — the level is the node's
+/// depth, the size halving from `grid` down to 1 — is `i32 parent` + one
+/// `u8` flag (1, 3, 7 seen). Every index is a NODE index inside the chunk:
+/// the tree names no block or item, so block deletion leaves it valid (and
+/// the cells it flags are in the same place). Returns
+/// (grid, origin, node count, leaf flag histogram) or the parse error.
+pub fn octree_chunk_summary(payload: &[u8]) -> Result<Option<(u32, [i32; 3], usize, std::collections::BTreeMap<u8, usize>)>, String> {
+    let mut r = Reader::new(payload);
+    let version = r.u32();
+    if version != 1 {
+        return Err(format!("version {version}"));
+    }
+    let trees = r.u32();
+    if trees == 0 {
+        if r.o != payload.len() {
+            return Err(format!("{} bytes after an empty tree list", payload.len() - r.o));
+        }
+        return Ok(None);
+    }
+    if trees != 1 {
+        return Err(format!("{trees} trees"));
+    }
+    let grid = r.u32();
+    if !grid.is_power_of_two() {
+        return Err(format!("grid {grid} is not a power of two"));
+    }
+    let origin = [r.i32(), r.i32(), r.i32()];
+    let n = r.u32() as usize;
+    let leaf_depth = grid.trailing_zeros() as usize; // grid 32 -> internal levels 32,16,8,4,2 -> leaves at depth 5
+    // depth of node i = depth of its parent + 1; the root (node 0) is depth 0
+    let mut depth: Vec<usize> = vec![usize::MAX; n];
+    let mut hist = std::collections::BTreeMap::new();
+    for i in 0..n {
+        if r.o + 4 > payload.len() {
+            return Err(format!("node {i} of {n}: chunk ends early"));
+        }
+        let parent = r.i32();
+        let d = if i == 0 {
+            if parent != -1 {
+                return Err(format!("root parent {parent}"));
+            }
+            0
+        } else {
+            if parent < 0 || parent as usize >= i {
+                return Err(format!("node {i}: parent {parent} is not an earlier node"));
+            }
+            depth[parent as usize] + 1
+        };
+        depth[i] = d;
+        if d < leaf_depth {
+            for _ in 0..8 {
+                let c = r.i32();
+                if c != -1 && (c < 0 || c as usize >= n) {
+                    return Err(format!("node {i}: child {c} outside the {n} nodes"));
+                }
+            }
+        } else if d == leaf_depth {
+            *hist.entry(r.u8()).or_insert(0) += 1;
+        } else {
+            return Err(format!("node {i} at depth {d} below the leaf level {leaf_depth}"));
+        }
+    }
+    if r.o != payload.len() {
+        return Err(format!("{} bytes left after {n} nodes", payload.len() - r.o));
+    }
+    Ok(Some((grid, origin, n, hist)))
 }

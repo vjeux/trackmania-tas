@@ -107,3 +107,65 @@ fn strict_is_not_vacuous() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// `remove_blocks` re-serialises both block chunks. Dropping NOTHING must
+/// reproduce the file byte for byte (the first-use-defines lookback encoding
+/// is the game's own), and dropping a slice must leave a file the parser
+/// reads back with exactly the kept records, free entries, colours and
+/// snapped-on tables in agreement.
+#[test]
+fn block_removal_roundtrips_and_reparses() {
+    for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+        let original = tmmaps::map::MapFile::load(&fixture);
+        let mut same = tmmaps::map::MapFile::load(&fixture);
+        let r = same.remove_blocks(|_| false, |_| false);
+        assert_eq!(r.blocks + r.baked, 0);
+        let body = same.patched_body();
+        if body != original.gbx.body {
+            let first = body.iter().zip(&original.gbx.body).position(|(a, b)| a != b).unwrap_or(body.len().min(original.gbx.body.len()));
+            let field = original.body_ids.iter().filter(|f| f.off <= first).last();
+            panic!("{name}: a no-op removal changed the body ({} -> {} bytes), first difference at {first}; the Id field there: {field:?}; original bytes {:02x?} new {:02x?}", original.gbx.body.len(), body.len(), &original.gbx.body[first.saturating_sub(8)..(first + 16).min(original.gbx.body.len())], &body[first.saturating_sub(8)..(first + 16).min(body.len())]);
+        }
+
+        // drop every other authored block and every baked block whose name starts with 'D'
+        let mut cut = tmmaps::map::MapFile::load(&fixture);
+        let r = cut.remove_blocks(|b| b.index % 2 == 1, |b| b.name.starts_with('D'));
+        let want_blocks = original.blocks.len() - r.blocks;
+        let want_baked = original.baked.len() - r.baked;
+        let out = std::env::temp_dir().join(format!("tmmaps-cut-{}-{name}", std::process::id()));
+        cut.write_to(&out).expect("write cut map");
+        let reread = tmmaps::map::MapFile::load(&out);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(reread.blocks.len(), want_blocks, "{name}: authored count");
+        assert_eq!(reread.baked.len(), want_baked, "{name}: baked count");
+        assert_eq!(reread.items.len(), original.items.len(), "{name}: items untouched");
+        let kept: Vec<&tmmaps::map::BlockRec> = original.blocks.iter().filter(|b| b.index % 2 == 0).collect();
+        for (a, b) in kept.iter().zip(&reread.blocks) {
+            assert_eq!((a.name.as_str(), a.dir, a.raw_coords, a.flags, a.free_pos), (b.name.as_str(), b.dir, b.raw_coords, b.flags, b.free_pos), "{name}: block {} changed", a.index);
+        }
+        let kept_baked: Vec<&tmmaps::map::BlockRec> = original.baked.iter().filter(|b| !b.name.starts_with('D')).collect();
+        for (a, b) in kept_baked.iter().zip(&reread.baked) {
+            assert_eq!((a.name.as_str(), a.raw_coords, a.flags, a.free_pos), (b.name.as_str(), b.raw_coords, b.flags, b.free_pos), "{name}: baked {} changed", a.index);
+        }
+        if let (Some(c0), Some(c1)) = (original.colors(), reread.colors()) {
+            for (a, b) in kept.iter().zip(0..) {
+                assert_eq!(c0.block(a.index), c1.block(b), "{name}: colour of kept block {}", a.index);
+            }
+            for i in 0..original.items.len() {
+                assert_eq!(c0.item(i), c1.item(i), "{name}: colour of item {i}");
+            }
+        }
+        if let Some(st) = reread.snap_tables() {
+            for (k, bi) in st.block_indexes.iter().enumerate() {
+                if *bi == -1 {
+                    continue;
+                }
+                let idx = (*bi as u32 & 0x00FF_FFFF) as usize;
+                assert!(idx < want_blocks, "{name}: snapped-on group {k} names block {idx} past the {want_blocks} kept");
+                // the group's block was an even source index, so it still exists
+                assert_eq!(reread.blocks[idx].name, kept[idx].name, "{name}: group {k} re-pointed at the wrong block");
+            }
+        }
+    }
+}
