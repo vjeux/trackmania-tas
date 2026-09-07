@@ -13,7 +13,12 @@ use candle_nn::{linear, Linear, VarBuilder, VarMap};
 pub const R_VERSION: u32 = 1;
 pub const OUT: usize = 8;
 pub const O_REACH: usize = 0;
-pub const O_LNTICKS: usize = 1;
+/// Head 1 parameterises the crossing time as a MEAN SPEED over the straight distance:
+/// s = 150 m/s · σ(u); ticks = 100 · dist / s. Bounded by construction (a ln-ticks
+/// head extrapolated to 1e18 s on a held-out map), and it transfers: a speed is
+/// a car property, a tick count is a map property.
+pub const O_MEANSPEED: usize = 1;
+pub const MAX_MEAN_SPEED: f32 = 150.0;
 pub const O_SPEED: usize = 2;
 pub const O_DY: usize = 4;
 pub const O_ANG: usize = 6;
@@ -125,10 +130,12 @@ pub struct Estimate {
     pub ang_sd: f32,
 }
 
-pub fn decode(o: &[f32]) -> Estimate {
+/// `dist_m` = straight distance start → gate centre (the feature block carries it too).
+pub fn decode(o: &[f32], dist_m: f32) -> Estimate {
+    let s = MAX_MEAN_SPEED / (1.0 + (-o[O_MEANSPEED]).exp());
     Estimate {
         p_reach: 1.0 / (1.0 + (-o[O_REACH]).exp()),
-        expected_ticks: o[O_LNTICKS].exp(),
+        expected_ticks: (100.0 * dist_m.max(0.0) / s.max(0.5)).min(6000.0),
         speed_mu: o[O_SPEED] * 100.0,
         speed_sd: o[O_SPEED + 1].exp() * 100.0,
         dy_mu: o[O_DY] * 10.0,
@@ -153,8 +160,8 @@ impl Weights {
         }
         cur
     }
-    pub fn estimate(&self, x: &[f32]) -> Estimate {
-        decode(&self.forward(x))
+    pub fn estimate(&self, x: &[f32], dist_m: f32) -> Estimate {
+        decode(&self.forward(x), dist_m)
     }
 
     /// THE CONTROL on two implementations of one function (RL-agentG §4).
@@ -163,12 +170,15 @@ impl Weights {
         let mut worst = 0f32;
         let d = self.in_dim();
         for _ in 0..n {
+            // inputs in the DATA domain (mean ± 2 std), so the activations are O(1) and an
+            // absolute tolerance means something
             let x: Vec<f32> = (0..d)
-                .map(|_| {
+                .map(|k| {
                     rng ^= rng << 13;
                     rng ^= rng >> 7;
                     rng ^= rng << 17;
-                    ((rng >> 11) as f32 / (1u64 << 53) as f32) * 4.0 - 2.0
+                    let u = ((rng >> 11) as f32 / (1u64 << 53) as f32) * 4.0 - 2.0;
+                    self.mean[k] + self.std[k] * u
                 })
                 .collect();
             let a = self.forward(&x);

@@ -2,10 +2,10 @@
 //!
 //!   tmr features                         print FEATURES.md (the feature layout, generated)
 //!   tmr frame --starts F.tsv             MEASURE which car axis is forward (quaternion convention control)
-//!   tmr build --reach DIR [--geom G] [--maps M] --out CACHE [--no-geometry]
+//!   tmr build --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
 //!                                        TMR0 shards → labelled rows per map (<uid>.rows + manifest.tsv)
 //!   tmr train --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
-//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--held-out uid,..] [--report F] [--threads T]
+//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
@@ -121,7 +121,10 @@ fn cmd_frame(args: &[String]) {
 }
 
 fn cmd_build(args: &[String]) {
-    let reach = PathBuf::from(flag(args, "--reach").unwrap_or_else(|| die("--reach DIR")));
+    let reaches: Vec<PathBuf> = args.iter().enumerate().filter(|(_, a)| *a == "--reach").filter_map(|(i, _)| args.get(i + 1).map(PathBuf::from)).collect();
+    if reaches.is_empty() {
+        die("--reach DIR (repeatable: a reach root of <uid>/ dirs, or one shard dir)");
+    }
     let out = PathBuf::from(flag(args, "--out").unwrap_or_else(|| die("--out CACHE")));
     std::fs::create_dir_all(&out).unwrap_or_else(|e| die(&e.to_string()));
     let geom = flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom);
@@ -130,9 +133,9 @@ fn cmd_build(args: &[String]) {
         maps.insert(0, PathBuf::from(m));
     }
     let no_geom = has(args, "--no-geometry");
-    let dirs = data::shard_dirs(&reach);
+    let dirs: Vec<PathBuf> = reaches.iter().flat_map(|r| data::shard_dirs(r)).collect();
     if dirs.is_empty() {
-        die(&format!("no samples.tmr under {}", reach.display()));
+        die(&format!("no samples.tmr under {:?}", reaches));
     }
     let mut manifest = String::from("map_uid\tmap_name\theld_out\trecords\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n");
     let mut log = Vec::new();
@@ -293,6 +296,9 @@ fn cmd_train(args: &[String]) {
     if let Some(s) = flag(args, "--seed") {
         cfg.seed = s.parse().unwrap_or_else(|_| die("--seed N"));
     }
+    if let Some(w) = flag(args, "--wd") {
+        cfg.weight_decay = w.parse().unwrap_or_else(|_| die("--wd X"));
+    }
     if let Some(p) = flag(args, "--patience") {
         cfg.patience = p.parse().unwrap_or_else(|_| die("--patience N"));
     }
@@ -303,7 +309,8 @@ fn cmd_train(args: &[String]) {
     if train_rows.is_empty() {
         die("every map is held out — nothing to train on");
     }
-    let train_set = Set::from_rows(&train_rows, &keep);
+    let mirror = !has(args, "--no-mirror");
+    let train_set = Set::from_rows_aug(&train_rows, &keep, mirror);
     let h_max = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(0f32, f32::max);
     let h_min = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(f32::INFINITY, f32::min);
     print!("{report}");
@@ -315,6 +322,7 @@ fn cmd_train(args: &[String]) {
     let meta = serde_json::json!({
         "produced_by": provenance("train"),
         "ablation": cfg.ablation,
+        "mirror_augmentation": mirror,
         "hidden": cfg.hidden,
         "epochs_run": rep.epochs_run,
         "best_epoch": rep.best_epoch,

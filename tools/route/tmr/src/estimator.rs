@@ -31,7 +31,20 @@ pub struct REstimator<'a> {
 }
 
 impl<'a> REstimator<'a> {
+    /// Direction of travel at node `from`. At a GATE node it is the gate normal: a
+    /// training row that starts at a gate crossing has the car heading THROUGH the
+    /// gate (that is what a crossing is), never along the chord from the previous
+    /// gate — the chord version put every human leg at p_reach 0.000 on both maps.
+    /// The chord is the fallback for a gate without an oriented normal.
     fn heading(&self, prev: Option<usize>, from: usize) -> [f32; 2] {
+        if from != 0 {
+            if let Some(rep) = self.gates.group_rep(self.nodes.groups[from]) {
+                let l = (rep.normal[0] * rep.normal[0] + rep.normal[2] * rep.normal[2]).sqrt();
+                if l > 1e-3 && rep.normal_source != "unknown" {
+                    return [rep.normal[0] / l, rep.normal[2] / l];
+                }
+            }
+        }
         if let Some(p) = prev {
             let a = self.nodes.pos[p];
             let b = self.nodes.pos[from];
@@ -106,7 +119,7 @@ impl<'a> REstimator<'a> {
         let mut x = vec![0f32; DIM];
         features::features(&s, &t, &probe, h, &mut x);
         features::mask_blocks(&mut x, &self.keep);
-        Some((self.w.estimate(&x), h, length))
+        Some((self.w.estimate(&x, length), h, length))
     }
 }
 

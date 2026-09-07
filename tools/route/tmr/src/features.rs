@@ -211,3 +211,52 @@ pub fn describe() -> String {
     s.push_str("\nAblations (`--ablation`): `no-probes` zeroes probes+chord; `no-attitude` zeroes attitude+angvel+wheels; `distance-only` keeps target+horizon.\n");
     s
 }
+
+/// Left/right mirror of a feature vector — the car is symmetric, so the
+/// mirrored (state, target, geometry) is an equally valid sample with the same
+/// label. Flips car-frame X components (target rel x, bearing sin, normal x,
+/// velocity x, up x, angular velocity y and z — a yaw/roll rate changes sign
+/// under a mirror, a pitch rate does not), swaps wheel contacts left↔right
+/// (order assumed FL, FR, RL, RR), and reverses the probe grid's lateral axis.
+pub fn mirror(x: &mut [f32]) {
+    x[OFF_TARGET] = -x[OFF_TARGET];
+    x[OFF_TARGET + 6] = -x[OFF_TARGET + 6];
+    x[OFF_NORMAL] = -x[OFF_NORMAL];
+    x[OFF_MOTION + 1] = -x[OFF_MOTION + 1];
+    x[OFF_ATTITUDE] = -x[OFF_ATTITUDE];
+    x[OFF_ANGVEL + 2] = -x[OFF_ANGVEL + 2];
+    x[OFF_ANGVEL + 3] = -x[OFF_ANGVEL + 3];
+    x.swap(OFF_WHEELS + 1, OFF_WHEELS + 2);
+    x.swap(OFF_WHEELS + 3, OFF_WHEELS + 4);
+    let nl = LATERAL_M.len();
+    for a in 0..AHEAD_M.len() {
+        for l in 0..nl / 2 {
+            let i = OFF_PROBES + 3 * (a * nl + l);
+            let j = OFF_PROBES + 3 * (a * nl + (nl - 1 - l));
+            for k in 0..3 {
+                x.swap(i + k, j + k);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mirror_is_an_involution_and_moves_the_right_slots() {
+        let mut x: Vec<f32> = (0..DIM).map(|i| i as f32 * 0.37 + 1.0).collect();
+        let orig = x.clone();
+        mirror(&mut x);
+        assert_ne!(x, orig);
+        // the ahead axis of the probe grid is untouched: centre lateral column stays
+        for a in 0..AHEAD_M.len() {
+            let c = OFF_PROBES + 3 * (a * LATERAL_M.len() + LATERAL_M.len() / 2);
+            assert_eq!(x[c], orig[c]);
+        }
+        assert_eq!(x[OFF_CHORD], orig[OFF_CHORD]);
+        assert_eq!(x[OFF_HORIZON], orig[OFF_HORIZON]);
+        mirror(&mut x);
+        assert_eq!(x, orig);
+    }
+}

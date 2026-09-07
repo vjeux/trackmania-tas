@@ -110,7 +110,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
     let mut brier = 0f64;
     let mut npos = 0usize;
     for i in 0..set.n {
-        let p = decode(&pred[i]).p_reach;
+        let p = decode(&pred[i], set.lab(i)[L_DIST]).p_reach;
         let y = set.lab(i)[L_Y] > 0.5;
         let b = ((p * 10.0) as usize).min(9);
         cal.bins[b].0 += 1;
@@ -162,7 +162,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
             if l[L_Y] <= 0.5 || l[L_TICKS] < 0.0 || !filter(l) {
                 continue;
             }
-            let pred_ticks = decode(&pred[i]).expected_ticks as f64;
+            let pred_ticks = decode(&pred[i], l[L_DIST]).expected_ticks as f64;
             let e = (pred_ticks - l[L_TICKS] as f64) * 0.010;
             bias += e;
             errs.push(e.abs());
