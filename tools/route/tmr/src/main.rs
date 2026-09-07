@@ -134,6 +134,8 @@ struct BuildOpts {
     fv: u32,
     /// Row cap per map (0 = none).
     max_rows: usize,
+    /// Featurisation threads.
+    threads: usize,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -167,18 +169,14 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
     };
     let feat = featurizer(&geo);
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
-    let mut rows = rows;
-    let dropped = if o.max_rows > 0 { rows.subsample(o.max_rows, 7) } else { 0 };
-    if dropped > 0 {
-        log.push(format!("  {uid} [{}]: subsampled to {} rows ({} dropped, seed 7)", o.kind, rows.n, dropped));
-    }
+    let _ = &rows;
     let f = o.out.join(rows_file_name(&uid, &o.kind));
     if o.fv == 2 { rows.write_half(&f)? } else { rows.write(&f)? }
     let held = data::held_out(&uid);
@@ -201,7 +199,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -811,7 +809,7 @@ fn cmd_watch(args: &[String]) {
             }
             let mut ok = true;
             for kind in ["gate", "local"] {
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, threads: o.threads, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {

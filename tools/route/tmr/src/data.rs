@@ -217,7 +217,7 @@ fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// Build the rows of one map. `probe` = the map's geometry (or `Probe::none()`
 /// for the geometry-free ablation build).
-pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
+pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, max_rows: usize, threads: usize, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
@@ -231,9 +231,8 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
         m
     };
     let mut st = BuildStats { records: shard.records.len(), ..Default::default() };
-    let dim = feat.dim();
-    let mut rows = Rows { map_uid: gates.map_uid.clone(), fv: feat.version(), dim, x: Vec::new(), lab: Vec::new(), n: 0 };
-    let mut buf = vec![0f32; dim];
+    let mut specs: Vec<Spec> = Vec::new();
+    let mut labs: Vec<f32> = Vec::new();
     let mut cand_total = 0usize;
     let candidates: Vec<&tmroute::gates::GateRec> = gates.gates.iter().filter(|g| g.kind != WpKind::Start).collect();
     for (ri, r) in shard.records.iter().enumerate() {
@@ -291,8 +290,7 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
             }
             cand_total += 1;
             let t = TargetSpec { centre: g.centre, normal: g.normal, half_width: g.half_width, group_size: *group_size.get(&g.group).unwrap_or(&1), kind: TargetKind::of_wp(g.kind), collected_share: s.cps_before as f32 / n_cp_groups.max(1) as f32 };
-            feat.fill(&s.state, &t, r.horizon_ticks, &mut buf);
-            rows.x.extend_from_slice(&buf);
+            specs.push(Spec { state: s.state, target: t, h: r.horizon_ticks });
             let mut lab = [0f32; NLAB];
             lab[L_Y] = if reached { 1.0 } else { 0.0 };
             lab[L_TICKS] = if reached { r.gate_tick[wp] as f32 } else { -1.0 };
@@ -316,8 +314,7 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
             lab[L_HUMAN] = if is_human { 1.0 } else { 0.0 };
             lab[L_START] = r.start_id as f32;
             lab[L_H] = r.horizon_ticks as f32;
-            rows.lab.extend_from_slice(&lab);
-            rows.n += 1;
+            labs.extend_from_slice(&lab);
             st.rows += 1;
             if reached {
                 st.positives += 1;
@@ -334,6 +331,10 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
         }
     }
     st.candidates_per_record = cand_total as f64 / st.records.max(1) as f64;
+    let (rows, dropped) = featurise(&gates.map_uid, &specs, &labs, feat, max_rows, 7, threads);
+    if dropped > 0 {
+        log.push(format!("  {} [gate]: {} of {} rows kept (uniform, seed 7)", gates.map_uid, rows.n, specs.len()));
+    }
     log.push(format!(
         "{} ({}): {} records → {} rows ({:.2} candidates/record), {} positives ({:.1} %), human rows {} ({} pos), band rows {}, finish candidates {}; positives beyond 400 m {}, outside radius(h) {}, already-credited-yet-reached {}, unknown-ghost starts {}, records without a start {}, waypoints ≥ 32 {}",
         gates.map_name, gates.map_uid, st.records, st.rows, st.candidates_per_record, st.positives, 100.0 * st.positives as f64 / st.rows.max(1) as f64,
@@ -448,16 +449,14 @@ fn unif(s: &mut u64) -> f32 {
 }
 
 /// Build the horizon-native rows of one map.
-pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, seed: u64, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
+pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, seed: u64, max_rows: usize, threads: usize, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
     let fallback = fallback_order(&orders);
     let mut st = LocalStats::default();
-    let dim = feat.dim();
     let n_cp_groups = gates.checkpoint_group_ids().len() as f32;
-    let mut rows = Rows { map_uid: gates.map_uid.clone(), fv: feat.version(), dim, x: Vec::new(), lab: Vec::new(), n: 0 };
-    let mut buf = vec![0f32; dim];
+    let mut rows = (Vec::<Spec>::new(), Vec::<f32>::new());
     let mut rng = seed.max(1) ^ 0x5851_f42d_4c95_7f2d;
     // group records by (start_id, h)
     let mut groups: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
@@ -477,12 +476,11 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     // approximated by the STRAIGHT segment start → endpoint: positives at fractions PASS_FRACS of it with
     // ticks ≈ f·h (the endpoint itself at f = 1 carries the real arrival state; interior points carry none);
     // a negative must be > R_NEG from EVERY segment of the cloud, not only from the endpoints.
-    let mut push_row = |rows: &mut Rows, s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32| {
+    let mut push_row = |rows: &mut (Vec<Spec>, Vec<f32>), s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32| {
         let d = dist3(s.state.pos, target);
         let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
         let t = TargetSpec { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
-        feat.fill(&s.state, &t, h, &mut buf);
-        rows.x.extend_from_slice(&buf);
+        rows.0.push(Spec { state: s.state, target: t, h });
         let mut lab = [0f32; NLAB];
         lab[L_Y] = y;
         lab[L_TICKS] = if y > 0.5 { ticks } else { -1.0 };
@@ -501,8 +499,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
         lab[L_HUMAN] = 0.0;
         lab[L_START] = sid as f32;
         lab[L_H] = h as f32;
-        rows.lab.extend_from_slice(&lab);
-        rows.n += 1;
+        rows.1.extend_from_slice(&lab);
     };
     for (gi, key) in keys.iter().enumerate() {
         let recs = &groups[key];
@@ -601,9 +598,14 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
         }
     }
     st.cloud_mean_extent_m = extent_sum / st.groups.max(1) as f64;
+    let n_specs = rows.0.len();
+    let (rows, dropped) = featurise(&gates.map_uid, &rows.0, &rows.1, feat, max_rows, seed.wrapping_add(7), threads);
+    if dropped > 0 {
+        log.push(format!("  {} [local]: {} of {} rows kept (uniform, seed 7)", gates.map_uid, rows.n, n_specs));
+    }
     log.push(format!(
         "{} ({}) LOCAL: {} (start, h) groups → {} rows: {} positives ({} endpoints + {} straight-segment passage points), {} negatives (radial {}, lateral {}, disc {}, chord {}); {} candidates rejected within {} m of an endpoint; {} no-op duplicate endpoints, {} human records skipped; cloud mean extent {:.1} m; R_LOCAL {} m",
-        gates.map_name, gates.map_uid, st.groups, rows.n, st.positives, st.positives - st.passage_positives, st.passage_positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
+        gates.map_name, gates.map_uid, st.groups, n_specs, st.positives, st.positives - st.passage_positives, st.passage_positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
     ));
     Ok((rows, st))
 }
@@ -766,4 +768,68 @@ mod f16_tests {
             assert!((x - y).abs() <= tol, "{x} -> {y}");
         }
     }
+}
+
+// ───────────────────────── deferred, parallel featurisation ─────────────────────────
+
+/// A row before its features: the start state, the target, the horizon. Labels live beside it.
+#[derive(Clone, Debug)]
+pub struct Spec {
+    pub state: CarState,
+    pub target: TargetSpec,
+    pub h: u16,
+}
+
+/// Featurise `specs` (a uniform seeded subsample of `max_rows` when set) on `threads` threads.
+/// Labels are `NLAB` per spec, in the same order.
+pub fn featurise(map_uid: &str, specs: &[Spec], lab: &[f32], feat: &Featurizer, max_rows: usize, seed: u64, threads: usize) -> (Rows, usize) {
+    let n = specs.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut dropped = 0;
+    if max_rows > 0 && n > max_rows {
+        let mut s = seed.max(1) ^ 0x9e37_79b9_7f4a_7c15;
+        for i in (1..idx.len()).rev() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let j = (s % (i as u64 + 1)) as usize;
+            idx.swap(i, j);
+        }
+        idx.truncate(max_rows);
+        idx.sort_unstable();
+        dropped = n - max_rows;
+    }
+    let dim = feat.dim();
+    let threads = threads.max(1).min(idx.len().max(1));
+    let chunk = (idx.len() + threads - 1) / threads.max(1);
+    let mut parts: Vec<Vec<f32>> = Vec::with_capacity(threads);
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = idx
+            .chunks(chunk.max(1))
+            .map(|ids| {
+                sc.spawn(move || {
+                    let mut out = Vec::with_capacity(ids.len() * dim);
+                    let mut buf = vec![0f32; dim];
+                    for &i in ids {
+                        let s = &specs[i];
+                        feat.fill(&s.state, &s.target, s.h, &mut buf);
+                        out.extend_from_slice(&buf);
+                    }
+                    out
+                })
+            })
+            .collect();
+        for h in handles {
+            parts.push(h.join().expect("featurise thread"));
+        }
+    });
+    let mut x = Vec::with_capacity(idx.len() * dim);
+    for p in parts {
+        x.extend(p);
+    }
+    let mut lab_out = Vec::with_capacity(idx.len() * NLAB);
+    for &i in &idx {
+        lab_out.extend_from_slice(&lab[i * NLAB..(i + 1) * NLAB]);
+    }
+    (Rows { map_uid: map_uid.to_string(), fv: feat.version(), dim, x, lab: lab_out, n: idx.len() }, dropped)
 }
