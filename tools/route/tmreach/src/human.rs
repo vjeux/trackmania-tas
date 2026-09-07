@@ -69,14 +69,17 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                         // DETERMINISM: the rows near the exit are however many the child flushed
                         // (0..5) plus extrapolation; anchor the finish row on the row 200 ms
                         // before the finish, extrapolated at constant velocity, run to run
-                        if let Some(a) = flat.iter().position(|r| w.race_of(r) == want - 200) {
-                            let anchor = flat[a].clone();
-                            let mut r = anchor.clone();
-                            r.time_ms = flat[i].time_ms;
-                            r.x = anchor.x + anchor.vx * 0.2;
-                            r.y = anchor.y + anchor.vy * 0.2;
-                            r.z = anchor.z + anchor.vz * 0.2;
-                            r.cps = flat[i].cps;
+                        // DETERMINISM: the engine rows near the exit are however many the child flushed;
+                        // the ghost's OWN telemetry (50 ms samples, Hermite to 1 ms) gives the finish
+                        // position deterministically; velocity from the telemetry over ±10 ms
+                        if let (Some(p), Some(pm), Some(pp)) = (tel.pos_at(want), tel.pos_at(want - 10), tel.pos_at(want + 10)) {
+                            let mut r = flat[i].clone();
+                            r.x = p[0];
+                            r.y = p[1];
+                            r.z = p[2];
+                            r.vx = (pp[0] - pm[0]) / 0.02;
+                            r.vy = (pp[1] - pm[1]) / 0.02;
+                            r.vz = (pp[2] - pm[2]) / 0.02;
                             flat[i] = r;
                         }
                         first[gi] = i as i32;
