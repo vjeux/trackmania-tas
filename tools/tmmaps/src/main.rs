@@ -226,6 +226,159 @@ fn main() {
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),
+        "recdump" => {
+            let m = map::MapFile::load(Path::new(&args[2]));
+            for it in m.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                let (s, e) = it.record_region;
+                let hex: String = m.gbx.body[s..e].iter().map(|x| format!("{:02x}", x)).collect();
+                println!("i{} {} {} pos_off_rel={} model_off_rel={} anchor? {}\n  {}", it.index, it.model, it.waypoint_tag.clone().unwrap_or_default(), it.pos_off - s, m.item_ids[it.model_field].off - s, it.author.clone().unwrap_or_default(), hex);
+            }
+        }
+        "untag" => {
+            // remove an item's waypoint node (it stops being a waypoint; record shrinks to a 4-byte null)
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let pa: usize = args.iter().position(|a| a == "--item").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--item iN");
+            let ia = m.items.iter().find(|it| it.index == pa).expect("not an item").clone();
+            let mut m = m;
+            m.raw_splices.push((ia.waypoint_region, vec![0xff, 0xff, 0xff, 0xff]));
+            println!("untagged i{} {} {:?}", pa, ia.model, ia.waypoint_tag);
+            m.write_to_reporting(Path::new(&out)).expect("write");
+            println!("wrote {out}");
+        }
+        "swapplace" => {
+            // table-safe placement swap: exchange the two placements' MODEL names via the rename machinery,
+            // and their pose (pos, yaw/pitch/roll, cell) and waypoint node (tag) via patches/splices.
+            // Equivalent to swapping the records, without moving any lookback definition.
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let pa: usize = args.iter().position(|a| a == "--a").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--a iN");
+            let pb: usize = args.iter().position(|a| a == "--b").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--b iM");
+            let ia = m.items.iter().position(|it| it.index == pa).expect("--a not an item");
+            let ib = m.items.iter().position(|it| it.index == pb).expect("--b not an item");
+            let (ra, rb) = (m.items[ia].clone(), m.items[ib].clone());
+            let wa = m.gbx.body[ra.waypoint_region.0..ra.waypoint_region.1].to_vec();
+            let wb = m.gbx.body[rb.waypoint_region.0..rb.waypoint_region.1].to_vec();
+            let mut m = m;
+            m.set_item_model(ia, &rb.model);
+            m.set_item_model(ib, &ra.model);
+            // pose: yaw/pitch/roll + cell + pos
+            let mut rot = Vec::new(); for v in [rb.yaw, rb.pitch, rb.roll] { rot.extend_from_slice(&v.to_le_bytes()); }
+            m.raw_patches.push((ra.yaw_off, rot));
+            let mut rot = Vec::new(); for v in [ra.yaw, ra.pitch, ra.roll] { rot.extend_from_slice(&v.to_le_bytes()); }
+            m.raw_patches.push((rb.yaw_off, rot));
+            m.raw_patches.push((ra.coord_off, rb.raw_coords.to_vec()));
+            m.raw_patches.push((rb.coord_off, ra.raw_coords.to_vec()));
+            let mut p = Vec::new(); for v in rb.pos { p.extend_from_slice(&v.to_le_bytes()); }
+            m.raw_patches.push((ra.pos_off, p));
+            let mut p = Vec::new(); for v in ra.pos { p.extend_from_slice(&v.to_le_bytes()); }
+            m.raw_patches.push((rb.pos_off, p));
+            // pass 1: renames + fixed-length patches; pass 2 (after reload): the variable-length tag swap
+            let tmp = format!("{out}.pass1.tmp");
+            m.write_to_reporting(Path::new(&tmp)).expect("write pass 1");
+            let m2 = map::MapFile::load(Path::new(&tmp));
+            let ja = m2.items.iter().position(|it| it.index == pa).unwrap();
+            let jb = m2.items.iter().position(|it| it.index == pb).unwrap();
+            let (qa, qb) = (m2.items[ja].clone(), m2.items[jb].clone());
+            let mut m = m2;
+            m.raw_splices.push((qa.waypoint_region, wb));
+            m.raw_splices.push((qb.waypoint_region, wa));
+            let _ = std::fs::remove_file(&tmp);
+            println!("swapped placements i{} {} {:?} <-> i{} {} {:?} (models via rename, pose+tag via patch/splice)", pa, ra.model, ra.waypoint_tag, pb, rb.model, rb.waypoint_tag);
+            m.write_to_reporting(Path::new(&out)).expect("write");
+            println!("wrote {out}");
+        }
+        "swaprec" => {
+            // swap two whole item placement RECORDS (file order experiment); the item count is unchanged
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let pa: usize = args.iter().position(|a| a == "--a").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--a iN");
+            let pb: usize = args.iter().position(|a| a == "--b").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--b iM");
+            let ia = m.items.iter().find(|it| it.index == pa).expect("--a not an item").clone();
+            let ib = m.items.iter().find(|it| it.index == pb).expect("--b not an item").clone();
+            let mut ra = m.gbx.body[ia.record_region.0..ia.record_region.1].to_vec();
+            let mut rb = m.gbx.body[ib.record_region.0..ib.record_region.1].to_vec();
+            // the author field is a lookback REFERENCE to the model-name slot this very record defines
+            // (slot numbers follow file order), so each moved record must take over the slot word of
+            // the position it lands in -- otherwise the file carries a forward reference and the game
+            // refuses to load it
+            let (aa, ab) = (&m.item_ids[ia.author_field], &m.item_ids[ib.author_field]);
+            if aa.len == 4 && ab.len == 4 && m.item_ids[ia.model_field].is_def && m.item_ids[ib.model_field].is_def {
+                let oa = aa.off - ia.record_region.0; // author word offset inside record a
+                let ob = ab.off - ib.record_region.0;
+                // rb goes to a's position: its model def takes a's slot; its author word must be a's word
+                rb[ob..ob + 4].copy_from_slice(&aa.raw.to_le_bytes());
+                ra[oa..oa + 4].copy_from_slice(&ab.raw.to_le_bytes());
+                println!("author slot words re-homed: {:#x} <-> {:#x}", aa.raw, ab.raw);
+            }
+            let mut m = m;
+            m.raw_splices.push((ia.record_region, rb));
+            m.raw_splices.push((ib.record_region, ra));
+            println!("swapped records: i{} ({} B) <-> i{} ({} B)", pa, ia.record_region.1 - ia.record_region.0, pb, ib.record_region.1 - ib.record_region.0);
+            m.write_to_reporting(Path::new(&out)).expect("write");
+            println!("wrote {out}");
+        }
+        "swapcell" => {
+            // swap the CELL bytes (raw_coords) of two item placements; positions untouched
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let pa: usize = args.iter().position(|a| a == "--a").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--a iN");
+            let pb: usize = args.iter().position(|a| a == "--b").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--b iM");
+            let ia = m.items.iter().find(|it| it.index == pa).expect("--a not an item").clone();
+            let ib = m.items.iter().find(|it| it.index == pb).expect("--b not an item").clone();
+            let mut m = m;
+            m.raw_patches.push((ia.coord_off, ib.raw_coords.to_vec()));
+            m.raw_patches.push((ib.coord_off, ia.raw_coords.to_vec()));
+            println!("swapped cells: i{} {:?} <-> i{} {:?}", pa, ia.raw_coords, pb, ib.raw_coords);
+            m.write_to_reporting(Path::new(&out)).expect("write");
+            println!("wrote {out}");
+        }
+        "swapmodel" => {
+            // swap the model Id words of two item placements (both must be 4-byte table references)
+            let m = map::MapFile::load(Path::new(&args[2]));
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let pa: usize = args.iter().position(|a| a == "--a").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--a iN");
+            let pb: usize = args.iter().position(|a| a == "--b").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--b iM");
+            let ia = m.items.iter().find(|it| it.index == pa).expect("--a not an item").clone();
+            let ib = m.items.iter().find(|it| it.index == pb).expect("--b not an item").clone();
+            let fa = m.item_ids[ia.model_field].clone();
+            let fb = m.item_ids[ib.model_field].clone();
+            let mut m = m;
+            if fa.len == 4 && fb.len == 4 {
+                let (oa, ob, ra, rb) = (fa.off, fb.off, fa.raw, fb.raw);
+                m.raw_patches.push((oa, rb.to_le_bytes().to_vec()));
+                m.raw_patches.push((ob, ra.to_le_bytes().to_vec()));
+            } else if fa.is_def && fb.is_def && fa.len == fb.len {
+                // both inline definitions of equal length: swap the name strings (every later
+                // reference to either table slot follows the swap: the two MODELS trade places)
+                let na = fa.name.clone().unwrap_or_default().into_bytes();
+                let nb = fb.name.clone().unwrap_or_default().into_bytes();
+                m.raw_patches.push((fa.off + 8, nb));
+                m.raw_patches.push((fb.off + 8, na));
+                println!("(inline definitions: the two model NAMES were swapped at their definition sites -- every placement of either model trades models)");
+            } else {
+                panic!("model ids not swappable: a len {} def {} / b len {} def {}", fa.len, fa.is_def, fb.len, fb.is_def);
+            }
+            println!("swapped model ids: i{} {} <-> i{} {} (words {:#x} <-> {:#x})", pa, ia.model, pb, ib.model, fa.raw, fb.raw);
+            m.write_to_reporting(Path::new(&out)).expect("write swapped map");
+            println!("wrote {out}");
+        }
+        "wpdump" => {
+            // every waypoint ITEM's raw placement record fields, for diffing maps
+            let m = map::MapFile::load(Path::new(&args[2]));
+            println!("idx\tmodel\tauthor\tcoll\ttag\torder\tyaw\tpitch\troll\tcoords\tpos\tflags\tpivot\tscale\ttail24\twpnode_bytes\trecord_bytes");
+            for it in m.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                let b = &m.gbx.body;
+                let (ws, we) = it.waypoint_region;
+                // order = the u32 after the tag string inside the waypoint node (v2)
+                let order = if we - ws >= 16 { u32::from_le_bytes(b[we - 8..we - 4].try_into().unwrap()) } else { 0 };
+                let flags = u16::from_le_bytes(b[we..we + 2].try_into().unwrap());
+                let tail_start = it.scale_off + 4 + if flags & 4 != 0 { 0 } else { 0 };
+                let tail: Vec<f32> = (0..6).map(|k| f32::from_le_bytes(b[tail_start + 4 * k..tail_start + 4 * k + 4].try_into().unwrap())).collect();
+                let wp_hex: String = b[ws..we].iter().map(|x| format!("{:02x}", x)).collect();
+                println!("{}\t{}\t{}\t{:#x}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:?}\t({:.3},{:.3},{:.3})\t{:#06x}\t({:.3},{:.3},{:.3})\t{:.3}\t{:?}\t{}\t{}", it.index, it.model, it.author.clone().unwrap_or_default(), it.collection_raw, it.waypoint_tag.clone().unwrap_or_default(), order, it.yaw, it.pitch, it.roll, it.raw_coords, it.pos[0], it.pos[1], it.pos[2], flags, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, tail, wp_hex, it.record_region.1 - it.record_region.0);
+            }
+        }
         "waypoints" => {
             let m = map::MapFile::load(Path::new(&args[2]));
             eprintln!(
