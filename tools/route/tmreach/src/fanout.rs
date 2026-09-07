@@ -352,7 +352,9 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 if !complete && !rolled.exited {
                     outcome = OUTCOME_ABORTED;
                 }
-                if rolled.exited && !finished_gate {
+                // a child that ENDED BEFORE ITS STOP POINT (its real rows do not reach the window's end)
+                // without finishing: an early death (or the validator's own cut-off past the tape)
+                if rolled.exited && !finished_gate && real_end_label < end_label {
                     out.stats.run_ended_unfinished += 1;
                 }
                 // a FINISHED rollout ends at its finish-crossing row (the rows past it
