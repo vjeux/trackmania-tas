@@ -669,7 +669,7 @@ fn cmd_plan(args: &[String]) {
     // memoised: the beam asks the same (bucket, prev, from, to) thousands of times
     let chained_memo = chained.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
     let chained_h_memo = chained_h.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
-    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(2.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
     let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained_memo) {
         (Some(h), _) => h,
         (None, Some(c)) => c,
