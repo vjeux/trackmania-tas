@@ -2201,9 +2201,19 @@ fn from_template(a: &[String]) {
     let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
     let g = vec![1u8; n];
     let b = vec![0u8; n];
-    tpl.write_with_inputs(&s, &g, &b, &out).unwrap_or_else(|e| die(e));
+    // THE SEED. A policy template gets validation seed 0 (`--keep-seed` keeps the
+    // donor's, for an identity replay of the donor's own tape).
+    let seed_note = if has(a, "--keep-seed") {
+        tpl.write_with_inputs(&s, &g, &b, &out).unwrap_or_else(|e| die(e));
+        format!("validation seed kept: {:?}", tmenv::template::validation_seed(&out).ok())
+    } else {
+        match tpl.write_with_inputs_seed0(&s, &g, &b, &out).unwrap_or_else(|e| die(e)) {
+            Some(old) => format!("validation seed {old} -> 0 (the donor's game clock at race start no longer quantizes our inputs)"),
+            None => "no validation block (synthesized container)".into(),
+        }
+    };
     println!("template  {}  ({n} ticks, {:.3} s)", tplp.display(), n as f64 * 0.01);
-    println!("reference {}", out.display());
+    println!("reference {}  {seed_note}", out.display());
     println!("the archive is OURS in full; the donor contributes the wrapper and the startup state");
 }
 
