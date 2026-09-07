@@ -9,6 +9,7 @@ pub mod ptr;
 pub mod regen;
 pub mod resync;
 pub mod server;
+pub mod tickhook;
 pub mod trace;
 pub mod tree;
 pub mod watch;

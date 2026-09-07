@@ -762,7 +762,10 @@ fn main_module_base() -> usize {
 /// keeps `forkshim` usable with `shimhost`, whose text obviously has no server
 /// instruction at this offset.
 unsafe extern "C" fn install_validator_trace() {
-    if std::env::var_os("FKSHIM_VALIDATOR_CAR").is_none() {
+    // Also under the tick clock: the race-keyed clock reads the race start
+    // through the captured validation simulation (see `race_start_now`).
+    let tick = std::env::var_os("FKSHIM_CLOCK").as_deref() == Some(std::ffi::OsStr::new("tick"));
+    if std::env::var_os("FKSHIM_VALIDATOR_CAR").is_none() && !tick {
         return;
     }
     let base = main_module_base();
@@ -795,9 +798,15 @@ unsafe extern "C" fn install_validator_trace() {
     std::ptr::write_volatile(at as *mut u8, 0xcc);
 }
 
+// One constructor, fixed order: the validator trap first (the tick clock needs
+// its capture), then the clock mode.
+unsafe extern "C" fn shim_ctor() {
+    install_validator_trace();
+    init_clock_mode();
+}
 #[used]
 #[cfg_attr(target_os = "linux", link_section = ".init_array")]
-static VALIDATOR_TRACE_INIT: unsafe extern "C" fn() = install_validator_trace;
+static SHIM_CTOR: unsafe extern "C" fn() = shim_ctor;
 
 // ------------------------------------------------------------- the TICK HOOK
 //
@@ -850,45 +859,82 @@ static N_TICK: AtomicU64 = AtomicU64::new(0);
 static SIM_MS: AtomicU64 = AtomicU64::new(0);
 /// `new_time - dt` at the first entry: the simulation's start time.
 static SIM_MS0: AtomicU64 = AtomicU64::new(u64::MAX);
+/// THE RACE START, in simulation ms, read out of the engine once it is set
+/// (u64::MAX = not yet). It is NOT a constant: 2200 on an idle box, and 2300
+/// in 1 of 150 servers started at once -- the spawn is scheduled off the
+/// engine's frame clock, which is the same load-dependent frame partition
+/// that made lroundf drift. So the tick clock is keyed on RACE time, not
+/// simulation time: `clock = (new_time - race_start) / 10 + RACE_CLOCK_BIAS`.
+static RACE_START: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The clock reading at the last hook entry (u64::MAX until the race start is
+/// known); what `clock_now` returns in tick mode.
+static TICK_CLOCK: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Ticks added to the race tick so countdown ticks (negative race time) are
+/// still positive clock values. Shared with the driver: `clock::RACE_CLOCK_BIAS`.
+pub const RACE_CLOCK_BIAS_TICKS: u64 = 1000;
+// Where the engine keeps the two times whose max is the race start, exactly
+// as the tick loop computes it before applying inputs (0x1219f3b..0x1219f66
+// -> 0x121cf50): `max([[playground+0x968]+0x3c], [participant+0x218])`,
+// unknown while either is -1. playground = [sim+0x18]; participant =
+// [[playground+0x660]] with [playground+0x668] == 1 (VALIDATOR_CAR.md).
+const PG_OFF: usize = 0x18;
+const PG_PLAYERS_OFF: usize = 0x660;
+const PG_NPLAYERS_OFF: usize = 0x668;
+const PG_ROUND_OFF: usize = 0x968;
+const ROUND_START_OFF: usize = 0x3c;
+const PARTICIPANT_SPAWN_OFF: usize = 0x218;
+
+/// The race start as the engine will use it this tick, or None while unset.
+/// Every hop is null-checked; a null anywhere is "not yet", never a fault.
+unsafe fn race_start_now() -> Option<u32> {
+    let sim = VALIDATOR_SIM.load(Ordering::Relaxed);
+    if sim == 0 {
+        return None;
+    }
+    let pg = *((sim + PG_OFF) as *const usize);
+    if pg == 0 {
+        return None;
+    }
+    if *((pg + PG_NPLAYERS_OFF) as *const u32) != 1 {
+        return None;
+    }
+    let players = *((pg + PG_PLAYERS_OFF) as *const usize);
+    let round = *((pg + PG_ROUND_OFF) as *const usize);
+    if players == 0 || round == 0 {
+        return None;
+    }
+    let participant = *(players as *const usize);
+    if participant == 0 {
+        return None;
+    }
+    let a = *((round + ROUND_START_OFF) as *const u32);
+    let b = *((participant + PARTICIPANT_SPAWN_OFF) as *const u32);
+    if a == u32::MAX || b == u32::MAX {
+        return None;
+    }
+    Some(a.max(b))
+}
 /// Entries whose `new_time - old_time != 10`. Must be 0; reported at exit.
 static TICK_ANOMALIES: AtomicU64 = AtomicU64::new(0);
+/// Entries at which the validation simulation's own clock (`[sim+0x48]`,
+/// readable once the validator callback has been captured) was not
+/// `new_time - dt`. Must be 0; reported at exit. This is the in-process
+/// control that the hook sits at a tick boundary of THIS simulation.
+static TICK_CLOCK_MISMATCH: AtomicU64 = AtomicU64::new(0);
 static TICK_HOOK_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+/// The offset actually hooked (the constant, or a finder-mode override).
+static TICK_FN_USED: AtomicUsize = AtomicUsize::new(0);
 
-/// Build 128182: the per-tick entry called first in the validator's tick loop.
-pub const TICK_FN_OFF: usize = 0x119e060;
-/// Its first 32 bytes. The first 17 are displaced into the trampoline.
-pub const TICK_FN_SIGNATURE: [u8; 32] = [
-    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec,
-    0x18, 0x48, 0x89, 0x7d, 0xc8, 0x85, 0xf6, 0x0f, 0x84, 0xe3, 0x00, 0x00, 0x00, 0x89, 0xf0, 0x48,
-];
-pub const TICK_FN_DISPLACED: usize = 17;
-/// The loop's call site: `mov ecx,r14d; call rel32` whose target must be
-/// `TICK_FN_OFF`.
-pub const TICK_CALL_SITE_OFF: usize = 0x12197e8;
-pub const TICK_CALL_SITE_SIGNATURE: [u8; 8] = [0x44, 0x89, 0xf1, 0xe8, 0x70, 0x48, 0xf8, 0xff];
-/// The loop's clock write: `mov ebx,[rbp-0x30]; mov [r15+0x48],ebx`.
-pub const TICK_CLOCK_WRITE_OFF: usize = 0x1219750;
-pub const TICK_CLOCK_WRITE_SIGNATURE: [u8; 7] = [0x8b, 0x5d, 0xd0, 0x41, 0x89, 0x5f, 0x48];
-
-/// Check every signature against the mapped image. Pure; used by the
-/// installer and by `fk tickhook check` through the shared constants.
-pub fn tick_hook_signatures_match(base: usize) -> Result<(), &'static str> {
-    let at = |off: usize, n: usize| unsafe { std::slice::from_raw_parts((base + off) as *const u8, n) };
-    if at(TICK_FN_OFF, TICK_FN_SIGNATURE.len()) != TICK_FN_SIGNATURE {
-        return Err("tick function prologue");
-    }
-    if at(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len()) != TICK_CALL_SITE_SIGNATURE {
-        return Err("tick loop call site");
-    }
-    let rel = i32::from_le_bytes(TICK_CALL_SITE_SIGNATURE[4..8].try_into().unwrap()) as i64;
-    if (TICK_CALL_SITE_OFF as i64 + 8 + rel) as usize != TICK_FN_OFF {
-        return Err("tick loop call site does not target the tick function");
-    }
-    if at(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len()) != TICK_CLOCK_WRITE_SIGNATURE {
-        return Err("tick loop clock write");
-    }
-    Ok(())
-}
+// The build constants and the two pure checks live in ONE file shared with the
+// driver (`fk tickhook check` reads the same bytes out of the ELF on disk):
+// `forkoracle/src/tickhook_sig.rs`, `#[path]`-included exactly like
+// `pred_core`, because the shim has no dependencies by design.
+#[path = "../../forkoracle/src/tickhook_sig.rs"]
+pub mod tickhook_sig;
+pub use tickhook_sig::{
+    prologue_displaced_len, tick_hook_signatures_match, TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE,
+    TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE, TICK_FN_DISPLACED, TICK_FN_OFF, TICK_FN_SIGNATURE,
+};
 
 /// Called from the trampoline at every entry of the tick function, with the
 /// engine's own `(new_time, dt)` (`edx`, `ecx`; `esi` is the player count). Runs the same clock dispatch the
@@ -903,9 +949,27 @@ unsafe extern "C" fn tick_entry(new: u32, dt: u32) {
     if SIM_MS0.load(Ordering::Relaxed) == u64::MAX {
         SIM_MS0.store(new as u64 - dt as u64, Ordering::Relaxed);
     }
+    let sim = VALIDATOR_SIM.load(Ordering::Relaxed);
+    if sim != 0 && std::ptr::read_volatile((sim + 0x48) as *const u32) != new.wrapping_sub(dt) {
+        TICK_CLOCK_MISMATCH.fetch_add(1, Ordering::Relaxed);
+    }
     N_TICK.fetch_add(1, Ordering::Relaxed);
     SIM_MS.store(new as u64, Ordering::Relaxed);
-    on_clock((new / 10) as u64);
+    // The race start is read until it is known and then FROZEN: the tape is
+    // indexed from it, so a clock keyed on it is the tape's own time base.
+    let mut rs = RACE_START.load(Ordering::Relaxed);
+    if rs == u64::MAX {
+        match race_start_now() {
+            Some(v) => {
+                rs = v as u64;
+                RACE_START.store(rs, Ordering::Relaxed);
+            }
+            None => return, // no race yet: nothing is keyed on this tick
+        }
+    }
+    let n = ((new as i64 - rs as i64).div_euclid(10) + RACE_CLOCK_BIAS_TICKS as i64) as u64;
+    TICK_CLOCK.store(n, Ordering::Relaxed);
+    on_clock(n);
 }
 
 /// Build the trampoline and patch the entry. Only under `FKSHIM_CLOCK=tick`;
@@ -934,21 +998,53 @@ unsafe fn install_tick_hook() {
             path == exe && perms.starts_with("r-x") && s <= a && b <= e
         })
     };
-    if !inside(TICK_FN_OFF, TICK_FN_SIGNATURE.len())
-        || !inside(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len())
-        || !inside(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len())
-    {
-        log(b"FKSHIM tickhook: REFUSED, signature offsets are not inside the main module's text\n");
-        _exit(92)
-    }
-    if let Err(what) = tick_hook_signatures_match(base) {
-        log(b"FKSHIM tickhook: REFUSED, signature mismatch: ");
-        log(what.as_bytes());
-        log(b"\n");
-        _exit(92)
-    }
-    let target = base + TICK_FN_OFF;
-    let resume = target + TICK_FN_DISPLACED;
+    // FINDER MODE. `FKSHIM_TICK_FN_OFF=0x...` with `FKSHIM_TICK_UNSAFE=1` hooks
+    // an arbitrary offset with only a prologue-shape check, so `fk tickhook
+    // find` can test candidates on a new build by their dynamic behaviour
+    // (entered once per tick, edx == sim clock + 10, ecx == 10). Never for
+    // production: without UNSAFE the override is refused.
+    let (fn_off, displaced): (usize, usize) = match std::env::var("FKSHIM_TICK_FN_OFF") {
+        Ok(v) => {
+            if std::env::var_os("FKSHIM_TICK_UNSAFE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+                log(b"FKSHIM tickhook: REFUSED, FKSHIM_TICK_FN_OFF needs FKSHIM_TICK_UNSAFE=1\n");
+                _exit(92)
+            }
+            let off = usize::from_str_radix(v.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+            if off == 0 || !inside(off, 64) {
+                log(b"FKSHIM tickhook: REFUSED, override offset is not inside the main module's text\n");
+                _exit(92)
+            }
+            let head = std::slice::from_raw_parts((base + off) as *const u8, 64);
+            match prologue_displaced_len(head) {
+                Some(n) => (off, n),
+                None => {
+                    log(b"FKSHIM tickhook: REFUSED, override target has no relocatable frame-pointer prologue\n");
+                    _exit(92)
+                }
+            }
+        }
+        Err(_) => {
+            if !inside(TICK_FN_OFF, TICK_FN_SIGNATURE.len())
+                || !inside(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len())
+                || !inside(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len())
+            {
+                log(b"FKSHIM tickhook: REFUSED, signature offsets are not inside the main module's text\n");
+                _exit(92)
+            }
+            let read = |off: usize, n: usize| std::slice::from_raw_parts((base + off) as *const u8, n).to_vec();
+            if let Err(what) = tick_hook_signatures_match(&read) {
+                log(b"FKSHIM tickhook: REFUSED, signature mismatch: ");
+                log(what.as_bytes());
+                log(b"\n");
+                _exit(92)
+            }
+            (TICK_FN_OFF, TICK_FN_DISPLACED)
+        }
+    };
+    TICK_FN_USED.store(fn_off, Ordering::SeqCst);
+    let target = base + fn_off;
+    let resume = target + displaced;
+    let displaced_bytes = std::slice::from_raw_parts(target as *const u8, displaced).to_vec();
 
     // Trampoline. 9 GPR pushes + 0x80 for xmm0-7 keep the call 16-aligned
     // (entry rsp = 8 mod 16, +72 +128 = 0 mod 16).
@@ -969,7 +1065,7 @@ unsafe fn install_tick_hook() {
     }
     t.extend_from_slice(&[0x48, 0x81, 0xc4, 0x80, 0x00, 0x00, 0x00]); // add rsp,0x80
     t.extend_from_slice(&[0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5f, 0x5e, 0x5a, 0x59, 0x58]);
-    t.extend_from_slice(&TICK_FN_SIGNATURE[..TICK_FN_DISPLACED]);
+    t.extend_from_slice(&displaced_bytes);
     t.extend_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]); // jmp [rip+0]
     t.extend_from_slice(&(resume as u64).to_le_bytes());
 
@@ -983,11 +1079,11 @@ unsafe fn install_tick_hook() {
     // Text becomes RX again afterwards; the trampoline page stays RWX only
     // because it is never written again and W is harmless there.
 
-    let mut patch = [0xccu8; TICK_FN_DISPLACED];
+    let mut patch = vec![0xccu8; displaced];
     patch[..6].copy_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]);
     patch[6..14].copy_from_slice(&(page as usize as u64).to_le_bytes());
     let lo = target / ps * ps;
-    let hi = (target + TICK_FN_DISPLACED + ps - 1) / ps * ps;
+    let hi = (target + displaced + ps - 1) / ps * ps;
     if mprotect(lo as *mut c_void, hi - lo, 7) != 0 {
         log(b"FKSHIM tickhook: mprotect(text, rwx) failed\n");
         _exit(92)
@@ -1021,9 +1117,6 @@ unsafe extern "C" fn init_clock_mode() {
     install_tick_hook();
 }
 
-#[used]
-#[cfg_attr(target_os = "linux", link_section = ".init_array")]
-static CLOCK_MODE_INIT: unsafe extern "C" fn() = init_clock_mode;
 
 unsafe extern "C" fn validator_trap_handler(_sig: c_int, _info: *const u8, ctx: *mut c_void) {
     let at = VALIDATOR_TRAP_ADDR.load(Ordering::Relaxed);
@@ -1750,13 +1843,15 @@ unsafe fn forkserver() {
     hello.push(b' ');
     utoa(VALIDATOR_SIM.load(Ordering::SeqCst) as u64, &mut hello);
     // The clock the checkpoint is keyed on, and where the engine actually is:
-    // `tick <sim_ms>` under the tick hook (the stop is at the START of the
-    // tick whose new_time is sim_ms; nothing of it has been consumed), or
-    // `lroundf 0` under the legacy clock.
+    // `tick <sim_ms> <race_start>` under the tick hook (the stop is at the
+    // START of the tick whose new_time is sim_ms; nothing of it has been
+    // consumed; race time = sim_ms - race_start), or `lroundf 0`.
     hello.push(b' ');
     if CLOCK_TICK.load(Ordering::Relaxed) != 0 {
         hello.extend_from_slice(b"tick ");
         utoa(SIM_MS.load(Ordering::Relaxed), &mut hello);
+        hello.push(b' ');
+        utoa(RACE_START.load(Ordering::Relaxed), &mut hello);
     } else {
         hello.extend_from_slice(b"lroundf 0");
     }
@@ -2634,7 +2729,7 @@ pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
 #[inline(always)]
 fn clock_now() -> u64 {
     if CLOCK_TICK.load(Ordering::Relaxed) != 0 {
-        SIM_MS.load(Ordering::Relaxed) / 10
+        TICK_CLOCK.load(Ordering::Relaxed)
     } else {
         N_LROUNDF.load(Ordering::Relaxed)
     }
@@ -2672,6 +2767,12 @@ fn emit() {
             logn(b"FKSHIM sim_ms0 ", SIM_MS0.load(Ordering::Relaxed));
             logn(b"FKSHIM sim_ms_end ", SIM_MS.load(Ordering::Relaxed));
             logn(b"FKSHIM tick_anomalies ", TICK_ANOMALIES.load(Ordering::Relaxed));
+            logn(b"FKSHIM tick_clock_mismatch ", TICK_CLOCK_MISMATCH.load(Ordering::Relaxed));
+            logn(b"FKSHIM tick_fn_off ", TICK_FN_USED.load(Ordering::Relaxed) as u64);
+            logn(b"FKSHIM race_start ", RACE_START.load(Ordering::Relaxed));
+        }
+        logn(b"FKSHIM clock_total ", clock_now());
+        if false {
         }
     }
 }

@@ -49,16 +49,17 @@ pub fn shim_env() -> &'static str {
     }
 }
 
-/// The validator's simulation time at which race time is 0, build 128182.
-///
-/// The simulation starts at `SIM_START_MS` and the participant's race clock
-/// starts 1.2 s later; the input record the engine copies at simulation time
-/// `T` is index `(T - SIM_RACE_ORIGIN_MS - start_offset_ms) / 10`. Measured
-/// under gdb (`0x119f0f0` is entered with `esi = 2200`, `r8d = start_offset`)
-/// and re-checked on every fork server by the page-fault probe: a server whose
-/// probe disagrees with this constant is refused, not corrected.
-pub const SIM_RACE_ORIGIN_MS: i64 = 2200;
-pub const SIM_START_MS: i64 = 1000;
+/// THE RACE START IS NOT A CONSTANT. The validator's simulation starts at
+/// ~1000 ms and the race (input record 0 of a tape with `start_offset_ms = 0`)
+/// usually starts at 2200 -- but 1 of 150 servers started at once put it at
+/// 2300: the spawn is scheduled off the engine's frame clock, the same
+/// load-dependent frame partition that made lroundf drift. So the shim reads
+/// the start out of the engine (`max(round start, participant spawn)`, exactly
+/// as the tick loop does before applying inputs) and keys its clock on RACE
+/// time: `clock = (sim_ms - race_start) / 10 + RACE_CLOCK_BIAS`. The bias keeps
+/// countdown ticks positive. Typical value, for reading logs only:
+pub const TYPICAL_RACE_START_MS: i64 = 2200;
+pub const RACE_CLOCK_BIAS: i64 = 1000;
 
 /// Clock units per simulated tick.
 pub fn per_tick() -> u64 {
@@ -77,11 +78,14 @@ pub fn lroundf_for_race_ms(ms: i64) -> u64 {
 
 /// The clock value at which a server should stop for race time `ms`.
 ///
-/// Tick mode: EXACT -- the start of the tick whose simulation time is
-/// `SIM_RACE_ORIGIN_MS + ms`, before that tick's input record is read.
+/// Tick mode: EXACT -- the start of the tick at race time `ms`, before that
+/// tick's input record is read, in whichever process and whatever its race
+/// start. (A checkpoint earlier than ~180 ms before the race start fires at
+/// the first tick at which the engine has set the start; everything before
+/// that is countdown the engine never reads inputs for.)
 pub fn ckpt_for_race_ms(ms: i64) -> u64 {
     match mode() {
-        ClockMode::Tick => ((SIM_RACE_ORIGIN_MS + ms).max(SIM_START_MS + 10) / 10) as u64,
+        ClockMode::Tick => (ms.div_euclid(10) + RACE_CLOCK_BIAS).max(0) as u64,
         ClockMode::Lroundf => lroundf_for_race_ms(ms),
     }
 }
@@ -92,16 +96,15 @@ pub fn ckpt_for_tick(tick: i64, start_offset_ms: i32) -> u64 {
     ckpt_for_race_ms(tick * 10 + start_offset_ms as i64)
 }
 
-/// The tape tick a tick-mode server stopped in front of, from the `sim_ms`
-/// it reported in its handshake. This is what the page-fault probe must agree
-/// with, on every server, every time.
-pub fn tape_tick_at_sim_ms(sim_ms: u64, start_offset_ms: i32) -> i64 {
-    (sim_ms as i64 - SIM_RACE_ORIGIN_MS - start_offset_ms as i64).div_euclid(10)
+/// The tape tick a tick-mode server stopped in front of, from the `sim_ms` and
+/// `race_start` it reported in its handshake. This is what the page-fault
+/// probe must agree with, on every server, every time.
+pub fn tape_tick_at(sim_ms: u64, race_start_ms: u64, start_offset_ms: i32) -> i64 {
+    (sim_ms as i64 - race_start_ms as i64 - start_offset_ms as i64).div_euclid(10)
 }
 
 /// The first tape tick the engine ever reads. The input application only
-/// looks at the tape from simulation time `SIM_RACE_ORIGIN_MS - 10` on (race
-/// time -10 ms; `0x119f0fc..0x119f11a`), so every record before that -- the
+/// looks at the tape from race time -10 ms on (`0x119f0fc..0x119f11a`), so every record before that -- the
 /// countdown -- is never consumed at all, which is why rewriting the
 /// countdown region is physically inert.
 pub fn first_read_tick(start_offset_ms: i32) -> i64 {
@@ -129,12 +132,17 @@ mod tests {
         if !tick_mode() {
             return;
         }
-        // map 2, rank 1: start_offset -1580, record 157 is read at sim 2190.
-        assert_eq!(ckpt_for_tick(157, -1580), 219);
-        assert_eq!(tape_tick_at_sim_ms(2190, -1580), 157);
+        // map 2, rank 1: start_offset -1580, record 157 is read at race -10 ms
+        // (sim 2190 with the usual 2200 start, 2290 with a 2300 one).
+        assert_eq!(ckpt_for_tick(157, -1580), 999);
+        assert_eq!(tape_tick_at(2190, 2200, -1580), 157);
+        assert_eq!(tape_tick_at(2290, 2300, -1580), 157);
+        assert_eq!(first_read_tick(-1580), 157);
+        assert_eq!(first_read_tick(0), 0);
         for t in [0i64, 1, 60, 171, 2313, 43000] {
-            let c = ckpt_for_tick(t, -1580);
-            assert_eq!(tape_tick_at_sim_ms(c * 10, -1580), t);
+            let c = ckpt_for_tick(t, -1580) as i64;
+            let race_ms = (c - RACE_CLOCK_BIAS) * 10;
+            assert_eq!(tape_tick_at((2200 + race_ms) as u64, 2200, -1580), t);
         }
     }
 }

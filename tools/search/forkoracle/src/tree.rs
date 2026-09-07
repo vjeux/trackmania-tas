@@ -114,13 +114,14 @@ impl Tree {
             }
         };
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false, tick_mode: false, sim_ms: 0 };
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false, tick_mode: false, sim_ms: 0, race_start: 0 };
         let hello = read_frame(&mut n.sock).ok_or("a branch node connected and said nothing")?;
         let s = String::from_utf8_lossy(&hello).into_owned();
         let ready = crate::forksrv::parse_ready_full(&s)?;
         let (base, clock, pid) = (ready.base, ready.clock, ready.pid);
         n.tick_mode = ready.tick_mode;
         n.sim_ms = ready.sim_ms;
+        n.race_start = ready.race_start;
         let pid = pid.ok_or_else(|| {
             format!(
                 "a branch node handshook without naming its pid ({:?}) -- a node the driver \
@@ -169,6 +170,7 @@ pub struct Node {
     dead: bool,
     pub tick_mode: bool,
     pub sim_ms: u64,
+    pub race_start: u64,
 }
 
 impl Node {

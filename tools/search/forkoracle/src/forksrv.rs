@@ -198,6 +198,9 @@ pub struct ForkServer {
     /// tick the stopped server is about to run -- nothing of it consumed.
     pub tick_mode: bool,
     pub sim_ms: u64,
+    /// The race start in simulation ms, as the engine set it in THIS process
+    /// (usually 2200; not a constant -- see `clock`).
+    pub race_start: u64,
     pub dir: PathBuf,
 }
 
@@ -414,6 +417,7 @@ impl ForkServer {
             validation_sim: 0,
             tick_mode: false,
             sim_ms: 0,
+            race_start: 0,
             dir: dir.to_path_buf(),
         };
 
@@ -434,6 +438,7 @@ impl ForkServer {
         srv.validation_sim = ready.validation_sim.unwrap_or(0);
         srv.tick_mode = ready.tick_mode;
         srv.sim_ms = ready.sim_ms;
+        srv.race_start = ready.race_start;
         Ok(srv)
     }
 
@@ -755,7 +760,7 @@ impl ForkServer {
     /// Under the tick hook the same boundary is a function of the tick the
     /// engine reported: the server is stopped at the START of the tick whose
     /// simulation time is `sim_ms`, and that tick's input application copies
-    /// record `(sim_ms - SIM_RACE_ORIGIN_MS - start_offset_ms) / 10`. So on
+    /// record `(sim_ms - race_start - start_offset_ms) / 10`. So on
     /// every server, every time, `probe + 1` must equal that -- a disagreement
     /// means the hook is not where TICKHOOK.md says, or the origin constant does
     /// not hold for this build/map, and it is a hard error rather than a number
@@ -765,12 +770,12 @@ impl ForkServer {
         if self.tick_mode {
             // A checkpoint inside the countdown is in front of records the engine
             // never reads; the first read is then the first race-time record.
-            let want = crate::clock::tape_tick_at_sim_ms(self.sim_ms, start_offset_ms)
+            let want = crate::clock::tape_tick_at(self.sim_ms, self.race_start, start_offset_ms)
                 .max(crate::clock::first_read_tick(start_offset_ms));
             if probe as i64 + 1 != want {
                 return Err(format!(
-                    "tick hook / probe disagreement: server stopped at sim_ms {} (about to read tape tick {} with start_offset {}), but the probe says the engine has finished record {} (so reads {} next)",
-                    self.sim_ms, want, start_offset_ms, probe, probe + 1
+                    "tick hook / probe disagreement: server stopped at sim_ms {} with race start {} (about to read tape tick {} with start_offset {}), but the probe says the engine has finished record {} (so reads {} next)",
+                    self.sim_ms, self.race_start, want, start_offset_ms, probe, probe + 1
                 ));
             }
         }
@@ -904,6 +909,7 @@ pub struct Ready {
     /// engine's simulation time of the tick it is about to run.
     pub tick_mode: bool,
     pub sim_ms: u64,
+    pub race_start: u64,
 }
 
 pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
@@ -922,11 +928,19 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
             s.trim()
         ));
     }
-    // Trailing `tick <sim_ms>` or `lroundf 0`; absent from older shims.
-    let (tick_mode, sim_ms) = match (it.next(), it.next()) {
-        (Some("tick"), Some(v)) => (true, v.parse().map_err(|_| format!("bad sim_ms in handshake: {}", s.trim()))?),
-        (Some("lroundf"), _) | (None, _) => (false, 0),
-        (Some(other), _) => return Err(format!("unknown clock `{}` in handshake: {}", other, s.trim())),
+    // Trailing `tick <sim_ms> <race_start>` or `lroundf 0`; absent from older shims.
+    let (tick_mode, sim_ms, race_start) = match (it.next(), it.next(), it.next()) {
+        (Some("tick"), Some(v), Some(r)) => {
+            let sim_ms: u64 = v.parse().map_err(|_| format!("bad sim_ms in handshake: {}", s.trim()))?;
+            let race_start: u64 = r.parse().map_err(|_| format!("bad race_start in handshake: {}", s.trim()))?;
+            if race_start == u64::MAX || race_start > sim_ms + 10_000 {
+                return Err(format!("the shim stopped before the engine set a race start: {}", s.trim()));
+            }
+            (true, sim_ms, race_start)
+        }
+        (Some("tick"), _, _) => return Err(format!("truncated tick handshake: {}", s.trim())),
+        (Some("lroundf"), _, _) | (None, _, _) => (false, 0, 0),
+        (Some(other), _, _) => return Err(format!("unknown clock `{}` in handshake: {}", other, s.trim())),
     };
     Ok(Ready {
         base,
@@ -936,6 +950,7 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
         validation_sim,
         tick_mode,
         sim_ms,
+        race_start,
     })
 }
 

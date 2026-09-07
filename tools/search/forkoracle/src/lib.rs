@@ -18,6 +18,7 @@
 
 pub mod pred_core;
 pub mod clock;
+pub mod tickhook_sig;
 pub mod forksrv;
 pub mod tree;
 pub mod pred;
