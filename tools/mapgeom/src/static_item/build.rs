@@ -2159,8 +2159,8 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     Ok((super::write_file(&f), m))
 }
 
-/// A gameplay gate's LED sign panel as a plain self-lit picture of the kind's
-/// logo (signlogo.rs: the live gate feeds the panels' `_DispIn` shader a
+/// A gameplay gate's LED sign panel as a plain picture of the kind's logo on
+/// black (signlogo.rs: the live gate feeds the panels' `_DispIn` shader a
 /// display the static item cannot). `TINY_SIGN_LOGO=off` keeps the game
 /// material (dark row, ⊗ on the beam).
 pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
@@ -2179,10 +2179,38 @@ pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMate
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
         main.is_using_game_material = false;
-        main.model = crate::crystal_model::Id::Str("TDSNI".into());
+        // TINY_SIGN_MODEL=TDSN (default) — the shading model of the panel.
+        // Measured on a lineup of the 16m Turbo gate (Summer 20 host, close-up
+        // frames, panel corners sampled): TDSN with the picture in slot 0
+        // alone gives BLACK cells (0x0a0e12) and a sunlit logo (0x919712);
+        // ANY use of slot 5 (the self-illumination, in TDSN or TDSNI) turns the
+        // black cells into a sky-coloured grey (0x21303e here, 0x5d under
+        // Summer 19's hazy sky against the original's 0x18) — the illum term
+        // adds an ambient over the whole panel, not just where the picture
+        // is lit. Slots 1–4, 6, 7 change nothing; 8 brightens everything; the
+        // picture's alpha (full/mask/zero) changes nothing; BaseTexture and
+        // TDSNE draw a checker/lighter panel, TDSNEM a flat colour. So the
+        // panel is a plain diffuse: black cells like the original, the logo
+        // lit by the sun instead of glowing.
+        main.model = crate::crystal_model::Id::Str(std::env::var("TINY_SIGN_MODEL").unwrap_or_else(|_| "TDSN".into()));
         main.material_name = crate::crystal_model::Id::Str(format!("SignLogo{kind}"));
         main.link = crate::crystal_model::Id::Null;
-        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+        // `TINY_SIGN_SLOTS=0` (the default) names the texture slots the picture
+        // fills (0 = diffuse; 5 = self-illumination, see above); the token `b`
+        // puts the file into BaseTexture instead (draws a checker — no).
+        let tokens: Vec<String> = std::env::var("TINY_SIGN_SLOTS")
+            .ok()
+            .map(|s| s.split(',').filter(|c| !c.trim().is_empty()).map(|c| c.trim().to_string()).collect())
+            .unwrap_or_else(|| vec!["0".into()]);
+        main.user_textures.clear();
+        for t in tokens {
+            if t == "b" {
+                main.base_texture = file.clone();
+            } else {
+                let u01: i32 = t.parse().unwrap_or_else(|_| panic!("TINY_SIGN_SLOTS: {t:?} is not a slot index"));
+                main.user_textures.push(crate::crystal_model::UserTexture { u01, texture: file.clone() });
+            }
+        }
     }
     owned
 }

@@ -54,9 +54,11 @@ pub fn sign_kind(link: &str, item_kind: Option<&str>) -> Option<String> {
     None
 }
 
-/// The archive file name of a kind's panel picture.
+/// The archive file name of a kind's panel picture (`TINY_SIGN_SUFFIX` tags
+/// the name so a lineup can carry several pictures of one kind).
 pub fn logo_file(kind: &str) -> String {
-    format!("SignLogo{kind}.dds")
+    let suffix = std::env::var("TINY_SIGN_SUFFIX").unwrap_or_default();
+    format!("SignLogo{kind}{suffix}.dds")
 }
 
 /// The panel picture of a kind: a 32-bit DDS, lit logo on black.
@@ -67,6 +69,10 @@ pub fn logo_dds(store: &mut crate::store::DataStore, kind: &str) -> R<Vec<u8>> {
     let bg = [rgba[0], rgba[1], rgba[2]];
     let bg_dark = bg.iter().all(|c| *c < 0x40);
     let mut out = Vec::with_capacity(rgba.len());
+    // TINY_SIGN_ALPHA=mask|zero|full (default full): the alpha the panel
+    // picture carries — a shading model may read the diffuse alpha as its
+    // specular/gloss level (the black cells mirrored the sky in TDSNI)
+    let alpha_mode = std::env::var("TINY_SIGN_ALPHA").unwrap_or_else(|_| "full".into());
     // Rows bottom-up: the live display shows the `_I` picture V-flipped
     // against a plain texture sampling of the panel's uv (Summer 19: the
     // chevrons pointed up on the tiny beam, down on the original).
@@ -82,7 +88,19 @@ pub fn logo_dds(store: &mut crate::store::DataStore, kind: &str) -> R<Vec<u8>> {
             } else {
                 bg
             };
-            out.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
+            let lit = c.iter().any(|v| *v >= 0x40);
+            let a = match alpha_mode.as_str() {
+                "zero" => 0x00,
+                "mask" => {
+                    if lit {
+                        0xFF
+                    } else {
+                        0x00
+                    }
+                }
+                _ => 0xFF,
+            };
+            out.extend_from_slice(&[c[0], c[1], c[2], a]);
         }
     }
     Ok(write_dds_rgba(w, h, &out))
