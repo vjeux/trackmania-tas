@@ -705,6 +705,26 @@ pub fn cmd(args: &[String]) {
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
 
+    // THE START IS THE LAST NON-GOAL WAYPOINT RECORD. The dedicated server (and
+    // the game) picks the map's start by ITEM-FILE ORDER, not by the waypoint
+    // type of the model, not by the placement's tag, not by position: the last
+    // waypoint placement that is not a Goal wins. Measured by the player
+    // project on a scratch copy of Summer 02 (2026-09-07): moving the Spawn
+    // record last put the engine start exactly on the Spawn item; moving it
+    // first left the start on a checkpoint 158 m away. Our natural emission
+    // order is the source's (blocks then items, in cell order), which put a
+    // checkpoint last on 23 of the 25 maps — the car started mid-track, and
+    // the checkpoint counter began at whatever it had already crossed.
+    // So the Spawn spec is moved to the END of the list; the Goal records that
+    // follow it in the source order do not matter (they are Goals), but keeping
+    // Spawn strictly last is the simplest rule that cannot be re-broken by a
+    // later change to emission order.
+    if let Some(at) = specs.iter().position(|s| s.tag.as_deref() == Some("Spawn")) {
+        let spawn = specs.remove(at);
+        println!("  start placement moved to the end of the item order (record {at} -> {}): the engine takes the LAST non-Goal waypoint as the start", specs.len());
+        specs.push(spawn);
+    }
+
     let tmp0 = out.with_extension(format!("tiny-{}.slots.Map.Gbx", std::process::id()));
     let tmp1 = out.with_extension(format!("tiny-{}.models.Map.Gbx", std::process::id()));
     let tmp2 = out.with_extension(format!("tiny-{}.waypoints.Map.Gbx", std::process::id()));
