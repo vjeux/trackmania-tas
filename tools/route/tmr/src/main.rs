@@ -961,6 +961,9 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
     match fv {
         1 => {
             let (s, _nodes) = tmplan::surface::SurfaceModel::build(map, gates, verbose, false)?;
+            if s.full.triangle_count() < 1000 {
+                return Err("SurfaceModel plumb index is empty — pak or map missing; refusing to build features on it".into());
+            }
             Ok(Geometry::V1(s))
         }
         2 => {
@@ -968,6 +971,9 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
             let m = tmmaps::map::MapFile::load(map);
             let t0 = std::time::Instant::now();
             let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            if scene.tris.len() < 1000 {
+                return Err(format!("LocalScene has only {} triangles — the pak or the map is not what it should be (a wiped /tmp/tmp/server reads as an empty scene); refusing to build features on it", scene.tris.len()));
+            }
             if verbose {
                 eprintln!("  LocalScene: {} triangles, {} placements, yoff {} in {:.1} s", scene.tris.len(), scene.placements.len(), gates.yoff, t0.elapsed().as_secs_f64());
             }
