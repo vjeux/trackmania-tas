@@ -29,6 +29,12 @@ pub struct Layout {
     /// a checkpoint, the finish included, and lives at a fixed offset from the
     /// validator's participant object (`fk::validator::CP_COUNTER_OFF`).
     pub cps: u64,
+    /// The live vehicle's `CSceneVehicleVisState` (`phy + 0x848`, 0x360 bytes),
+    /// or 0 when not resolved. See [`Vis`].
+    pub vis: u64,
+    /// The participant slot the live vehicle came from (0 Stadium, 1 Snow,
+    /// 2 Rally, 3 Desert); meaningful only with `vis != 0`.
+    pub car: u8,
 }
 
 /// Offsets within the gathered record, once the two segments are concatenated.
@@ -43,7 +49,7 @@ pub const R_CPS: usize = 48;
 
 /// The gathered record length for this layout.
 pub fn rec_len(l: &Layout) -> usize {
-    if l.cps != 0 { REC_LEN + 4 } else { REC_LEN }
+    (if l.cps != 0 { REC_LEN + 4 } else { REC_LEN }) + if l.vis != 0 { VIS_LEN } else { 0 }
 }
 
 /// Where the wetness f32 sits relative to the position anchor. MEASURED, not
@@ -67,7 +73,111 @@ pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
     if l.cps != 0 {
         v.push((l.cps, 4));
     }
+    if l.vis != 0 {
+        v.push((l.vis, VIS_LEN as u32));
+    }
     v
+}
+
+
+/// The engine's `CSceneVehicleVisState` (0x360 bytes at `phy + 0x848`) --
+/// gear, rpm, wheels, turbo, applied steer -- decoded per the INPUT arm's
+/// `WHEELS.md` §2 (2026-09-06; `fk wheels` reproduces the ghost's own 50 ms
+/// samples from it byte for byte: gear/rpm/steer/dampers/contact 100 %,
+/// materials 98-100 %, on 7 ghosts × 6 maps × all 4 cars). Wheel order is the
+/// ENGINE's: k = 0..3 = FL, FR, RR, RL.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vis {
+    /// False when the layout carries no vis segment: every field below is
+    /// then meaningless and a consumer must say UNKNOWN, not zero.
+    pub known: bool,
+    /// Which of the participant's four vehicle slots was live: 0 Stadium,
+    /// 1 Snow, 2 Rally, 3 Desert.
+    pub car: u8,
+    pub gear: u8,
+    pub rpm: f32,
+    /// The steer the engine applied, after the action-key cap, -1..1.
+    pub steer_applied: f32,
+    pub gas: f32,
+    pub braking: bool,
+    pub front_speed: f32,
+    pub lateral_speed: f32,
+    pub turbo_time: f32,
+    pub is_turbo: bool,
+    pub ground_contact: bool,
+    pub wheel_contact: [bool; 4],
+    pub wheel_material: [u8; 4],
+    pub wheel_slip: [f32; 4],
+    pub wheel_damper: [f32; 4],
+    pub wheel_steer: [f32; 4],
+    pub wetness: f32,
+}
+
+impl Vis {
+    pub const UNKNOWN: Vis = Vis {
+        known: false,
+        car: u8::MAX,
+        gear: u8::MAX,
+        rpm: f32::NAN,
+        steer_applied: f32::NAN,
+        gas: f32::NAN,
+        braking: false,
+        front_speed: f32::NAN,
+        lateral_speed: f32::NAN,
+        turbo_time: f32::NAN,
+        is_turbo: false,
+        ground_contact: false,
+        wheel_contact: [false; 4],
+        wheel_material: [u8::MAX; 4],
+        wheel_slip: [f32::NAN; 4],
+        wheel_damper: [f32::NAN; 4],
+        wheel_steer: [f32::NAN; 4],
+        wetness: f32::NAN,
+    };
+
+    /// Decode a gathered 0x360-byte vis state.
+    pub fn decode(s: &[u8], car: u8) -> Vis {
+        let f = |o: usize| f32::from_le_bytes(s[o..o + 4].try_into().unwrap());
+        let u = |o: usize| u32::from_le_bytes(s[o..o + 4].try_into().unwrap());
+        let flags = u(0x88);
+        let mut v = Vis {
+            known: true,
+            car,
+            gear: (u(0x1a4) & 0xf) as u8,
+            rpm: f(0x198),
+            steer_applied: f(0x10),
+            gas: f(0x14),
+            braking: u(0x20) != 0,
+            front_speed: f(0x74),
+            lateral_speed: f(0x78),
+            turbo_time: f(0x1ac),
+            is_turbo: flags & (1 << 24) != 0,
+            ground_contact: flags & (1 << 20) != 0,
+            wheel_contact: [false; 4],
+            wheel_material: [0; 4],
+            wheel_slip: [0.0; 4],
+            wheel_damper: [0.0; 4],
+            wheel_steer: [0.0; 4],
+            wetness: f(0x328),
+        };
+        for k in 0..4 {
+            let w = 0xa8 + 44 * k;
+            let wf = u(w + 0x28);
+            v.wheel_contact[k] = wf & 2 == 0;
+            v.wheel_material[k] = s[w + 0x10];
+            v.wheel_slip[k] = f(w + 0x14);
+            v.wheel_damper[k] = f(w);
+            v.wheel_steer[k] = f(w + 0x0c);
+        }
+        v
+    }
+}
+
+/// Size of the vis state segment.
+pub const VIS_LEN: usize = 0x360;
+/// Where the vis segment starts in the record: after the counter, when present.
+pub fn r_vis(l: &Layout) -> usize {
+    if l.cps != 0 { R_CPS + 4 } else { REC_LEN }
 }
 
 fn getf32(b: &[u8], o: usize) -> f64 {
@@ -96,6 +206,9 @@ pub struct Row {
     /// The engine's checkpoint counter at this tick; `u32::MAX` when the
     /// layout carries none.
     pub cps: u32,
+    /// The vis state (gear, rpm, wheels, ...); `Vis::UNKNOWN` when the layout
+    /// carries none.
+    pub vis: Vis,
 }
 
 /// Find the engine's race clock near an already-qualified position address.
@@ -205,6 +318,7 @@ pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<
             qz: getf32(b, R_QUAT + 12),
             wetness: getf32(b, R_WET),
             cps: if l.cps != 0 { u32::from_le_bytes(b[R_CPS..R_CPS + 4].try_into().unwrap()) } else { u32::MAX },
+            vis: if l.vis != 0 { Vis::decode(&b[r_vis(l)..r_vis(l) + VIS_LEN], l.car) } else { Vis::UNKNOWN },
         };
         match rows.last_mut() {
             Some(last) if last.time_ms == t => *last = row,
@@ -441,6 +555,30 @@ pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, Str
     let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
         .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
     let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
+    // THE BIAS BELONGS TO THE OBJECT (tickhook arm + ENV arm, 2026-09-06). This
+    // is the bias for a row read from the VIS STATE (the object the pointer
+    // chains end at, `+0x4e8`, the one `fk trace`/`fk tickhook reads` gather): a
+    // vis row labelled race T holds the car at T, and against the ghost's own
+    // telemetry that reads 3.5 mm median. The validator's PHYSICS object
+    // (`ValidatorCar.pos`, phy+0x12f0) holds the same instant one tick LATER --
+    // measured 0.8360 m apart at 83.58 m/s, 1.00 tick of travel -- so a physics
+    // row's label is T+10: use `physics_bias` for a Layout whose `pos` is the
+    // physics object (tmenv does; its tape replay is exact with it and one
+    // record early without). Carrying a bias across objects is a one-tick error.
     let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 20;
     Ok(counter - sampled_state_race_ms)
+}
+
+/// The clock bias for a Layout whose `pos` is the validator's PHYSICS object
+/// (`CGameVehiclePhy` + 0x12f0), given the vis-object bias
+/// [`measured_clock_bias`] returns: the physics object holds the same instant
+/// one tick later, so its row is labelled 10 ms later. Measured three ways
+/// against the TAPE (ENV/LEARN/INPUT, 2026-09-06): with this bias a ghost's own
+/// inputs fed at record (T - start_offset)/10 reproduce its run to the ms
+/// (19.812, 19.556, 22.718) and `fk trace --reference` agrees to mm; with the
+/// vis bias the feed is one record early (0.078 m at 0.5 s, off the road by
+/// 9-13 s). And `tmenv wheels-control` then reads the telemetry sample stamped T
+/// as exactly the vis fields gathered in the physics row T (phase 0 ms).
+pub fn physics_bias(vis_bias: i64) -> i64 {
+    vis_bias - 10
 }

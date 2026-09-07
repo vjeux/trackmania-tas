@@ -95,7 +95,26 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
     // fractions through the middle of the run where the car is fastest. Every
     // attempt still faces the unchanged acceptance test, so this widens where
     // we look and not what we will believe.
-    let layout = {
+    // THE VALIDATOR'S OWN CAR FIRST. `ValidatorCar` walks the typed ownership
+    // chain (controller -> sim -> playground -> participant -> CGameVehiclePhy)
+    // with no scan and no candidate ranking; the pointer chains below are
+    // heuristics found on one binary and the default one is a dead stack frame
+    // (POINTER.md §5) that reads null when the process stops at the tick hook.
+    // Under the tick hook this is the path that resolves; the ladder is kept as
+    // the fallback and says on its own line when it was needed. (INPUT arm,
+    // 2026-09-06.)
+    let layout = if let Ok(car) = crate::validator::ValidatorCar::locate(
+        &mut s.srv,
+        probe,
+        &recs,
+        s.tape.start_offset_ms,
+        bounds,
+        4000,
+        true,
+    ) {
+        println!("locate: validator ownership chain");
+        (car.layout().clone(), probe, recs)
+    } else {
         let mut found = None;
         let mut first_err = None;
         let mut tried: Vec<String> = Vec::new();

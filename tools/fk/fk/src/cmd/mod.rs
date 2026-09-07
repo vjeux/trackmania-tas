@@ -13,3 +13,4 @@ pub mod tickhook;
 pub mod trace;
 pub mod tree;
 pub mod watch;
+pub mod wheels;

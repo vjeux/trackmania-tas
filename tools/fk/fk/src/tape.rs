@@ -50,7 +50,7 @@ pub struct Tape {
     pub declared_ms: Option<u32>,
     inner: GTape,
     body: Vec<u8>,
-    path: String,
+    pub path: String,
 }
 
 impl Tape {

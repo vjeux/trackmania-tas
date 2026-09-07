@@ -124,6 +124,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // difference between the two contexts, not a layout guess. Whoever picks
     // this up should start there: dump the 40 bytes at pos-16 in BOTH
     // processes and diff them, rather than trying more quat_kind values.
+    // THE VALIDATOR ANCHOR FIRST. Resolved inside the clean process from the
+    // validator's ownership chain (`record.rs`: chain "validator"), it needs
+    // no per-map pointer chain and survives the tick hook, which left every
+    // chain below reading null. The chains remain as fallbacks.
+    if !noanchor && std::env::var("FK_NO_VALIDATOR_ANCHOR").is_err() {
+        let mut a = crate::record::Anchors::from_chain(0, 0, "validator");
+        a.quat_off = -16;
+        a.quat_kind = 0;
+        a.vel_off = 12;
+        anchors.push(a);
+    }
     if !noanchor && std::env::var("FK_ANCHOR_SERVER").is_err() {
         let mut chains: Vec<String> = crate::ptr::chain_cache_get(&c.server, &c.map);
         if let Ok(v) = std::env::var("FK_CAR_CHAIN") {

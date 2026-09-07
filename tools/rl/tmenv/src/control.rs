@@ -242,7 +242,7 @@ pub fn flat_trace(
     ticks: u64,
 ) -> Result<Vec<Row>, String> {
     let rig = Rig::new(server, map, shim, work, candidate)?;
-    let mut s = rig.session_clock(EARLIEST_CLOCK)?;
+    let mut s = rig.session_root()?;
     let probe = s.probe_tick()?;
     let reference = s.tape.tail_records(0);
     let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
@@ -277,7 +277,7 @@ pub fn measure_spawn(
     reference: &Path,
 ) -> Result<(SpawnFix, Vec<Row>), String> {
     let rig = Rig::new(server, map, shim, work, reference)?;
-    let mut s = rig.session_clock(EARLIEST_CLOCK)?;
+    let mut s = rig.session_root()?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(0);
     let car = resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)?;
@@ -302,4 +302,84 @@ pub fn measure_spawn(
         },
         rows,
     ))
+}
+
+/// [`flat_trace`] that reports where the ENGINE ended the run instead of
+/// failing there: one fork from the root, `ticks` ticks or the run's end,
+/// whichever comes first. For asking how far past its tape a run goes.
+pub fn flat_trace_or_end(
+    server: &Path,
+    map: &Path,
+    shim: &Path,
+    work: &Path,
+    candidate: &Path,
+    ticks: u64,
+) -> Result<(Vec<Row>, bool), String> {
+    let rig = Rig::new(server, map, shim, work, candidate)?;
+    let mut s = rig.session_root()?;
+    let probe = s.probe_tick()?;
+    let reference = s.tape.tail_records(0);
+    let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
+    let dir = work.join("flat-traces");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+    let fk::session::Session { srv, .. } = s;
+    let mut f = Forest::new(srv, work, reference, Some(cfg))?;
+    f.probe_root()?;
+    match f.advance_or_end(ROOT, &[], 0, ticks)? {
+        branch::Advanced::Node(rows, h) => {
+            f.release(h);
+            Ok((rows, false))
+        }
+        branch::Advanced::RunEnded(rows) => Ok((rows, true)),
+    }
+}
+
+/// One row of the wheels control: race clock + the raw vis state.
+pub struct VisTick {
+    pub clock: u32,
+    pub vis: Vec<u8>,
+}
+
+/// Gather the LIVE vis state (`Layout.vis`) per tick for a whole run of the
+/// candidate, from the root, in one fork. For `tmenv wheels-control`.
+pub fn gather_vis(
+    server: &Path,
+    map: &Path,
+    shim: &Path,
+    work: &Path,
+    candidate: &Path,
+    ticks: u32,
+) -> Result<(Vec<VisTick>, i64, u8), String> {
+    let rig = Rig::new(server, map, shim, work, candidate)?;
+    let mut s = rig.session_root()?;
+    let probe = s.probe_tick()?;
+    let reference = s.tape.tail_records(0);
+    let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
+    let l = car.layout().clone();
+    if l.vis == 0 {
+        return Err("the validator car resolved without a vis state".into());
+    }
+    let segs = vec![(l.clock, 4u32), (l.vis, forkoracle::layout::VIS_LEN as u32)];
+    let recs = s.tape.tail_records(probe);
+    let rows = fk::locate::gather_ticks(&mut s.srv, probe, &recs, &segs, ticks, 400_000, (0, 4));
+    let out = rows
+        .into_iter()
+        .map(|t| VisTick { clock: t.clock, vis: t.rec[4..4 + forkoracle::layout::VIS_LEN].to_vec() })
+        .collect();
+    Ok((out, l.clock_bias, l.car))
+}
+
+/// The root stop for a tape: the start of the FIRST tick the engine reads by
+/// index. With a countdown prefix (`start_offset_ms <= -10`) that is race
+/// -10 ms ([`EARLIEST_CLOCK`]); a tape whose record 0 IS race 0 has no record
+/// for race -10 (index -1), so its root is the start of race 0. Measured: a
+/// rank-10000 Summer 2026 - 02 ghost with start_offset 0 failed the tick-hook
+/// / probe control at 999 ("about to read tape tick -1").
+pub fn root_clock_for(start_offset_ms: i32) -> u64 {
+    if start_offset_ms <= -10 {
+        EARLIEST_CLOCK
+    } else {
+        forkoracle::clock::ckpt_for_race_ms(start_offset_ms as i64)
+    }
 }
