@@ -894,6 +894,9 @@ fn cmd_watch(args: &[String]) {
                         cmd.args([pass, &v]);
                     }
                 }
+                if has(args, "--no-mirror") {
+                    cmd.arg("--no-mirror");
+                }
                 cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
                 match cmd.spawn() {
                     Ok(ch) => children.push((suffix.clone(), model, ch)),
