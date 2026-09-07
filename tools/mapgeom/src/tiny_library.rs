@@ -571,7 +571,15 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         let sl = pk.variant.spawn_loc;
                         m.spawn = [sl[0] * scale, sl[1] * scale, sl[2] * scale];
                     }
-                    let opts = crate::static_item::build::BuildOpts { ident: ident.clone(), author: ident.clone(), scale, collection, editors: m.editors };
+                    // the block info's skin declaration (the screen blocks'
+                    // `Any\Advertisement16x9\`) travels into the item header
+                    if let Some(chunk) = store.read(&path).ok().and_then(|b| tmmaps::header::game_skin_chunk(&b)) {
+                        if let Some(s) = tmmaps::header::GameSkin::decode(&chunk) {
+                            m.notes.push(format!("skin {} ({} slots)", s.dir, s.fids.len()));
+                        }
+                        m.skin = Some(chunk);
+                    }
+                    let opts = crate::static_item::build::BuildOpts { ident: ident.clone(), author: ident.clone(), scale, collection, editors: m.editors, skin: m.skin.clone() };
                     crate::static_item::build::assemble(&m, &opts).map(|f| (crate::static_item::file::write_file(&f), m))
                 }
             }

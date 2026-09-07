@@ -188,9 +188,20 @@ pub struct ItemRec {
     /// a `PalmForest` placement's variant is its palm species). Read off the
     /// placements with `tmmaps region --items --raw`.
     pub flags: u16,
+    /// Absolute body range of the skin `FileRef` (`packDesc`) when flags bit 2
+    /// is set: the skin file this placement applies to its model (Summer 15's
+    /// lights: `Skins\Stadium\LightColors\WhiteCold.dds`). Decode it with
+    /// `header::FileRef::decode`. The model must DECLARE a skin (header chunk
+    /// 0x090F4000) for the game to apply it.
+    pub skin_region: Option<(usize, usize)>,
 }
 
 impl ItemRec {
+    /// The placement's skin reference, decoded from `body`.
+    pub fn skin(&self, body: &[u8]) -> Option<crate::header::FileRef> {
+        let (a, b) = self.skin_region?;
+        crate::header::FileRef::decode(&body[a..b]).map(|(f, _)| f)
+    }
     /// The placement's variant index (the high byte of `flags`).
     pub fn variant(&self) -> u8 {
         (self.flags >> 8) as u8
@@ -1464,8 +1475,11 @@ fn parse_items(
             let pivot = [r.f32(), r.f32(), r.f32()];
             let scale_off = r.o;
             let scale = r.f32();
+            let mut skin_region = None;
             if flags & 4 != 0 {
+                let skin_start = r.o;
                 read_file_ref(&mut r);
+                skin_region = Some((skin_start, r.o));
             }
             r.skip(12 + 12);
             rec = Some(ItemRec {
@@ -1493,6 +1507,7 @@ fn parse_items(
                 record_region: (record_start, 0),
                 waypoint_tag: tag,
                 flags,
+                skin_region,
             });
         }
         let mut rec = rec.expect("item without a 0x03101002 chunk");

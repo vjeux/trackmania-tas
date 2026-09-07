@@ -271,17 +271,23 @@ pub fn cmd_region(args: &[String]) {
     print_region(&found);
     // --raw: the v8 tail of every listed ITEM record (flags, pivot, scale,
     // [skin], the two trailing words) as hex — the bytes an item VARIANT index
-    // would live in, for reading a layout off real placements.
+    // would live in, for reading a layout off real placements. `skin` is the
+    // decoded placement skin FileRef (flags bit 2), `-` without one.
     if crate::cli::has(args, "--raw") {
-        println!("id\tflags\tvariant\tyaw,pitch,roll\tpivot\tscale\ttail_hex");
+        println!("id\tflags\tvariant\tyaw,pitch,roll\tpivot\tscale\tskin\ttail_hex");
         for e in found.iter().filter(|e| e.item) {
             let i: usize = e.id[1..].parse().unwrap();
             let rec = &m.items[i];
             let tail = &m.gbx.body[rec.waypoint_region.1..rec.record_region.1];
             let rest: String = tail[2 + 12 + 4..].iter().map(|b| format!("{b:02x}")).collect();
+            let skin = match rec.skin(&m.gbx.body) {
+                Some(f) if f.url.is_empty() => f.path,
+                Some(f) => format!("{} <{}>", f.path, f.url),
+                None => "-".to_string(),
+            };
             println!(
-                "{}\t{:#06x}\t{}\t{:.4},{:.4},{:.4}\t{:.3},{:.3},{:.3}\t{:.3}\t{}",
-                e.id, rec.flags, rec.variant(), rec.yaw, rec.pitch, rec.roll, rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, rest
+                "{}\t{:#06x}\t{}\t{:.4},{:.4},{:.4}\t{:.3},{:.3},{:.3}\t{:.3}\t{}\t{}",
+                e.id, rec.flags, rec.variant(), rec.yaw, rec.pitch, rec.roll, rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, skin, rest
             );
         }
     }

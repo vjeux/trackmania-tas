@@ -267,6 +267,89 @@ fn main() {
             }
             eprintln!("{} entries", n);
         }
+        // skins [SUBSTR] [--raw]: every pack entry (items, block infos) whose
+        // path contains SUBSTR and whose HEADER carries a CPlugGameSkin chunk
+        // (0x090F4000) — the declaration that lets the game feed a model's
+        // texture slot with a skin: the in-game advertisement on screens and
+        // gates (`Any\Advertisement6x1\`), a placement's own skin file
+        // (`Stadium\LightColors\`). One row per entry: path, skin folder,
+        // texture slots (class:name=default file), the trailing words; `--raw`
+        // adds the chunk bytes as hex. A row that does not decode to the exact
+        // byte count says so — the layout is measured, not assumed.
+        "skins" => {
+            let mut store = open(&a);
+            let pat = a.rest.get(1).filter(|s| !s.starts_with("--")).cloned().unwrap_or_default().to_uppercase();
+            let raw = a.rest.iter().any(|x| x == "--raw");
+            let paths: Vec<String> = store
+                .entries()
+                .filter(|e| {
+                    let p = e.path();
+                    (pat.is_empty() || p.to_uppercase().contains(&pat))
+                        && (e.class_id == 0x2E00_2000 || (e.class_id >> 12) == 0x03051 || (e.class_id >> 12) == 0x03053 || (e.class_id >> 12) == 0x03055 || (e.class_id >> 12) == 0x0305B)
+                })
+                .map(|e| e.path())
+                .collect();
+            let mut n = 0;
+            println!("path\tdir\tfids\ttail\tbytes");
+            for p in &paths {
+                let Ok(bytes) = store.read(p) else { continue };
+                let Some(chunk) = tmmaps::header::game_skin_chunk(&bytes) else { continue };
+                n += 1;
+                match tmmaps::header::GameSkin::decode(&chunk) {
+                    Some(s) => {
+                        let fids: Vec<String> = s.fids.iter().map(|f| format!("{:08X}:{}={}({})", f.class, f.name, f.file, f.flag)).collect();
+                        let tail: Vec<String> = s.tail.chunks(4).map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<String>()).collect();
+                        let exact = if s.encode() == chunk { "" } else { " REENCODE-MISMATCH" };
+                        println!("{}\t{}\t{}\t{}\t{}{}", p, s.dir, fids.join(" "), tail.join(" "), chunk.len(), exact);
+                    }
+                    None => println!("{}\tUNDECODED\t\t\t{}", p, chunk.len()),
+                }
+                if raw {
+                    println!("  {}", chunk.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                }
+            }
+            eprintln!("{} of {} candidate entries carry a 0x090F4000 header chunk", n, paths.len());
+        }
+        // item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]: the
+        // game's own item file under a new Ident (every length-prefixed ident /
+        // name / author string replaced in header and body) so it can be
+        // EMBEDDED in a map as is — every reference it carries still points
+        // into the packs, which is the question such a copy asks the game.
+        "item-rename" => {
+            let inp = a.rest.get(1).cloned().unwrap_or_else(|| die("item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]".to_string()));
+            let bytes = std::fs::read(&inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".to_string()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".to_string()));
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| ident.clone());
+            let (old_name, old_author) = tmmaps::header::item_ident_author(&bytes).unwrap_or_else(|| die(format!("{inp}: no header ident")));
+            let renamed = mapgeom::tiny_assets::rename_item_ident(&bytes, &old_name, &old_author, &ident, &author);
+            std::fs::write(&out, &renamed).unwrap_or_else(|e| die(e.to_string()));
+            let back = tmmaps::header::item_ident_author(&renamed).map(|(n, a)| format!("{n} by {a}")).unwrap_or_else(|| "NOT READ BACK".into());
+            println!("wrote {out}: ident {old_name:?} by {old_author:?} -> {back} ({} bytes)", renamed.len());
+        }
+        // skin FILE [--from SRC --out OUT]: print a GBX file's skin declaration
+        // (header chunk 0x090F4000), or graft SRC's declaration onto FILE and
+        // write OUT — the one-item experiment before the bake carried it.
+        "skin" => {
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("skin FILE [--from SRC --out OUT]".to_string()));
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            match tmmaps::header::game_skin_chunk(&bytes) {
+                Some(c) => match tmmaps::header::GameSkin::decode(&c) {
+                    Some(s) => println!("{p}: {}", s.summary()),
+                    None => println!("{p}: 0x090F4000 chunk of {} bytes, undecoded: {}", c.len(), c.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                },
+                None => println!("{p}: no skin declaration"),
+            }
+            if let Some(from) = flag(&a.rest, "--from") {
+                let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out OUT with --from".to_string()));
+                let src = std::fs::read(&from).unwrap_or_else(|e| die(format!("{from}: {e}")));
+                let chunk = tmmaps::header::game_skin_chunk(&src).unwrap_or_else(|| die(format!("{from}: no skin declaration to copy")));
+                let grafted = tmmaps::header::set_game_skin_chunk(&bytes, &chunk);
+                std::fs::write(&out, &grafted).unwrap_or_else(|e| die(e.to_string()));
+                let check = tmmaps::header::game_skin(&grafted).map(|s| s.summary()).unwrap_or_else(|| "NOT READ BACK".into());
+                println!("wrote {out} ({} bytes): {check}", grafted.len());
+            }
+        }
         "resolve" => {
             let store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();

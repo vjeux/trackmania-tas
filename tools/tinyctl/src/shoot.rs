@@ -90,6 +90,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // way — it needs the frames, not the shoot. `--no-compare` skips it.
     let one_side = sides.len() < 2;
     if one_side && tmmaps::cli::has(args, "--no-compare") {
+        if tmmaps::cli::has(args, "--pull-full") {
+            let names = crate::compare_view_names(&views)?;
+            pull_frames(&wsx, &remote_dir, &tag, &names, &sides, &outdir)?;
+        }
         eprintln!("one side only — no comparison; frames are in {remote_dir} on the box");
         return Ok(());
     }
@@ -118,7 +122,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         Err(e) => {
             eprintln!("compare on the box failed ({e}); pulling the frames and comparing here");
-            pull_frames(&wsx, &remote_dir, &tag, &names, &outdir)?;
+            pull_frames(&wsx, &remote_dir, &tag, &names, &["o", "t"], &outdir)?;
             let mut cargs: Vec<String> = vec!["--views".into(), views.to_string_lossy().into_owned(), "--dir".into(), outdir.to_string_lossy().into_owned(), "--tag".into(), tag.clone()];
             if Path::new(&ffmpeg_local).exists() {
                 cargs.push("--hstack-ffmpeg".into());
@@ -128,15 +132,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
     }
     if tmmaps::cli::has(args, "--pull-full") {
-        pull_frames(&wsx, &remote_dir, &tag, &names, &outdir)?;
+        pull_frames(&wsx, &remote_dir, &tag, &names, &["o", "t"], &outdir)?;
     }
     eprintln!("look at {}/cmpdiff-{tag}-crops.png, then -overview.png; full frames stay in {remote_dir} on the box", outdir.display());
     Ok(())
 }
 
-fn pull_frames(wsx: &Wsx, remote_dir: &str, tag: &str, names: &[String], outdir: &Path) -> Result<(), String> {
+/// The full frames of `sides` (`o`/`t`), one per view, into `outdir`.
+fn pull_frames(wsx: &Wsx, remote_dir: &str, tag: &str, names: &[String], sides: &[&str], outdir: &Path) -> Result<(), String> {
     for name in names {
-        for side in ["o", "t"] {
+        for side in sides {
             let f = format!("cmp-{tag}{name}-{side}.png");
             let n = wsx.pull(&format!("{remote_dir}/{f}"), &outdir.join(&f))?;
             eprintln!("  pulled {f} ({n} B)");

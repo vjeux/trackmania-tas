@@ -32,6 +32,13 @@ pub struct BuildOpts {
     /// Remap every material link onto the mesh-editor family (BlueBay
     /// embedded items: only `Editors\...` links are known to render there).
     pub editors: bool,
+    /// The source model's CPlugGameSkin HEADER chunk (0x090F4000), copied
+    /// verbatim: the declaration (`Any\Advertisement6x1\`, `*Image` slot)
+    /// that makes the game paint the current in-game advertisement — the
+    /// campaign artwork — onto the model's `Image` texture, and lets a
+    /// placement's own skin file (a light colour) apply. Without it a screen
+    /// draws the material's default yellow `RaceAd6x1.dds` panel.
+    pub skin: Option<Vec<u8>>,
 }
 
 /// One source visual + the material slot it draws with.
@@ -114,6 +121,10 @@ pub struct Merged {
     /// `TINY_WATER=keep|drop` overrides.
     pub keep_water: bool,
     pub editors: bool,
+    /// The source model's CPlugGameSkin header chunk (0x090F4000), verbatim
+    /// — see `BuildOpts::skin`. Set from the pack item file or the block
+    /// info file; the built item carries it in its own header.
+    pub skin: Option<Vec<u8>>,
     /// The crystal bake built `surf_vertices`/`surf_triangles`/`surf_ids`
     /// itself (per-slot entries, trigger synthesis); skip the shared
     /// dedup-and-weld tail in `add_crystal`.
@@ -1410,6 +1421,9 @@ fn next_index(next: &mut i32) -> i32 {
 
 /// Header chunks 2E001003 (desc, v8), 2E001006 (lightmap time 0),
 /// 2E002000 (item type Ornament), 2E002001 (file version 0).
+/// Header chunks 2E001003 (desc, v8), [090F4000 the source's game skin],
+/// 2E001006 (lightmap time 0), 2E002000 (item type Ornament), 2E002001 (file
+/// version 0). Nadeo's items carry the skin chunk right after the icon.
 pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
     use super::file::HeaderChunk;
     let mut d = Vec::new();
@@ -1427,12 +1441,17 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         w.string("New Item");
         w.u8(3);
     }
-    vec![
-        HeaderChunk { id: 0x2E001003, heavy: false, payload: d },
+    let mut out = vec![HeaderChunk { id: 0x2E001003, heavy: false, payload: d }];
+    // TINY_ITEM_SKIN=0 leaves the declaration out (the A/B of 2026-09-07)
+    if let Some(skin) = opts.skin.as_ref().filter(|_| std::env::var("TINY_ITEM_SKIN").as_deref() != Ok("0")) {
+        out.push(HeaderChunk { id: tmmaps::header::GAME_SKIN_CHUNK, heavy: false, payload: skin.clone() });
+    }
+    out.extend([
         HeaderChunk { id: 0x2E001006, heavy: false, payload: vec![0; 8] },
         HeaderChunk { id: 0x2E002000, heavy: false, payload: 1u32.to_le_bytes().to_vec() },
         HeaderChunk { id: 0x2E002001, heavy: false, payload: vec![0; 4] },
-    ]
+    ]);
+    out
 }
 
 /// Physics id of an external `.Material.Gbx` (its `CPlugMaterial` surface
@@ -1600,7 +1619,7 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     let mut m = Merged::default();
     m.editors = std::env::var_os("TINY_EDITORS").is_some();
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
 }
@@ -1616,6 +1635,8 @@ pub fn static_item_from_item(item_bytes: &[u8], ident: &str, author: &str, scale
 pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
     m.editors = std::env::var_os("TINY_EDITORS").is_some();
+    // the source item's skin declaration (header chunk 0x090F4000) travels
+    let skin = tmmaps::header::game_skin_chunk(item_bytes);
     match super::parse_file(item_bytes) {
         Ok(f) => {
             let so = f.item.static_object().ok_or("item has no CPlugStaticObjectModel (and is not a crystal item)")?;
@@ -1658,7 +1679,8 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
             super::bake::add_crystal(&crystal, scale, &mut m)?;
         }
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
+    m.skin = skin;
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
 }
@@ -2351,6 +2373,16 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
         m.modifier = links;
         m.modifier_suffix = suffix;
     }
+    // The item's skin declaration (header chunk 0x090F4000: the in-game
+    // advertisement slot of screens and gates, the colour slot of lights) is
+    // carried verbatim — the game applies skins only to a model that declares
+    // one (2026-09-07: every tiny screen drew the default yellow panel).
+    if let Some(chunk) = store.read(item_path).ok().and_then(|b| tmmaps::header::game_skin_chunk(&b)) {
+        if let Some(s) = tmmaps::header::GameSkin::decode(&chunk) {
+            m.notes.push(format!("skin {} ({} slots)", s.dir, s.fids.len()));
+        }
+        m.skin = Some(chunk);
+    }
     let picked = match variants.get(variant) {
         Some(p) => p.clone(),
         None => {
@@ -2376,7 +2408,7 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     if m.visuals.is_empty() && !m.veget.is_empty() {
         return Ok((Vec::new(), m));
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
 }

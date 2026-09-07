@@ -282,6 +282,15 @@ impl Gbx {
         self.file_with_stream(new_body, &stream)
     }
 
+    /// The whole file with `new_body` stored UNCOMPRESSED (`'U'`), the way the
+    /// item builder writes `.Item.Gbx` files. Header edits on such a file go
+    /// through here so the container keeps its form.
+    pub fn write_body_uncompressed(&self, new_body: &[u8]) -> Vec<u8> {
+        let mut out = self.header_bytes(b'U');
+        out.extend_from_slice(new_body);
+        out
+    }
+
     /// The whole file: this container's header, then `stream` declared as the
     /// compressed form of a body `body_len` long.
     pub fn file_with_stream(&self, new_body: &[u8], stream: &[u8]) -> Vec<u8> {
