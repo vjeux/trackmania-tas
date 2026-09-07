@@ -162,7 +162,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
             continue;
         }
-        let Some(pk) = bi.pick_placement(ground, vindex, sub) else {
+        let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+        let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) else {
             outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("block info has no variant with units or mobils".into()) });
             continue;
         };

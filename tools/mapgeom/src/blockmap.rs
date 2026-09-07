@@ -29,6 +29,9 @@ pub const FLAG_REPLACEMENT: u32 = 1 << 16;
 pub const FLAG_DECAL: u32 = 1 << 17;
 pub const FLAG_WAYPOINT: u32 = 1 << 20;
 pub const FLAG_BIT21: u32 = 1 << 21;
+/// Bits 21..27: additional-variant index (0 = base variant, k = additional
+/// ground/air variant k-1) — see `BlockInfo::pick_placement_add`.
+pub const FLAG_ADDITIONAL_SHIFT: u32 = 21;
 pub const FLAG_GHOST: u32 = 1 << 28;
 pub const FLAG_FREE: u32 = 1 << 29;
 

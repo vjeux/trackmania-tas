@@ -481,6 +481,16 @@ impl Merged {
                 self.notes.push(format!("id-pass visual {} dropped", self.materials[mat].link().unwrap_or("")));
                 continue;
             }
+            // A terrain WATER surface (`RedIsland\Media\Material\Water`: the water
+            // quad of WaterHill / DecoLake prefabs) is not drawable as an item
+            // material — the game's water is a render pass of the Water zone,
+            // and as a static visual it came out as a black quad (Summer 02).
+            // The regenerated full-size lake is at that very height, so dropping
+            // the quad leaves the real water showing through.
+            if self.materials.get(mat).and_then(|m| m.link()).map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false) {
+                self.notes.push("water surface visual dropped (the zone water draws it)".to_string());
+                continue;
+            }
             // TINY_DROP_MATS=sub1,sub2: drop visuals whose material link contains
             // a substring (bisecting which material makes the game drop an item)
             if let Ok(drop) = std::env::var("TINY_DROP_MATS") {

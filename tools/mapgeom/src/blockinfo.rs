@@ -1265,10 +1265,27 @@ impl BlockInfo {
     /// support blocks have an empty ground variant), else air, and the label
     /// says which. An index past the lists falls back to list 0 with a note.
     pub fn pick_placement(&self, ground: bool, variant: usize, subvariant: usize) -> Option<Picked<'_>> {
+        self.pick_placement_add(ground, variant, subvariant, 0)
+    }
+
+    /// `additional` = the block flags' bits 21..27: 0 is the base variant,
+    /// k picks additional variant k-1 of the ground (or air) list. Read off
+    /// RedIsland's `DecoTerrainHD` (61 variants: base "0-WaterHill Base1" +
+    /// add0..add58, the HD detail meshes matching every cliff/hill shape),
+    /// whose 62 placements in Summer 2026 - 02 carry 4, 5, 6, 14..17, 34,
+    /// 35, 45, 47, 59 there with the low variant bits all zero; every one of
+    /// them came out as the base WaterHill piece (a black lake-bottom square
+    /// in the middle of the dirt) before this was decoded. Within the chosen
+    /// variant the low bits pick the mobil list and bits 6..11 the mobil.
+    pub fn pick_placement_add(&self, ground: bool, variant: usize, subvariant: usize, additional: usize) -> Option<Picked<'_>> {
         // "Has content": units, or at least one mobil somewhere. StructurePillarFCBGround's
         // ground variant has no units and one EMPTY mobil list; its geometry is the air variant's.
         let has_units = |v: &Option<Variant>| v.as_ref().is_some_and(|v| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty()));
-        let (v, label) = if ground && has_units(&self.variant_base_ground) {
+        let adds = if ground { &self.additional_ground } else { &self.additional_air };
+        let has_content = |v: &Variant| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty());
+        let (v, label) = if additional > 0 && additional - 1 < adds.len() && has_content(&adds[additional - 1]) {
+            (&adds[additional - 1], if ground { "ground/add" } else { "air/add" })
+        } else if ground && has_units(&self.variant_base_ground) {
             (self.variant_base_ground.as_ref()?, "ground/base")
         } else if !ground && has_units(&self.variant_base_air) {
             (self.variant_base_air.as_ref()?, "air/base")
@@ -1296,11 +1313,12 @@ impl BlockInfo {
             }
             _ => Vec::new(),
         };
-        let additional = if ground { self.additional_ground.len() } else { self.additional_air.len() };
-        if additional > 0 {
-            notes.push(format!("{} additional {} variant(s) exist; base used", additional, if ground { "ground" } else { "air" }));
+        let n_add = if ground { self.additional_ground.len() } else { self.additional_air.len() };
+        if n_add > 0 && additional == 0 {
+            notes.push(format!("{n_add} additional {} variant(s) exist; base used (flags bits 21..27 are 0)", if ground { "ground" } else { "air" }));
         }
-        Some(Picked { variant: v, label: label.to_string(), list: list_idx, mobils, notes })
+        let label = if label.ends_with("/add") { format!("{label}{}", additional - 1) } else { label.to_string() };
+        Some(Picked { variant: v, label, list: list_idx, mobils, notes })
     }
 
     pub fn all_variants(&self) -> Vec<(String, &Variant)> {
