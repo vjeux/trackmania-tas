@@ -710,7 +710,7 @@ fn cmd_plan(args: &[String]) {
     for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
         println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
     }
-    let prov = provenance("plan");
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", provenance("plan")), None => provenance("plan") };
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {

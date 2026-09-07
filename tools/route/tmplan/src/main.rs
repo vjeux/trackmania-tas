@@ -113,7 +113,8 @@ fn cmd_plan(args: &[String]) {
         "{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tinf_pairs {}/{}\tplans {}",
         gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est.name(), width, inf_pairs, d.len() * d.len(), plans.len()
     );
-    let prov = tmroute::provenance("tmplan plan");
+    // --note: appended to produced_by (e.g. the tiny converter build + the map md5 and collhash it was planned on)
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", tmroute::provenance("tmplan plan")), None => tmroute::provenance("tmplan plan") };
     let out_dir = flag(args, "--out-dir");
     for (k, p) in plans.iter().enumerate() {
         let (g, w) = order_str(&nodes, &gates, &p.visit);

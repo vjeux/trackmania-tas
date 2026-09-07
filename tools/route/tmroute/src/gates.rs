@@ -392,7 +392,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             let dz = a.centre[2] - b.centre[2];
             let dxz = (dx * dx + dz * dz).sqrt();
             let dy = (a.centre[1] - b.centre[1]).abs();
-            let linked = a.tag == "LinkedCheckpoint" && b.tag == "LinkedCheckpoint" && a.order == b.order;
+            // order 0 is "unset": the tiny converter (2026-09-07) tags every piece LinkedCheckpoint with order 0 — those
+            // are grouped by geometry like plain pieces, not all into one
+            let linked = a.tag == "LinkedCheckpoint" && b.tag == "LinkedCheckpoint" && a.order == b.order && a.order != 0;
             // Two GRID blocks are two gates however close: Spring 2026 - 17 has
             // RoadBumpCheckpointSlopeUp/SlopeDown in adjacent cells (32 m apart) and
             // the header counts them as two checkpoints. Rows of one gate are built
@@ -406,7 +408,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             let is_finish = matches!(a.kind, WpKind::Finish | WpKind::Multilap);
             // a ROW is pieces of one kind (item–item or free–free) with parallel axes; Summer 2024 - 23 has a
             // free `GateCheckpoint` 22 m from an item `GateCheckpointLeft32m`, at right angles: two checkpoints
-            let same_regime = a.from_item == b.from_item;
+            // tiny maps: the converter names block-derived items AC…, original items AI… — a block and an item
+            // 12 m apart were two checkpoints in the full-size map (Norway 2026) and stay two here
+            let conv_class = |m: &str| -> String { if m.len() > 2 && m.starts_with('A') && (m.as_bytes()[1] == b'C' || m.as_bytes()[1] == b'I') && m.as_bytes()[2].is_ascii_digit() { m[..2].to_string() } else { "std".to_string() } };
+            let same_regime = a.from_item == b.from_item && conv_class(&a.model) == conv_class(&b.model);
             let parallel = ((a.yaw - b.yaw).cos()).abs() > 0.9;
             let near = same_tag && ((both_placed && same_regime && parallel) || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
             // two touching pieces are one gate whatever their tags (Fall 2024 - 24 has a
