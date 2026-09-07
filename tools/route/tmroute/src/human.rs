@@ -339,7 +339,7 @@ pub struct Consensus {
 /// oracle confirmed the lap. None → `Hypothesis`.
 pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by: &str, certified_by: Option<&str>) -> Consensus {
     let mut notes = Vec::new();
-    let declared = gates.declared_checkpoints;
+    let declared = if gates.declared_checkpoints > 0 { gates.expected_splits() } else { -1 };
     // finished + fully matched + right split count
     let ok: Vec<usize> = (0..runs.len())
         .filter(|&i| rows[i].unmatched == 0 && declared > 0 && rows[i].cp_ms.len() as i32 == declared && rows[i].ms > 0)

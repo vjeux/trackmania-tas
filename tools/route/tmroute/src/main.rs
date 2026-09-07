@@ -304,7 +304,7 @@ fn cmd_human_orders(args: &[String]) {
         if r.unmatched > 0 {
             unmatched += 1;
         }
-        if gates.declared_checkpoints > 0 && r.cp_ms.len() as i32 != gates.declared_checkpoints {
+        if gates.declared_checkpoints > 0 && r.cp_ms.len() as i32 != gates.expected_splits() {
             bad_count += 1;
         } else if r.unmatched == 0 {
             ok += 1;
@@ -316,7 +316,7 @@ fn cmd_human_orders(args: &[String]) {
         "{}: {} ghosts; split count == declared ({}) on {}; wrong split count {}; with unmatched crossings {}; max XZ residual to gate centre P50 {:.1} m P90 {:.1} m max {:.1} m",
         gates.map_name,
         rows.len(),
-        gates.declared_checkpoints,
+        gates.expected_splits(),
         ok + unmatched.min(0),
         bad_count,
         unmatched,
@@ -355,7 +355,7 @@ fn cmd_consensus(args: &[String]) {
     // every distinct order, with its count
     let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
     for r in &rows {
-        if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints {
+        if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.expected_splits() {
             *counts.entry(r.order_group.clone()).or_default() += 1;
         }
     }
@@ -584,7 +584,7 @@ pub fn cmd_human_batch(args: &[String]) {
             );
             for n in &c.notes { out.push_str(&format!("  note: {n}\n")); }
             let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
-            for r in &rows { if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints { *counts.entry(r.order_group.clone()).or_default() += 1; } }
+            for r in &rows { if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.expected_splits() { *counts.entry(r.order_group.clone()).or_default() += 1; } }
             for (k, v) in &counts { out.push_str(&format!("  order [{}] x{}\n", j(k), v)); }
             if let Some(route) = &c.route {
                 out.push_str(&format!("  route: {} pts, {:.1} m, {} legs, predicted {}, valid {}\n", route.pts.len(), route.s.last().copied().unwrap_or(0.0), route.legs.as_ref().map_or(0, |l| l.len()), io::secs(route.route.as_ref().unwrap().predicted_ms), route.validate().is_empty()));
