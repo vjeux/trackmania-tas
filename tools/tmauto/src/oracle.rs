@@ -355,7 +355,11 @@ fn evaluate_inner(
     if tapes.is_empty() {
         return Ok(Vec::new());
     }
-    let mut meta = crate::synth::meta_for_map(map)?;
+    // complete_meta_for_map, not meta_for_map: the latter leaves the validator
+    // start index at 0, which on Summer 2026 - 01 is the last checkpoint -- the
+    // wrong-start defect (`tm2020-autopilot-spawn-defect.md`). Every container
+    // the oracle writes starts where the map says.
+    let mut meta = crate::synth::complete_meta_for_map(map)?;
     if let Some(d) = declared_ms {
         // set_declared, never a direct assignment: the walltime pair is checked
         // against the declared time and moving one without the other is the

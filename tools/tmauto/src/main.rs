@@ -126,6 +126,7 @@ fn main() {
         ("synth", Some("starts")) => startset::run(&args[2..]),
         ("synth", Some("start-check")) => startset::check(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
+        ("verdict", _) => cmd_verdict(&args[1..]),
         ("startprobe", _) => startprobe::run(&args[1..]),
         ("cpladder", _) => cpladder::run(&args[1..]),
         ("tailsearch", _) => tailsearch::run(&args[1..]),
@@ -586,7 +587,16 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
     let out = PathBuf::from(arg(args, "--out").ok_or("--out is required")?);
     let ticks: usize = arg(args, "--ticks").unwrap_or_else(|| "600".into()).parse().map_err(|_| "--ticks")?;
-    let mut meta = synth::complete_meta_for_map(&map)?;
+    // An explicit --validation-u03 is the G1 measurement instrument: it must be
+    // able to write a container for a map whose start rule is NOT yet known.
+    let mut meta = match arg(args, "--validation-u03") {
+        Some(s) => {
+            let mut m = synth::meta_for_map(&map)?;
+            m.validation_start_index = parse_u32(&s, "--validation-u03")?;
+            m
+        }
+        None => synth::complete_meta_for_map(&map)?,
+    };
     if let Some(s) = arg(args, "--seed") {
         meta.validation_seed = s.parse().map_err(|_| "--seed")?;
     }
@@ -717,5 +727,69 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         initial.pos[0], initial.pos[1], initial.pos[2], initial.quat[0], initial.quat[1],
         initial.quat[2], initial.quat[3], initial.roadtech_dir, meta.validation_start_index, corrupt_x_m
     );
+    Ok(())
+}
+
+/// `tmauto verdict FILE... --map MAP [--raw] [--tag T]` -- the plain oracle,
+/// one server launch for the whole batch, every file's verdict beside the
+/// server's own words. Exit code 0 even for DNFs: a DNF is an answer. Non-zero
+/// only when the server declined to read a file (a container fault).
+fn cmd_verdict(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let tag = arg(args, "--tag").unwrap_or_else(|| format!("verdict-{}", std::process::id()));
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i].starts_with("--") {
+            if args[i] != "--raw" {
+                i += 1;
+            }
+        } else {
+            files.push(PathBuf::from(&args[i]));
+        }
+        i += 1;
+    }
+    if files.is_empty() {
+        return Err("no files given".into());
+    }
+    let batch = oracle::validate_raw(&oracle::server_dir(), &files, Maps::One(&map), &tag)?;
+    if flag(args, "--raw") {
+        println!("--- server transcript ---\n{}", batch.raw);
+    }
+    println!("{:<40} {:<18} {:>4} {:>4} {}", "file", "verdict", "cps", "ncp", "server said");
+    let mut missing = 0;
+    for f in &files {
+        let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        match batch.answers.iter().find(|a| a.file == name) {
+            Some(a) => {
+                let verdict = match a.verdict() {
+                    Some(v) => v.secs(),
+                    None => "REFUSED".to_string(),
+                };
+                let ncp = a
+                    .desc
+                    .split("out of ")
+                    .nth(1)
+                    .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into());
+                println!(
+                    "{:<40} {:<18} {:>4} {:>4} {}",
+                    name,
+                    verdict,
+                    a.cps.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+                    ncp,
+                    a.desc.trim()
+                );
+            }
+            None => {
+                missing += 1;
+                println!("{:<40} {:<18} {:>4} {:>4} {}", name, "NOT READ", "-", "-", "the server reported nothing for this file");
+            }
+        }
+    }
+    if missing > 0 {
+        return Err(format!("{} file(s) were not read by the server", missing));
+    }
     Ok(())
 }
