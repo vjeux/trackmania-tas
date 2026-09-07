@@ -640,12 +640,16 @@ fn has_flag(args: &[String], name: &str) -> bool { args.iter().any(|a| a == name
 /// GEOMETRIC planner's order, the R planner's order (`tmr plan`), and each one's agreement with the humans
 /// (EXACT / τ). `--also` adds maps without a human order (the failed / hypothesis maps) with what exists.
 pub fn cmd_table_r(args: &[String]) {
-    let pos = positionals(args, &["--geom", "--geo", "--r", "--also"], &[]);
+    let pos = positionals(args, &["--geom", "--geo", "--r", "--also", "--train", "--held-out", "--title"], &[]);
     let root = pos.first().unwrap_or_else(|| die("table-r ROUTES_DIR --geom GEOM_DIR"));
     let geom = flag(args, "--geom").unwrap_or_else(|| die("--geom GEOM_DIR"));
     let geo_src = flag(args, "--geo").unwrap_or_else(|| "router-plan-cost".into());
     let r_src = flag(args, "--r").unwrap_or_else(|| "router-plan-r".into());
     let also: Vec<String> = flag(args, "--also").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+    let list = |k: &str| -> Vec<String> { flag(args, k).map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default() };
+    let (train, held) = (list("--train"), list("--held-out"));
+    let title = flag(args, "--title");
+    let (mut unseen_n, mut unseen_r_ex, mut unseen_geo_ex) = (0usize, 0usize, 0usize);
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&geom).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
     dirs.sort();
     let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
@@ -697,14 +701,23 @@ pub fn cmd_table_r(args: &[String]) {
             }
         }
         let hyp = also.contains(&uid);
-        rows.push((g.map_name.clone(), format!("| {}{} | {} | {} | {} | {} | {} | {} | {} |", g.map_name, if hyp { " †" } else { "" }, g.checkpoint_groups, human.as_ref().map_or("—".into(), |v| j(v)), share, geo.as_ref().map_or("— (no plan)".into(), |v| j(v)), gs, r.as_ref().map_or("— (no plan)".into(), |v| j(v)), rs)));
+        let seen = if train.contains(&uid) { "train" } else if held.contains(&uid) { "held-out" } else { "unseen" };
+        if human.is_some() && seen != "train" {
+            unseen_n += 1;
+            if let Some((true, _)) = rv { unseen_r_ex += 1; }
+            if let Some((true, _)) = gv { unseen_geo_ex += 1; }
+        }
+        rows.push((g.map_name.clone(), format!("| {}{} | {} | {} | {} | {} | {} | {} | {} | {} |", g.map_name, if hyp { " †" } else { "" }, g.checkpoint_groups, human.as_ref().map_or("—".into(), |v| j(v)), share, geo.as_ref().map_or("— (no plan)".into(), |v| j(v)), gs, r.as_ref().map_or("— (no plan)".into(), |v| j(v)), rs, seen)));
     }
     rows.sort();
-    println!("| map | CP groups | human modal order (groups) | human share | geometric planner ({geo_src}) | geo vs human | R planner ({r_src}) | R vs human |");
-    println!("|---|--:|---|---|---|---|---|---|");
+    if let Some(t) = &title {
+        println!("{t}\n");
+    }
+    println!("| map | CP groups | human modal order (groups) | human share | geometric planner ({geo_src}) | geo vs human | R planner ({r_src}) | R vs human | R saw the map? |");
+    println!("|---|--:|---|---|---|---|---|---|---|");
     for (_, r) in &rows {
         println!("{r}");
     }
     println!();
-    println!("maps with a human order: {n_h}; geometric planner has a plan on {n_geo_plans}, == human on {geo_ex}; R planner has a plan on {n_r_plans}, == human on {r_ex}; over the {both_have} maps both planned: mean τ geometric {:.3}, R {:.3}. † = added without a human order (failed / hypothesis maps). τ = Kendall tau over the checkpoint groups.", if n_tau > 0 { geo_tau / n_tau as f64 } else { f64::NAN }, if n_tau > 0 { r_tau / n_tau as f64 } else { f64::NAN });
+    println!("maps with a human order: {n_h}; geometric planner has a plan on {n_geo_plans}, == human on {geo_ex}; R planner has a plan on {n_r_plans}, == human on {r_ex}; over the {both_have} maps both planned: mean τ geometric {:.3}, R {:.3}. HONEST ROWS (held-out + unseen by R): {unseen_n} maps, R == human on {unseen_r_ex}, geometric == human on {unseen_geo_ex}. † = added without a human order (failed / hypothesis maps). τ = Kendall tau over the checkpoint groups.", if n_tau > 0 { geo_tau / n_tau as f64 } else { f64::NAN }, if n_tau > 0 { r_tau / n_tau as f64 } else { f64::NAN });
 }
