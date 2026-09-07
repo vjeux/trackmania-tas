@@ -2085,6 +2085,26 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     _ => m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} with shape node {shape_idx} (not an external shape) skipped")),
                 }
             }
+            // NPlugTrigger_SSpawn (0x0917A000): the START gate's spawn point —
+            // entity 0 of `Items\Gate\StartLeft8m.Prefab` sits at local
+            // (0, 0, -10.6), and the car of the original Summer 15 stands at
+            // x 1003.4 = 1014 - 10.6 (measured in play, 2026-09-07). A
+            // checkpoint prefab carries one too (its respawn point). The
+            // entity's position, through the chain and the scale, becomes the
+            // item's spawn iso; the FIRST one wins (a nested prefab's would be
+            // a helper). Until this arm existed the class was "skipped" and
+            // every item-start map (Summer 15/20/25: GateStart items) had no
+            // spawn at all — the playground opened with NO CAR.
+            Some(Node::Opaque(o)) if o.class_id == 0x0917A000 => {
+                let at_world = apply(&iso, [0.0, 0.0, 0.0]);
+                let sp = [at_world[0] * scale, at_world[1] * scale, at_world[2] * scale];
+                if m.spawn == [0.0, 0.0, 0.0] {
+                    m.spawn = sp;
+                    m.notes.push(format!("{path} entity {i}: spawn point {:?} (NPlugTrigger_SSpawn)", sp));
+                } else {
+                    m.notes.push(format!("{path} entity {i}: a second spawn point {:?} ignored (kept {:?})", sp, m.spawn));
+                }
+            }
             Some(other) => m.notes.push(format!("{path} entity {i}: model class 0x{:08X} skipped", other.class_id())),
             None if e.model.index < 0 => {}
             None => match ext_name(e.model.index) {
@@ -3199,6 +3219,19 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     if variants.len() > 1 {
         m.notes.push(format!("variant {variant} of {}: {}", variants.len(), picked.rsplit('\\').next().unwrap_or(&picked)));
     }
+    // The waypoint TYPE lives in the item's own chunk (0 Start, 1 Finish, 2
+    // Checkpoint, 3 none, 4 StartFinish). A checkpoint/finish prefab also
+    // says so through its NPlugTrigger_SWaypoint node (read above, with the
+    // trigger shape); a START prefab has no such node — only the spawn — so
+    // without this the baked start gate was type 3 and the map had no start.
+    if m.waypoint_type.is_none() {
+        if let Some(t) = store.read(item_path).ok().and_then(|b| pack_item_waypoint_type(&b)) {
+            if t != 3 {
+                m.waypoint_type = Some(t);
+                m.notes.push(format!("waypoint type {t} from the item chunk"));
+            }
+        }
+    }
     // A vegetation CLUSTER item (Stadium's `Spring` / `SpringCherryTree`:
     // a prefab of tree entities and nothing else) has no mesh to bake; the
     // caller places its trees as stock items from `m.veget`.
@@ -3245,6 +3278,29 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     let f = assemble(&m, &opts)?;
     m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
+}
+
+/// The waypoint type of a PACK item (its chunk 0x2E00201F: version, type).
+/// The item parser cannot walk a pack wrapper — its entity model (0x2E002019,
+/// before the waypoint chunk) is an external node — so the chunk is found by
+/// its id in the 3 KB body and read where the version and the type are
+/// plausible (types 0 Start .. 5 Dispenser).
+pub fn pack_item_waypoint_type(item_bytes: &[u8]) -> Option<i32> {
+    let g = tmmaps::gbx::Gbx::parse(item_bytes);
+    let body = &g.body;
+    let id = 0x2E00_201Fu32.to_le_bytes();
+    let mut i = 0usize;
+    while i + 12 <= body.len() {
+        if body[i..i + 4] == id {
+            let version = u32::from_le_bytes(body[i + 4..i + 8].try_into().unwrap());
+            let t = i32::from_le_bytes(body[i + 8..i + 12].try_into().unwrap());
+            if version <= 20 && (0..=5).contains(&t) {
+                return Some(t);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The "StadiumOnTerrain" game skin: in a BlueBay map every Stadium-family
