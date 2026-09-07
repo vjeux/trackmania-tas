@@ -67,6 +67,8 @@ pub struct ForkEnv {
     cur: Handle,
     reference: Vec<Rec>,
     n_ticks: usize,
+    /// Race time of the tick after the tape's last record: `n * 10 + start_offset`.
+    tape_end_ms: i64,
     spans: Vec<Span>,
     trace: Vec<Row>,
     root_row: Row,
@@ -152,6 +154,7 @@ impl ForkEnv {
             cur: ROOT,
             reference,
             n_ticks,
+            tape_end_ms: n_ticks as i64 * 10 + tape.start_offset_ms as i64,
             spans: Vec::new(),
             trace: Vec::new(),
             root_row,
@@ -271,6 +274,13 @@ impl ForkEnv {
         self.snaps.len()
     }
 
+    /// The tape tick the next `step` writes from: the current node's own probed
+    /// boundary. THIS is the index to align an external tape against -- the
+    /// core's tick counter counts ingested rows and can drift from it.
+    pub fn next_tick(&self) -> Result<usize, String> {
+        self.forest.floor(self.cur, None)
+    }
+
     /// One macro of the discrete action table, held for `cfg.k_ticks` ticks.
     pub fn step(&mut self, action: usize) -> Result<(Vec<f32>, f32, Option<Done>, Info), String> {
         let a = self.core.acts.get(action);
@@ -294,6 +304,19 @@ impl ForkEnv {
         }
         let k = chunk.len();
         let from = self.forest.floor(self.cur, None)?;
+        // Past the tape's last record the engine reads a default record and
+        // the boundary probe no longer names a tape tick (measured: it answers
+        // 1 once the run has outlived its tape, and a caller stepping on it
+        // rewrites records 1..k -- the countdown -- forever). The race clock
+        // says whether the tape is spent.
+        if self.core.last_row().time_ms + 10 >= self.tape_end_ms
+            || from >= self.n_ticks
+            || self.last_end >= self.n_ticks
+            || from + 2 * MAX_CHUNK < self.last_end
+        {
+            let obs = self.core.observe();
+            return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
+        }
         // Under the tick hook a child stops at the START of tick `from + k`,
         // before that tick's record is read: exactly k ticks run, every traced
         // row is a completed tick, and the k records written are exactly the
@@ -321,6 +344,15 @@ impl ForkEnv {
             // stands on the parent it was forked from, and it is over.
             branch::Advanced::RunEnded(rows) => (rows, true),
         };
+        if std::env::var("TMENV_DEBUG").is_ok() {
+            eprintln!(
+                "  step: from {from} k {k} -> {} rows, clocks {:?}..{:?}, ended {ended}, next floor {:?}",
+                rows.len(),
+                rows.first().map(|r| r.time_ms),
+                rows.last().map(|r| r.time_ms),
+                self.forest.floor(self.cur, None).ok()
+            );
+        }
         for (i, a) in chunk.iter().enumerate() {
             self.spans.push(Span { from: from + i, k: 1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
         }

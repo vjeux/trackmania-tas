@@ -107,3 +107,10 @@ pub fn secs_opt(ms: Option<i64>) -> String {
         None => "DNF".into(),
     }
 }
+
+/// Was this flag on the command line? For the handful of switches that reach
+/// code far from the parser — a control that is off by default, never a
+/// behaviour that changes silently.
+pub fn has_flag(name: &str) -> bool {
+    std::env::args().any(|a| a == name)
+}

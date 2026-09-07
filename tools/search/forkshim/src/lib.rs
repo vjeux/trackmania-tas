@@ -973,6 +973,44 @@ static TICK_ANOMALIES: AtomicU64 = AtomicU64::new(0);
 /// control that the hook sits at a tick boundary of THIS simulation.
 static TICK_CLOCK_MISMATCH: AtomicU64 = AtomicU64::new(0);
 static TICK_HOOK_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+
+// ------------------------------------------------------------- the TIMING PAGE
+//
+// WHERE A CANDIDATE'S MILLISECONDS GO, measured inside the child.
+//
+// A candidate costs `fixed + per_tick * tail`, and at a late checkpoint the
+// fixed part is most of it -- but from outside the fork you cannot see what it
+// is made of, and every attempt to infer it by differencing two protocol paths
+// measures the paths instead (the sampled path's own transport costs more than
+// the finish path it was meant to price).
+//
+// So the child reports its own timeline through a MAP_SHARED page it inherits:
+// three stores per tick, no syscalls, nothing on the wire. The parent reads it
+// after the child is done and appends it to FKTIME.
+#[repr(C)]
+struct Timing {
+    child_us: u64,
+    first_tick_us: u64,
+    last_tick_us: u64,
+    ticks: u64,
+}
+static TIMING: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn timing() -> *mut Timing {
+    TIMING.load(Ordering::Relaxed) as *mut Timing
+}
+
+/// Allocate the page once, in the fork-server parent, so every child inherits
+/// the same mapping and writes into memory the parent can read.
+unsafe fn timing_init() {
+    if TIMING.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let p = mmap(std::ptr::null_mut(), 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if p as isize != -1 && !p.is_null() {
+        TIMING.store(p as usize, Ordering::SeqCst);
+    }
+}
 /// The offset actually hooked (the constant, or a finder-mode override).
 static TICK_FN_USED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1027,6 +1065,18 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
     }
     N_TICK.fetch_add(1, Ordering::Relaxed);
     SIM_MS.store(new as u64, Ordering::Relaxed);
+    // Three stores, only in a child that has a timing page.
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let t = timing();
+        if !t.is_null() {
+            let now = now_us();
+            if (*t).first_tick_us == 0 {
+                (*t).first_tick_us = now;
+            }
+            (*t).last_tick_us = now;
+            (*t).ticks += 1;
+        }
+    }
     // The race start is read until it is known and then FROZEN: the tape is
     // indexed from it, so a clock keyed on it is the tape's own time base.
     let mut rs = RACE_START.load(Ordering::Relaxed);
@@ -1775,6 +1825,7 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
 }
 
 unsafe fn forkserver() {
+    timing_init();
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
@@ -2693,6 +2744,14 @@ unsafe fn forkserver() {
         // 'R' u32 n, then n * (u32 tick, f32 steer, f32 gas, f32 brake)
         let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
         fflush(std::ptr::null_mut()); // no half-written stdio in the child
+        // Zero the timing page before every fork, so the child's report is this
+        // candidate's and never the previous one's.
+        {
+            let tp = timing();
+            if !tp.is_null() {
+                std::ptr::write_bytes(tp as *mut u8, 0, std::mem::size_of::<Timing>());
+            }
+        }
         let t_start = now_us();
         let mut fds = [0i32; 2];
         if pipe(fds.as_mut_ptr()) != 0 {
@@ -2709,6 +2768,10 @@ unsafe fn forkserver() {
         if pid == 0 {
             // ---- child: becomes the candidate's simulator
             IS_CHILD.store(1, Ordering::SeqCst);
+            let tp = timing();
+            if !tp.is_null() {
+                (*tp).child_us = now_us();
+            }
             close(fds[0]);
             dup2(fds[1], 1);
             close(fds[1]);
@@ -2720,6 +2783,8 @@ unsafe fn forkserver() {
             }
             return; // resume the simulation, with the tail rewritten
         }
+        // The timing page is zeroed before every fork so the child's report is
+        // this candidate's, never the previous one's.
         // ---- parent: collect the child's JSON, then stop it dead
         let t_forked = now_us();
         let mut t_first = 0u64;
@@ -2765,6 +2830,22 @@ unsafe fn forkserver() {
         utoa(t_first.saturating_sub(t_forked), &mut out);
         out.extend_from_slice(b" done_us ");
         utoa(now_us() - t_start, &mut out);
+        // The child's own timeline, out of the shared page: when it started,
+        // when it ran its first and last tick, and how many. Everything between
+        // `last_tick_us` and `done_us` is what the candidate pays AFTER the
+        // simulation -- the validator's finish and print path, the JSON, the
+        // pipe and the parse.
+        let tp = timing();
+        if !tp.is_null() {
+            out.extend_from_slice(b" child_us ");
+            utoa((*tp).child_us.saturating_sub(t_start), &mut out);
+            out.extend_from_slice(b" tick1_us ");
+            utoa((*tp).first_tick_us.saturating_sub(t_start), &mut out);
+            out.extend_from_slice(b" tickN_us ");
+            utoa((*tp).last_tick_us.saturating_sub(t_start), &mut out);
+            out.extend_from_slice(b" ticks ");
+            utoa((*tp).ticks, &mut out);
+        }
         out.push(b'\n');
         send_frame(res, &out);
     }
