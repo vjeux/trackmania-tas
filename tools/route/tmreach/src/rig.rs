@@ -14,25 +14,14 @@ use forkoracle::forksrv::{rec_of, Rec};
 use forkoracle::layout::Row;
 use std::path::{Path, PathBuf};
 
-/// The earliest `lroundf` count the engine can be stopped at with the
-/// validator's ownership chain already built (a7aa56c `control::EARLIEST_CLOCK`). LROUNDF CLOCK ONLY.
-pub const EARLIEST_CLOCK: u64 = 11_000;
-
-/// The root for a tape WITHOUT countdown records (`start_offset_ms` near 0).
-///
-/// MEASURED (Summer 2026 - 01, p00003 19.552, 2026-09-07): a pause inside the
-/// pre-race phase of an offset-0 tape gives a DIFFERENT RUN from the plain
-/// oracle's. Paused at lroundf 6000/8000/9500/11000/14000 the root had consumed
-/// 51/33/95/52/52 records (non-monotone in the clock) with the car still at
-/// rest, and the continued run then matched the telemetry only shifted by that
-/// many ticks and diverged to 40–125 m by 17 s. The plain oracle on the same
-/// file, and on the re-encoded reference, returns the declared 19.552, and
-/// hard-left on ticks 0..40 turns it into "wrong simu" -- so in the oracle tick
-/// 0 IS race 0. Paused AFTER the race start (30000 → tick 70, 40000 → 108,
-/// 90000 → 296) the run matches the telemetry to RMS 0.007 m. A countdown tape
-/// (offset −1550: 155 pre-race records) is unaffected at 11000 (44 ghosts).
-/// The mechanism is UNKNOWN and is a task; the rule is a description.
-pub const OFFSET0_CLOCKS: &[u64] = &[36_000, 60_000, 90_000, 140_000];
+/// HISTORY (the lroundf clock, deleted 2026-09-07 with the tick hook): under it
+/// the root was `lroundf` 11000 (race −0.030 on a countdown tape), and an
+/// offset-0 tape paused pre-race gave a run shifted by the 33..96 records the
+/// engine had READ during the countdown (RMS 30–125 m vs the telemetry); the
+/// last row of a paused child was stale (1.21 m at 121 m/s). Both are
+/// properties of that clock. Under the tick hook the pre-race read-ahead shows
+/// up as `ForkServer::start` refusing the root (hook ≠ probe), handled by the
+/// race-time ladder in `start`.
 
 /// What one rollout produced.
 pub struct Rolled {
@@ -89,7 +78,8 @@ impl Worker {
         verbose: bool,
     ) -> Result<Worker, String> {
         let tape = Tape::load(&ghost.to_string_lossy())?;
-        if forkoracle::clock::tick_mode() {
+        let _ = &tape;
+        {
             // Race −0.010 s first. An offset-0 tape can refuse it: during the
             // countdown the engine READS records it does not apply (the probe
             // saw 33..96 of them read at race −0.010 on p00003), and
@@ -112,55 +102,11 @@ impl Worker {
                     }
                 }
             }
-            return Err(format!("no root agreed with the tick hook: {last}"));
+            Err(format!("no root agreed with the tick hook: {last}"))
         }
-        if tape.start_offset_ms <= -1000 {
-            return Self::start_at(server, map, shim, work, ghost, verbose, EARLIEST_CLOCK);
-        }
-        // An offset-0 tape: the pre-race pause is broken (see OFFSET0_CLOCKS), and
-        // how many lroundf calls the pre-race dwell takes is not repeatable
-        // (36000 landed once at tick 51 pre-race, 30000 twice at tick 70 in the
-        // race). So the STATE decides: a root with the car at rest is pre-race
-        // and is thrown away for a later clock.
-        let mut last_err = String::new();
-        for &c in OFFSET0_CLOCKS {
-            match Self::start_at(server, map, shim, work, ghost, verbose, c) {
-                Ok(mut w) => {
-                    if speed(&w.root_row) > 4.0 {
-                        // Mid-race root. One more thing can be wrong: the probe can
-                        // run AHEAD of the physics (measured once: probe tick 97
-                        // with the car in its tick-93 state, labels 40 ms off), so
-                        // a short flat run must sit on the telemetry at exactly
-                        // the +10 ms label convention every good run has.
-                        let tel = crate::tele::Telemetry::load(&ghost.to_string_lossy())?;
-                        let rows = w.flat(300)?;
-                        let (shift, cmp) = crate::tele::best_shift(&rows, &tel);
-                        if shift == 10 && cmp.rms < 0.05 {
-                            return Ok(w);
-                        }
-                        last_err = format!(
-                            "clock {} root tick {}: 300-tick flat run sits on the telemetry at shift {:+} ms (RMS {:.4} m), not the +10 ms convention: probe/physics disagree",
-                            c, w.root_probe, shift, cmp.rms
-                        );
-                        if verbose {
-                            eprintln!("  offset-0 tape: {last_err}; retrying later");
-                        }
-                        drop(w);
-                        continue;
-                    }
-                    last_err = format!("clock {} paused pre-race (root tick {}, car at rest)", c, w.root_probe);
-                    if verbose {
-                        eprintln!("  offset-0 tape: {last_err}; retrying later");
-                    }
-                    drop(w);
-                }
-                Err(e) => last_err = e,
-            }
-        }
-        Err(format!("no root inside the race for an offset-0 tape: {last_err}"))
     }
 
-    /// `start` with an explicit root `lroundf` count (diagnostics).
+    /// `start` with an explicit root clock (tick units: race_ms/10 + 1000; diagnostics).
     pub fn start_at(
         server: &Path,
         map: &Path,
@@ -191,7 +137,7 @@ impl Worker {
         let dir = work.join("traces");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
-        let hook = if s.srv.tick_mode { Some(s.srv.sim_ms as i64 - s.srv.race_start as i64) } else { None };
+        let hook = Some(s.srv.sim_ms as i64 - s.srv.race_start as i64);
         let Session { srv, .. } = s;
         let mut forest = Forest::new(srv, work, recs, Some(cfg))?;
         let root_probe = forest.probe_root()?;
@@ -359,10 +305,9 @@ pub fn pos(r: &Row) -> [f64; 3] {
 /// Under the TICK clock the pause is at the tick function's entry, the last
 /// sample is a whole tick, and dropping it opened a one-row gap at every seam
 /// (measured: 14950 → 14970); so this is the lroundf clock's fix only.
-pub fn drop_stale_tail(rows: &mut Vec<Row>) {
-    if !forkoracle::clock::tick_mode() && rows.len() >= 2 {
-        rows.pop();
-    }
+pub fn drop_stale_tail(_rows: &mut Vec<Row>) {
+    // Nothing under the tick hook: the pause is at the tick function's entry
+    // and the last sample is a whole tick. (The lroundf clock is deleted.)
 }
 
 impl Worker {

@@ -374,7 +374,7 @@ impl Forest {
         let req = BranchReq {
             from,
             recs: inputs,
-            stop_after: (k_ticks * clock_per_tick()).max(1),
+            stop_after: k_ticks.max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,
