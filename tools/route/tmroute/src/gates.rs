@@ -295,7 +295,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         axis3: Option<[f32; 3]>,
         /// The placement's local UP in world (unit) when pitched/rolled; the arch centre is hh along it.
         up3: Option<[f32; 3]>,
-        /// A wall-mounted item (|pitch| ≈ 90°): its plane convention is unsolved (normal_source "unknown-wall").
+        /// A wall-mounted item (|pitch| ≈ 90°): through-axis INTO the wall (the yaw normal); the car rides the
+        /// trigger slab (normal_source "placement-wall").
         wall: bool,
         model: String,
         from_item: bool,
@@ -342,10 +343,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 // an ITEM: its trigger plane turns with the item's full (yaw, pitch, roll) — Fall 2025 - 12's
                 // 32 m gates are pitched 66–83° on a wall section (GEN arm, engine-credited rows)
                 if let Some(rot) = w.item_rot {
-                    // a WALL placement (|pitch| ≈ 90°, Spring 2025 - 24 wp14) does not follow this composition — the
-                    // engine-credited rows put its plane on the travel axis, not on the turned local +Z. Keep the
-                    // horizontal yaw normal and flag it (normal_source "unknown-wall" set below) until the
-                    // convention is solved from more wall cases.
+                    // a WALL placement (|pitch| ≈ 90°, Spring 2025 - 24 wp14): the through-axis is INTO the wall = the
+                    // yaw normal; the car RIDES inside the trigger slab along the wall and is credited mid-box (GEN,
+                    // 21:33Z), so a pitched plane would be wrong — keep the yaw normal, flag it "placement-wall".
                     let wall = (rot[1].abs() - std::f32::consts::FRAC_PI_2).abs() < 0.05;
                     wall_item = wall;
                     if !wall && (rot[1].abs() > 0.05 || rot[2].abs() > 0.05) {
