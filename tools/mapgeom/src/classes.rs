@@ -1863,15 +1863,17 @@ impl<'a> Graph<'a> {
         // `Reader::array` (which takes a closure over the reader alone).
         let n_lights = self.r.u32()? as usize;
         for _ in 0..n_lights {
-            let _name = self.r.lookback()?;
+            let name = self.r.lookback()?;
             let is_node = self.r.bool32()?;
-            if is_node {
-                self.noderef()?;
+            let node = if is_node {
+                self.noderef()?
             } else {
                 self.r.string()?;
-            }
+                -1
+            };
             self.r.marks.push((self.r.o + 36, 3));
-            self.r.iso4()?;
+            let iso = self.r.iso4()?;
+            out.lights.push((name, node, iso));
             self.r.take(12)?;
             if version >= 26 {
                 self.r.take(12)?;

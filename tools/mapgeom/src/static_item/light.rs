@@ -142,6 +142,17 @@ impl CPlugLight {
         }
     }
 
+    /// Driven by an animation image (chunk 003 `ImageAnim`) or a `CFuncLight`
+    /// (chunk 000/002/004): the light's output is not constant.
+    pub fn is_animated(&self) -> bool {
+        self.chunks.iter().any(|c| match c {
+            LightChunk::Anim { image_anim, .. } => image_anim.index >= 0 || image_anim.inline.is_some(),
+            LightChunk::Base { refs, .. } => refs[1].index >= 0 || refs[1].inline.is_some(),
+            LightChunk::Model { func_light, .. } => func_light.index >= 0 || func_light.inline.is_some(),
+            LightChunk::Raw(_) => false,
+        })
+    }
+
     /// Every node reference except the GxLight (FuncLight, the flare and
     /// projector bitmaps, the animation image, the colour table) set to null:
     /// they name files of the pack, which an item embedded in a map cannot

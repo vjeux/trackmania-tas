@@ -438,6 +438,7 @@ impl Merged {
     /// Add every visual and the collision shape of one static object, placed
     /// by `iso` and scaled.
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
+        let iso_entity_only = *iso;
         let s2 = so.solid2().ok_or("static object without an inline CPlugSolid2Model")?;
         // Light sources: a Solid2 `lights` socket = a name, an Iso4 in model
         // space and (in the packs) an EXTERNAL CPlugLight ref — Lamp.Mesh.Gbx
@@ -449,7 +450,21 @@ impl Merged {
         self.lights += s2.lights.len() + s2.light_insts.len();
         for l in &s2.lights {
             let mut socket = l.clone();
-            let iso = compose(iso, &l.u05);
+            // The light's frame in the item: its POSITION follows the geometry
+            // (entity iso applied to the socket's translation), but its
+            // ROTATION composes with the entity chain's rotation INVERTED —
+            // measured 2026-09-07 on Summer 09's grass with `tmmaps lineup`:
+            // the Lamp (entity = identity) lights the ground south of its post
+            // with the socket rotation read column-major, beam along local -Z
+            // (a Lamp light forced to identity beams south, to Rx(-90) beams
+            // straight down, to Rx(+90) beams up); the LightsFront rig's eight
+            // spots (entities rotated 90 and 115 degrees about X) only lit the
+            // grass like the stock rig with the entity rotation transposed —
+            // entity*socket sent them north/up, nothing on the ground.
+            let mut iso = compose(iso, &l.u05);
+            let et = [iso_entity_only[0], iso_entity_only[3], iso_entity_only[6], iso_entity_only[1], iso_entity_only[4], iso_entity_only[7], iso_entity_only[2], iso_entity_only[5], iso_entity_only[8], 0.0, 0.0, 0.0];
+            let r = compose(&et, &[l.u05[0], l.u05[1], l.u05[2], l.u05[3], l.u05[4], l.u05[5], l.u05[6], l.u05[7], l.u05[8], 0.0, 0.0, 0.0]);
+            iso[..9].copy_from_slice(&r[..9]);
             socket.u05 = iso;
             for k in 9..12 {
                 socket.u05[k] *= scale;
@@ -1970,6 +1985,17 @@ impl Merged {
         for (path, socket, scale) in std::mem::take(&mut self.pending_lights) {
             match load_light(store, &path) {
                 Ok(mut light) => {
+                    // A light driven by an animation image (the checkpoint
+                    // gates' blue speedometer LEDs: `SpeedometerCP.Light.Gbx`
+                    // with `Anims\Speedometer.tga`; the TurboRoulette colour
+                    // cycle) or by a CFuncLight is a GAMEPLAY light: idle it is
+                    // dark, and without its driver it would burn at full
+                    // strength — Summer 17's gates bloomed white until these
+                    // were left out (2026-09-07).
+                    if light.is_animated() {
+                        self.notes.push(format!("{path}: animated light (image anim / func light) not embedded — idle it is off"));
+                        continue;
+                    }
                     light.drop_external_refs();
                     match light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
                         Some(super::Node::GxLight(g)) => g.scale(scale),
@@ -1980,8 +2006,9 @@ impl Merged {
                     }
                     let (color, intensity, range) = light.gx_light().map(|g| g.summary()).unwrap_or_default();
                     self.notes.push(format!(
-                        "light {:?} from {path}: colour [{:.2}, {:.2}, {:.2}] intensity {intensity} range {range} at [{:.2}, {:.2}, {:.2}]",
-                        socket.u01, color[0], color[1], color[2], socket.u05[9], socket.u05[10], socket.u05[11]
+                        "light {:?} from {path}: colour [{:.2}, {:.2}, {:.2}] intensity {intensity} range {range} at [{:.2}, {:.2}, {:.2}] rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}]",
+                        socket.u01, color[0], color[1], color[2], socket.u05[9], socket.u05[10], socket.u05[11],
+                        socket.u05[0], socket.u05[1], socket.u05[2], socket.u05[3], socket.u05[4], socket.u05[5], socket.u05[6], socket.u05[7], socket.u05[8]
                     ));
                     self.lights_out.push(MergedLight { socket, light, source: path });
                 }

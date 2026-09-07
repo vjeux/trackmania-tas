@@ -1564,12 +1564,21 @@ fn describe(n: &Node) -> String {
             s.meshes.iter().map(|m| m.tris.len()).sum::<usize>(),
             s.primitives.len()
         ),
-        Node::Solid2(s) => format!(
-            "CPlugSolid2Model, {} geoms, {} visuals, materials [{}]",
-            s.geoms.len(),
-            s.visuals.len(),
-            s.material_names.join(" ")
-        ),
+        Node::Solid2(s) => {
+            let mut d = format!(
+                "CPlugSolid2Model, {} geoms, {} visuals, materials [{}]",
+                s.geoms.len(),
+                s.visuals.len(),
+                s.material_names.join(" ")
+            );
+            for (name, node, iso) in &s.lights {
+                d.push_str(&format!(
+                    "\n      light {name:?} node {node} at [{:.3}, {:.3}, {:.3}] rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}]",
+                    iso[9], iso[10], iso[11], iso[0], iso[1], iso[2], iso[3], iso[4], iso[5], iso[6], iso[7], iso[8]
+                ));
+            }
+            d
+        }
         Node::Visual(v) => format!(
             "CPlugVisual, {} verts, {} indices, {} streams",
             v.count,

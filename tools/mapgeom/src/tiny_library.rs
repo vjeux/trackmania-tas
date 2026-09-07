@@ -124,78 +124,11 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
     })
 }
 
-/// The stock light item standing in for a light-carrying item the static bake
-/// cannot light (Summer 09 is set at night: its lamps and light tubes are what
-/// makes the platforms visible). One size down where the family has one:
-/// `Lamp`/`LampB`/`LampC` -> `LampSmall*`; `Light<Shape><N>m…` -> N/2 m (a 2 m
-/// piece stays); `LightTubeBig4m…` -> `LightTubeSmall4m…` (no 2 m tube);
-/// `ShowLightRamp8m` -> `ShowLightRamp4m`. Only the Lamp* and Light* families
-/// qualify: anything else that happens to carry a light (the gates' speedometer
-/// LEDs — `GateCheckpointCenter32mv2` has no 16 m twin and stayed FULL size on
-/// Summer 11's half-size plaza — `Podium`, screens) is baked, unlit, at the
-/// right size. Show rigs (`Show`, `ShowLights`, `ShowRace`: 16-32 m trusses)
-/// are NOT substituted either — full size they would span twice the platform.
-pub fn light_substitute(model: &str) -> Option<String> {
-    if model.starts_with("Show") && !model.starts_with("ShowLightRamp") {
-        return None;
-    }
-    if let Some(rest) = model.strip_prefix("Lamp") {
-        if !rest.starts_with("Small") {
-            return Some(format!("LampSmall{rest}"));
-        }
-        return Some(model.to_string());
-    }
-    if !model.starts_with("Light") && !model.starts_with("ShowLightRamp") {
-        return None;
-    }
-    // the first `<digits>m` run: the piece's size
-    let bytes = model.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i < bytes.len() && bytes[i] == b'm' && (i + 1 == bytes.len() || !bytes[i + 1].is_ascii_lowercase()) {
-                let n: u32 = model[start..i].parse().unwrap_or(0);
-                let (head, tail) = (&model[..start], &model[i..]);
-                let min = if head.starts_with("LightTube") { 4 } else { 2 };
-                if n / 2 >= min && n % 2 == 0 {
-                    return Some(format!("{head}{}{tail}", n / 2));
-                }
-                if head == "LightTubeBig" {
-                    return Some(format!("LightTubeSmall{n}{tail}"));
-                }
-                return Some(model.to_string());
-            }
-        } else {
-            i += 1;
-        }
-    }
-    Some(model.to_string())
-}
-
-#[cfg(test)]
-mod light_tests {
-    #[test]
-    fn ladder() {
-        let s = |m: &str| super::light_substitute(m);
-        assert_eq!(s("Lamp").as_deref(), Some("LampSmall"));
-        assert_eq!(s("LampB").as_deref(), Some("LampSmallB"));
-        assert_eq!(s("LampSmall").as_deref(), Some("LampSmall"));
-        assert_eq!(s("LightTubeBig8m").as_deref(), Some("LightTubeBig4m"));
-        assert_eq!(s("LightTubeBig4m").as_deref(), Some("LightTubeSmall4m"));
-        assert_eq!(s("LightTubeSmall4mCurve").as_deref(), Some("LightTubeSmall4mCurve"));
-        assert_eq!(s("LightTubeBig16mDiagCube").as_deref(), Some("LightTubeBig8mDiagCube"));
-        assert_eq!(s("LightCube8mX2").as_deref(), Some("LightCube4mX2"));
-        assert_eq!(s("LightCubeSlopeCornerOut2mX2").as_deref(), Some("LightCubeSlopeCornerOut2mX2"));
-        assert_eq!(s("ShowLightRamp8m").as_deref(), Some("ShowLightRamp4m"));
-        assert_eq!(s("ShowLights"), None);
-        assert_eq!(s("Show"), None);
-    }
-}
-
+/// Light-carrying items (Lamp*, Light*, the ShowLights rigs) are baked like
+/// everything else since 2026-09-07: the bake embeds their `CPlugLight`s
+/// (scaled) in the static item — `static_item::build::MergedLight`. Before
+/// that a `light_substitute` ladder kept them as STOCK items one size down
+/// (lit, but twice the relative size); it is gone.
 fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
     let want = format!("\\{}.ITEM.GBX", model.to_uppercase());
     let mut hits: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_uppercase().ends_with(&want)).collect();
@@ -656,7 +589,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // the map's own embedded files (custom items live under Items\…)
     let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = 0usize;
-    let lights_mode = std::env::var("TINY_LIGHTS").unwrap_or_else(|_| "stock".into());
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
     for ((model, variant), n) in &item_counts {
@@ -700,25 +632,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         };
         match res {
-            // A light-carrying item (Solid2 `lights`: Lamp, LightTube*, …)
-            // stays a STOCK item one size down: the static bake has no
-            // light, and on a night map (Summer 09) the lamps are what
-            // shows the platforms. TINY_LIGHTS=bake keeps the unlit copy.
-            Ok((_, m)) if m.lights > 0 && lights_mode != "bake" && light_substitute(model).is_some() => {
-                let sub = light_substitute(model).unwrap_or_else(|| model.clone());
-                if sub != *model && find_item_file(store, &sub).is_none() {
-                    outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("{} light(s): kept as the stock item (no {sub} in the packs); full size, unscaled", m.lights)) });
-                    remember(model);
-                    item_map.insert(key, model.clone());
-                } else {
-                    outcomes.push(Outcome { alias: sub.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("{} light(s): re-pointed at stock {sub} (the static bake has no light; placement scale is ignored)", m.lights)) });
-                    remember(&sub);
-                    item_map.insert(key, sub);
-                }
-            }
             Ok((out, m)) if !m.visuals.is_empty() => {
                 item_alias_n += 1;
-                let summary = format!("{} bytes, {} visuals, {} collision tris{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
+                let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
+                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
                 remember(&ident);
                 item_map.insert(key, ident.clone());

@@ -1740,10 +1740,17 @@ impl MapFile {
     /// low bits (bit 2 = the record carries a skin PackDesc, which the record
     /// layout depends on).
     pub fn clear_item_variant(&mut self, item_index: usize) {
+        self.set_item_variant(item_index, 0);
+    }
+
+    /// Set the variant byte (high byte of the placement flags: which entry of
+    /// the item's variant list the placement shows — `ShowLights` 23 =
+    /// Light4Spots), keeping the low bits.
+    pub fn set_item_variant(&mut self, item_index: usize, variant: u8) {
         let it = self.items[item_index].clone();
         let o = it.waypoint_region.1;
         let flags = u16::from_le_bytes(self.gbx.body[o..o + 2].try_into().unwrap());
-        self.raw_patches.push((o, (flags & 0x00FF).to_le_bytes().to_vec()));
+        self.raw_patches.push((o, ((flags & 0x00FF) | ((variant as u16) << 8)).to_le_bytes().to_vec()));
     }
 
     /// Chunk 0x03043062 — one colour byte per unbaked block, then per baked

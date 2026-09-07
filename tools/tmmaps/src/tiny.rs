@@ -1124,7 +1124,17 @@ pub fn lineup_cmd(args: &[String]) {
     // --yaw R turns every item of the row (radians): a pusher's piston runs
     // along its local z, so pi/2 makes it run along the row, visible from the north
     let yaw: f32 = cli::flag(args, "--yaw").unwrap_or("0").parse().expect("--yaw radians");
-    let mut names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    // a stock name may carry a variant: `ShowLights@23` = the Light4Spots entry
+    let mut variants: Vec<u8> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for s in list.split(',').filter(|s| !s.is_empty()) {
+        let (name, v) = match s.split_once('@') {
+            Some((n, v)) => (n.to_string(), v.parse::<u8>().unwrap_or_else(|_| panic!("--stock {s}: variant is not a byte"))),
+            None => (s.to_string(), 0),
+        };
+        names.push(name);
+        variants.push(v);
+    }
     let n_stock = names.len();
     // embedded item files: (ident, author, bytes)
     let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -1158,7 +1168,7 @@ pub fn lineup_cmd(args: &[String]) {
         m.set_item_author(i, author);
         m.move_item(i, pos, yaw, cell_for(pos));
         m.set_item_scale(i, 1.0);
-        m.clear_item_variant(i);
+        m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
         m.set_item_color(i, if k < n_stock { 0 } else { 1 });
         println!("  {name} ({author}) at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
     }

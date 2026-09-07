@@ -167,6 +167,8 @@ pub struct Solid2 {
     /// Material NODES, in the same index space as `material_names`: a
     /// CPlugMaterialUserInst per slot when the names are empty.
     pub material_nodes: Vec<i32>,
+    /// The light sockets: (name, CPlugLight node or -1, Iso4 in model space).
+    pub lights: Vec<(String, i32, [f32; 12])>,
 }
 
 /// A `CPlugLight` (0x0901D000) — the wrapper a Solid2's `lights` socket names
