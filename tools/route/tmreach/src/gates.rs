@@ -388,6 +388,22 @@ impl Detector {
                     }
                 }
             }
+            // platform blocks credit ~20 rows after the GEOM plane: a wider window before the
+            // centre fallback
+            for win in [win, 30] {
+                if best.is_some() {
+                    break;
+                }
+                for gi in 0..ng {
+                    if taken[gi] || geo[gi] < 0 {
+                        continue;
+                    }
+                    let d = (geo[gi] as i64 - s as i64).abs();
+                    if d as usize <= win && best.map(|(_, b)| d < b).unwrap_or(true) {
+                        best = Some((gi, d));
+                    }
+                }
+            }
             if best.is_none() {
                 // any uncredited gate whose trigger contains a row near the step
                 for gi in 0..ng {
@@ -395,8 +411,8 @@ impl Detector {
                         continue;
                     }
                     let t = self.trigger_for(&gates.gates[gi]);
-                    let lo = s.saturating_sub(win);
-                    let hi = (s + win).min(rows.len() - 1);
+                    let lo = s.saturating_sub(30);
+                    let hi = (s + 30).min(rows.len() - 1);
                     if let Some(i) = (lo..=hi).find(|&i| t.inside(&gates.gates[gi], [rows[i].x, rows[i].y, rows[i].z])) {
                         let d = (i as i64 - s as i64).abs();
                         if best.map(|(_, b)| d < b).unwrap_or(true) {

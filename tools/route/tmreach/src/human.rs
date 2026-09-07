@@ -21,6 +21,7 @@ pub const RESPAWN_MACRO: u16 = 65534;
 pub struct HumanOut {
     pub starts: Vec<crate::fanout::StartRow>,
     pub records: Vec<Record>,
+    pub paths: Vec<[crate::tmr::PathPoint; crate::tmr::TMP4_POINTS]>,
     pub legs: usize,
     pub respawns: usize,
     pub log: Vec<String>,
@@ -75,7 +76,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     let mut events: Vec<(usize, usize)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (*t as usize, gi)).collect();
     events.sort();
     let respawns = respawn_ticks(&w.ghost);
-    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new() };
+    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new(), paths: Vec::new() };
     // race-0 row index
     let race0 = flat.iter().position(|r| w.race_of(r) >= 0).unwrap_or(0);
     let mut leg_start = race0;
@@ -105,6 +106,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
             let _ = outcome0;
             let end = CarState::from_row(&flat[rr], w.race_of(&flat[rr]), cps, false);
             out.starts.push(mk_start(st, cps, start_id, w, tel));
+            out.paths.push(crate::tmr::path4(win, &|r| w.race_of(r)));
             out.records.push(Record {
                 start_id,
                 macro_id: RESPAWN_MACRO,
@@ -130,6 +132,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         }
         let end = CarState::from_row(&flat[row_idx], w.race_of(&flat[row_idx]), cps + 1, finished);
         out.starts.push(mk_start(st, cps, start_id, w, tel));
+        out.paths.push(crate::tmr::path4(win, &|r| w.race_of(r)));
         out.records.push(Record {
             start_id,
             macro_id: HUMAN_MACRO,

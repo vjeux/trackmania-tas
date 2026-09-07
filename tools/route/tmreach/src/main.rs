@@ -332,6 +332,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let results = tmreach::pool::run_per_ghost(&pcfg, &items, move |i, w, tel| fanout_ghost(w, tel, &c2, (i / shards) as u32 * 1000, (i % shards, shards)));
     let wall = t0.elapsed().as_secs_f64();
     let mut writer = tmreach::tmr::Writer::create(&out.join("samples.tmr"), gates.gates.len() as u8)?;
+    let mut p4 = tmreach::tmr::Path4Writer::create(&out.join("path4.tmp4"))?;
     let mut starts = String::from(tmreach::starts::starts_tsv_header());
     let mut endpoints = String::from("start_id\tmacro_id\thorizon\tx\ty\tz\n");
     let mut others = String::from("ghost\tstart_id\tmacro_id\thorizon\tgate\tmacro\tnote\n");
@@ -351,8 +352,9 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
                         if fo.records.iter().any(|r| r.start_id == s.start_id && r.macro_id >= tmreach::human::RESPAWN_MACRO) { "human-leg" } else { "human" }
                     ));
                 }
-                for r in &fo.records {
+                for (i, r) in fo.records.iter().enumerate() {
                     writer.push(r)?;
+                    p4.push(fo.paths.get(i).ok_or("a record without its path points")?)?;
                 }
                 for (sid, m, h, p) in &fo.endpoints {
                     endpoints.push_str(&format!("{sid}\t{m}\t{h}\t{:.2}\t{:.2}\t{:.2}\n", p[0], p[1], p[2]));
@@ -393,6 +395,10 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
         }
     }
     let count = writer.close()?;
+    let p4_count = p4.close()?;
+    if p4_count != count {
+        return Err(format!("path4.tmp4 has {p4_count} records, samples.tmr {count}"));
+    }
     std::fs::write(out.join("starts.tsv"), starts).map_err(|e| e.to_string())?;
     std::fs::write(out.join("endpoints.tsv"), endpoints).map_err(|e| e.to_string())?;
     std::fs::write(out.join("other-connections.tsv"), others).map_err(|e| e.to_string())?;
@@ -447,6 +453,27 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
         "{}: TMR0 v{} md5 {} : {} records, {} gates, {} starts in starts.tsv, {} distinct start_ids in the shard; outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; {} gate crossings, {} with a tick outside the horizon",
         p.display(), shard.version, md5, shard.records.len(), shard.n_gates, starts, by_start.len(), hist[0], hist[1], hist[2], hist[3], hist[4], gates_hit, bad_ticks
     );
+    // the TMP4 sidecar, when present: same count, last point == the record's end
+    let p4_path = dir.join("path4.tmp4");
+    if p4_path.exists() {
+        let p4 = tmreach::tmr::read_path4(&p4_path)?;
+        let mut bad = 0;
+        if p4.len() != shard.records.len() {
+            println!("path4.tmp4: {} records vs {} in samples.tmr", p4.len(), shard.records.len());
+            bad += 1;
+        }
+        for (r, p) in shard.records.iter().zip(p4.iter()) {
+            let e = p[tmreach::tmr::TMP4_POINTS - 1];
+            let d = ((e.pos[0] - r.end.pos[0]).powi(2) + (e.pos[1] - r.end.pos[1]).powi(2) + (e.pos[2] - r.end.pos[2]).powi(2)).sqrt();
+            if d > 0.001 && r.outcome != tmreach::tmr::OUTCOME_FINISHED {
+                bad += 1;
+            }
+        }
+        println!("path4.tmp4: {} records x {} points; last point == end on all but {} (finished rollouts end at the crossing row, their path at the last row)", p4.len(), tmreach::tmr::TMP4_POINTS, bad);
+        if p4.len() != shard.records.len() {
+            return Err("verify FAILED (path4)".into());
+        }
+    }
     if let Some(p) = a.get("dump") {
         let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\n");
         let mut recs = shard.records.clone();
@@ -902,7 +929,7 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 std::fs::write(stage_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;
                 if verdict == "PASS" {
                     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-                    for f in ["samples.tmr", "starts.tsv", "macros.tsv", "endpoints.tsv", "other-connections.tsv", "detector.json", "FANOUT.log"] {
+                    for f in ["samples.tmr", "path4.tmp4", "starts.tsv", "macros.tsv", "endpoints.tsv", "other-connections.tsv", "detector.json", "FANOUT.log"] {
                         std::fs::copy(PathBuf::from(&fo_out).join(f), out_dir.join(f)).map_err(|e| format!("bank {f}: {e}"))?;
                     }
                     std::fs::write(out_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;

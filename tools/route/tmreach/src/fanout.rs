@@ -64,6 +64,8 @@ pub struct Stats {
 pub struct GhostFanout {
     pub starts: Vec<StartRow>,
     pub records: Vec<Record>,
+    /// Parallel to `records`: the 4 sampled path points (TMP4 sidecar).
+    pub paths: Vec<[crate::tmr::PathPoint; crate::tmr::TMP4_POINTS]>,
     pub stats: Stats,
     /// (start index, macro, horizon, end position) for endpoints.tsv
     pub endpoints: Vec<(u32, u16, u16, [f32; 3])>,
@@ -139,7 +141,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         v.sort();
         v.into_iter().map(|(_, wp)| wp).collect()
     };
-    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new(), human_legs: 0, human_respawns: 0 };
+    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new(), human_legs: 0, human_respawns: 0, paths: Vec::new() };
     out.log.push(format!("{}: human gate order by detector {:?}", w.ghost.display(), human_order));
     let max_h = *cfg.horizons.iter().max().unwrap_or(&300) as usize;
 
@@ -324,6 +326,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 cells.insert(((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64));
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
                 out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });
+                out.paths.push(crate::tmr::path4(&win, &|r| w.race_of(r)));
             }
         }
         let Some(st) = start_state else {
@@ -350,6 +353,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
             out.human_respawns = h.respawns;
             out.starts.extend(h.starts);
             out.records.extend(h.records);
+            out.paths.extend(h.paths);
             out.log.extend(h.log);
         }
         Err(e) => out.log.push(format!("  human legs FAILED: {e}")),
