@@ -317,18 +317,40 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
             if let Some((pin, pout)) = pair {
                 let (s1, lat1, up1) = g.local(pin);
                 let s2 = g.local(pout).0;
-                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { crate::gates::model_key(g) };
-                let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
-                e.0.push((s2, s1));
-                e.3 = e.3.max(lat1.abs());
-                e.4 = e.4.min(up1);
-                e.5 = e.5.max(up1);
+                // collected under the model key AND the per-gate key: a model whose gates do not share a
+                // plane (GateCheckpointCenter32mv2 items: -1.1 on one gate, -1.7 on another, Spring
+                // 2025 - 24) gets per-gate planes where a gate has >= 3 credits
+                let mk = crate::gates::model_key(g);
+                for key in [mk.clone(), format!("{mk}@wp{}", g.waypoint)] {
+                    let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
+                    e.0.push((s2, s1));
+                    e.3 = e.3.max(lat1.abs());
+                    e.4 = e.4.min(up1);
+                    e.5 = e.5.max(up1);
+                }
             }
         }
     }
+    // models whose plane is inconsistent by more than 0.3 m: their gates get their own planes
+    let inconsistent: std::collections::BTreeSet<String> = by
+        .iter()
+        .filter(|(m, _)| !m.contains("@wp"))
+        .filter(|(m, (v, ..))| {
+            let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(m));
+            let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
+            hi - lo < -0.3
+        })
+        .map(|(m, _)| m.clone())
+        .collect();
     let mut per_model = Vec::new();
     let mut notes = Vec::new();
     for (m, (v, hw, item, lat_max, up_min, up_max)) in by {
+        if m.contains("@wp") {
+            let model = m.split("@wp").next().unwrap_or("");
+            if !(inconsistent.contains(model) && v.len() >= 3) {
+                continue;
+            }
+        }
         let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(&m)); // max s(T-2) and oracle refusals: must be OUTSIDE
         let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min); // min s(T-1): must be INSIDE
         // an INCONSISTENT model (no plane separates all outside from all inside rows) fires
@@ -366,7 +388,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
 /// Unknown models: the GEOM half_width + 2 m, flagged in CONTROL.md until a
 /// control bounds them.
 pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f64 {
-    let model = model.trim_end_matches("@item");
+    let model = model.split('@').next().unwrap_or(model);
     match model {
         "RoadTechCheckpoint" => 12.5,
         "RoadTechFinish" => 12.5,
@@ -383,7 +405,8 @@ pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f6
 ///   GateCheckpointLeft32m: refused at s −2.150 (lat +10.95, up −3.24; p00301 t1355 m29),
 ///   while a human at s(T−1) = −2.143 was credited → the plane is in (−2.150, −2.143].
 pub fn oracle_refused_max_s(model: &str) -> f64 {
-    match model {
+    match model.split('@').next().unwrap_or(model) {
+
         "GateCheckpointLeft32m" => -2.150,
         _ => f64::NEG_INFINITY,
     }

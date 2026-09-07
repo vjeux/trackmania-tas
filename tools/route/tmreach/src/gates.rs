@@ -222,6 +222,11 @@ pub struct Detector {
 impl Detector {
     pub fn trigger_for(&self, g: &Gate) -> Trigger {
         let key = model_key(g);
+        // a per-gate plane first (fitted where the model's gates do not share one), then the model's
+        let gate_key = format!("{key}@wp{}", g.waypoint);
+        if let Some((_, t)) = self.per_model.iter().find(|(m, _)| *m == gate_key) {
+            return *t;
+        }
         self.per_model.iter().find(|(m, _)| *m == key).map(|(_, t)| *t).unwrap_or(self.default)
     }
 
