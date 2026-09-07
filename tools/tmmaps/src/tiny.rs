@@ -773,6 +773,17 @@ pub fn cmd(args: &[String]) {
     }
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
+    // The source's stored lightmap goes (TINY_LIGHTMAP=keep keeps it): it was
+    // computed for the full-size layout, and a block-deleted map whose items
+    // all load is an UNMODIFIED, validated map to the game, which then applies
+    // it — Summer 05 (2026-09-07): the original's shadows on the tiny deck,
+    // mottled grass in play mode. The parked maps got it discarded only
+    // because the load-time repair of their stacked blocks marked them
+    // modified (and 15's deleted build because 16 placements had no model).
+    if std::env::var("TINY_LIGHTMAP").map(|v| v != "keep").unwrap_or(true) {
+        let n = m.strip_lightmap();
+        println!("  stored lightmap stripped ({n} bytes)");
+    }
     if library.as_os_str() != "-" {
         let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
         assert!(

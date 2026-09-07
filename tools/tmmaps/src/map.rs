@@ -2829,3 +2829,29 @@ pub fn octree_chunk_summary(payload: &[u8]) -> Result<Option<(u32, [i32; 3], usi
     }
     Ok(Some((grid, origin, n, hist)))
 }
+
+impl MapFile {
+    /// Drop the stored lightmap: chunk 0x0304305B becomes `version,
+    /// HasLightmaps = 0, U01, U02` (16 bytes, the form of a map whose shadows
+    /// were never computed). A tiny map's lightmap would have to be computed
+    /// for the TINY layout; the source's (computed for the full-size map, ~1 MB
+    /// of WEBP atlases + the CHmsLightMapCache) is stale data the client may
+    /// or may not apply — the editor applied it to a block-deleted Summer 05
+    /// (shadows of the full-size structures on the deck) and discarded it on
+    /// the parked build ("NOT VALIDATED"). Returns the bytes removed; a map
+    /// without the chunk, or already without lightmaps, is left alone (0).
+    pub fn strip_lightmap(&mut self) -> usize {
+        let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0304_305B) else { return 0 };
+        let body = &self.gbx.body;
+        if size < 16 || u32::from_le_bytes(body[payload + 4..payload + 8].try_into().unwrap()) == 0 {
+            return 0;
+        }
+        let mut head = body[payload..payload + 16].to_vec();
+        head[4..8].copy_from_slice(&0u32.to_le_bytes()); // HasLightmaps = false
+        // the chunk's own size field, then the payload (size deltas in
+        // `patched_body` only cover the item-side chunks, so write it here)
+        self.raw_patches.push((off + 8, 16u32.to_le_bytes().to_vec()));
+        self.raw_splices.push(((payload, payload + size), head));
+        size - 16
+    }
+}
