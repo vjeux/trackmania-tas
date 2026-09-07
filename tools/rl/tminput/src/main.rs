@@ -195,6 +195,7 @@ fn main() {
         }
         "trace" => trace_cmd(rest),
         "tdiff" => tdiff_cmd(rest),
+        "codec" => codec_cmd(rest),
         o => die(format!("unknown op {o}")),
     }
 }
@@ -343,5 +344,206 @@ pub fn tdiff_cmd(rest: &[String]) {
     match first {
         Some(t) => println!("FIRST DIVERGENCE at race {:.3} (tol {tol} m); {shared} shared ticks, max |dpos| {maxd:.4} m", t as f64 / 1000.0),
         None => println!("IDENTICAL over {shared} shared ticks (tol {tol} m), max |dpos| {maxd:.2e} m"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I4: verbatim vs explicit — does the explicit writer preserve every field?
+// ---------------------------------------------------------------------------
+
+/// `tminput codec FILE|DIR... [--oracle N --map-root DIR] [--out DIR]`
+///
+/// For every ghost: (1) the verbatim identity control; (2) an EXPLICIT
+/// re-encode spliced into the file's own body and re-decoded, compared packet
+/// by packet on word0/flags/mode/respawn/mouse/steer/accel/brake/tri; (3) the
+/// coding census (lit / prev / prev2 state words, vsame vehicle fields, tail
+/// bytes). With `--oracle N`, the first N ghosts that carry an action-key word
+/// (and N without) are written explicitly and validated on their own map
+/// (`<map-root>/<uid>/map.Map.Gbx`) beside the original — same time required.
+pub fn codec_cmd(rest: &[String]) {
+    let mut files = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i].starts_with("--") {
+            i += 2;
+            continue;
+        }
+        collect_ghosts(&rest[i], &mut files);
+        i += 1;
+    }
+    files.sort();
+    // the same ghost can sit in the bank twice (extracted dir + tar): dedupe by content
+    {
+        let mut seen = std::collections::HashSet::new();
+        files.retain(|f| {
+            let b = std::fs::read(f).unwrap_or_default();
+            let mut h: u64 = 0xcbf29ce484222325;
+            for x in &b {
+                h ^= *x as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            seen.insert((h, b.len()))
+        });
+    }
+    let oracle_n: usize = flag(rest, "--oracle").map(|s| s.parse().unwrap_or(0)).unwrap_or(0);
+    let map_root = flag(rest, "--map-root").cloned();
+    let outdir = flag(rest, "--out").cloned().unwrap_or_else(|| "/tmp/tminput-codec".to_string());
+    std::fs::create_dir_all(&outdir).unwrap_or_else(|e| die(e));
+    let (mut n_ok, mut n_verb_fail, mut n_expl_fail, mut n_err) = (0usize, 0usize, 0usize, 0usize);
+    let (mut lit, mut prev, mut prev2, mut vsame, mut packets, mut tail_bytes, mut mouse) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut with_ak: Vec<(String, String)> = Vec::new();
+    let mut without: Vec<(String, String)> = Vec::new();
+    for f in &files {
+        let c = match Container::load(f) {
+            Ok(c) => c,
+            Err(_) => {
+                n_err += 1;
+                continue;
+            }
+        };
+        let t = match Tape::from_file(f) {
+            Ok(t) => t,
+            Err(_) => {
+                n_err += 1;
+                continue;
+            }
+        };
+        if let Err(e) = t.verbatim_is_identity() {
+            n_verb_fail += 1;
+            println!("VERBATIM FAIL {f}: {e}");
+            continue;
+        }
+        let ar = &t.archives[0];
+        packets += ar.packets.len() as u64;
+        tail_bytes += ar.tail.len() as u64;
+        for p in &ar.packets {
+            match p.state {
+                StateEnc::Lit(_) => lit += 1,
+                StateEnc::Prev => prev += 1,
+                StateEnc::Prev2(..) => prev2 += 1,
+            }
+            vsame += p.vsame as u64;
+            mouse += p.mouse.is_some() as u64;
+        }
+        let body = match t.splice_into(c.body(), Encoding::Explicit) {
+            Ok(b) => b,
+            Err(e) => {
+                n_expl_fail += 1;
+                println!("EXPLICIT SPLICE FAIL {f}: {e}");
+                continue;
+            }
+        };
+        let back = match Tape::from_body(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                n_expl_fail += 1;
+                println!("EXPLICIT READ-BACK FAIL {f}: {e}");
+                continue;
+            }
+        };
+        let mut bad = 0;
+        for (p, q) in ar.packets.iter().zip(back.archives[0].packets.iter()) {
+            if p.word0 != q.word0 || p.flags != q.flags || p.mode != q.mode || p.respawn() != q.respawn() || p.mouse != q.mouse
+                || p.steer != q.steer || p.accel != q.accel || p.brake != q.brake || p.tri != q.tri
+            {
+                bad += 1;
+            }
+        }
+        if bad > 0 || back.archives[0].packets.len() != ar.packets.len() {
+            n_expl_fail += 1;
+            println!("EXPLICIT FIELD MISMATCH {f}: {bad} packets");
+            continue;
+        }
+        n_ok += 1;
+        let has_ak = ar.packets.iter().any(|p| [0x404u32, 0x1020, 0x4000, 0x10000, 0x40000].iter().any(|m| p.flags & m == *m));
+        let uid = std::path::Path::new(f)
+            .parent()
+            .map(|d| if d.file_name().map(|s| s == "ghosts").unwrap_or(false) { d.parent().unwrap_or(d) } else { d })
+            .and_then(|d| d.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        // tm-pop is Summer 2026 - 01
+        let uid = if uid == "tm-pop" { "buNzfsVlp2NF2oWtHM3729dEylg".to_string() } else { uid };
+        let list = if has_ak { &mut with_ak } else { &mut without };
+        if list.len() < oracle_n && list.iter().filter(|(u, _)| *u == uid).count() < 2 {
+            let name = format!("{}/{}-{}", outdir, uid, std::path::Path::new(f).file_name().unwrap().to_string_lossy());
+            let out = name.replace(".Ghost.Gbx", "-explicit.Ghost.Gbx");
+            container::write_gbx(&c.gbx, body, &out).unwrap_or_else(|e| die(e));
+            std::fs::copy(f, &name).unwrap_or_else(|e| die(e));
+            list.push((uid, name));
+        }
+    }
+    println!(
+        "codec: {} files, {} ok, {} verbatim-identity failures, {} explicit failures, {} unreadable",
+        files.len(),
+        n_ok,
+        n_verb_fail,
+        n_expl_fail,
+        n_err
+    );
+    println!(
+        "coding census: {packets} packets; state word lit {lit} ({:.2} %), prev {prev} ({:.2} %), prev2 {prev2} ({:.3} %); vehicle same-bit {vsame} ({:.2} %); mouse present {mouse}; tail bytes {tail_bytes} ({:.1} per file)",
+        100.0 * lit as f64 / packets as f64,
+        100.0 * prev as f64 / packets as f64,
+        100.0 * prev2 as f64 / packets as f64,
+        100.0 * vsame as f64 / packets as f64,
+        tail_bytes as f64 / n_ok.max(1) as f64
+    );
+    if oracle_n > 0 {
+        let root = map_root.unwrap_or_else(|| die("--oracle needs --map-root DIR"));
+        let mut by_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for (uid, name) in with_ak.iter().chain(without.iter()) {
+            let e = by_map.entry(uid.clone()).or_default();
+            e.push(name.clone());
+            e.push(name.replace(".Ghost.Gbx", "-explicit.Ghost.Gbx"));
+        }
+        let (mut same, mut differ, mut void) = (0, 0, 0);
+        for (uid, names) in &by_map {
+            let map = format!("{root}/{uid}/map.Map.Gbx");
+            let out = std::process::Command::new("tmauto")
+                .arg("verdict")
+                .args(names)
+                .arg("--map")
+                .arg(&map)
+                .output()
+                .unwrap_or_else(|e| die(format!("tmauto: {e}")));
+            let txt = String::from_utf8_lossy(&out.stdout).to_string();
+            let mut verdicts: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for l in txt.lines().skip(1) {
+                let cols: Vec<&str> = l.split_whitespace().collect();
+                if cols.len() >= 2 {
+                    verdicts.insert(cols[0].to_string(), cols[1].to_string());
+                }
+            }
+            for n in names.iter().filter(|n| !n.contains("-explicit")) {
+                let base = std::path::Path::new(n).file_name().unwrap().to_string_lossy().to_string();
+                let expl = base.replace(".Ghost.Gbx", "-explicit.Ghost.Gbx");
+                let a = verdicts.get(&base).cloned().unwrap_or_default();
+                let b = verdicts.get(&expl).cloned().unwrap_or_default();
+                let ak = with_ak.iter().any(|(_, x)| x == n);
+                if a.is_empty() || b.is_empty() {
+                    void += 1;
+                } else if a == b {
+                    same += 1;
+                } else {
+                    differ += 1;
+                }
+                println!("oracle {} {:<50} original {:<12} explicit {:<12} {}", if ak { "AK " } else { "-- " }, base, a, b, if a == b { "same" } else { "DIFFER" });
+            }
+        }
+        println!("oracle: {same} same, {differ} differ, {void} void");
+    }
+}
+
+fn collect_ghosts(p: &str, out: &mut Vec<String>) {
+    let path = std::path::Path::new(p);
+    if path.is_dir() {
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for e in rd.flatten() {
+                collect_ghosts(&e.path().to_string_lossy(), out);
+            }
+        }
+    } else if p.ends_with(".Ghost.Gbx") || p.ends_with(".Replay.Gbx") {
+        out.push(p.to_string());
     }
 }
