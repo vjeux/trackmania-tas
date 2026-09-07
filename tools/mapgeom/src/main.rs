@@ -780,6 +780,10 @@ fn main() {
         "etlsum" => {
             mapgeom::etlsum::run(&a.rest).unwrap_or_else(die);
         }
+        // Every thread's stack in every minidump of a load (shootctl loadprof --dump-every).
+        "threads" => {
+            mapgeom::threads::run(&a.rest).unwrap_or_else(die);
+        }
         // A full memory dump of the running client: the pack keys it derived.
         "pak-keyhunt" => {
             mapgeom::keyhunt::run(&a.rest).unwrap_or_else(die);

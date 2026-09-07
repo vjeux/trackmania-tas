@@ -906,16 +906,28 @@ impl Session {
     ///    is taken as an unverified link and the search goes on from there.
     pub fn stack_walk(&self) -> Vec<Frame> {
         let d = &self.dump;
+        let Some(ctx) = self.context() else { return Vec::new() };
+        let tid = d.exception.as_ref().map(|e| e.tid);
+        self.stack_walk_at(ctx.rip(), ctx.rsp(), tid)
+    }
+
+    /// The CONTEXT of any thread in the dump (every thread carries one; the
+    /// exception context is the faulting thread's at the fault).
+    pub fn thread_context(&self, tid: u32) -> Option<Context<'_>> {
+        let t = self.dump.thread(tid)?;
+        let b = self.dump.d.get(t.ctx_rva as usize..t.ctx_rva as usize + (t.ctx_size as usize).max(0x4d0))?;
+        Some(Context { b })
+    }
+
+    /// The heuristic walk from an arbitrary (rip, rsp) — the faulting thread's
+    /// or any thread's from its own context (`mapgeom threads`).
+    pub fn stack_walk_at(&self, rip: u64, rsp: u64, tid: Option<u32>) -> Vec<Frame> {
+        let d = &self.dump;
         let mut frames = Vec::new();
-        let Some(ctx) = self.context() else { return frames };
-        let rip = ctx.rip();
-        let rsp = ctx.rsp();
         frames.push(Frame { sp: rsp, ret: rip, call: None, callee: None, depth: 0, link: Link::Rip, func: None });
         // bound the scan by the thread's stack range if we know it
-        let end = d
-            .exception
-            .as_ref()
-            .and_then(|e| d.thread(e.tid))
+        let end = tid
+            .and_then(|t| d.thread(t))
             .map(|t| t.stack_start + t.stack_size as u64)
             .filter(|&e| e > rsp)
             .unwrap_or(rsp + 0x20000);

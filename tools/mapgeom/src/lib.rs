@@ -39,6 +39,7 @@ pub mod lz4dict;
 pub mod md5;
 pub mod etlsum;
 pub mod minidump;
+pub mod threads;
 pub mod keyhunt;
 pub mod names;
 pub mod node;
