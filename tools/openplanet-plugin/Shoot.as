@@ -156,15 +156,11 @@ void WalkFind(CControlBase@ c, int depth, const string &in needle, string &out s
 }
 
 string EditorTree(const string &in needle) {
-    auto app = GetApp();
     string sb = "";
-    // CGameEditorMediaTracker has NO EditorInterface (checked: its whole
-    // hierarchy exposes only GameScene and PluginAPI). The map editor does, and
-    // in-game MediaTracker runs inside it, so that is the tree to walk.
-    auto fr = cast<CGameCtnEditorFree>(app.Editor);
-    if (fr !is null && fr.EditorInterface !is null && fr.EditorInterface.InterfaceRoot !is null) {
-        sb += "-- editor InterfaceRoot --\n";
-        WalkFind(fr.EditorInterface.InterfaceRoot, 0, needle, sb, 12);
+    auto ed = cast<CGameCtnEditor>(GetApp().Editor);
+    if (ed !is null && ed.FrameRoot !is null) {
+        sb += "-- editor FrameRoot --\n";
+        WalkFind(ed.FrameRoot, 0, needle, sb, 12);
     }
     if (sb == "") sb = "nothing matching \"" + needle + "\"\n";
     return sb;

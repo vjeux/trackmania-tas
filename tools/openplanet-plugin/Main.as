@@ -53,6 +53,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     string qs = "";
     if (q >= 0) { qs = r.SubStr(q+1); r = r.SubStr(0, q); }
 
+    if (r == "/passcancel") return HttpResponse(200, CancelEditorPassword());
     if (r == "/ping") return HttpResponse(200, "pong");
     if (r == "/build") return HttpResponse(200, "B1787429440");
     if (r == "/await") return HttpResponse(200, Await(QArg(qs,"c"), Text::ParseInt(QArg(qs,"ms"))));
@@ -72,6 +73,11 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
             Text::ParseInt(QArg(qs,"fps")), Text::ParseInt(QArg(qs,"w")),
             Text::ParseInt(QArg(qs,"h")), Text::ParseInt(QArg(qs,"ext"))));
     if (r == "/menus") return HttpResponse(200, MenuReport());
+    if (r == "/nadeoauth") return HttpResponse(200, NadeoAuth(QArg(qs,"aud")));
+    if (r == "/nadeoget") return HttpResponse(200, NadeoGet(QArg(qs,"aud"), ""));
+    if (r == "/nadeopost") return HttpResponse(200, NadeoPost(QArg(qs,"aud"), QArg(qs,"method")));
+    if (r == "/nadeowho") return HttpResponse(200, NadeoWho(""));
+    if (r == "/nadeotoken") return HttpResponse(200, NadeoToken(QArg(qs,"aud")));
     if (r == "/menutree") return HttpResponse(200, MenuTree(PathArg()));
     if (r == "/dlgnods") return HttpResponse(200, DialogNods(PathArg()));
     if (r == "/shootparams") return HttpResponse(200, ShootParamsState());
@@ -110,6 +116,8 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/back")     return HttpResponse(200, GoBackToMenu());
     if (r == "/mtingame") return HttpResponse(200, OpenMTInGame());
     if (r == "/cam")      return HttpResponse(200, DumpCameras());
+    if (r == "/shadows")  return HttpResponse(200, ComputeShadows(QArg(qs, "q")));
+    if (r == "/shadowsq") return HttpResponse(200, ShadowsState());
     if (r == "/editmap")  return HttpResponse(200, EditMapFromFile());
     if (r == "/playmap")  return HttpResponse(200, PlayMapFromFile(QArg(qs, "mode")));
     if (r == "/editmap2") return HttpResponse(200, EditMap2FromFile(QArg(qs, "dec")));
@@ -541,4 +549,31 @@ string PathArg() {
     string v = h.ReadToEnd().Trim();
     h.Close();
     return v;
+}
+
+// ---- lightmap ---------------------------------------------------------------
+// /shadows?q=1..5 asks the map editor to compute the lightmap (VeryFast 1,
+// Fast 2, Default 3, High 4, Ultra 5) the way the "Compute shadows" button
+// does; the editor may put up a confirmation dialog, which /dlgok clears.
+// /shadowsq reports the editor's current quality and whether it is busy
+// (IsEditorReadyForRequest false while the lightmapper runs). The tiny maps
+// have no lightmap of their own, so this is how a comparison shot gets the
+// same baked light the original's editor view shows (2026-09-07, lights work).
+string ComputeShadows(const string &in qs) {
+    auto editor = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (editor is null) return "no CGameCtnEditorFree";
+    auto pmt = editor.PluginMapType;
+    if (pmt is null) return "no PluginMapType";
+    int q = Text::ParseInt(qs);
+    if (q < 1 || q > 5) q = 2;
+    pmt.ComputeShadows1(CGameEditorPluginMap::EShadowsQuality(q));
+    return "computing shadows q=" + q;
+}
+
+string ShadowsState() {
+    auto editor = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (editor is null) return "{\"editor\":false}";
+    auto pmt = editor.PluginMapType;
+    if (pmt is null) return "{\"editor\":true,\"pmt\":false}";
+    return "{\"editor\":true,\"ready\":" + (pmt.IsEditorReadyForRequest ? "true" : "false") + ",\"quality\":" + int(pmt.CurrentShadowsQuality) + "}";
 }

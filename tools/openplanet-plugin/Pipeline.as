@@ -47,6 +47,13 @@ string OpenMediaTracker() {
 // select all, ok.
 // ---------------------------------------------------------------------------
 
+string CancelEditorPassword() {
+    auto m = Menus();
+    if (m is null) return "no MenuManager";
+    m.DialogAskPassword_OnCancel();
+    return "cancelled editor password";
+}
+
 string ReplayMenuState() {
     auto m = Menus();
     if (m is null) return "{\"err\":\"no MenuManager\"}";

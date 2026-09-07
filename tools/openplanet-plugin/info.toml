@@ -5,3 +5,4 @@ category = "Map Editor"
 
 [script]
 imports = [ "HttpServer.as" ]
+dependencies = [ "NadeoServices" ]

@@ -74,7 +74,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     for side in &sides {
         let map = if *side == "o" { &r_orig } else { &r_tiny };
         let anchor_arg = if *side == "t" { format!(" --anchor {anchor}") } else { String::new() };
-        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {side} --tag {tag} --outdir {remote_dir}{anchor_arg}");
+        // --shadows Q: compute the lightmap on both sides before shooting
+        let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
+        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {side} --tag {tag} --outdir {remote_dir}{anchor_arg}{shadows_arg}");
         eprintln!("shooting side {side} …");
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {

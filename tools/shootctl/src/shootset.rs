@@ -117,6 +117,9 @@ pub struct Opts {
     pub settle_ms: u64,
     pub lock: bool,
     pub detach: bool,
+    /// `--shadows Q`: compute the lightmap (1 VeryFast .. 5 Ultra) after the
+    /// map opens, before the first view; 0 = leave the editor as it is.
+    pub shadows: u64,
 }
 
 pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -151,6 +154,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         settle_ms: num("--settle-ms", 5000)?,
         lock: !args.iter().any(|a| a == "--no-lock"),
         detach: args.iter().any(|a| a == "--detach"),
+        shadows: num("--shadows", 0)?,
     })
 }
 
@@ -305,6 +309,39 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     if !dialogs.is_empty() {
         lines.push(format!("dialogs\t{}", dialogs.join(" | ")));
+    }
+    // --shadows Q: the lightmap, computed here so both sides of a comparison
+    // show the same baked light (a map without one shows direct light only:
+    // the tiny 09 tunnel read dark and teal next to the original's warm walls
+    // until this, 2026-09-07). The editor answers the request on a later
+    // frame; `ready` goes false while the lightmapper runs and true when it
+    // is done. A confirmation dialog, if one comes up, is answered.
+    if opts.shadows > 0 {
+        let ts = Instant::now();
+        let r = super::http_get(&format!("/shadows?q={}", opts.shadows), 10).unwrap_or_default();
+        println!("{} shadows: {}", el(), r.trim());
+        let mut saw_busy = false;
+        loop {
+            std::thread::sleep(Duration::from_millis(1000));
+            let c = super::http_get("/ctx", 10).unwrap_or_default();
+            if c.contains("FrameAskYesNo") || c.contains("\"dialog\":\"") && !c.contains("\"dialog\":null") {
+                let _ = super::http_get("/dlgok", 10);
+                let _ = super::http_get("/yes", 10);
+            }
+            let s = super::http_get("/shadowsq", 10).unwrap_or_default();
+            if s.contains("\"ready\":false") {
+                saw_busy = true;
+            } else if saw_busy || ts.elapsed().as_secs() > 20 {
+                println!("{} shadows done in {:.0}s: {}", el(), ts.elapsed().as_secs_f64(), s.trim());
+                lines.push(format!("shadows\tq={} {:.0}s{}", opts.shadows, ts.elapsed().as_secs_f64(), if saw_busy { "" } else { " (never saw the editor busy)" }));
+                break;
+            }
+            if ts.elapsed().as_secs() > 900 {
+                lines.push(format!("shadows\tq={} TIMEOUT after 900s", opts.shadows));
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(opts.settle_ms.max(3000)));
     }
     for (i, v) in views.iter().enumerate() {
         let (target, dist) = match (&opts.side[..], &opts.anchor) {
