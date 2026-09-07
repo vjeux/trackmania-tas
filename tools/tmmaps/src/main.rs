@@ -1133,6 +1133,13 @@ fn main() {
                     println!("item\t{}\t{}\tcolor {}", i, it.model, c);
                 }
             }
+            for (i, b) in m.baked.iter().enumerate() {
+                let c = bytes.get(nb + i).copied().unwrap_or(255);
+                *hist.entry(("baked", c)).or_insert(0) += 1;
+                if filter.as_deref().map(|f| b.name.contains(f)).unwrap_or(false) {
+                    println!("baked\tb{}\t{}\tcolor {}", i, b.name, c);
+                }
+            }
             for ((k, c), n) in hist {
                 println!("{k}\tcolor {c}\t{n}");
             }

@@ -1244,6 +1244,13 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
                     }
                 }
+                // a dynamic object (the flag cloth of Flag16m/Flag8m): its mesh
+                // at rest, no collision
+                Some(p) if p.to_ascii_lowercase().ends_with(".dynaobject.gbx") => {
+                    if let Err(e) = add_dyna_object_file(store, &p, &iso, scale, m) {
+                        m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
+                    }
+                }
                 Some(p) => m.notes.push(format!("{path} entity {i}: external {p} skipped")),
                 None => m.notes.push(format!("{path} entity {i}: external node {} unnamed", e.model.index)),
             },
@@ -1547,6 +1554,117 @@ pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, a
         Some((p, link, phys))
     };
     m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))
+}
+
+/// A `.DynaObject.Gbx` pack file (`CPlugDynaObjectModel`, class 0x09144000:
+/// the cloth of `Items\Flag\Flag16m`, a rotor, a light ray): its mesh at REST,
+/// merged as a non-collidable static object. The body is the plain struct
+/// `classes.rs` documents — version, IsStatic, DynamizeOnSpawn, then the Mesh
+/// ref — and the mesh is an external `.Mesh.Gbx` (`CPlugSolid2Model`) whose
+/// visuals carry their vertices INLINE (converted to streams on parse). A
+/// vertex-animated mesh stacks its frames in that one vertex array under a
+/// single index list (Flag: 12384 = 43 x 288 vertices, 726 indices); the first
+/// frame — the vertices the indices reach — is what stays.
+pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
+    let model = store.load_model(path)?;
+    if model.class_id != crate::node::C_DYNA_OBJECT {
+        return Err(format!("{path}: class 0x{:08X} is not CPlugDynaObjectModel", model.class_id));
+    }
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(model.external_indices().iter().copied());
+    let mut r = super::Rd::new(&model.body, 0, lb);
+    let _version = r.u32()?;
+    let _is_static = r.u32()?;
+    let _dynamize = r.u32()?;
+    let mesh = super::read_ref(&mut r)?;
+    let name_in = |tbl: &[(u32, String)], i: i32| tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
+    let mp = match mesh.inline.as_deref() {
+        Some(_) => return Err(format!("{path}: inline dyna mesh is not handled")),
+        None => name_in(&model.externals, mesh.index).ok_or_else(|| format!("{path}: mesh node {} is neither inline nor external", mesh.index))?,
+    };
+    let mm_ = store.load_model(&mp)?;
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(mm_.external_indices().iter().copied());
+    let mut r = super::Rd::new(&mm_.body, 0, lb);
+    let mut s2 = super::solid2::CPlugSolid2Model::parse(&mut r).map_err(|e| format!("{mp}: {e}"))?;
+    for vr in s2.visuals.iter_mut() {
+        if let Some(Node::Visual(v)) = vr.inline.as_deref_mut() {
+            let count = v.main.as_ref().map(|m| m.count).unwrap_or(0).max(0) as usize;
+            let reach = v.index_buffer.as_ref().and_then(|b| b.indices.iter().max().copied()).map(|x| x as usize + 1).unwrap_or(count);
+            if reach < count {
+                m.notes.push(format!("{mp}: visual keeps frame 0 ({reach} of {count} vertices, {} sub-visual frames dropped)", v.sub_visuals.len()));
+                v.truncate_vertices(reach);
+                // the frame table (0x09006005: vertex base, index start, index
+                // count per frame) is what makes the game run the vertex-animation
+                // draw path on it — the 2026-09-06 crash in SCBufferDraw@NCharAnimSkelV
+                v.sub_visuals.clear();
+                if let Some(mn) = v.main.as_mut() {
+                    if let Some(Node::VertexStream(s)) = mn.vertex_streams.first().and_then(|r| r.inline.as_deref()) {
+                        if let Some(Elem::Float3(p)) = s.elems.first() {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for q in p {
+                                for k in 0..3 {
+                                    lo[k] = lo[k].min(q[k]);
+                                    hi[k] = hi[k].max(q[k]);
+                                }
+                            }
+                            mn.bounding_box = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, (hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0, (hi[2] - lo[2]) / 2.0];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mesh_ext = mm_.externals.clone();
+    // A material whose shader tweens between vertex frames
+    // (`Tech3_Warp_TDiffSpec_VertexTween`, the flag cloth's `ItemFlag`) runs the
+    // vertex-animation draw path on every visual it dresses — with no frame
+    // table that is a NULL read (SCBufferDraw@NCharAnimSkelV, 2026-09-06, twice).
+    // Such a cloth is drawn as TrackBorders (the road-shoulder material: white
+    // under the map's White colour, and skinned like the roads in BlueBay) with
+    // its uv0 pinned to one texel of the white panel — the flag is a plain
+    // light cloth in the game (its own green `ItemFlag_D` is hue-masked to the
+    // colour); Technics made it a dark grey rag.
+    let tween = |store: &mut crate::store::DataStore, p: &str| -> bool {
+        store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
+    };
+    let mut tween_notes: Vec<String> = Vec::new();
+    let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| tween(store, &p)).unwrap_or(false)).collect();
+    if tween_mats.iter().any(|t| *t) {
+        for g in &s2.shaded_geoms {
+            if !tween_mats.get(g.material_index.max(0) as usize).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(Node::Visual(v)) = s2.visuals.get_mut(g.visual_index as usize).and_then(|r| r.inline.as_deref_mut()) {
+                if let Some(Node::VertexStream(s)) = v.main.as_mut().and_then(|mn| mn.vertex_streams.first_mut()).and_then(|r| r.inline.as_deref_mut()) {
+                    for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+                        if d.name() == N_TEXCOORD0 {
+                            if let Elem::Float2(uv) = e {
+                                for q in uv.iter_mut() {
+                                    *q = [0.4, 0.3];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2)), is_mesh_collidable: false, shape: super::null_ref() };
+    let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        let p = name_in(&mesh_ext, idx)?;
+        if tween(store, &p) {
+            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
+            return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
+        }
+        let link = material_link(&p);
+        let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
+        Some((p, link, phys))
+    };
+    let r = m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"));
+    m.notes.extend(tween_notes);
+    r
 }
 
 /// A pack ITEM (`CGameItemModel` wrapper whose entity model -- a static

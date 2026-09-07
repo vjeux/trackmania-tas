@@ -378,7 +378,7 @@ pub fn cmd(args: &[String]) {
             pos: transform(origin, source_anchor, target_anchor, scale),
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
-            color: colors.baked(b.index),
+            color: std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or(colors.baked(b.index)),
             scale: scale / map.model_scale,
             tag: None,
         });

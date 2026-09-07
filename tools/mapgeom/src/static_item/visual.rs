@@ -270,7 +270,14 @@ impl CPlugVisualIndexedTriangles {
                 0x0902C004 => {
                     let m = v.main.as_ref().ok_or("chunk 0x0902C004 before 0x0900600F")?;
                     if m.vertex_streams.is_empty() {
-                        return Err("CPlugVisual3D with inline vertices (no vertex stream) is not supported".into());
+                        // Inline `CPlugVisual3D` vertices (the Dyna meshes:
+                        // `Dyna\Flag\Flag.Mesh.Gbx` keeps 43 animation frames of
+                        // its cloth this way, 12384 = 43 x 288 vertices under a
+                        // 726-index list). Read them as `classes.rs` does and
+                        // rebuild the visual as a vertex-stream one, the only
+                        // form the item side knows how to carry.
+                        Self::parse_inline_into_stream(r, &mut v)?;
+                        continue;
                     }
                     let per = ((!(m.flags() >> 17)) & 8) | 4;
                     let one = |r: &mut Rd| -> R<Vec<u8>> {
@@ -293,6 +300,137 @@ impl CPlugVisualIndexedTriangles {
             }
         }
         Ok(v)
+    }
+
+    /// Chunk 0x0902C004 of a visual WITHOUT a vertex stream: the vertices are
+    /// inline (position, normal, colour per the chunk-flags word, then the two
+    /// tangent arrays). They are re-emitted as one `CPlugVertexStream` in the
+    /// pack's 40-byte layout (position, normal, uv0, uv1, tangent U/V — plus a
+    /// colour word when the inline form carried one), the texcoord sets moving
+    /// into the stream, and the chunk-flags word set to the stream form's
+    /// 0x38, so downstream code (scaling, merging, the game) sees an ordinary
+    /// pack visual.
+    fn parse_inline_into_stream(r: &mut Rd, v: &mut CPlugVisualIndexedTriangles) -> R<()> {
+        use super::build::{dec3n_pack, dec3n_unpack};
+        use super::vstream::*;
+        use super::{Node, NodeRef};
+        let m = v.main.as_mut().ok_or("chunk 0x0902C004 before 0x0900600F")?;
+        let w = m.chunk_flags;
+        if std::env::var_os("TINY_DEBUG_INLINE").is_some() {
+            eprintln!("inline visual: chunk_flags {:#x} (unpacked {:#x}) count {} texcoord sets {} skin {:?} sub_visuals {:?} splits {} morph {:?} chunks {:x?}", w, m.flags(), m.count, m.tex_coord_sets.len(), m.skin, v.sub_visuals, v.splits.len(), v.morph, v.chunks);
+        }
+        let (use_normal, use_color, compress3, compress4, bit22) = (w & (1 << 5) != 0, w & (1 << 6) != 0, w & (1 << 7) != 0, w & (1 << 8) != 0, w & (1 << 9) != 0);
+        let n = m.count.max(0) as usize;
+        let mut pos = Vec::with_capacity(n);
+        let mut nrm = Vec::with_capacity(n);
+        let mut col: Vec<u32> = Vec::new();
+        let has_color = !bit22 || use_color;
+        for _ in 0..n {
+            pos.push(r.vec3()?);
+            if !bit22 && !compress4 && use_color {
+                nrm.push(dec3n_pack(r.vec3()?));
+                let c = r.floats::<4>()?;
+                col.push(pack_color(c));
+            } else {
+                let nl = if !bit22 || use_normal {
+                    if compress3 {
+                        r.u32()?
+                    } else {
+                        dec3n_pack(r.vec3()?)
+                    }
+                } else {
+                    dec3n_pack([0.0, 1.0, 0.0])
+                };
+                nrm.push(nl);
+                if has_color {
+                    if compress4 {
+                        col.push(r.u32()?);
+                    } else {
+                        col.push(pack_color(r.floats::<4>()?));
+                    }
+                }
+            }
+        }
+        let per = if compress3 { 4 } else { 12 };
+        let read_tangents = |r: &mut Rd| -> R<Vec<u32>> {
+            let k = r.count()?;
+            let raw = r.take(k * per)?.to_vec();
+            Ok(if per == 4 {
+                raw.chunks(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+            } else {
+                raw.chunks(12).map(|c| dec3n_pack([f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]), f32::from_le_bytes([c[8], c[9], c[10], c[11]])])).collect()
+            })
+        };
+        let mut tu = read_tangents(r)?;
+        let mut tv = read_tangents(r)?;
+        if tu.len() != n || tv.len() != n {
+            // no stored frame: any orthonormal frame around the normal
+            tu.clear();
+            tv.clear();
+            for nw in &nrm {
+                let nn = dec3n_unpack(*nw);
+                let a = if nn[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                let u = [a[1] * nn[2] - a[2] * nn[1], a[2] * nn[0] - a[0] * nn[2], a[0] * nn[1] - a[1] * nn[0]];
+                let l = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-9);
+                let u = [u[0] / l, u[1] / l, u[2] / l];
+                let vv = [nn[1] * u[2] - nn[2] * u[1], nn[2] * u[0] - nn[0] * u[2], nn[0] * u[1] - nn[1] * u[0]];
+                tu.push(dec3n_pack(u));
+                tv.push(dec3n_pack(vv));
+            }
+        }
+        let uv0: Vec<[f32; 2]> = match m.tex_coord_sets.first() {
+            Some(t) => t.coords.iter().map(|(uv, _, _)| *uv).collect(),
+            None => vec![[0.0, 0.0]; n],
+        };
+        let uv1: Vec<[f32; 2]> = match m.tex_coord_sets.get(1) {
+            Some(t) => t.coords.iter().map(|(uv, _, _)| *uv).collect(),
+            None => uv0.clone(),
+        };
+        let color = has_color && col.len() == n;
+        let stride = if color { 11 } else { 10 };
+        let d = Decl::with_stride;
+        let mut decls = vec![d(N_POSITION, T_FLOAT3, SPACE_GLOBAL3D, 0, stride), d(N_NORMAL, T_DEC3N, SPACE_LOCAL3D, 0xC, stride)];
+        let mut elems = vec![Elem::Float3(pos), Elem::Word(nrm)];
+        let mut off = 0x10;
+        if color {
+            decls.push(d(N_COLOR0, T_COLOR, SPACE_GLOBAL2D, off, stride));
+            elems.push(Elem::Word(col));
+            off += 4;
+        }
+        decls.push(d(N_TEXCOORD0, T_FLOAT2, SPACE_GLOBAL2D, off, stride));
+        elems.push(Elem::Float2(uv0));
+        decls.push(d(N_TEXCOORD0 + 1, T_FLOAT2, SPACE_GLOBAL2D, off + 8, stride));
+        elems.push(Elem::Float2(uv1));
+        decls.push(d(N_TANGENT_U, T_DEC3N, SPACE_LOCAL3D, off + 16, stride));
+        elems.push(Elem::Word(tu));
+        decls.push(d(N_TANGENT_V, T_DEC3N, SPACE_LOCAL3D, off + 20, stride));
+        elems.push(Elem::Word(tv));
+        let stream = CPlugVertexStream { version: 1, count: n as i32, flags: 1, base: super::null_ref(), decls, compress_local3d: Some(true), elems };
+        m.vertex_streams = vec![NodeRef { index: 0, inline: Some(Box::new(Node::VertexStream(stream))) }];
+        m.tex_coord_sets.clear();
+        m.chunk_flags = 0x38;
+        v.tangents = Some((Vec::new(), Vec::new()));
+        Ok(())
+    }
+
+    /// Keep the first `n` vertices of every stream element (a vertex-animated
+    /// mesh's first frame).
+    pub fn truncate_vertices(&mut self, n: usize) {
+        if let Some(m) = self.main.as_mut() {
+            if let Some(super::Node::VertexStream(s)) = m.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                for e in s.elems.iter_mut() {
+                    match e {
+                        super::vstream::Elem::Float2(v) => v.truncate(n),
+                        super::vstream::Elem::Float3(v) => v.truncate(n),
+                        super::vstream::Elem::Float4(v) => v.truncate(n),
+                        super::vstream::Elem::Word(v) => v.truncate(n),
+                        super::vstream::Elem::Raw { size, bytes } => bytes.truncate(n * *size),
+                    }
+                }
+                s.count = n as i32;
+            }
+            m.count = n as i32;
+        }
     }
 
     fn parse_main(r: &mut Rd) -> R<VisualMain> {
@@ -335,6 +473,12 @@ impl CPlugVisualIndexedTriangles {
         }
         Ok(m)
     }
+}
+
+/// A float4 colour as the RGBA byte word the stream form stores.
+fn pack_color(c: [f32; 4]) -> u32 {
+    let b = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    b(c[0]) | (b(c[1]) << 8) | (b(c[2]) << 16) | (b(c[3]) << 24)
 }
 
 impl CPlugVisualIndexedTriangles {
