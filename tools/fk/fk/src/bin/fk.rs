@@ -136,6 +136,20 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                 },
             )
         }
+        "wheels" => {
+            let rest = &a[1..];
+            let (engine, tape, at) = common(rest)?;
+            cmd::wheels::run(
+                &engine,
+                tape,
+                at,
+                cmd::wheels::WheelsOpts {
+                    shifts: flag(rest, "--shifts").map(|s| s.split(',').map(|x| x.parse().expect("--shifts a,b,c")).collect()).unwrap_or_else(|| vec![-10, 0, 10]),
+                    bytes: rest.iter().any(|x| x == "--bytes"),
+                    out: flag(rest, "--out").map(|s| s.to_string()),
+                },
+            )
+        }
         "trace" => {
             let rest = &a[1..];
             let (engine, tape, at) = common(rest)?;
