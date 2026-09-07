@@ -37,6 +37,7 @@ fn flight_of(s: Option<String>) -> Option<FlightModel> {
         None | Some("none") => None,
         Some("ballistic") => Some(FlightModel::ballistic()),
         Some("drag") => Some(FlightModel::drag()),
+        Some("any") => Some(FlightModel::any()),
         Some(x) => die(&format!("--flight {x}: none|ballistic|drag")),
     }
 }
@@ -80,14 +81,16 @@ fn print_matrix(nodes: &Nodes, d: &[Vec<f32>], title: &str) {
 
 fn cmd_plan(args: &[String]) {
     let (_map, gates, surf, nodes, d, len, fields) = load(args);
+    let dirs = surf.directions(&nodes, &fields);
     if has(args, "--matrix") {
         print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
         print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     }
     let flight = flight_of(flag(args, "--flight"));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf) };
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    human_legs(args, &nodes, &gates, &est, &len);
     let plans = planner::beam(&nodes, &est, width, top_k, StateBucket::of_speed(0.0));
     if has(args, "--exact") {
         match planner::exact_cost(&nodes, &d) {
@@ -132,12 +135,31 @@ fn cmd_plan(args: &[String]) {
 }
 
 fn cmd_legs(args: &[String]) {
-    let (_map, gates, surf, nodes, d, len, _fields) = load(args);
+    let (_map, gates, surf, nodes, d, len, fields) = load(args);
+    let dirs = surf.directions(&nodes, &fields);
     print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
     print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     let flight = flight_of(flag(args, "--flight").or(Some("ballistic".into())));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf) };
-    let plans = planner::beam(&nodes, &est, 4000, 1, StateBucket::of_speed(0.0));
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs) };
+    let mut plans = planner::beam(&nodes, &est, 4000, 1, StateBucket::of_speed(0.0));
+    if let Some(o) = flag(args, "--order") {
+        // characterise a GIVEN group order (e.g. the human modal order) instead of the best tour
+        let mut visit = vec![0usize];
+        for g in o.split(',') {
+            let g: u32 = g.parse().unwrap_or_else(|_| die("--order g,g,g (group ids, finish last)"));
+            visit.push(nodes.groups.iter().position(|x| *x == g).unwrap_or_else(|| die(&format!("group {g} is not a node"))));
+        }
+        let mut edges = Vec::new();
+        let mut bucket = StateBucket::of_speed(0.0);
+        for li in 0..visit.len() - 1 {
+            let e = est.estimate(bucket, if li == 0 { None } else { Some(visit[li - 1]) }, visit[li], visit[li + 1]);
+            bucket = e.arrival;
+            edges.push(e);
+        }
+        let ms: i32 = edges.iter().map(|e| e.expected_ms.max(0)).sum();
+        let logp: f32 = edges.iter().map(|e| e.p_reach.max(1e-6).ln()).sum();
+        plans = vec![planner::Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 }];
+    }
     let step: f32 = flag(args, "--step").and_then(|s| s.parse().ok()).unwrap_or(4.0);
     let reach: f32 = flag(args, "--reach").and_then(|s| s.parse().ok()).unwrap_or(40.0);
     let Some(p) = plans.first() else {
@@ -193,4 +215,45 @@ fn main() {
         "legs" => cmd_legs(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
+}
+
+/// `--human-orders FILE`: evaluate the human modal order through the estimator
+/// and print per-leg length / predicted / human-best — the speed model's
+/// calibration data. Rows with unmatched crossings are skipped.
+fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile, est: &dyn EdgeEstimator, len: &[Vec<f32>]) {
+    let Some(f) = flag(args, "--human-orders") else { return };
+    let Ok(txt) = std::fs::read_to_string(&f) else { eprintln!("cannot read {f}"); return };
+    let mut rows: Vec<(Vec<u32>, Vec<i32>, i32)> = Vec::new();
+    for (i, line) in txt.lines().enumerate() {
+        if i == 0 { continue; }
+        let c: Vec<&str> = line.split('\t').collect();
+        if c.len() < 8 || c[7] != "0" { continue; }
+        let groups: Vec<u32> = c[6].split(',').filter_map(|x| x.parse().ok()).collect();
+        let cp: Vec<i32> = c[5].split(',').filter_map(|x| x.parse().ok()).collect();
+        let ms: i32 = c[2].parse().unwrap_or(-1);
+        if groups.len() == cp.len() && ms > 0 { rows.push((groups, cp, ms)); }
+    }
+    if rows.is_empty() { println!("  human-orders: no usable row"); return; }
+    let mut counts: std::collections::BTreeMap<Vec<u32>, usize> = Default::default();
+    for r in &rows { *counts.entry(r.0.clone()).or_default() += 1; }
+    let (modal, n) = counts.iter().max_by_key(|(_, v)| **v).map(|(k, v)| (k.clone(), *v)).unwrap();
+    let node_of = |g: u32| nodes.groups.iter().position(|x| *x == g);
+    let mut visit = vec![0usize];
+    for g in &modal { match node_of(*g) { Some(k) => visit.push(k), None => { println!("  human-orders: group {g} not a planner node"); return; } } }
+    let best_lap = rows.iter().filter(|r| r.0 == modal).map(|r| r.2).min().unwrap();
+    println!("  human modal order (groups [{}], {n}/{} runs, best lap {}): per leg", modal.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","), rows.len(), io::secs(best_lap));
+    println!("    {:>3} {:>8} {:>9} {:>10} {:>10} {:>9} {:>9}", "leg", "to", "length_m", "pred_ms", "human_ms", "v_pred", "v_human");
+    let mut bucket = StateBucket::of_speed(0.0);
+    let mut tot_pred = 0i32;
+    for li in 0..modal.len() {
+        let (a, b) = (visit[li], visit[li + 1]);
+        let e = est.estimate(bucket, if li == 0 { None } else { Some(visit[li - 1]) }, a, b);
+        let human_ms = rows.iter().filter(|r| r.0 == modal).map(|r| r.1[li] - if li == 0 { 0 } else { r.1[li - 1] }).min().unwrap();
+        let l = len[a][b];
+        println!("    {:>3} {:>8} {:>9.0} {:>10} {:>10} {:>9.1} {:>9.1}", li, format!("g{}", modal[li]), l, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, 1000.0 * l / human_ms.max(1) as f32);
+        tot_pred += e.expected_ms.max(0);
+        bucket = e.arrival;
+    }
+    println!("    lap: predicted {} vs human best {}", io::secs(tot_pred), io::secs(best_lap));
+    let _ = gates;
 }

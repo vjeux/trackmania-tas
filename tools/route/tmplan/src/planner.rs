@@ -47,7 +47,8 @@ pub fn beam(nodes: &Nodes, est: &dyn EdgeEstimator, width: usize, top_k: usize, 
                     continue;
                 }
                 let to = 1 + cp;
-                let e = est.estimate(p.bucket, p.at, to);
+                let prev = if p.visit.len() >= 2 { Some(p.visit[p.visit.len() - 2]) } else { None };
+                let e = est.estimate(p.bucket, prev, p.at, to);
                 if e.kind == EdgeKind::None || e.p_reach <= 0.0 {
                     continue;
                 }
@@ -76,7 +77,8 @@ pub fn beam(nodes: &Nodes, est: &dyn EdgeEstimator, width: usize, top_k: usize, 
     for p in &frontier {
         debug_assert_eq!(p.mask, full);
         for f in nodes.finish_range() {
-            let e = est.estimate(p.bucket, p.at, f);
+            let prev = if p.visit.len() >= 2 { Some(p.visit[p.visit.len() - 2]) } else { None };
+            let e = est.estimate(p.bucket, prev, p.at, f);
             if e.kind == EdgeKind::None || e.p_reach <= 0.0 {
                 continue;
             }

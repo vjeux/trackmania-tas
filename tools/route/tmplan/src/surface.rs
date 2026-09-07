@@ -275,3 +275,46 @@ impl ChordProfile {
         out.into_iter().map(|(k, c)| (k, c as f32 / n)).collect()
     }
 }
+
+impl SurfaceModel {
+    /// Unit XZ directions of the surface path i→j at its two ends: `out[i][j]`
+    /// = the first ~10 m leaving i, `inn[i][j]` = the last ~10 m arriving at j.
+    /// NaN where there is no path. Lets the estimator charge a TURN at a gate:
+    /// the angle between how the car arrives (prev→from) and how it must leave
+    /// (from→to).
+    pub fn directions(&self, nodes: &Nodes, fields: &[Option<(Vec<f32>, Vec<u32>)>]) -> (Vec<Vec<[f32; 2]>>, Vec<Vec<[f32; 2]>>) {
+        let n = nodes.pos.len();
+        let nan = [f32::NAN, f32::NAN];
+        let mut out = vec![vec![nan; n]; n];
+        let mut inn = vec![vec![nan; n]; n];
+        let dir = |a: [f32; 3], b: [f32; 3]| -> [f32; 2] {
+            let dx = b[0] - a[0];
+            let dz = b[2] - a[2];
+            let l = (dx * dx + dz * dz).sqrt();
+            if l < 1e-3 { nan } else { [dx / l, dz / l] }
+        };
+        for i in 0..n {
+            for j in 0..n {
+                if i == j { continue; }
+                let Some(p) = self.path_points(nodes, fields, i, j) else { continue };
+                if p.len() < 2 { continue; }
+                // ~10 m from each end
+                let mut k = 0;
+                let mut acc = 0.0;
+                while k + 1 < p.len() && acc < 10.0 {
+                    acc += ((p[k + 1][0] - p[k][0]).powi(2) + (p[k + 1][2] - p[k][2]).powi(2)).sqrt();
+                    k += 1;
+                }
+                out[i][j] = dir(p[0], p[k]);
+                let mut k2 = p.len() - 1;
+                acc = 0.0;
+                while k2 > 0 && acc < 10.0 {
+                    acc += ((p[k2][0] - p[k2 - 1][0]).powi(2) + (p[k2][2] - p[k2 - 1][2]).powi(2)).sqrt();
+                    k2 -= 1;
+                }
+                inn[i][j] = dir(p[k2], p[p.len() - 1]);
+            }
+        }
+        (out, inn)
+    }
+}
