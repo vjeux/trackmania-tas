@@ -11,7 +11,7 @@
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -897,7 +897,10 @@ fn cmd_watch(args: &[String]) {
             }
             let mut ok = true;
             for kind in ["gate", "local"] {
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                // --gate-rows N caps the GATE rows separately (they need fewer: 60k/map trains the order prior as
+                // well as 150k did, and a 60-map round was taking an hour per head)
+                let cap = if kind == "gate" { flag(args, "--gate-rows").and_then(|s| s.parse().ok()).unwrap_or(o.max_rows).min(if o.max_rows > 0 { o.max_rows } else { usize::MAX }) } else { o.max_rows };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
