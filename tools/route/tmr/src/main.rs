@@ -11,7 +11,7 @@
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -761,6 +761,7 @@ fn cmd_watch(args: &[String]) {
     std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(&e.to_string()));
     let interval: u64 = flag(args, "--interval").and_then(|s| s.parse().ok()).unwrap_or(600);
     let once = has(args, "--once");
+    let mut force_first = has(args, "--force-first");
     let epochs = flag(args, "--epochs").unwrap_or_else(|| "30".into());
     let threads = flag(args, "--threads").unwrap_or_else(|| "32".into());
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tmr"));
@@ -803,6 +804,10 @@ fn cmd_watch(args: &[String]) {
         for l in &log {
             println!("{l}");
         }
+        if force_first && changed.is_empty() {
+            changed.push("(forced retrain: --force-first)".into());
+        }
+        force_first = false;
         if !changed.is_empty() {
             version += 1;
             let stamp = now_utc();
