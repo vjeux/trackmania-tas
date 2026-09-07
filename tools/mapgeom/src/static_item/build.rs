@@ -2035,7 +2035,19 @@ pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugM
     }
     let env = env_name(collection);
     let Some(link) = inst.link() else { return inst.clone() };
-    let Some(stem) = link.strip_prefix("Stadium\\Media\\Material\\") else { return inst.clone() };
+    // The skin is applied AFTER the block's material modifier, by material
+    // stem: Summer 16's OpenDirtZone blocks (modifier PlatformDirt, whose
+    // folder has its own `Deco` = DecoHillDirt) draw BlueBay grass in the
+    // game, not dirt — `Modifier\PlatformDirt\Deco` still lands on the skin's
+    // `Deco` slot. So a `Stadium\Media\Modifier\<X>\<stem>` link is skinned
+    // like the plain material of the same stem.
+    let stem = match link.strip_prefix("Stadium\\Media\\Material\\") {
+        Some(stem) => stem,
+        None => match link.strip_prefix("Stadium\\Media\\Modifier\\").and_then(|rest| rest.split_once('\\')) {
+            Some((_folder, stem)) if !stem.contains('\\') => stem,
+            _ => return inst.clone(),
+        },
+    };
     let Some((_, slot)) = SKIN.iter().find(|(name, _)| *name == stem) else { return inst.clone() };
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
