@@ -25,11 +25,10 @@ if [ $step = gates ] || [ $step = all ]; then
 fi
 if [ $step = human ] || [ $step = all ]; then
   $R/tmroute human-batch --data $V --geom $G --routes $RT --unverified
-  # Summer 2026 - 01 also has the 44 tm-pop ghosts: use every verified + tm-pop ghost for its route
+  # Summer 2026 - 01's 44 tm-pop ghosts (not oracle-verified here) → a control consensus only
   u=buNzfsVlp2NF2oWtHM3729dEylg
-  $R/tmroute consensus --gates $G/$u/gates.json --orders $G/$u/human-orders.tsv --out $RT/$u/route-router-human-0.json --gates-out $G/$u/gates.json \
-    $HOME/persistent/private-30d/tm-pop/*.Ghost.Gbx $(for j in $V/$u/ghosts/*.json; do grep -q '"verdict": "exact"' $j && echo ${j%.json}.Ghost.Gbx; done) > $G/$u/consensus.txt 2>&1
-  head -1 $G/$u/consensus.txt
+  $R/tmroute consensus --gates $G/$u/gates.json --orders $G/$u/human-orders.tm-pop.tsv --out /tmp/tm-pop-route.json $HOME/persistent/private-30d/tm-pop/*.Ghost.Gbx > $G/$u/consensus.tm-pop.txt 2>&1
+  head -1 $G/$u/consensus.tm-pop.txt
 fi
 if [ $step = plan ] || [ $step = all ]; then
   mkdir -p $P/plan-cost $P/plan-geometric $P/human-legs
@@ -47,6 +46,13 @@ if [ $step = plan ] || [ $step = all ]; then
     grep -E "cp_groups|rank 0|NO PLAN" $P/plan-cost/$u.txt | head -2 | cut -c1-160
   done
   cat $P/human-legs/*.tsv | grep -v "^map" | sort > $P/human-legs/ALL.tsv
+fi
+if [ $step = classify ] || [ $step = all ]; then
+  # human routes: name each leg's connection from the surface graph (Road, or Jump/Drop = a connection the graph lacks)
+  for u in $(uids); do f=$(mapfile_of $u); [ -n "$f" ] || continue; r=$RT/$u/route-router-human-0.json; [ -f $r ] || continue
+    grid=$(grep -q "DECORATION" $P/plan-cost/$u.txt 2>/dev/null && echo deco || echo track)
+    nice $R/tmplan classify $r $f --gates $G/$u/gates.json --grid $grid --quiet 2>&1 | tail -1
+  done
 fi
 if [ $step = tables ] || [ $step = all ]; then
   $R/tmroute index $RT --names $G

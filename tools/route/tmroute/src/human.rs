@@ -62,18 +62,48 @@ pub struct Crossing {
 }
 
 pub fn load_run(p: &Path) -> Result<Run, String> {
-    let d = gbx::record::decode_ghost(p.to_str().ok_or("path")?).map_err(|e| format!("{}: {e}", p.display()))?;
-    let mut samples: Vec<Sample> = d
-        .samples
+    // EVERY CSceneVehicleVis entity, merged by time. `gbx::record::decode_ghost` keeps only the
+    // entity with the most samples; Spring 2026 - 12's ghosts carry SIX of them, each a consecutive
+    // time span of the same car (76+113+165+83+253+59 samples = the whole 37 s run), so the
+    // largest alone starts at 21.6 s and every early split lands on nothing.
+    let path = p.to_str().ok_or("path")?;
+    let body = gbx::record::load_body(path).map_err(|e| format!("{}: {e}", p.display()))?;
+    let (version, blob) = gbx::record::find_entrecord_blob(&body).map_err(|e| format!("{}: {e}", p.display()))?;
+    let rec = gbx::record::parse_record_data(&blob, version).map_err(|e| format!("{}: {e}", p.display()))?;
+    let res = gbx::container::read_result(&body);
+    let mut samples: Vec<Sample> = Vec::new();
+    let mut n_ents = 0;
+    // Consecutive spans of ONE car merge; overlapping spans are several cars (a replay with
+    // ghosts) and then only the longest entity is the run.
+    let mut vis: Vec<&gbx::record::Ent> = rec
+        .ents
         .iter()
-        .map(|s| Sample {
-            t_ms: s.time_ms,
-            pos: [s.x, s.y, s.z],
-            vel: [s.vx, s.vy, s.vz],
-            speed: s.speed_ms,
+        .filter(|ent| {
+            let cid = rec.descs.get(ent.type_.max(0) as usize).filter(|_| ent.type_ >= 0).map(|d| d.class_id);
+            cid == Some(gbx::record::CLASS_CSCENEVEHICLEVIS) && ent.sample_size >= 103 && !ent.times.is_empty()
         })
         .collect();
+    vis.sort_by_key(|e| e.times[0]);
+    let overlapping = vis.windows(2).any(|w| w[1].times[0] <= *w[0].times.last().unwrap());
+    if overlapping {
+        let best = vis.iter().max_by_key(|e| e.times.len()).copied();
+        vis = best.into_iter().collect();
+    }
+    for ent in vis {
+        n_ents += 1;
+        let ss = ent.sample_size;
+        for (i, &t) in ent.times.iter().enumerate() {
+            let d = &ent.raw[i * ss..(i + 1) * ss];
+            let s = gbx::record::decode_vehicle_sample(d);
+            samples.push(Sample { t_ms: t, pos: [s.x, s.y, s.z], vel: [s.vx, s.vy, s.vz], speed: s.speed_ms });
+        }
+    }
+    if n_ents == 0 {
+        return Err(format!("{}: no CSceneVehicleVis entity", p.display()));
+    }
     samples.sort_by_key(|s| s.t_ms);
+    samples.dedup_by_key(|s| s.t_ms);
+    let d = (res.as_ref().map(|r| r.race_ms), res.as_ref().map(|r| r.checkpoints()).unwrap_or_default());
     let mut respawns = 0;
     for w in samples.windows(2) {
         let d = dist(w[0].pos, w[1].pos);
@@ -84,8 +114,8 @@ pub fn load_run(p: &Path) -> Result<Run, String> {
     Ok(Run {
         path: p.display().to_string(),
         md5: crate::md5::md5_file_hex(p)?,
-        declared_ms: d.race_time_ms.unwrap_or(-1),
-        splits_ms: d.checkpoints_ms.clone(),
+        declared_ms: d.0.unwrap_or(-1),
+        splits_ms: d.1,
         samples,
         respawns,
     })
@@ -151,7 +181,10 @@ pub fn crossings(run: &Run, gates: &GatesFile, max_xz: f32) -> Vec<Option<Crossi
                 if g.kind == WpKind::Start {
                     continue;
                 }
-                if (p[1] - g.centre[1]).abs() > MATCH_DY {
+                // a Platform* gate's trigger is tall (Spring 2026 - 06's PlatformTechFinish fires with the
+                // car 24 m above the slab, dropping in): twice the height window there
+                let dy_max = if g.model.starts_with("Platform") { 2.0 * MATCH_DY } else { MATCH_DY };
+                if (p[1] - g.centre[1]).abs() > dy_max {
                     continue;
                 }
                 // distance to the gate SEGMENT (centre ± half_width along the row), not the centre
