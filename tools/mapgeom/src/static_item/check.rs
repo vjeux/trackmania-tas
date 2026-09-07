@@ -138,11 +138,37 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 continue;
             };
             let link = inst.link().unwrap_or("").to_string();
-            let key = (link.clone(), inst.physics());
+            // A custom-texture material (2026-09-07, the baked screen pictures):
+            // no game link, a shading model and textures named by file — the
+            // files must ride in the same archive folder as the item, which
+            // the check cannot see; it requires the form to be complete.
+            let custom = inst.main.as_ref().filter(|m| !m.is_using_game_material && link.is_empty()).map(|m| (m.model.clone(), m.user_textures.clone()));
+            let key = (if let Some((_, t)) = &custom { format!("custom:{}", t.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(";")) } else { link.clone() }, inst.physics());
             if slots.contains(&key) {
-                problems.push(format!("material {mi}: duplicate slot {link} ({})", inst.physics()));
+                problems.push(format!("material {mi}: duplicate slot {} ({})", key.0, inst.physics()));
             }
             slots.push(key.clone());
+            if let Some((model, textures)) = &custom {
+                let model_name = match model {
+                    crate::crystal_model::Id::Str(s) => s.clone(),
+                    _ => String::new(),
+                };
+                if model_name.is_empty() {
+                    problems.push(format!("material {mi}: custom-texture material without a shading model"));
+                }
+                if textures.is_empty() {
+                    problems.push(format!("material {mi}: custom-texture material without textures"));
+                }
+                for t in textures {
+                    if !t.texture.to_ascii_lowercase().ends_with(".dds") || t.texture.contains('\\') || t.texture.contains('/') {
+                        problems.push(format!("material {mi}: texture {:?} is not a bare .dds file name (the game resolves only that, next to the item)", t.texture));
+                    }
+                }
+                if facts {
+                    println!("{path}: material {mi} custom {model_name} textures [{}] phys {} used by {} geoms", textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "), inst.physics(), used.get(mi).copied().unwrap_or(0));
+                }
+                continue;
+            }
             if link.is_empty() {
                 problems.push(format!("material {mi}: empty link"));
             } else {
