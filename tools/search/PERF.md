@@ -227,3 +227,98 @@ or the predicate kills what the temperature would have taken.
 
 Nothing was replaced; the predicate set gained a kind. `SUMMARY_BYTES` grew from
 148 to 152 for `lag_max_ms` (shim and driver share the file).
+
+---
+
+## 3. The fixed cost of a candidate: the exit marker, the standby child, the census
+
+Measured first (`fk tickhook cost`, map 2 rank00001, `tick:2313`, 119 ticks of
+tail, 40 runs per phase, this box), then cut what the measurement named.
+
+### 3.1 The parent was waiting for the kernel to tear the child down
+
+A child that has its answer leaves with `_exit`, and the parent learned that
+from EOF on the result pipe. EOF arrives when the kernel closes the child's
+files — and `do_exit` runs `exit_mm()` FIRST: every COW'd page and every page
+table of a ~150 MB process, freed while the parent sits in `poll`. With the
+answer already in the shared page.
+
+| phase (tick 2313, finisher, exit-at-finish armed) | before | after |
+|---|---|---|
+| last tick → parent has the answer | **2.34 ms** | **0.07 ms** |
+| a candidate, end to end | 7.65 ms | 5.08 ms |
+
+The fix is eight bytes: the child writes `FKEXIT` down its result pipe right
+before `_exit` (`leave(1)`), the parent treats it exactly like `"IsValid"`, and
+the teardown happens on whatever core the kernel puts it on while the next
+candidate is already running. Every store into the shared pages precedes the
+`write` syscall, so a parent that has seen the marker sees them. Used by the
+finish exit, the watchdog's trip exit and the tape-exhausted exit.
+
+### 3.2 The fork itself, off the critical path
+
+`fork()` of the paused engine costs 1.0–1.9 ms (the kernel copying ~150 MB of
+page tables) and the parent paid it between receiving a candidate and starting
+it. Now every fork point — the root and every ladder node — keeps ONE child
+forked ahead of time, blocked on a pipe. A candidate is handed to it (the
+payload down the pipe, ~40 KB) and the next standby is forked right after the
+hand-off, while the candidate simulates, on a core the parent was not using.
+
+| phase | before | after |
+|---|---|---|
+| fork → child alive | 1.04–1.50 ms | **0.07 ms** |
+| child → its first tick | 0.32 ms | 0.31 ms |
+| a candidate, end to end (tick 2313) | 5.08 ms | **4.00 ms** |
+| fixed cost as a share of that candidate | 54 % (7.65 ms build) | **11 %** |
+
+What keeps it correct: a standby is a copy of the parent's inheritable state at
+the moment it was forked, so **every command other than `'R'`/`'W'` kills the
+standby first** — arming the watchdog, the chain, the finish word, a branch, a
+probe — and the next candidate forks synchronously and pre-forks a fresh one
+behind itself. A standby whose parent dies reads EOF on its command pipe and
+exits (no orphan; 0 `TrackmaniaServer` processes after every run above). A
+standby that died is detected at the hand-off and that candidate forks the old
+way. `'R'` and `'W'` now share one launch path and one parent loop.
+
+Across the evening, a late finisher went **13.22 ms (start of the tickhook
+work) → 7.65 (exit-at-finish) → 5.08 (exit marker) → 4.00 ms (standby)**, of
+which 3.54 ms is the 119 ticks of physics.
+
+### 3.3 The census, and why huge pages and `MADV_DONTFORK` are not tried
+
+`FKSHIM_CENSUS=1` makes the parent read the child's `/proc/<pid>/stat` and
+`smaps_rollup` before killing it and append `minflt rss_kb pdirty_kb` to
+`FKTIME`; `fk ladder check` reports the means. Map 2, a full run from tick 171
+(2261 ticks): **a candidate child faults 2668 pages and dirties 11.8 MB** of a
+144.7 MB resident set (root and ladder children alike: 2655 faults, 11.7 MB).
+
+* COW is ~2.7 ms per full-length candidate (2668 faults at ~1 µs), about 4 %
+  of the 66 ms of ticks, ~1.2 µs of the 29.4 µs/tick. Not a lever.
+* Transparent huge pages (this box: `madvise` mode, so `MADV_HUGEPAGE` +
+  `MADV_COLLAPSE` would be allowed) would cut the page-table copy — which the
+  standby has already taken off the critical path — and turn every one of
+  those ≥ 3000 dirtied 4 KB pages into a 2 MB copy-on-write. 11.8 MB dirtied
+  in small pages spread over the heap is tens to hundreds of 2 MB regions;
+  the arithmetic says slower, so it is not tried.
+* `MADV_DONTFORK` on never-touched regions would save page-table copying
+  only, which is no longer on the path, at the price of a SIGSEGV the first
+  time a candidate touches a region the census never saw. Not tried.
+
+### Proof
+
+* `fk tickhook cost` as above; `fk tickhook reads` PASS after every change.
+* `fk ladder watched`, 300 candidates: 300/300 identical time and summary
+  after the marker, 300/300 after the standby, 300/300 after the rebase onto
+  tickhook @ 485319b.
+* `fk server check` 50/50 (map 2 tick 1200) after each change; `fk ladder
+  check` 200/200 on "get jiggy with it" after the standby.
+* The whole suites: 157 search tests, 38 fk tests, 0 failures.
+* Search, 5 minutes, 24 workers, seed 42, ladder-only build vs ladder + marker
+  + standby, run concurrently: 328,560 evals / 10 confirmed / 0 phantoms vs
+  **398,910 evals / 10 confirmed / 0 phantoms** (+21 %).
+
+### What was deleted
+
+The two copies of the candidate launch (the `'R'` child, the `'W'` child) and
+the two parent loops: one `launch`, one `apply_candidate`, one loop. There is no
+flag that disables the marker or the standby.
