@@ -123,7 +123,21 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
         return detach(&opts.outdir);
     }
     let t0 = Instant::now();
-    let res = publish_here(&opts);
+    // One game, several drivers: the token route and the playcheck talk to
+    // the running game, which answers nothing while another thread's shootset
+    // or playshots has it loading a map (Summer 19's first publish died on
+    // `/nadeotoken: Resource temporarily unavailable`; 17's and 18's
+    // playchecks waited out their 600 s). Hold the same render lock those
+    // take — the upload itself is Nadeo-side, but it is short next to a wait.
+    let owner = format!("publish-{}", o_stem(&opts.map));
+    let res = match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
+        Ok(()) => {
+            let r = publish_here(&opts);
+            let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+            r
+        }
+        Err(e) => Err(format!("render lock: {e}")),
+    };
     let summary = match &res {
         Ok(lines) => format!("OK in {:.0}s\n{}\n", t0.elapsed().as_secs_f64(), lines.join("\n")),
         Err(e) => format!("FAILED after {:.0}s: {e}\n", t0.elapsed().as_secs_f64()),
@@ -132,6 +146,28 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
     let tmp = opts.outdir.join("done-publish.tmp");
     std::fs::write(&tmp, &summary).and_then(|_| std::fs::rename(&tmp, &done)).map_err(|e| format!("{}: {e}", done.display()))?;
     res.map(|_| ())
+}
+
+/// `shootctl lock acquire|release --owner WHO [--wait S]` — the render box's
+/// one-driver lock (a directory beside the game; shootset and playshots take
+/// the same one). Through the CLI rather than a crate link: the box builds
+/// shootctl and tinyctl side by side, and the lock's home is shootctl's.
+fn render_lock(shootctl: &str, owner: &str, verb: &str, extra: &[&str]) -> Result<(), String> {
+    let out = Command::new(shootctl).arg("lock").arg(verb).arg("--owner").arg(owner).args(extra).output().map_err(|e| format!("{shootctl}: {e}"))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if let Some(l) = text.lines().find(|l| l.contains("render lock")) {
+        println!("{l}");
+    }
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(text.trim().to_string())
+    }
+}
+
+/// `Tiny19` for `…/Tiny19.Map.Gbx` — the lock owner name.
+fn o_stem(map: &Path) -> String {
+    map.file_name().and_then(|s| s.to_str()).map(|s| s.split('.').next().unwrap_or(s).to_string()).unwrap_or_else(|| "map".into())
 }
 
 fn detach(outdir: &Path) -> Result<(), String> {
@@ -363,7 +399,7 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
     if wsx.verbose {
         eprintln!("{}", started.trim());
     }
-    let done = wsx.wait_done(&format!("{remote_out}/done-publish.txt"), &format!("{remote_out}/publish.log"), Duration::from_secs(900), "publish")?;
+    let done = wsx.wait_done(&format!("{remote_out}/done-publish.txt"), &format!("{remote_out}/publish.log"), Duration::from_secs(1800), "publish")?;
     println!("{}", done.trim());
     if tmmaps::cli::has(args, "--playcheck") {
         let shot = format!("playcheck-{}.png", hdr.uid);
