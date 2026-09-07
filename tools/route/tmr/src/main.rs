@@ -145,6 +145,13 @@ struct BuildOpts {
 /// Build one shard dir's rows into `<out>/<uid>.rows`; returns the manifest line and the log line.
 fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, String), String> {
     let uid = data::shard_map_uid(d).ok_or_else(|| format!("{}: cannot tell its map uid (dir name or FANOUT.log)", d.display()))?;
+    let build_hash = data::shard_build_hash(d);
+    // FRAME control before anything is built from this shard (fail closed)
+    let (fz, nf) = data::frame_control(d)?;
+    if nf >= 20 && fz < 0.9 {
+        return Err(format!("{uid} (build {build_hash}): FRAME control FAILED — mean dot(velocity, local +Z) = {fz:.3} over {nf} starts; the quaternion convention changed, fix frame.rs before building rows"));
+    }
+    log.push(format!("  {uid}: generator build {build_hash}, frame control +Z {fz:.3} over {nf} starts → PASS"));
     let gdir = o.geom.join(&uid);
     // the bank is an object store another box writes into: a gates.json mid-rewrite reads truncated.
     // Keep the last good copy in the cache and fall back to it, saying so.
@@ -186,11 +193,11 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
             log.push(format!("    surface note: {n}"));
         }
     }
-    let manifest = format!("{}\tv{}\t{}\t{}\t{}\t{}\t{}\t{}\n", o.kind, o.fv, uid, gates.map_name, held as u8, manifest_tail, d.display(), provenance("build"));
+    let manifest = format!("{}\tv{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", o.kind, o.fv, uid, gates.map_name, held as u8, manifest_tail, d.display(), build_hash, provenance("build"));
     Ok((manifest, line))
 }
 
-const MANIFEST_HEADER: &str = "kind\tfv\tmap_uid\tmap_name\theld_out\trecords_or_groups\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n";
+const MANIFEST_HEADER: &str = "kind\tfv\tmap_uid\tmap_name\theld_out\trecords_or_groups\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tgenerator_build\tprovenance\n";
 
 fn build_opts(args: &[String]) -> BuildOpts {
     let out = PathBuf::from(flag(args, "--out").or_else(|| flag(args, "--cache")).unwrap_or_else(|| die("--out CACHE")));

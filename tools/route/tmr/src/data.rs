@@ -833,3 +833,28 @@ pub fn featurise(map_uid: &str, specs: &[Spec], lab: &[f32], feat: &Featurizer, 
     }
     (Rows { map_uid: map_uid.to_string(), fv: feat.version(), dim, x, lab: lab_out, n: idx.len() }, dropped)
 }
+
+/// The generator build hash of a shard dir (`fanout <hash> on <uid>` in FANOUT.log), or "?".
+pub fn shard_build_hash(dir: &Path) -> String {
+    if let Ok(log) = std::fs::read_to_string(dir.join("FANOUT.log")) {
+        for line in log.lines() {
+            if let Some(rest) = line.strip_prefix("fanout ") {
+                if let Some(h) = rest.split_whitespace().next() {
+                    return h.to_string();
+                }
+            }
+        }
+    }
+    "?".into()
+}
+
+/// The FRAME control on a shard's starts: forward must be local +Z (mean dot with the velocity
+/// direction > 0.9 over rows faster than 5 m/s). A new engine build can change the quaternion
+/// convention (coordinator, 10:04Z: `quat` becomes the dyna body quaternion); every shard is
+/// checked before its rows are built. Returns (mean dot with +Z, rows used).
+pub fn frame_control(reach_dir: &Path) -> Result<(f32, usize), String> {
+    let starts = read_starts(&reach_dir.join("starts.tsv"))?;
+    let rows: Vec<([f32; 3], [f32; 4])> = starts.values().map(|s| (s.state.vel, s.state.quat)).collect();
+    let (acc, n) = crate::frame::alignment(&rows, 5.0);
+    Ok((acc[2], n))
+}
