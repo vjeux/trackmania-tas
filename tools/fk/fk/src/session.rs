@@ -222,8 +222,30 @@ impl Session {
         )?;
         let mut s = Session { srv, tape, checkpoint_clock: clock };
         s.assert_running_our_tape()?;
-        // Every session gets the fast finish; it costs one fork and saves 5.8 ms
-        // on every candidate that finishes.
+        // THE FAST FINISH IS FOR SESSIONS THAT WANT AN ANSWER, NOT A RECORDING.
+        //
+        // It ends the child the moment the engine records a finish, which is
+        // exactly right for a candidate being scored and exactly wrong for
+        // anything that SAMPLES: `fk trace` asks the child to keep running and
+        // gather state every tick, and an armed session cut its trajectory off
+        // at the finish -- 1694 of 1741 rows on one map, and only on the runs
+        // where calibration happened to succeed, so it looked intermittent.
+        // (Found by the perf arm on Kacky Reloaded #290.)
+        //
+        // So it is opt-in per session rather than on by default: `Session::run`
+        // and the scoring paths arm it, and a sampler never does. That is the
+        // same rule as `on_clock` running before the exit -- a speedup must not
+        // change what the caller observes.
+        if std::env::var("FK_FAST_FINISH_ALL").is_ok() {
+            s.arm_fast_finish(false)?;
+        }
+        Ok(s)
+    }
+
+    /// Start a session for SCORING -- one that wants each candidate's answer
+    /// and nothing else -- with the exit-at-finish lever armed.
+    pub fn start_scoring(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<Session, String> {
+        let mut s = Session::start(engine, tape, at)?;
         if std::env::var("FK_NO_FAST_FINISH").is_err() {
             s.arm_fast_finish(false)?;
         }

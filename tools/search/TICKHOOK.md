@@ -1033,3 +1033,25 @@ With both right they agree exactly:
 identical, 0 mismatches**, and `tick:2380` — the pair that failed — run three
 times for **50/50 every time**. Deterministic, which the word-based version was
 not. search 151/151, fk 38/38.
+
+### 13.5 The lever belonged to scoring sessions, not to every session
+
+The perf arm found a second effect of the same lever on the same map: `fk trace`
+on Kacky Reloaded #290 stopped at the finish tick — 1694 of 1741 rows — on the
+runs where finish calibration happened to succeed, which is why it looked
+intermittent.
+
+`Session::start` armed the lever for **every** session. That is right for a
+session that wants each candidate's answer and wrong for one that SAMPLES: the
+child leaving at the finish is exactly the behaviour `fk trace` must not have.
+
+So it is opt-in per session. `Session::start_scoring` arms it — `fk server
+check` and `fk server bench` use it, and `tmsearch` arms it directly — and a
+sampler never does. Same rule as `on_clock` running before the exit: **a
+speedup must not change what the caller observes.**
+
+`fk trace` on that map is now 8 of 9 runs at the full 1742 rows with the
+self-check passing; the ninth fails in the LOCATOR (no chain tracks the car,
+the sweep picks a non-unit-quaternion object), which is §11's open problem on a
+map that has none of its chains derived — and the same command aborts outright
+at the branch point, so it is not a regression.
