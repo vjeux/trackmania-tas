@@ -439,10 +439,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         let mut st: Vec<(&Vec<u64>, &u64)> = t.stacks.iter().collect();
         st.sort_by(|a, b| b.1.cmp(a.1));
-        let _ = writeln!(out, "--- most common exe stacks (leaf first) ---");
+        let _ = writeln!(out, "--- most common exe stacks (leaf first, callers below) ---");
         for (k, n) in st.iter().take(8) {
-            let _ = writeln!(out, "{:>6.1}% {:>7}", pct(**n), n);
-            for r in k.iter().take(24) {
+            let _ = writeln!(out, "{:>6.1}% {:>7}{}", pct(**n), n, if k.is_empty() { "  (no exe frame on the stack: waiting in ntdll / the kernel)" } else { "" });
+            for r in k.iter().rev().take(24) {
                 let _ = writeln!(out, "           exe+0x{:<8x} objdump {}", r, objd(*r));
             }
         }
