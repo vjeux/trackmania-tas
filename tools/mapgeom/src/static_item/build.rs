@@ -2053,6 +2053,18 @@ impl Merged {
                         self.notes.push(format!("{path}: animated light (image anim / func light) not embedded — idle it is off"));
                         continue;
                     }
+                    // The gameplay gates' lights — `SpecialSpot` / `SpecialFXLight`
+                    // of the Turbo/Boost/Reset/NoEngine… Special prefabs (base
+                    // `Media\Light\Special*.Light.Gbx`, per-kind copies under
+                    // `Media\Modifier\<Kind>\`) and the GateGameplay spots: they
+                    // fire when a car passes and are dark at rest — steady ON
+                    // they streaked Summer 19's decks white (maps loop, 09:39).
+                    let lower = path.to_ascii_lowercase();
+                    let file = lower.rsplit('\\').next().unwrap_or(&lower);
+                    if lower.contains("\\modifier\\") || file.starts_with("special") {
+                        self.notes.push(format!("{path}: gameplay-gate light not embedded — at rest it is off"));
+                        continue;
+                    }
                     light.drop_external_refs();
                     match light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
                         Some(super::Node::GxLight(g)) => g.scale(scale),
