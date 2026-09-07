@@ -338,7 +338,10 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
         let s_off = if hi <= lo { hi - 0.02 } else { 0.5 * (lo + hi) };
         // lateral: the model rule, widened to the humans' own crossings + 2 m; vertical:
         // the humans' up range widened by 3 m below and 6 m above (jumps), at least −6..+8
-        let lat_half = lateral_half_extent(&m, hw, item).max(lat_max + 2.0);
+        // widened to the humans' lateral range only when at least 3 humans support it: one credit
+        // at |lat| 9.5 on a 4 m gate is a misattribution (Spring 2026 - 20: an 8 m gate beside a
+        // 32 m gate of the same group), not evidence of a wider trigger
+        let lat_half = if v.len() >= 3 { lateral_half_extent(&m, hw, item).max(lat_max + 2.0) } else { lateral_half_extent(&m, hw, item) };
         let (up_lo, up_hi) = ((up_min - 3.0).min(-6.0), (up_max + 6.0).max(8.0));
         notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}; human |lat| max {lat_max:.2} -> lat_half {lat_half:.1}; up {up_min:+.2}..{up_max:+.2} -> {up_lo:+.1}..{up_hi:+.1}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT (plane 2 cm before the earliest credited row)" } else { "" }));
         per_model.push((m.clone(), Trigger { s_off, depth: 8.0, lat_half, up_lo, up_hi }));

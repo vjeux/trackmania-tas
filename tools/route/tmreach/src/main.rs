@@ -1024,6 +1024,16 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 (Err(e), _) => format!("LOCAL gates unreadable: {e}"),
             }
         };
+        // MULTILAP maps (a RoadTechMultilap / StartFinish gate): the humans cross every gate once per
+        // lap and my detector credits each gate once -- not supported yet, skipped by name (Winter
+        // 2026 - 10: 114 of 228 counter steps were second-lap credits)
+        if let Ok(g) = MapGates::load(&map, Some(&geom_local)) {
+            if g.gates.iter().any(|x| x.kind == GateKind::Multilap) {
+                report.push_str(&format!("{name}\t{uid}\tSKIPPED: multilap map (not supported: gates are credited once per lap)\n"));
+                println!("   multilap map: skipped");
+                continue;
+            }
+        }
         let geom_arg = geom_local.to_string_lossy().into_owned();
         let work = scratch.join(uid).join("work");
         let stage_dir = scratch.join(uid);
