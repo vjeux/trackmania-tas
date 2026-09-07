@@ -257,6 +257,8 @@ fn main() {
             let ia = m.items.iter().position(|it| it.index == pa).expect("--a not an item");
             let ib = m.items.iter().position(|it| it.index == pb).expect("--b not an item");
             let (ra, rb) = (m.items[ia].clone(), m.items[ib].clone());
+            let orig_colors = m.colors();
+            let orig_body = m.gbx.body.clone();
             // the waypoint node AND the v8 tail (flags with the variant byte, pivot, scale,
             // skin FileRef, the two trailing Vec3) travel with the model: one span each
             let wa = m.gbx.body[ra.waypoint_region.0..ra.record_region.1].to_vec();
@@ -307,6 +309,36 @@ fn main() {
             println!("swapped placements i{} {} {:?} <-> i{} {} {:?} (models via rename, pose via patch, waypoint node + v8 tail + side bytes via splice)", pa, ra.model, ra.waypoint_tag, pb, rb.model, rb.waypoint_tag);
             m.write_to_reporting(Path::new(&out)).expect("write");
             println!("wrote {out}");
+            // `--check`: re-read the WRITTEN map and assert that every
+            // per-placement field arrived. A swap that silently drops one is
+            // the dangerous kind — a start moved into the engine's slot must
+            // not rescale, re-anchor, recolour or re-variant either item, and
+            // the freeze pass depends on that (2026-09-07).
+            if args.iter().any(|a| a == "--check") {
+                let m3 = map::MapFile::load(Path::new(&out));
+                let ga = m3.items.iter().find(|it| it.index == pa).expect("a");
+                let gb = m3.items.iter().find(|it| it.index == pb).expect("b");
+                let same = |x: [f32; 3], y: [f32; 3]| x.iter().zip(y).all(|(u, v)| (u - v).abs() < 1e-4);
+                let mut bad = Vec::new();
+                if ga.model != rb.model || gb.model != ra.model { bad.push("model"); }
+                if !same(ga.pos, rb.pos) || !same(gb.pos, ra.pos) { bad.push("pos"); }
+                if (ga.yaw - rb.yaw).abs() > 1e-6 || (gb.yaw - ra.yaw).abs() > 1e-6 { bad.push("yaw"); }
+                if !same(ga.pivot, rb.pivot) || !same(gb.pivot, ra.pivot) { bad.push("pivot"); }
+                if (ga.scale - rb.scale).abs() > 1e-6 || (gb.scale - ra.scale).abs() > 1e-6 { bad.push("scale"); }
+                if ga.variant() != rb.variant() || gb.variant() != ra.variant() { bad.push("variant"); }
+                if ga.waypoint_tag != rb.waypoint_tag || gb.waypoint_tag != ra.waypoint_tag { bad.push("waypoint tag"); }
+                if ga.waypoint_order != rb.waypoint_order || gb.waypoint_order != ra.waypoint_order { bad.push("waypoint order"); }
+                if ga.skin(&m3.gbx.body) != rb.skin(&orig_body) || gb.skin(&m3.gbx.body) != ra.skin(&orig_body) { bad.push("skin"); }
+                if let (Some(c0), Some(c1)) = (orig_colors.as_ref(), m3.colors()) {
+                    if c1.item(pa) != c0.item(pb) || c1.item(pb) != c0.item(pa) { bad.push("colour"); }
+                }
+                if bad.is_empty() {
+                    println!("check: every per-placement field arrived (model, pose, pivot, scale, variant, tag, order, colour, skin)");
+                } else {
+                    eprintln!("check FAILED: {} did not survive the swap", bad.join(", "));
+                    std::process::exit(1);
+                }
+            }
         }
         "swaprec" => {
             // swap two whole item placement RECORDS (file order experiment); the item count is unchanged
