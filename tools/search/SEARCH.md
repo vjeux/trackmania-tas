@@ -38,8 +38,8 @@ Three crates, one workspace, one `cargo test`:
 The fork oracle's CLOCK is the engine's own tick: the shim hooks the function
 the validator calls once per simulated 10 ms, so a checkpoint is a tick and is
 the same simulation point in every process under any load. `TICKHOOK.md` has
-the hook, the controls and the measurements; `FK_CLOCK=lroundf` restores the
-old `lroundf`-counting clock for A/B.
+the hook, the controls and the measurements. There is one clock and no flag to
+ask for another: the shim installs the hook or exits 92.
 
 `forkoracle` and `forkshim` are in the same workspace because the shim
 `#[path]`-includes `forkoracle/src/pred_core.rs`: a predicate has exactly one
@@ -100,7 +100,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `tmtas trace` | per-tick input dump → `ghost tape extract`. |
 | `tmtas splice` | cross-spliced two runs at a checkpoint to measure how not-modular they are. The measurement is real and its answer is recorded (§5); splicing tapes is `ghost tape` territory now. |
 | `tmtas selftest` | `cargo test`. |
-| `fkcount` (a whole crate) | an LD_PRELOAD census of every libc entry point the server called, looking for one whose per-ghost count was a clean multiple of the tick count. **It found `lroundf`** — ~25.5 calls per simulated millisecond, bit-identical across runs on an idle box — and that answer is the foundation of the whole fork oracle. It also proved `rand()` is called only during init, so there is no RNG in the simulation. The scaffolding is deleted; both facts are in `forkoracle`'s module docs. |
+| `fkcount` (a whole crate) | an LD_PRELOAD census of every libc entry point the server called, looking for one whose per-ghost count was a clean multiple of the tick count. **It found `lroundf`** — ~25.5 calls per simulated millisecond, bit-identical across runs on an idle box — and that was the fork oracle's clock for a year. It is gone: the clock is now the engine's own tick function (`TICKHOOK.md`), because the lroundf count is NOT stable under load. The census also proved `rand()` is called only during init, so there is no RNG in the simulation, and that fact still stands. |
 
 **Two flags I was told to delete and could not find.** `FK_BUDGET_MUL` (in
 `budget_for`) and `FK_SAMPLE_CENSUS` (in `gather_ticks`) do not exist in any
@@ -199,14 +199,16 @@ reference.
 
 ### The resume floor
 
-The `lroundf` checkpoint is not a fixed simulation point, so each worker's
-server stops where it stops. An edit below a worker's own resume tick is a
-silent no-op — invisible to the evaluator, present in the written file, scoring
-exactly the incumbent's score, accepted at `delta == 0`, contaminating that
-worker's lineage for free.
+Since the tick hook the checkpoint IS the same simulation point in every
+process -- 300 servers started together stop at one tick -- but a boundary that
+is ASSUMED is how the phantom got in, so it is still MEASURED on every worker.
+An edit below a worker's own resume tick is a silent no-op — invisible to the
+evaluator, present in the written file, scoring exactly the incumbent's score,
+accepted at `delta == 0`, contaminating that worker's lineage for free.
 
-Every worker now probes its own server, publishes `max(calibration, probe + 1)`,
-and a startup barrier holds the fleet until all of them have. The mutation
+Every worker probes its own server, publishes `max(calibration, probe)` (the
+probe names the first UNCONSUMED record), and a startup barrier holds the fleet
+until all of them have. The mutation
 floor is the **maximum** over workers — it must be the maximum, because
 migration moves a state made by one worker into another.
 `tests/loop_invariants.rs` runs the loop against a fake oracle with per-worker

@@ -4,11 +4,10 @@ The fork server used to count `lroundf` calls. It now hooks the function the
 validator calls once per simulated tick, and every checkpoint, stride, budget
 and deadline is in **ticks of race time**.
 
-```
-FK_CLOCK=tick      (default)  the tick hook; the shim installs it or dies
-FK_CLOCK=lroundf              the old clock, kept so the two can be measured
-                              against each other
-```
+There is ONE clock and no way to ask for another: the shim installs the hook or
+exits 92. What it replaced -- a count of `lroundf` calls -- is gone from the
+tree; the numbers it produced are kept below, because they are why the hook
+exists.
 
 ---
 
@@ -81,25 +80,50 @@ checkpoint (`fk tickhook load --n 300 --at tick:171`):
    sub rsp,0x18` — 17 bytes with no RIP-relative operand, so they can be
    re-executed from a trampoline anywhere in the address space.
 
-### The record read, and why every resume needed `probe + 1`
+### The record, the read, and the two things that were wrong about them
 
-The page-fault probe reports `(fault_addr − base) / 32`, where `base` is where
-the shim found the tape's **steer** values. Steer sits 4 bytes into the
-engine's 32-byte record, so a fault on the first byte of record `i` reports
-`i − 1`. **The probe names the last record the engine finished with; `probe+1`
-is the first unconsumed one.** That `+1` had been carried for a year as "tick p
-is already partly consumed" — it is not partial consumption, it is an offset,
-and now it is checked rather than believed (§4).
+The record is 32 bytes and the engine fetches it whole
+(`0x119f165: shl rcx,5; movups xmm0,[rdx+rcx]; movups xmm1,[rdx+rcx+0x10]`),
+so element `i` starts at `array + 32i`. Read out of a running server rather
+than inferred:
 
-The engine also never touches the tape before race time −10 ms
-(`0x119f0fc..0x119f11a`), which is why rewriting the countdown region is
-physically inert (a fact the phantom investigation found empirically).
+| offset | contents | how it is known |
+|---|---|---|
+| `+0x00` | `u32` flags, normally 2 | the "no input" path ORs `0x40` into the byte at `+0` (`0x119f1a2`) |
+| `+0x04` | `f32` steer = `(i8)steer / 127` | the shim's key match, and it equals the tape at every tick |
+| `+0x08` | `f32` gas | same |
+| `+0x0c` | `f32` brake | same |
+| `+0x10` | `f32` 0 | measured, every record |
+| `+0x14` | `u32`, engine-owned | **NOT the constant the old notes called a "device-segment const"**: `0x3576f40e` early on one tape and `0x3576f409` later. Never read, never written |
+| `+0x18` | `u32` 0 | measured, every record |
+| `+0x1c` | `u32` 2 | the "no input" path writes `2` to the byte here (`0x119f14c`) |
+
+**The base was four bytes into that record until 2026-09-06.** The shim finds
+the array by searching for the tape's STEER values, and it used the address of
+tick 0's steer as `base`. Every field was still written to the right address —
+the patch is 12 bytes at `base + 32t`, which is steer/gas/brake either way —
+but the page-fault probe divides a *record-aligned* fault address by 32, and
+`(32i − 4) / 32 = i − 1`. **That is where the `probe + 1` every resume carried
+came from.** It had been read for a year as "tick p is already partly
+consumed"; it was an offset. The base is now the record base, the patch writes
+at `+4`, the probe protects exactly `[base, base + 32n)`, and the probe reports
+the record the engine reads next — so the resume floor is `probe`, and the
+forward-only rule refuses BELOW the boundary and accepts AT it.
+
+**The countdown reads record 0.** Before race time −10 ms — or while the race
+start is still `-1` — the engine does not index the tape at all: it copies
+record 0 verbatim as that tick's input (`0x119f0fc..0x119f127`). So on a tape
+whose `start_offset_ms` is −1580, records 1..156 are **never read**, and record
+0 is the input for the whole countdown. That is the mechanism behind a fact the
+phantom investigation could only measure: rewriting the countdown region is
+inert. `clock::record_read_at` is that rule transcribed, and it is what the
+boundary control compares the probe against.
 
 ---
 
 ## 3. The hook
 
-`FKSHIM_CLOCK=tick` makes the shim, before `main`:
+Before `main`, the shim:
 
 1. resolve the main module's base from `/proc/self/maps`;
 2. check that all three signature ranges are inside its **executable** mapping
@@ -116,20 +140,25 @@ physically inert (a fact the phantom investigation found empirically).
 5. overwrite those 17 bytes with a 14-byte absolute `jmp [rip+0]` + the
    trampoline address (padded with `int3`), under `mprotect` RWX→RX.
 
-Any failure is `_exit(92)`. **There is no fallback to the lroundf clock**: a
-driver that asked for the tick clock must never silently get the other one.
+Any failure is `_exit(92)`. **There is no other clock to fall back to**, which
+is the point: a silent fallback is how a wrong number gets believed.
 
-`tick_entry` is where the old `lroundf` interposer's body now lives: the
-sampler/watchdog dispatch, the SIGSTOP stop point and the fork-server
-checkpoint, keyed on the tick. `lroundf` is still interposed — it only counts,
-so `FKSHIM lroundf_total` stays comparable — and under `FK_CLOCK=lroundf`
-nothing about the old path changes.
+`tick_entry` carries what the `lroundf` interposer used to: the sampler/watchdog
+dispatch, the SIGSTOP stop point and the fork-server checkpoint, keyed on the
+tick.
+
+Two hosts are not the game and are handled by fact rather than by a flag. A
+shim LINKED INTO a binary (the crate's own `cargo test`) hooks nothing — its
+constructor sees its code inside the main executable. `shimhost`, the engine
+stand-in the savestate-tree tests run against, has no tick function to hook, so
+it sets `FKSHIM_TEST_HOST=1` and calls the shim's `fkshim_tick(new_ms, dt,
+race_start_ms)` seam once per tick; a real server never gets that licence.
 
 ### The clock is RACE time, not simulation time
 
 The simulation starts at ~1000 ms and the race — input record 0 of a tape with
 `start_offset_ms = 0` — starts later. **That start is not a constant.** It is
-usually 2200 ms, and in 1–3 of 300 servers started at once it was 2300: the
+usually 2200 ms, and in 1–6 of 300 servers started at once it was 2300: the
 spawn is scheduled off the same frame clock whose partition made `lroundf`
 drift. Keying on simulation time would have imported exactly the defect this
 work removes.
@@ -165,9 +194,7 @@ tape_tick_at(sim, start, off) = (sim − start − off)/10
 ```
 
 `forkoracle::clock` is the only place these live; `fk::session::clock_for_*`
-and `tmsearch::forkeval::clock_for_tick` forward to it. Under
-`FK_CLOCK=lroundf` the same functions return the old fitted line
-`36141 + 25.483·race_ms`.
+and `tmsearch::forkeval::clock_for_tick` forward to it.
 
 ---
 
@@ -183,11 +210,15 @@ The point of a hook is that a wrong one must **fail** a check, not go quiet.
 * `clock_total` vs `(sim_ms_end − race_start)/10 + 1000`.
 
 **Against the engine, every fork server**: `ForkServer::boundary_tick` runs the
-page-fault probe and requires `probe + 1` to equal the tape tick that the
-reported `sim_ms`/`race_start` name. The two are measured from opposite sides —
-one is where the engine says it is, the other is which record it faults on — so
-agreement is a real check and a disagreement is a hard error, never a number to
-choose between. `tmsearch` and `fk` both go through it.
+page-fault probe and requires it to equal the record that the reported
+`sim_ms`/`race_start` say the engine reads next. The two are measured from
+opposite sides — one is where the engine says it is, the other is which record
+it actually faults on — so agreement is a real check and a disagreement is a
+hard error, never a number to choose between. `tmsearch` and `fk` both go
+through it.
+
+**Every read of engine memory, on demand**: `fk tickhook reads` stops a server
+and compares all five against the engine (§4.1).
 
 **Negative controls, run:**
 
@@ -197,8 +228,39 @@ choose between. `tmsearch` and `fk` both go through it.
 | a host with no server text (`/bin/true`, `/usr/bin/time`) | exit 92, "signature offsets are not inside the main module's text" |
 | `FKSHIM_TICK_FN_OFF` without `FKSHIM_TICK_UNSAFE=1` | exit 92, refused |
 | an override target whose prologue is not relocatable | exit 92, refused |
-| `FKSHIM_CLOCK=bogus` | exit 92 |
-| `probe + 1` ≠ the engine's tick | hard error naming both numbers |
+| a handshake with no tick clock, or a race start of 0 | the driver refuses the server |
+| the probe ≠ the engine's own tick | hard error naming both numbers |
+| a write BELOW a node's boundary (savestate tree) | refused; a write AT it is accepted **and changes the verdict** |
+
+### 4.1 Every read of engine memory, and what it is checked against
+
+The oracle reads five things out of a running server. Until `fk tickhook reads`
+existed, two of them had ever been checked against the engine's own arithmetic
+— and **three of the five were wrong**.
+
+| # | read | checked against | verdict |
+|---|---|---|---|
+| 1 | the input array's base, and the record the engine reads next | the tick the hook reports, vs the page-fault probe — two independent measurements | **was wrong**: base 4 bytes into the record (`probe + 1`); fixed |
+| 2 | the record's fields at `+4/+8/+12` | the tape, tick by tick; and the engine-owned tail against its own writes | right; the tail's `+0x14` is **not** the constant the notes claimed |
+| 3 | the u32 the locators call "the race clock" | the race time the hook knows exactly | **was mislabelled**: it counts from the ROUND start (1200 ms), and its bias was FITTED (1000 in one run, 1020 in another). Now measured from the stopped parent: 1000 every time |
+| 4 | the car's position | the validator's own ownership chain — a different object, no shared evidence | right, and now quantified: the two are the same car exactly one tick apart |
+| 5 | `[sim+0x48]`, the simulation's own clock | `new_time − 10`, on every tick | right; 0 mismatches in every run |
+
+Read 3 is the one with teeth beyond tidiness. The label a trajectory sample
+carries is `counter − bias`, and a fitted bias is an assumption about which
+tick a child's first sample belongs to: measured, that assumption was two ticks
+out between two runs of one tape — which is exactly "the fork child's tick
+labelling shifts by a whole tick between workers", recorded as phantom defect
+3 and never explained. `layout::measured_clock_bias` reads the counter in the
+stopped parent, whose tick the hook knows, so the origin is arithmetic.
+
+Measured at three checkpoints on map 2 (`fk tickhook reads`, all PASS):
+
+| checkpoint | probe vs engine | counter − bias | blind car vs validator car |
+|---|---|---|---|
+| `tick:171` | 171 = 171 | 120 ms = race of the finished tick | 0.0175 m at 1.73 m/s = **1.01 ticks** |
+| `tick:1200` | 1200 = 1200 | 10410 ms | 0.8360 m at 83.58 m/s = **1.00 ticks** |
+| `tick:2313` | 2313 = 2313 | 21540 ms | 0.8523 m at 85.16 m/s = **1.00 ticks** |
 
 ---
 
@@ -226,13 +288,14 @@ same tape, plus an independent gdb count with no shim at all:
 reports the DNF row as a FAIL because it insists on a validated time; the tick
 criteria all pass.)
 
-**Determinism under load** (`fk tickhook load`, map 2 rank00001, `tick:171`):
+**Determinism under load** (`fk tickhook load`, map 2 rank00001, `tick:171`).
+The lroundf rows were taken on the same box before that clock was deleted:
 
 | clock | servers | distinct stops | probe |
 |---|---|---|---|
-| tick | 150 | 1 (`clock 1013`, probe 170) | 150/150 agree |
-| tick | 300 (×2 runs) | 1 (`clock 1013`, probe 170) | 300/300 agree, both runs — including the 1–3 servers whose race start was 2300 |
-| lroundf | 300 | **10** (probe 277…287) | n/a |
+| tick | 150 | 1 (`clock 1013`) | 150/150 agree |
+| tick | 300 (×3 runs) | 1 (`clock 1013`) | 300/300 agree, every run — including the 1–6 servers whose race start was 2300 |
+| lroundf | 300 | **10** (probe 277…289) | n/a |
 
 At a late checkpoint and on another map (150 servers each):
 
@@ -256,8 +319,10 @@ time: those nine servers are at a different `sim_ms` and the same tick.
 
 **700 / 700 identical, 0 mismatches**, oracle self-repeatability 0 disagreements
 throughout, identity resume exact everywhere. In every one of the 14 runs the
-calibration sweep left the boundary at the requested tick: `boundary tick N
-(probe N−1)`.
+calibration sweep left the boundary where the probe put it. (Those runs predate
+the record-alignment fix, so they read `boundary tick N (probe N−1)`; three of
+them were repeated after it -- 150/150 exact at ticks 171/1200/2380 -- and now
+read `boundary tick N (probe N)`.)
 
 **Cost.** 15 full validations of map 2 rank00001, median wall time: no shim
 **2.350 s**, lroundf shim **2.376 s**, tick shim **2.360 s**. Per candidate
@@ -267,7 +332,8 @@ runs are a hair cheaper only because their stop lands later (probe 2327 vs
 2313), i.e. they simulate fewer ticks. The hook itself is free.
 
 **The watchdog and the per-tick sampler.** `fk watch measure`, 60 candidates,
-same seed, both clocks resumed at the same boundary (278): identical verdicts —
+same seed, both clocks resumed at the same boundary (278), taken while both
+clocks still existed: identical verdicts —
 21 non-tripping candidates bit-identical armed vs unarmed, 0 disagreeing with
 the full validation, 0 perturbed by watching, the same 39 trips with the same
 per-predicate breakdown, the same false positive (`c0055`), the same progress
@@ -280,7 +346,7 @@ abort lands at most one tick earlier, which the score-safety invariant
 **A search, end to end.** `tmsearch --fork --forktick 171` on map 2, 24
 workers, 10 minutes, seed 42, phantom guard on, and the boundary-stress window
 that historically produced phantoms (`--lo 171 --window 60 --stride 400`), run
-once under each clock:
+once under each clock, while both still existed:
 
 | clock | evals | eval/s | banked | phantoms | best |
 |---|---|---|---|---|---|
@@ -300,10 +366,11 @@ cost is equal within noise (§ above).
 ## 6. `fk tickhook`
 
 ```
-fk tickhook check                     do the constants match this binary? (static, reads the ELF)
-fk tickhook count  --tape G --map M [--gdb]     hooked vs plain run, all the criteria
-fk tickhook load   --tape G --map M --at T --n N   N servers at once
-fk tickhook find   --tape G --map M [--back N --ahead N]   a new build
+fk tickhook check                              do the constants match this binary? (static, reads the ELF)
+fk tickhook count --tape G --map M [--gdb]     hooked vs plain run, all the criteria
+fk tickhook load  --tape G --map M --at T --n N   N servers at once
+fk tickhook reads --tape G --map M --at T      every read of engine memory, vs the engine
+fk tickhook find  --tape G --map M             a new build: which function is the tick?
 ```
 
 ## 7. A new server build
@@ -343,6 +410,7 @@ chain plus `0x1219f3b..0x1219f66`.
 * **The plain oracle still decides every banked number.** The guard is
   unchanged and still on by default.
 * **The page-fault probe is still run**, on every server, every time — as the
-  control on the hook rather than as the mechanism. It has now been demoted,
-  not deleted, and that is deliberate: two independent measurements that must
-  agree are worth more than either alone.
+  control on the hook rather than as the mechanism. It has been demoted, not
+  deleted, and that is deliberate: two independent measurements that must agree
+  are worth more than either alone. It is also how the four-byte base error was
+  caught, months after every downstream number had been checked.
