@@ -69,6 +69,9 @@ pub struct Merged {
     /// UNSCALED frame) — `tiny-library` re-emits them as stock tree items next
     /// to the block's item (a DecoLake shore carries hundreds of trees).
     pub veget: Vec<(String, Xform)>,
+    /// Light sources the source model carries (Solid2 `lights` +
+    /// `light_insts`), which the static item cannot reproduce.
+    pub lights: usize,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
@@ -366,6 +369,11 @@ impl Merged {
     /// by `iso` and scaled.
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
         let s2 = so.solid2().ok_or("static object without an inline CPlugSolid2Model")?;
+        // Light sources (Solid2 `lights`: external CPlugLight refs with an
+        // Iso4 each — Lamp.Mesh.Gbx carries ItemLampSpot.Light.Gbx) are not
+        // baked: the static item has no light. Counted so the library can
+        // keep the item as a stock light instead (Summer 09 is a night map).
+        self.lights += s2.lights.len() + s2.light_insts.len();
         if self.pre_light_gen.is_none() {
             self.pre_light_gen = s2.pre_light_gen.clone();
         }
