@@ -242,9 +242,14 @@ impl Grid {
         const MAX_SHARE: f32 = 0.25;
         let mut want: Vec<u16> = Vec::new();
         let mut dropped: Vec<String> = Vec::new();
-        for (m, _n) in &votes {
+        // …unless MOST anchors voted for it: a map whose scene has no decoration (the tiny campaign copies,
+        // 2026-09-07 — every road is one converter material) makes the track itself the majority of the
+        // surfaces. The Summer 2026 - 16 false positives were single-gate votes.
+        let n_votes: usize = votes.values().sum();
+        for (m, n) in &votes {
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
-            if share > MAX_SHARE {
+            let majority = *n >= 3 && *n * 2 >= n_votes;
+            if share > MAX_SHARE && !majority {
                 dropped.push(format!("{} ({:.0} % of the map)", self.mats[*m as usize], 100.0 * share));
             } else {
                 want.push(*m);

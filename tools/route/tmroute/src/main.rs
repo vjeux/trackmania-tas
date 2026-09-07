@@ -435,6 +435,7 @@ fn main() {
         "table" => cmd_table(rest),
         "table-r" => cmd_table_r(rest),
         "split" => cmd_split(rest),
+        "tiny-map" => cmd_tiny_map(rest),
         "human-batch" => cmd_human_batch(rest),
         other => die(&format!("unknown command {other}")),
     }
@@ -757,5 +758,48 @@ pub fn cmd_table_r(args: &[String]) {
 fn cmd_split(args: &[String]) {
     for u in args.iter().filter(|a| !a.starts_with("--")) {
         println!("{u}\t{}\t{}", metrics::fnv1a64(u) % 10, if metrics::fnv_held_out(u) { "HELD-OUT" } else { "train" });
+    }
+}
+
+/// `tmroute tiny-map --full gates.json --tiny gates.json [--order 1,2,0,3]`
+/// Gate-for-gate correspondence between a full-size map and its TINY copy (uniform scale 0.5 about a
+/// centre c; c is solved from the two spawns: c = 2·tiny_spawn − full_spawn), then every full gate group
+/// is mapped to the nearest tiny gate group. With --order (a full-size GROUP order, e.g. the human modal
+/// order) prints the same order in tiny group ids.
+fn cmd_tiny_map(args: &[String]) {
+    let full = io::read_gates(Path::new(&flag(args, "--full").unwrap_or_else(|| die("--full gates.json")))).unwrap_or_else(|e| die(&e));
+    let tiny = io::read_gates(Path::new(&flag(args, "--tiny").unwrap_or_else(|| die("--tiny gates.json")))).unwrap_or_else(|e| die(&e));
+    let fs = full.spawn.pos;
+    let ts = tiny.spawn.pos;
+    let c = [2.0 * ts[0] - fs[0], 2.0 * ts[1] - fs[1], 2.0 * ts[2] - fs[2]];
+    let to_tiny = |p: [f32; 3]| [c[0] + 0.5 * (p[0] - c[0]), c[1] + 0.5 * (p[1] - c[1]), c[2] + 0.5 * (p[2] - c[2])];
+    // group centres
+    let centres = |g: &tmroute::gates::GatesFile| -> BTreeMap<u32, [f32; 3]> {
+        let mut acc: BTreeMap<u32, (usize, [f32; 3])> = BTreeMap::new();
+        for r in &g.gates {
+            if r.kind == tmroute::gates::WpKind::Start { continue; }
+            let e = acc.entry(r.group).or_insert((0, [0.0; 3]));
+            e.0 += 1;
+            for a in 0..3 { e.1[a] += r.centre[a]; }
+        }
+        acc.into_iter().map(|(k, (n, s))| (k, [s[0] / n as f32, s[1] / n as f32, s[2] / n as f32])).collect()
+    };
+    let fc = centres(&full);
+    let tc = centres(&tiny);
+    println!("scale centre c = ({:.1}, {:.1}, {:.1}); full groups {}, tiny groups {}", c[0], c[1], c[2], fc.len(), tc.len());
+    let mut m: BTreeMap<u32, (u32, f32)> = BTreeMap::new();
+    for (fg, fp) in &fc {
+        let p = to_tiny(*fp);
+        let (best, d) = tc.iter().map(|(tg, tp)| (*tg, ((tp[0] - p[0]).powi(2) + (tp[2] - p[2]).powi(2)).sqrt())).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+        m.insert(*fg, (best, d));
+        println!("  full group {fg:>2} → tiny group {best:>2}  (XZ residual {d:.1} m)");
+    }
+    let worst = m.values().map(|v| v.1).fold(0.0f32, f32::max);
+    let distinct: std::collections::BTreeSet<u32> = m.values().map(|v| v.0).collect();
+    println!("mapping {}: worst residual {worst:.1} m, {} of {} tiny groups hit", if distinct.len() == fc.len() && worst < 20.0 { "OK" } else { "AMBIGUOUS" }, distinct.len(), tc.len());
+    if let Some(o) = flag(args, "--order") {
+        let order: Vec<u32> = o.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let mapped: Vec<String> = order.iter().map(|g| m.get(g).map_or("?".to_string(), |v| v.0.to_string())).collect();
+        println!("tiny order: {}", mapped.join(","));
     }
 }
