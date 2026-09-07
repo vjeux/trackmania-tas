@@ -824,13 +824,19 @@ pub fn cmd(args: &[String]) {
         // A parked start block would still be THE start (the car spawned in the
         // map corner), and parked checkpoints would still count: every waypoint
         // block becomes a plain road piece, and the race runs on the items.
-        let neutral = source
-            .blocks
-            .iter()
-            .map(|b| b.name.as_str())
-            .find(|n| *n == "RoadTechStraight")
-            .unwrap_or_else(|| source.blocks[0].name.as_str())
-            .to_string();
+        // TINY_PARK_NEUTRAL=NAME picks the stand-in (the profile of 2026-09-07:
+        // Summer 05 has no RoadTechStraight, so its 6 629 parked records all
+        // became RoadDirtCheckpoint — a lit checkpoint arch — and the
+        // lightmapper spent 5.5 minutes on that one cell).
+        let neutral = std::env::var("TINY_PARK_NEUTRAL").ok().unwrap_or_else(|| {
+            source
+                .blocks
+                .iter()
+                .map(|b| b.name.as_str())
+                .find(|n| *n == "RoadTechStraight")
+                .unwrap_or_else(|| source.blocks[0].name.as_str())
+                .to_string()
+        });
         let mut neutralised = 0;
         for i in 0..m.blocks.len() {
             let b = m.blocks[i].clone();
