@@ -24,6 +24,7 @@ mod play;
 mod png;
 mod probe;
 mod publish;
+mod replaypull;
 mod startcheck;
 mod shoot;
 mod upload;
@@ -54,6 +55,14 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                [--drive-ms MS [--drive-at-ms 13500]]
         the map in PLAY mode on the box (shootctl playshots): N timed frames from
         the playground opening — the MediaTracker intro — as one stacked sheet
+  tinyctl startcheck --map MAP [--tag T] [--tolerance 12] [--outdir D]
+        where does the CLIENT put the car? opens the playground, reads the car at
+        rest, PASS/FAIL against the map's Spawn placement (no vehicle = loud FAIL)
+  tinyctl replay-pull [--map MAP] [--tag T] [--drive-ms MS] [--wait-only] [--wait 900] [--out DIR]
+        a REAL client recording: parks the box's autosaved replays, opens the map
+        in play mode (or waits while somebody drives it), then pulls the new
+        `…_PersonalBest_TimeAttack.Replay.Gbx` with its md5 verified. Only a
+        FINISHED run autosaves; a map needing steering wants --wait-only or a tape
   tinyctl camcheck --orig cam-O.tsv --tiny cam-T.tsv --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] [--trigger lo:hi]
         two --camlog-ms logs aligned on the intro's first camera cut: the tiny camera
         vs the original's through the transform, per 250 ms; the in-game trigger jump
@@ -101,6 +110,7 @@ fn main() {
         "compare" => compare::cmd(rest),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
+        "replay-pull" => replaypull::cmd(rest),
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
