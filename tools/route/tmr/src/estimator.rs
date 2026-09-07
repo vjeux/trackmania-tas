@@ -273,7 +273,11 @@ impl<'a> Chained<'a> {
         let mut frontier = vec![start];
         let mut paths: Vec<Vec<[f32; 3]>> = vec![vec![from_pos]];
         let mut best: Option<(f32, ChainState, Vec<[f32; 3]>)> = None;
-        for _step in 0..self.max_steps {
+        // step budget scales with the leg: a 10-step cap cannot cross a long leg when the head keeps the steps
+        // short (GEOM's 14 "p = 0 on every tour" maps, 23:33Z). ~1 step per 40 m of chord + 5, between max_steps and 40.
+        let chord_m = ((goal[0] - from_pos[0]).powi(2) + (goal[2] - from_pos[2]).powi(2)).sqrt();
+        let steps = self.max_steps.max((chord_m / 40.0) as usize + 5).min(40);
+        for _step in 0..steps {
             let mut next: Vec<(f32, ChainState, Vec<[f32; 3]>)> = Vec::new();
             for (s, path) in frontier.iter().zip(&paths) {
                 let to_goal = [goal[0] - s.pos[0], goal[2] - s.pos[2]];
@@ -390,18 +394,30 @@ impl<'a> Chained<'a> {
     /// (spawn edges first, then by from/to/bucket) so a budget cut drops the same edges every run.
     pub fn precompute(&self, threads: usize, budget: std::time::Duration) -> (usize, usize, f64) {
         let n = self.nodes.pos.len();
-        let mut jobs: Vec<(u8, usize, usize)> = Vec::new();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
         for from in 0..n {
             for to in 1..n {
-                if from == to {
-                    continue;
+                if from != to {
+                    edges.push((from, to));
                 }
-                for b in 0..5u8 {
-                    if from == 0 && b != 0 {
-                        continue; // the spawn is left from rest only
-                    }
-                    jobs.push((b, from, to));
+            }
+        }
+        self.precompute_only(threads, budget, &edges)
+    }
+
+    /// Price all 5 arrival buckets for just these (from, to) edges — the hybrid's R-priced set (graph-missing,
+    /// detour and override-candidate legs, 10–25 % of the edges on a 30-group map; GEOM 23:33Z).
+    pub fn precompute_only(&self, threads: usize, budget: std::time::Duration, edges: &[(usize, usize)]) -> (usize, usize, f64) {
+        let mut jobs: Vec<(u8, usize, usize)> = Vec::new();
+        for &(from, to) in edges {
+            if from == to || to == 0 {
+                continue;
+            }
+            for b in 0..5u8 {
+                if from == 0 && b != 0 {
+                    continue; // the spawn is left from rest only
                 }
+                jobs.push((b, from, to));
             }
         }
         let total = jobs.len();
