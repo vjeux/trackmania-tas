@@ -88,7 +88,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // 1. the clock bias and the state's offset from the input array, from a
     //    checkpoint far enough in that the probe is exact and the car is moving
     let bt = biastick.min((f.steer.len() as i64) / 3).max(60);
-    let noanchor = args.iter().any(|a| a == "--noanchor");
+    let mut noanchor = args.iter().any(|a| a == "--noanchor");
     // Anchor checkpoints to try, in order. One fixed tick is not enough: a
     // trial map is barely moving at tick 200, a short map has no tick 200 at
     // all, and the locate needs a MOVING car (its whole discriminator is
@@ -124,16 +124,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // difference between the two contexts, not a layout guess. Whoever picks
     // this up should start there: dump the 40 bytes at pos-16 in BOTH
     // processes and diff them, rather than trying more quat_kind values.
-    // THE VALIDATOR ANCHOR FIRST. Resolved inside the clean process from the
-    // validator's ownership chain (`record.rs`: chain "validator"), it needs
-    // no per-map pointer chain and survives the tick hook, which left every
-    // chain below reading null. The chains remain as fallbacks.
-    if !noanchor && std::env::var("FK_NO_VALIDATOR_ANCHOR").is_err() {
-        let mut a = crate::record::Anchors::from_chain(0, 0, "validator");
-        a.quat_off = -16;
-        a.quat_kind = 0;
-        a.vel_off = 12;
-        anchors.push(a);
+    // THE DERIVED CAR FIRST (LOCATE.md): `run_clean` with no anchor derives the
+    // car in the clean process itself (`forkoracle::car`), no per-map chain, no
+    // sweep. The pointer chains below stay as fallbacks only when asked for
+    // (`FK_CHAIN_ANCHORS=1`); by default the derived path runs alone.
+    if std::env::var("FK_CHAIN_ANCHORS").is_err() {
+        noanchor = true;
     }
     if !noanchor && std::env::var("FK_ANCHOR_SERVER").is_err() {
         let mut chains: Vec<String> = crate::ptr::chain_cache_get(&c.server, &c.map);
@@ -434,10 +430,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // stationary car, but when the tape is already moving at the handover it
     // needs no cross-process assumption at all.
     if o.is_none() {
-        println!("falling back to an in-process locate");
+        println!("deriving the car in the clean process (LOCATE.md)");
         let g = crate::record::GatherOpts {
             segs_rel: &segs_rel,
-            bias_override: if bias == 0 { None } else { Some(bias) },
+            // the derived car carries its own bias (race start); a cached one
+            // from another process must not override it
+            bias_override: None,
             anchors: None,
             period,
             phase_ms: phase,
@@ -451,7 +449,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // the memory-search fallback below is the last resort -- an
                 // exit at this point killed the run before it could run.
                 match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                    Ok(_) => o = Some(v),
+                    Ok(_) => {
+                        // THE LABEL IS DERIVED WITH THE CAR: the clock word is
+                        // the tick loop's own and its bias is the race start
+                        // the engine set in this process (LOCATE.md §3). It
+                        // is the only bias this process can have.
+                        bias = v.bias;
+                        println!("bias {} (derived: the engine's race start, this process)", bias);
+                        o = Some(v)
+                    }
                     Err(e) => println!("in-process locate: REJECTED -- {}", e),
                 }
             }
@@ -498,10 +504,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // and the cached/scanned bias (the vis convention, one tick earlier) must
     // not override it. INPUT measured the mix-up as regen samples stamped 10 ms
     // (Summer 2026 - 02 templates) and 20 ms (Summer 2026 - 01) late.
-    let phys_anchor = used_anchor.as_ref().map(|a| a.chain == "validator").unwrap_or(false);
+    let phys_anchor = used_anchor.is_none();
     if phys_anchor {
         bias = o.bias;
-        println!("label bias {} (the validator car's own, physics convention: row race T = physics at T)", bias);
+        println!("label bias {} (the derived car's own: clock sim+0x48, bias = race start)", bias);
     }
     println!(
         "clean run: {} instants ({} .. {} ms), probe at race {} ms, validator Time {:?}",

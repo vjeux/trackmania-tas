@@ -100,7 +100,6 @@ fn main() {
         Some("cpfind") => cpfind_cmd(&a),
         Some("start-sanity") => start_sanity(&a),
         Some("threeway") => threeway(&a),
-        Some("clock-probe") => clock_probe(&a),
         Some("sample-diff") => sample_diff(&a),
         Some("transplant") => transplant(&a),
         Some("packet-show") => packet_show(&a),
@@ -2253,18 +2252,21 @@ fn probe_scan(a: &[String]) {
             let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)
                 .unwrap_or_else(|e| die(e));
             if has(a, "--slots") {
-                let prov = car.provenance();
+                let pid = s.srv.pid();
+                let word = |addr: u64| forkoracle::procmem::read_at(pid, addr, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap())).unwrap_or(0);
                 println!(
-                    "  slots at stop {c}: chosen {} vis {:#x}; {:?}",
-                    prov.car,
-                    prov.vis,
-                    fk::validator::slot_flags(s.srv.pid(), prov.participant).iter().map(|(k, p, f)| format!("slot {k} phy {p:#x} +0x10={f:#x}")).collect::<Vec<_>>()
+                    "  slots at stop {c}: driven slot {} phy {:#x} vis {:#x} body {:?}; {:?}",
+                    car.slot,
+                    car.phy,
+                    car.vis(),
+                    car.body.map(|b| b.handle),
+                    car.vehicles.iter().enumerate().map(|(k, p)| format!("slot {k} phy {p:#x} +0x10={:#x} +0x128c={:#x} +0x1c90={}", word(*p + 0x10), word(*p + 0x128c), word(*p + 0x1c90))).collect::<Vec<_>>()
                 );
             }
-            let bias = car.layout().clock_bias;
+            let bias = control::env_layout(&car).clock_bias;
             let dir = work.join("traces");
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
-            let cfg = branch::TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4000 };
+            let cfg = branch::TraceCfg { layout: control::env_layout(&car), dir, stride: 1, max: 4000 };
             let fk::session::Session { srv, .. } = s;
             let mut f = branch::Forest::new(srv, &work, recs, Some(cfg)).unwrap_or_else(|e| die(e));
             f.probe_root().unwrap_or_else(|e| die(e));
@@ -3566,49 +3568,6 @@ fn sample_diff(a: &[String]) {
     }
 }
 
-/// THE TWO CLOCK WORDS, side by side: the located race counter and `sim+0x48`,
-/// read in the stopped parent and then sampled in a child for a few ticks --
-/// to learn whether the two advance in lockstep at the sampler's instant, i.e.
-/// whether one bias transfers to the other.
-fn clock_probe(a: &[String]) {
-    let p = paths(a);
-    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
-    let rig = Rig::new(&p.server, &p.map, &p.shim, &p.work, &p.reference).unwrap_or_else(|e| die(e));
-    let mut s = rig.session_root().unwrap_or_else(|e| die(e));
-    let probe = s.probe_tick().unwrap_or_else(|e| die(e));
-    let recs = s.tape.tail_records(probe);
-    let hit = fk::locate::find_clock2(&mut s.srv, probe, &recs, s.tape.start_offset_ms, 40_000, false).unwrap_or_else(|e| die(e));
-    let car = tmenv::control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false).unwrap_or_else(|e| die(e));
-    let sim_addr = car.provenance().sim + fk::validator::SIM_TIME_OFF;
-    let rd = |pid: i32, a: u64| forkoracle::procmem::read_at(pid, a, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap())).unwrap_or(0);
-    let pid = s.srv.pid();
-    println!(
-        "parent at the root stop: handshake sim_ms {} race_start {} -> race {}; located counter {:#x} = {} (vis bias {}, physics bias {}); sim+0x48 = {}",
-        s.srv.sim_ms,
-        s.srv.race_start,
-        s.srv.sim_ms as i64 - s.srv.race_start as i64,
-        hit.addr,
-        rd(pid, hit.addr),
-        hit.bias,
-        forkoracle::layout::physics_bias(hit.bias),
-        rd(pid, sim_addr)
-    );
-    let segs = vec![(hit.addr, 4u32), (sim_addr, 4u32), (car.layout().pos, 12u32)];
-    let rows = fk::locate::gather_ticks(&mut s.srv, probe, &recs, &segs, 6, 1000, (0, 8));
-    for r in rows.iter().take(6) {
-        let c = u32::from_le_bytes(r.rec[0..4].try_into().unwrap()) as i64;
-        let sm = u32::from_le_bytes(r.rec[4..8].try_into().unwrap()) as i64;
-        let z = f32::from_le_bytes(r.rec[16..20].try_into().unwrap());
-        println!(
-            "  child row: counter {} (label phys {}), sim+0x48 {} (sim - counter = {}), z {:.4}",
-            c,
-            c - forkoracle::layout::physics_bias(hit.bias),
-            sm,
-            sm - c,
-            z
-        );
-    }
-}
 
 /// THE THREE-WAY TICK CHECK: env rows (open-loop --dump-trace TSV), fk regen
 /// --dump-truth rows (CSV), and the ghost's own telemetry samples, pairwise at

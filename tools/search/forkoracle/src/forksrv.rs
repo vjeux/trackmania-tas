@@ -668,6 +668,21 @@ impl ForkServer {
         self.run_sampled_segs(from, recs, &[(addr, len)], stride, max, key)
     }
 
+    /// Tell the shim which address holds this race's finish time, so children
+    /// can stop the moment the engine records one. See `crate::finish`.
+    /// `last_tape_clock` is the clock of the tape's final record -- past it the
+    /// engine simulates on whatever the input array holds, so nothing after it
+    /// is this tape's result. It is arithmetic, not a measurement: see
+    /// `crate::finish`.
+    pub fn set_finish_word(&mut self, addr: u64, last_tape_clock: u64, cp: u64) -> String {
+        let mut p = Vec::with_capacity(25);
+        p.push(b'Y');
+        p.extend_from_slice(&addr.to_le_bytes());
+        p.extend_from_slice(&last_tape_clock.to_le_bytes());
+        p.extend_from_slice(&cp.to_le_bytes());
+        self.arm(&p)
+    }
+
     /// Arm the watchdog: predicates, the reference line and the memory
     /// segments to watch, sent ONCE. Every later fork inherits them.
     pub fn arm(&mut self, payload: &[u8]) -> String {
@@ -1022,6 +1037,72 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // THE CHECKPOINT COUNT COMES FROM THE ENGINE, NOT FROM THE `Desc` LINE.
+    //
+    // `Desc` is a lossy print. For a mutated candidate it is almost always
+    // "wrong simu" -- the ghost file's declared result no longer matches what
+    // was simulated -- which this used to map to 0 checkpoints, and the plain
+    // oracle cannot see a lone checkpoint at all (it reports k>=2 only; the
+    // route project measured 1163 of 2453 tapes in that class). So a `Desc`
+    // count is a LOWER BOUND on what the car did.
+    //
+    // The engine counts them itself at `participant+0xc70`, the shim publishes
+    // that every tick, and the child's last value arrives as `FKCPS`. It is the
+    // quantity rather than a rendering of it, it is present however the child
+    // ended, and it is what every path here reports -- a run must never mix two
+    // definitions of the same number.
+    //
+    // A DNF cps recorded before this change is a lower bound: do not compare
+    // one naively with a new one (see SEARCH.md).
+    // A FINISH AFTER THE TAPE'S LAST RECORD IS FLAGGED, NOT SUPPRESSED.
+    //
+    // Past the end the engine simulates on whatever follows the input array, so
+    // such a time was not produced by this tape alone -- and the perf arm
+    // measured the plain oracle giving one such tape a BATCH-DEPENDENT verdict
+    // (DNF alone, 26.839 in a batch of 520).
+    //
+    // But it is the same time the JSON reports and the same time a full
+    // validation reports: past the array both read zero-filled pages, and only
+    // a reused dirty allocation differs. Returning a DNF instead cost 19 of 50
+    // candidates at map 2 `tick:2380`, all of which the full validation scored
+    // as finishes with the same millisecond -- and the class is not rare, since
+    // the tape ends at the reference's finish and every slower candidate is in
+    // it. So `FKPASTEND` rides in the output for whoever is deciding what to
+    // BANK, and the verdict here stays the engine's.
+    //
+    // `text.contains("FKPASTEND")` is the test for that consumer.
+
+    let engine_cps = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("FKCPS ")
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok())
+    });
+    // A child that ran out of tape without finishing already knows its whole
+    // answer: it did not finish, and it passed this many checkpoints.
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKDNF cps ") {
+            if let Some(v) = rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+                return (None, Some(engine_cps.unwrap_or(v)));
+            }
+        }
+    }
+    // THE CHILD MAY HAVE ANSWERED ALREADY. When the shim exits a child at the
+    // finish (`FKSHIM_EXIT_AT_FINISH`), the validator never runs its print path,
+    // so there is no `ValidatedResult` to read -- the answer arrives on its own
+    // line instead, in the same race ms the JSON would have carried. It is not
+    // an estimate: it is the engine's own result word, sub-tick interpolation
+    // included (`tickhook_sig`).
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKFINISH race_ms ") {
+            if let Some(ms) = rest.split_whitespace().next().and_then(|s| s.parse::<i64>().ok())
+            {
+                if (0..=BAD_TIME_MS).contains(&ms) {
+                    return (Some(ms), None);
+                }
+            }
+        }
+    }
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with("\"ValidatedResult\"") {
@@ -1033,10 +1114,21 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
                 .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok())
                 .filter(|&ms| (0..=BAD_TIME_MS).contains(&ms));
             in_validated = false;
-        } else if t.starts_with("\"Desc\"") {
+        }
+    }
+    // The engine's count wins wherever it is present; the `Desc` fallback below
+    // exists only for a server with no shim (the plain oracle's own path).
+    if engine_cps.is_some() {
+        return (time, engine_cps);
+    }
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("\"Desc\"") {
             if let Some(p) = t.find("reached some checkpoints (") {
-                let rest = &t[p + "reached some checkpoints (".len()..];
-                cps = rest.split(' ').next().and_then(|s| s.trim().parse().ok());
+                cps = t[p + "reached some checkpoints (".len()..]
+                    .split(' ')
+                    .next()
+                    .and_then(|s| s.trim().parse().ok());
             } else if t.contains("wrong simu") {
                 cps = Some(0);
             }

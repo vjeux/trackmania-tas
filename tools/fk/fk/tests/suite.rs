@@ -1035,31 +1035,49 @@ fn the_scanner_finds_a_pointer_this_test_planted() {
     let taddr = &*target as *const _ as u64;
     let holder: Box<u64> = Box::new(taddr);
     let haddr = &*holder as *const u64 as u64;
-    // RETRIED, and the reason is the point of the tool. `Snapshot::take` reads
-    // /proc/<pid>/maps and then /proc/<pid>/mem, which is only atomic if the
-    // process is STOPPED -- which is how `fk ptr` uses it, at the shim's
-    // handover. A test that snapshots ITSELF is racing its own allocator and
-    // the test harness's other threads: a mapping that shrinks between the two
-    // reads is skipped, and once in a while that is the mapping the needle is
-    // in. Observed once, under 24 parallel engine runs. Three attempts, and a
-    // failure means the scan is broken rather than unlucky.
-    let mut found = None;
-    for _ in 0..3 {
-        let snap = fk::ptr::Snapshot::take(std::process::id() as i32)
-            .expect("a process can snapshot itself");
-        assert!(snap.bytes > 0, "the snapshot is empty");
-        if snap
-            .find_pointers(&[(taddr, taddr + 1)])
-            .iter()
-            .any(|(slot, v)| *slot == haddr && *v == taddr)
-        {
-            found = Some(snap);
-            break;
+    // SNAPSHOT A STOPPED CHILD, which is how `fk ptr` uses this and the only
+    // way the read is atomic.
+    //
+    // This test used to snapshot ITSELF and retry three times, and it failed
+    // perhaps one run in ten under `cargo test`: `Snapshot::take` reads
+    // /proc/<pid>/maps and then /proc/<pid>/mem, and a self-snapshot races its
+    // own allocator and every other test thread -- a mapping that shrinks
+    // between the two reads is skipped, and sometimes that is the mapping the
+    // needle is in. Retrying a race is not a fix; removing it is. A forked
+    // child inherits this address space, so the planted pointer is at the same
+    // address in it, and a child sitting in SIGSTOP cannot move anything.
+    extern "C" {
+        fn fork() -> i32;
+        fn raise(sig: i32) -> i32;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        fn _exit(code: i32) -> !;
+    }
+    let pid = unsafe { fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        // async-signal-safe only: stop, and if we are ever continued, leave
+        unsafe {
+            raise(19 /* SIGSTOP */);
+            _exit(0)
         }
     }
-    let snap = found.unwrap_or_else(|| {
-        panic!("three scans all missed the slot at {:#x} holding {:#x}", haddr, taddr)
-    });
+    let mut st = 0i32;
+    unsafe { waitpid(pid, &mut st, 2 /* WUNTRACED */) };
+    let snap = fk::ptr::Snapshot::take(pid).expect("a stopped child can be snapshotted");
+    unsafe {
+        kill(pid, 9);
+        waitpid(pid, &mut st, 0);
+    }
+    assert!(snap.bytes > 0, "the snapshot is empty");
+    assert!(
+        snap.find_pointers(&[(taddr, taddr + 1)])
+            .iter()
+            .any(|(slot, v)| *slot == haddr && *v == taddr),
+        "the scan missed the slot at {:#x} holding {:#x}",
+        haddr,
+        taddr
+    );
     // And the range form, which is how a caller asks "what points INTO this
     // struct": a pointer to the first byte is inside the range.
     let range = snap.find_pointers(&[(taddr, taddr + 864)]);

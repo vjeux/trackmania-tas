@@ -517,6 +517,16 @@ impl Forest {
     /// The process a node is paused in -- the root's fork server for `ROOT`,
     /// else the branch child -- for a caller that reads engine memory beside
     /// the sampler (e.g. the participant's LIVE vehicle slot across a switch).
+    /// The engine clock the node stopped at: (`sim_ms`, `race_start`) from its
+    /// hello -- what `forkoracle::car::resolve_with` needs to re-derive the car
+    /// in that process.
+    pub fn clock_of(&self, h: Handle) -> Result<(u64, u64), String> {
+        match h {
+            ROOT => Ok((self.root.sim_ms, self.root.race_start)),
+            _ => self.held(h).map(|n| (n.node.sim_ms, n.node.race_start)),
+        }
+    }
+
     pub fn pid_of(&self, h: Handle) -> Result<i32, String> {
         if h == ROOT {
             return Ok(self.root.pid());

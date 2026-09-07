@@ -31,7 +31,7 @@
 use crate::forkenv::Rig;
 use branch::{Forest, TraceCfg, ROOT};
 
-use fk::validator::ValidatorCar;
+use forkoracle::car::Car;
 use forkoracle::layout::Row;
 use std::path::Path;
 
@@ -212,20 +212,46 @@ pub struct SpawnFix {
 /// and quaternion are perfectly self-consistent, moving at 3.8 m/s while the car
 /// does 40"*. Self-consistency cannot tell them apart; it was never meant to.
 ///
-/// [`ValidatorCar`] instead walks `validator controller → simulation →
-/// playground → sole participant → CGameVehiclePhy → state`, every hop an exact
-/// pointer read, with the class id and the player count checked. There is no
-/// scan and no fallback, and its inner `Layout` is private so a caller cannot
-/// substitute a state-shaped address.
+/// [`forkoracle::car::locate`] (LOCATE.md) instead DERIVES the car: `validator
+/// controller → simulation → playground → participant → the driven
+/// CGameVehiclePhy → its dyna body record`, every hop an exact pointer read the
+/// engine itself takes, cross-checked (the phy is one the vehicle manager
+/// iterates; the body record equals the copy-out bit for bit). Thirty reads of
+/// the stopped parent, ~130 µs, no scan, no fallback, no fitted bias.
 pub fn resolve_car(
     srv: &mut forkoracle::forksrv::ForkServer,
-    probe: usize,
-    recs: &[forkoracle::forksrv::Rec],
-    off: i32,
+    _probe: usize,
+    _recs: &[forkoracle::forksrv::Rec],
+    _off: i32,
     verbose: bool,
-) -> Result<ValidatorCar, String> {
-    let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-    ValidatorCar::locate(srv, probe, recs, off, wide, 40_000, verbose)
+) -> Result<Car, String> {
+    let car = forkoracle::car::locate(srv)?;
+    if verbose {
+        println!("car: {car}");
+    }
+    Ok(car)
+}
+
+/// THE LABEL SHIFT between the derivation's clock convention and the game's.
+///
+/// `Car::layout()` labels a row `[sim+0x48] − race_start`: the simulation time
+/// the tick loop stamped on the FINISHED tick whose state memory holds. The
+/// game stamps the same state -- in its telemetry samples, its tape record
+/// times and its finish times -- and the env's rows are labelled the GAME's
+/// way, so that DATA's telemetry-derived labels, LEARN's tape indexing and the
+/// env agree on the tick with no lag constant anywhere. The shift between the
+/// two is MEASURED by `tmenv threeway` (env row T vs the ghost's own telemetry
+/// sample T vs fk regen's dump-truth row T, at Δt = 0 and ±10 ms) and written
+/// here; the control is the guard, not this constant.
+pub const GAME_LABEL_SHIFT_MS: i64 = 0;
+
+/// The layout the env gathers with: the derived car's, plus the engine's
+/// checkpoint counter and the driven vehicle's vis state, labelled the game's
+/// way (`GAME_LABEL_SHIFT_MS`).
+pub fn env_layout(car: &Car) -> forkoracle::layout::Layout {
+    let mut l = car.layout_with_engine();
+    l.clock_bias -= GAME_LABEL_SHIFT_MS;
+    l
 }
 
 /// Re-simulate a written tape in ONE piece and read its trajectory out.
@@ -248,7 +274,7 @@ pub fn flat_trace(
     let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+    let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 400_000 };
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, reference, Some(cfg))?;
     f.probe_root()?;
@@ -283,7 +309,7 @@ pub fn measure_spawn(
     let car = resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)?;
     let dir = work.join("spawn-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4_000 };
+    let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 4_000 };
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, recs, Some(cfg))?;
     f.probe_root()?;
@@ -335,7 +361,7 @@ pub fn flat_trace_or_end(
     let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+    let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 400_000 };
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, reference, Some(cfg))?;
     f.probe_root()?;
@@ -369,7 +395,7 @@ pub fn gather_vis(
     let probe = s.probe_tick()?;
     let reference = s.tape.tail_records(0);
     let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
-    let l = car.layout().clone();
+    let l = env_layout(&car);
     if l.vis == 0 {
         return Err("the validator car resolved without a vis state".into());
     }

@@ -19,9 +19,12 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk tree cost       what a savestate-tree branch costs, against every baseline  [Q1]
   fk tree exact      forward-only fork exactness, with both controls and a depth sweep
   fk tree scale      branch-evals per second with many servers side by side
-  fk tree tape       rewrite a container tape with a varied steer channel, so the shim
-                     can find the engine's input array at all
-  fk liveness        is this anchor the copy of the car that has the fields?
+  fk locate          the car, DERIVED: every pointer hop, the record, the clock; timed
+  fk locate census   every copy of the car in memory, by object and by phase
+  fk locate check    body == copy-out bit for bit, every tick of a run  [THE CONTROL]
+  fk locate mirror   hard left vs hard right: which object answers first
+  fk locate watch    under gdb: who writes each copy, and in what order
+  fk liveness        do the wheel fields of the car's vis state move?
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
@@ -100,6 +103,43 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                 _ => Err("fk server <probe|check|bench>".into()),
             }
         }
+        "locate" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let (sub, rest): (&str, &[String]) = match verb {
+                "census" | "check" | "mirror" | "watch" => (verb, &a[2..]),
+                _ => ("", &a[1..]),
+            };
+            match sub {
+                "" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::show(&engine, tape, at, num(rest, "--reps").unwrap_or(1000) as usize)
+                }
+                "census" => {
+                    let (engine, tape, at) = common(rest)?;
+                    let radius = flag(rest, "--radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+                    cmd::locate::census(&engine, tape, at, radius, num(rest, "--ticks").unwrap_or(64) as u32)
+                }
+                "check" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::check(&engine, tape, at, num(rest, "--ticks").map(|v| v as u32))
+                }
+                "mirror" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::mirror(
+                        &engine,
+                        tape,
+                        at,
+                        num(rest, "--hold").unwrap_or(5) as usize,
+                        num(rest, "--ticks").unwrap_or(24) as u32,
+                    )
+                }
+                "watch" => {
+                    let (engine, tape, _) = common(rest)?;
+                    cmd::locate::watch(&engine, tape, num(rest, "--arm").unwrap_or(400) as u32)
+                }
+                _ => unreachable!(),
+            }
+        }
         "liveness" => {
             let rest = &a[1..];
             let (engine, tape, at) = common(rest)?;
@@ -108,7 +148,6 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                 tape,
                 at,
                 cmd::liveness::LivenessOpts {
-                    reference: flag(rest, "--reference").map(|s| s.to_string()),
                     also: flag(rest, "--also")
                         .map(|s| s.split(',').map(|x| x.parse().expect("--also a,b,c")).collect())
                         .unwrap_or_default(),
@@ -133,20 +172,6 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         let v: Vec<f64> = s.split(',').map(|x| x.parse().expect("--affine a,b")).collect();
                         (v[0], v[1])
                     }),
-                },
-            )
-        }
-        "wheels" => {
-            let rest = &a[1..];
-            let (engine, tape, at) = common(rest)?;
-            cmd::wheels::run(
-                &engine,
-                tape,
-                at,
-                cmd::wheels::WheelsOpts {
-                    shifts: flag(rest, "--shifts").map(|s| s.split(',').map(|x| x.parse().expect("--shifts a,b,c")).collect()).unwrap_or_else(|| vec![-10, 0, 10]),
-                    bytes: rest.iter().any(|x| x == "--bytes"),
-                    out: flag(rest, "--out").map(|s| s.to_string()),
                 },
             )
         }
@@ -234,6 +259,25 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         },
                     )
                 }
+                "dnf" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::dnf(&engine, tape, at)
+                }
+                "finishcheck" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::finishcheck(
+                        &engine,
+                        tape,
+                        at,
+                        num(rest, "--n").unwrap_or(200) as usize,
+                        num(rest, "--seed").unwrap_or(1) as u64,
+                    )
+                }
+                "finishfind" => {
+                    let (engine, tape, at) = common(rest)?;
+                    let obj = flag(rest, "--object").unwrap_or("participant").to_string();
+                    cmd::tickhook::finishfind(&engine, tape, at, &obj)
+                }
                 "finish" => {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::finish(&engine, tape, at)
@@ -246,7 +290,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::reads(&engine, tape, at)
                 }
-                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish>".into()),
+                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish|finishfind|finishcheck|dnf>".into()),
             }
         }
         "tree" => {
@@ -300,13 +344,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         allow_load: has(rest, "--allow-load"),
                     },
                 ),
-                "tape" => cmd::tree::tape_vary(
-                    &tape,
-                    std::path::Path::new(flag(rest, "--out").ok_or("fk tree tape needs --out FILE.Ghost.Gbx")?),
-                    num(rest, "--seed").unwrap_or(1) as u64,
-                    num(rest, "--amp").unwrap_or(12) as i32,
-                ),
-                _ => Err("fk tree <cost|exact|scale|tape>".into()),
+                _ => Err("fk tree <cost|exact|scale>".into()),
             }
         }
         "watch" => cmd::watch::run(&a[1..]),

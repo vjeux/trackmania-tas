@@ -43,7 +43,7 @@
 //! the run is already lost, and finish time is unavailable for a tape that
 //! never finishes. The horizon is monotone in exactly the thing being bought.
 
-use crate::locate::{locate_v2, trajectory};
+use crate::locate::trajectory;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
@@ -176,42 +176,26 @@ fn horizon(rows: &[Row], r: &traj::Reference, lag: i64, tol: f64, onset: f64) ->
 
 pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), String> {
     let reference = traj::Reference::load(&o.reference)?;
-    let bounds = reference.bounds(400.0);
     let ntape = tape.n();
-    // THE LOCATE IS NOT DETERMINISTIC and it chooses between objects. On this
-    // engine it can settle on a slot whose "car" has a mean speed of 1.7 m/s
-    // while the real one is doing 39, and every internal test still passes.
-    // The reference is the answer key: the baseline tape is this recording's
-    // own tape, so the engine's run of it MUST sit on the recording. If it
-    // does not, the locate is wrong — throw the server away and try again
-    // rather than searching against a slot that is not the car.
-    let mut attempt = 0;
-    let (mut s, probe, layout, base_recs) = loop {
-        attempt += 1;
-        let mut s = Session::start(engine, tape.clone(), at)?;
-        let probe = s.probe_tick()?;
-        let base_recs = s.tape.tail_records(probe);
-        let layout = locate_v2(
-            &mut s.srv,
-            probe,
-            &base_recs,
-            s.tape.start_offset_ms,
-            bounds,
-            2000,
-            4000,
-            true,
-        )?;
-        // The locate control must be measured on a window where the tape is
-        // known to still be on the line. Judged over 238 ticks it reads
-        // 0.6123 m on the very subject of this command -- because that window
-        // contains the divergence being investigated -- and six good locates
-        // in a row get thrown away.
+    // THE CAR IS DERIVED (`forkoracle::car`, LOCATE.md), so there is nothing to
+    // retry -- the old locate chose between objects and could settle on a slot
+    // doing 1.7 m/s while the car did 39. The reference stays as the CONTROL:
+    // the baseline tape is this recording's own tape, so the engine's run of it
+    // must sit on the recording, and a miss is an error, not a retry.
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.probe_tick()?;
+    let base_recs = s.tape.tail_records(probe);
+    let car = forkoracle::car::locate(&s.srv)?;
+    println!("car: {}", car);
+    let layout = car.layout();
+    // The control is measured on a window where the tape is known to still be
+    // on the line (judged over 238 ticks it read 0.6123 m on the very subject
+    // of this command, because that window contains the divergence being
+    // investigated), and AT THE FITTED LAG: the engine's clock and the
+    // recording's differ by a whole number of ticks, and at 145 km/h one tick
+    // is 0.40 m.
+    {
         let rows = trajectory(&mut s.srv, probe, &base_recs, &layout, o.ctlticks as u32);
-        // The control has to be measured AT THE FITTED LAG. The engine's clock
-        // and the recording's differ by a whole number of ticks, and at
-        // 145 km/h one tick is 0.40 m: judged at lag 0, a perfect locate on a
-        // recording that replays to the millisecond reads 0.3964 m and gets
-        // thrown away, six times in a row.
         let lag0 = fit_lag(&rows, &reference, 500);
         let mut resid: Vec<f64> = rows
             .iter()
@@ -223,27 +207,22 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: Opts) -> Result<(), S
             .collect();
         resid.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = if resid.is_empty() { f64::MAX } else { resid[resid.len() / 2] };
-        let ok = med < 0.05;
         println!(
-            "attempt {}: probe tick {} (race {}), locate control: median {:.4} m over {} ticks at lag {:+}",
-            attempt,
+            "probe tick {} (race {}), locate control: median {:.4} m over {} ticks at lag {:+}",
             probe,
             crate::secs(s.tape.race_ms(probe)),
             med,
             resid.len(),
             lag0
         );
-        if ok {
-            break (s, probe, layout, base_recs);
+        if med >= 0.05 {
+            return Err(format!(
+                "the derived car is {:.4} m from the recording it is supposed to be driving -- \
+                 not the car, or not the tape",
+                med
+            ));
         }
-        s.srv.quit();
-        if attempt >= 6 {
-            return Err(
-                "six locates in a row failed the reference control; the car was never found"
-                    .into(),
-            );
-        }
-    };
+    }
     println!("tape {} ticks, reference {}", ntape, o.reference);
     let tape_race0 = s.tape.race_ms(probe);
 

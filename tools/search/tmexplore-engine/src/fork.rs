@@ -31,11 +31,11 @@
 //!   explorer only keeps the last `k`. That is this backend's cost, not the
 //!   engine's, and `Forest` removes it.
 
-use fk::validator::ValidatorCar;
-use forkoracle::blind::bounds_from;
+use forkoracle::car::Car;
+
 use forkoracle::forksrv::{parse_result, write_key, ForkServer, Rec};
 use forkoracle::inputs::Inputs;
-use forkoracle::layout::{decode_rows, segments, tail_recs, Row, REC_LEN};
+use forkoracle::layout::{decode_rows, segments, REC_LEN};
 use std::path::PathBuf;
 use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
@@ -72,7 +72,8 @@ pub struct ForkBranch {
     /// The server's own probed boundary + 1: the first tick this worker may
     /// write. The explorer's tick 0.
     pub from: usize,
-    car: ValidatorCar,
+    car: Car,
+    layout: forkoracle::layout::Layout,
     segs: Vec<(u64, u32)>,
     /// The reference tape, full length, as the container holds it.
     reference: Inputs,
@@ -152,47 +153,23 @@ impl ForkBranch {
         // Addresses are re-derived in THIS process, every time: the server is
         // PIE and its heap is bimodal, so consecutive runs give different
         // addresses. A failure is an abort, never a guess.
-        let lrecs = tail_recs(&reference.steer_u8(), &gas, &brake, from);
-        let rows: Vec<Row> = o
-            .route_points
-            .iter()
-            .map(|p| Row {
-                time_ms: 0,
-                x: p[0] as f64,
-                y: p[1] as f64,
-                z: p[2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-                vis: forkoracle::layout::Vis::UNKNOWN,
-                cps: u32::MAX,
-            })
-            .collect();
-        let bounds = bounds_from(&rows, 300.0);
-        // The race clock is located by its exact +10-per-tick signature. Car
-        // identity is not: it comes only from the validator-owned pointer chain.
-        let verbose = std::env::var("TMEX_VERBOSE_LOCATE").is_ok();
-        let car = ValidatorCar::locate(
-            &mut srv,
-            from,
-            &lrecs,
-            o.start_offset_ms,
-            bounds,
-            2000,
-            verbose,
-        )
-        .map_err(|e| format!("the validator-owned car did not resolve: {}", e))?;
-        let segs = segments(car.layout());
+        // The car is DERIVED (`forkoracle::car`, LOCATE.md): the copy-out of
+        // the dyna body the physics step integrates, in the driven
+        // CGameVehiclePhy, stamped by the tick loop's own clock. No search, no
+        // bounds, nothing chosen.
+        let car = forkoracle::car::locate(&srv)
+            .map_err(|e| format!("the car did not derive: {}", e))?;
+        if std::env::var("TMEX_VERBOSE_LOCATE").is_ok() {
+            println!("car: {}", car);
+        }
+        let layout = car.layout();
+        let segs = segments(&layout);
         let capacity = reference.len();
         Ok(ForkBranch {
             srv,
             from,
             car,
+            layout,
             segs,
             reference,
             capacity,
@@ -237,7 +214,7 @@ impl ForkBranch {
             budget,
         );
         self.sim_ticks += n as u64;
-        let (rows, _) = decode_rows(&blob, self.car.layout(), 0);
+        let (rows, _) = decode_rows(&blob, &self.layout, 0);
         let states: Vec<CarState> = rows
             .iter()
             .enumerate()
@@ -269,7 +246,7 @@ impl ForkBranch {
     pub fn reference(&self) -> &Inputs {
         &self.reference
     }
-    pub fn car(&self) -> &ValidatorCar {
+    pub fn car(&self) -> &Car {
         &self.car
     }
     pub fn record_len(&self) -> usize {

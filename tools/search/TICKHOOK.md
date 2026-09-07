@@ -364,6 +364,11 @@ once under each clock, while both still existed:
 | lroundf clock | 236 130 | 391 | 9 | **0** | 22.711 |
 | tick clock, after the read audit (`from = probe`, one tick earlier) | 274 590 | 456 | 9 | **0** | 22.711 |
 | final build (bias fix, calibration off the per-run path, 96-tick clock hunt) | 275 760 | 458 | 8 | **0** | 22.711 |
+| with the exit-at-finish lever live | 278 850 | 463 | 9 | **0** | 22.711 |
+| final build (live vehicle slot, DNF machinery present and off) | 276 120 | 459 | 7 | **0** | 22.713 |
+| engine CP count + past-end guard | 279 390 | 464 | 9 | **0** | 22.711 |
+| finish word armed with no calibration fork | **282 630** | **470** | 10 | **0** | 22.711 |
+| past-the-end guard fixed (arithmetic, flag not verdict) | 275 400 | 458 | 8 | **0** | 22.712 |
 
 The third row is the one that matters for the audit: the resume floor moved a
 tick earlier when the probe stopped reporting one record late, so every
@@ -390,7 +395,9 @@ fk tickhook count --tape G --map M [--gdb]     hooked vs plain run, all the crit
 fk tickhook load  --tape G --map M --at T --n N   N servers at once
 fk tickhook reads --tape G --map M --at T      every read of engine memory, vs the engine
 fk tickhook cost  --tape G --map M --at T      where a candidate's milliseconds go, measured in the child
-fk tickhook finish --tape G --map M --at T     hunt the race result in memory (past the finish)
+fk tickhook finish --tape G --map M --at T      hunt the race result in memory (--chain: backward pointer scan)
+fk tickhook finishfind --tape G --map M --at T  which word changes at the finish (--object result)
+fk tickhook finishcheck --tape G --map M --at T --n N   the fast finish vs the JSON, same child
 fk tickhook find  --tape G --map M             a new build: which function is the tick?
 ```
 
@@ -572,3 +579,479 @@ measured with.
   branch point: the pool-spec test named `DEFAULT_CHAIN` after the default
   had stopped being a pool; `POINTER.md` quoted the legacy chain as the
   default; two indented blocks in `record.rs` docs compiled as Rust. **38/38.**
+
+---
+
+## 10. Exit at the finish
+
+A candidate no longer waits for the validator to format its answer.
+
+### 10.1 What the 5.8 ms was
+
+§9.1 measured it and could not name it: 5.8 ms per candidate, constant, between
+the child's last simulated tick and its first byte of output, and only 0.26 ms
+of that is the 7 ticks the engine runs past the finish. The rest is the
+validator's finish-and-print path — run to deliver one integer.
+
+The printer is at `0x113b020` and reads a result struct whose fields fall
+straight out of the disassembly, each beside its own name string:
+
+| field | offset | how it is known |
+|---|---|---|
+| `IsValid` | +0x00 | `cmp DWORD PTR [rbx],0x1` / `sete` |
+| `Time` | +0x08 | `mov r8d,[rbx+0x8]` beside `"Time"` |
+| `Score` | +0x0c | `mov r8d,[rbx+0xc]` beside `"Score"` |
+| `NbRespawns` | +0x10 | `mov r8d,[rbx+0x10]` |
+| `NbCheckpoints` | +0x20 | `mov r8d,[rbx+0x20]` |
+
+That struct is **no use**: the engine builds it at print time, out of a vector
+it hangs at `+0x4870`, so reaching it means paying for the thing being skipped.
+
+### 10.2 Finding the word the engine writes AT the finish
+
+The value is in memory two ticks after the finish and long before anything is
+printed — 41 copies of it — but at no fixed offset from anything: **two runs of
+the same tape put it 0x50 apart**. So it lives in a per-run allocation, and the
+only durable way to it is a pointer some typed object holds.
+
+Forwards that is a 150 MB pointer graph. Backwards it is a short search, and
+`fk tickhook finish --chain` does it: snapshot the writable memory, take the
+words holding the finish time, find every word that points into their blocks,
+repeat, and stop when a hop lands inside an object the shim can already
+resolve. Sixteen candidates at depth 1; four survived three tapes with three
+different finish times; the shortest is
+
+```text
+[[controller + 0x1a88] + 0xa4]     the finish time, in SIMULATION ms
+```
+
+It reads `0xffffffff` for the whole race and takes its value one tick after the
+tick that detects the crossing. It is exact **including the sub-tick**:
+rank00100 finishes at race 22884 ms — not a multiple of 10, so the engine
+interpolates within the tick — and the word reads sim 25084, which is 22884 to
+the millisecond. (This is also why "detect the finish tick and convert" is not
+a solution: the tick is 22880.)
+
+### 10.3 Why it is calibrated per server and not a constant
+
+Hardcoding that offset is wrong, and every way it is wrong is SILENT:
+
+| map | what a hardcoded rule met |
+|---|---|
+| map 2 | the word at +0xa4, sentinel `0xffffffff`, state beside it `2 -> 3` |
+| 145875 | the word at +0xa4, sentinel `0xffffffff`, state beside it **`0 -> 1`** |
+| 126859 | sentinel **`0`**, and the record **not in that block at all** |
+
+Each mismatch made the lever quietly not fire — a search would have kept paying
+the 5.8 ms while the code said it had been fixed. So the driver calibrates:
+one fork of the tape whose finish time it already knows (the incumbent's own
+millisecond, from the plain oracle), gathering the block as it changes — the
+dedup key is the whole window, so a block that sits still costs nothing — and
+it keeps the word that ends at exactly that time and started at one of the two
+"nothing yet" markers. It tries the controller's block first, then the
+participant, vehicle, playground and simulation.
+
+Children are forked from that process, so **the address is the same in every
+one of them** and no offset has to be portable. The shim is told the address
+(`'Y'`), reads the sentinel itself, and every tick does one load and one
+compare; when the word changes it writes the value to the shared timing page
+and `_exit`s. The parent turns it into `FKFINISH race_ms <N>`, which
+`parse_result` prefers over the JSON.
+
+`on_clock` runs BEFORE that check, deliberately: leaving first would drop the
+last tick from every finisher's watchdog summary — a behaviour change disguised
+as a speedup.
+
+### 10.4 The control, and the numbers
+
+`fk tickhook finishcheck` arms `FKSHIM_FINISH_CHECK`, which makes a child
+record the fast answer **and print the JSON anyway**, so both numbers come from
+one simulation. It fails on any disagreement, and on any candidate where one
+path answered and the other did not.
+
+| map, checkpoint | candidates | finished | agree | disagree |
+|---|---|---|---|---|
+| map 2, `tick:171` | 400 | 93 | 93 | **0** |
+| map 2, `tick:2313` | 200 | 200 | 200 | **0** |
+| 126859, `tick:1200` | 250 | 57 | 57 | **0** |
+| 145875, `tick:400` | 250 | 144 | 144 | **0** |
+| **total** | **1100** | **494** | **494** | **0** |
+
+A DNF produces no fast answer and keeps the JSON path — that is the honest
+fallback, not a guess, and it is why the table's non-finishers are not a gap.
+
+**Cost, measured** (`fk tickhook cost`, n=40, map 2 rank00001):
+
+| checkpoint | before | after | |
+|---|---|---|---|
+| `tick:2313` (119 tail ticks) | 13.22 ms | **9.57 ms** | 1.38x |
+| `tick:1200` (1232) | 43.19 | 40.78 | 1.06x |
+| `tick:171` (2261) | 75.71 | 70.50 | 1.07x |
+
+**Nothing else moved:** `fk watch measure` 50 candidates, same seed — 30 of 50
+trips, 20 identical armed vs unarmed, 0 false positives, 50/50 score safety,
+the same as with the lever off. `fk server check` **300/300 exact** across two
+maps × three checkpoints. The guarded 10-minute stress search: 278 850 evals,
+9 improvements, **0 phantoms**, best 22.711.
+
+### 10.5 What is NOT done
+
+* **A DNF still pays the 5.8 ms.** Skipping it needs the checkpoint count the
+  driver reads from the `Desc` line, and no stable place for that has been
+  found. In a search most candidates that reach the end are DNFs, so this is
+  the larger half of the remaining win.
+* **`FK_FAST_LOCATE` is still off** — §11.
+
+---
+
+## 11. FK_FAST_LOCATE: named, half fixed, still off
+
+§9.3 reported a locator that answers in 0.2 s where the sweep takes 3.6 s, and
+an unexplained difference: with it the watchdog stopped tripping (4 of 8 → 0 of
+8) and a search ran 5.8x faster with 0 % finishers. That is now explained, and
+the explanation is worth more than the speedup.
+
+**The fast locator was picking a POSITION-ONLY RENDER COPY of the car.**
+Identical x/y/z to the real state — which is why every position check passed,
+including `fk trace`'s 3 mm control — but **velocity all zeros** and a
+quaternion that is not a unit quaternion (|q|−1 = 0.14 against 1.3e-7 for the
+real one). A speed-based predicate cannot fire on a car whose speed is
+identically zero, so the watchdog went quiet, every candidate ran to the end,
+and the search "sped up" by measuring nothing.
+
+The fix is that the test is now the whole state, not the position: a candidate
+must track the validator's car, travel what the car travels, carry a unit
+quaternion at −16, and carry a velocity at +12 that is the derivative of its
+own position. That rejects the copy on every map.
+
+**It is still not the only locator, because a second copy exists.** With the
+whole-state tests in place the candidate set still contains an object exactly
+ONE TICK out of phase with the vis state. It passes every test above —
+`fk trace`'s self-check accepts its quaternion and velocity — and produces a
+trajectory 1.2147 m from the reference on 126859, which is one tick of travel
+at 128.9 m/s, which the watchdog turns into **21 false positives out of 21
+finishers**. The obvious discriminator does not work: the phase between the vis
+state and the validator's own car is **not the same on every map** (the vis
+state lags by a tick on map 2 and does not on 126859), so any rule of the form
+"closer to where the car was" is right on one map and wrong on the next.
+
+So the sweep stays the default and the blind sweep is NOT deleted. What is
+known, for whoever finishes it:
+
+* the engine's own pointer chains (`fk::ptr::CAR_CHAINS`, mirrored in
+  `forkoracle::car::CAR_CHAINS`) end at the vis state by construction and
+  resolve in 0.00 s — they are the right candidate source, and `fk trace`'s
+  ladder already uses them to reach 2.9 mm on 126859 where the sweep cannot
+  locate at all (`vel_err 1356 m/s: refusing to guess`);
+* what is missing is the choice BETWEEN chains on a map where several resolve.
+  The one test that is ground truth for it is the reference line the search
+  already holds: the chosen object and bias must reproduce the reference
+  position at the checkpoint tick. That is one comparison, and it is the next
+  step;
+* candidates must be vetted in the driver before they reach a child. Gathering
+  several into one sample is faster and wrong: one bad address takes the child
+  down and the failure reads as "nothing tracks the car".
+
+### 10.6 The DNF half: found, measured, and NOT switched on
+
+A DNF pays the same epilogue — **6.02 ms** after its last simulated tick,
+against 5.84 for a finisher (`fk tickhook cost` with the tape steered off the
+road) — and in a search DNFs are the majority: 307 of 400 candidates at an
+early checkpoint. So this is the larger half of the lever, and both pieces it
+needs now exist:
+
+* **the engine says when the tape runs out.** `fk tickhook dnf` steers a
+  candidate off the road and asks which words in the participant settle near
+  the end: six do, all at the same instant, **one tick after the tape's last
+  record** — `participant+0x188` goes `2 -> 0`, on a finisher and on a DNF
+  alike. A child that reaches it with no finish recorded knows it did not
+  finish;
+* **the engine counts checkpoints.** `participant+0xc70` increments exactly at
+  the ghosts' split ticks, the finish included — located behaviourally by the
+  tm-player project's ENV arm and verified 200/200 against the plain oracle
+  (and 1288/1289 over 2453 tapes). This arm's finish hunt had found the same
+  word independently: it is the `2 -> 3` at the finish in §10.2.
+
+It is implemented, and it is **off** (`FKSHIM_DNF_FAST=1`), because the two
+numbers are not the same number:
+
+| | JSON `Desc` | engine's counter |
+|---|---|---|
+| 45 of 79 DNFs | agrees | agrees |
+| **34 of 79 DNFs** | `"wrong simu"` → **0** | **1** |
+
+`parse_result` derives a DNF's checkpoint count from the `Desc` line, and for a
+MUTATED candidate that line is almost always `wrong simu` — the declared result
+in the ghost file no longer matches what was simulated — which the driver maps
+to 0 checkpoints. The engine's counter says the car really did pass one. **Both
+are right about different things**, and the engine's is the more truthful; but
+switching to it changes how every non-finisher in the search is scored. That is
+a decision about the search, not a speedup to slip in behind a 6 ms saving, so
+it ships as a flag with this table attached.
+
+### 10.7 What the finish lever does NOT cover
+
+`fk server check` on **126859 refuses to calibrate** — no word in 32 KB of the
+controller's block, the participant, any of the four vehicle slots, the
+playground or the simulation ends at that race's finish time — and the server
+keeps the JSON path. That is the designed fallback and it is verified, not
+assumed: 100/100 exact on that map with the lever refusing. The map has already
+shown it keeps this record somewhere else (§10.3), and the search window is
+32 KB from each base; widening it is the obvious next step and costs one fork.
+
+### 10.8 The four vehicle slots
+
+Fixed on the way, from the tm-player INPUT arm's finding: the participant holds
+**four** vehicle slots (`+0x1118/+0x1128/+0x1138/+0x1148` = Stadium, Snow,
+Rally, Desert) and only one is being driven — the one whose `phy+0x10` is not
+`0xffffffff`. `validator_chain` read slot 0 unconditionally, which is right on
+an ordinary map and resolves to a **parked** vehicle on a transform map. It now
+picks the live slot and refuses if the count is not exactly one.
+
+(The same arm places the full vis state at `phy+0x848`. Tried: its position is
+exact on 126859 and 145875 and one tick out on map 2, and the quaternion at
+`pos-16` is not a unit quaternion there — so its internal layout is not the one
+`segments()` describes. Left alone rather than guessed at.)
+
+---
+
+## 12. The DNF count is the engine's, and a finish past the tape's end is not a finish
+
+Two changes decided after §10: the parent adopted the engine's checkpoint
+counter as the default, and the perf arm's plain-oracle hazard turned out to be
+something this lever can *fix* rather than merely avoid.
+
+### 12.1 The checkpoint count comes from the engine, on every path
+
+`parse_result` used to read a DNF's checkpoint count out of the validator's
+`Desc` line. That line is a **lossy print**: for a mutated candidate it is
+almost always `"wrong simu"` — the ghost file's declared result no longer
+matches what was simulated — which the driver mapped to 0, and the plain oracle
+cannot see a lone checkpoint at all (it reports k≥2 only; the route project
+measured 1163 of 2453 tapes in that class). A `Desc` count is a **lower bound**,
+not a measurement.
+
+The engine counts them itself at `participant+0xc70` (located behaviourally by
+the tm-player project's ENV arm, verified 200/200 against the plain oracle and
+1288/1289 over 2453 tapes; this arm's finish hunt found the same word
+independently — it is the `2 -> 3` at the finish in §10.2).
+
+**The child publishes it every tick**, not only when it takes the fast exit —
+one load and one store — so the count is present however the child ended: fast
+exit, validator print path, or SIGKILL. A run can therefore never mix two
+definitions of the same number, which was the condition on adopting it. The
+`Desc` parse survives only for a server with no shim, which is the plain
+oracle's own path.
+
+Measured on 1100 candidates across 3 maps, against the JSON:
+
+| | m2 `tick:171` | 145875 | 126859 |
+|---|---|---|---|
+| engine == JSON | 306 | 125 | 138 |
+| engine **above** the JSON's bound | **144** | 0 | 0 |
+| engine below it, or ≠ a JSON count that was ≥2 | **0** | **0** | **0** |
+
+144 of 306 DNFs on map 2 are candidates that really passed a checkpoint and
+were scored 0. `Outcome`'s ordering is unchanged — every finisher still ranks
+above every DNF, more checkpoints still ranks higher among DNFs — so the only
+behavioural change is that a 1-CP DNF now correctly outranks a 0-CP one.
+
+> **A DNF checkpoint count recorded before this commit is a LOWER BOUND.** Do
+> not compare one naively with a new one; the same run can read 0 then and 1
+> now without anything having changed about the driving.
+
+### 12.2 A finish after the tape's last record is FLAGGED (and the first
+### version of this was a regression)
+
+**This section originally said such a finish is not a finish, and made the fork
+report a DNF. That was wrong twice over, and the perf arm caught it.**
+
+Past the end of its tape the engine keeps simulating on whatever the input
+array happens to hold, so a candidate can cross the finish line on heap
+contents. The perf arm measured what the plain oracle then says: **the verdict
+is batch-dependent** — one tape is a DNF alone and 26.839 in a batch of 520.
+
+The JSON reports such a crossing as an ordinary finish, and every consumer
+believes it. The shim does not, because it can see what the JSON cannot: the
+tape-exhausted word (`participant+0x188`, `2 -> 0` one tick after the last
+record, §10.6) fires first. A finish recorded after it is reported as
+`FKPASTEND` and never as a time; `parse_result` returns it as a DNF with its
+checkpoint count.
+
+It is not a rare class: of 1100 candidates, **43 finished past their tape's
+end** — 32 of 71 apparent finishers on map 2 at `tick:171`, 6 on 145875, 5 on
+126859. Every one of those would have been scored with a batch-dependent
+number.
+
+This makes the fast path **more correct than the JSON**, not merely faster.
+
+### 12.3 The controls, after both changes
+
+`fk tickhook finishcheck`, 1100 candidates over 4 (map, checkpoint) pairs:
+
+| map, checkpoint | candidates | finishers | agree | disagree | past-end |
+|---|---|---|---|---|---|
+| map 2, `tick:171` | 400 | 62 | 62 | **0** | 32 |
+| map 2, `tick:2313` | 200 | 200 | 200 | **0** | 0 |
+| 145875, `tick:400` | 300 | 169 | 169 | **0** | 6 |
+| 126859, `tick:1200` | 200 | 57 | 57 | **0** | 5 |
+
+Score safety 50/50 with 0 violations, trips and false positives unchanged from
+the baseline, `fk server check` exact, and the guarded 10-minute stress search
+with 0 phantoms.
+
+### 12.4 126859 and the finish word
+
+The calibration window is now two passes, 32 KB then 256 KB of each base (the
+controller's result block, the participant, all four vehicle slots, the
+playground, the simulation) — one extra fork per base, only on a map the narrow
+pass cannot answer.
+
+**126859 is not reliably calibrable even so**: it succeeded on one run and
+failed on the next at the same checkpoint, which means the record's distance
+from every typed object varies per process on that map. When calibration
+refuses, the server keeps the JSON path and everything still works — verified
+rather than assumed: 100/100 exact on that map with the lever refused, and the
+`finishcheck` row above is from a run where it did calibrate. Whoever picks
+this up: the record is reachable (the backward pointer scan finds it every
+time), so the answer is a chain, not a bigger window.
+
+### 12.5 The clock bias belongs to the OBJECT
+
+§9.4 fixed the bias by one tick and proved it with `fk trace` (3.1 mm against
+ghost telemetry, against 796 mm — one tick of travel — with the old value). The
+tm-player project's ENV arm then reached the **opposite** sign from three
+independent harnesses, and both results are correct:
+
+| the row is read from | its bias | who reads it |
+|---|---|---|
+| the **vis state** (`…:+0x4e8`, what `segments()` gathers) | `-20` | this project's sampler, `fk trace`, the watchdog |
+| the validator's **`CGameVehiclePhy`** (`phy+0x12f0`) | `-10` | tmenv, the open-loop control, `ValidatorCar` |
+
+They are the same car one tick apart — `fk tickhook reads` measures exactly
+that pair on every run (0.8360 m at 83.58 m/s = 1.00 ticks). Carrying either
+bias across to the other object is a one-tick error, which is **0.84 m at
+racing speed** and is precisely the class of defect that produced 21 false
+positives in §11.
+
+So the bias is not a constant anywhere: it travels in the same `Layout` as the
+address it was measured for.
+
+### 12.6 The finish word without a fork, where the engine allows it
+
+vjeux: *"We shouldn't have to do 51 fork boundary calibrations or any of this
+kind of things."*
+
+The result block is reachable by a pointer — `controller+0x1a88`, allocated at
+`0x118c22d` — and on the maps where the record sits at `+0xa4` of it the
+address needs no measuring at all: read the pointer, add the offset, check that
+the word holds the "nothing yet" marker while the race is running. Map 2 and
+145875 now arm the lever with **no calibration fork**.
+
+**The check must demand `0xffffffff`, not "a marker".** Accepting `0` as well
+looked harmless and was not: on 126859 it matched a zeroed word at the right
+offset of the right block and reported **46 wrong finish times in 150
+candidates**. `0xffffffff` is a value someone chose; `0` is what memory is. A
+map whose sentinel is `0` pays the calibration fork, which proves the word by
+watching it take that race's own answer — and 126859, which cannot be
+calibrated reliably at all, keeps the JSON path.
+
+---
+
+## 13. The past-the-end guard, and two ways it was wrong
+
+The perf arm reported an intermittent regression on `ebbd39a`: `fk server check`
+on Kacky Reloaded #290 gave `47/50, 3 MISMATCHES` in two runs of three and
+50/50 in the others — same seed, same candidates, alternating verdicts. All
+three were finishes 4–7 ticks INSIDE the tape.
+
+### 13.1 A measured stand-in for a known fact
+
+The guard asked a WORD whether the tape had run out: `participant+0x188`, which
+`fk tickhook dnf` had watched go `2 -> 0` one tick after the last record. On
+that map the same word also moves **at the finish**, so a genuine finish tripped
+the guard and was scored a DNF — intermittently, because whether the word had
+settled by the finish tick depends on the engine's wall-clock frame partition.
+
+The tape's last tick was never something to discover. **The clock IS the record
+index**: a child resuming at boundary tick `probe` with `n` records consumes its
+last at `probe + n - 1`, and the driver knows both numbers before the child
+exists. It is now sent with the finish word and the child does one compare.
+Exact on every map, identical on every run, nothing per-map to be wrong about.
+
+`forkoracle::finish::last_tape_clock` replaces `EXHAUSTED_IN_PARTICIPANT`.
+
+**+1, and it is not slack**: the engine writes the result one tick after the
+tick that detects the crossing (§10.2), so a finish detected on the tape's last
+tick lands at `last + 1`. Refusing that would be the same regression from the
+other side.
+
+### 13.2 Flagging is not overruling
+
+With the arithmetic right, suppressing the time still turned **19 of 50**
+candidates at map 2 `tick:2380` and 14 of 50 at 145875 into DNFs that the full
+validation scored as finishes — with the same millisecond.
+
+Past the array both processes read **zero-filled pages**, so they agree; the
+batch-dependent case the perf arm measured differs because a reused allocation
+is dirty. And the class is not rare: **the tape ends at the reference's finish,
+so every candidate slower than the incumbent is in it.**
+
+So the verdict stays the engine's and `FKPASTEND` rides beside it. Refusing to
+BANK one is a decision for whoever banks; this layer reports.
+
+Two further corrections the controls forced:
+
+* **the exit must stay gated.** Replacing the word with the clock accidentally
+  ungated the tape-exhausted EXIT, and a child that leaves at the last record
+  never reaches a crossing one to four ticks later: 10 of 50 and 8 of 50 wrong
+  DNFs. `FKSHIM_DNF_FAST=1` gates the exit; the flag is always on.
+* **the flag is taken at the finish, not at exit.** By the time any child ends
+  it has passed the tape's end — the engine coasts hundreds of ticks — so an
+  exit-time test marks every finisher and says nothing.
+
+### 13.3 The control has to be in ticks
+
+`fk tickhook finishcheck` now cross-checks the classification against the JSON's
+own time, and its first version compared MILLISECONDS: it called 111 of 200
+legitimate finishes on 145875 "past the end". A crossing partway through the
+tape's last tick is still driven by the tape — it just carries a timestamp a few
+ms past that record's own. The comparison is between TICK INDICES.
+
+With both right they agree exactly:
+
+| map, checkpoint | flagged past-end | JSON agrees it is late | flagged wrongly | late but unflagged |
+|---|---|---|---|---|
+| map 2, `tick:171` | 24 | 24 | **0** | **0** |
+| map 2, `tick:2313` | 0 | 0 | **0** | **0** |
+| 145875, `tick:400` | 3 | 3 | **0** | **0** |
+| 126859, `tick:1500` | 2 | 2 | **0** | **0** |
+
+### 13.4 Back to green
+
+`fk server check`, five (map, checkpoint) pairs across three maps, **250/250
+identical, 0 mismatches**, and `tick:2380` — the pair that failed — run three
+times for **50/50 every time**. Deterministic, which the word-based version was
+not. search 151/151, fk 38/38.
+
+### 13.5 The lever belonged to scoring sessions, not to every session
+
+The perf arm found a second effect of the same lever on the same map: `fk trace`
+on Kacky Reloaded #290 stopped at the finish tick — 1694 of 1741 rows — on the
+runs where finish calibration happened to succeed, which is why it looked
+intermittent.
+
+`Session::start` armed the lever for **every** session. That is right for a
+session that wants each candidate's answer and wrong for one that SAMPLES: the
+child leaving at the finish is exactly the behaviour `fk trace` must not have.
+
+So it is opt-in per session. `Session::start_scoring` arms it — `fk server
+check` and `fk server bench` use it, and `tmsearch` arms it directly — and a
+sampler never does. Same rule as `on_clock` running before the exit: **a
+speedup must not change what the caller observes.**
+
+`fk trace` on that map is now 8 of 9 runs at the full 1742 rows with the
+self-check passing; the ninth fails in the LOCATOR (no chain tracks the car,
+the sweep picks a non-unit-quaternion object), which is §11's open problem on a
+map that has none of its chains derived — and the same command aborts outright
+at the branch point, so it is not a regression.

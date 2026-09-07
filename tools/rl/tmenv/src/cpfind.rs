@@ -17,7 +17,6 @@
 //! resolved on any server without a scan.
 
 use crate::forkenv::Rig;
-use fk::validator::ValidatorCar;
 use forkoracle::forksrv::Rec;
 use std::path::Path;
 
@@ -119,8 +118,24 @@ pub fn cpfind(
     // ALL records, for the resolver (it scans, it does not drive)...
     let recs: Vec<Rec> = s.tape.tail_records(0);
     let car = crate::control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, verbose)?;
-    let layout = car.layout().clone();
-    let prov = car.provenance().clone();
+    let layout = car.layout();
+    // the objects the report prints offsets against (LOCATE.md §2)
+    struct Prov {
+        controller: u64,
+        sim: u64,
+        playground: u64,
+        players: u64,
+        participant: u64,
+        vehicle: u64,
+    }
+    let prov = Prov {
+        controller: car.controller,
+        sim: car.sim,
+        playground: car.playground,
+        players: car.playground + 0x660,
+        participant: car.participant,
+        vehicle: car.phy,
+    };
     // For a countdown-prefixed real ghost the root probe is exact (measured:
     // 156 on every server, bias 2200 = the in-race calibration), so the
     // root-implied bias is used here; the snapshot tolerance covers a tick.
@@ -263,6 +278,5 @@ pub fn cpfind(
         }
     }
     println!("stage 2    {} of {} candidates step at the ghost's split times (±{} ms)", survivors.len(), cands.len(), tol_ms);
-    let _ = ValidatorCar::layout;
     Ok((cands, survivors))
 }

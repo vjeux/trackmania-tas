@@ -68,6 +68,10 @@ pub struct ForkEnv {
     /// The validator's participant object (same address in every fork), for
     /// following the LIVE vehicle slot across a car switch; 0 = unknown.
     participant: u64,
+    /// The derived car at the root (LOCATE.md): its controller/sim addresses and
+    /// the module base are what re-deriving the car in a paused node needs.
+    root_car: Option<forkoracle::car::Car>,
+    module_base: u64,
     /// Set by `follow_live_car` when the slot changed before a fork.
     car_switched: bool,
     reference: Vec<Rec>,
@@ -164,6 +168,8 @@ impl ForkEnv {
             forest,
             cur: ROOT,
             participant: 0,
+            root_car: None,
+            module_base: 0,
             car_switched: false,
             reference,
             n_ticks,
@@ -492,38 +498,46 @@ impl ForkEnv {
         self.participant = participant;
     }
 
+    /// Give the env the derived root car, so every fork first RE-DERIVES the
+    /// driven vehicle in the paused node (`forkoracle::car::resolve_with`, ~30
+    /// reads) and moves the layout when the car changed slot.
+    pub fn set_root_car(&mut self, car: forkoracle::car::Car) {
+        self.participant = car.participant;
+        self.module_base = forkoracle::car::module_base(self.forest.pid_of(ROOT).unwrap_or(0)).unwrap_or(0);
+        self.root_car = Some(car);
+    }
+
     /// Before a fork from `cur`: is the live vehicle still the one the layout
     /// points at? If not, move the layout (car block, vis; clock/counter stay).
     /// Returns whether it moved. Cheap: 8 small reads of the paused process.
     fn follow_live_car(&mut self) -> Result<bool, String> {
-        if self.participant == 0 {
-            return Ok(false);
-        }
+        let Some(root) = self.root_car.as_ref() else { return Ok(false) };
         let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
         let pid = self.forest.pid_of(self.cur)?;
-        let Some((slot, phy)) = fk::validator::live_vehicle(pid, self.participant) else {
-            return Ok(false);
+        let (sim_ms, race_start) = self.forest.clock_of(self.cur)?;
+        // THE SAME DERIVATION AS AT THE ROOT, in this process: the driven slot
+        // is the one the copy-out loop does not skip (LOCATE.md §2), which is
+        // how a car transform is followed -- no heuristic on a flag word.
+        let car = match forkoracle::car::resolve_with(
+            root.controller,
+            root.sim,
+            self.module_base,
+            sim_ms,
+            race_start,
+            |a, n| forkoracle::procmem::read_at(pid, a, n),
+        ) {
+            Ok(c) => c,
+            // inside a respawn window or before the spawn the derivation can
+            // name no body; keep the layout we have
+            Err(_) => return Ok(false),
         };
-        let pos = phy + fk::validator::STATE_POS_IN_VEHICLE;
-        if pos == cur.pos {
+        if car.pos() == cur.pos {
             return Ok(false);
         }
-        // the whole-state check the tick-hook session insists on: a unit
-        // quaternion and finite position/velocity at the new address, else it
-        // is not a vehicle state and we keep what we had
-        let Some(b) = forkoracle::procmem::read_at(pid, pos - 16, 40) else { return Ok(false) };
-        let f = |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
-        if !(0..10).all(|i| f(i * 4).is_finite()) {
-            return Ok(false);
-        }
-        let qn = (f(0).powi(2) + f(4).powi(2) + f(8).powi(2) + f(12).powi(2)).sqrt();
-        if (qn - 1.0).abs() > 1e-3 {
-            return Ok(false);
-        }
-        let mut l = cur;
-        l.pos = pos;
-        l.vis = phy + fk::validator::VIS_IN_VEHICLE;
-        l.car = slot;
+        let mut l = crate::control::env_layout(&car);
+        // the clock word and its bias never change within a process
+        l.clock = cur.clock;
+        l.clock_bias = cur.clock_bias;
         self.forest.set_layout(l)?;
         self.car_switched = true;
         Ok(true)
@@ -899,9 +913,9 @@ pub fn build_at_start(
         s.tape.start_offset_ms,
         root.verbose,
     )?;
-    let tcfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 200_000 };
+    let tcfg = TraceCfg { layout: crate::control::env_layout(&car), dir, stride: 1, max: 200_000 };
     let mut env = ForkEnv::new(s, &rig.engine, track, acts, cfg, Some(tcfg))?;
-    env.set_participant(car.provenance().participant);
+    env.set_root_car(car.clone());
     let row = {
         env.reset()?;
         env.core.last_row()
@@ -926,7 +940,7 @@ pub fn build_at_start(
              validator ownership; race clock labelled from the engine (bias {}), root row race {:.3}",
             root_clock,
             if tries == 1 { "" } else { "s" },
-            car.layout().clock_bias,
+            crate::control::env_layout(&car).clock_bias,
             row.time_ms as f64 / 1000.0
         );
     }
