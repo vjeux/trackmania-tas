@@ -196,6 +196,8 @@ fn main() {
         "trace" => trace_cmd(rest),
         "tdiff" => tdiff_cmd(rest),
         "codec" => codec_cmd(rest),
+        "squash" => squash_cmd(rest),
+        "rescale" => rescale_cmd(rest),
         o => die(format!("unknown op {o}")),
     }
 }
@@ -546,4 +548,72 @@ fn collect_ghosts(p: &str, out: &mut Vec<String>) {
     } else if p.ends_with(".Ghost.Gbx") || p.ends_with(".Replay.Gbx") {
         out.push(p.to_string());
     }
+}
+
+/// `tminput squash IN OUT --ticks A..B --above X --to Y`: every tick in [A,B)
+/// whose |steer| ≥ X gets steer sign·Y (the vehicle fields are re-coded
+/// explicitly where changed; the state words are untouched). Under a CLAMP at
+/// c with Y ≥ 127c this edit is physics-neutral; under a SCALE it is not.
+pub fn squash_cmd(rest: &[String]) {
+    let inp = rest.first().unwrap_or_else(|| die("tminput squash IN OUT --ticks A..B --above X --to Y"));
+    let out = rest.get(1).unwrap_or_else(|| die("tminput squash IN OUT --ticks A..B --above X --to Y"));
+    let (a, b) = range(need(rest, "--ticks"));
+    let above: i32 = need(rest, "--above").parse().unwrap_or_else(|_| die("--above X"));
+    let to: i32 = need(rest, "--to").parse().unwrap_or_else(|_| die("--to Y"));
+    let c = Container::load(inp).unwrap_or_else(|e| die(e));
+    let mut t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+    t.verbatim_is_identity().unwrap_or_else(|e| die(e));
+    let mut n = 0;
+    {
+        let ar = &mut t.archives[0];
+        let hi = b.min(ar.packets.len());
+        for i in a..hi {
+            let s = ar.packets[i].steer_i8() as i32;
+            if s.abs() >= above {
+                let v = if s < 0 { -to } else { to } as i8;
+                ar.packets[i].steer = (v as u8) as u32;
+                ar.packets[i].vsame = false;
+                n += 1;
+            }
+        }
+    }
+    println!("squashed {n} ticks in {a}..{b} with |steer| >= {above} to ±{to}");
+    write_back(&c, &t, out, Encoding::Verbatim);
+    println!("wrote {out}");
+}
+
+/// `tminput rescale IN OUT --ticks A..B (--mul F | --clamp N)`: rewrite the
+/// steer over [A,B) as round(steer × F) or clamp(steer, ±N). State words are
+/// untouched (strip them separately). The "replace the action key by its
+/// effect" reconstruction: exact only up to i8 rounding.
+pub fn rescale_cmd(rest: &[String]) {
+    let inp = rest.first().unwrap_or_else(|| die("tminput rescale IN OUT --ticks A..B (--mul F | --clamp N)"));
+    let out = rest.get(1).unwrap_or_else(|| die("tminput rescale IN OUT --ticks A..B (--mul F | --clamp N)"));
+    let (a, b) = range(need(rest, "--ticks"));
+    let mul: Option<f32> = flag(rest, "--mul").map(|s| s.parse().unwrap_or_else(|_| die("--mul F")));
+    let clamp: Option<i32> = flag(rest, "--clamp").map(|s| s.parse().unwrap_or_else(|_| die("--clamp N")));
+    let c = Container::load(inp).unwrap_or_else(|e| die(e));
+    let mut t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+    t.verbatim_is_identity().unwrap_or_else(|e| die(e));
+    let mut n = 0;
+    {
+        let ar = &mut t.archives[0];
+        let hi = b.min(ar.packets.len());
+        for i in a..hi {
+            let s = ar.packets[i].steer_i8() as i32;
+            let v = match (mul, clamp) {
+                (Some(f), _) => (s as f32 * f).round() as i32,
+                (_, Some(k)) => s.clamp(-k, k),
+                _ => die("--mul F or --clamp N"),
+            };
+            if v != s {
+                ar.packets[i].steer = (v as i8 as u8) as u32;
+                ar.packets[i].vsame = false;
+                n += 1;
+            }
+        }
+    }
+    println!("rescaled {n} ticks in {a}..{b}");
+    write_back(&c, &t, out, Encoding::Verbatim);
+    println!("wrote {out}");
 }
