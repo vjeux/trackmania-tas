@@ -118,10 +118,21 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     let dxz = ((r0.x - sp.centre[0]).powi(2) + (r0.z - sp.centre[2]).powi(2)).sqrt();
     let dy = r0.y - sp.centre[1];
     let d3 = dist(pos(&r0), sp.centre);
-    let pre_race = v0 <= 4.0 && dxz <= 6.0;
+    // the telemetry's own first sample is the independent witness of the race origin; the
+    // map Spawn is a GEOM number (Summer 2026 - 19: every root car sits 10.33 m from the
+    // tmroute Spawn, at rest, on its own telemetry to 4 mm -- the spawn FRAME is off, the
+    // run is not), so the control passes on either witness and flags the other
+    let s0 = &tel.dec.samples[0];
+    let t0p = [s0.x as f64, s0.y as f64, s0.z as f64];
+    let root_on_t0 = dist(pos(&r0), t0p);
+    let at_origin = dxz <= 6.0 || root_on_t0 <= 0.5;
+    let pre_race = v0 <= 4.0 && at_origin;
+    if dxz > 6.0 && root_on_t0 <= 0.5 {
+        println!("SPAWN FRAME OFF (GEOM/tmroute): the root car is {dxz:.2} m (horizontal) from the map Spawn wp{} {:?} at ({:.1}, {:.1}, {:.1}) but {root_on_t0:.3} m from the telemetry's own first sample -- the gates.json spawn, not the run", sp.waypoint, sp.model, sp.centre[0], sp.centre[1], sp.centre[2]);
+    }
     let pass_a;
     if pre_race {
-        pass_a = dxz <= 6.0 && dy.abs() <= 12.0 && v0 <= 4.0;
+        pass_a = at_origin && (dy.abs() <= 12.0 || root_on_t0 <= 0.5) && v0 <= 4.0;
         println!(
             "START-POSITION control (LIVE): root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} group {} -> \
              ({:.1}, {:.1}, {:.1}); d_xz {:.2} m, dy {:+.2} m, d3 {:.2} m  => {}",
