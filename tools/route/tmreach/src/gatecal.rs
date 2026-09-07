@@ -424,7 +424,9 @@ impl CounterGrade {
         // a geometric crossing of some gate within 30 rows (300 ms) and no gate may be entered
         // without a step; the ±2-tick figure is the plane's quality, reported, not the bar
         // (platform blocks credit 1.5–3.5 m inside the slab, ~20 rows after the GEOM plane).
-        self.steps > 0 && self.unmatched_steps == 0 && self.extra_detections == 0
+        // Geometric detections without a step never enter the dataset (credits are the
+        // counter's), so they are reported as the plane's quality, not the bar.
+        self.steps > 0 && self.unmatched_steps == 0
     }
 }
 
