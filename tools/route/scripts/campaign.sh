@@ -88,20 +88,24 @@ if [ $step = plan-r ]; then
   echo "gate prior $RV ($(md5sum < $MODEL_R | cut -c1-8)) chain $RLV ($(md5sum < $MODEL_RL | cut -c1-8)) flags $TMR_FLAGS run $(date -u +%Y-%m-%dT%H:%MZ); trained on: $TRAIN held-out: $HELD" | tee $P/plan-r/MODELS.txt
   { for d in $G/*/; do u=$(basename $d); [ -f $d/consensus.txt ] || [ -f $d/consensus.unverified.txt ] || continue; grep -q "modal_groups \[[0-9]" $d/consensus*.txt 2>/dev/null && echo $u; done; for u in $HYP; do echo $u; done; } | sort -u > /tmp/plan-r.uids
   echo "plan-r over $(wc -l < /tmp/plan-r.uids) maps"
+  # per map: the HYBRID first (geometric on roads, R where the graph has nothing — fast), then pure R; each under a
+  # wall-clock cap (the chained estimator costs ~5 s per edge evaluation: Poland 2026 ran > 90 min un-capped)
   plan_r_one() { u=$1; f=$(mapfile_of $u); [ -n "$f" ] || return 0; [ -f $G/$u/gates.json ] || return 0
-    nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1
-    grep -E "cp_groups|rank 0|NO PLAN" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
-  export -f plan_r_one mapfile_of; export TMR TMR_FLAGS MODEL_R MODEL_RL G RT P B V
+    timeout ${CAP_HYB:-900} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator hybrid $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-hyb > $P/plan-r/$u.hyb.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_HYB:-900} s" >> $P/plan-r/$u.hyb.txt
+    grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT|hybrid pricing" $P/plan-r/$u.hyb.txt | head -3 | cut -c1-160
+    timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_R:-1500} s" >> $P/plan-r/$u.txt
+    grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
+  export -f plan_r_one mapfile_of; export TMR TMR_FLAGS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R
   cat /tmp/plan-r.uids | xargs -P ${PAR:-6} -n 1 bash -c 'plan_r_one "$0"'
   $R/tmroute index $RT --names $G
-  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
+  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
   tail -1 $P/table-r.md
 fi
 if [ $step = tables ] || [ $step = all ]; then
   $R/tmroute index $RT --names $G
   $R/tmroute table $RT --geom $G --plan-source router-plan-cost > $P/table-cost.md
   $R/tmroute table $RT --geom $G --plan-source router-plan > $P/table-speed.md
-  [ -f $RT/routes.tsv ] && grep -q router-plan-r $RT/routes.tsv && $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --also $(echo $HYP | tr " " ",") > $P/table-r.md
+  [ -f $RT/routes.tsv ] && grep -q router-plan-r $RT/routes.tsv && $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --also $(echo $HYP | tr " " ",") > $P/table-r.md
   tail -1 $P/table-cost.md; tail -1 $P/table-speed.md
   echo "human legs the surface graph cannot explain: $(grep -c MISSING $P/human-legs/ALL.tsv) of $(wc -l < $P/human-legs/ALL.tsv)"
 fi

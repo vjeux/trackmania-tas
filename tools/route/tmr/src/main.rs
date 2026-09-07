@@ -650,8 +650,11 @@ fn cmd_plan(args: &[String]) {
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         Some(c)
     } else { None };
-    let hybrid = chained_h.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(2.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
-    let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained) {
+    // memoised: the beam asks the same (bucket, prev, from, to) thousands of times
+    let chained_memo = chained.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
+    let chained_h_memo = chained_h.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
+    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(2.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained_memo) {
         (Some(h), _) => h,
         (None, Some(c)) => c,
         (None, None) => &est,
@@ -662,6 +665,9 @@ fn cmd_plan(args: &[String]) {
     if let Some(h) = &hybrid {
         let (ng, nr) = h.counts.get();
         println!("  hybrid pricing: {ng} edge queries geometric, {nr} learned");
+    }
+    for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
+        println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
     }
     let prov = provenance("plan");
     let out_dir = flag(args, "--out-dir");

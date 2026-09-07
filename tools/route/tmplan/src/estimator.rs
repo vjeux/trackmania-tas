@@ -312,3 +312,36 @@ impl<'a> EdgeEstimator for Hybrid<'a> {
         format!("hybrid(geo: {}, learned: {}, detour > {:.1}×)", self.geo.name(), self.learned.name(), self.detour_ratio)
     }
 }
+
+/// Memoises an estimator on (bucket, prev, from, to): the beam re-queries the same edge thousands of
+/// times (every partial tour at `from` with the same arrival bucket asks the same question), and a
+/// learned estimator pays a network forward pass per query — Poland 2026 took > 75 min un-memoised.
+pub struct Memo<'a> {
+    pub inner: &'a dyn EdgeEstimator,
+    cache: std::cell::RefCell<std::collections::HashMap<(u8, u8, u32, u32, u32), Edge>>,
+    pub hits: std::cell::Cell<u64>,
+    pub misses: std::cell::Cell<u64>,
+}
+
+impl<'a> Memo<'a> {
+    pub fn new(inner: &'a dyn EdgeEstimator) -> Memo<'a> {
+        Memo { inner, cache: std::cell::RefCell::new(std::collections::HashMap::new()), hits: std::cell::Cell::new(0), misses: std::cell::Cell::new(0) }
+    }
+}
+
+impl<'a> EdgeEstimator for Memo<'a> {
+    fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
+        let key = (bucket.speed_bin, bucket.car, prev.map_or(u32::MAX, |p| p as u32), from as u32, to as u32);
+        if let Some(e) = self.cache.borrow().get(&key) {
+            self.hits.set(self.hits.get() + 1);
+            return e.clone();
+        }
+        self.misses.set(self.misses.get() + 1);
+        let e = self.inner.estimate(bucket, prev, from, to);
+        self.cache.borrow_mut().insert(key, e.clone());
+        e
+    }
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+}
