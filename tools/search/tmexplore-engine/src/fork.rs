@@ -50,7 +50,7 @@ pub struct ForkOpts {
     /// boundary; nothing about it is a driver.
     pub reference_ghost: PathBuf,
     pub shim: PathBuf,
-    /// The `lroundf` clock the server forks at. Earlier is better for a cold
+    /// The tick the server forks at. Earlier is better for a cold
     /// start: everything below the resulting boundary is fixed.
     pub checkpoint_clock: u64,
     pub start_offset_ms: i32,
@@ -126,7 +126,7 @@ impl ForkBranch {
         // hard abort: a resume cannot be trusted without it, and a fallback
         // here is how the phantom got in.
         let probe = srv.probe_tick()?;
-        let mut from = probe + 1;
+        let mut from = probe;
         if let Some(c) = o.common_from {
             if from > c {
                 return Err(format!(
@@ -223,10 +223,8 @@ impl ForkBranch {
         // Bit 31 of `max` makes the child exit as soon as the sample budget is
         // spent rather than simulating on in silence.
         let samples = (n as u32).saturating_add(4);
-        // Clock units per tick: 1 under the tick hook, ~255 lroundf calls under
-        // the legacy clock. Only bounds how far the child runs; nothing is
-        // labelled from it.
-        let budget = ((n as u64 + 4) * forkoracle::clock::per_tick()).min(u32::MAX as u64) as u32;
+        // Ticks. Only bounds how far the child runs; nothing is labelled from it.
+        let budget = (n as u64 + 4).min(u32::MAX as u64) as u32;
         let (json, blob) = self.srv.run_sampled_segs_ex(
             self.from,
             &recs,
