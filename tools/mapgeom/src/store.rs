@@ -49,7 +49,7 @@ fn parse_key(hex: &str) -> Result<[u8; 16], String> {
     Ok(k)
 }
 
-fn pak_encrypted_header_start(data: &[u8], version: i32) -> Result<usize, String> {
+pub fn pak_encrypted_header_start(data: &[u8], version: i32) -> Result<usize, String> {
     let mut o = 12usize;
     let take = |o: &mut usize, n: usize| -> Result<(), String> {
         if *o + n > data.len() {

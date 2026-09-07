@@ -104,10 +104,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // (baked) non-Sea blocks -- the FC clip fillers that finish the authored
     // structures; the Sea itself stays the full-size foundation
     let mut keys: BTreeMap<(String, u32), usize> = BTreeMap::new();
+    // Free-placed blocks (flag 0x20000000) are keyed like the rest: their
+    // variant bits are the same, `tmmaps tiny` places them from free_pos /
+    // free_rot (Summer 11 has 87 of them; skipping them refused the map).
     for b in source.blocks.iter().chain(source.baked.iter().filter(|b| b.name != "Sea")) {
-        if b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
-            continue;
-        }
         *keys.entry((b.name.clone(), b.flags)).or_insert(0) += 1;
     }
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -305,9 +305,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| b.name != "Sea").map(|b| ("b@", b))) {
-        if b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
-            continue;
-        }
         match block_map.get(&(b.name.clone(), b.flags)) {
             Some((alias, sx, sz)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };

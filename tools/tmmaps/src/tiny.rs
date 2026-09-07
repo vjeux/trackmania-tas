@@ -123,6 +123,11 @@ fn read_mapping(path: &Path) -> Mappings {
     out
 }
 
+/// World y of the BlueBay sea surface: the height the tiny transform keeps
+/// fixed by default (the land plane, block top y 10, halves to 8.5 above
+/// it — the verified Summer 01 mapping, spawn 16 -> 11.5).
+const WATER_LEVEL: f32 = 7.0;
+
 thread_local! {
     /// World y of cell row 0 for the map being converted (see `map::ground_y`).
     static GROUND_Y: std::cell::Cell<f32> = const { std::cell::Cell::new(-62.0) };
@@ -219,8 +224,24 @@ pub fn cmd_batch(args: &[String]) {
         "{} contains no .Map.Gbx files",
         input.display()
     );
+    // --mapgeom BIN --paks "--pak A:HASH --pak B:HASH": build EVERY map its own
+    // item library first (`mapgeom tiny-library`, a subprocess: the mapping is
+    // indexed by the map's own block indices, so one library cannot serve
+    // two maps); the TINY_* recipe comes from the environment. Without it the
+    // old form applies: one --mapping/--library shared by every map.
+    let mapgeom = cli::flag(args, "--mapgeom").map(PathBuf::from);
+    let paks: Vec<String> = cli::flag(args, "--paks").map(|p| p.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
+    // The CLI's panic hook exits the process on the first refusal; a batch
+    // wants the refusal printed and the next map tried.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.payload().downcast_ref::<String>().cloned().or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(|| "internal error".to_string());
+        eprintln!("tmmaps: {msg}");
+    }));
+    let mut failed: Vec<String> = Vec::new();
     for source in maps {
-        let target = output.join(source.file_name().unwrap());
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let stem = name.trim_end_matches(".Map.Gbx").to_string();
+        let target = output.join(&name);
         let mut one = vec![
             "tmmaps".to_string(),
             "tiny".to_string(),
@@ -228,13 +249,45 @@ pub fn cmd_batch(args: &[String]) {
             "--out".to_string(),
             target.display().to_string(),
         ];
+        if let Some(bin) = &mapgeom {
+            let lib = output.join(format!("{stem}.lib.zip"));
+            let mapping = output.join(format!("{stem}.placements.tsv"));
+            let report = output.join(format!("{stem}.report.tsv"));
+            println!("== {name}: library");
+            let status = std::process::Command::new(bin)
+                .args(&paks)
+                .arg("tiny-library")
+                .arg(&source)
+                .arg("--library-out").arg(&lib)
+                .arg("--mapping-out").arg(&mapping)
+                .arg("--report").arg(&report)
+                .status()
+                .unwrap_or_else(|e| panic!("{}: {e}", bin.display()));
+            if !status.success() {
+                eprintln!("== {name}: tiny-library failed ({status}); skipped");
+                failed.push(name);
+                continue;
+            }
+            one.extend(["--mapping".to_string(), mapping.display().to_string(), "--library".to_string(), lib.display().to_string()]);
+        }
         for flag in ["--mapping", "--library", "--scale", "--anchor"] {
             if let Some(value) = cli::flag(args, flag) {
                 one.push(flag.to_string());
                 one.push(value.to_string());
             }
         }
-        cmd(&one);
+        println!("== {name}: tiny");
+        match std::panic::catch_unwind(|| cmd(&one)) {
+            Ok(()) => {}
+            Err(_) => {
+                eprintln!("== {name}: tiny failed; skipped");
+                failed.push(name);
+            }
+        }
+    }
+    if !failed.is_empty() {
+        eprintln!("tiny-batch: {} map(s) failed: {}", failed.len(), failed.join(", "));
+        std::process::exit(1);
     }
 }
 
@@ -253,10 +306,7 @@ pub fn cmd(args: &[String]) {
         scale.is_finite() && scale > 0.0,
         "--scale must be positive and finite"
     );
-    let target_anchor = vec3(
-        cli::flag(args, "--anchor").unwrap_or("1024,300,1024"),
-        "--anchor",
-    );
+    let anchor_flag = cli::flag(args, "--anchor").map(|a| vec3(a, "--anchor"));
     let mapping = read_mapping(&mapping_path);
     // --host HOST.Map.Gbx: build the copy INTO another map (e.g. an empty
     // Stadium map, where real Stadium materials are accepted) instead of into
@@ -272,6 +322,10 @@ pub fn cmd(args: &[String]) {
         .find(|w| w.kind == crate::map::Kind::Block && w.tag == "Spawn")
         .expect("map needs a block-carried Spawn");
     let source_anchor = block_pos(&source.blocks[spawn.index]);
+    // Default target anchor: the start keeps its x,z and the sea surface
+    // stays where it is, so y' = 7 + (y - 7) * scale. Summer 01: spawn 1584,16,784 -> 1584,11.5,784.
+    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], WATER_LEVEL + (source_anchor[1] - WATER_LEVEL) * scale, source_anchor[2]]);
+    println!("  anchor: spawn {:?} -> {:?} (scale {scale})", source_anchor, target_anchor);
 
     // ALL authored blocks are required. A missing model is a refusal, never a
     // silently omitted decoration that makes the output look "mostly tiny".

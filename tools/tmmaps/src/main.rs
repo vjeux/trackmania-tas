@@ -1195,7 +1195,9 @@ TINY MAPS (half-scale campaign: every authored block/item -> an embedded static 
         `@index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz`; `-` = intentionally
         nothing) and re-point/drop items (`i@index<TAB>ITEM|stock model|-`);
         the baked foundation stays. Inputs come from `mapgeom tiny-library`.
-  tmmaps tiny-batch DIR --out DIR [same flags]      every .Map.Gbx of a directory
+  tmmaps tiny-batch DIR --out DIR [--mapgeom BIN --paks "--pak F:HASH …"] [same flags]
+                                                    every .Map.Gbx of a directory; with --mapgeom each map gets
+                                                    its own item library (OUT/NAME.lib.zip, .placements.tsv, .report.tsv)
   tmmaps tiny-catalog MAP --mapping T --library Z --out F [--only NAME] [--lineup A,B]
         one block per model beside its items (or the listed item files), for a look
 
