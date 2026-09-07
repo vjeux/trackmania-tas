@@ -189,6 +189,16 @@ static VALIDATOR_PARTICIPANT_COUNT_ARG: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_ARMED: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_SOCK_LEN: AtomicUsize = AtomicUsize::new(0);
 static mut BRANCH_SOCK: [u8; 108] = [0; 108];
+/// WARM NODES (`BranchReq::watched`). A branch child asked to run its ticks
+/// with the armed watchdog sets `BRANCH_WARMING` while it consumes them; when it
+/// re-enters the fork server it clears that and sets `NODE_WARM`: this
+/// process's `EVAL` now holds the watched run's state -- speed history,
+/// progress, gate and event records -- up to its own tick, and a `'W'` child
+/// forked from it CONTINUES that run instead of resetting. That is what makes a
+/// candidate forked 1800 ticks in return the summary the root would have
+/// returned. Both are inherited by descendants, which is the point.
+static BRANCH_WARMING: AtomicUsize = AtomicUsize::new(0);
+static NODE_WARM: AtomicUsize = AtomicUsize::new(0);
 /// The input array's base, found once by `locate` and inherited by every
 /// descendant. Re-verified, never merely trusted.
 static CACHED_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -597,6 +607,23 @@ unsafe fn watch_eval(rec: *const u8, clock: i64) {
     if trip >= 0 {
         // dead candidate: stop paying for it. The parent sees EOF on the JSON
         // pipe and reads the verdict out of the shared page.
+        if BRANCH_WARMING.load(Ordering::Relaxed) != 0 {
+            // A branch child warming up on the lineage's own ticks tripped: it
+            // cannot become a node, and a driver waiting on the socket must
+            // not sit out its timeout to learn that. Connect and say so; the
+            // hello fails to parse as READY and the driver falls back.
+            let path = &*core::ptr::addr_of!(BRANCH_SOCK);
+            let n = BRANCH_SOCK_LEN.load(Ordering::SeqCst);
+            let fd = connect_unix(&path[..n]);
+            if fd >= 0 {
+                let mut m = Vec::with_capacity(64);
+                m.extend_from_slice(b"ERR tripped pred ");
+                utoa(trip as u64, &mut m);
+                m.extend_from_slice(b" tick ");
+                utoa(tick.max(0) as u64, &mut m);
+                send_frame(fd, &m);
+            }
+        }
         _exit(0)
     }
 }
@@ -2029,6 +2056,15 @@ unsafe fn forkserver() {
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
+    // A warm branch stops watching here -- a paused node runs no ticks -- and
+    // keeps what the watchdog saw: every `'W'` child of this node continues
+    // from it.
+    if branch && BRANCH_WARMING.swap(0, Ordering::SeqCst) != 0 {
+        WATCH_ON.store(0, Ordering::SeqCst);
+        SAMPLE_STRIDE.store(0, Ordering::SeqCst);
+        SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+        NODE_WARM.store(1, Ordering::SeqCst);
+    }
 
     // The trace file this child wrote while it consumed its k ticks. Closed
     // BEFORE the handshake, so the driver that reads it after READY reads a
@@ -2406,9 +2442,33 @@ unsafe fn forkserver() {
             let skeyoff = u32::from_le_bytes(payload[o + 16..o + 20].try_into().unwrap()) as usize;
             o += 20;
             let poff = o;
+            // OPTIONAL trailing flags after the patches (an older driver sends
+            // none): bit 0 = warm node, see `BRANCH_WARMING`.
+            let bflags = {
+                let f = poff + np * 16;
+                if payload.len() >= f + 4 {
+                    u32::from_le_bytes(payload[f..f + 4].try_into().unwrap())
+                } else {
+                    0
+                }
+            };
+            let warm = bflags & 1 != 0;
             if slen == 0 || slen > 107 {
                 send_frame(res, b"ERR socklen");
                 continue;
+            }
+            // Refused BEFORE the fork, with a reason, rather than in a child
+            // that dies where nobody can read why.
+            if warm {
+                let cfg = &*core::ptr::addr_of!(WCFG);
+                if cfg.out.is_null() || cfg.nseg == 0 {
+                    send_frame(res, b"ERR not armed: a warm node needs the watchdog armed first");
+                    continue;
+                }
+                if nseg > 0 && tlen > 0 {
+                    send_frame(res, b"ERR a warm node cannot also write a state trace");
+                    continue;
+                }
             }
             fflush(std::ptr::null_mut());
             let pid = fork();
@@ -2435,11 +2495,42 @@ unsafe fn forkserver() {
                 b[..slen].copy_from_slice(&sock);
                 BRANCH_SOCK_LEN.store(slen, Ordering::SeqCst);
             }
-            // The state trace, if the driver asked for one. Same sampler the
-            // 'S' path uses, aimed at a file instead of a pipe: nobody is
-            // reading the other end yet, and a pipe that fills would stall the
-            // simulation we are trying to time.
-            if nseg > 0 && tlen > 0 {
+            if warm {
+                // THE WARM NODE. Run the ticks to the stop point exactly as a
+                // `'W'` child would, on a report page of this lineage's own,
+                // and keep the evaluator afterwards (see `NODE_WARM`). A node
+                // made from a node that is already warm continues ITS state
+                // rather than resetting: the run this lineage represents began
+                // at the root and has been watched ever since.
+                let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
+                let p = mmap(std::ptr::null_mut(), 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+                if p as isize == -1 || p.is_null() {
+                    log(b"FKSHIM: warm branch could not map its report page\n");
+                    _exit(94)
+                }
+                cfg.out = p as *mut u8;
+                if NODE_WARM.load(Ordering::SeqCst) == 0 {
+                    let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+                    ev.reset();
+                    ev.np = cfg.np;
+                    ev.preds = cfg.preds;
+                    ev.rl = cfg.rl;
+                    ev.finish_s = cfg.finish_s;
+                    ev.plane_x = cfg.plane_x;
+                    ev.gate = cfg.gate;
+                    ev.fire = cfg.fire;
+                    WPREV_VALID.store(0, Ordering::SeqCst);
+                    WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+                }
+                BRANCH_WARMING.store(1, Ordering::SeqCst);
+                WATCH_ON.store(1, Ordering::SeqCst);
+                SAMPLE_STRIDE.store(1, Ordering::SeqCst);
+                SAMPLE_NEXT.store(0, Ordering::SeqCst);
+            } else if nseg > 0 && tlen > 0 {
+                // The state trace, if the driver asked for one. Same sampler the
+                // 'S' path uses, aimed at a file instead of a pipe: nobody is
+                // reading the other end yet, and a pipe that fills would stall the
+                // simulation we are trying to time.
                 let fd = open(tracep.as_ptr() as *const c_char, 577, 0o644);
                 if fd < 0 {
                     log(b"FKSHIM: branch could not open its trace file\n");
@@ -2953,17 +3044,21 @@ unsafe fn forkserver() {
                     let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
                     apply_patch(base, tick, payload.as_ptr().add(o + 4));
                 }
-                let ev = &mut *core::ptr::addr_of_mut!(EVAL);
-                ev.reset();
-                ev.np = cfg.np;
-                ev.preds = cfg.preds;
-                ev.rl = cfg.rl;
-                ev.finish_s = cfg.finish_s;
-                ev.plane_x = cfg.plane_x;
-                ev.gate = cfg.gate;
-                ev.fire = cfg.fire;
-                WPREV_VALID.store(0, Ordering::SeqCst);
-                WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+                // A WARM NODE's child continues the run the node has been
+                // watching since the root; a cold one starts from nothing.
+                if NODE_WARM.load(Ordering::SeqCst) == 0 {
+                    let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+                    ev.reset();
+                    ev.np = cfg.np;
+                    ev.preds = cfg.preds;
+                    ev.rl = cfg.rl;
+                    ev.finish_s = cfg.finish_s;
+                    ev.plane_x = cfg.plane_x;
+                    ev.gate = cfg.gate;
+                    ev.fire = cfg.fire;
+                    WPREV_VALID.store(0, Ordering::SeqCst);
+                    WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+                }
                 WATCH_ON.store(1, Ordering::SeqCst);
                 SAMPLE_STRIDE.store(1, Ordering::SeqCst);
                 SAMPLE_NEXT.store(0, Ordering::SeqCst);
