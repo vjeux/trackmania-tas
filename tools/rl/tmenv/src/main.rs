@@ -98,6 +98,7 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("threeway") => threeway(&a),
         Some("clock-probe") => clock_probe(&a),
         Some("sample-diff") => sample_diff(&a),
         Some("transplant") => transplant(&a),
@@ -3587,4 +3588,57 @@ fn clock_probe(a: &[String]) {
             z
         );
     }
+}
+
+/// THE THREE-WAY TICK CHECK: env rows (open-loop --dump-trace TSV), fk regen
+/// --dump-truth rows (CSV), and the ghost's own telemetry samples, pairwise at
+/// Δt = 0 and ±10 ms.
+fn threeway(a: &[String]) {
+    let trace = flag(a, "--trace").unwrap_or_else(|| die("--trace".into()));
+    let truth = flag(a, "--truth").unwrap_or_else(|| die("--truth".into()));
+    let ghost = flag(a, "--ghost").unwrap_or_else(|| die("--ghost".into()));
+    let read_table = |p: &str, sep: char| -> std::collections::BTreeMap<i64, [f64; 3]> {
+        let s = std::fs::read_to_string(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+        let mut m = std::collections::BTreeMap::new();
+        for l in s.lines().skip(1) {
+            let f: Vec<&str> = l.split(sep).collect();
+            if f.len() < 4 {
+                continue;
+            }
+            if let (Ok(t), Ok(x), Ok(y), Ok(z)) = (f[0].parse::<i64>(), f[1].parse::<f64>(), f[2].parse::<f64>(), f[3].parse::<f64>()) {
+                m.insert(t, [x, y, z]);
+            }
+        }
+        m
+    };
+    let env = read_table(&trace, '\t');
+    let dump = read_table(&truth, ',');
+    let dec = gbx::record::decode_ghost(&ghost).unwrap_or_else(|e| die(e.to_string()));
+    let tel: std::collections::BTreeMap<i64, [f64; 3]> =
+        dec.samples.iter().map(|s| (s.time_ms as i64, [s.x as f64, s.y as f64, s.z as f64])).collect();
+    println!("env rows {}, dump-truth rows {}, telemetry samples {}", env.len(), dump.len(), tel.len());
+    let pair = |name: &str, p: &std::collections::BTreeMap<i64, [f64; 3]>, q: &std::collections::BTreeMap<i64, [f64; 3]>| {
+        for shift in [-10i64, 0, 10] {
+            let mut d: Vec<f64> = Vec::new();
+            for (t, a) in p {
+                if let Some(b) = q.get(&(t + shift)) {
+                    d.push(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt());
+                }
+            }
+            if d.is_empty() {
+                println!("  {name}: Δt {shift:+3} ms: no pairs");
+                continue;
+            }
+            d.sort_by(|x, y| x.total_cmp(y));
+            println!(
+                "  {name}: Δt {shift:+3} ms: {} pairs, |Δpos| median {:.4} m, max {:.4} m",
+                d.len(),
+                d[d.len() / 2],
+                d[d.len() - 1]
+            );
+        }
+    };
+    pair("env row T      vs dump-truth row T+Δt", &env, &dump);
+    pair("env row T      vs telemetry T+Δt    ", &env, &tel);
+    pair("dump-truth T   vs telemetry T+Δt    ", &dump, &tel);
 }

@@ -2051,6 +2051,17 @@ unsafe fn forkserver() {
             }
             if pid == 0 {
                 IS_CHILD.store(1, Ordering::SeqCst);
+                // A PROBE CHILD SAMPLES NOTHING. The parent's sampler statics may be
+                // armed from an earlier 'S' (deadline, exit-when-done): inherited
+                // by this child they fire in `do_sample` at the first hook entry and
+                // `_exit(0)` it before it ever touches the input array -- an EMPTY
+                // probe reply with wstatus 0 (seen on ~1 in 10 servers when several
+                // references start at once, since the probe after the clock scan is
+                // the one that inherits an armed sampler). Disarm first.
+                SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+                SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
+                SAMPLE_EXIT.store(0, Ordering::SeqCst);
+                WATCH_ON.store(0, Ordering::SeqCst);
                 close(fds[0]);
                 dup2(fds[1], 1);
                 arm_probe(base, key.steer.len(), fds[1]);
