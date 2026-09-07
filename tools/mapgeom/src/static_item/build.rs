@@ -1476,6 +1476,25 @@ pub fn material_link(path: &str) -> String {
 
 /// Walk a prefab (and its external prefabs, recursively) adding every static
 /// object placed by `at`.
+/// A pack `*_Trigger.Shape.Gbx` (CPlugSurface) as a waypoint trigger in the
+/// item's scaled frame — the canonical mesh form the game accepts from an item
+/// (the pack surface kept verbatim, materials and ids included, made the game
+/// drop the whole item: GateCheckpointLeft32m, 2026-09-06). `at` is the frame
+/// the shape is authored in (identity for a block's own trigger).
+pub fn trigger_from_shape_file(store: &mut crate::store::DataStore, shape_path: &str, at: &Xform, scale: f32) -> R<super::surface::CPlugSurface> {
+    let sm = store.load_model(shape_path)?;
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(sm.external_indices().iter().copied());
+    let mut r = super::Rd::new(&sm.body, 0, lb);
+    let sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{shape_path}: {e}"))?;
+    let super::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf else {
+        return Err(format!("{shape_path}: trigger shape is not a mesh surface"));
+    };
+    let verts: Vec<[f32; 3]> = vertices.iter().map(|v| { let t = apply(at, *v); [t[0] * scale, t[1] * scale, t[2] * scale] }).collect();
+    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: 0, u03: 0, surface_index: 0 }).collect();
+    Ok(super::surface::CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0]))
+}
+
 pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, depth: usize) -> R<()> {
     if depth > 8 {
         return Err(format!("{path}: prefab nesting deeper than 8"));
