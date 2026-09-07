@@ -773,13 +773,15 @@ pub fn cmd(args: &[String]) {
     }
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
-    // The source's stored lightmap goes (TINY_LIGHTMAP=keep keeps it): it was
-    // computed for the full-size layout, and a block-deleted map whose items
-    // all load is an UNMODIFIED, validated map to the game, which then applies
-    // it — Summer 05 (2026-09-07): the original's shadows on the tiny deck,
-    // mottled grass in play mode. The parked maps got it discarded only
-    // because the load-time repair of their stacked blocks marked them
-    // modified (and 15's deleted build because 16 placements had no model).
+    // The source's stored lightmap goes (TINY_LIGHTMAP=keep keeps it). It was
+    // computed for the full-size layout and the game applies it BY OBJECT
+    // INDEX: in PLAY mode a parked build of Summer 15 (2026-09-07) drew every
+    // converted-block item BLACK — the appended items fall outside the
+    // lightmap's tables — while the original items (screens, palms, flags)
+    // were lit; the same build with the lightmap stripped is lit throughout,
+    // pixel-identical to the deleted builds. Every map published before this
+    // (parked, lightmap kept) has that defect in play. In the editor the
+    // stale map showed "VALIDATED" and the original's shading on 05's deck.
     if std::env::var("TINY_LIGHTMAP").map(|v| v != "keep").unwrap_or(true) {
         let n = m.strip_lightmap();
         println!("  stored lightmap stripped ({n} bytes)");
