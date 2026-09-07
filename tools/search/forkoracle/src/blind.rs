@@ -340,6 +340,7 @@ pub fn locate_blind(
         clock_bias: bias,
         rms: hit.vel_err,
         max_dev: hit.vel_err,
+        cps: 0,
     })
 }
 

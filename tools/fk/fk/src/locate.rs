@@ -460,7 +460,7 @@ pub fn locate_v2(
         if verbose {
             println!("STATE {:#014x} (base-{}) taken from FK_STATE_OFF", pos, off);
         }
-        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 });
+        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0, cps: 0 });
     }
     // THE CAR COMES FROM THE POINTER, not from a sweep.
     //
@@ -489,6 +489,7 @@ pub fn locate_v2(
         clock_bias: ck.bias,
         rms: 0.0,
         max_dev: 0.0,
+        cps: 0,
     })
 }
 
@@ -516,6 +517,7 @@ pub fn trajectory(
             qy: getf32(&t.rec, R_QUAT + 8),
             qz: getf32(&t.rec, R_QUAT + 12),
             wetness: getf32(&t.rec, forkoracle::layout::R_WET),
+            cps: u32::MAX,
         })
         .collect()
 }

@@ -246,6 +246,20 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
+        self.advance_budget(h, inputs, from, (k_ticks * LROUNDF_PER_TICK).max(1))
+    }
+
+    /// [`Forest::advance`] with the child's stop given as a raw `lroundf`
+    /// budget instead of a tick count -- for a caller that wants to place the
+    /// stop more finely than whole ticks (the env: k ticks plus a fraction, so
+    /// a one-tick step reliably crosses one tick boundary and no more).
+    pub fn advance_budget(
+        &mut self,
+        h: Handle,
+        inputs: &[Rec],
+        from: usize,
+        lroundf_budget: u64,
+    ) -> Result<(StateTrace, Handle), String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -282,7 +296,7 @@ impl Forest {
             recs: inputs,
             // ~255 calls to the tick. Where the child ACTUALLY stops is what
             // its probe says; this only decides roughly how far it goes.
-            stop_after_lroundf: (k_ticks * LROUNDF_PER_TICK).max(1),
+            stop_after_lroundf: lroundf_budget.max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,

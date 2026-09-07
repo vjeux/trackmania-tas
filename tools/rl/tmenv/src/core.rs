@@ -187,6 +187,7 @@ impl Default for Info {
     }
 }
 
+#[derive(Clone)]
 pub struct Core {
     pub cfg: CoreCfg,
     pub track: Arc<Track>,
@@ -199,7 +200,6 @@ pub struct Core {
     last_gain_tick: usize,
     off_run: usize,
     tick: usize,
-    prev_action: usize,
     /// The last `tmobs::N_PREV` actions, oldest first: the observation's
     /// action-history block.
     prev_actions: Vec<Action>,
@@ -225,7 +225,6 @@ impl Core {
             last_gain_tick: 0,
             off_run: 0,
             tick: 0,
-            prev_action: usize::MAX,
             prev_actions: Vec::new(),
             cur_s: 0.0,
             done: None,
@@ -265,8 +264,47 @@ impl Core {
         self.cur
     }
 
+    /// Checkpoints credited so far.
+    ///
+    /// **The engine's own counter when the row carries it** (`Row::cps`,
+    /// resolved from the validator's participant — gap G1), else the geometric
+    /// tracker. The finish increments the counter too, so on a map with n
+    /// gates `finished` is `cps >= n`.
     pub fn gates_hit(&self) -> usize {
+        if self.cur.cps != u32::MAX {
+            self.cur.cps as usize
+        } else {
+            self.gates.hit()
+        }
+    }
+
+    /// Whether the row carries the engine's counter at all.
+    pub fn engine_cps(&self) -> bool {
+        self.cur.cps != u32::MAX
+    }
+
+    /// The geometric detector's own count, kept as the cross-check it is.
+    pub fn geometric_gates_hit(&self) -> usize {
         self.gates.hit()
+    }
+
+    fn is_finished(&self) -> bool {
+        if self.cur.cps != u32::MAX {
+            self.track.n_gates() > 0 && self.cur.cps as usize >= self.track.n_gates()
+        } else {
+            self.gates.finished(&self.track)
+        }
+    }
+
+    /// The arc length progress may not exceed: the first gate still owed,
+    /// by the engine's count when it has one.
+    fn progress_cap(&self) -> f32 {
+        if self.cur.cps != u32::MAX {
+            let k = self.cur.cps as usize;
+            if k < self.track.n_gates() { self.track.gate_s[k] } else { self.track.length() }
+        } else {
+            self.gates.cap(&self.track)
+        }
     }
 
     /// Start an episode from the state the engine is in at `row0`.
@@ -277,7 +315,6 @@ impl Core {
         self.tick = tick0;
         self.last_gain_tick = tick0;
         self.off_run = 0;
-        self.prev_action = usize::MAX;
         self.prev_actions.clear();
         self.done = None;
         self.cur_s = 0.0;
@@ -288,7 +325,7 @@ impl Core {
         let pr = self.track.probe_near(p, Some(0.0));
         self.cur_s = pr.s;
         self.gates.observe(&self.track, p, pr.s);
-        self.best_s = if self.cfg.gate_cap { pr.s.min(self.gates.cap(&self.track)) } else { pr.s };
+        self.best_s = if self.cfg.gate_cap { pr.s.min(self.progress_cap()) } else { pr.s };
         self.observe()
     }
 
@@ -309,7 +346,12 @@ impl Core {
     /// Every tick is examined, not just the last: a gate collected in the
     /// middle of a ten-tick macro is collected, and a car that left the
     /// corridor and came back within one macro really did leave it.
-    pub fn ingest(&mut self, action: usize, rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
+    ///
+    /// `actions` are the per-TICK inputs the chunk wrote, in order; row `j`
+    /// is paired with `actions[min(j, last)]` for the observation's action
+    /// history (the last `tmobs::N_PREV` TICKS, which is what a recorded ghost
+    /// gives the DATA arm too).
+    pub fn ingest(&mut self, actions: &[Action], rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
         let mut info = Info::default();
         if self.done.is_some() {
             return (self.observe(), 0.0, self.done, info);
@@ -317,10 +359,13 @@ impl Core {
         let mut reward = 0.0f32;
         let ticks = rows.len();
 
-        for r in rows {
+        for (j, r) in rows.iter().enumerate() {
             self.prev = Some(self.cur);
             self.cur = *r;
             self.tick += 1;
+            if let Some(a) = actions.get(j.min(actions.len().saturating_sub(1))) {
+                self.push_action(*a);
+            }
 
             let p = self.pos();
             let pr = self.track.probe_near(p, Some(self.cur_s));
@@ -330,7 +375,7 @@ impl Core {
             // Saturating progress, and only ever the NEW maximum: a car that
             // drives back and forth over the same stretch is not paid twice,
             // so there is no reward to farm short of the finish.
-            let cap = if self.cfg.gate_cap { self.gates.cap(&self.track) } else { self.track.length() };
+            let cap = if self.cfg.gate_cap { self.progress_cap() } else { self.track.length() };
             let s_eff = pr.s.min(cap);
             if s_eff > self.best_s {
                 info.dprog += s_eff - self.best_s;
@@ -351,7 +396,7 @@ impl Core {
                 info.air_guarded = true;
             }
 
-            if self.gates.finished(&self.track) {
+            if self.is_finished() {
                 self.done = Some(Done::Finished);
             } else if self.off_run >= self.cfg.offroute_ticks {
                 self.done = Some(Done::OffRoute);
@@ -377,13 +422,11 @@ impl Core {
             _ => {}
         }
 
-        self.prev_action = action;
-        self.push_action(action);
         info.tick = self.tick;
         info.state = self.state();
         info.race_s = self.cur.time_ms as f32 / 1000.0;
         info.best_s = self.best_s;
-        info.gates = self.gates.hit();
+        info.gates = self.gates_hit();
         info.speed = norm(self.vel());
         (self.observe(), reward, self.done, info)
     }
@@ -418,8 +461,8 @@ impl Core {
             ),
             None => [f32::NAN; 3],
         };
-        st.cps = self.gates.hit().min(u8::MAX as usize) as u8;
-        st.finished = self.gates.finished(&self.track);
+        st.cps = self.gates_hit().min(u8::MAX as usize) as u8;
+        st.finished = self.is_finished();
         st
     }
 
@@ -428,9 +471,8 @@ impl Core {
         &self.prev_actions
     }
 
-    fn push_action(&mut self, action: usize) {
-        let a = self.acts.get(action);
-        self.prev_actions.push(Action { steer: a.steer as i8, gas: a.gas != 0, brake: a.brake != 0 });
+    fn push_action(&mut self, a: Action) {
+        self.prev_actions.push(a);
         if self.prev_actions.len() > tmobs::N_PREV {
             let drop = self.prev_actions.len() - tmobs::N_PREV;
             self.prev_actions.drain(0..drop);
@@ -467,6 +509,7 @@ pub fn zero_row() -> Row {
         qz: 0.0,
         qw: 1.0,
         wetness: 0.0,
+        cps: u32::MAX,
     }
 }
 
@@ -502,7 +545,7 @@ mod tests {
     }
 
     fn row(t: i64, z: f64, vz: f64) -> Row {
-        Row { time_ms: t, x: 0.3, y: 10.0, z, vx: 0.0, vy: 0.0, vz, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0, wetness: 0.0 }
+        Row { time_ms: t, x: 0.3, y: 10.0, z, vx: 0.0, vy: 0.0, vz, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0, wetness: 0.0, cps: u32::MAX }
     }
 
     /// THE identity the interface promises: the env's live observation IS
@@ -529,7 +572,8 @@ mod tests {
                     row(t, z, -30.0)
                 })
                 .collect();
-            let (obs, _r, done, info) = core.ingest(step % 20, &rows);
+            let act = tmstate::Action { steer: ((step as i32 % 5) * 60 - 120) as i8, gas: true, brake: step % 7 == 0 };
+            let (obs, _r, done, info) = core.ingest(&[act; 10], &rows);
             let st = core.state();
             let again = tmobs::observe(&track.geom, &st, core.prev_actions());
             assert!(
