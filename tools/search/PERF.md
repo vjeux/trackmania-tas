@@ -476,3 +476,46 @@ batch it was measured in. `tmauto verdict` marks the same class `AFTER-TAPE`
 * `a_mutated_candidate_is_banked_only_under_the_time_it_actually_does` now
   states the rule: a mutant inside its tape banks under the oracle's time, one
   past its end is refused.
+
+---
+
+## 8–9. The two designs: `MPPI.md`
+
+The policy as an MPPI proposal over the savestate tree (§1 there), costed from
+this file's numbers — a rollout from a warm node is 0.5 ms fixed plus 24–30 µs
+a tick, a node 1–3 ms, so a 32-rollout, 100-tick planning step is ~12 ms over
+eight replicas of a node — and a learned progress critic as an abort rule (§2
+there): first a per-tick lag threshold `X(t)` learned from the confirmed
+improvements' lag traces, shipped as one more line-indexed table in the `'A'`
+arm message and judged by the existing `K_LAG` with `fk watch measure`'s
+"FASTER than the incumbent" count as the acceptance test; a network critic only
+if the table measurably leaves evaluation time on the floor.
+
+## 10. Dataset labels: nothing to cache
+
+Asked of the player coordinator (their answer, verbatim in spirit): the DATA
+arm's shards store raw per-tick `CarState + Action` (148-byte records) plus a
+per-map `geom.json`; `tmobs::observe` runs at load time at a few µs per sample,
+so the observation function can change without rebuilding shards, and there is
+no label computation to cache once. Nothing to do here.
+
+---
+
+## Summary
+
+| # | lever | before → after | proof | deleted |
+|---|---|---|---|---|
+| 1 | deep fork points (ladder, warm nodes) | 538 → 1,060 evals/s (10 min A/B, 24 workers); ×4.4 at a 90 % window | 3000/3000 identical time+summary on 3 maps; 0 phantoms | the single-checkpoint fork path |
+| 2 | incumbent-lag predicate | +4–7 % throughput at 0 false positives on 2000 | `fk watch measure`, score-safety 2000/2000 | — (new predicate) |
+| 3 | exit marker + standby child | late candidate 7.65 → 4.00 ms; fixed cost 54 % → 11 %; search +21 % | `fk tickhook cost`, 300/300 watched, 50/50, suites | two launch paths, two parent loops |
+| 4 | frame overhead | measured: ≤ 0.5 % of a run | inter-tick gap census | nothing to change |
+| 5 | sample ring | 3.2 µs per sample; sampled run 64.6 → 57.4 ms | shimhost test; CSVs byte-identical | the per-sample write |
+| 6 | box saturation | knee at ¾ of the cores; pinning −4.5 % | 6-point sweep, 2 min each | the pinning experiment |
+| 7 | batched certification | one launch per batch of 15 (see §7 for the 500-file run) | identical verdicts alone vs batched | one launch per claim |
+| 8–9 | designs | `MPPI.md` | — | — |
+| 10 | dataset labels | nothing to cache | player coordinator | — |
+
+Cumulative, the tape search on map 2 at 24 workers: **569 evals/s (tickhook @
+485319b) → 1,384 evals/s (this branch), 2.43×, in the same ten minutes on the
+same box, both guarded, both 0 phantoms** — and 3,419 evals/s at 64 workers
+alone on the box.
