@@ -67,11 +67,17 @@ where
     // a worker start (server boot + car derivation) can fail transiently under load (Summer
     // 2026 - 01 p00041 under 30 workers + two campaigns: failed once, passed twice alone):
     // one retry after 2 s before the ghost is failed closed
-    let mut w = match Worker::start(server, map, shim, work, ghost, verbose) {
-        Ok(w) => w,
-        Err(e1) => {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            Worker::start(server, map, shim, work, ghost, verbose).map_err(|e2| format!("{e2} (first attempt: {e1})"))?
+    // (PROBE-EMPTY under many concurrent starts: the ENV arm sees ~1 in 40; two retries, 5 s apart)
+    let mut attempt = 0;
+    let mut w = loop {
+        match Worker::start(server, map, shim, work, ghost, verbose) {
+            Ok(w) => break w,
+            Err(e) if attempt < 2 && !e.contains("no dedicated server") => {
+                attempt += 1;
+                eprintln!("  worker start failed ({e}); retry {attempt} in 5 s");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            Err(e) => return Err(if attempt > 0 { format!("{e} (after {attempt} retries)") } else { e }),
         }
     };
     let r = f(gi, &mut w, &tel);

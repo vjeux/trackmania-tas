@@ -165,7 +165,12 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
         if (t0[1] - sp.centre[1]).abs() > 12.0 {
             println!("SPAWN FRAME OFF vertically (GEOM/tmroute): telemetry t=0 y {:.2} vs Spawn y {:.2}", t0[1], sp.centre[1]);
         }
-        pass_a = t0_dxz <= 6.0 && t0_v <= 4.0 && root_on_tel < 0.05;
+        // the map Spawn is a GEOM number (Winter 2026 - 17: 9.9 m off on an offset-0 tape); the
+        // telemetry's own first sample at rest + the live root ON that telemetry is the control
+        if t0_dxz > 6.0 {
+            println!("SPAWN FRAME OFF (GEOM/tmroute): the telemetry's first sample is {t0_dxz:.2} m (horizontal) from the map Spawn ({:.1}, {:.1}, {:.1})", sp.centre[0], sp.centre[1], sp.centre[2]);
+        }
+        pass_a = t0_v <= 4.0 && root_on_tel < 0.05;
         println!(
             "START-POSITION control (ORIGIN; root is inside the race at tick {} race {}, {:.1} m/s): telemetry t=0 at ({:.3}, {:.3}, {:.3}) {:.2} m/s, \
              d_xz {:.2} m from Spawn ({:.1}, {:.1}, {:.1}); live root state {:.4} m off that telemetry  => {}",
