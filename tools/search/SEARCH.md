@@ -35,6 +35,12 @@ Three crates, one workspace, one `cargo test`:
 | `forkoracle` | the fork oracle: protocol, watchdog, record layout, the car locator, and the mutation operators — shared with `fk`, which measures the watchdog's false-positive rate against this exact mix |
 | `forkshim` | the LD_PRELOAD half of the fork oracle, loaded into the game server |
 
+The fork oracle's CLOCK is the engine's own tick: the shim hooks the function
+the validator calls once per simulated 10 ms, so a checkpoint is a tick and is
+the same simulation point in every process under any load. `TICKHOOK.md` has
+the hook, the controls and the measurements; `FK_CLOCK=lroundf` restores the
+old `lroundf`-counting clock for A/B.
+
 `forkoracle` and `forkshim` are in the same workspace because the shim
 `#[path]`-includes `forkoracle/src/pred_core.rs`: a predicate has exactly one
 definition in the parent that arms it and in the fork child that evaluates it.

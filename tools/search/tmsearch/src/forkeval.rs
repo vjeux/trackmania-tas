@@ -54,8 +54,9 @@ use forkoracle::pred::{outcome, GateRecord, Watch};
 /// estimate costs a checkpoint in the wrong place, never a wrong answer -- but
 /// if you are on a new map, measure the fit rather than trusting this.
 pub fn clock_for_tick(tick: i64, start_offset_ms: i32) -> u64 {
-    let ms = tick * 10 + start_offset_ms as i64;
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
+    // Under the tick hook this is EXACT (the start of the tick that consumes
+    // record `tick`); the fit above only describes the legacy lroundf clock.
+    forkoracle::clock::ckpt_for_tick(tick, start_offset_ms)
 }
 
 /// The exact first tick a resume may rewrite, calibrated against ground truth.
@@ -231,7 +232,11 @@ impl ForkEval {
         // WHERE DID THIS SERVER ACTUALLY STOP? Ask it, do not assume the
         // master's answer. A failed probe is a hard abort: a resume cannot be
         // trusted without it, and a fallback here is how the phantom got in.
-        let probe = srv.probe_tick()?;
+        // `boundary_tick` is the probe WITH the tick-hook control: under the
+        // tick clock the engine's reported tick must agree with the record the
+        // engine faults on, on every worker. `probe + 1` is the first
+        // unconsumed record (see `ForkServer::boundary_tick`).
+        let probe = srv.boundary_tick(s.start_offset_ms)?;
         let from = s.calibrated.max(probe + 1);
 
         let steer: Vec<u8> = reference.steer.iter().map(|&v| v as u8).collect();

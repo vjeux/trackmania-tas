@@ -78,10 +78,13 @@ impl Drop for Engine {
 
 /// Where to stop the simulation.
 ///
-/// The engine has no notion of "tick 2323"; it has an `lroundf` call count. The
-/// two are related by a line fitted on three segment maps, and the fit is only
-/// ever used to CHOOSE a checkpoint — never to label anything, because the
-/// count is not a fixed simulation point (see [`Session::probe_tick`]).
+/// Under the tick hook (the default) a checkpoint IS a tick: the shim stops at
+/// the start of the tick at that race time, before its input record is read,
+/// in every process and under any load. Under `FK_CLOCK=lroundf` the engine
+/// has no notion of "tick 2323" — only an `lroundf` count related to race time
+/// by a line fitted on three segment maps, which may CHOOSE a checkpoint and
+/// never label anything, because that count is not a fixed simulation point.
+/// See `tools/search/TICKHOOK.md`.
 #[derive(Clone, Copy, Debug)]
 pub enum Checkpoint {
     /// A raw `lroundf` call count.
@@ -100,10 +103,14 @@ pub enum Checkpoint {
 /// [`Session::probe_tick`] to learn where the server actually stopped, and
 /// never label a sample from this.
 pub fn clock_for_race_ms(ms: i64) -> u64 {
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
+    // Under the tick hook (the default) this is exact and the fit above is
+    // history; `FK_CLOCK=lroundf` brings the fit back. One definition, in
+    // `forkoracle::clock`.
+    forkoracle::clock::ckpt_for_race_ms(ms)
 }
 
-/// The TOTAL `lroundf` count for one full validation of `ghost` on `map`.
+/// The TOTAL clock (ticks under the hook, `lroundf` calls otherwise) for one
+/// full validation of `ghost` on `map`.
 ///
 /// Measured, not fitted, because `--at frac:F` should mean F of the run on any
 /// map rather than F of a line fitted on three segment maps of one ghost. Costs
@@ -143,14 +150,18 @@ pub fn total_clock(
         .args(["/nodaemon", "/validatepath=."])
         .current_dir(&dir)
         .env("LD_PRELOAD", shim.canonicalize().map_err(|e| e.to_string())?)
+        .env("FKSHIM_CLOCK", forkoracle::clock::shim_env())
         .output()
         .map_err(|e| format!("launching the server: {}", e))?;
     let _ = std::fs::remove_dir_all(&dir);
+    // `clock_total` is the shim's last clock reading in whichever unit it ran:
+    // race ticks (+ bias) under the tick hook, lroundf calls otherwise.
     String::from_utf8_lossy(&out.stderr)
         .lines()
-        .find_map(|l| l.strip_prefix("FKSHIM lroundf_total ")?.trim().parse().ok())
+        .find_map(|l| l.strip_prefix("FKSHIM clock_total ")?.trim().parse::<u64>().ok())
+        .filter(|v| *v != u64::MAX)
         .ok_or_else(|| {
-            "the shim did not report an lroundf total -- is LD_PRELOAD reaching the server?"
+            "the shim did not report a clock total -- is LD_PRELOAD reaching the server?"
                 .to_string()
         })
 }
@@ -248,7 +259,9 @@ impl Session {
     /// the incumbent's score, so `delta == 0` is accepted and that lineage is
     /// contaminated for free.
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        self.srv.probe_tick()
+        // With the control: under the tick hook the probe must equal the tick
+        // the engine says it stopped in front of.
+        self.srv.boundary_tick(self.tape.start_offset_ms)
     }
 }
 

@@ -61,7 +61,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     println!(
-        "checkpoint lroundf #{} -> probe tick {} (race {}), tape {} ticks",
+        "checkpoint clock #{} -> probe tick {} (race {}), tape {} ticks",
         s.checkpoint_clock,
         probe,
         crate::secs(s.tape.race_ms(probe)),
