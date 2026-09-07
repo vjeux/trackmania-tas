@@ -1,0 +1,17 @@
+[package]
+name = "tmrl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tmenv = { path = "../tmenv" }
+branch = { path = "../../search/branch" }
+forkoracle = { path = "../../search/forkoracle" }
+fk = { path = "../../fk/fk" }
+tmauto = { path = "../../tmauto" }
+candle-core = "0.9"
+candle-nn = "0.9"
+
+[[bin]]
+name = "tmrl"
+path = "src/main.rs"

@@ -19,6 +19,8 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk tree cost       what a savestate-tree branch costs, against every baseline  [Q1]
   fk tree exact      forward-only fork exactness, with both controls and a depth sweep
   fk tree scale      branch-evals per second with many servers side by side
+  fk tree tape       rewrite a container tape with a varied steer channel, so the shim
+                     can find the engine's input array at all
   fk liveness        is this anchor the copy of the car that has the fields?
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
@@ -245,7 +247,6 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         ks: ns("--ks", "1,5,10,20,50,200,1000"),
                         depth: num(rest, "--depth").unwrap_or(50) as usize,
                         seed: num(rest, "--seed").unwrap_or(1) as u64,
-                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
                         allow_load: has(rest, "--allow-load"),
                         trace: has(rest, "--trace"),
                     },
@@ -273,11 +274,16 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         secs: num(rest, "--secs").unwrap_or(30) as u64,
                         k: num(rest, "--k").unwrap_or(10) as u64,
                         seed: num(rest, "--seed").unwrap_or(1) as u64,
-                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
                         allow_load: has(rest, "--allow-load"),
                     },
                 ),
-                _ => Err("fk tree <cost|exact|scale>".into()),
+                "tape" => cmd::tree::tape_vary(
+                    &tape,
+                    std::path::Path::new(flag(rest, "--out").ok_or("fk tree tape needs --out FILE.Ghost.Gbx")?),
+                    num(rest, "--seed").unwrap_or(1) as u64,
+                    num(rest, "--amp").unwrap_or(12) as i32,
+                ),
+                _ => Err("fk tree <cost|exact|scale|tape>".into()),
             }
         }
         "watch" => cmd::watch::run(&a[1..]),

@@ -100,6 +100,42 @@ fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     Some(gbx::name::unescape_xml(&seg[a..b]))
 }
 
+/// The medal times the **map file itself** declares, out of the header XML's
+/// `<times>` element. This is the map's own number, and it is the one this
+/// project is allowed to depend on: an online API's `authorScore` is a mirror
+/// of it, and the two agreeing is a control rather than a source.
+///
+/// Values are milliseconds as written in the file. `-1` (the editor's "not
+/// set") reads as `None`, because a sentinel that survives into a comparison is
+/// exactly the kind of magic number this project has been burned by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Times {
+    pub bronze_ms: Option<i64>,
+    pub silver_ms: Option<i64>,
+    pub gold_ms: Option<i64>,
+    pub author_ms: Option<i64>,
+}
+
+/// Read `<times .../>` out of a `.Map.Gbx` header. Reads the header only — no
+/// body decompression, so it is cheap enough to run over a whole campaign.
+pub fn times(path: &str) -> Result<Times, String> {
+    let g = Gbx::load(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+    let chunks = user_chunks(&g.user_data)
+        .ok_or_else(|| format!("{path}: no user-data chunks"))?;
+    let xml = header_xml(&chunks)
+        .ok_or_else(|| format!("{path}: no header XML chunk (0x03043005)"))?;
+    if !xml.contains("<times ") {
+        return Err(format!("{path}: header XML carries no <times> element"));
+    }
+    let n = |a: &str| attr(&xml, "times", a).and_then(|v| v.parse::<i64>().ok()).filter(|v| *v >= 0);
+    Ok(Times {
+        bronze_ms: n("bronze"),
+        silver_ms: n("silver"),
+        gold_ms: n("gold"),
+        author_ms: n("authortime"),
+    })
+}
+
 /// Every `<dep file="…"/>` in the XML: the external files the map declares it
 /// needs. A missing dependency is invisible to a simulation and is exactly the
 /// kind of thing an editor open would have to resolve.

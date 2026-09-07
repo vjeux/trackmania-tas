@@ -493,6 +493,7 @@ extern "C" {
 const PROT_RW: c_int = 3;
 const MAP_SHARED: c_int = 1;
 const MAP_ANONYMOUS: c_int = 0x20;
+const MAP_PRIVATE: c_int = 2;
 
 const MAXREC: usize = 256;
 
@@ -2254,13 +2255,23 @@ unsafe fn forkserver() {
                     apply_patch(base, tick, payload.as_ptr().add(o + 4));
                 }
                 // buffers are allocated BEFORE the hook can fire, so the hot
-                // path never allocates
-                let mut b = vec![0u8; 8 + slen];
-                let mut p = vec![0xFFu8; slen.max(1)];
-                SAMPLE_BUF.store(b.as_mut_ptr() as usize, Ordering::SeqCst);
-                SAMPLE_PREV.store(p.as_mut_ptr() as usize, Ordering::SeqCst);
-                std::mem::forget(b);
-                std::mem::forget(p);
+                // path never allocates -- and they come from mmap, NOT the
+                // heap. A heap buffer can lie INSIDE the window being gathered
+                // (a 1 MB scan window over the brk heap contains the sampler's
+                // own 1 MB record buffer once glibc's dynamic mmap threshold
+                // has risen), and copying a window over its own destination
+                // corrupts the allocator: every scan child died with "double
+                // free or corruption (out)" and returned 0 samples, which
+                // read three layers up as "no candidates".
+                let bsz = 8 + slen;
+                let bp = mmap(std::ptr::null_mut(), bsz, PROT_RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                let pp = mmap(std::ptr::null_mut(), slen.max(1), PROT_RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if bp as isize == -1 || pp as isize == -1 {
+                    _exit(0);
+                }
+                std::ptr::write_bytes(pp as *mut u8, 0xFF, slen.max(1));
+                SAMPLE_BUF.store(bp as usize, Ordering::SeqCst);
+                SAMPLE_PREV.store(pp as usize, Ordering::SeqCst);
                 SAMPLE_ADDR.store(segs[0].0, Ordering::SeqCst);
                 SAMPLE_LEN.store(slen, Ordering::SeqCst);
                 SEG_N.store(nseg.min(MAX_SEG), Ordering::SeqCst);

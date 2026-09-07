@@ -140,6 +140,26 @@ pub struct Opts {
     pub with_deco: bool,
     pub verbose: bool,
     pub step: f32,
+    /// Solve the tour from THIS world position instead of the map's `Spawn`
+    /// waypoint.
+    ///
+    /// # Why this exists
+    ///
+    /// On Summer 2026 - 01 the dedicated server puts the validated car at
+    /// (1360.00, 10.00, 1108.75), 389 m from the map's own `RoadTechStart`
+    /// block at (1584, 16, 784). That is MEASURED — a memory sweep of all 2308
+    /// mapped windows finds no other car, the trajectory self-check passes, and
+    /// the plain oracle corroborates it (a straight run covering 848 m of path
+    /// collects zero checkpoints, which is impossible from the map's start).
+    /// Why the two differ is UNKNOWN and is a task.
+    ///
+    /// A route solved from the wrong origin has the wrong arc length, the wrong
+    /// leg order and the wrong first gate, and every one of those is silently
+    /// wrong: the geometry is self-consistent and the reward built on it is
+    /// nonsense. So the caller who can measure where the car really is gets to
+    /// say so. The map's own waypoint remains the default; nothing changes for
+    /// a caller who does not pass this.
+    pub spawn_override: Option<[f32; 3]>,
 }
 
 pub fn build(
@@ -213,8 +233,29 @@ pub fn build(
     }
     let checkpoints = group(&cp_gates);
     let finish = group(&goal_gates);
-    let spawn = spawn_gates[0].pos;
+    // The tour's origin. The map's `Spawn` waypoint by default; an override
+    // when the caller has MEASURED where the engine actually puts the car (see
+    // `Opts::spawn_override`). An overridden origin is treated as item-placed:
+    // it is an absolute world position already on the road, not a cell base.
+    let spawn_from_item = o.spawn_override.is_some() || spawn_gates[0].from_item;
+    let spawn = o.spawn_override.unwrap_or(spawn_gates[0].pos);
     let spawn_yaw = spawn_gates[0].yaw;
+    if let Some(s) = o.spawn_override {
+        notes.push(format!(
+            "tour solved from a MEASURED spawn ({:.2}, {:.2}, {:.2}), {:.1} m from the map's own \
+             Spawn waypoint at ({:.2}, {:.2}, {:.2})",
+            s[0],
+            s[1],
+            s[2],
+            ((s[0] - spawn_gates[0].pos[0]).powi(2)
+                + (s[1] - spawn_gates[0].pos[1]).powi(2)
+                + (s[2] - spawn_gates[0].pos[2]).powi(2))
+            .sqrt(),
+            spawn_gates[0].pos[0],
+            spawn_gates[0].pos[1],
+            spawn_gates[0].pos[2],
+        ));
+    }
     if finish.len() > 1 {
         notes.push(format!(
             "{} separate finish groups; the tour ends at the one it can reach most cheaply",
@@ -225,7 +266,7 @@ pub fn build(
     // ---- 4. the drivable grid ----------------------------------------------
     let mut grid = Grid::build(&scene);
     let mut anchors: Vec<([f32; 3], f32, f32)> = vec![{
-        let (lo, hi) = crate::pack::window(spawn_gates[0].from_item);
+        let (lo, hi) = crate::pack::window(spawn_from_item);
         (spawn, lo, hi)
     }];
     for c in checkpoints.iter().chain(finish.iter()) {

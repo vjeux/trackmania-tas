@@ -23,6 +23,12 @@ pub struct Layout {
     /// Deviation of the located position from the ghost's own path, metres.
     pub rms: f64,
     pub max_dev: f64,
+    /// The engine's own checkpoint counter (u32), or 0 when not resolved.
+    /// Located behaviourally from three real ghosts' own split times (tmenv
+    /// cpfind, 2026-09-06): it steps at exactly the tick the validator credits
+    /// a checkpoint, the finish included, and lives at a fixed offset from the
+    /// validator's participant object (`fk::validator::CP_COUNTER_OFF`).
+    pub cps: u64,
 }
 
 /// Offsets within the gathered record, once the two segments are concatenated.
@@ -32,6 +38,13 @@ pub const R_POS: usize = 20; // x y z
 pub const R_VEL: usize = 32; // vx vy vz
 pub const R_WET: usize = 44; // f32 tyre wetness, 0..1
 pub const REC_LEN: usize = 48;
+/// u32 checkpoint counter, present only when `Layout::cps != 0`.
+pub const R_CPS: usize = 48;
+
+/// The gathered record length for this layout.
+pub fn rec_len(l: &Layout) -> usize {
+    if l.cps != 0 { REC_LEN + 4 } else { REC_LEN }
+}
 
 /// Where the wetness f32 sits relative to the position anchor. MEASURED, not
 /// assumed: `fk probe` searched a 2 KB window around the car against the
@@ -50,7 +63,11 @@ pub const WET_OFF: i64 = 180;
 /// The segments the production sampler gathers: the clock, the car block, and
 /// the wetness word (see `WET_OFF`).
 pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
-    vec![(l.clock, 4), (l.pos - 16, 40), (l.pos.wrapping_add(WET_OFF as u64), 4)]
+    let mut v = vec![(l.clock, 4), (l.pos - 16, 40), (l.pos.wrapping_add(WET_OFF as u64), 4)];
+    if l.cps != 0 {
+        v.push((l.cps, 4));
+    }
+    v
 }
 
 fn getf32(b: &[u8], o: usize) -> f64 {
@@ -58,7 +75,10 @@ fn getf32(b: &[u8], o: usize) -> f64 {
 }
 
 /// One extracted tick.
-#[derive(Clone, Debug)]
+///
+/// `Copy` because the environment carries it as plain state through a hot loop
+/// and every scalar in it is a machine word.
+#[derive(Clone, Copy, Debug)]
 pub struct Row {
     pub time_ms: i64,
     pub x: f64,
@@ -73,6 +93,9 @@ pub struct Row {
     pub qw: f64,
     /// Tyre wetness, 0..1.
     pub wetness: f64,
+    /// The engine's checkpoint counter at this tick; `u32::MAX` when the
+    /// layout carries none.
+    pub cps: u32,
 }
 
 /// Find the engine's race clock near an already-qualified position address.
@@ -140,12 +163,13 @@ pub fn find_clock(
 /// The clock makes the stream self-timing: a missing or duplicated tick shows
 /// up as a gap rather than silently shifting everything after it.
 pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<String>) {
-    let recsz = 8 + REC_LEN;
+    let rl = rec_len(l);
+    let recsz = 8 + rl;
     let m = blob.len() / recsz;
     let mut rows: Vec<Row> = Vec::new();
     let mut warn = Vec::new();
     for i in 0..m {
-        let b = &blob[i * recsz + 8..i * recsz + 8 + REC_LEN];
+        let b = &blob[i * recsz + 8..i * recsz + 8 + rl];
         let clk = u32::from_le_bytes(b[R_CLOCK..R_CLOCK + 4].try_into().unwrap()) as i64;
         let t = clk - l.clock_bias + label_shift;
         let row = Row {
@@ -161,6 +185,7 @@ pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<
             qy: getf32(b, R_QUAT + 8),
             qz: getf32(b, R_QUAT + 12),
             wetness: getf32(b, R_WET),
+            cps: if l.cps != 0 { u32::from_le_bytes(b[R_CPS..R_CPS + 4].try_into().unwrap()) } else { u32::MAX },
         };
         match rows.last_mut() {
             Some(last) if last.time_ms == t => *last = row,

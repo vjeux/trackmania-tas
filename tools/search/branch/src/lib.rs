@@ -101,6 +101,17 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
+/// What an `advance_or_end` produced.
+pub enum Advanced {
+    /// A new paused node, and the rows on the way to it.
+    Node(StateTrace, Handle),
+    /// The engine ENDED THE RUN inside the macro (the car left the world, the
+    /// validator declared the replay invalid, the declared time was reached):
+    /// the child exited instead of pausing. The rows it traced before that
+    /// are returned; there is no node.
+    RunEnded(StateTrace),
+}
+
 /// How a node writes its state trace, and where the car lives in its memory.
 #[derive(Clone, Debug)]
 pub struct TraceCfg {
@@ -224,6 +235,26 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
+        match self.advance_or_end(h, inputs, from, k_ticks)? {
+            Advanced::Node(t, id) => Ok((t, id)),
+            Advanced::RunEnded(_) => Err(format!(
+                "the branch child exited before reaching its stop point: the engine ended the run \
+                 inside this macro (handle {:?}, from tick {})",
+                h, from
+            )),
+        }
+    }
+
+    /// [`Forest::advance`], reporting a run the ENGINE ended inside the macro as
+    /// [`Advanced::RunEnded`] (with the rows traced up to it) instead of an
+    /// error. `k_ticks` is exact under the tick clock.
+    pub fn advance_or_end(
+        &mut self,
+        h: Handle,
+        inputs: &[Rec],
+        from: usize,
+        k_ticks: u64,
+    ) -> Result<Advanced, String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -278,7 +309,22 @@ impl Forest {
             _ => self.held_mut(h)?.node.branch(&req)?,
         };
 
-        let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
+        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+            Some(n) => n,
+            None => {
+                // The engine ended the run inside this macro. Whatever the
+                // child traced before it stopped simulating is real state;
+                // the caller decides what an ended run means.
+                let trace = if trace_path.as_os_str().is_empty() {
+                    Vec::new()
+                } else {
+                    let t = self.read_trace(&trace_path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&trace_path);
+                    t
+                };
+                return Ok(Advanced::RunEnded(trace));
+            }
+        };
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -318,7 +364,7 @@ impl Forest {
         };
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok((trace, id))
+        Ok(Advanced::Node(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child
@@ -370,6 +416,25 @@ impl Forest {
             ticks_differing: diff.len(),
             raw,
         })
+    }
+
+    /// Re-run a node's own boundary probe, and time it.
+    ///
+    /// [`Forest::advance`] already probes every node it creates, so this is not
+    /// needed for correctness — it exists so the rig can MEASURE what the probe
+    /// costs. The first version of that measurement timed [`Forest::floor`]
+    /// instead, which only reads the cached boundary: the column read 0.000 ms
+    /// for every row, which is a number reported for something the instrument
+    /// was not measuring.
+    pub fn reprobe(&mut self, h: Handle) -> Result<usize, String> {
+        match h {
+            ROOT => {
+                let t = self.root.probe_tick()?;
+                self.root_boundary = Some(t);
+                Ok(t)
+            }
+            _ => self.held_mut(h)?.node.probe(),
+        }
     }
 
     /// Destroy a node and forget it.
