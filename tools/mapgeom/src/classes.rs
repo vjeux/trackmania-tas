@@ -151,6 +151,14 @@ impl<'a> Graph<'a> {
                 self.r.take(8)?;
                 Ok(Node::Other(class_id))
             }
+            // 0x09179000 (the special/expandable gate trigger): version 2,
+            // a TriggerShape reference, one word; the entity quaternion follows.
+            0x09179000 => {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                self.r.take(4)?;
+                Ok(Node::Other(class_id))
+            }
             // `CPlugDynaObjectModel`: a block that MOVES. Eighty-three bytes
             // at version 13, identical in every one in the pack (rotor, tube,
             // turnstile, flag, light ray), read off `ObstacleTube6m` and

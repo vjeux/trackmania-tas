@@ -110,7 +110,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
         // (`classes.rs`) does and kept raw so the entity list stays walkable.
-        0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        0x09178000 | 0x09179000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         other => Node::Opaque(read_opaque(r, other)?),
     })
 }
@@ -241,6 +241,15 @@ fn read_fixed_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
         }
         0x0917B000 => {
             r.take(8)?;
+        }
+        // NPlugTrigger_SGateSpecial (the expandable/special gate prefabs):
+        // version 2, trigger shape ref, one u32 (read off
+        // Gate\ExpandableSpecial_Air.Prefab.Gbx: the entity's identity
+        // quaternion follows at once)
+        0x09179000 => {
+            r.u32()?;
+            r.noderef(read_node)?;
+            r.u32()?;
         }
         // chunked bodies: chunk ids up to FACADE
         0x09119000 | 0x09118000 | 0x0917A000 => loop {

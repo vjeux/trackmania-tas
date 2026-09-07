@@ -114,7 +114,13 @@ impl BlockInfoIndex {
             Some(c) => c.clone(),
             None => match up.strip_prefix("STADIUM").and_then(|rest| self.by_stem.get(rest)) {
                 Some(c) => c.iter().filter(|p| p.to_uppercase().contains("\\STADIUM\\")).cloned().collect(),
-                None => return Vec::new(),
+                // `GateSpecialBoostOriented` (Summer 15): no block info of that
+                // name in the 2026-04 packs; the plain gate is the same prefab
+                // bar the orientation arrow.
+                None => match up.strip_suffix("ORIENTED").and_then(|base| self.by_stem.get(base)) {
+                    Some(c) => c.clone(),
+                    None => return Vec::new(),
+                },
             },
         };
         let rank = |p: &str| -> (u32, u32) {

@@ -123,10 +123,16 @@ fn read_mapping(path: &Path) -> Mappings {
     out
 }
 
-/// World y of the BlueBay sea surface: the height the tiny transform keeps
-/// fixed by default (the land plane, block top y 10, halves to 8.5 above
-/// it — the verified Summer 01 mapping, spawn 16 -> 11.5).
-const WATER_LEVEL: f32 = 7.0;
+/// World y the tiny transform keeps fixed by default, per collection: the
+/// BlueBay sea surface (7: the land plane, block top y 10, halves to 8.5
+/// above it — the verified Summer 01 mapping, spawn 16 -> 11.5); the Stadium
+/// grass (10: the full-size floor the genealogy regenerates stays the floor).
+fn fixed_plane(collection: u32) -> f32 {
+    match collection {
+        0x1c => 7.0,
+        _ => 10.0,
+    }
+}
 
 thread_local! {
     /// World y of cell row 0 for the map being converted (see `map::ground_y`).
@@ -316,15 +322,21 @@ pub fn cmd(args: &[String]) {
     let source = MapFile::load(&src);
     let colors = source.colors().unwrap_or(crate::map::Colors { bytes: Vec::new(), n_blocks: 0, n_baked: 0 });
     set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
-    let spawn = source
-        .waypoints()
-        .into_iter()
-        .find(|w| w.kind == crate::map::Kind::Block && w.tag == "Spawn")
-        .expect("map needs a block-carried Spawn");
-    let source_anchor = block_pos(&source.blocks[spawn.index]);
+    // The source anchor is the Spawn: a start block's cell corner, or (the
+    // Stadium maps 15/20/25: GateStart items) the start item's position.
+    let spawns = source.waypoints();
+    let source_anchor = match spawns.iter().find(|w| w.kind == crate::map::Kind::Block && w.tag == "Spawn") {
+        Some(w) => block_pos(&source.blocks[w.index]),
+        None => {
+            let w = spawns.iter().find(|w| w.kind == crate::map::Kind::Item && w.tag == "Spawn").expect("map needs a Spawn (block or item)");
+            source.items[w.index].pos
+        }
+    };
     // Default target anchor: the start keeps its x,z and the sea surface
     // stays where it is, so y' = 7 + (y - 7) * scale. Summer 01: spawn 1584,16,784 -> 1584,11.5,784.
-    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], WATER_LEVEL + (source_anchor[1] - WATER_LEVEL) * scale, source_anchor[2]]);
+    let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
+    let plane = fixed_plane(collection);
+    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale, source_anchor[2]]);
     println!("  anchor: spawn {:?} -> {:?} (scale {scale})", source_anchor, target_anchor);
 
     // ALL authored blocks are required. A missing model is a refusal, never a
@@ -541,12 +553,27 @@ pub fn cmd(args: &[String]) {
     }
     m.write_to(&tmp2).expect("write waypoint stage");
 
-    // Stage 4: embed the converted block models. A non-empty source archive
-    // would also need merging; replacing it would silently drop custom items.
-    assert!(
-        crate::header::embedded_zip(&source.gbx.body).is_none(),
-        "source map already embeds custom objects; merge them into --library before converting"
-    );
+    // Stage 4: embed the converted block models. The source's own archive
+    // (custom items: the TME nation items) is replaced, which is only right
+    // when no placement still points at one of its files — the library
+    // builder bakes them into half-scale copies; anything left over would be
+    // silently dropped, so it is a refusal.
+    if let Some((_, names)) = crate::header::embedded_zip(&source.gbx.body) {
+        let files: Vec<String> = names.iter().map(|n| n.replace('/', "\\").to_ascii_lowercase()).collect();
+        let still: Vec<String> = specs
+            .iter()
+            .map(|s| s.model.clone())
+            .filter(|m| files.iter().any(|f| f == &format!("items\\{}", m.to_ascii_lowercase())))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(
+            still.is_empty(),
+            "source map embeds custom objects still placed after the mapping ({}): merge them into --library before converting",
+            still.join(", ")
+        );
+        println!("  source archive ({} files) replaced: every custom item is re-pointed at a scaled copy", names.len());
+    }
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
     if library.as_os_str() != "-" {
@@ -581,7 +608,9 @@ pub fn cmd(args: &[String]) {
     // (2026-09-06). Cleared, the floor cells without a block are plain sea.
     // (Rewriting the baked chunk to all-Sea -- `all_sea_file` -- is NOT
     // needed and makes the game refuse the map: "Couldn't load map!".)
-    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() {
+    // Stadium keeps it: its zones are the grass floor, full size under the
+    // tiny map like the reference maps (and there is no sea to fall into).
+    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() && collection == 0x1c {
         let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
         println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
     }

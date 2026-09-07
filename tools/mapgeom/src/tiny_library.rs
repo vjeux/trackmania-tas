@@ -93,6 +93,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let source = MapFile::load(map);
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     println!("  map collection {collection:#x}; {} blocks, {} items", source.blocks.len(), source.items.len());
+    // block infos are looked up under the map's own collection first
+    // (BlueBay\GameCtnBlockInfo\…\Stadium\X carries the terrain modifiers a
+    // Stadium block gets on BlueBay; a Stadium map wants the plain files)
+    let collection_name = if collection_name.is_empty() { match collection { 0x1c => "BlueBay", 0x1a => "Stadium", _ => "BlueBay" } } else { collection_name };
     let wanted = |name: &str| only.map(|o| o.split(',').any(|n| n == name)).unwrap_or(true);
     let legacy: BTreeMap<String, Vec<u8>> = match legacy_zip {
         Some(p) => crate::embedded::unzip(&std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).expect("legacy zip"),
@@ -134,6 +138,15 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 continue;
             }
         };
+        // Stadium's Grass floor is the one terrain the tiny map keeps FULL
+        // size: `tmmaps tiny` leaves the Stadium genealogy in place, so the
+        // game regenerates the floor under the tiny map (the reference
+        // maps' foundation); a half-scale copy would only z-fight it.
+        if collection == 0x1a && name == "Grass" {
+            block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
+            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
+            continue;
+        }
         let Some(pk) = bi.pick_placement(ground, vindex, sub) else {
             outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("block info has no variant with units or mobils".into()) });
             continue;
@@ -254,6 +267,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     // model -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
     let mut item_map: BTreeMap<String, String> = BTreeMap::new();
+    // the map's own embedded files (custom items live under Items\…)
+    let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = 0usize;
     for (model, n) in &item_counts {
         if model.is_empty() || !wanted(model) {
@@ -264,9 +279,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let local = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file());
         let res = match &local {
             Some(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), &ident, &ident, scale, collection),
-            None => match find_item_file(store, model) {
-                Some(logical) => crate::static_item::build::static_item_from_pack_item_report(store, &logical, &ident, &ident, scale, collection),
-                None => Err("no .Item.Gbx in the client packs (nor --items-dir)".into()),
+            None => match embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
+                // a custom item the MAP embeds (the TME_* nation items)
+                Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, &ident, &ident, scale, collection),
+                None => match find_item_file(store, model) {
+                    Some(logical) => crate::static_item::build::static_item_from_pack_item_report(store, &logical, &ident, &ident, scale, collection),
+                    None => Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()),
+                },
             },
         };
         match res {

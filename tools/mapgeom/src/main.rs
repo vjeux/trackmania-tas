@@ -581,7 +581,7 @@ fn main() {
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
             let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "substitute".into());
-            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".into());
+            let coll = flag(&a.rest, "--collection").unwrap_or_default();
             mapgeom::tiny_library::build(
                 &mut store,
                 map,
