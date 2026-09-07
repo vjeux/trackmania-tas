@@ -588,6 +588,22 @@ fn main() {
             let map = std::path::Path::new(a.rest.get(1).expect("tiny-library needs MAP"));
             let req = |name: &str| std::path::PathBuf::from(flag(&a.rest, name).unwrap_or_else(|| die(format!("tiny-library needs {name}"))));
             let report = flag(&a.rest, "--report").map(std::path::PathBuf::from);
+        // item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]: the
+        // game's own item file under a new Ident (header chunk 0x2E001003 rebuilt,
+        // the body's ident/name strings replaced) so it can be EMBEDDED in a map
+        // as is — every reference it carries still points into the packs, which
+        // is the question such a copy asks the game.
+        "item-rename" => {
+            let inp = a.rest.get(1).unwrap_or_else(|| die("item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]".into()));
+            let bytes = std::fs::read(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| ident.clone());
+            let (old_name, old_author) = tmmaps::header::item_ident_author(&bytes).unwrap_or_else(|| die(format!("{inp}: no header ident")));
+            let renamed = mapgeom::tiny_assets::rename_item_ident(&bytes, &old_name, &old_author, &ident, &author);
+            std::fs::write(&out, &renamed).expect("write");
+            println!("wrote {out}: ident {old_name:?} by {old_author:?} -> {ident:?} by {author:?} ({} bytes)", renamed.len());
+        }
             let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);

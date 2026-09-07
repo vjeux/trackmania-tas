@@ -33,6 +33,7 @@ pub mod surface;
 pub mod item;
 pub mod file;
 pub mod prefab;
+pub mod dyna;
 pub mod build;
 pub mod bake;
 pub mod check;
@@ -55,6 +56,7 @@ pub const C_ITEM_PLACEMENT_PARAM: u32 = 0x2E020000;
 pub const C_MATERIAL_USER_INST: u32 = crate::crystal_model::C_MATERIAL_USER_INST;
 pub const C_MATERIAL: u32 = 0x09079000;
 pub const C_MATERIAL_CUSTOM: u32 = 0x0903A000;
+pub const C_PREFAB: u32 = 0x09145000;
 
 const SKIP: &[u8; 4] = b"PIKS";
 
@@ -76,6 +78,11 @@ pub enum Node {
     /// A `CPlugLight` (a Solid2 `lights` socket target) and its `GxLight*`.
     Light(light::CPlugLight),
     GxLight(light::GxLight),
+    /// A prefab of entities (the entity model of a moving item: static parts,
+    /// `CPlugDynaObjectModel`s and their kinematic constraints).
+    Prefab(prefab::CPlugPrefab),
+    Dyna(dyna::CPlugDynaObjectModel),
+    Kinematic(dyna::KinematicConstraint),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
 }
@@ -95,6 +102,9 @@ impl Node {
             Node::Placement(_) => C_ITEM_PLACEMENT_PARAM,
             Node::Light(_) => light::C_PLUG_LIGHT,
             Node::GxLight(g) => g.class_id,
+            Node::Prefab(_) => C_PREFAB,
+            Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
+            Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::Opaque(o) => o.class_id,
         }
     }
@@ -115,6 +125,9 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
         light::C_PLUG_LIGHT => Node::Light(light::CPlugLight::parse(r)?),
         c if light::is_gx_light_class(c) => Node::GxLight(light::GxLight::parse(r, c)?),
+        C_PREFAB => Node::Prefab(prefab::CPlugPrefab::parse_in(r)?),
+        dyna::C_DYNA_OBJECT_MODEL => Node::Dyna(dyna::CPlugDynaObjectModel::parse(r)?),
+        dyna::C_KINEMATIC_CONSTRAINT => Node::Kinematic(dyna::KinematicConstraint::parse(r)?),
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
         // (`classes.rs`) does and kept raw so the entity list stays walkable.
@@ -138,6 +151,9 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::Placement(x) => x.write(w),
         Node::Light(x) => x.write(w),
         Node::GxLight(x) => x.write(w),
+        Node::Prefab(x) => x.write_in(w),
+        Node::Dyna(x) => x.write(w),
+        Node::Kinematic(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
     }
 }

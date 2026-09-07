@@ -129,23 +129,24 @@ const PARENTS: &[(u32, u32)] = &[
 ];
 
 /// The class id the game folds into the cipher at the start of this class's
-/// node body.
-pub fn dummy_write_class(class_id: u32) -> u32 {
+/// node body — `None` for a class the table does not know: the fold happens
+/// only for a class with a declared parent (GBX.NET folds nothing when
+/// `GetParentClassId` is null). Measured 2026-09-07 on
+/// `ObstaclePusher8mPiston.DynaObject.Gbx` (CPlugDynaObjectModel, 278 bytes,
+/// raw, dummy-written, no inline node): its bytes past 0x100 are right with NO
+/// fold (LocAnim -1, WaterModel -1, zeros) and garbage with the CPlug fallback
+/// fold, while `ItemLampSpot.Light.Gbx` (CPlugLight : CPlug in the table)
+/// needs its fold. The old fallback (CPlug for 0x09xxxxxx, CMwNod otherwise)
+/// corrupted every table-less raw class past 0x100.
+pub fn dummy_write_class(class_id: u32) -> Option<u32> {
     // GBX.NET's own overrides where its hierarchy differs from the engine's
     match class_id {
-        0x07031000 => return 0x07001000,          // CControlFrame
-        0x0A02E000 => return 0x0A02E000,          // CPlugVehiclePhyTuning (its own id)
-        0x0501F000 => return C_MWNOD,             // CFuncKeysReal ("weird case of CPlugCurveSimpleNod")
-        0x0305D000 | 0x0305E000 | 0x0305F000 | 0x03062000 => return 0x2401C000, // CGameCtnZone*
-        0x03051000 | 0x0304E000 | 0x0304F000 | 0x03050000 => return 0x24005000, // CGameCtnBlockInfo*
+        0x07031000 => return Some(0x07001000),          // CControlFrame
+        0x0A02E000 => return Some(0x0A02E000),          // CPlugVehiclePhyTuning (its own id)
+        0x0501F000 => return Some(C_MWNOD),             // CFuncKeysReal ("weird case of CPlugCurveSimpleNod")
+        0x0305D000 | 0x0305E000 | 0x0305F000 | 0x03062000 => return Some(0x2401C000), // CGameCtnZone*
+        0x03051000 | 0x0304E000 | 0x0304F000 | 0x03050000 => return Some(0x24005000), // CGameCtnBlockInfo*
         _ => {}
     }
-    if let Some((_, p)) = PARENTS.iter().find(|(c, _)| *c == class_id) {
-        return *p;
-    }
-    if class_id >> 24 == 0x09 {
-        C_PLUG
-    } else {
-        C_MWNOD
-    }
+    PARENTS.iter().find(|(c, _)| *c == class_id).map(|(_, p)| *p)
 }

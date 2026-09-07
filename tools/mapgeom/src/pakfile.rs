@@ -163,7 +163,7 @@ fn decrypt_scheduled(data: &[u8], base: usize, key: &[u8; 16], version: i32, n: 
 fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
     let Ok(g) = crate::container::Gbx::parse(plain) else { return Vec::new() };
     let body_start = plain.len() - g.body.len();
-    let mut out = vec![(body_start, crate::parents::dummy_write_class(class_id))];
+    let mut out: Vec<(usize, u32)> = crate::parents::dummy_write_class(class_id).map(|c| (body_start, c)).into_iter().collect();
     let externals: Vec<(u32, String)> = g.refs.iter().map(|e| (e.node_index, e.name.clone())).collect();
     let mut graph = crate::node::Graph::new(&g.body, g.num_nodes, &externals);
     let _ = graph.node_body(class_id);
@@ -173,7 +173,9 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
         if *off == 0 {
             continue;
         }
-        out.push((body_start + off, crate::parents::dummy_write_class(*c)));
+        if let Some(fold) = crate::parents::dummy_write_class(*c) {
+            out.push((body_start + off, fold));
+        }
     }
     out
 }

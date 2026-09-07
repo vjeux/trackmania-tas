@@ -1121,6 +1121,9 @@ pub fn lineup_cmd(args: &[String]) {
     let list = cli::flag(args, "--stock").unwrap_or("");
     let at = vec3(&cli::flag(args, "--at").expect("lineup needs --at X,Y,Z"), "--at");
     let pitch: f32 = cli::flag(args, "--pitch").unwrap_or("16").parse().expect("--pitch metres");
+    // --yaw R turns every item of the row (radians): a pusher's piston runs
+    // along its local z, so pi/2 makes it run along the row, visible from the north
+    let yaw: f32 = cli::flag(args, "--yaw").unwrap_or("0").parse().expect("--yaw radians");
     let mut names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
     let n_stock = names.len();
     // embedded item files: (ident, author, bytes)
@@ -1153,7 +1156,7 @@ pub fn lineup_cmd(args: &[String]) {
         m.set_item_model(i, name);
         let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");
         m.set_item_author(i, author);
-        m.move_item(i, pos, 0.0, cell_for(pos));
+        m.move_item(i, pos, yaw, cell_for(pos));
         m.set_item_scale(i, 1.0);
         m.clear_item_variant(i);
         m.set_item_color(i, if k < n_stock { 0 } else { 1 });

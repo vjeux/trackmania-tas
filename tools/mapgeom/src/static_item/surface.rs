@@ -26,6 +26,22 @@ pub enum Surf {
         vertices: Vec<[f32; 3]>,
         triangles: Vec<Triangle>,
     },
+    /// The convex hull the dyna objects move with (a pusher's `MoveShape` is
+    /// one; a rotor's is a compound of nine): a bounding box (centre, half
+    /// extents), the hull's vertices, a flat index list and the faces as
+    /// (start, count) runs into it, then the surface index like the other
+    /// primitives. Read off `ObstaclePusher8mPiston.MoveShape.Gbx` (20 vertices,
+    /// 18 faces) and `ObstacleRotor16mHolesX4.MoveShape.Gbx`.
+    ConvexPolyhedron {
+        version: u32,
+        u01: u32,
+        center: [f32; 3],
+        half: [f32; 3],
+        vertices: Vec<[f32; 3]>,
+        indices: Vec<u32>,
+        faces: Vec<(u32, u32)>,
+        surface_index: Option<i16>,
+    },
     Compound { surfs: Vec<(Surf, Option<[f32; 3]>)>, locs: Vec<[f32; 12]>, joints: Option<Vec<i16>> },
 }
 
@@ -36,7 +52,53 @@ impl Surf {
             Surf::Ellipsoid { .. } => 1,
             Surf::Box { .. } => 6,
             Surf::Mesh { .. } => 7,
+            Surf::ConvexPolyhedron { .. } => 10,
             Surf::Compound { .. } => 13,
+        }
+    }
+
+    /// Every length in the shape multiplied by `s` (a compound's child
+    /// placements included).
+    pub fn scale(&mut self, s: f32) {
+        let sv = |v: &mut [f32; 3]| {
+            for x in v.iter_mut() {
+                *x *= s;
+            }
+        };
+        match self {
+            Surf::Sphere { size, .. } => *size *= s,
+            Surf::Ellipsoid { size, .. } => sv(size),
+            Surf::Box { transform, .. } => {
+                for x in transform.iter_mut() {
+                    *x *= s;
+                }
+            }
+            Surf::Mesh { vertices, .. } => vertices.iter_mut().for_each(sv),
+            Surf::ConvexPolyhedron { center, half, vertices, .. } => {
+                sv(center);
+                sv(half);
+                vertices.iter_mut().for_each(sv);
+            }
+            Surf::Compound { surfs, locs, .. } => {
+                for (c, _) in surfs.iter_mut() {
+                    c.scale(s);
+                }
+                for l in locs.iter_mut() {
+                    l[9] *= s;
+                    l[10] *= s;
+                    l[11] *= s;
+                }
+            }
+        }
+    }
+
+    /// Triangle / vertex counts for reports (a polyhedron counts its faces).
+    pub fn counts(&self) -> (usize, usize) {
+        match self {
+            Surf::Mesh { vertices, triangles, .. } => (vertices.len(), triangles.len()),
+            Surf::ConvexPolyhedron { vertices, faces, .. } => (vertices.len(), faces.len()),
+            Surf::Compound { surfs, .. } => surfs.iter().map(|(s, _)| s.counts()).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1)),
+            _ => (0, 0),
         }
     }
 }
@@ -69,6 +131,19 @@ pub fn read_surf(r: &mut Rd, sv: u32) -> R<(Surf, Option<[f32; 3]>)> {
                 Ok(Triangle { indices: [r.u32()?, r.u32()?, r.u32()?], material_id: r.u8()?, u03: r.u8()?, surface_index: r.i16()? })
             })?;
             Surf::Mesh { version, vertices, triangles }
+        }
+        10 => {
+            let version = r.u32()?;
+            if version != 0 {
+                return Err(format!("GmSurf ConvexPolyhedron version {version} (only 0 is modelled)"));
+            }
+            let u01 = r.u32()?;
+            let center = r.vec3()?;
+            let half = r.vec3()?;
+            let vertices = r.array(|r| r.vec3())?;
+            let indices = r.array(|r| r.u32())?;
+            let faces = r.array(|r| Ok((r.u32()?, r.u32()?)))?;
+            Surf::ConvexPolyhedron { version, u01, center, half, vertices, indices, faces, surface_index: si(r)? }
         }
         13 => {
             let n = r.count()?;
@@ -117,6 +192,22 @@ pub fn write_surf(w: &mut Wr, s: &Surf, dir: &Option<[f32; 3]>, sv: u32) {
                 w.u8(t.u03);
                 w.i16(t.surface_index);
             }
+        }
+        Surf::ConvexPolyhedron { version, u01, center, half, vertices, indices, faces, surface_index } => {
+            w.u32(*version);
+            w.u32(*u01);
+            w.floats(center);
+            w.floats(half);
+            w.u32(vertices.len() as u32);
+            vertices.iter().for_each(|v| w.floats(v));
+            w.u32(indices.len() as u32);
+            indices.iter().for_each(|i| w.u32(*i));
+            w.u32(faces.len() as u32);
+            for (a, b) in faces {
+                w.u32(*a);
+                w.u32(*b);
+            }
+            si(w, surface_index);
         }
         Surf::Compound { surfs, locs, joints } => {
             w.u32(surfs.len() as u32);

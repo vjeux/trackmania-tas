@@ -337,6 +337,19 @@ impl CGameItemModel {
     pub fn static_object(&self) -> Option<&CPlugStaticObjectModel> {
         self.model()?.entity_model()?.static_object()
     }
+    /// The prefab entity model of a moving item: straight under the model
+    /// chunk (the pack's layout) or inside a `CGameCommonItemEntityModel`.
+    pub fn prefab(&self) -> Option<&super::prefab::CPlugPrefab> {
+        let mc = self.model()?;
+        match mc.entity_model.inline.as_deref()? {
+            super::Node::Prefab(p) => Some(p),
+            super::Node::EntityModel(e) => match e.static_object.inline.as_deref()? {
+                super::Node::Prefab(p) => Some(p),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     pub fn item_type(&self) -> i32 {
         self.chunks
             .iter()

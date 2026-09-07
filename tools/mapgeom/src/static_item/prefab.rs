@@ -84,6 +84,17 @@ impl CPlugPrefab {
         let mut lb = super::LookbackState::default();
         lb.defined_nodes.extend(externals.iter().copied());
         let mut r = Rd::new(body, 0, lb);
+        let p = Self::parse_in(&mut r)?;
+        if r.o != body.len() {
+            return Err(format!("prefab: {} trailing bytes after the entities at 0x{:x}", body.len() - r.o, r.o));
+        }
+        Ok(p)
+    }
+
+    /// Parse the struct where the reader stands (an inline prefab node inside
+    /// an item: the class has no chunk framing, so nothing follows the
+    /// entities).
+    pub fn parse_in(r: &mut Rd) -> R<CPlugPrefab> {
         let version = r.u32()?;
         let file_write_time = r.u64()?;
         let url = r.string()?;
@@ -93,17 +104,14 @@ impl CPlugPrefab {
         let mut ents = Vec::with_capacity(n);
         for i in 0..n {
             let ctx = |e: String| format!("prefab entity {i}/{n}: {e}");
-            let model = read_ref(&mut r).map_err(ctx)?;
+            let model = read_ref(r).map_err(ctx)?;
             let rot = r.floats::<4>()?;
             let pos = r.vec3()?;
             let params_id = r.i32()?;
-            let params = read_params(&mut r, params_id).map_err(ctx)?;
+            let params = read_params(r, params_id).map_err(ctx)?;
             let k = r.count()?;
             let u01 = r.take(k)?.to_vec();
             ents.push(Entity { model, rot, pos, params_id, params, u01 });
-        }
-        if r.o != body.len() {
-            return Err(format!("prefab: {} trailing bytes after the entities at 0x{:x}", body.len() - r.o, r.o));
         }
         Ok(CPlugPrefab { version, file_write_time, url, u01, u02, ents })
     }
@@ -112,6 +120,11 @@ impl CPlugPrefab {
         let mut out = Vec::new();
         let mut lb = super::LookbackState::default();
         let mut w = Wr { w: &mut out, lb: &mut lb };
+        self.write_in(&mut w);
+        out
+    }
+
+    pub fn write_in(&self, w: &mut Wr) {
         w.u32(self.version);
         w.u64(self.file_write_time);
         w.string(&self.url);
@@ -119,7 +132,7 @@ impl CPlugPrefab {
         w.u32(self.ents.len() as u32);
         w.i32(self.u02);
         for e in &self.ents {
-            write_ref(&mut w, &e.model);
+            write_ref(w, &e.model);
             w.floats(&e.rot);
             w.floats(&e.pos);
             w.i32(e.params_id);
@@ -127,7 +140,6 @@ impl CPlugPrefab {
             w.u32(e.u01.len() as u32);
             w.bytes(&e.u01);
         }
-        out
     }
 
     /// Parse a prefab loaded through the store.
