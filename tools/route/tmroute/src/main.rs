@@ -182,14 +182,24 @@ fn cartographer_dirs(pack: &Path, route: &Path, gates: &GatesFile) -> BTreeMap<u
 }
 
 fn cmd_gates(args: &[String]) {
-    let pos = positionals(args, &["--out"], &["--orient-from"]);
-    let map = pos.first().unwrap_or_else(|| die("gates MAP.Map.Gbx --out gates.json [--orient-from PACK ROUTE]"));
+    let pos = positionals(args, &["--out", "--engine-flips"], &["--orient-from"]);
+    let map = pos.first().unwrap_or_else(|| die("gates MAP.Map.Gbx --out gates.json [--orient-from PACK ROUTE] [--engine-flips flipped-normals.tsv]"));
     let prov = tmroute::provenance("tmroute gates");
     let mut g = tmroute::gates::build(Path::new(map), &prov).unwrap_or_else(|e| die(&e));
     let mut oriented = 0;
+    // the GEN arm's engine-credited sign FIRST (it is relative to the placement normal) and it wins:
+    // `orient` never touches an "engine" gate
+    if let Some(fp) = flag(args, "--engine-flips") {
+        let flips = tmroute::gates::read_flips(Path::new(&fp)).unwrap_or_else(|e| die(&e));
+        if let Some(w) = flips.get(&g.map_uid) {
+            let n = tmroute::gates::orient_engine(&mut g, w);
+            oriented = g.gates.len() - 1;
+            eprintln!("engine sign: {} gates, {n} flipped against placement", oriented);
+        }
+    }
     if let Some(v) = flag_n(args, "--orient-from", 2) {
         let dirs = cartographer_dirs(Path::new(&v[0]), Path::new(&v[1]), &g);
-        oriented = tmroute::gates::orient(&mut g, &dirs, "cartographer");
+        oriented += tmroute::gates::orient(&mut g, &dirs, "cartographer");
     }
     let ctl = if g.control_ok() { "OK" } else { "FAIL" };
     println!(

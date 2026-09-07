@@ -507,9 +507,14 @@ pub fn strip_fmt(s: &str) -> String {
 
 /// Orient every gate's normal along a reference direction (dot > 0), recording
 /// the source. `dirs` maps waypoint → direction of travel.
+/// Flip the sign of the gate normals whose arrival direction `dirs` opposes; `source` is recorded.
+/// A gate already oriented by the ENGINE (GEN arm's credited rows, `orient_engine`) is never touched.
 pub fn orient(g: &mut GatesFile, dirs: &BTreeMap<u32, [f32; 3]>, source: &str) -> usize {
     let mut n = 0;
     for gate in &mut g.gates {
+        if gate.normal_source == "engine" {
+            continue;
+        }
         if let Some(d) = dirs.get(&gate.waypoint) {
             let dot = gate.normal[0] * d[0] + gate.normal[2] * d[2];
             if dot < 0.0 {
@@ -746,4 +751,37 @@ mod diag_tests {
         eprintln!("(16,2,16) → ({:.2}, {:.2}, {:.2})", c[0], c[1], c[2]);
         assert!(local[0].is_finite());
     }
+}
+
+/// The GEN arm's engine-credited sign (gen/g2/flipped-normals.tsv: `uid \t map \t [wp, wp, …]`): the listed
+/// waypoints are crossed AGAINST the PLACEMENT normal, so this takes a freshly built (placement-signed) file,
+/// flips them, and marks every gate `normal_source = "engine"` — the authority over human and cartographer signs.
+pub fn orient_engine(g: &mut GatesFile, flipped: &[u32]) -> usize {
+    let mut n = 0;
+    for gate in &mut g.gates {
+        if gate.kind == WpKind::Start {
+            continue;
+        }
+        if flipped.contains(&gate.waypoint) {
+            gate.normal = [-gate.normal[0], 0.0, -gate.normal[2]];
+            n += 1;
+        }
+        gate.normal_source = "engine".to_string();
+    }
+    n
+}
+
+/// Parse `flipped-normals.tsv` → uid → flipped waypoints.
+pub fn read_flips(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u32>>, String> {
+    let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = BTreeMap::new();
+    for line in s.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 3 || cols[0] == "uid" {
+            continue;
+        }
+        let wps: Vec<u32> = cols[2].trim_matches(|c| c == '[' || c == ']').split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        out.insert(cols[0].to_string(), wps);
+    }
+    Ok(out)
 }

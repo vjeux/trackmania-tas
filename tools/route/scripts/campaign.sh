@@ -18,8 +18,10 @@ uids() { { ls $B/bank/maps/*.Map.Gbx 2>/dev/null | xargs -n1 basename | sed 's/.
 if [ $step = gates ] || [ $step = all ]; then
   for u in $(uids); do f=$(mapfile_of $u); [ -n "$f" ] || continue; mkdir -p $G/$u
     pk=$B/packs/$u.pack.json
-    if [ -f $pk ]; then $R/tmroute gates $f --out $G/$u/gates.json --orient-from $pk ${pk%.pack.json}.route.json > $G/$u/gates.txt 2>&1
-    else $R/tmroute gates $f --out $G/$u/gates.json > $G/$u/gates.txt 2>&1; fi
+    # the GEN arm's engine-credited normal signs (gen/g2/flipped-normals.tsv) win over the cartographer tour
+    EF=$BANK/gen/g2/flipped-normals.tsv; efarg=""; [ -f $EF ] && efarg="--engine-flips $EF"
+    if [ -f $pk ]; then $R/tmroute gates $f --out $G/$u/gates.json --orient-from $pk ${pk%.pack.json}.route.json $efarg > $G/$u/gates.txt 2>&1
+    else $R/tmroute gates $f --out $G/$u/gates.json $efarg > $G/$u/gates.txt 2>&1; fi
     head -1 $G/$u/gates.txt | cut -f1,3,4,5,6
   done
 fi
