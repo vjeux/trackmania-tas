@@ -88,6 +88,7 @@ fn main() {
         Some("template-control") => template_control(&a),
         Some("accept") => accept(&a),
         Some("from-template") => from_template(&a),
+        Some("probe-scan") => probe_scan(&a),
         _ => {
             eprintln!(
                 "tmenv -- the RL environment over our own instrument\n\
@@ -300,6 +301,8 @@ fn build_env_shared(
     if let Some(c) = flag(a, "--root-clock").and_then(|s| s.parse::<u64>().ok()) {
         root.clock = c;
     }
+    root.max_root_probe = num(a, "--max-root-probe", root.max_root_probe);
+    root.max_root_tries = num(a, "--max-root-tries", root.max_root_tries);
     tmenv::forkenv::build_at_start(
         &p.server, &p.map, &p.shim, work, &p.reference, track,
         ActionSpace::default(), cfg, &root,
@@ -2141,4 +2144,64 @@ fn from_template(a: &[String]) {
     println!("template  {}  ({n} ticks, {:.3} s)", tplp.display(), n as f64 * 0.01);
     println!("reference {}", out.display());
     println!("the archive is OURS in full; the donor contributes the wrapper and the startup state");
+}
+
+// ------------------------------------------------------------- probe-scan
+
+/// How stable is the boundary probe at a given `lroundf` stop?
+///
+/// Starts `--repeat` fresh servers per clock, probes each one `--reprobe`
+/// times, and prints beside every probe the RAW clock word of the first
+/// sampled row (the clock the layout reads, before any bias). The engine is
+/// deterministic, so the raw clock at a given stop must be constant; a probe
+/// that varies while the raw clock does not is the probe mislabelling the
+/// tick, and everything labelled from it is off by the same amount.
+fn probe_scan(a: &[String]) {
+    let p = paths(a);
+    let clocks: Vec<u64> = flag(a, "--clocks")
+        .unwrap_or_else(|| "11000".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let repeat: usize = num(a, "--repeat", 3);
+    let reprobe: usize = num(a, "--reprobe", 3);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv probe-scan  clocks {:?}  repeat {}  reprobe {}", clocks, repeat, reprobe);
+    println!("clock    run  probes                 raw_clock  race_label  pos                          speed");
+    for c in &clocks {
+        for r in 0..repeat {
+            let work = p.work.join(format!("ps-{c}-{r}"));
+            let rig = Rig::new(&p.server, &p.map, &p.shim, &work, &p.reference).unwrap_or_else(|e| die(e));
+            let mut s = rig.session_clock(*c).unwrap_or_else(|e| die(e));
+            let mut probes = Vec::new();
+            for _ in 0..reprobe {
+                probes.push(s.probe_tick().unwrap_or_else(|e| die(e)));
+            }
+            let probe = probes[0];
+            let recs = s.tape.tail_records(0);
+            let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)
+                .unwrap_or_else(|e| die(e));
+            let bias = car.layout().clock_bias;
+            let start_offset = s.tape.start_offset_ms;
+            let dir = work.join("traces");
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            let cfg = branch::TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4000 };
+            let fk::session::Session { srv, .. } = s;
+            let mut f = branch::Forest::new(srv, &work, recs, Some(cfg)).unwrap_or_else(|e| die(e));
+            f.probe_root().unwrap_or_else(|e| die(e));
+            let cal = f.calibrate_clock(tmenv::forkenv::CLOCK_WARM_TICKS, start_offset).unwrap_or_else(|e| die(e));
+            let (rows, h) = f.advance(branch::ROOT, &[], 0, 2).unwrap_or_else(|e| die(e));
+            f.release(h);
+            match rows.first() {
+                Some(row) => {
+                    let v = (row.vx * row.vx + row.vy * row.vy + row.vz * row.vz).sqrt();
+                    println!(
+                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   cal: probe {} raw {} bias {} (root-implied {})",
+                        c, r, format!("{:?}", probes), row.time_ms + cal.bias, row.time_ms, row.x, row.y, row.z, v, cal.probe, cal.raw_clock, cal.bias, bias
+                    );
+                }
+                None => println!("{:6}  {:3}  {:<22} (no rows)", c, r, format!("{:?}", probes)),
+            }
+        }
+    }
 }

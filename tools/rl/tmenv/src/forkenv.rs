@@ -26,7 +26,7 @@
 
 use crate::action::{Act, ActionSpace};
 use crate::core::{Core, CoreCfg, Done, Info};
-use branch::{Forest, Handle, TraceCfg, ROOT};
+use branch::{ClockCal, Forest, Handle, TraceCfg, ROOT};
 use fk::session::{Checkpoint, Engine, Session};
 use fk::tape::Tape;
 use forkoracle::forksrv::{rec_of, Rec};
@@ -73,7 +73,14 @@ pub struct ForkEnv {
     gap: usize,
     overlap: usize,
     finish_ms: Option<i64>,
+    /// How the race clock was labelled for this server.
+    pub clock_cal: ClockCal,
 }
+
+/// Ticks to run past the root before taking the clock calibration probe. The
+/// root sits ~0.03 s before the race starts; 50 ticks lands the calibration
+/// node ~0.45 s into the race, well inside the regime where the probe is exact.
+pub const CLOCK_WARM_TICKS: u64 = 50;
 
 impl ForkEnv {
     /// Build an env on an already-started session.
@@ -103,6 +110,9 @@ impl ForkEnv {
         let _ = probe;
         let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg)?;
         forest.probe_root()?;
+        // Label the clock from INSIDE the race, not from the root's probe --
+        // see `Forest::calibrate_clock` for the measurement that forced this.
+        let clock_cal = forest.calibrate_clock(CLOCK_WARM_TICKS, tape.start_offset_ms)?;
 
         // The state at the root, captured once: the root never moves, so every
         // reset starts from the same place and there is no reason to pay a fork
@@ -129,6 +139,7 @@ impl ForkEnv {
             gap: 0,
             overlap: 0,
             finish_ms: None,
+            clock_cal,
         })
     }
 
@@ -352,11 +363,22 @@ pub struct RootCfg {
     /// knowing the container seeded it at the map's start line are different
     /// claims; this is the second one.
     pub require_start: Option<([f32; 3], f32, f64)>,
+    /// The largest root probe accepted: the reference tape owns at most this
+    /// many ticks of every episode. A server whose root probes higher is
+    /// restarted, up to `max_root_tries` times.
+    pub max_root_probe: usize,
+    pub max_root_tries: usize,
 }
 
 impl Default for RootCfg {
     fn default() -> Self {
-        RootCfg { clock: crate::control::EARLIEST_CLOCK, verbose: false, require_start: None }
+        RootCfg {
+            clock: crate::control::EARLIEST_CLOCK,
+            verbose: false,
+            require_start: None,
+            max_root_probe: 12,
+            max_root_tries: 6,
+        }
     }
 }
 
@@ -436,8 +458,38 @@ pub fn build_at_start(
     let dir = work.join("traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
+    // The root's probe is not a tick label (see `Forest::calibrate_clock`),
+    // but it IS the write floor: records below it may already have been read
+    // ahead, so the env never writes them and they stay the reference's. How
+    // many that is varies per server (0 to 112 measured at the same instant),
+    // so a server whose floor would give the reference more than
+    // `max_root_probe` ticks is thrown away and started again -- cheap, once,
+    // at startup -- rather than silently handing the first second to a tape
+    // the policy does not control.
     let mut s = rig.session_clock(root.clock)?;
-    let probe = s.probe_tick()?;
+    let mut probe = s.probe_tick()?;
+    let mut tries = 1usize;
+    while probe > root.max_root_probe && tries < root.max_root_tries {
+        if root.verbose {
+            eprintln!(
+                "  root probe {probe} > {} (try {tries}): the pre-race read-ahead got that far on this \
+                 server; restarting it",
+                root.max_root_probe
+            );
+        }
+        drop(s);
+        s = rig.session_clock(root.clock)?;
+        probe = s.probe_tick()?;
+        tries += 1;
+    }
+    if probe > root.max_root_probe {
+        return Err(format!(
+            "the root probe is {probe} on {tries} consecutive servers (limit {}): the first {:.2} s \
+             of every tape would belong to the reference. Refusing rather than training on it.",
+            root.max_root_probe,
+            probe as f64 * 0.01
+        ));
+    }
     let refrecs = s.tape.tail_records(0);
     let car = crate::control::resolve_car(
         &mut s.srv,
@@ -467,10 +519,18 @@ pub fn build_at_start(
         }
     }
     if root.verbose {
+        let c = env.clock_cal;
         eprintln!(
-            "  env root: lroundf {}, probe tick {probe} (race {:.3}), car from validator ownership",
+            "  env root: lroundf {}, root probe {probe} (write floor; {tries} server start{}), car from \
+             validator ownership; clock bias {} from an in-race probe ({} at raw {}; the root's probe \
+             implied {}), root row race {:.3}",
             root.clock,
-            probe as f64 * 0.01
+            if tries == 1 { "" } else { "s" },
+            c.bias,
+            c.probe,
+            c.raw_clock,
+            c.old_bias,
+            row.time_ms as f64 / 1000.0
         );
     }
     Ok((env, rig, tape))

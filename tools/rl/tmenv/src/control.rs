@@ -249,9 +249,11 @@ pub fn flat_trace(
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+    let start_offset = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, reference, Some(cfg))?;
     f.probe_root()?;
+    f.calibrate_clock(crate::forkenv::CLOCK_WARM_TICKS, start_offset)?;
     let (rows, h) = f.advance(ROOT, &[], 0, ticks)?;
     f.release(h);
     forkoracle::layout::check_rows(&rows).map_err(|e| format!("the reconstruction failed its own checks: {e}"))?;
@@ -285,9 +287,11 @@ pub fn measure_spawn(
     let dir = work.join("spawn-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4_000 };
+    let start_offset = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, recs, Some(cfg))?;
     f.probe_root()?;
+    f.calibrate_clock(crate::forkenv::CLOCK_WARM_TICKS, start_offset)?;
     let (rows, h) = f.advance(ROOT, &[], 0, 200)?;
     f.release(h);
     let first = *rows.first().ok_or("no state rows at the start: the spawn is UNMEASURED")?;

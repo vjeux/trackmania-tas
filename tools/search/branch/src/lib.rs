@@ -110,6 +110,19 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
+/// What [`Forest::calibrate_clock`] measured.
+#[derive(Clone, Copy, Debug)]
+pub struct ClockCal {
+    /// The bias the root's probe implied.
+    pub old_bias: i64,
+    /// The bias an in-race probe implies; what the traces are labelled with now.
+    pub bias: i64,
+    /// The warm node's probed boundary.
+    pub probe: usize,
+    /// The raw clock word at the warm node's pause.
+    pub raw_clock: i64,
+}
+
 /// How a node writes its state trace, and where the car lives in its memory.
 #[derive(Clone, Debug)]
 pub struct TraceCfg {
@@ -398,6 +411,66 @@ impl Forest {
             }
             _ => self.held_mut(h)?.node.probe(),
         }
+    }
+
+    /// Calibrate the race-clock label from a pause INSIDE the race.
+    ///
+    /// # Why the root's probe cannot label the clock
+    ///
+    /// `Layout::clock_bias` is `clock_word - race_ms`, and the only way to
+    /// know `race_ms` at some instant is the boundary probe: the state at a
+    /// pause is the state at the end of tick `probe - 1`. That holds while the
+    /// simulation is consuming the tape. It does NOT hold before the race
+    /// starts: at the same engine instant (raw clock 2170–2190 on Summer
+    /// 2026 - 01, car at rest on the line) the root probe answered 0, 8, 15,
+    /// 70 and 112 on different servers — something reads the first records
+    /// ahead of the simulation there, and how far it got is a property of the
+    /// process, not of the engine's state. Every row labelled from such a
+    /// probe is off by that many ticks, and two runs of the SAME tape then
+    /// disagree by tens of metres "at the same time" while their positions
+    /// agree row for row (measured: 4a noise floor 1.51 m median instead of
+    /// 0.000000 m; CONTROL B 24 m median).
+    ///
+    /// Inside the race the probe is exact: `lroundf` 14000 → probe 10 at raw
+    /// clock 2290, `lroundf` 36000 → probe 93 at raw 3120, both giving bias
+    /// 2200, four servers each, no scatter.
+    ///
+    /// So: advance the root `warm_ticks` with no inputs (into the race), fork
+    /// that node once more so the child's first sampled row is the parent's
+    /// paused state, and set the bias from THAT node's probe. Both throwaway
+    /// nodes are released. Costs two forks at startup, once per server.
+    ///
+    /// Returns the calibration so a caller can report it beside the root's
+    /// label; refuses if the warm node's first row is not past the race start
+    /// (the calibration would be from the same unreliable regime).
+    pub fn calibrate_clock(&mut self, warm_ticks: u64, start_offset_ms: i32) -> Result<ClockCal, String> {
+        let old = self.cfg.as_ref().ok_or("calibrate_clock: no trace configuration")?.layout.clock_bias;
+        let (_rows1, h1) = self.advance(ROOT, &[], 0, warm_ticks)?;
+        let probe1 = self.probed_boundary(h1).ok_or("calibrate_clock: the warm node has no probe")?;
+        let (rows2, h2) = self.advance(h1, &[], 0, 1)?;
+        self.release(h2);
+        self.release(h1);
+        let first = rows2.first().ok_or("calibrate_clock: the warm node's child produced no rows")?;
+        let raw = first.time_ms + old;
+        // The first row a child samples is the state its parent was paused in:
+        // the end of tick `probe1 - 1` (layout::sample_ms's convention).
+        let race = (probe1 as i64 - 1) * 10 + start_offset_ms as i64;
+        let new = raw - race;
+        if probe1 < 3 {
+            return Err(format!(
+                "calibrate_clock: the warm node's probe is {probe1} after {warm_ticks} ticks -- still \
+                 before the race; the calibration would come from the regime it exists to avoid"
+            ));
+        }
+        if let Some(c) = self.cfg.as_mut() {
+            c.layout.clock_bias = new;
+        }
+        Ok(ClockCal { old_bias: old, bias: new, probe: probe1, raw_clock: raw })
+    }
+
+    /// The clock bias the traces are currently labelled with.
+    pub fn clock_bias(&self) -> Option<i64> {
+        self.cfg.as_ref().map(|c| c.layout.clock_bias)
     }
 
     /// Destroy a node and forget it.
