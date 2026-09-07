@@ -301,10 +301,15 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 out.stats.outcomes[outcome as usize] += 1;
                 // a FINISHED rollout ends at its finish-crossing row (the rows past it
                 // are however many the exiting child flushed: 0..3, run to run)
-                let end_row = if finished_gate {
-                    first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).and_then(|(_, t)| win.get(*t as usize).cloned())
-                } else {
-                    win.last().cloned()
+                let finish_idx = if finished_gate { first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).map(|(_, t)| *t as usize) } else { None };
+                let end_row = match finish_idx {
+                    Some(i) => win.get(i).cloned(),
+                    None => win.last().cloned(),
+                };
+                // the sampled path ends where the record does
+                let win_eff: &[Row] = match finish_idx {
+                    Some(i) if i < win.len() => &win[..=i],
+                    _ => &win,
                 };
                 let Some(end_row) = end_row else {
                     out.stats.errors += 1;
@@ -326,7 +331,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 cells.insert(((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64));
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
                 out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });
-                out.paths.push(crate::tmr::path4(&win, &|r| w.race_of(r)));
+                out.paths.push(crate::tmr::path4(win_eff, &|r| w.race_of(r)));
             }
         }
         let Some(st) = start_state else {
