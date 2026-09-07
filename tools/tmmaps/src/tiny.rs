@@ -775,20 +775,20 @@ pub fn cmd(args: &[String]) {
     m.append_item_clones(specs.len());
     m.write_to(&tmp0).expect("write item-slot stage");
 
-    // Stage 1: the source's blocks go. DELETED (default, 2026-09-07): the
-    // authored records and the generated non-foundation fillers are cut out of
-    // the block chunks (`remove_blocks` rewrites everything that lists blocks
-    // — counts, free positions, colours, lightmap quality, macroblock refs,
-    // the items' snapped-on tables), the way the reference tiny maps have
-    // ZERO authored blocks. `TINY_PARK_BLOCKS=1` keeps the old way for A/B:
-    // every record stays and is MOVED to cell (0,0,0) by fixed-size patches
-    // (free blocks to y -1000) and renamed to a neutral road — ~5 700 dead
-    // records per map stacked in the corner, and a suspect for Summer 05's
-    // 5-7 minute load. The lookback-table renames of the parking path need
-    // their own reload so the item and block regions cannot shift each
-    // other's saved offsets; the deletion is variable-length and needs the
-    // same.
-    let park = std::env::var_os("TINY_PARK_BLOCKS").is_some();
+    // Stage 1: the source's blocks go. DELETED: the authored records and the
+    // generated non-foundation fillers are cut out of the block chunks
+    // (`remove_blocks` rewrites everything that lists blocks — counts, free
+    // positions, colours, lightmap quality, macroblock refs, the items'
+    // snapped-on tables), the way the reference tiny maps have ZERO authored
+    // blocks. The deletion is variable-length and needs its own reload so the
+    // item and block regions cannot shift each other's saved offsets.
+    //
+    // The old alternative — PARKING: every record kept, moved to cell (0,0,0)
+    // and renamed to a stand-in block — is gone (2026-09-07). It was the whole
+    // cause of Summer 05's 5.6-minute load: the profile showed the game's
+    // lightmapper (`NHmsLightMap::RenderLightBall`) spending 91 % of the load
+    // on the 2 116 stand-ins stacked in one cell (05 has no RoadTechStraight,
+    // so they were RoadDirtCheckpoint arches — lit blocks). Deleted: 10 s.
     let mut m = MapFile::load(&tmp0);
     let old_uid = m
         .body_ids
@@ -796,11 +796,10 @@ pub fn cmd(args: &[String]) {
         .and_then(|f| f.name.clone())
         .expect("map uid");
     let new_uid = format!("Tin2{}", &old_uid[..23]);
-    if !park {
-        // The foundation records stay: `Sea` (BlueBay's water, the only baked
-        // name the parking path left in place). TINY_KEEP_BAKED=Sea,Grass
-        // widens it (a Stadium map's baked Grass tiles in place instead of
-        // regenerated from the kept genealogy).
+    {
+        // The foundation records stay: `Sea` (BlueBay's water). TINY_KEEP_BAKED=
+        // Sea,Grass widens it (a Stadium map's baked Grass tiles in place instead
+        // of regenerated from the kept genealogy).
         let keep_baked: BTreeSet<String> = std::env::var("TINY_KEEP_BAKED")
             .unwrap_or_else(|_| "Sea".to_string())
             .split(',')
@@ -820,60 +819,6 @@ pub fn cmd(args: &[String]) {
         assert!(m.baked.iter().all(|b| keep_baked.contains(&b.name)), "a generated block outside the keep set survived the deletion");
     }
     m.set_map_uid(&new_uid);
-    if park {
-        // A parked start block would still be THE start (the car spawned in the
-        // map corner), and parked checkpoints would still count: every waypoint
-        // block becomes a plain road piece, and the race runs on the items.
-        // TINY_PARK_NEUTRAL=NAME picks the stand-in (the profile of 2026-09-07:
-        // Summer 05 has no RoadTechStraight, so its 6 629 parked records all
-        // became RoadDirtCheckpoint — a lit checkpoint arch — and the
-        // lightmapper spent 5.5 minutes on that one cell).
-        let neutral = std::env::var("TINY_PARK_NEUTRAL").ok().unwrap_or_else(|| {
-            source
-                .blocks
-                .iter()
-                .map(|b| b.name.as_str())
-                .find(|n| *n == "RoadTechStraight")
-                .unwrap_or_else(|| source.blocks[0].name.as_str())
-                .to_string()
-        });
-        let mut neutralised = 0;
-        for i in 0..m.blocks.len() {
-            let b = m.blocks[i].clone();
-            if std::env::var_os("TINY_NO_PARK_BLOCKS").is_some() && b.waypoint_tag.is_none() {
-                continue; // debug knob: only the waypoint blocks are parked
-            }
-            if b.flags & FREE_BLOCK_FLAG != 0 {
-                m.move_block_free(i, [16.0, -1000.0, 16.0]);
-            } else {
-                m.move_block_cell(i, (0, 0, 0));
-            }
-            // EVERY parked block is renamed to the neutral road, not just the
-            // waypoints: with the genealogy chunk cleared, a parked terrain block
-            // (Summer 06: Land0_Land1_Land2 / DecoTreeBeach…) at cell 0,0,0 makes
-            // the client dereference a missing zone (0x140d2b0bc, 2026-09-06);
-            // the same map loads with the blocks left in place or the genealogy
-            // kept. A road needs no zone.
-            if b.name != neutral {
-                m.set_block_name(i, &neutral);
-                neutralised += 1;
-            }
-        }
-        println!("  {neutralised} parked blocks renamed to {neutral}");
-        // the generated non-Sea fillers are parked too (re-emitted as items above);
-        // the Sea records stay: they are the water
-        let mut parked_baked = 0usize;
-        for i in 0..m.baked.len() {
-            if std::env::var_os("TINY_NO_PARK_BAKED").is_some() {
-                break; // debug knob: leave the generated blocks where they are
-            }
-            if m.baked[i].name != "Sea" {
-                m.move_baked_cell(i, (0, 0, 0));
-                parked_baked += 1;
-            }
-        }
-        println!("  {parked_baked} generated (baked) non-Sea blocks parked");
-    }
     m.write_to(&tmp1).expect("write block stage");
 
     // Stage 2: append new model slots while preserving every original slot.
@@ -948,32 +893,22 @@ pub fn cmd(args: &[String]) {
             println!("  map name: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
         }
     }
-    // The source's stored lightmap goes (TINY_LIGHTMAP=keep keeps it). It was
-    // computed for the full-size layout and the game applies it BY OBJECT
-    // INDEX: in PLAY mode a parked build of Summer 15 (2026-09-07) drew every
-    // converted-block item BLACK — the appended items fall outside the
-    // lightmap's tables — while the original items (screens, palms, flags)
-    // were lit; the same build with the lightmap stripped is lit throughout,
-    // pixel-identical to the deleted builds. Every map published before this
-    // (parked, lightmap kept) has that defect in play. In the editor the
-    // stale map showed "VALIDATED" and the original's shading on 05's deck.
-    //
-    // BUT with the blocks DELETED (the default since 4081dde) the lightmap
-    // STAYS: the game rejects a stale lightmap whose block count is 0 on its
-    // own (delete-blocks thread: deleted builds render the same with or
+    // The source's stored lightmap STAYS (TINY_LIGHTMAP=strip strips it). It
+    // was computed for the full-size layout and the game applies it BY OBJECT
+    // INDEX — in PLAY mode a build that kept its blocks (Summer 15, 2026-09-07)
+    // drew every converted-block item BLACK, the appended items falling
+    // outside the lightmap's tables — but with the blocks DELETED the game
+    // rejects a stale lightmap whose block count is 0 on its own (delete-blocks thread: deleted builds render the same with or
     // without it, in play AND in the editor — verified on 09's start deck and
     // cp5 tunnel, 2026-09-07 14:11), while a 0-block map WITHOUT a lightmap
     // makes the EDITOR crash with a STACK_OVERFLOW during or right after the
     // load (3 of 4 opens of the tiny 09; Trackmania.exe+0x96d7e0 recursing
     // under an Openplanet frame — the editor's automatic lightmap pass over a
     // map with no blocks, presumably), which kills every shootset comparison.
-    // The parked build (blocks kept) still needs the strip. TINY_LIGHTMAP=
-    // keep|strip forces either way.
-    let strip = match std::env::var("TINY_LIGHTMAP").as_deref() {
-        Ok("keep") => false,
-        Ok("strip") => true,
-        _ => park,
-    };
+    // The game recomputes a default-settings lightmap at every load anyway
+    // (0.4 s on a 0-block map, measured 2026-09-07). TINY_LIGHTMAP=strip
+    // strips it (A/B only).
+    let strip = matches!(std::env::var("TINY_LIGHTMAP").as_deref(), Ok("strip"));
     if strip {
         let n = m.strip_lightmap();
         println!("  stored lightmap stripped ({n} bytes)");
@@ -1315,42 +1250,40 @@ pub fn catalog_cmd(args: &[String]) {
     m.write_to(&tmp0).expect("write slots");
 
     let mut m = MapFile::load(&tmp0);
+    if host.is_none() {
+        // Every block but the representatives and the zone (terrain) tiles is
+        // DELETED — not parked in cell (0,0,0): a pile of blocks in one cell is
+        // what cost Summer 05 five and a half minutes in the game's lightmapper
+        // (2026-09-07), and 2 936 Lake tiles stacked there left the GreenCoast
+        // editor view solid white (Summer 04, 2026-09-06). The island stays as
+        // scenery for the survey. The deletion is variable-length and wants a
+        // fresh load, so it comes first and the map is reloaded before the
+        // uid, the moves and the item edits.
+        let keep: BTreeSet<usize> = grid.iter().map(|g| g.0).collect();
+        let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
+        let kept_idx: Vec<usize> = m.blocks.iter().filter(|b| keep.contains(&b.index) || zones.contains(&b.name)).map(|b| b.index).collect();
+        let r = m.remove_blocks(|b| !keep.contains(&b.index) && !zones.contains(&b.name), |_| false);
+        println!("  {} blocks deleted ({} kept: {} representatives + zone tiles)", r.blocks, kept_idx.len(), keep.len());
+        let tmpd = out.with_extension("catd.Map.Gbx");
+        m.write_to(&tmpd).expect("write block-deletion stage");
+        m = MapFile::load(&tmpd);
+        assert_eq!(m.blocks.len(), kept_idx.len(), "block count after the deletion");
+        for (new_i, &old_i) in kept_idx.iter().enumerate() {
+            if let Some(&(_, cell)) = grid.iter().find(|g| g.0 == old_i) {
+                m.move_block_cell(new_i, cell);
+            }
+        }
+    }
     // Fresh UID per build: the game caches embedded items and lightmaps by
     // map UID, so reusing the host's UID shows stale items (empty grass
     // where new items should be -- graft tests 2026-09-05).
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
     m.set_map_uid(&format!("Cat1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000));
-    if host.is_none() {
-        let keep: BTreeSet<usize> = grid.iter().map(|g| g.0).collect();
-        let neutral = "RoadTechStraight".to_string();
-        // Zone (terrain) blocks stay where they are: 2936 Lake/LakeShore
-        // tiles stacked in one cell left the GreenCoast editor view solid
-        // white (Summer 04, 2026-09-06); the island is scenery for the survey.
-        let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-        for i in 0..m.blocks.len() {
-            let b = m.blocks[i].clone();
-            if let Some(&(_, cell)) = grid.iter().find(|g| g.0 == i) {
-                m.move_block_cell(i, cell);
-                continue;
-            }
-            if zones.contains(&b.name) {
-                continue;
-            }
-            if b.flags & FREE_BLOCK_FLAG != 0 {
-                m.move_block_free(i, [16.0, -1000.0, 16.0]);
-            } else {
-                m.move_block_cell(i, (0, 0, 0));
-            }
-            if !keep.contains(&i) && (b.waypoint_tag.is_some() || b.name.contains("Start") || b.name.contains("Finish") || b.name.contains("Checkpoint")) {
-                m.set_block_name(i, &neutral);
-            }
-        }
-    }
     // existing items out of sight
     for i in 0..n_existing {
         m.move_item(i, [8.0, -900.0, 8.0], 0.0, (0, 0, 0));
     }
-    m.write_to(&tmp1).expect("write parked");
+    m.write_to(&tmp1).expect("write block stage");
 
     let mut m = MapFile::load(&tmp1);
     for (k, s) in specs.iter().enumerate() {

@@ -927,15 +927,6 @@ impl MapFile {
     /// volume is exactly the one the block always had
     /// (FLEET_NOTICE_origin_control_insufficient_v1). `cell` is in gbx-py /
     /// world-grid coordinates; the file stores x and z one higher.
-    /// Move a BAKED (generated) block record the same way -- three coord bytes
-    /// in chunk 0x03043048, fixed size. A tiny map parks the generated FC
-    /// fillers this way (it re-emits them as items).
-    pub fn move_baked_cell(&mut self, baked_index: usize, cell: (i32, i32, i32)) {
-        let b = self.baked[baked_index].clone();
-        assert!((0..=254).contains(&cell.0) && (0..=255).contains(&cell.1) && (0..=254).contains(&cell.2), "cell {:?} out of the one-byte grid range", cell);
-        self.raw_patches.push((b.coord_off, vec![(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8]));
-    }
-
     pub fn move_block_cell(&mut self, block_index: usize, cell: (i32, i32, i32)) {
         let b = self.blocks[block_index].clone();
         assert!(
