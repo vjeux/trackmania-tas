@@ -132,7 +132,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
-    let mut driver: Option<std::thread::JoinHandle<Result<(), String>>> = None;
+    let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     if opts.drive_ms > 0 {
         // the key is held on its own thread so the shots keep their cadence
         let (at, hold) = (opts.drive_at_ms, opts.drive_ms);
@@ -191,7 +191,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     }
     if let Some(d) = driver {
         match d.join() {
-            Ok(Ok(())) => {}
+            Ok(Ok(text)) => lines.push(format!("drive\t{text}")),
             Ok(Err(e)) => lines.push(format!("drive\tFAILED: {e}")),
             Err(_) => lines.push("drive\tFAILED: the key thread panicked".to_string()),
         }
@@ -200,73 +200,40 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
-/// Hold the Up arrow for `ms` in the foreground game window: PowerShell +
-/// `keybd_event` (an extended key: scan 0x48, flags 1 down / 3 up), the game
-/// brought to the foreground first. Synthetic input reaches the game the way
-/// AutoHotkey's does.
-fn hold_accelerator(ms: u64) -> Result<(), String> {
+/// Hold the Up arrow for `ms` in the game window: PowerShell + `keybd_event`
+/// (an extended key: scan 0x48, flags 1 down / 3 up). The game is brought to
+/// the FOREGROUND first — measured 2026-09-07: it was not (the foreground was
+/// an untitled window and a 7 s hold moved nothing), and a background
+/// process may only call `SetForegroundWindow` after it has itself generated
+/// input, so a bare ALT tap precedes the call (the standard dance;
+/// `SwitchToThisWindow` as the second attempt). The foreground window's
+/// title after that is what the result reports: `fg=[Trackmania]` is the
+/// proof the keys went to the game.
+fn hold_accelerator(ms: u64) -> Result<String, String> {
     let script = format!(
-        "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);'; \
+        "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); \
+         [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); \
+         [DllImport(\"user32.dll\")] public static extern void SwitchToThisWindow(System.IntPtr hWnd, bool fAltTab); \
+         [DllImport(\"user32.dll\")] public static extern System.IntPtr GetForegroundWindow(); \
+         [DllImport(\"user32.dll\")] public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int count);'; \
          $k = Add-Type -MemberDefinition $sig -Name Keys -Namespace Drive -PassThru; \
          $p = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First 1; \
-         if ($p) {{ [void]$k::SetForegroundWindow($p.MainWindowHandle) }}; Start-Sleep -Milliseconds 150; \
-         $k::keybd_event(0x26, 0x48, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {ms}; $k::keybd_event(0x26, 0x48, 3, [System.UIntPtr]::Zero); 'held'"
+         if (-not $p) {{ 'no Trackmania process'; exit 1 }}; \
+         $h = $p.MainWindowHandle; \
+         $k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 200; \
+         if ($k::GetForegroundWindow() -ne $h) {{ $k::SwitchToThisWindow($h, $true); Start-Sleep -Milliseconds 300 }}; \
+         $sb = New-Object System.Text.StringBuilder 256; [void]$k::GetWindowText($k::GetForegroundWindow(), $sb, 256); \
+         $k::keybd_event(0x26, 0x48, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {ms}; $k::keybd_event(0x26, 0x48, 3, [System.UIntPtr]::Zero); \
+         'held fg=[' + $sb.ToString() + ']'"
     );
     let out = std::process::Command::new(super::shootset::POWERSHELL)
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("powershell: {e}"))?;
-    if !out.status.success() || !String::from_utf8_lossy(&out.stdout).contains("held") {
-        return Err(format!("keybd_event script: {} {}", String::from_utf8_lossy(&out.stdout).trim(), String::from_utf8_lossy(&out.stderr).trim()));
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || !text.contains("held") {
+        return Err(format!("keybd_event script: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(())
-}
-
-/// `shootctl carlog FILE`: what a `car-<tag>.tsv` says in five lines — rows
-/// and wall span, where the car started and ended, how far it got from the
-/// start, its top speed, and the first moment it had left the spawn by more
-/// than half a metre (a shove) — instead of reading 3000 rows by eye.
-pub fn summarize(args: &[String]) -> i32 {
-    let Some(file) = args.first() else {
-        eprintln!("usage: shootctl carlog FILE.tsv");
-        return 2;
-    };
-    let text = match std::fs::read_to_string(file) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{file}: {e}");
-            return 2;
-        }
-    };
-    let mut rows: Vec<(u64, [f64; 3], f64)> = Vec::new(); // wall_ms, pos, speed
-    for line in text.lines().skip(1) {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 9 || line.starts_with('#') {
-            continue;
-        }
-        let num = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
-        let pos = [num(2), num(3), num(4)];
-        if pos == [0.0; 3] {
-            continue; // the frame before the player exists
-        }
-        rows.push((num(0) as u64, pos, num(8)));
-    }
-    let Some(first) = rows.first().copied() else {
-        println!("{file}: no car rows");
-        return 1;
-    };
-    let last = *rows.last().unwrap();
-    let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    let far = rows.iter().map(|r| dist(r.1, first.1)).fold(0.0, f64::max);
-    let top = rows.iter().map(|r| r.2).fold(0.0, f64::max);
-    let shove = rows.iter().find(|r| dist(r.1, first.1) > 0.5);
-    println!("{}: {} rows over {:.1} s", file, rows.len(), (last.0 - first.0) as f64 / 1000.0);
-    println!("  start ({:.2}, {:.2}, {:.2})  end ({:.2}, {:.2}, {:.2})", first.1[0], first.1[1], first.1[2], last.1[0], last.1[1], last.1[2]);
-    println!("  farthest from the start {far:.2} m, top speed {top:.1}");
-    match shove {
-        Some(r) => println!("  left the spawn (> 0.5 m) at +{:.1} s: ({:.2}, {:.2}, {:.2})", (r.0 - first.0) as f64 / 1000.0, r.1[0], r.1[1], r.1[2]),
-        None => println!("  never left the spawn"),
-    }
-    0
+    Ok(text)
 }
