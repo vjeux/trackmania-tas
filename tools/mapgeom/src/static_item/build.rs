@@ -1747,6 +1747,21 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
 
 /// The merged collision as the canonical mesh surface.
 pub fn build_surface(m: &Merged) -> CPlugSurface {
+    if m.surf_triangles.is_empty() {
+        // An item with NO collision at all (the OpenTech `_FC_Ground` decals:
+        // DecalPlatform quads, 8 of Summer 09's models) is DROPPED by the
+        // editor on re-save — all 122 placements of exactly those 8 models were
+        // gone after SaveMap, everything else kept (2026-09-07). Play mode
+        // draws them. TINY_EMPTY_SURFACE=empty keeps the empty mesh; `tri`
+        // (default) gives it one 1 mm triangle 4 m under the item's origin —
+        // a shape the editor accepts and nothing can hit.
+        let form = std::env::var("TINY_EMPTY_SURFACE").unwrap_or_else(|_| "tri".into());
+        if form == "tri" {
+            let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
+            let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 0, u03: 0, surface_index: 0 }];
+            return CPlugSurface::mesh(v, t, vec![28], [0.0, 0.0, 1.0]);
+        }
+    }
     CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])
 }
 

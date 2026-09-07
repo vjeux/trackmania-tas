@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod lightmap;
 mod camcheck;
 mod build;
 mod compare;
@@ -95,6 +96,7 @@ fn main() {
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
+        "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),
         "play" => play::cmd(rest),
         "camcheck" => camcheck::cmd(rest),

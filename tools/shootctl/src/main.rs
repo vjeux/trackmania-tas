@@ -22,6 +22,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 mod host;
+mod lightmap;
 use host::plugin_addrs;
 mod loadprof;
 mod lock;
@@ -1166,6 +1167,8 @@ usage:
         "playshots" => playshots::run(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
         "perfsum" => perfsum::run(&args[1..]),
+        // the EDITOR's lightmap for a tiny build, re-saved into a new file. lightmap.rs.
+        "lightmap" => lightmap::run(&args[1..]),
         "carlog" => playshots::summarize(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
