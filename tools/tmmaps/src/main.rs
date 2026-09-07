@@ -210,7 +210,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "mediatracker",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -1315,6 +1315,30 @@ fn main() {
             m.set_map_uid(&uid);
             m.write_to(&out).expect("write output");
             println!("wrote {} with uid {uid}", out.display());
+        }
+        // `tmmaps delblocks MAP --out F [--keep-baked Sea,…] [--strip-lightmap]`: every
+        // authored block deleted (the generated ones too, but for --keep-baked),
+        // items kept — the 0-block form of `tmmaps tiny` on ANY map, for the
+        // lightmapper-crash bisect of 2026-09-07
+        "delblocks" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("delblocks needs --out MAP"));
+            let keep: std::collections::BTreeSet<String> = tmmaps::cli::flag(&args, "--keep-baked").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+            // --keep-first N: the first N authored blocks stay (the "does ONE block suffice" probe)
+            let keep_first: usize = tmmaps::cli::flag(&args, "--keep-first").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let (nb, nk) = (m.blocks.len(), m.baked.len());
+            let r = m.remove_blocks(|b| b.index >= keep_first, |b| !keep.contains(&b.name));
+            println!("deleted {} of {nb} authored and {} of {nk} generated blocks; {} free entries, {} snap groups ({} items un-snapped)", r.blocks, r.baked, r.free_entries, r.snap_groups, r.snapped_items_cleared);
+            let tmp = out.with_extension("del0.Map.Gbx");
+            m.write_to(&tmp).expect("write");
+            let mut m = tmmaps::map::MapFile::load(&tmp);
+            if tmmaps::cli::has(&args, "--strip-lightmap") {
+                println!("lightmap stripped ({} bytes)", m.strip_lightmap());
+            }
+            m.write_to(&out).expect("write output");
+            let _ = std::fs::remove_file(&tmp);
+            println!("wrote {} ({} blocks, {} items)", out.display(), m.blocks.len(), m.items.len());
         }
         "census" => census::cmd_census(&args),
         "header" => header::cmd(&args),

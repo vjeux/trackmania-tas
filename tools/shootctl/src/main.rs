@@ -1302,6 +1302,30 @@ usage:
         // mapsave REL: re-save the map open in the track editor as REL (relative
         // to the user's Trackmania folder, e.g. Maps/_shoot/x.Map.Gbx) — the
         // plugin's /mapsave reads the path from arg.txt (MapSave.as)
+        // mapstate --map M: what the editor makes of a map — open it, ask /mapstate
+        // (name, block count after the game's own ground regeneration), leave
+        "mapstate" => {
+            let map = args.iter().position(|a| a == "--map").and_then(|i| args.get(i + 1)).cloned();
+            match map {
+                None => { eprintln!("mapstate --map MAP"); 2 }
+                Some(map) => {
+                    let d = lock::lock_dir();
+                    let owner = format!("mapstate-{}", std::process::id());
+                    match lock::acquire(&d, &owner, 1500, 0) {
+                        Err(e) => { eprintln!("{e}"); 1 }
+                        Ok(()) => {
+                            let code = probe(&map, "edit", "", 420);
+                            let st = http_get("/mapstate", 25).unwrap_or_default();
+                            println!("mapstate\t{}", st.trim());
+                            let _ = http_get("/back", 10);
+                            std::thread::sleep(std::time::Duration::from_secs(4));
+                            let _ = lock::release(&d, &owner);
+                            code
+                        }
+                    }
+                }
+            }
+        }
         "mapsave" => {
             if args.len() < 2 { 2 } else {
                 match set_arg(&args[1]).and_then(|_| http_get("/mapsave", 25)) { Ok(b) => { println!("{b}"); 0 } Err(e) => { eprintln!("{e}"); 1 } }
