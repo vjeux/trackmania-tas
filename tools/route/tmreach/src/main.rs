@@ -245,6 +245,16 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
     }
     let (mut det, notes) = fit(&runs, &gates, &prov);
     det.flipped = flips;
+    // the refitted normals (Detector.normals) take effect in this process too: the grades and the
+    // gate clouds below use the frame the detector will use
+    let mut gates = gates;
+    for (wp, n) in &det.normals {
+        for g in &mut gates.gates {
+            if g.waypoint == *wp {
+                g.normal = *n;
+            }
+        }
+    }
     println!("\nFITTED DETECTOR (plane at per-model s_off from the crediting geometry, credited tick = T-1; lat 10 m road / GEOM item, up -6..+8: see gatecal::fit):");
     for n in &notes {
         println!("  {n}");
