@@ -34,6 +34,25 @@ pub enum Shape {
     /// Steer `steer` only if the START state is airborne (|vy| > 2 m/s), else
     /// the reference (a no-op, logged as such); gas held.
     AirSteer { steer: i8 },
+    /// SLALOM: steer alternates +a / −a every `half` ticks (period 2·half), gas held
+    /// (coordinator, 2026-09-07 06:26Z: 3–4 periods × 2 amplitudes).
+    Slalom { a: i8, half: usize },
+}
+
+impl Shape {
+    /// The family a shape belongs to (distinct-outcome counts are logged per family).
+    pub fn family(&self) -> &'static str {
+        match self {
+            Shape::Reference => "reference",
+            Shape::Hold { .. } => "hold",
+            Shape::BaseSteer { .. } => "base-steer",
+            Shape::BasePedal { .. } => "base-pedal",
+            Shape::Ramp { .. } => "ramp",
+            Shape::Doublet { .. } => "doublet",
+            Shape::AirSteer { .. } => "air-steer",
+            Shape::Slalom { .. } => "slalom",
+        }
+    }
 }
 
 pub fn library_v0() -> Vec<Macro> {
@@ -65,6 +84,12 @@ pub fn library_v0() -> Vec<Macro> {
     }
     for &s in &[-127i8, 127] {
         push(format!("air-control steer {s:+} while airborne at the start (else reference)"), Shape::AirSteer { steer: s });
+    }
+    // v1 (ids 48..55): the slalom family -- periods 60, 100, 160, 240 ticks (half 30, 50, 80, 120) × amplitudes 64, 127
+    for &half in &[30usize, 50, 80, 120] {
+        for &a in &[64i8, 127] {
+            push(format!("slalom steer ±{a} every {half} ticks (period {}), gas", 2 * half), Shape::Slalom { a, half });
+        }
     }
     v
 }
@@ -122,6 +147,12 @@ pub fn build(m: &Macro, base: &[(u8, u8, u8)], airborne: bool) -> Built {
             }
             for _ in 0..h {
                 out.push(rec_of(*steer as u8, 1, 0));
+            }
+        }
+        Shape::Slalom { a, half } => {
+            for i in 0..h {
+                let st: i8 = if (i / half) % 2 == 0 { *a } else { -(*a as i16) as i8 };
+                out.push(rec_of(st as u8, 1, 0));
             }
         }
     }

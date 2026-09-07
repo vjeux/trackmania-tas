@@ -343,3 +343,10 @@ pub fn extrapolate_exit(rows: &mut Vec<Row>) {
         }
     }
 }
+
+impl Worker {
+    /// Race time of the tape's last record (the run continues on heap contents after it).
+    pub fn race_of_tick_end(&self) -> i64 {
+        (self.n_ticks() as i64 - 1) * 10 + self.tape.start_offset_ms as i64 + self.label_shift
+    }
+}

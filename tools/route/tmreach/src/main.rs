@@ -320,6 +320,15 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
         gates: gates.clone(),
         floor_y,
         keep_rows: false,
+        // --long-horizon TICKS,K : horizon TICKS on every K-th start (default 600 on every 3rd)
+        long_horizon: match a.get("long-horizon") {
+            Some("none") => None,
+            Some(s) => {
+                let mut p = s.split(',');
+                Some((p.next().unwrap().parse().unwrap(), p.next().unwrap_or("3").parse().unwrap()))
+            }
+            None => Some((600, 3)),
+        },
     });
     let pcfg = pool_cfg(a, &map, "fanout");
     println!(
@@ -353,6 +362,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let mut tot = Stats::default();
     let mut ok = 0;
     let (mut human_legs, mut human_resp) = (0usize, 0usize);
+    let mut fam_cells: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
     for (g, r) in items.iter().zip(results) {
         match r {
             Ok(fo) => {
@@ -395,6 +405,9 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
                 tot.reached_other += fo.stats.reached_other;
                 tot.distinct_cells.extend(fo.stats.distinct_cells.iter());
                 tot.switches += fo.stats.switches;
+                for (fam, v) in &fo.stats.family_cells {
+                    fam_cells.entry(fam.clone()).or_default().extend(v.iter().copied());
+                }
                 human_legs += fo.human_legs;
                 human_resp += fo.human_respawns;
                 tot.rollout_secs += fo.stats.rollout_secs;
@@ -423,14 +436,16 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
          outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; reached the human's next gate {} ({:.1} %), some OTHER gate first {} ({:.2} %); no-op macros {}, out-of-tape {}, errors {}\n\
          identity (macro 0 end state vs the human's trajectory): max {:.4} m, {} fails over {} starts; start-row blend by a macro's first record: max {:.4} m\n\
          distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n\
-         human legs (positives) {}, respawn negatives {}\n",
+         human legs (positives) {}, respawn negatives {}\n\
+         distinct end cells per start by macro family (median over starts): {}\n",
         tmreach::GIT_HASH, gates.map_uid, hostname(), ok, items.len(), tot.rollouts, count, wall, tot.rollouts as f64 / wall, tmreach::pool::cap(pcfg.workers),
         1000.0 * tot.rollout_secs / tot.rollouts.max(1) as f64,
         tot.outcomes[0], tot.outcomes[1], tot.outcomes[2], tot.outcomes[3], tot.outcomes[4],
         tot.reached_next, 100.0 * tot.reached_next as f64 / tot.rollouts.max(1) as f64,
         tot.reached_other, 100.0 * tot.reached_other as f64 / tot.rollouts.max(1) as f64,
         tot.noop, tot.out_of_tape, tot.errors, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
-        lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp
+        lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp,
+        fam_cells.iter().map(|(f, v)| { let mut v = v.clone(); v.sort(); format!("{f} {}", v.get(v.len() / 2).copied().unwrap_or(0)) }).collect::<Vec<_>>().join(", ")
     );
     print!("{summary}");
     log.push_str(&summary);
@@ -570,6 +585,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
     let blind_below = (n_total / 2).max(2);
     let (mut agree, mut disagree, mut unanswered, mut blind, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, 0, Vec::new());
     let mut tail = 0;
+    let mut after_tape = 0;
     let finished_case = |c: &tmreach::oraclectl::Case| c.oracle_ms.is_some() || c.det_finished;
     for c in &cases {
         s.push_str(&case_tsv_row(c));
@@ -581,6 +597,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
             // child traced rows past that window: the extra credit fell in the tail whose
             // adjudication end is not pinned (declared + 2.5 s holds on Summer 2026 - 01;
             // Summer 2026 - 11 credited a checkpoint later than that) -- counted apart
+            _ if c.finish_after_tape => after_tape += 1,
             Some(x) if x > c.det_cps && c.rows_past_cut > 0 && !finished_case(c) => tail += 1,
             Some(_) => disagree += 1,
         }
@@ -600,7 +617,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         *hist.entry((c.det_cps, c.oracle_cps)).or_default() += 1;
     }
     let verdict = format!(
-        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}, tail-window ambiguities (oracle credited more, after declared + grace) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
+        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}, tail-window ambiguities (oracle credited more, after declared + grace) {}, FINISHES AFTER THE TAPE'S OWN END (batch-dependent oracle, its own class) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
         cases.len(),
         agree,
         100.0 * agree as f64 / cases.len().max(1) as f64,
@@ -610,6 +627,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         n_total,
         blind,
         tail,
+        after_tape,
         near,
         fin,
         fin_dt,

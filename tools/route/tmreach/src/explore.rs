@@ -225,9 +225,10 @@ pub fn explore_ghost(w: &mut Worker, tel: &Telemetry, cfg: &ExploreCfg) -> Resul
                     let _ = w.tape.write_candidate(&st, &gs, &br, &tape);
                     let (s, lat, up) = gates.gates[*gi].local(pos(&rolled.rows[cr.gate_row[*gi] as usize]));
                     out.connections.push(format!(
-                        "{}\t{}\t{}\t{}\twp{}\t{}\t{:?}\t{}\t{:+.2}\t{:+.2}\t{:+.2}\t{:.1}\t{}",
+                        "{}\t{}\t{}\t{}\twp{}\t{}\t{:?}\t{}\t{:+.2}\t{:+.2}\t{:+.2}\t{:.1}\t{}\t{}",
                         name, f, crate::secs(w.race_of(&rolled.rows[0])), already.iter().map(|i| format!("wp{}", gates.gates[*i].waypoint)).collect::<Vec<_>>().join(","), gates.gates[*gi].waypoint,
-                        human_next.map(|g| format!("wp{}", gates.gates[g].waypoint)).unwrap_or("-".into()), full_chain, crate::secs(w.race_of(&rolled.rows[cr.gate_row[*gi] as usize])), s, lat, up, speed(&rolled.rows[cr.gate_row[*gi] as usize]), tape.display()
+                        human_next.map(|g| format!("wp{}", gates.gates[g].waypoint)).unwrap_or("-".into()), full_chain, crate::secs(w.race_of(&rolled.rows[cr.gate_row[*gi] as usize])), s, lat, up, speed(&rolled.rows[cr.gate_row[*gi] as usize]), tape.display(),
+                        if w.race_of(&rolled.rows[cr.gate_row[*gi] as usize]) > w.race_of_tick_end() { "AFTER-TAPE (batch-dependent oracle)" } else { "in-tape" }
                     ));
                 }
             }
@@ -380,7 +381,7 @@ pub fn explore_ghost(w: &mut Worker, tel: &Telemetry, cfg: &ExploreCfg) -> Resul
 }
 
 pub fn connections_header() -> &'static str {
-    "ghost\tf\tstart_race\tcredited_before\tgate\thuman_next\tchain\tcross_race\ts\tlat\tup\tspeed\ttape\n"
+    "ghost\tf\tstart_race\tcredited_before\tgate\thuman_next\tchain\tcross_race\ts\tlat\tup\tspeed\ttape\twindow\n"
 }
 
 pub fn default_macros() -> Vec<Macro> {
