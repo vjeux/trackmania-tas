@@ -297,7 +297,13 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                     outcome = OUTCOME_ABORTED;
                 }
                 out.stats.outcomes[outcome as usize] += 1;
-                let end_row = win.last().cloned();
+                // a FINISHED rollout ends at its finish-crossing row (the rows past it
+                // are however many the exiting child flushed: 0..3, run to run)
+                let end_row = if finished_gate {
+                    first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).and_then(|(_, t)| win.get(*t as usize).cloned())
+                } else {
+                    win.last().cloned()
+                };
                 let Some(end_row) = end_row else {
                     out.stats.errors += 1;
                     out.log.push(format!("  start {start_id} macro {} h {h}: no rows in the window", m.id));

@@ -52,7 +52,26 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     // the flat run exits at the finish; the crossing row may be missing
     crate::rig::extrapolate_exit(&mut flat);
     let ng = gates.gates.len();
-    let first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
+    let mut first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
+    let mut synth_finish = false;
+    // A finishing ghost whose finish step is among the samples the exiting
+    // child lost (0..5, run to run): the declared time is the finish, so the
+    // finish leg ends at the row of race (declared − 10) — the row whose tick
+    // the counter credits — synthesised when it is within 0.5 s past the trace.
+    if let Some(decl) = w.tape.declared_ms {
+        for (gi, g) in gates.gates.iter().enumerate() {
+            if g.kind == GateKind::Finish && first[gi] < 0 {
+                let want = decl as i64 - 10;
+                if let Some(i) = flat.iter().position(|r| w.race_of(r) == want) {
+                    // only when the counter shows every checkpoint credited
+                    if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 == ng).unwrap_or(false) {
+                        first[gi] = i as i32;
+                        synth_finish = true;
+                    }
+                }
+            }
+        }
+    }
     let mut events: Vec<(usize, usize)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (*t as usize, gi)).collect();
     events.sort();
     let respawns = respawn_ticks(&w.ghost);
@@ -114,7 +133,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         out.records.push(Record {
             start_id,
             macro_id: HUMAN_MACRO,
-            horizon_ticks: (row_idx - leg_start).min(65535) as u16,
+            horizon_ticks: (row_idx - leg_start + 1).min(65535) as u16,
             outcome: if finished { OUTCOME_FINISHED } else { OUTCOME_OK },
             end,
             gate_tick,
@@ -128,12 +147,13 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         leg_start = row_idx;
     }
     out.log.push(format!(
-        "{}: {} legs, {} respawn negatives ({} respawn presses in the tape), gates in order {:?}",
+        "{}: {} legs, {} respawn negatives ({} respawn presses in the tape), gates in order {:?}{}",
         w.ghost.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         out.legs,
         out.respawns,
         respawns.len(),
-        first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (gates.gates[gi].waypoint, crate::secs(w.race_of(&flat[*t as usize])))).collect::<Vec<_>>()
+        first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (gates.gates[gi].waypoint, crate::secs(w.race_of(&flat[*t as usize])))).collect::<Vec<_>>(),
+        if synth_finish { " (finish leg from the declared time: its counter step was among the exiting child's lost samples)" } else { "" }
     ));
 
     Ok(out)

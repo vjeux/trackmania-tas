@@ -433,6 +433,16 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
         "{}: TMR0 v{} md5 {} : {} records, {} gates, {} starts in starts.tsv, {} distinct start_ids in the shard; outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; {} gate crossings, {} with a tick outside the horizon",
         p.display(), shard.version, md5, shard.records.len(), shard.n_gates, starts, by_start.len(), hist[0], hist[1], hist[2], hist[3], hist[4], gates_hit, bad_ticks
     );
+    if let Some(p) = a.get("dump") {
+        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\n");
+        let mut recs = shard.records.clone();
+        recs.sort_by_key(|r| (r.start_id, r.macro_id, r.horizon_ticks));
+        for r in &recs {
+            let g: Vec<String> = r.gate_tick.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(w, t)| format!("wp{w}")).collect();
+            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed));
+        }
+        std::fs::write(p, s).map_err(|e| e.to_string())?;
+    }
     if bad_ticks > 0 || by_start.len() != starts {
         return Err("verify FAILED".into());
     }
