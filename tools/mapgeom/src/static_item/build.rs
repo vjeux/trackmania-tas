@@ -1320,6 +1320,20 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // kinematic constraint per moving part binding the world (-1) to it.
         let prefab_index = if dyna_form_common() { next_index(&mut next) } else { 1 };
         let mut ents: Vec<super::prefab::Entity> = Vec::new();
+        let static_entity = |next: &mut i32, so: CPlugStaticObjectModel| {
+            let i = next_index(next);
+            super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() }
+        };
+        // TINY_DYNA_NO_STATIC=1 leaves the static part out; TINY_DYNA_STATIC_FIRST=1
+        // lists it before the moving parts (does a moving part need a static
+        // sibling, and does the order matter? the 2026-09-07 cross tests)
+        let mut static_object = static_object.filter(|_| std::env::var_os("TINY_DYNA_NO_STATIC").is_none());
+        if std::env::var_os("TINY_DYNA_STATIC_FIRST").is_some() {
+            if let Some(so) = static_object.take() {
+                ents.push(static_entity(&mut next, so));
+            }
+        }
+        let mut dyna_indices: Vec<i32> = Vec::new();
         for part in &m.dyna {
             let mesh_index = next_index(&mut next);
             let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
@@ -1340,18 +1354,16 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
                 None => super::null_ref(),
             };
             let i = next_index(&mut next);
+            dyna_indices.push(ents.len() as i32);
             ents.push(super::prefab::Entity { model: inline(i, Node::Dyna(model)), rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
         }
-        // TINY_DYNA_NO_STATIC=1 leaves the static part out (does a moving part
-        // need a static sibling? the 2026-09-07 rotor cross test)
-        if let Some(so) = static_object.filter(|_| std::env::var_os("TINY_DYNA_NO_STATIC").is_none()) {
-            let i = next_index(&mut next);
-            ents.push(super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+        if let Some(so) = static_object {
+            ents.push(static_entity(&mut next, so));
         }
         for (k, part) in m.dyna.iter().enumerate() {
             let mut cp = part.constraint_params.clone();
             cp.ent1 = -1;
-            cp.ent2 = k as i32;
+            cp.ent2 = dyna_indices[k];
             let i = next_index(&mut next);
             ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(part.constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
         }
@@ -2244,6 +2256,36 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     let kmodel = store.load_model(constraint_path)?;
     let mut constraint = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{constraint_path}: {e}"))?;
     constraint.scale(scale);
+    // TINY_DYNA_KC_ROT=axis,min,max[,ms] / TINY_DYNA_KC_TRANS=axis,min,max[,ms]:
+    // override a range (and its single-step period) — the 2026-09-07 cross
+    // tests of a pusher that should also turn
+    for (var, is_rot) in [("TINY_DYNA_KC_ROT", true), ("TINY_DYNA_KC_TRANS", false)] {
+        if let Ok(v) = std::env::var(var) {
+            let f: Vec<&str> = v.split(',').collect();
+            if f.len() >= 3 {
+                let axis: u8 = f[0].parse().unwrap_or(2);
+                let lo: f32 = f[1].parse().unwrap_or(0.0);
+                let hi: f32 = f[2].parse().unwrap_or(0.0);
+                let ms: Option<u32> = f.get(3).and_then(|s| s.parse().ok());
+                if is_rot {
+                    constraint.rot_axis = axis;
+                    constraint.angle_min_deg = lo;
+                    constraint.angle_max_deg = hi;
+                    if let Some(ms) = ms {
+                        constraint.rot = super::dyna::AnimFunc { u01: 1, subs: vec![super::dyna::AnimSubFunc { ease: 1, reverse: 1, duration_ms: ms }] };
+                    }
+                } else {
+                    constraint.trans_axis = axis;
+                    constraint.trans_min = lo;
+                    constraint.trans_max = hi;
+                    if let Some(ms) = ms {
+                        constraint.trans = super::dyna::AnimFunc { u01: 1, subs: vec![super::dyna::AnimSubFunc { ease: 1, reverse: 1, duration_ms: ms }] };
+                    }
+                }
+                m.notes.push(format!("{var}={v}: constraint now [{}]", constraint.summary()));
+            }
+        }
+    }
     let mut mesh = Merged::default();
     mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
@@ -2461,7 +2503,11 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     // sibling? the 2026-09-07 cross test)
     if let Ok(extra) = std::env::var("TINY_DYNA_EXTRA_STATIC") {
         if !extra.is_empty() {
-            add_prefab(store, &extra, &IDENTITY, scale, &mut m, 0)?;
+            if extra.to_ascii_lowercase().ends_with(".staticobject.gbx") {
+                add_static_object_file(store, &extra, &IDENTITY, scale, &mut m)?;
+            } else {
+                add_prefab(store, &extra, &IDENTITY, scale, &mut m, 0)?;
+            }
             m.notes.push(format!("extra static part {extra}"));
         }
     }
