@@ -104,11 +104,17 @@ pub fn find_clock(
     let g = |i: usize, o: usize| -> u32 {
         u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 12 + o].try_into().unwrap())
     };
+    let _ = start_offset_ms;
     let mut found: Vec<(u64, i64)> = Vec::new();
     for o in (0..len as usize - 4).step_by(4) {
         if (0..m - 1).all(|i| g(i + 1, o).wrapping_sub(g(i, o)) == 10) {
-            let race0 = sample_ms(probe, 0, start_offset_ms);
-            found.push((lo + o as u64, g(0, o) as i64 - race0));
+            // The +10-per-tick signature FINDS the counter; the label comes
+            // from the engine, not from a fit. See `measured_clock_bias`.
+            let a = lo + o as u64;
+            match measured_clock_bias(srv, a) {
+                Ok(b) => found.push((a, b)),
+                Err(_) => continue,
+            }
         }
     }
     if std::env::var("FKDBG").is_ok() {
@@ -207,7 +213,8 @@ pub fn tail_recs(steer: &[u8], accel: &[u8], brake: &[u8], from: usize) -> Vec<R
 /// be, tick for tick, the tape we mean to measure.
 ///
 /// `base` is the array the shim located and reported at handshake; the layout
-/// is one 32-byte record per tick, `+0` steer, `+4` gas, `+8` brake as f32.
+/// is one 32-byte record per tick: `+4` steer, `+8` gas, `+12` brake as f32
+/// (`forkoracle::forksrv::STRIDE` documents the whole record).
 /// Reading it back through /proc/<pid>/mem costs one 70 KB read and settles the
 /// question completely.
 pub fn verify_tape(
@@ -225,12 +232,17 @@ pub fn verify_tape(
     for t in 0..n {
         let o = t * crate::forksrv::STRIDE;
         let g = |k: usize| f32::from_le_bytes(buf[o + k..o + k + 4].try_into().unwrap());
+        let (st, ga, br) = (
+            g(crate::forksrv::REC_STEER),
+            g(crate::forksrv::REC_GAS),
+            g(crate::forksrv::REC_BRAKE),
+        );
         let want = crate::forksrv::rec_of(steer[t], accel[t], brake[t]);
-        if g(0) != want.steer || g(4) != want.gas || g(8) != want.brake {
+        if st != want.steer || ga != want.gas || br != want.brake {
             if bad == 0 {
                 first = format!(
                     "tick {}: server has ({}, {}, {}), tape says ({}, {}, {})",
-                    t, g(0), g(4), g(8), want.steer, want.gas, want.brake
+                    t, st, ga, br, want.steer, want.gas, want.brake
                 );
             }
             bad += 1;
@@ -343,4 +355,34 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
         return Err(format!("the car never moves: {}", c));
     }
     Ok(c)
+}
+
+/// THE CLOCK'S LABEL, MEASURED RATHER THAN FITTED.
+///
+/// The counter the locators find is not the race clock: on build 128182 it
+/// counts from the ROUND start, which sits 1000 ms before the race start on
+/// map 2 (round 1200, race 2200), and the difference is not a constant of the
+/// engine — it is per race. So a label needs an origin, and until now that
+/// origin was FITTED: `first sample value - sample_ms(probe, 0, ...)`, i.e. an
+/// assumption about which tick the first sample of a child's stream belongs to.
+/// Measured, that fit was 1000 in one run and 1020 in another — two ticks of
+/// disagreement between two runs of one tape, which is exactly the shape of
+/// "the fork child's tick labelling shifts by a whole tick between workers"
+/// (phantom defect 3).
+///
+/// This reads the counter out of the STOPPED PARENT, whose tick the tick hook
+/// reports exactly, so the origin is arithmetic rather than inference:
+///
+/// ```text
+/// bias = counter_in_parent - (race time of the tick the parent has FINISHED)
+///      = counter_in_parent - ((sim_ms - race_start) - 10)
+/// ```
+///
+/// and `race_ms = counter - bias` for every sample thereafter.
+pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, String> {
+    let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
+        .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
+    let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
+    let finished_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 10;
+    Ok(counter - finished_race_ms)
 }

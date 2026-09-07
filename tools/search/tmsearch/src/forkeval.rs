@@ -14,15 +14,17 @@
 //!   DNF. So every candidate this evaluator scores carries
 //!   [`Provenance::distance`], and the guard re-validates anything that is
 //!   going to be banked.
-//! * **The resume boundary is per worker.** The `lroundf` checkpoint is not a
-//!   fixed simulation point: under load the count moves in whole chunks of ~62
-//!   calls (~0.24 tick), so servers started together stop at different ticks --
-//!   104 of 150 workers stopped one tick later than the master's single
-//!   calibration when 150 started at once. Each worker therefore probes its own
-//!   server and publishes `max(calibration, probe + 1)`; `probe + 1` because
-//!   tick `probe` is already partly consumed. The search takes the MAXIMUM over
+//! * **The resume boundary is still measured per worker.** It no longer VARIES
+//!   per worker -- the tick hook stops every server at the same tick, and 300
+//!   servers started together prove it -- but it is still MEASURED on each one,
+//!   because a boundary that is assumed is how the phantom got in. Each worker
+//!   probes its own server and publishes `max(calibration, probe)`, where the
+//!   probe is the first UNCONSUMED record. The search takes the MAXIMUM over
 //!   workers as its mutation floor -- it must be the maximum, because migration
 //!   moves a state made by one worker into another.
+//!   (When the clock was a count of `lroundf` calls this was a real spread: 104
+//!   of 150 workers stopped one tick later than the master's single
+//!   calibration.)
 //!
 //! # Scoring an aborted candidate
 //!
@@ -232,12 +234,11 @@ impl ForkEval {
         // WHERE DID THIS SERVER ACTUALLY STOP? Ask it, do not assume the
         // master's answer. A failed probe is a hard abort: a resume cannot be
         // trusted without it, and a fallback here is how the phantom got in.
-        // `boundary_tick` is the probe WITH the tick-hook control: under the
-        // tick clock the engine's reported tick must agree with the record the
-        // engine faults on, on every worker. `probe + 1` is the first
-        // unconsumed record (see `ForkServer::boundary_tick`).
+        // `boundary_tick` is the first unconsumed record, measured by the
+        // page-fault probe and required to agree with the tick the engine says
+        // it stopped at -- on every worker, every time.
         let probe = srv.boundary_tick(s.start_offset_ms)?;
-        let from = s.calibrated.max(probe + 1);
+        let from = s.calibrated.max(probe);
 
         let steer: Vec<u8> = reference.steer.iter().map(|&v| v as u8).collect();
         let gas: Vec<u8> = reference.gas.iter().map(|&v| v as u8).collect();

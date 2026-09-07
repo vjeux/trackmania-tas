@@ -327,17 +327,18 @@ fn main() {
     let started = std::time::Instant::now();
     let workdir = work.clone();
 
-    // `--forktick` is a TICK; the shim wants an `lroundf` COUNT. The fitted line
+    // `--forktick` is a TAPE TICK; the shim wants a race-tick clock value. The
+    // conversion is exact
     // is `clock = 36141 + 25.483 * race_ms` and it is per map (this one is map
     // 2's). It only has to place the checkpoint near the right instant — where
     // the server ACTUALLY stopped is probed and is what everything is labelled
     // from. Passing the tick straight through as a clock puts the fork at
-    // lroundf call 60, which is during load, and the shim then reports
+    // tick 60 of the tape, and the shim then reports
     // `bad handshake: ERR notfound` because the input array is not there yet.
     let forktick_t: i64 = a.num("forktick", 60i64);
     let forktick: u64 = tmsearch::forkeval::clock_for_tick(forktick_t, 0);
     println!(
-        "\nFORK    checkpoint at tick {} -> lroundf clock {} (fitted line, per map; the boundary\n        the server actually stops at is PROBED and is what ticks are labelled from)",
+        "\nFORK    checkpoint at tape tick {} -> race clock {} (exact; the boundary the server\n        actually stops at is still PROBED, as the control)",
         forktick_t, forktick
     );
     let route_pts = route_polyline(&route);

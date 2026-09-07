@@ -31,6 +31,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk tickhook count  hooked run vs plain run: once per tick, nothing changed  [--gdb]
   fk tickhook load   N servers at once: one simulation point, probe agreeing   [--n 150]
   fk tickhook find   a new build: which function is the tick? prints the constants
+  fk tickhook reads  audit every read the oracle makes of engine memory  [THE CONTROL]
 
 Engine flags, accepted by every command:
   --tape FILE        the .Ghost.Gbx / .Replay.Gbx whose inputs the engine runs
@@ -216,7 +217,11 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         },
                     )
                 }
-                _ => Err("fk tickhook <check|count|load|find>".into()),
+                "reads" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::reads(&engine, tape, at)
+                }
+                _ => Err("fk tickhook <check|count|load|find|reads>".into()),
             }
         }
         "tree" => {

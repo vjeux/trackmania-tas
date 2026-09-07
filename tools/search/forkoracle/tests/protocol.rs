@@ -10,18 +10,30 @@ use forkoracle::forksrv::{parse_ready_full, parse_result};
 use forkoracle::layout::{check_rows, sample_ms, tail_recs, Row};
 
 #[test]
-fn ready_carries_validator_callback_provenance() {
-    let r = parse_ready_full("READY 4096 36395 77 8192 12288").unwrap();
+fn ready_carries_validator_callback_provenance_and_the_tick_clock() {
+    let r = parse_ready_full("READY 4096 2042 77 8192 12288 tick 12620 2200").unwrap();
     assert_eq!(r.base, 4096);
-    assert_eq!(r.clock, 36395);
+    assert_eq!(r.clock, 2042);
     assert_eq!(r.pid, Some(77));
     assert_eq!(r.validator_controller, Some(8192));
     assert_eq!(r.validation_sim, Some(12288));
+    assert_eq!(r.sim_ms, 12620);
+    assert_eq!(r.race_start, 2200);
+}
+
+/// A handshake with no tick clock is not this shim, and its `clock` means
+/// something else. Refuse it rather than measure with it.
+#[test]
+fn ready_rejects_a_handshake_without_a_tick_clock() {
+    assert!(parse_ready_full("READY 4096 36395 77 8192 12288").is_err());
+    assert!(parse_ready_full("READY 4096 36395 77 8192 12288 tick 12620").is_err());
+    // a race start the engine never set
+    assert!(parse_ready_full("READY 4096 2042 77 8192 12288 tick 12620 0").is_err());
 }
 
 #[test]
 fn ready_rejects_half_a_validator_capture() {
-    assert!(parse_ready_full("READY 4096 36395 77 8192").is_err());
+    assert!(parse_ready_full("READY 4096 36395 77 8192 tick 12620 2200").is_err());
 }
 
 /// THE ASYMMETRIC FIXTURE.
