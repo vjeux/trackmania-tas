@@ -257,9 +257,29 @@ fn main() {
             let ia = m.items.iter().position(|it| it.index == pa).expect("--a not an item");
             let ib = m.items.iter().position(|it| it.index == pb).expect("--b not an item");
             let (ra, rb) = (m.items[ia].clone(), m.items[ib].clone());
-            let wa = m.gbx.body[ra.waypoint_region.0..ra.waypoint_region.1].to_vec();
-            let wb = m.gbx.body[rb.waypoint_region.0..rb.waypoint_region.1].to_vec();
+            // the waypoint node AND the v8 tail (flags with the variant byte, pivot, scale,
+            // skin FileRef, the two trailing Vec3) travel with the model: one span each
+            let wa = m.gbx.body[ra.waypoint_region.0..ra.record_region.1].to_vec();
+            let wb = m.gbx.body[rb.waypoint_region.0..rb.record_region.1].to_vec();
             let mut m = m;
+            // the per-item side bytes (colour 0x62, anim phase 0x63, foreground 0x65,
+            // lightmap quality 0x68: the items are the last ni bytes of each) swap too
+            {
+                let chunks = map::skip_chunks(&m.gbx.body);
+                let ni = m.items.len();
+                for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3065, 0x0304_3068] {
+                    let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == cid) else { continue };
+                    if size < 4 + ni {
+                        continue;
+                    }
+                    let base = payload + size - ni;
+                    let (ba, bb) = (m.gbx.body[base + ia], m.gbx.body[base + ib]);
+                    if ba != bb {
+                        m.raw_patches.push((base + ia, vec![bb]));
+                        m.raw_patches.push((base + ib, vec![ba]));
+                    }
+                }
+            }
             m.set_item_model(ia, &rb.model);
             m.set_item_model(ib, &ra.model);
             // pose: yaw/pitch/roll + cell + pos
@@ -281,10 +301,10 @@ fn main() {
             let jb = m2.items.iter().position(|it| it.index == pb).unwrap();
             let (qa, qb) = (m2.items[ja].clone(), m2.items[jb].clone());
             let mut m = m2;
-            m.raw_splices.push((qa.waypoint_region, wb));
-            m.raw_splices.push((qb.waypoint_region, wa));
+            m.raw_splices.push(((qa.waypoint_region.0, qa.record_region.1), wb));
+            m.raw_splices.push(((qb.waypoint_region.0, qb.record_region.1), wa));
             let _ = std::fs::remove_file(&tmp);
-            println!("swapped placements i{} {} {:?} <-> i{} {} {:?} (models via rename, pose+tag via patch/splice)", pa, ra.model, ra.waypoint_tag, pb, rb.model, rb.waypoint_tag);
+            println!("swapped placements i{} {} {:?} <-> i{} {} {:?} (models via rename, pose via patch, waypoint node + v8 tail + side bytes via splice)", pa, ra.model, ra.waypoint_tag, pb, rb.model, rb.waypoint_tag);
             m.write_to_reporting(Path::new(&out)).expect("write");
             println!("wrote {out}");
         }
