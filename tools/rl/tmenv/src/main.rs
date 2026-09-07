@@ -31,8 +31,8 @@ fn has(a: &[String], k: &str) -> bool {
 #[derive(Clone)]
 struct Paths {
     server: PathBuf,
-    /// `--allow-car-switch`: run on a transform map anyway.
-    allow_car_switch: bool,
+    /// `--refuse-car-switch`: do not run on a transform map at all.
+    refuse_car_switch: bool,
     map: PathBuf,
     shim: PathBuf,
     work: PathBuf,
@@ -62,7 +62,7 @@ fn paths(a: &[String]) -> Paths {
         work,
         reference: PathBuf::from(flag(a, "--ref").unwrap_or_default()),
         geom: flag(a, "--geom").map(PathBuf::from),
-        allow_car_switch: a.iter().any(|x| x == "--allow-car-switch"),
+        refuse_car_switch: a.iter().any(|x| x == "--refuse-car-switch"),
     }
 }
 
@@ -273,13 +273,23 @@ fn measured_track(p: &Paths) -> Result<tmenv::Track, String> {
     // REFUSE car-switch maps (see `tmenv::track::car_switch_blocks`) unless
     // told otherwise: the validator car freezes at the switch and every row
     // after it would be a stale copy.
+    // Car-switch maps RUN (the readout follows the participant's live vehicle
+    // slot before every fork and the clock is the car-independent sim time;
+    // Spring 2026 - 12 open-loop: 37.072 exact, 8/8 gates, slots 0-2-0-2-0-2),
+    // with one known limit said out loud: a switch INSIDE a k-tick step leaves
+    // up to k rows on the old (frozen) car before the follow -- 27 of 3708 rows
+    // over 5 switches at k = 10 -- and `Info.car_switched` marks the step.
+    // `--refuse-car-switch` restores the refusal for a caller that wants none.
     let sw = tmenv::track::car_switch_blocks(&p.map);
-    if !sw.is_empty() && !p.allow_car_switch {
-        return Err(format!(
-            "this map has car-switch blocks ({}) and the env's car readout does not yet follow the live vehicle \
-             slot -- refused (pass --allow-car-switch to run anyway, knowing the car may freeze at the switch)",
+    if !sw.is_empty() {
+        if p.refuse_car_switch {
+            return Err(format!("this map has car-switch blocks ({}) -- refused on request", sw.join(", ")));
+        }
+        eprintln!(
+            "tmenv: car-switch map ({}) -- the readout follows the live vehicle per step; a switch inside a step \
+             leaves up to k stale rows (Info.car_switched)",
             sw.join(", ")
-        ));
+        );
     }
     // `--geom geom.json` (the DATA arm's TrackGeom: field-median line, WR line,
     // router output) takes precedence over the cartographer's pack/route, which
@@ -3064,6 +3074,34 @@ fn open_loop_control(a: &[String]) {
             if matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
                 break;
             }
+        }
+        // trace continuity: the largest per-tick position jump and the ticks where
+        // the position froze while the car was moving (a car switch not followed)
+        {
+            let rec = env.rollout_record();
+            let mut max_jump = 0.0f64;
+            let mut frozen = 0usize;
+            let mut cars: Vec<u8> = Vec::new();
+            for w in rec.trace.windows(2) {
+                let d = ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2)).sqrt();
+                let v = (w[1].vx.powi(2) + w[1].vy.powi(2) + w[1].vz.powi(2)).sqrt();
+                if d > max_jump {
+                    max_jump = d;
+                }
+                if d == 0.0 && v > 1.0 {
+                    frozen += 1;
+                }
+                if w[1].vis.known && cars.last() != Some(&w[1].vis.car) {
+                    cars.push(w[1].vis.car);
+                }
+            }
+            println!(
+                "  trace: {} rows, max per-tick jump {:.3} m, frozen-while-moving ticks {}, car slots in order {:?}",
+                rec.trace.len(),
+                max_jump,
+                frozen,
+                cars
+            );
         }
         let path = bank.join(format!("olc-{gi:02}.Ghost.Gbx"));
         let (s, ga, b) = env.banked_tape(&tape);
