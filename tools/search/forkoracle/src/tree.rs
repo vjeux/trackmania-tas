@@ -132,6 +132,60 @@ impl Tree {
         Ok(n)
     }
 
+    /// `accept`, but watching the child it expects: when `pid` exits before it
+    /// connects, return at once with `Err(ChildExited)` instead of sitting out
+    /// the whole frame timeout.
+    ///
+    /// A child that runs off the END of its race does exactly this -- the
+    /// validator finishes, the process exits, and its stop point is never
+    /// reached. Before this the driver waited 120 s for a socket that would
+    /// never connect, once per finishing rollout. The child's trace file is
+    /// still on disk, so the caller can read what it drove.
+    pub fn accept_expecting(&mut self, pid: i32, timeout_ms: i32) -> Result<Node, AcceptErr> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+        let stream = loop {
+            match self.listener.accept() {
+                Ok((s, _)) => break s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if pid > 0 && !pid_alive(pid) {
+                        // One more look: the connect may have raced the exit.
+                        if let Ok((s, _)) = self.listener.accept() {
+                            break s;
+                        }
+                        return Err(AcceptErr::ChildExited(pid));
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(AcceptErr::Other(format!(
+                            "no branch node connected within {} ms -- the child either never \
+                             reached its stop point or could not reach {}",
+                            timeout_ms,
+                            self.path.display()
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+                Err(e) => return Err(AcceptErr::Other(format!("accept: {}", e))),
+            }
+        };
+        stream.set_nonblocking(false).map_err(|e| AcceptErr::Other(e.to_string()))?;
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false };
+        let hello = read_frame(&mut n.sock).ok_or(AcceptErr::Other("a branch node connected and said nothing".into()))?;
+        let s = String::from_utf8_lossy(&hello).into_owned();
+        let (base, clock, got) = parse_ready(&s).map_err(AcceptErr::Other)?;
+        let got = got.ok_or_else(|| {
+            AcceptErr::Other(format!(
+                "a branch node handshook without naming its pid ({:?}) -- a node the driver \
+                 cannot kill is an orphan holding a 150 MB address space",
+                s.trim()
+            ))
+        })?;
+        n.base = base;
+        n.clock = clock;
+        n.pid = got;
+        self.live.push(got);
+        Ok(n)
+    }
+
     /// Forget a node the caller has already destroyed.
     pub fn reaped(&mut self, pid: i32) {
         self.live.retain(|p| *p != pid);
@@ -347,5 +401,38 @@ mod tests {
         assert_eq!(n.floor(Some(100)).unwrap(), 172, "an EARLIER estimate must be ignored");
         assert_eq!(n.floor(Some(172)).unwrap(), 172);
         assert_eq!(n.floor(Some(400)).unwrap(), 400, "a LATER estimate must win");
+    }
+}
+
+/// Why `accept_expecting` returned without a node.
+#[derive(Debug, Clone)]
+pub enum AcceptErr {
+    /// The expected child exited (or became a zombie) before connecting: it
+    /// ran to the end of its simulation instead of pausing.
+    ChildExited(i32),
+    Other(String),
+}
+
+impl std::fmt::Display for AcceptErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AcceptErr::ChildExited(p) => write!(f, "branch child {} exited before reaching its stop point (the race ended?)", p),
+            AcceptErr::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+/// Is `pid` a live, non-zombie process? A child whose parent has not reaped
+/// it is a zombie and is as gone as one that was.
+pub fn pid_alive(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+        Err(_) => false,
+        Ok(s) => {
+            // "pid (comm) S ..." -- comm may contain spaces/parens; state follows the last ')'.
+            match s.rfind(')') {
+                Some(i) => !matches!(s[i + 1..].trim_start().chars().next(), Some('Z') | Some('X') | None),
+                None => false,
+            }
+        }
     }
 }

@@ -110,6 +110,15 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
+/// What `Forest::advance_ex` came back with.
+pub enum Advanced {
+    /// The child paused at its stop point and is a new fork point.
+    Paused(StateTrace, Handle),
+    /// The child ran to the end of its simulation (the race finished or the
+    /// tape ran out) and exited; this is everything it traced.
+    Exited(StateTrace),
+}
+
 /// How a node writes its state trace, and where the car lives in its memory.
 #[derive(Clone, Debug)]
 pub struct TraceCfg {
@@ -328,6 +337,95 @@ impl Forest {
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
         Ok((trace, id))
+    }
+
+    /// `advance`, for a macro that may run the race to its END.
+    ///
+    /// A child that crosses the finish never reaches its stop point: the
+    /// validator ends, the process exits, and `advance` would sit out the whole
+    /// frame timeout and then fail. Here the exit is detected through the pid
+    /// and the child's trace -- everything it drove up to the end -- is
+    /// returned as [`Advanced::Exited`]. The trace still has to be
+    /// tick-continuous; a trace with a gap is refused like any other.
+    pub fn advance_ex(
+        &mut self,
+        h: Handle,
+        inputs: &[Rec],
+        from: usize,
+        k_ticks: u64,
+    ) -> Result<Advanced, String> {
+        if !inputs.is_empty() {
+            let floor = self.floor(h, None)?;
+            if from < floor {
+                return Err(format!(
+                    "FORWARD-ONLY VIOLATION: handle {:?} has consumed through tick {}, so the \
+                     first tick it may be given is {}; you asked to write from {}.",
+                    h,
+                    floor - 1,
+                    floor,
+                    from
+                ));
+            }
+        }
+        let id = Handle(self.next);
+        self.next += 1;
+        let sock = self.tree.sock_path();
+        let (trace_path, segs, stride, max) = match &self.cfg {
+            Some(c) => (
+                c.dir.join(format!("trace-{}.bin", id.0)),
+                forkoracle::layout::segments(&c.layout),
+                c.stride,
+                c.max,
+            ),
+            None => (PathBuf::new(), Vec::new(), 0, 0),
+        };
+        let tp = trace_path.to_string_lossy().into_owned();
+        let req = BranchReq {
+            from,
+            recs: inputs,
+            stop_after_lroundf: (k_ticks * LROUNDF_PER_TICK).max(1),
+            sock: &sock,
+            trace_path: &tp,
+            segs: &segs,
+            sample_stride: stride.max(1),
+            sample_max: max,
+            key: (0, (segs.iter().map(|s| s.1).sum::<u32>()).max(1)),
+        };
+        let pid = match h {
+            ROOT => self.root.branch(&req)?,
+            _ => self.held_mut(h)?.node.branch(&req)?,
+        };
+        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms()) {
+            Ok(n) => n,
+            Err(forkoracle::tree::AcceptErr::ChildExited(_)) => {
+                // Give the trace file's last write a moment to land.
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let trace = if trace_path.as_os_str().is_empty() { Vec::new() } else { self.read_trace(&trace_path)? };
+                let _ = std::fs::remove_file(&trace_path);
+                return Ok(Advanced::Exited(trace));
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        if node.pid != pid {
+            node.destroy();
+            return Err(format!("branch mismatch: asked for pid {} and pid {} arrived on the socket", pid, node.pid));
+        }
+        if let Err(e) = node.probe() {
+            let pid = node.pid;
+            node.destroy();
+            self.tree.reaped(pid);
+            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+        }
+        let mut written = match h {
+            ROOT => Vec::new(),
+            _ => self.held(h)?.written.clone(),
+        };
+        written.extend((from..from + inputs.len()).filter(|t| {
+            inputs.get(t - from).zip(self.reference.get(*t)).map(|(a, b)| a != b).unwrap_or(true)
+        }));
+        let trace = if trace_path.as_os_str().is_empty() { Vec::new() } else { self.read_trace(&trace_path)? };
+        self.nodes.insert(id, Held { node, trace: trace_path, written });
+        Ok(Advanced::Paused(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child

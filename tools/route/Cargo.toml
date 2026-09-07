@@ -1,0 +1,15 @@
+# The route project's engine-facing layer: the reachability generator.
+#
+#   tmreach   savestates along human runs, the gate-crossing detector and its
+#             oracle control, the macro fan-out, the TMR0 dataset writer.
+#
+# Its own workspace because it pins -O3 + LTO like fk/search (the rollout loop
+# is on the hot path) and because nothing in tools/ needs to see it.
+[workspace]
+members = ["tmreach"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
