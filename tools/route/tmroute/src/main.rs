@@ -444,14 +444,25 @@ pub fn cmd_table(args: &[String]) {
         let Ok(g) = io::read_gates(&d.join("gates.json")) else { continue };
         let load = |src: &str| io::read_route(&Path::new(root).join(&uid).join(io::route_file_name(src, 0))).ok().map(|r| metrics::to_groups(&r.gate_order(), &g));
         let carto = load("cartographer");
-        let human = load("router-human");
+        let mut human = load("router-human");
+        let mut unverified = false;
         let plan = load(&plan_source);
-        // human share from consensus.txt
-        let share = std::fs::read_to_string(d.join("consensus.txt")).ok().and_then(|s| {
+        // no verified route: fall back to the UNVERIFIED consensus (ghosts without a resim verdict) — marked
+        let cons_file = if d.join("consensus.txt").exists() { "consensus.txt" } else { unverified = human.is_none(); "consensus.unverified.txt" };
+        if human.is_none() {
+            human = std::fs::read_to_string(d.join(cons_file)).ok().and_then(|s| {
+                let l = s.lines().next()?.to_string();
+                let m = l.split('\t').find(|f| f.starts_with("modal_groups ["))?.trim_start_matches("modal_groups [").trim_end_matches(']').to_string();
+                let v: Vec<u32> = m.split(',').filter_map(|x| x.parse().ok()).collect();
+                (!v.is_empty()).then_some(v)
+            });
+        }
+        // human share from consensus
+        let share = std::fs::read_to_string(d.join(cons_file)).ok().and_then(|s| {
             let l = s.lines().next()?.to_string();
             let sh = l.split('\t').find(|f| f.starts_with("share "))?.trim_start_matches("share ").to_string();
             let n = l.split('\t').find(|f| f.starts_with("runs "))?.trim_start_matches("runs ").to_string();
-            Some(format!("{sh} ({n} runs)"))
+            Some(format!("{sh} ({n} runs{})", if unverified { ", UNVERIFIED" } else { "" }))
         }).unwrap_or_else(|| "-".into());
         let cmp = |a: &Option<Vec<u32>>, b: &Option<Vec<u32>>| -> String {
             match (a, b) {
