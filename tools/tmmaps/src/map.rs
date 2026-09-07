@@ -50,10 +50,16 @@ pub const CELL_Y: f32 = 8.0;
 
 /// World y of cell row 0, per collection: the map stores block heights as a
 /// cell index and item heights in metres, and the constant joining them is
-/// the environment's, not the file's. Stadium (0x1a): -62 (a cell-9 block
-/// top at y 10). BlueBay (0x1c): -40, measured on Summer 2026 - 01 (Land at
+/// the environment's, not the file's. Stadium (0x1a): -64 — a cell-9 block
+/// has its deck at y 10 = 9*8 - 64 + the prefabs' +2 deck offset, flush with
+/// the grass (Grass zone at cell 9, plane local +2). It was -62 until Summer
+/// 15 (2026-09-07): the "block top at 10" had been read as the cell floor, so
+/// every Stadium block item stood 2 m (1 m tiny) above the items placed on
+/// it — road signs buried to the rim, pushers squat — and the whole tiny map
+/// floated 1 m above the regenerated grass (05 and 10 shipped that way).
+/// BlueBay (0x1c): -40, measured on Summer 2026 - 01 (Land at
 /// cell 6, the palms standing on it at y 10.0 = 6*8 - 40 + 2 m block top;
-/// GateCheckpoint at y 10 on a cell-6 platform). Others: unmeasured, Stadium.
+/// GateCheckpoint at y 10 on a cell-6 platform).
 pub fn ground_y(collection: u32) -> f32 {
     match collection {
         0x1c => -40.0,
@@ -73,7 +79,7 @@ pub fn ground_y(collection: u32) -> f32 {
         // carry cell 5 and stand at y 2 on the regenerated Grass (cell 5, plane
         // local +2: 40 - 40 + 2); Lake/LakeShore at cell 4, Grass at 6/7/9.
         0xf => -40.0,
-        _ => -62.0,
+        _ => -64.0,
     }
 }
 
