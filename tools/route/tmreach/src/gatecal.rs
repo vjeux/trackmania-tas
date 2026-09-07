@@ -317,7 +317,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
             if let Some((pin, pout)) = pair {
                 let (s1, lat1, up1) = g.local(pin);
                 let s2 = g.local(pout).0;
-                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
+                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { crate::gates::model_key(g) };
                 let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
                 e.0.push((s2, s1));
                 e.3 = e.3.max(lat1.abs());
@@ -366,6 +366,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
 /// Unknown models: the GEOM half_width + 2 m, flagged in CONTROL.md until a
 /// control bounds them.
 pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f64 {
+    let model = model.trim_end_matches("@item");
     match model {
         "RoadTechCheckpoint" => 12.5,
         "RoadTechFinish" => 12.5,

@@ -221,7 +221,8 @@ pub struct Detector {
 
 impl Detector {
     pub fn trigger_for(&self, g: &Gate) -> Trigger {
-        self.per_model.iter().find(|(m, _)| *m == g.model).map(|(_, t)| *t).unwrap_or(self.default)
+        let key = model_key(g);
+        self.per_model.iter().find(|(m, _)| *m == key).map(|(_, t)| *t).unwrap_or(self.default)
     }
 
     /// First row index at which the car is inside each gate's trigger, or -1;
@@ -494,4 +495,11 @@ impl MapGates {
         }
         out
     }
+}
+
+/// The detector's per-model key: a block and an ITEM of the same model do not
+/// share a plane (an item gate credits ~1.4 m before its anchor, a block 2.2 m
+/// before its centre — Fall 2025 - 12, GEOM 14:22Z).
+pub fn model_key(g: &Gate) -> String {
+    if g.from_item { format!("{}@item", g.model) } else { g.model.clone() }
 }
