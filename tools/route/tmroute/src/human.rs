@@ -301,7 +301,10 @@ pub struct Consensus {
 
 /// Build the modal order and the `router-human` route.
 /// `runs` are loaded ghosts; `rows` their order rows (same index).
-pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by: &str) -> Consensus {
+/// `certified_by`: when every run given is a plain-oracle-verified ghost (resim verdict `exact` on another
+/// box), the route's status is `Certified` by the best of them — a human drove exactly this route and the
+/// oracle confirmed the lap. None → `Hypothesis`.
+pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by: &str, certified_by: Option<&str>) -> Consensus {
     let mut notes = Vec::new();
     let declared = gates.declared_checkpoints;
     // finished + fully matched + right split count
@@ -458,7 +461,10 @@ pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by
             source: "router-human".into(),
             rank: 0,
             predicted_ms: rows[best].ms,
-            status: RouteStatus::Hypothesis,
+            status: match certified_by {
+                Some(oracle_box) => RouteStatus::Certified { ms: rows[best].ms, ghost_md5: rows[best].md5.clone(), oracle_box: oracle_box.to_string() },
+                None => RouteStatus::Hypothesis,
+            },
             gate_order,
             produced_by: format!("{produced_by}; consensus of {} runs ({} agreeing, share {:.2}), corridor = median line of the agreeing runs, reference {}", ok.len(), members.len(), share, rows[best].md5),
         }),

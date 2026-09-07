@@ -6,7 +6,7 @@
 //!                                                 gates.json (INTERFACES §3) with the declared-count control
 //!   tmroute from-cartographer PACK.pack.json ROUTE.route.json --gates gates.json --out route.json
 //!   tmroute human-orders --gates gates.json --out human-orders.tsv GHOST...
-//!   tmroute consensus --gates gates.json --orders human-orders.tsv --out route.json [--gates-out gates.json] GHOST...
+//!   tmroute consensus --gates gates.json --orders human-orders.tsv --out route.json [--gates-out gates.json] [--certified-by BOX] GHOST...
 //!   tmroute index ROUTES_DIR [--names gates_dir]  rebuild routes.tsv
 //!   tmroute validate ROUTE.json
 
@@ -342,7 +342,8 @@ fn cmd_consensus(args: &[String]) {
         std::fs::write(&o, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
     }
     let prov = tmroute::provenance("tmroute consensus");
-    let c = human::consensus(&gates, &runs, &rows, &prov);
+    let cert = flag(args, "--certified-by");
+    let c = human::consensus(&gates, &runs, &rows, &prov, cert.as_deref());
     let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     println!(
         "{}\t{}\truns {}\tusable {}\tdistinct_orders {}\tmodal_groups [{}]\tmodal_n {}\tshare {:.2}\tagree {}",
@@ -528,6 +529,8 @@ pub fn cmd_human_batch(args: &[String]) {
     let geom = flag(args, "--geom").unwrap_or_else(|| die("--geom GEOM_DIR"));
     let routes = flag(args, "--routes").unwrap_or_else(|| die("--routes ROUTES_DIR"));
     let unverified = has_flag(args, "--unverified");
+    // who certified the verified ghosts: the DATA arm's plain-oracle resim (its box, from its STATUS.md)
+    let oracle_box = flag(args, "--oracle-box").unwrap_or_else(|| "tm-player DATA resim (devvm62680)".into());
     let prov = tmroute::provenance("tmroute human-batch");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&data).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
     dirs.sort();
@@ -573,7 +576,7 @@ pub fn cmd_human_batch(args: &[String]) {
             let mut lines = vec![human::ORDERS_HEADER.to_string()];
             lines.extend(rows.iter().map(human::order_row));
             let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), lines.join("\n") + "\n");
-            let c = human::consensus(gates, &runs, &rows, &prov);
+            let c = human::consensus(gates, &runs, &rows, &prov, if bank_route { Some(oracle_box.as_str()) } else { None });
             let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
             let mut out = format!(
                 "{}\t{}\truns {}\tusable {}\tdistinct_orders {}\tmodal_groups [{}]\tmodal_n {}\tshare {:.2}\tagree {}\n",
