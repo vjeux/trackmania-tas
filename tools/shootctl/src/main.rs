@@ -1022,6 +1022,7 @@ usage:
         maps the camera through the tiny anchor at half the distance.
         --detach returns at once; DIR/done-<side>.txt appears when finished.
   shootctl playshots --map MAP --outdir /mnt/c/DIR [--tag T] [--shots 4] [--every-ms 3000]
+                    [--drive-ms MS [--drive-at-ms 13500]] (hold the accelerator: the car rolls off the start)
                     [--first-ms 4000] [--timeout S] [--detach]
         open the map in PLAY mode (a playground, the car at the start) under the
         lock and take N timed screenshots DIR/play-<T>-<k>.png — does a moving

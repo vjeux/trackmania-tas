@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300]
-//!              [--timeout 600] [--outdir /tmp/tiny3] [--wsx P] [-v]
+//!              [--drive-ms MS [--drive-at-ms 13500]] [--timeout 600] [--outdir /tmp/tiny3] [--wsx P] [-v]
 //! ```
 //!
 //! The MediaTracker intro plays when a map opens in play (a 10 s camera
@@ -47,7 +47,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let remote_dir = format!("{SHOTS}/play-{tag}");
     eprintln!("pushing {} to the box …", map.display());
     wsx.push(&map, &remote_map)?;
-    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}");
+    // --drive-ms MS [--drive-at-ms MS]: hold the accelerator on the box (the
+    // car rolls off the start into the in-game triggers ahead of it)
+    let drive = match (f("--drive-ms"), f("--drive-at-ms")) {
+        (Some(ms), at) => format!(" --drive-ms {ms}{}", at.map(|a| format!(" --drive-at-ms {a}")).unwrap_or_default()),
+        (None, _) => String::new(),
+    };
+    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}");
     eprintln!("playing {tag} on the box ({shots} frames) — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {

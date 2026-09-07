@@ -230,8 +230,12 @@ pub struct MediaTracker {
 struct Walker<'a> {
     body: &'a [u8],
     end: usize,
-    /// the next node index a NEW node is expected to carry
+    /// one past the highest node index defined so far (the resync heuristics
+    /// look for the next block's index at or above it)
     next_index: u32,
+    /// the first node index the chunk defines: anything below is a
+    /// back-reference into the rest of the body
+    first_index: u32,
     seen: std::collections::HashSet<u32>,
     notes: Vec<String>,
 }
@@ -248,35 +252,28 @@ impl<'a> Walker<'a> {
     }
 
     fn take_index(&mut self, r: &mut Reader) -> R<Option<(u32, bool)>> {
-        // -> None for a null ref; Some((index, is_new))
+        // -> None for a null ref; Some((index, is_new)).
+        //
+        // A reader stores nodes BY INDEX, so the order in which the file
+        // defines them is free: an index below the chunk's first one was
+        // defined earlier in the body (a waypoint node, a skin), one seen
+        // here already is a back-reference, anything else is a definition —
+        // the class word that follows is checked by every caller, which is
+        // what catches a back-reference to a node nested inside an opaque
+        // block (never seen on the 25 Summer maps). `--promote-endrace` moves
+        // a clip ahead of a lower-numbered group, so the order is not relied
+        // on anywhere.
         let idx = r.u32();
         if idx == NULL_REF {
             return Ok(None);
         }
-        if self.seen.contains(&idx) {
+        if self.seen.contains(&idx) || idx < self.first_index {
             return Ok(Some((idx, false)));
-        }
-        if idx < self.next_index {
-            // an index defined before the MediaTracker (a waypoint node, a skin):
-            // a back-reference into the rest of the body
-            return Ok(Some((idx, false)));
-        }
-        if idx > self.next_index {
-            // nodes are defined in index order, so a gap means nodes this
-            // walker did not see: the ones nested inside an opaque block that
-            // closed a list (a Text block's effect node). The caller checks
-            // the class word that follows, which is what catches a lost sync.
-            if idx - self.next_index > 64 {
-                return Err(format!(
-                    "node index {idx} at {} where {} was expected (lost sync)",
-                    r.o - 4,
-                    self.next_index
-                ));
-            }
-            self.notes.push(format!("node indices {}..{} not seen (inside an opaque block)", self.next_index, idx - 1));
         }
         self.seen.insert(idx);
-        self.next_index = idx + 1;
+        if idx >= self.next_index {
+            self.next_index = idx + 1;
+        }
         Ok(Some((idx, true)))
     }
 
@@ -821,7 +818,7 @@ pub fn parse(body: &[u8], span: (usize, usize)) -> R<MediaTracker> {
         }
         first
     };
-    let mut w = Walker { body, end, next_index: first_new.unwrap_or(0), seen: Default::default(), notes: Vec::new() };
+    let mut w = Walker { body, end, next_index: first_new.unwrap_or(0), first_index: first_new.unwrap_or(0), seen: Default::default(), notes: Vec::new() };
     let intro = match w.parse_clip(&mut r)? {
         Some(c) => Slot::Clip(c),
         None => Slot::Null,
@@ -1109,6 +1106,81 @@ impl MediaTracker {
         (keys_moved, verts_moved, cells, left)
     }
 
+    /// EXPERIMENT (`tmmaps mediatracker --promote-endrace N`): move end-race
+    /// clip N (1-based) WITH its trigger into the in-game group. An end-race
+    /// clip fires when the race ends; the same clip in the in-game group fires
+    /// when the car ENTERS its trigger — so a clip whose trigger covers the
+    /// spawn (Summer 15's end-race "Trigger 1": a custom camera on the start
+    /// cells) plays right after the intro, and a play-mode frame at ~14 s
+    /// shows whether the trigger cells landed where the car is. Node indices
+    /// stay unique (the clip's bytes move, its index with them); a reader
+    /// stores nodes by index, so their order in the file does not matter.
+    pub fn promote_end_race(&mut self, n: usize) -> Result<(), String> {
+        if !matches!(self.in_game, Slot::Group(_)) {
+            return Err("promoting into a map without an in-game group would need a fresh node index: not supported".into());
+        }
+        let Slot::Group(er) = &mut self.end_race else { return Err("no end-race group".into()) };
+        if n == 0 || n > er.clips.len() {
+            return Err(format!("end-race clip {n}: the group has {}", er.clips.len()));
+        }
+        let clip = er.clips.remove(n - 1);
+        let trigger = er.triggers.remove(n - 1);
+        let Slot::Group(g) = &mut self.in_game else { unreachable!() };
+        g.clips.push(clip);
+        g.triggers.push(trigger);
+        Ok(())
+    }
+
+    /// EXPERIMENT (`--shift-trigger dx,dy,dz`): move the LAST in-game trigger
+    /// by whole cells — the promoted clip's, to put it on the straight ahead
+    /// of the spawn where a driven car enters it.
+    pub fn shift_last_in_game_trigger(&mut self, d: [i32; 3]) -> Result<(), String> {
+        let Slot::Group(g) = &mut self.in_game else { return Err("no in-game group".into()) };
+        let t = g.triggers.last_mut().ok_or("the in-game group has no trigger")?;
+        for c in &mut t.coords {
+            for k in 0..3 {
+                c[k] += d[k];
+            }
+        }
+        Ok(())
+    }
+
+    /// EXPERIMENT (`--trigger-size a,b,c`): re-express every trigger on a finer
+    /// grid (an integer multiple per axis of the current one): a cell becomes
+    /// the r×r×r block of cells covering the same volume. Whether the GAME
+    /// honours the chunk's trigger size, or has 3×1×3 built in, is what this
+    /// tests: if it ignores the field, the re-expressed cells sit at twice the
+    /// distance from the origin and the spawn trigger no longer fires.
+    pub fn set_trigger_size(&mut self, ts: [i32; 3]) -> Result<(), String> {
+        let old = self.trigger_size.ok_or("the chunk has no trigger size (version 0)")?;
+        let mut ratio = [1i32; 3];
+        for k in 0..3 {
+            if ts[k] <= 0 || ts[k] % old[k] != 0 {
+                return Err(format!("trigger size {ts:?}: axis {k} is not a positive multiple of the current {old:?}"));
+            }
+            ratio[k] = ts[k] / old[k];
+        }
+        for (_, slot) in self.slots_mut() {
+            if let Slot::Group(g) = slot {
+                for t in &mut g.triggers {
+                    let mut out = Vec::new();
+                    for c in &t.coords {
+                        for dx in 0..ratio[0] {
+                            for dy in 0..ratio[1] {
+                                for dz in 0..ratio[2] {
+                                    out.push([c[0] * ratio[0] + dx, c[1] * ratio[1] + dy, c[2] * ratio[2] + dz]);
+                                }
+                            }
+                        }
+                    }
+                    t.coords = out;
+                }
+            }
+        }
+        self.trigger_size = Some(ts);
+        Ok(())
+    }
+
     /// The chunk's bytes (id word included) with the edits applied and the
     /// trigger lists re-emitted. With no edit and no transform this reproduces
     /// the source bytes exactly (`tests::mediatracker_roundtrips`).
@@ -1315,6 +1387,43 @@ pub fn cmd(args: &[String]) {
             if again != orig {
                 let first = again.iter().zip(orig).position(|(a, b)| a != b);
                 crate::cli::die(&format!("re-emitting the chunk unchanged gives {} bytes for {} (first difference at {:?}): the writer does not reproduce this map", again.len(), orig.len(), first));
+            }
+            // experiments: --promote-endrace N, --trigger-size a,b,c, --strip; written with --out
+            if let Some(out) = crate::cli::flag(args, "--out") {
+                let mut mt = mt;
+                if let Some(n) = crate::cli::flag(args, "--promote-endrace") {
+                    let n: usize = n.parse().unwrap_or_else(|_| crate::cli::die("--promote-endrace wants a 1-based clip number"));
+                    mt.promote_end_race(n).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("end-race clip {n} moved into the in-game group");
+                }
+                if let Some(d) = crate::cli::flag(args, "--shift-trigger") {
+                    let v: Vec<i32> = d.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| crate::cli::die("--shift-trigger wants dx,dy,dz (cells)"))).collect();
+                    if v.len() != 3 {
+                        crate::cli::die("--shift-trigger wants three numbers");
+                    }
+                    mt.shift_last_in_game_trigger([v[0], v[1], v[2]]).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("last in-game trigger shifted by {v:?} cells");
+                }
+                if let Some(ts) = crate::cli::flag(args, "--trigger-size") {
+                    let v: Vec<i32> = ts.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| crate::cli::die("--trigger-size wants a,b,c"))).collect();
+                    if v.len() != 3 {
+                        crate::cli::die("--trigger-size wants three numbers");
+                    }
+                    mt.set_trigger_size([v[0], v[1], v[2]]).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("trigger grid re-expressed as {:?}", mt.trigger_size);
+                }
+                if crate::cli::has(args, "--strip") {
+                    mt.strip = true;
+                }
+                let mut w = crate::map::MapFile::load(path);
+                w.set_mediatracker(&mt);
+                w.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+                let check = crate::map::MapFile::load(std::path::Path::new(out));
+                match check.mediatracker() {
+                    Some(Ok(re)) => println!("wrote {out}: {} clips, trigger size {:?}", re.clips().len(), re.trigger_size),
+                    Some(Err(e)) => crate::cli::die(&format!("{out}: the written MediaTracker does not read back: {e}")),
+                    None => crate::cli::die(&format!("{out}: no MediaTracker chunk after the write")),
+                }
             }
         }
     }

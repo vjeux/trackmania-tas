@@ -24,6 +24,15 @@ pub struct Opts {
     /// for MS milliseconds into `OUTDIR/car-<tag>.tsv` before the shots —
     /// the spawn point is the first row, a shove is a velocity that appears.
     pub carlog_ms: u64,
+    /// `--drive-ms MS [--drive-at-ms MS]`: hold the accelerator (the Up arrow,
+    /// a synthetic key held for MS through the Windows input stream) from
+    /// `drive_at_ms` after the playground opens — the race starts ~14.7 s in
+    /// (10 s intro + countdown) — so the car rolls off the start straight
+    /// ahead: the one way this pipeline has of putting the car INTO an
+    /// in-game MediaTracker trigger (a car spawned inside one does not fire
+    /// it, measured on Summer 15).
+    pub drive_ms: u64,
+    pub drive_at_ms: u64,
     pub detach: bool,
 }
 
@@ -43,6 +52,8 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         first_ms: num("--first-ms", 4000)?,
         timeout_s: num("--timeout", 300)?,
         carlog_ms: num("--carlog-ms", 0)?,
+        drive_ms: num("--drive-ms", 0)?,
+        drive_at_ms: num("--drive-at-ms", 13500)?,
         detach: args.iter().any(|a| a == "--detach"),
     })
 }
@@ -52,7 +63,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--timeout S] [--detach]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--timeout S] [--detach]");
             return 2;
         }
     };
@@ -121,6 +132,18 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
+    let mut driver: Option<std::thread::JoinHandle<Result<(), String>>> = None;
+    if opts.drive_ms > 0 {
+        // the key is held on its own thread so the shots keep their cadence
+        let (at, hold) = (opts.drive_at_ms, opts.drive_ms);
+        let opened_at = load0;
+        driver = Some(std::thread::spawn(move || {
+            let wait = Duration::from_millis(at).saturating_sub(opened_at.elapsed());
+            std::thread::sleep(wait);
+            hold_accelerator(hold)
+        }));
+        lines.push(format!("drive\taccelerator held {} ms from {} ms after the playground opened", opts.drive_ms, opts.drive_at_ms));
+    }
     if opts.carlog_ms > 0 {
         // one call per 5 s slice: a 24 s request never came back (the server
         // serves a handler that yields, but not for that long), and the
@@ -166,8 +189,38 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         println!("{} {line}", el());
         lines.push(line);
     }
+    if let Some(d) = driver {
+        match d.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => lines.push(format!("drive\tFAILED: {e}")),
+            Err(_) => lines.push("drive\tFAILED: the key thread panicked".to_string()),
+        }
+    }
     let _ = super::to_menu();
     Ok(lines)
+}
+
+/// Hold the Up arrow for `ms` in the foreground game window: PowerShell +
+/// `keybd_event` (an extended key: scan 0x48, flags 1 down / 3 up), the game
+/// brought to the foreground first. Synthetic input reaches the game the way
+/// AutoHotkey's does.
+fn hold_accelerator(ms: u64) -> Result<(), String> {
+    let script = format!(
+        "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);'; \
+         $k = Add-Type -MemberDefinition $sig -Name Keys -Namespace Drive -PassThru; \
+         $p = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First 1; \
+         if ($p) {{ [void]$k::SetForegroundWindow($p.MainWindowHandle) }}; Start-Sleep -Milliseconds 150; \
+         $k::keybd_event(0x26, 0x48, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {ms}; $k::keybd_event(0x26, 0x48, 3, [System.UIntPtr]::Zero); 'held'"
+    );
+    let out = std::process::Command::new(super::shootset::POWERSHELL)
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("powershell: {e}"))?;
+    if !out.status.success() || !String::from_utf8_lossy(&out.stdout).contains("held") {
+        return Err(format!("keybd_event script: {} {}", String::from_utf8_lossy(&out.stdout).trim(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(())
 }
 
 /// `shootctl carlog FILE`: what a `car-<tag>.tsv` says in five lines — rows

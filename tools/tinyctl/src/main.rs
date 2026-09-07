@@ -44,6 +44,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         (--ab: --orig is a tiny build too — an A/B of two tiny outputs — and is
         shot through the anchor like the tiny side)
   tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300] [--timeout 600] [--outdir D]
+               [--drive-ms MS [--drive-at-ms 13500]]
         the map in PLAY mode on the box (shootctl playshots): N timed frames from
         the playground opening — the MediaTracker intro — as one stacked sheet
   tinyctl compare --views VIEWS.tsv --dir DIR --tag sNN [--color 50] [--edge 16] [--keep-hud]

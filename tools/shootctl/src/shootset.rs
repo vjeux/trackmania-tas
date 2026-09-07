@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext";
 const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
-const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+pub const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 const SHOTDPI: &str = "C:\\Users\\vjeux\\shotdpi.ps1";
 
 #[derive(Clone, Debug)]
