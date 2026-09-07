@@ -478,7 +478,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 centre: match r.up3 { Some(u) => [r.centre[0] + hh * u[0], r.centre[1] + hh * u[1], r.centre[2] + hh * u[2]], None => [r.centre[0], r.centre[1] + hh, r.centre[2]] },
                 // a pitched/rolled placement keeps its 3-D axis (unit); the sign is oriented later
                 normal: match r.axis3 { Some(a) => { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); [a[0] / l, a[1] / l, a[2] / l] } None => [sy, 0.0, cy] },
-                normal_source: if r.wall { "unknown-wall".into() } else { "placement".into() },
+                normal_source: if r.wall { "placement-wall".into() } else { "placement".into() },
                 half_width: hw,
                 half_height: hh,
                 model: r.model.clone(),
