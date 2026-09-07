@@ -1070,7 +1070,18 @@ usage:
             let d = lock::lock_dir();
             match args.get(1).map(|s| s.as_str()) {
                 Some("acquire") => match lock::acquire(&d, &owner, num("--wait", 0), num("--max-age", 0)) {
-                    Ok(()) => 0,
+                    Ok(()) => {
+                        // The CLI acquire exits as soon as it holds the lock, so
+                        // ITS pid is dead a millisecond later and the next
+                        // acquirer would break the lock at once (66f775a's
+                        // liveness rule) — while `tinyctl publish-here` or a
+                        // `sh -c 'acquire; job; release'` is still driving the
+                        // game. The holder that matters is the PARENT: it lives
+                        // exactly as long as the job. Recorded 2026-09-07 after
+                        // reading the rule against the publish flow.
+                        let _ = std::fs::write(d.join("pid"), std::os::unix::process::parent_id().to_string());
+                        0
+                    }
                     Err(e) => {
                         eprintln!("{e}");
                         1
