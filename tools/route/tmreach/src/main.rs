@@ -1340,12 +1340,13 @@ fn cmd_effects(a: &Args) -> Result<(), String> {
 /// human legs, workers) — the campaign table the coordinator reads.
 fn cmd_bank_table(a: &Args) -> Result<(), String> {
     let bank = PathBuf::from(a.req("bank"));
+    // within ONE line of the file (a hand-written CONTROL.md has the same phrases across lines)
     let pick = |s: &str, re_start: &str, re_end: &str| -> String {
-        s.find(re_start).map(|i| {
-            let rest = &s[i + re_start.len()..];
+        s.lines().find_map(|l| l.find(re_start).map(|i| {
+            let rest = &l[i + re_start.len()..];
             let j = rest.find(re_end).unwrap_or(rest.len());
             rest[..j].trim().to_string()
-        }).unwrap_or_default()
+        })).unwrap_or_default()
     };
     let mut rows: Vec<(String, String)> = Vec::new();
     for e in std::fs::read_dir(&bank).map_err(|e| e.to_string())? {
@@ -1357,7 +1358,7 @@ fn cmd_bank_table(a: &Args) -> Result<(), String> {
         }
         let name = pick(&c, "# CONTROL.md — ", " (");
         let ghosts = pick(&c, "Ghosts: ", " in the player manifest");
-        let excluded = c.matches(".Ghost.Gbx").count();
+        let excluded = c.lines().find(|l| l.contains("EXCLUDED (startup controls failed")).map(|l| l.matches(".Ghost.Gbx").count()).unwrap_or(0);
         let records = pick(&c, "work items (ghost x shard) ok, ", " rollouts (").to_string() + " rollouts, " + &pick(&c, " rollouts (", " records)") + " records";
         let counter = pick(&c, "finish included): ", " matched by a detector crossing on the same row").replace(" counter steps: ", " steps, ");
         let oracle = pick(&c, "ORACLE CONTROL: ", ", unanswered");
