@@ -852,7 +852,19 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
         }
     }
     let mut report = String::new();
-    for (uid, (name, exact, total)) in &maps {
+    // --newest-first: campaigns by (year desc, season Fall > Summer > Spring > Winter), country maps last
+    let rank = |name: &str| -> (i64, i64, String) {
+        let year: i64 = name.split_whitespace().find_map(|t| t.parse::<i64>().ok()).filter(|y| *y > 2000).unwrap_or(0);
+        let season = if name.starts_with("Fall") { 4 } else if name.starts_with("Summer") { 3 } else if name.starts_with("Spring") { 2 } else if name.starts_with("Winter") { 1 } else { 0 };
+        let country = if season == 0 { 1 } else { 0 };
+        (country, -(year * 10 + season), name.to_string())
+    };
+    let mut order: Vec<&String> = maps.keys().collect();
+    if a.has("newest-first") {
+        order.sort_by_key(|u| rank(&maps[*u].0));
+    }
+    for uid in order {
+        let (name, exact, total) = &maps[uid];
         if let Some(fl) = &filter {
             if !fl.contains(uid) {
                 continue;
@@ -873,9 +885,17 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
             report.push_str(&format!("{name}\t{uid}\tSKIPPED: no resim-exact ghost ({total} in the manifest)\n"));
             continue;
         }
-        let map = maps_dir.join(format!("{uid}.Map.Gbx"));
-        if !map.exists() {
-            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no map file {}\n", map.display()));
+        // the map file: <maps-dir>/<uid>.Map.Gbx (cartographer bank) or the player's maps/<uid>/map.Map.Gbx,
+        // copied into scratch (a mount read can be partial; tmroute gates then refuses it)
+        let map_src = [maps_dir.join(format!("{uid}.Map.Gbx")), ghosts_root.join(uid).join("map.Map.Gbx")].into_iter().find(|p| p.exists());
+        let Some(map_src) = map_src else {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no map file under {} or {}\n", maps_dir.display(), ghosts_root.join(uid).display()));
+            continue;
+        };
+        let map = scratch.join(uid).join(format!("{uid}.Map.Gbx"));
+        std::fs::create_dir_all(map.parent().unwrap()).map_err(|e| e.to_string())?;
+        if let Err(e) = std::fs::copy(&map_src, &map) {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: map copy failed: {e}\n"));
             continue;
         }
         // ghost directory of symlinks: <rank>-<declared>.Ghost.Gbx under the player's maps/<uid>/ghosts
