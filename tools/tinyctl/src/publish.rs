@@ -231,7 +231,13 @@ fn publish_here(o: &PublishOpts) -> Result<Vec<String>, String> {
     }
 
     if o.playcheck {
-        lines.push(playcheck(o, &auth_core, &file_url, &uid)?);
+        // The upload is done and verified by now: a playcheck that fails
+        // (Summer 05 takes ~7 min to load, longer than the wait was) must not
+        // hide the upload/campaign/stored lines — it becomes a line of its own.
+        match playcheck(o, &auth_core, &file_url, &uid) {
+            Ok(line) => lines.push(line),
+            Err(e) => lines.push(format!("playcheck\tFAILED\t{e}")),
+        }
     }
     Ok(lines)
 }
@@ -264,7 +270,8 @@ fn playcheck(o: &PublishOpts, auth_core: &str, file_url: &str, uid: &str) -> Res
     let pm = get("/playmap?mode=");
     let t0 = Instant::now();
     let mut ctx = String::new();
-    while t0.elapsed() < Duration::from_secs(150) {
+    // the tiny 05 needs ~7 min from PlayMap to the playground; the others < 1 min
+    while t0.elapsed() < Duration::from_secs(600) {
         std::thread::sleep(Duration::from_secs(3));
         ctx = get("/ctx");
         if ctx.contains("\"playground\":true") {
