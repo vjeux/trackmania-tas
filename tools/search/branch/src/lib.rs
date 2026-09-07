@@ -304,56 +304,77 @@ impl Forest {
             key: (0, (segs.iter().map(|s| s.1).sum::<u32>()).max(1)),
         };
 
-        let pid = match h {
-            ROOT => self.root.branch(&req)?,
-            _ => self.held_mut(h)?.node.branch(&req)?,
-        };
+        // Fork, accept, probe -- up to three times when the probe child exits
+        // without faulting (`PROBE-EMPTY`, exit 0; the start-up flake seen on
+        // ~1 in 10 servers when several references start at once, also seen on
+        // a node mid-episode). A node whose probe answered nothing is destroyed
+        // and the same fork is made again from the same parent; the tick it
+        // stops at is the same by construction (the tick hook), so nothing
+        // about the episode changes but the process id.
+        let mut attempt = 0usize;
+        let mut node = loop {
+            let pid = match h {
+                ROOT => self.root.branch(&req)?,
+                _ => self.held_mut(h)?.node.branch(&req)?,
+            };
 
-        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
-            Some(n) => n,
-            None => {
-                // The engine ended the run inside this macro. Whatever the
-                // child traced before it stopped simulating is real state;
-                // the caller decides what an ended run means.
-                let trace = if trace_path.as_os_str().is_empty() {
-                    Vec::new()
-                } else {
-                    let t = self.read_trace(&trace_path).unwrap_or_default();
+            let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+                Some(n) => n,
+                None => {
+                    // The engine ended the run inside this macro. Whatever the
+                    // child traced before it stopped simulating is real state;
+                    // the caller decides what an ended run means.
+                    let trace = if trace_path.as_os_str().is_empty() {
+                        Vec::new()
+                    } else {
+                        let t = self.read_trace(&trace_path).unwrap_or_default();
+                        let _ = std::fs::remove_file(&trace_path);
+                        t
+                    };
+                    return Ok(Advanced::RunEnded(trace));
+                }
+            };
+            if node.pid != pid {
+                // A node is only the node you asked for if it says so itself. Two
+                // branches in flight on one server would otherwise be told apart by
+                // arrival order, which is the shape of every swapped-replay defect
+                // in this project.
+                node.destroy();
+                return Err(format!(
+                    "branch mismatch: asked for pid {} and pid {} arrived on the socket",
+                    pid, node.pid
+                ));
+            }
+            // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
+            // abort. Not "fall back to the parent's" -- that is the defect.
+            match node.probe() {
+                Ok(_) => break node,
+                Err(e) if e.contains("ValidatedResult") => {
+                    // The probe child ran to the END without another input read:
+                    // every remaining record is already in the engine's buffer.
+                    // The node is alive and can continue the reference, but owns
+                    // no writable tick (measured by the route GEN arm: paused at
+                    // 19.670 of a 19.798 run, 13 records left, probe reply = the
+                    // validator's result).
+                    node.assume_exhausted(self.reference.len());
+                    break node;
+                }
+                Err(e) if e.contains("PROBE-EMPTY") && attempt < 2 => {
+                    let pid = node.pid;
+                    node.destroy();
+                    self.tree.reaped(pid);
                     let _ = std::fs::remove_file(&trace_path);
-                    t
-                };
-                return Ok(Advanced::RunEnded(trace));
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => {
+                    let pid = node.pid;
+                    node.destroy();
+                    self.tree.reaped(pid);
+                    return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+                }
             }
         };
-        if node.pid != pid {
-            // A node is only the node you asked for if it says so itself. Two
-            // branches in flight on one server would otherwise be told apart by
-            // arrival order, which is the shape of every swapped-replay defect
-            // in this project.
-            node.destroy();
-            return Err(format!(
-                "branch mismatch: asked for pid {} and pid {} arrived on the socket",
-                pid, node.pid
-            ));
-        }
-        // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
-        // abort. Not "fall back to the parent's" -- that is the defect.
-        if let Err(e) = node.probe() {
-            if e.contains("ValidatedResult") {
-                // The probe child ran to the END without another input read:
-                // every remaining record is already in the engine's buffer.
-                // The node is alive and can continue the reference, but owns
-                // no writable tick (measured by the route GEN arm: paused at
-                // 19.670 of a 19.798 run, 13 records left, probe reply = the
-                // validator's result).
-                node.assume_exhausted(self.reference.len());
-            } else {
-                let pid = node.pid;
-                node.destroy();
-                self.tree.reaped(pid);
-                return Err(format!("node {} could not probe its own boundary: {}", pid, e));
-            }
-        }
 
         let mut written = match h {
             ROOT => Vec::new(),

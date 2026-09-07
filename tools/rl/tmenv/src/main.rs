@@ -3666,7 +3666,7 @@ fn start_sanity(a: &[String]) {
         if !only.is_empty() && !only.iter().any(|u| *u == uid) {
             continue;
         }
-        if d.join("map.Map.Gbx").exists() && d.join("ghosts").is_dir() {
+        if d.join("map.Map.Gbx").exists() && (d.join("ghosts").is_dir() || d.join("ghosts.tar").exists()) {
             maps.push(d);
         }
     }

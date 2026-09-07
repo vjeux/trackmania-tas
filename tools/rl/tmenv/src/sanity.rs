@@ -118,8 +118,36 @@ impl MapSanity {
 /// The fastest (lowest ms) ghost in `<map>/ghosts/`, by the file name
 /// `<rank>-<ms>.Ghost.Gbx`.
 pub fn fastest_ghost(map_dir: &Path) -> Result<(PathBuf, i64), String> {
+    fastest_ghost_in(&map_dir.join("ghosts"))
+}
+
+/// The map's ghosts directory: `<map>/ghosts/` when extracted, else `ghosts.tar`
+/// unpacked into `work/ghosts/` (the pool keeps 356 of 393 maps tarred).
+pub fn ghosts_dir(map_dir: &Path, work: &Path) -> Result<PathBuf, String> {
+    let d = map_dir.join("ghosts");
+    if d.is_dir() && fastest_ghost_in(&d).is_ok() {
+        return Ok(d);
+    }
+    let tar = map_dir.join("ghosts.tar");
+    if !tar.exists() {
+        return Err(format!("{}: neither ghosts/ nor ghosts.tar", map_dir.display()));
+    }
+    std::fs::create_dir_all(work).map_err(|e| e.to_string())?;
+    let st = std::process::Command::new("tar").args(["xf", &tar.to_string_lossy(), "-C", &work.to_string_lossy()]).status().map_err(|e| format!("tar: {e}"))?;
+    if !st.success() {
+        return Err(format!("tar xf {} failed", tar.display()));
+    }
+    let out = work.join("ghosts");
+    if out.is_dir() {
+        Ok(out)
+    } else {
+        Err(format!("{}: the tar holds no ghosts/ directory", tar.display()))
+    }
+}
+
+pub fn fastest_ghost_in(dir: &Path) -> Result<(PathBuf, i64), String> {
     let mut best: Option<(PathBuf, i64)> = None;
-    for e in std::fs::read_dir(map_dir.join("ghosts")).map_err(|e| format!("{}: {e}", map_dir.display()))? {
+    for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let p = e.map_err(|e| e.to_string())?.path();
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if !name.ends_with(".Ghost.Gbx") {
@@ -130,7 +158,7 @@ pub fn fastest_ghost(map_dir: &Path) -> Result<(PathBuf, i64), String> {
             best = Some((p, ms));
         }
     }
-    best.ok_or_else(|| format!("{}: no ghosts", map_dir.display()))
+    best.ok_or_else(|| format!("{}: no ghosts", dir.display()))
 }
 
 /// The map's start block(s) / item(s), by name.
@@ -181,7 +209,8 @@ pub fn sanity_one(cfg: &SanityCfg, map_dir: &Path) -> MapSanity {
     }
     let res = (|| -> Result<(), String> {
         // 1. the rank-1 ghost's own container as the template
-        let (ghost, ms) = fastest_ghost(map_dir)?;
+        let gdir = ghosts_dir(map_dir, &work)?;
+        let (ghost, ms) = fastest_ghost_in(&gdir)?;
         r.ghost = ghost.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         r.ghost_ms = ms;
         let tpl = crate::template::Template::load(&ghost)?;
