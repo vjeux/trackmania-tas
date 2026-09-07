@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn record_round_trips() {
         let mut end = CarState::from_row(
-            &forkoracle::layout::Row { time_ms: 1230, x: 1.0, y: 2.0, z: 3.0, vx: 4.0, vy: 5.0, vz: 6.0, qx: 0.1, qy: 0.2, qz: 0.3, qw: 0.9, wetness: 0.0, cps: u32::MAX },
+            &forkoracle::layout::Row { time_ms: 1230, x: 1.0, y: 2.0, z: 3.0, vx: 4.0, vy: 5.0, vz: 6.0, qx: 0.1, qy: 0.2, qz: 0.3, qw: 0.9, wetness: 0.0, cps: u32::MAX, vis: forkoracle::layout::Vis::UNKNOWN },
             1240,
             2,
             false,

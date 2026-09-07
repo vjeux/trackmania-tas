@@ -367,6 +367,78 @@ pub fn observe(g: &TrackGeom, st: &CarState, prev: &[Action]) -> Obs {
     o
 }
 
+// ------------------------------------------------------------ OBS_VERSION 2
+
+/// `OBS_VERSION` 2 = the 80 floats of v1 (identical, same indices) followed by
+/// the G3 vehicle blocks, `OBS_DIM_V2` = 100:
+///
+/// | idx | n | block |
+/// |---|---|---|
+/// | 80 | 7 | gear one-hot 0..=6 (all 0 when unknown) |
+/// | 87 | 1 | rpm `/RPM_SCALE` |
+/// | 88 | 4 | wheel ground contact FL, FR, RL, RR (0/1; 0 when unknown) |
+/// | 92 | 4 | wheel slip FL, FR, RL, RR (clamped 0..1; 0 when unknown) |
+/// | 96 | 1 | turbo time `/TURBO_SCALE_S` clamped 0..1 |
+/// | 97 | 1 | vis fields present flag (1 when `CarState.gear != u8::MAX`) |
+/// | 98 | 2 | car: `car/3` and a Stadium flag (1 when car == 0) |
+///
+/// v1 policies keep loading: `observe` is v1 and `observe_v2` writes v1 first.
+/// Materials are NOT observed (an engine id with no scale); wetness stays
+/// reserved at v1's slot 10. The vis fields lag `race_ms` by one tick
+/// (`tmstate::VIS_PHASE_MS_DEFAULT`).
+pub const OBS_VERSION_V2: u32 = 2;
+pub const OBS_DIM_V2: usize = 100;
+pub const RPM_SCALE: f32 = 12_000.0;
+pub const TURBO_SCALE_S: f32 = 3.0;
+pub type ObsV2 = [f32; OBS_DIM_V2];
+
+pub fn observe_v2(g: &TrackGeom, st: &CarState, prev: &[Action]) -> ObsV2 {
+    let v1 = observe(g, st, prev);
+    let mut o = [0.0f32; OBS_DIM_V2];
+    o[..OBS_DIM].copy_from_slice(&v1);
+    let mut i = OBS_DIM;
+    let mut push = |v: f32| {
+        o[i] = if v.is_finite() { v } else { 0.0 };
+        i += 1;
+    };
+    let known = st.gear != u8::MAX;
+    for gear in 0..7u8 {
+        push(if known && st.gear == gear { 1.0 } else { 0.0 });
+    }
+    push(if known { (st.rpm / RPM_SCALE).clamp(0.0, 3.0) } else { 0.0 });
+    for k in 0..4 {
+        push(if known && st.wheel_contact[k] == 1 { 1.0 } else { 0.0 });
+    }
+    for k in 0..4 {
+        push(if known { st.wheel_slip[k].clamp(0.0, 1.0) } else { 0.0 });
+    }
+    push(if known { (st.turbo / TURBO_SCALE_S).clamp(0.0, 1.0) } else { 0.0 });
+    push(if known { 1.0 } else { 0.0 });
+    let car_known = st.car != u8::MAX;
+    push(if car_known { st.car as f32 / 3.0 } else { 0.0 });
+    push(if car_known && st.car == 0 { 1.0 } else { 0.0 });
+    assert_eq!(i, OBS_DIM_V2, "the v2 layout table and the code disagree");
+    o
+}
+
+/// Observe at a given version: 1 → the 80 floats, 2 → the 100 floats (v1 as a
+/// prefix). Any other version is a caller error.
+pub fn observe_version(version: u32, g: &TrackGeom, st: &CarState, prev: &[Action]) -> Vec<f32> {
+    match version {
+        1 => observe(g, st, prev).to_vec(),
+        2 => observe_v2(g, st, prev).to_vec(),
+        v => panic!("tmobs: no OBS_VERSION {v} (1 or 2)"),
+    }
+}
+
+pub fn obs_dim(version: u32) -> usize {
+    match version {
+        1 => OBS_DIM,
+        2 => OBS_DIM_V2,
+        v => panic!("tmobs: no OBS_VERSION {v} (1 or 2)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +634,63 @@ mod guard_tests {
             let o = observe(&g, &st, &[]);
             assert!(o.iter().all(|v| v.is_finite()));
         }
+    }
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+    use tmstate::Gate;
+
+    fn geom() -> TrackGeom {
+        let n = 50;
+        let pts: Vec<[f32; 3]> = (0..n).map(|i| [i as f32 * 2.0, 0.0, 0.0]).collect();
+        let s: Vec<f32> = (0..n).map(|i| i as f32 * 2.0).collect();
+        TrackGeom {
+            geom_version: 1,
+            map_uid: "t".into(),
+            pts,
+            half_width: vec![8.0; n],
+            s,
+            gates: vec![Gate { kind: GateKind::Finish, centre: [98.0, 0.0, 0.0], normal: [1.0, 0.0, 0.0], half_width: 8.0, s: 98.0, map_waypoint: u32::MAX }],
+            spawn: [0.0; 3],
+            spawn_yaw: 0.0,
+            source: "test".into(),
+            legs: None,
+            route: None,
+        }
+    }
+
+    #[test]
+    fn v2_is_v1_plus_the_vehicle_blocks() {
+        let g = geom();
+        let mut st = CarState::unknown();
+        st.pos = [10.0, 0.0, 0.0];
+        st.vel = [20.0, 0.0, 0.0];
+        st.quat = [1.0, 0.0, 0.0, 0.0];
+        st.speed = 20.0;
+        let v1 = observe(&g, &st, &[]);
+        let v2 = observe_v2(&g, &st, &[]);
+        assert_eq!(&v2[..OBS_DIM], &v1[..], "v1 is the prefix of v2");
+        // unknown vehicle fields observe as zeros, present flag 0
+        assert!(v2[OBS_DIM..].iter().all(|x| *x == 0.0));
+        st.gear = 3;
+        st.rpm = 6000.0;
+        st.wheel_contact = [1, 1, 0, 1];
+        st.wheel_slip = [0.2, 0.0, 2.0, f32::NAN];
+        st.turbo = 1.5;
+        st.car = 2;
+        let v2 = observe_v2(&g, &st, &[]);
+        assert_eq!(v2[80 + 3], 1.0);
+        assert_eq!(v2[80..87].iter().sum::<f32>(), 1.0);
+        assert!((v2[87] - 0.5).abs() < 1e-6);
+        assert_eq!(&v2[88..92], &[1.0, 1.0, 0.0, 1.0]);
+        assert_eq!(&v2[92..96], &[0.2, 0.0, 1.0, 0.0]);
+        assert!((v2[96] - 0.5).abs() < 1e-6);
+        assert_eq!(v2[97], 1.0);
+        assert!((v2[98] - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(v2[99], 0.0);
+        assert_eq!(obs_dim(2), OBS_DIM_V2);
+        assert_eq!(observe_version(1, &g, &st, &[]).len(), 80);
     }
 }

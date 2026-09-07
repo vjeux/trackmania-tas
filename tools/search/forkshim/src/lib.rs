@@ -2082,6 +2082,17 @@ unsafe fn forkserver() {
             let mut st = 0i32;
             waitpid(pid, &mut st, 0);
             close(fds[0]);
+            if out.is_empty() {
+                // The probe child wrote NOTHING: it died before it faulted on the
+                // array. Say how, so the driver can tell a dead child from a
+                // silent one (seen under concurrent start-up of several servers).
+                out.extend_from_slice(b"PROBE-EMPTY wstatus ");
+                utoa(st as u32 as u64, &mut out);
+                out.extend_from_slice(b" base ");
+                utoa(base as u64, &mut out);
+                out.extend_from_slice(b" n ");
+                utoa(key.steer.len() as u64, &mut out);
+            }
             send_frame(res, &out);
             continue;
         }

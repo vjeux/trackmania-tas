@@ -106,16 +106,30 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    let layout = locate_v2(
-        &mut s.srv,
-        probe,
-        &recs,
-        s.tape.start_offset_ms,
-        bounds,
-        2000,
-        4000,
-        true,
-    )?;
+    // The validator's own car first (typed ownership chain; the pointer chain
+    // below is null at the tick hook), the old locator as the fallback.
+    let layout = match crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, s.tape.start_offset_ms, bounds, 4000, true) {
+        Ok(car) => {
+            println!("locate: validator ownership chain");
+            car.layout().clone()
+        }
+        Err(_) => locate_v2(
+            &mut s.srv,
+            probe,
+            &recs,
+            s.tape.start_offset_ms,
+            bounds,
+            2000,
+            4000,
+            true,
+        )?,
+    };
+    // FK_PROBE_BASE=ADDR: centre the window on an explicit address instead (an
+    // object found by other means, e.g. the CGameVehiclePhy itself).
+    let layout = match std::env::var("FK_PROBE_BASE").ok().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()) {
+        Some(p) => forkoracle::layout::Layout { pos: p, ..layout },
+        None => layout,
+    };
 
     // A window centred on the car, plus the clock so every gathered tick can be
     // placed in race time.

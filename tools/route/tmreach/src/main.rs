@@ -661,7 +661,7 @@ fn cmd_rejudge(a: &Args) -> Result<(), String> {
                     if c.len() < 12 {
                         return None;
                     }
-                    Some(forkoracle::layout::Row { time_ms: c[0] as i64, x: c[1], y: c[2], z: c[3], vx: c[4], vy: c[5], vz: c[6], qw: c[7], qx: c[8], qy: c[9], qz: c[10], wetness: c[11], cps: u32::MAX })
+                    Some(forkoracle::layout::Row { time_ms: c[0] as i64, x: c[1], y: c[2], z: c[3], vx: c[4], vy: c[5], vz: c[6], qw: c[7], qx: c[8], qy: c[9], qz: c[10], wetness: c[11], cps: u32::MAX, vis: forkoracle::layout::Vis::UNKNOWN })
                 })
                 .collect();
             if exited {

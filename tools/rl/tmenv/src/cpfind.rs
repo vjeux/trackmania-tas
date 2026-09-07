@@ -114,7 +114,7 @@ pub fn cpfind(
         splits.iter().map(|s| format!("{:.3}", *s as f64 / 1000.0)).collect::<Vec<_>>().join(" ")
     );
     let rig = Rig::new(server, map, shim, work, ghost_path)?;
-    let mut s = rig.session_clock(crate::control::EARLIEST_CLOCK)?;
+    let mut s = rig.session_root()?;
     let probe = s.probe_tick()?;
     // ALL records, for the resolver (it scans, it does not drive)...
     let recs: Vec<Rec> = s.tape.tail_records(0);
