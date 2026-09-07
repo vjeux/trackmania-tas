@@ -44,7 +44,7 @@
 //!   The comparison is therefore on the ticks the fork actually simulated, in
 //!   race time, and never row against row.
 
-use crate::locate::{gather_ticks, locate_v2};
+use crate::locate::gather_ticks;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
@@ -97,39 +97,19 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 
 pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<(), String> {
     let affine = o.affine;
-    let reference = traj::Reference::load(&o.reference)?;
+    let _reference = traj::Reference::load(&o.reference)?;
     let want = crate::traj::Reference::channel_from(&o.reference, &o.channel)
 
         .ok_or_else(|| format!("the reference has no column {}", o.channel))?;
-    let bounds = reference.bounds(400.0);
-
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    // The validator's own car first (typed ownership chain; the pointer chain
-    // below is null at the tick hook), the old locator as the fallback.
-    let layout = match crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, s.tape.start_offset_ms, bounds, 4000, true) {
-        Ok(car) => {
-            println!("locate: validator ownership chain");
-            car.layout().clone()
-        }
-        Err(_) => locate_v2(
-            &mut s.srv,
-            probe,
-            &recs,
-            s.tape.start_offset_ms,
-            bounds,
-            2000,
-            4000,
-            true,
-        )?,
-    };
-    // FK_PROBE_BASE=ADDR: centre the window on an explicit address instead (an
-    // object found by other means, e.g. the CGameVehiclePhy itself).
-    let layout = match std::env::var("FK_PROBE_BASE").ok().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()) {
-        Some(p) => forkoracle::layout::Layout { pos: p, ..layout },
-        None => layout,
-    };
+    // The car, derived (`forkoracle::car`): the window below is centred on the
+    // copy-out in the driven CGameVehiclePhy, so it covers the phy's own fields
+    // and its post-step vis state (pos - 0xaa8) at the default span.
+    let car = forkoracle::car::locate(&s.srv)?;
+    println!("car: {}", car);
+    let layout = car.layout();
 
     // A window centred on the car, plus the clock so every gathered tick can be
     // placed in race time.

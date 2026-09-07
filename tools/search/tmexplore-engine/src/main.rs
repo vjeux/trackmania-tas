@@ -667,10 +667,10 @@ fn state_probe(a: &Args) {
     };
     let mut branch = ForkBranch::start(&opts, reference).unwrap_or_else(die);
     println!("boundary_tick\t{}", branch.from);
-    let p = branch.car().provenance();
+    let p = branch.car();
     println!(
         "ownership\tcontroller=0x{:x}\tsim=0x{:x}\tplayground=0x{:x}\tparticipant=0x{:x}\tvehicle=0x{:x}\tstate=0x{:x}",
-        p.controller, p.sim, p.playground, p.participant, p.vehicle, p.state_pos
+        p.controller, p.sim, p.playground, p.participant, p.phy, p.pos()
     );
     let initial = branch
         .initial_state()

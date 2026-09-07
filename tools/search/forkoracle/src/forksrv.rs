@@ -68,8 +68,19 @@ pub const REC_BRAKE: usize = 12;
 
 /// `'R'`: fork, rewrite ticks `from..` with `recs`, run to the finish.
 pub fn payload_run(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'R', from, recs)
+}
+
+/// `'W'`: as `'R'`, with the armed watchdog evaluated in the child every tick.
+/// Two frames come back: the validator's JSON (empty when the child aborted
+/// itself) and the fixed-size summary out of the shared page.
+pub fn payload_watched(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'W', from, recs)
+}
+
+fn payload_tail(cmd: u8, from: usize, recs: &[Rec]) -> Vec<u8> {
     let mut p = Vec::with_capacity(5 + recs.len() * 16);
-    p.push(b'R');
+    p.push(cmd);
     p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
     for (i, r) in recs.iter().enumerate() {
         p.extend_from_slice(&((from + i) as u32).to_le_bytes());
@@ -112,7 +123,18 @@ pub struct BranchReq<'a> {
     pub sample_max: u32,
     /// Dedup key `(offset, length)` inside the gathered record.
     pub key: (u32, u32),
+    /// **A WARM NODE.** The child runs its ticks with the armed watchdog
+    /// evaluating them, and the node keeps that evaluator state: a candidate
+    /// forked from it later continues the SAME watched run the root would have
+    /// made, with the same speed history, the same progress, the same gate
+    /// record, instead of a cold evaluator that has seen nothing. It is what
+    /// lets a deep fork point return the identical verdict to a shallow one.
+    /// Refused with a state trace (`segs`), which uses the same per-tick hook.
+    pub watched: bool,
 }
+
+/// The flag word a `'B'` payload ends with. Bit 0: `watched`.
+pub const BRANCH_FLAG_WATCHED: u32 = 1;
 
 /// `'B'`: the branch. See the shim's handler for the field order.
 pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
@@ -139,6 +161,10 @@ pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
         p.extend_from_slice(&r.gas.to_le_bytes());
         p.extend_from_slice(&r.brake.to_le_bytes());
     }
+    // Trailing flags, after the patches, so a shim that predates them reads a
+    // plain branch: the same optional-tail convention `'S'` uses for its
+    // budget and gate.
+    p.extend_from_slice(&(if b.watched { BRANCH_FLAG_WATCHED } else { 0 }).to_le_bytes());
     p
 }
 
@@ -668,6 +694,21 @@ impl ForkServer {
         self.run_sampled_segs(from, recs, &[(addr, len)], stride, max, key)
     }
 
+    /// Tell the shim which address holds this race's finish time, so children
+    /// can stop the moment the engine records one. See `crate::finish`.
+    /// `last_tape_clock` is the clock of the tape's final record -- past it the
+    /// engine simulates on whatever the input array holds, so nothing after it
+    /// is this tape's result. It is arithmetic, not a measurement: see
+    /// `crate::finish`.
+    pub fn set_finish_word(&mut self, addr: u64, last_tape_clock: u64, cp: u64) -> String {
+        let mut p = Vec::with_capacity(25);
+        p.push(b'Y');
+        p.extend_from_slice(&addr.to_le_bytes());
+        p.extend_from_slice(&last_tape_clock.to_le_bytes());
+        p.extend_from_slice(&cp.to_le_bytes());
+        self.arm(&p)
+    }
+
     /// Arm the watchdog: predicates, the reference line and the memory
     /// segments to watch, sent ONCE. Every later fork inherits them.
     pub fn arm(&mut self, payload: &[u8]) -> String {
@@ -686,15 +727,7 @@ impl ForkServer {
     /// tick. Returns the validator's JSON (empty when the child was aborted)
     /// and the raw summary block.
     pub fn run_watched(&mut self, from: usize, recs: &[Rec]) -> (String, Vec<u8>) {
-        let mut p = Vec::with_capacity(5 + recs.len() * 16);
-        p.push(b'W');
-        p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
-        for (i, r) in recs.iter().enumerate() {
-            p.extend_from_slice(&((from + i) as u32).to_le_bytes());
-            p.extend_from_slice(&r.steer.to_le_bytes());
-            p.extend_from_slice(&r.gas.to_le_bytes());
-            p.extend_from_slice(&r.brake.to_le_bytes());
-        }
+        let p = payload_watched(from, recs);
         self.cmd_w
             .write_all(&(p.len() as u32).to_le_bytes())
             .unwrap();
@@ -1022,6 +1055,72 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // THE CHECKPOINT COUNT COMES FROM THE ENGINE, NOT FROM THE `Desc` LINE.
+    //
+    // `Desc` is a lossy print. For a mutated candidate it is almost always
+    // "wrong simu" -- the ghost file's declared result no longer matches what
+    // was simulated -- which this used to map to 0 checkpoints, and the plain
+    // oracle cannot see a lone checkpoint at all (it reports k>=2 only; the
+    // route project measured 1163 of 2453 tapes in that class). So a `Desc`
+    // count is a LOWER BOUND on what the car did.
+    //
+    // The engine counts them itself at `participant+0xc70`, the shim publishes
+    // that every tick, and the child's last value arrives as `FKCPS`. It is the
+    // quantity rather than a rendering of it, it is present however the child
+    // ended, and it is what every path here reports -- a run must never mix two
+    // definitions of the same number.
+    //
+    // A DNF cps recorded before this change is a lower bound: do not compare
+    // one naively with a new one (see SEARCH.md).
+    // A FINISH AFTER THE TAPE'S LAST RECORD IS FLAGGED, NOT SUPPRESSED.
+    //
+    // Past the end the engine simulates on whatever follows the input array, so
+    // such a time was not produced by this tape alone -- and the perf arm
+    // measured the plain oracle giving one such tape a BATCH-DEPENDENT verdict
+    // (DNF alone, 26.839 in a batch of 520).
+    //
+    // But it is the same time the JSON reports and the same time a full
+    // validation reports: past the array both read zero-filled pages, and only
+    // a reused dirty allocation differs. Returning a DNF instead cost 19 of 50
+    // candidates at map 2 `tick:2380`, all of which the full validation scored
+    // as finishes with the same millisecond -- and the class is not rare, since
+    // the tape ends at the reference's finish and every slower candidate is in
+    // it. So `FKPASTEND` rides in the output for whoever is deciding what to
+    // BANK, and the verdict here stays the engine's.
+    //
+    // `text.contains("FKPASTEND")` is the test for that consumer.
+
+    let engine_cps = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("FKCPS ")
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok())
+    });
+    // A child that ran out of tape without finishing already knows its whole
+    // answer: it did not finish, and it passed this many checkpoints.
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKDNF cps ") {
+            if let Some(v) = rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+                return (None, Some(engine_cps.unwrap_or(v)));
+            }
+        }
+    }
+    // THE CHILD MAY HAVE ANSWERED ALREADY. When the shim exits a child at the
+    // finish (`FKSHIM_EXIT_AT_FINISH`), the validator never runs its print path,
+    // so there is no `ValidatedResult` to read -- the answer arrives on its own
+    // line instead, in the same race ms the JSON would have carried. It is not
+    // an estimate: it is the engine's own result word, sub-tick interpolation
+    // included (`tickhook_sig`).
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKFINISH race_ms ") {
+            if let Some(ms) = rest.split_whitespace().next().and_then(|s| s.parse::<i64>().ok())
+            {
+                if (0..=BAD_TIME_MS).contains(&ms) {
+                    return (Some(ms), None);
+                }
+            }
+        }
+    }
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with("\"ValidatedResult\"") {
@@ -1033,10 +1132,21 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
                 .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok())
                 .filter(|&ms| (0..=BAD_TIME_MS).contains(&ms));
             in_validated = false;
-        } else if t.starts_with("\"Desc\"") {
+        }
+    }
+    // The engine's count wins wherever it is present; the `Desc` fallback below
+    // exists only for a server with no shim (the plain oracle's own path).
+    if engine_cps.is_some() {
+        return (time, engine_cps);
+    }
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("\"Desc\"") {
             if let Some(p) = t.find("reached some checkpoints (") {
-                let rest = &t[p + "reached some checkpoints (".len()..];
-                cps = rest.split(' ').next().and_then(|s| s.trim().parse().ok());
+                cps = t[p + "reached some checkpoints (".len()..]
+                    .split(' ')
+                    .next()
+                    .and_then(|s| s.trim().parse().ok());
             } else if t.contains("wrong simu") {
                 cps = Some(0);
             }

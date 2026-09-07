@@ -98,6 +98,12 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("start-sanity") => start_sanity(&a),
+        Some("threeway") => threeway(&a),
+        Some("sample-diff") => sample_diff(&a),
+        Some("transplant") => transplant(&a),
+        Some("packet-show") => packet_show(&a),
+        Some("tape-show") => tape_show(&a),
         Some("wheels-control") => wheels_control(&a),
         Some("run-end") => run_end_cmd(&a),
         Some("tape-diff") => tape_diff(&a),
@@ -2194,9 +2200,19 @@ fn from_template(a: &[String]) {
     let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
     let g = vec![1u8; n];
     let b = vec![0u8; n];
-    tpl.write_with_inputs(&s, &g, &b, &out).unwrap_or_else(|e| die(e));
+    // THE SEED. A policy template gets validation seed 0 (`--keep-seed` keeps the
+    // donor's, for an identity replay of the donor's own tape).
+    let seed_note = if has(a, "--keep-seed") {
+        tpl.write_with_inputs(&s, &g, &b, &out).unwrap_or_else(|e| die(e));
+        format!("validation seed kept: {:?}", tmenv::template::validation_seed(&out).ok())
+    } else {
+        match tpl.write_with_inputs_seed0(&s, &g, &b, &out).unwrap_or_else(|e| die(e)) {
+            Some(old) => format!("validation seed {old} -> 0 (the donor's game clock at race start no longer quantizes our inputs)"),
+            None => "no validation block (synthesized container)".into(),
+        }
+    };
     println!("template  {}  ({n} ticks, {:.3} s)", tplp.display(), n as f64 * 0.01);
-    println!("reference {}", out.display());
+    println!("reference {}  {seed_note}", out.display());
     println!("the archive is OURS in full; the donor contributes the wrapper and the startup state");
 }
 
@@ -2235,12 +2251,25 @@ fn probe_scan(a: &[String]) {
             let recs = s.tape.tail_records(0);
             let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)
                 .unwrap_or_else(|e| die(e));
-            let bias = car.layout().clock_bias;
+            if has(a, "--slots") {
+                let pid = s.srv.pid();
+                let word = |addr: u64| forkoracle::procmem::read_at(pid, addr, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap())).unwrap_or(0);
+                println!(
+                    "  slots at stop {c}: driven slot {} phy {:#x} vis {:#x} body {:?}; {:?}",
+                    car.slot,
+                    car.phy,
+                    car.vis(),
+                    car.body.map(|b| b.handle),
+                    car.vehicles.iter().enumerate().map(|(k, p)| format!("slot {k} phy {p:#x} +0x10={:#x} +0x128c={:#x} +0x1c90={}", word(*p + 0x10), word(*p + 0x128c), word(*p + 0x1c90))).collect::<Vec<_>>()
+                );
+            }
+            let bias = control::env_layout(&car).clock_bias;
             let dir = work.join("traces");
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
-            let cfg = branch::TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4000 };
+            let cfg = branch::TraceCfg { layout: control::env_layout(&car), dir, stride: 1, max: 4000 };
+            let off = s.tape.start_offset_ms;
             let fk::session::Session { srv, .. } = s;
-            let mut f = branch::Forest::new(srv, &work, recs, Some(cfg)).unwrap_or_else(|e| die(e));
+            let mut f = branch::Forest::new(srv, &work, recs, Some(cfg), off).unwrap_or_else(|e| die(e));
             f.probe_root().unwrap_or_else(|e| die(e));
             let (rows, h) = f.advance(branch::ROOT, &[], 0, 2).unwrap_or_else(|e| die(e));
             f.release(h);
@@ -2248,8 +2277,8 @@ fn probe_scan(a: &[String]) {
                 Some(row) => {
                     let v = (row.vx * row.vx + row.vy * row.vy + row.vz * row.vz).sqrt();
                     println!(
-                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   engine bias {}",
-                        c, r, format!("{:?}", probes), row.time_ms + bias, row.time_ms, row.x, row.y, row.z, v, bias
+                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   engine bias {}  q ({:+.6} {:+.6} {:+.6} {:+.6})  v ({:+.4} {:+.4} {:+.4})",
+                        c, r, format!("{:?}", probes), row.time_ms + bias, row.time_ms, row.x, row.y, row.z, v, bias, row.qw, row.qx, row.qy, row.qz, row.vx, row.vy, row.vz
                     );
                 }
                 None => println!("{:6}  {:3}  {:<22} (no rows)", c, r, format!("{:?}", probes)),
@@ -2695,6 +2724,8 @@ fn cp_oracle_control(a: &[String]) {
         path: PathBuf,
         done: String,
         cps_steps: Vec<i64>,
+        /// Race time of the tick after this worker's tape's last record.
+        tape_end_ms: i64,
     }
     let t0 = Instant::now();
     let mut outs: Vec<Out> = std::thread::scope(|sc| {
@@ -2847,6 +2878,7 @@ fn cp_oracle_control(a: &[String]) {
                             path,
                             done,
                             cps_steps,
+                            tape_end_ms: tape.n() as i64 * 10 + tape.start_offset_ms as i64,
                         });
                         i += workers;
                     }
@@ -2881,6 +2913,11 @@ fn cp_oracle_control(a: &[String]) {
     let mut finishes = 0usize;
     let mut unreported = 0usize;
     let mut by_count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    // finishes AFTER the tape's last record: the engine reads its default record
+    // there (participant+0x188 goes 2 -> 0 one tick after the last record) and
+    // such a finish is batch-dependent (tickhook arm: 43 of 1100) -- counted as
+    // its own class, never as a policy's result.
+    let mut post_tape_finish = 0usize;
     let mut lines = String::from("tape\tpolicy\toracle\toracle_cps\tengine_cps\tgeom_cps\tticks\n");
     // MATCHED BY FILE NAME, never by position: with several donor containers
     // in one batch the server answers in an order that is NOT the filename
@@ -2894,6 +2931,11 @@ fn cp_oracle_control(a: &[String]) {
             die(format!("the oracle has no answer named {name}"));
         };
         let ov = ans.verdict();
+        if let Some(tmauto::Verdict::Finish { ms }) = ov {
+            if ms as i64 > o.tape_end_ms {
+                post_tape_finish += 1;
+            }
+        }
         let oracle_cps: Option<u32> = match ov {
             Some(tmauto::Verdict::Dnf { cps }) => Some(cps),
             Some(tmauto::Verdict::Finish { .. }) => {
@@ -2942,7 +2984,7 @@ fn cp_oracle_control(a: &[String]) {
     }
     let _ = std::fs::write(bank.join("per-tape.tsv"), lines);
     println!();
-    println!("oracle checkpoint counts over the {} tapes: {:?}  (finishes {}, refusals {}, counts UNREPORTED -- bare wrong simu = 0 or 1 -- {})", outs.len(), by_count, finishes, refused, unreported);
+    println!("oracle checkpoint counts over the {} tapes: {:?}  (finishes {} of which {} AFTER the tape's last record -- batch-dependent, not a policy's result; refusals {}; counts UNREPORTED -- bare wrong simu = 0 or 1 -- {})", outs.len(), by_count, finishes, post_tape_finish, refused, unreported);
     println!("ENGINE COUNTER vs oracle : {agree} agree, {disagree} disagree");
     println!("geometric detector vs oracle: {geom_agree} agree, {} disagree  (the number it replaces)", outs.len() - geom_agree);
     let pass = disagree == 0 && refused == 0 && agree == outs.len();
@@ -3074,6 +3116,15 @@ fn open_loop_control(a: &[String]) {
             if matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
                 break;
             }
+        }
+        if let Some(dir) = flag(a, "--dump-trace") {
+            let rec = env.rollout_record();
+            let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\n");
+            for r in &rec.trace {
+                s.push_str(&format!("{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear));
+            }
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            std::fs::write(Path::new(&dir).join(format!("olc-{gi:02}.tsv")), s).unwrap_or_else(|e| die(e.to_string()));
         }
         // trace continuity: the largest per-tick position jump and the ticks where
         // the position froze while the car was moving (a car switch not followed)
@@ -3268,6 +3319,13 @@ fn run_end_cmd(a: &[String]) {
             c = r.cps;
         }
     }
+    if let Some(f) = flag(a, "--dump-trace") {
+        let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\n");
+        for r in &rows {
+            s.push_str(&format!("{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear));
+        }
+        std::fs::write(&f, s).unwrap_or_else(|e| die(e.to_string()));
+    }
     println!(
         "{} rows, first race {:?}, last race {:?}, run ended {ended}, counter {} (steps at {})",
         rows.len(),
@@ -3410,5 +3468,301 @@ fn wheels_control(a: &[String]) {
     );
     if !all_pass {
         std::process::exit(1);
+    }
+}
+
+/// Print a tape's records around a tick (steer/gas/brake + state word).
+fn tape_show(a: &[String]) {
+    let t = fk::tape::Tape::load(&a[1]).unwrap_or_else(|e| die(e));
+    let from: usize = num(a, "--from", 0);
+    let to: usize = num(a, "--to", t.n());
+    let words = state_words(&a[1]);
+    for i in from..to.min(t.n()) {
+        println!(
+            "tick {i:5} race {:8.3}: steer {:4} gas {} brake {}  word0/flags {:#x}/{:#x}",
+            t.race_ms(i) as f64 / 1000.0,
+            t.steer[i] as i8,
+            t.accel[i],
+            t.brake[i],
+            words.get(i).map(|w| w.0).unwrap_or(0),
+            words.get(i).map(|w| w.1).unwrap_or(0)
+        );
+    }
+}
+
+/// Every packet field of a tape around a tick (word0, flags, mode, mouse, tri, vsame).
+fn packet_show(a: &[String]) {
+    let t = gbx::tape::Tape::from_file(&a[1]).unwrap_or_else(|e| die(e.to_string()));
+    let from: usize = num(a, "--from", 0);
+    let to: usize = num(a, "--to", 20);
+    let Some(ar) = t.archives.first() else { die("no archive".into()) };
+    let mut hist: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (i, p) in ar.packets.iter().enumerate() {
+        let k = format!("mode {} mouse {:?} tri {:?} word0 {:#x} flags {:#x}", p.mode, p.mouse, p.tri, p.word0, p.flags);
+        *hist.entry(k.clone()).or_default() += 1;
+        if i >= from && i < to {
+            println!("tick {i:5}: steer {:4} accel {} brake {} | {k} vsame {}", p.steer_i8(), p.accel, p.brake, p.vsame);
+        }
+    }
+    println!("distinct (mode, mouse, tri, word0, flags): {:#?}", hist);
+}
+
+/// Write DONOR's inputs (aligned by race time) into TEMPLATE's container, as a
+/// file, with no env involved -- to ask the plain oracle whether a container
+/// carries physics beyond its input records.
+fn transplant(a: &[String]) {
+    let tpl_path = flag(a, "--template").unwrap_or_else(|| die("--template".into()));
+    let donor_path = flag(a, "--donor").unwrap_or_else(|| die("--donor".into()));
+    let out = flag(a, "--out").unwrap_or_else(|| die("--out".into()));
+    let tpl = tmenv::template::Template::load(Path::new(&tpl_path)).unwrap_or_else(|e| die(e));
+    let t = fk::tape::Tape::load(&tpl_path).unwrap_or_else(|e| die(e));
+    let d = fk::tape::Tape::load(&donor_path).unwrap_or_else(|e| die(e));
+    let n = tpl.facts().ticks;
+    let shift: i64 = (t.start_offset_ms as i64 - d.start_offset_ms as i64) / 10 + num::<i64>(a, "--shift-adjust", 0);
+    let mut s = vec![0u8; n];
+    let mut g = vec![0u8; n];
+    let mut b = vec![0u8; n];
+    for k in 0..n {
+        let j = ((k as i64 + shift).max(0) as usize).min(d.n() - 1);
+        s[k] = d.steer[j];
+        g[k] = d.accel[j];
+        b[k] = d.brake[j];
+    }
+    tpl.write_with_inputs(&s, &g, &b, Path::new(&out)).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: {} ticks of {} in {}'s container (donor index = tick {shift:+})", n, donor_path, tpl_path);
+}
+
+/// Compare two ghosts' telemetry SAMPLES by timestamp: max/median |Δpos| at
+/// Δt = 0 and at ±10/±20 ms, so a regenerated record's stamps can be checked
+/// against the game's own (the best shift must be 0).
+fn sample_diff(a: &[String]) {
+    let x = gbx::record::decode_ghost(&a[1]).unwrap_or_else(|e| die(e.to_string()));
+    let y = gbx::record::decode_ghost(&a[2]).unwrap_or_else(|e| die(e.to_string()));
+    let by: std::collections::BTreeMap<i64, [f64; 3]> =
+        y.samples.iter().map(|s| (s.time_ms as i64, [s.x as f64, s.y as f64, s.z as f64])).collect();
+    println!("{}: {} samples; {}: {} samples", a[1], x.samples.len(), a[2], y.samples.len());
+    let mut best: Option<(f64, i64)> = None;
+    for shift in [-20i64, -10, 0, 10, 20] {
+        let mut d: Vec<f64> = Vec::new();
+        for s in &x.samples {
+            let Some(p) = by.get(&(s.time_ms as i64 + shift)) else { continue };
+            let dd = ((s.x as f64 - p[0]).powi(2) + (s.y as f64 - p[1]).powi(2) + (s.z as f64 - p[2]).powi(2)).sqrt();
+            d.push(dd);
+        }
+        if d.is_empty() {
+            println!("  shift {shift:+3} ms: no paired samples");
+            continue;
+        }
+        d.sort_by(|p, q| p.total_cmp(q));
+        let med = d[d.len() / 2];
+        let max = d[d.len() - 1];
+        println!("  shift {shift:+3} ms: {} pairs, |dpos| median {:.4} m, max {:.4} m", d.len(), med, max);
+        if best.map(|b| med < b.0).unwrap_or(true) {
+            best = Some((med, shift));
+        }
+    }
+    if let Some((m, s)) = best {
+        println!("BEST shift {s:+} ms (median {m:.4} m){}", if s == 0 { "  -- the stamps agree" } else { "  -- the stamps are OFF" });
+        if s != 0 {
+            std::process::exit(1);
+        }
+    }
+}
+
+
+/// THE THREE-WAY TICK CHECK: env rows (open-loop --dump-trace TSV), fk regen
+/// --dump-truth rows (CSV), and the ghost's own telemetry samples, pairwise at
+/// Δt = 0 and ±10 ms.
+fn threeway(a: &[String]) {
+    let trace = flag(a, "--trace").unwrap_or_else(|| die("--trace".into()));
+    let truth = flag(a, "--truth").unwrap_or_else(|| die("--truth".into()));
+    let ghost = flag(a, "--ghost").unwrap_or_else(|| die("--ghost".into()));
+    let read_table = |p: &str, sep: char| -> std::collections::BTreeMap<i64, [f64; 3]> {
+        let s = std::fs::read_to_string(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+        let mut m = std::collections::BTreeMap::new();
+        for l in s.lines().skip(1) {
+            let f: Vec<&str> = l.split(sep).collect();
+            if f.len() < 4 {
+                continue;
+            }
+            if let (Ok(t), Ok(x), Ok(y), Ok(z)) = (f[0].parse::<i64>(), f[1].parse::<f64>(), f[2].parse::<f64>(), f[3].parse::<f64>()) {
+                m.insert(t, [x, y, z]);
+            }
+        }
+        m
+    };
+    let env = read_table(&trace, '\t');
+    let dump = read_table(&truth, ',');
+    let dec = gbx::record::decode_ghost(&ghost).unwrap_or_else(|e| die(e.to_string()));
+    let tel: std::collections::BTreeMap<i64, [f64; 3]> =
+        dec.samples.iter().map(|s| (s.time_ms as i64, [s.x as f64, s.y as f64, s.z as f64])).collect();
+    println!("env rows {}, dump-truth rows {}, telemetry samples {}", env.len(), dump.len(), tel.len());
+    let pair = |name: &str, p: &std::collections::BTreeMap<i64, [f64; 3]>, q: &std::collections::BTreeMap<i64, [f64; 3]>| {
+        for shift in [-10i64, 0, 10] {
+            let mut d: Vec<f64> = Vec::new();
+            for (t, a) in p {
+                if let Some(b) = q.get(&(t + shift)) {
+                    d.push(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt());
+                }
+            }
+            if d.is_empty() {
+                println!("  {name}: Δt {shift:+3} ms: no pairs");
+                continue;
+            }
+            d.sort_by(|x, y| x.total_cmp(y));
+            println!(
+                "  {name}: Δt {shift:+3} ms: {} pairs, |Δpos| median {:.4} m, max {:.4} m",
+                d.len(),
+                d[d.len() / 2],
+                d[d.len() - 1]
+            );
+        }
+    };
+    pair("env row T      vs dump-truth row T+Δt", &env, &dump);
+    pair("env row T      vs telemetry T+Δt    ", &env, &tel);
+    pair("dump-truth T   vs telemetry T+Δt    ", &dump, &tel);
+}
+
+// ------------------------------------------------------------ start-sanity
+
+/// `tmenv start-sanity --maps-dir DIR [--threads N] [--seconds S] [--only uid,uid]
+///  [--out-dir DIR] [--no-write-map-dir]` -- see `tmenv::sanity`.
+fn start_sanity(a: &[String]) {
+    let p = paths(a);
+    let maps_dir = PathBuf::from(flag(a, "--maps-dir").unwrap_or_else(|| die("--maps-dir DIR is required".into())));
+    let threads: usize = num(a, "--threads", 40);
+    let seconds: f32 = num(a, "--seconds", 3.0);
+    let only: Vec<String> = flag(a, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+    let out_dir = PathBuf::from(flag(a, "--out-dir").unwrap_or_else(|| p.work.join("env-sanity").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let mut maps: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(&maps_dir).unwrap_or_else(|e| die(format!("{}: {e}", maps_dir.display()))) {
+        let d = match e {
+            Ok(e) => e.path(),
+            Err(_) => continue,
+        };
+        let uid = d.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if !only.is_empty() && !only.iter().any(|u| *u == uid) {
+            continue;
+        }
+        if d.join("map.Map.Gbx").exists() && (d.join("ghosts").is_dir() || d.join("ghosts.tar").exists()) {
+            maps.push(d);
+        }
+    }
+    maps.sort();
+    println!("# tmenv start-sanity  {} map(s) under {}  {} threads  CONST {:.1} s", maps.len(), maps_dir.display(), threads, seconds);
+    let cfg = tmenv::sanity::SanityCfg {
+        server: p.server.clone(),
+        shim: p.shim.clone(),
+        work: p.work.clone(),
+        seconds,
+        write_into_map_dir: !has(a, "--no-write-map-dir"),
+        out_dir: out_dir.clone(),
+    };
+    let t0 = Instant::now();
+    let rows = tmenv::sanity::sanity_all(&cfg, &maps, threads);
+    // the summary: failure classes with counts
+    let mut identity_ok = 0usize;
+    let mut identity_fail: Vec<String> = Vec::new();
+    let mut ghost_unrepro: Vec<String> = Vec::new();
+    let mut offroute_on_road: Vec<String> = Vec::new();
+    let mut errors: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut const_done: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut const_short: Vec<String> = Vec::new();
+    let mut spawn_far: Vec<String> = Vec::new();
+    let mut tsv = String::from("uid\tname\tidentity_ok\tidentity_oracle\tdeclared_ms\tconst_m\tconst_done\tconst_ticks\tspawn_vs_geom_m\tstart_blocks\tcar_switch\terror\tghost_oracle\tghost_reproducible\tconst_materials\tconst_lateral\tcrawl_complete\n");
+    for r in &rows {
+        tsv.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.uid,
+            r.name,
+            r.identity_ok.map(|b| b.to_string()).unwrap_or("-".into()),
+            r.identity_oracle,
+            r.identity_declared_ms.map(|v| v.to_string()).unwrap_or("-".into()),
+            r.const_m.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
+            r.const_done,
+            r.const_ticks.map(|v| v.to_string()).unwrap_or("-".into()),
+            r.spawn_vs_geom_m.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
+            r.start_blocks.join("|"),
+            r.car_switch_blocks.join("|"),
+            r.error.replace('\t', " ").replace('\n', " "),
+            r.ghost_oracle,
+            r.ghost_reproducible.map(|b| b.to_string()).unwrap_or("-".into()),
+            r.const_materials.iter().map(|m| m.to_string()).collect::<Vec<_>>().join("|"),
+            r.const_lateral.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
+            r.crawl_complete.map(|b| b.to_string()).unwrap_or("-".into())
+        ));
+        if !r.error.is_empty() {
+            // class by the first clause of the error
+            let k: String = r.error.split(|c| c == ':' || c == '(').next().unwrap_or("").trim().chars().take(70).collect();
+            *errors.entry(k).or_default() += 1;
+            continue;
+        }
+        if r.ghost_reproducible == Some(false) {
+            ghost_unrepro.push(format!("{} ({}: the ghost's own file -> {})", r.name, r.uid, r.ghost_oracle));
+        } else {
+            match r.identity_ok {
+                Some(true) => identity_ok += 1,
+                _ => identity_fail.push(format!("{} ({}: {})", r.name, r.uid, r.identity_oracle)),
+            }
+        }
+        if r.const_done == "OffRoute" {
+            // off the corridor but the wheels still on a road material (16 = the
+            // road we drive on; 0 = air): the GEOMETRY's corridor is wrong there,
+            // not the car
+            let on_road = r.const_materials.iter().filter(|m| **m != 0).count() >= 3;
+            if on_road {
+                offroute_on_road.push(format!("{} ({:.0} m, lateral {:.1} m, materials {:?})", r.name, r.const_m.unwrap_or(0.0), r.const_lateral.unwrap_or(0.0), r.const_materials));
+            }
+        }
+        *const_done.entry(r.const_done.clone()).or_default() += 1;
+        if r.const_m.map(|m| m < 60.0).unwrap_or(false) && r.const_done != "running" {
+            const_short.push(format!("{} ({:.0} m, {})", r.name, r.const_m.unwrap_or(0.0), r.const_done));
+        }
+        if r.spawn_vs_geom_m.map(|d| d > 6.0).unwrap_or(false) {
+            spawn_far.push(format!("{} ({:.1} m)", r.name, r.spawn_vs_geom_m.unwrap_or(0.0)));
+        }
+    }
+    let _ = std::fs::write(out_dir.join("env-sanity.tsv"), &tsv);
+    println!("\n{} maps in {:.0} s -> {}", rows.len(), t0.elapsed().as_secs_f64(), out_dir.display());
+    println!(
+        "identity replay OK: {} / {} (of maps without an env error whose ghost the engine reproduces; {} ghosts the current engine does NOT reproduce on their own -- old physics, not the env)",
+        identity_ok,
+        rows.len() - errors.values().sum::<usize>() - ghost_unrepro.len(),
+        ghost_unrepro.len()
+    );
+    for s in &ghost_unrepro {
+        println!("  not reproducible: {s}");
+    }
+    if !identity_fail.is_empty() {
+        println!("identity FAIL ({}):", identity_fail.len());
+        for s in &identity_fail {
+            println!("  {s}");
+        }
+    }
+    println!("CONST outcomes: {:?}", const_done);
+    if !const_short.is_empty() {
+        println!("CONST ended before 60 m ({}):", const_short.len());
+        for s in &const_short {
+            println!("  {s}");
+        }
+    }
+    if !offroute_on_road.is_empty() {
+        println!("CONST OffRoute with the wheels still on a road surface = the corridor is wrong there, a GEOMETRY defect ({}):", offroute_on_road.len());
+        for s in &offroute_on_road {
+            println!("  {s}");
+        }
+    }
+    if !spawn_far.is_empty() {
+        println!("measured spawn > 6 m from the geometry's ({}):", spawn_far.len());
+        for s in &spawn_far {
+            println!("  {s}");
+        }
+    }
+    if !errors.is_empty() {
+        println!("env errors by class:");
+        for (k, n) in &errors {
+            println!("  {n:4}  {k}");
+        }
     }
 }

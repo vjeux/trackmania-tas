@@ -32,6 +32,9 @@ pub const K_FLOOR: u32 = 2;
 pub const K_BOX: u32 = 3;
 pub const K_OFFREF: u32 = 4;
 pub const K_NOPROG: u32 = 5;
+/// THE INCUMBENT-LAG PREDICATE: the candidate is behind the incumbent by more than
+/// `p[0]` ms at the point of the line it has reached. See `Eval::feed`.
+pub const K_LAG: u32 = 6;
 
 pub fn kind_name(k: u32) -> &'static str {
     match k {
@@ -41,6 +44,7 @@ pub fn kind_name(k: u32) -> &'static str {
         K_BOX => "box",
         K_OFFREF => "offref",
         K_NOPROG => "noprog",
+        K_LAG => "lag",
         _ => "unknown",
     }
 }
@@ -52,6 +56,7 @@ pub fn kind_of(s: &str) -> Option<u32> {
         "box" => Some(K_BOX),
         "offref" => Some(K_OFFREF),
         "noprog" => Some(K_NOPROG),
+        "lag" => Some(K_LAG),
         _ => None,
     }
 }
@@ -68,6 +73,7 @@ pub fn kind_of(s: &str) -> Option<u32> {
 /// | box | - | consecutive ticks | xmin | xmax ymin ymax zmin zmax |
 /// | offref | - | consecutive ticks | metres from the reference line | |
 /// | noprog | look-back ticks | consecutive ticks | metres of net displacement | |
+/// | lag | - | consecutive ticks | ms behind the incumbent at the same point of its line | |
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Pred {
@@ -215,9 +221,16 @@ pub struct Summary {
     /// rigid twice" is a fact the search can see rather than one it discards.
     pub fire_end_tick: i32,
     pub fire_runs: u32,
+    /// HOW FAR BEHIND THE INCUMBENT the run got, in ms, maximised over the
+    /// ticks it spent inside the corridor: at tape tick `t` the car is at the
+    /// point of the line the incumbent reached at its tick `cur`, so it is
+    /// `10 * (t - cur)` ms behind (negative: ahead). Recorded whether or not a
+    /// `lag` predicate is armed, which is how the predicate's threshold is
+    /// measured rather than guessed.
+    pub lag_max_ms: f32,
 }
 
-pub const SUMMARY_BYTES: usize = 148;
+pub const SUMMARY_BYTES: usize = 152;
 pub const SUMMARY_MAGIC: u32 = 0x464B5057; // "FKPW"
 
 impl Summary {
@@ -249,6 +262,7 @@ impl Summary {
         after_tick: -1,
         fire_end_tick: -1,
         fire_runs: 0,
+        lag_max_ms: f32::NEG_INFINITY,
     };
     pub fn encode(&self, o: &mut [u8]) {
         let w = |o: &mut [u8], i: usize, v: u32| o[i..i + 4].copy_from_slice(&v.to_le_bytes());
@@ -285,6 +299,7 @@ impl Summary {
         w(o, 132, self.after_tick as u32);
         w(o, 136, self.fire_end_tick as u32);
         w(o, 140, self.fire_runs);
+        w(o, 144, self.lag_max_ms.to_bits());
     }
     pub fn decode(b: &[u8]) -> Option<Summary> {
         if b.len() < SUMMARY_BYTES {
@@ -323,6 +338,7 @@ impl Summary {
             after_tick: g(132) as i32,
             fire_end_tick: g(136) as i32,
             fire_runs: g(140),
+            lag_max_ms: f(144),
         })
     }
 }
@@ -1129,6 +1145,15 @@ impl Eval {
                         self.sum.progress = s;
                         self.sum.refidx = j as i32;
                     }
+                    // The line is indexed by the incumbent's own tape tick, so
+                    // the index of the nearest point IS the tick the incumbent
+                    // was here, and the difference is how far behind it the
+                    // candidate is running. Kept as a maximum whether or not
+                    // anything is armed on it.
+                    let lag_ms = 10.0 * (tick - j as i32) as f32;
+                    if lag_ms > self.sum.lag_max_ms {
+                        self.sum.lag_max_ms = lag_ms;
+                    }
                 }
             }
         }
@@ -1183,6 +1208,24 @@ impl Eval {
                         let b = self.at(w);
                         let d = dist([a.1, a.2, a.3], [b.1, b.2, b.3]);
                         (d < p.p[0], d)
+                    }
+                }
+                K_LAG => {
+                    // THE INCUMBENT'S SPLIT, at every tick rather than at the
+                    // checkpoints only: a candidate that reaches a point of the
+                    // line `p[0]` ms after the incumbent did is not going to
+                    // beat it -- for the polish objective, that is a dead
+                    // candidate, and the sooner it is dropped the more of the
+                    // tail it saves. Only judged inside the corridor; off the
+                    // line the index means nothing (and `offref` is watching).
+                    // The threshold is MEASURED, not chosen: `lag_max_ms` is
+                    // recorded for every run, and the control is that no
+                    // candidate faster than the incumbent ever exceeded it.
+                    if self.rl.n == 0 || off > self.rl.corridor {
+                        (false, 0.0)
+                    } else {
+                        let lag_ms = 10.0 * (tick - self.cur as i32) as f32;
+                        (lag_ms > p.p[0], lag_ms)
                     }
                 }
                 _ => (false, 0.0),

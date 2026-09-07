@@ -37,7 +37,7 @@ use forkoracle::pred::GateRecord;
 use crate::score::{tag, GateState, Outcome, Progress};
 use crate::tape::Patcher;
 use ghost::secs;
-use ghost::oracle::{validate, MapsMode};
+use ghost::oracle::{validate_many, MapsMode};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -190,6 +190,8 @@ impl Bank {
     /// then puts it in the bank. A disagreement is preserved as
     /// `PHANTOM_*.Ghost.Gbx` next to the log line that describes it, and
     /// returned as an error: the caller must roll the incumbent back.
+    ///
+    /// The one-claim case of [`Bank::offer_many`].
     pub fn offer(
         &mut self,
         p: &Patcher,
@@ -197,30 +199,94 @@ impl Bank {
         claimed: Outcome,
         prov: &Provenance,
     ) -> Result<Banked, Phantom> {
+        self.offer_many(p, &[(inputs, claimed, prov)]).pop().expect("one claim, one verdict")
+    }
+
+    /// Offer several candidates at once: ONE server launch for the whole set.
+    ///
+    /// The plain oracle's cost is the launch (2.3 s to boot the engine) and
+    /// not the file (tens of ms), so claims that arrive together are certified
+    /// together (PERF.md §7). Every claim gets its own verdict, in the order
+    /// offered, judged exactly as [`Bank::offer`] judges one; the oracle's
+    /// answer for each file is found by the unique name the file was given, so
+    /// a batch can never hand one tape another's time.
+    ///
+    /// A FINISH AFTER THE TAPE'S OWN LAST RECORD IS REFUSED (SEARCH.md §3): the
+    /// engine drives on past the end on whatever memory holds, the plain
+    /// oracle's time there depends on the rest of its batch, and a number that
+    /// changes with its neighbours is not a result. Such a claim is kept as
+    /// `PHANTOM_pastend_*` with the oracle's time in the log, and returned as
+    /// a phantom.
+    pub fn offer_many(
+        &mut self,
+        p: &Patcher,
+        claims: &[(&Inputs, Outcome, &Provenance)],
+    ) -> Vec<Result<Banked, Phantom>> {
+        if claims.is_empty() {
+            return Vec::new();
+        }
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
-        let tmp = self.scratch.join(format!("offer_{}.Ghost.Gbx", stamp));
-        let bytes = p.file(inputs);
-        std::fs::write(&tmp, &bytes).expect("write the offered tape");
+        let tape_end_ms = p.start_offset_ms as i64 + 10 * p.n() as i64;
+        let mut tmps = Vec::with_capacity(claims.len());
+        for (i, (inputs, _, _)) in claims.iter().enumerate() {
+            let tmp = self.scratch.join(format!("offer_{}_{}.Ghost.Gbx", stamp, i));
+            std::fs::write(&tmp, p.file(inputs)).expect("write the offered tape");
+            tmps.push(tmp);
+        }
+        let refs: Vec<&Path> = tmps.iter().map(|t| t.as_path()).collect();
+        let answers = validate_many(&self.server, &refs, MapsMode::One(&self.map), &self.tag);
+        let mut out = Vec::with_capacity(claims.len());
+        for (i, (_, claimed, prov)) in claims.iter().enumerate() {
+            let tmp = &tmps[i];
+            let name = tmp.file_name().unwrap().to_string_lossy().into_owned();
+            let actual: Result<Outcome, String> = match &answers {
+                Err(e) => Err(e.clone()),
+                Ok(v) => match v.iter().find(|r| r.file == name) {
+                    None => Err(format!("the server reported nothing for {} -- it did not read the file", name)),
+                    Some(r) => match r.time_ms {
+                        Some(ms) if ms > tape_end_ms => Err(format!(
+                            "finished at {} AFTER its own tape ended at {}: the engine drove on past \
+                             the last record and the plain oracle's time there is batch-dependent",
+                            secs(ms),
+                            secs(tape_end_ms)
+                        )),
+                        Some(ms) => Ok(Outcome::fin(ms)),
+                        None => Ok(Outcome::Dnf(crate::score::Progress::Checkpoints {
+                            cps: r.cps.unwrap_or(0),
+                            seg_ms: None,
+                        })),
+                    },
+                },
+            };
+            out.push(self.judge(tmp, *claimed, prov, actual, stamp + i as u64));
+        }
+        out
+    }
 
-        let actual = match validate(&self.server, &tmp, MapsMode::One(&self.map), &self.tag) {
-            Ok(r) => match r.time_ms {
-                Some(ms) => Outcome::fin(ms),
-                None => Outcome::Dnf(crate::score::Progress::Checkpoints {
-                    cps: r.cps.unwrap_or(0),
-                    seg_ms: None,
-                }),
-            },
+    /// One claim's verdict, given what the plain oracle said about its file.
+    fn judge(
+        &mut self,
+        tmp: &Path,
+        claimed: Outcome,
+        prov: &Provenance,
+        actual: Result<Outcome, String>,
+        stamp: u64,
+    ) -> Result<Banked, Phantom> {
+        let actual = match actual {
+            Ok(a) => a,
             Err(e) => {
-                // An oracle that cannot answer is not permission to bank. The
-                // guard fails CLOSED.
-                let path = self.dir.join(format!("PHANTOM_unvalidated_{}.Ghost.Gbx", stamp));
-                install(&tmp, &path);
+                // An oracle that cannot answer -- or answers with a time past
+                // the tape's end -- is not permission to bank. The guard fails
+                // CLOSED.
+                let kind = if e.starts_with("finished at") { "pastend" } else { "unvalidated" };
+                let path = self.dir.join(format!("PHANTOM_{}_{}.Ghost.Gbx", kind, stamp));
+                install(tmp, &path);
                 self.phantoms += 1;
                 self.note(&format!(
-                    "{{\"phantom\":true,\"reason\":\"the oracle did not answer: {}\",\
+                    "{{\"phantom\":true,\"reason\":\"{}\",\
                      \"claimed\":\"{}\",\"file\":\"{}\"}}",
                     e.replace('"', "'"),
                     claimed,
@@ -263,7 +329,7 @@ impl Bank {
             let path = self
                 .dir
                 .join(format!("PHANTOM_{}_{}.Ghost.Gbx", tag(&claimed), stamp));
-            install(&tmp, &path);
+            install(tmp, &path);
             self.phantoms += 1;
             let ph = Phantom { path: path.clone(), claimed, actual: Some(actual) };
             self.note(&format!(
@@ -329,7 +395,7 @@ impl Bank {
             }
         }
         let path = self.dir.join(format!("best_{}.Ghost.Gbx", tag(&banked)));
-        install(&tmp, &path);
+        install(tmp, &path);
         self.confirmed += 1;
         // THE STATE BESIDE THE TAPE. A gate result never acquires a
         // millisecond it did not earn: what it earned is a state, so that is

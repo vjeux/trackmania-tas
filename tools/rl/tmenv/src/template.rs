@@ -118,6 +118,26 @@ impl Template {
         }
         self.inner.write_candidate(steer, gas, brake, out)
     }
+
+    /// [`Template::write_with_inputs`] with the validation SEED set to 0 -- for a
+    /// template the env drives with its OWN inputs (see `set_validation_seed`:
+    /// the donor's game clock at race start would quantize our inputs the
+    /// donor's way). NOT for an identity replay of the donor's tape, which needs
+    /// the donor's seed to reproduce the donor's run. Returns the donor's seed.
+    pub fn write_with_inputs_seed0(
+        &self,
+        steer: &[u8],
+        gas: &[u8],
+        brake: &[u8],
+        out: &Path,
+    ) -> Result<Option<u32>, String> {
+        self.write_with_inputs(steer, gas, brake, out)?;
+        match set_validation_seed(out, 0) {
+            Ok(old) => Ok(Some(old)),
+            Err(e) if e.contains("no validation block") => Ok(None),
+            Err(e) => Err(format!("template seed: {e}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -149,4 +169,70 @@ mod tests {
         // `Template::inner` is private and no method returns it or anything
         // derived from its input channels. That is the boundary.
     }
+}
+
+/// The validation block's `validation_seed` (chunk 0x0309202D): the client's
+/// game clock at race start, in ms. The client stamps inputs with a float32
+/// game time, so above 2^24 ms of uptime the inputs are quantized by 2-4 ms in
+/// a seed-dependent way and the validator REPRODUCES that from the stored seed
+/// (INPUT arm, VALIDATION-SEED.md, 2026-09-07: seeds 1..5 bit-identical,
+/// 2^25+4 differs, divergence always at an input transition). That is why a
+/// human tape reproduced only in its own container. A template the env writes
+/// its own inputs into gets seed 0: every policy input then lands exactly on
+/// its tick, with no player's eight-hour-uptime jitter in the physics.
+pub fn validation_seed(path: &std::path::Path) -> Result<u32, String> {
+    let c = gbx::container::Container::load(&path.to_string_lossy())?;
+    let body = c.body();
+    let (_, p, _) = find_skippable(body, 0x0309_202D).ok_or("no validation block (0x0309202D)")?;
+    let off = seed_offset(body, p)?;
+    Ok(u32::from_le_bytes(body[off..off + 4].try_into().unwrap()))
+}
+
+/// Rewrite the validation seed in place (the file at `path` is replaced).
+pub fn set_validation_seed(path: &std::path::Path, seed: u32) -> Result<u32, String> {
+    let c = gbx::container::Container::load(&path.to_string_lossy())?;
+    let mut body = c.body().to_vec();
+    let (_, p, _) = find_skippable(&body, 0x0309_202D).ok_or("no validation block (0x0309202D)")?;
+    let off = seed_offset(&body, p)?;
+    let old = u32::from_le_bytes(body[off..off + 4].try_into().unwrap());
+    body[off..off + 4].copy_from_slice(&seed.to_le_bytes());
+    gbx::container::write_gbx(&c.gbx, body, &path.to_string_lossy())?;
+    Ok(old)
+}
+
+/// Layout of the validation block (gbx::manifest / tminput valset): u01, exe
+/// string, checksum, os, cpu, wall_start, wall_end, title string, 32-byte title
+/// checksum, u02 (settings flags), u03 (start cp index), SEED, u04, settings.
+fn seed_offset(body: &[u8], p: usize) -> Result<usize, String> {
+    let rd = |o: usize| -> Result<u32, String> {
+        body.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).ok_or_else(|| "validation block truncated".to_string())
+    };
+    let mut o = p;
+    if rd(o)? != 0 {
+        return Err("embedded-inputs validation block: unsupported".into());
+    }
+    o += 4;
+    let l = rd(o)? as usize; // exe string
+    o += 4 + l;
+    o += 4 * 5; // checksum, os, cpu, wall_start, wall_end
+    let l = rd(o)? as usize; // title string
+    o += 4 + l;
+    o += 32; // title checksum
+    o += 4 + 4; // u02, u03
+    rd(o)?;
+    Ok(o)
+}
+
+fn find_skippable(body: &[u8], id: u32) -> Option<(usize, usize, usize)> {
+    let mut i = 0usize;
+    while i + 12 <= body.len() {
+        if u32::from_le_bytes(body[i..i + 4].try_into().unwrap()) == id && &body[i + 4..i + 8] == gbx::container::SKIP_MAGIC {
+            let size = u32::from_le_bytes(body[i + 8..i + 12].try_into().unwrap()) as usize;
+            if i + 12 + size <= body.len() {
+                return Some((i, i + 12, size));
+            }
+        }
+        i += 1;
+    }
+    None
 }

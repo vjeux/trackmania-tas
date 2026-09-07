@@ -16,9 +16,37 @@
 //! instant. The finish time it prints is the re-verification of the very run
 //! whose telemetry was recorded.
 
-use crate::session::{clock_for_tick, start_server_on_file, tail_recs, Ctx};
-use crate::locate::locate_v2;
+use crate::session::{clock_for_tick, start_server_on_file, Ctx};
+
 use crate::tape::Tape as Factory;
+
+/// The clock and the labels of the car's copies, derived (`forkoracle::car`,
+/// LOCATE.md) instead of scanned for.
+///
+/// `sim+0x48` is the tick loop's own clock and at a stop it holds the tick the
+/// engine has FINISHED. The state stamped with it is the phy copy-out and the
+/// post-step vis state (`phy+0x848`): bias = race start. The pre-step vis
+/// states the chain anchors name (`+0x4e8`) hold the tick BEFORE: bias =
+/// race start + 10. The bias belongs to the object, never to the clock.
+pub struct DerivedClock {
+    pub car: forkoracle::car::Car,
+    /// `sim+0x48`.
+    pub addr: u64,
+    /// For the phy copy-out and the post-step vis state.
+    pub bias_post: i64,
+    /// For the pre-step vis states the `CAR_CHAINS` anchors reach.
+    pub bias_pre: i64,
+}
+
+pub fn derived_clock(srv: &forkoracle::forksrv::ForkServer) -> Result<DerivedClock, String> {
+    let car = forkoracle::car::locate(srv).map_err(|e| format!("clock: the car did not derive: {}", e))?;
+    Ok(DerivedClock {
+        addr: car.sim_time,
+        bias_post: car.race_start as i64,
+        bias_pre: car.race_start as i64 + 10,
+        car,
+    })
+}
 
 /// One gathered instant: the race clock and the raw bytes of every segment.
 pub struct Rec {
@@ -251,9 +279,6 @@ impl Anchors {
     /// gather then cannot read. A chain ignores `srv_base` — it walks from the
     /// module's static data by construction.
     pub fn resolve_in(&self, pid: i32, srv_base: u64) -> Result<u64, String> {
-        if self.chain == "validator" {
-            return Err("the validator anchor is resolved from the fork server itself (record::run_clean), not from a pid".into());
-        }
         // "live" means the SAMPLER resolves the address at every instant (see
         // `GatherOpts::live_chain`), so there is nothing to resolve here. The
         // value returned is a placeholder the gather overwrites; it only has
@@ -362,27 +387,6 @@ pub fn mat_to_quat(m: &[f64; 9]) -> [f64; 4] {
     }
 }
 
-fn quat_fwd(q: [f64; 4]) -> [f64; 3] {
-    let [x, y, z, w] = q;
-    // rotate (0,0,1)
-    [
-        2.0 * (x * z + w * y),
-        2.0 * (y * z - w * x),
-        1.0 - 2.0 * (x * x + y * y),
-    ]
-}
-
-fn wrap(a: f64) -> f64 {
-    let mut a = a;
-    while a > std::f64::consts::PI {
-        a -= 2.0 * std::f64::consts::PI;
-    }
-    while a < -std::f64::consts::PI {
-        a += 2.0 * std::f64::consts::PI;
-    }
-    a
-}
-
 
 
 pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
@@ -407,9 +411,8 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    let ck = derived_clock(&srv)?;
     let base = srv.base;
     let pid = srv.pid();
 
@@ -443,7 +446,7 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     // the acceptance test — which reads the whole run — decide.
     let mut out: Vec<Anchors> = Vec::new();
     for ch in &chains {
-        if let Ok(v) = Anchors::candidates(ck.bias, ck.addr as i64 - base as i64, ch, pid) {
+        if let Ok(v) = Anchors::candidates(ck.bias_pre, ck.addr as i64 - base as i64, ch, pid) {
             out.extend(v);
         }
     }
@@ -467,25 +470,18 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     Ok(out)
 }
 
-pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i64, String> {
+pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, _verbose: bool) -> Result<i64, String> {
 
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-bias", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    // NO INPUT PATCH for the locate probes. The staged ghost is the original
-    // file, so the child already has the right tape; patching it with the
-    // Factory'"'"'s decoded values is at best a no-op and at worst wrong -- on
-    // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
-    // nothing but decoys. Observing costs nothing and assumes nothing.
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let hit = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    let hit = derived_clock(&srv)?;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    Ok(hit.bias)
+    Ok(hit.bias_pre)
 }
 
 /// The clean run itself.
@@ -686,44 +682,45 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let ladder: Vec<u64> = if c.ckpt > 0 {
         vec![c.ckpt]
     } else {
-        // TICK-CLOCK units (forkoracle::clock): stop 999 is the start of the tick
-        // at race -10 ms, the first one the engine reads by index, and the
-        // validator's vehicle exists there (the ENV arm roots its env on it on
-        // every server). The old lroundf ladder started at 600, which under the
-        // tick clock is ~4 s before the race: the participant has no vehicle yet
-        // ("primary vehicle class is 0x0") and every anchor failed -- the
-        // `fk regen` regression DATA reported on the tick-hook merge.
-        vec![
-            forkoracle::clock::ckpt_for_race_ms(-10),
-            forkoracle::clock::ckpt_for_race_ms(0),
-            forkoracle::clock::ckpt_for_race_ms(20),
-            forkoracle::clock::ckpt_for_race_ms(50),
-            forkoracle::clock::ckpt_for_race_ms(100),
-            forkoracle::clock::ckpt_for_race_ms(200),
-            forkoracle::clock::ckpt_for_race_ms(500),
-            forkoracle::clock::ckpt_for_race_ms(1000),
-        ]
+        vec![600, 1000, 1600, 2600, 4200, 7000, 12000, 20000, 34000, 56000]
     };
     let mut srv = None;
     let mut used = 0u64;
+    let mut derived: Option<DerivedClock> = None;
     let mut err = String::from("no checkpoint tried");
     for ck in ladder {
         match start_server_on_file(c, &f, &work, ck, std::path::Path::new(&c.template)) {
             Ok(s) => {
-                // NO LIVENESS GATE HERE. One was tried: read the car's position at
-                // this checkpoint and walk to the next rung if it is not
-                // plausible, so that a map whose spawn is a long fall gets a
-                // checkpoint where the vehicle exists. It does not work and it
-                // is expensive. It cannot tell "not allocated yet" from "a
-                // chain that names something else", so it walks the whole
-                // ladder for every candidate -- 52 anchors x 10 rungs is 520
-                // engine starts -- and ends at "ckpt 56000: the car does not
-                // exist yet" having rejected chains that were fine. The
-                // acceptance test downstream reads the WHOLE run and is the
-                // thing that can actually tell.
-                srv = Some(s);
-                used = ck;
-                break;
+                // THE CAR MUST EXIST AT THE HANDOVER. The four vehicle objects
+                // are created two ticks before the race starts (race -20 ms on
+                // map 2: `LOCATE.md` §10); a rung in the countdown has a
+                // participant whose vehicle slots are still null, and nothing
+                // can be derived from -- or located in -- a process where the
+                // object does not exist yet. So the derivation runs here, at
+                // the rung, and a "not yet" walks to the next rung. Any other
+                // failure is an error: the acceptance test downstream reads the
+                // whole run and cannot be fooled by a wrong object, but a
+                // wrong object must not be handed to it either.
+                match derived_clock(&s) {
+                    Ok(d) => {
+                        srv = Some(s);
+                        used = ck;
+                        derived = Some(d);
+                        break;
+                    }
+                    Err(e)
+                        if e.contains("not CGameVehiclePhy")
+                            || e.contains("processes none")
+                            || e.contains("participant.vehicle[k]") =>
+                    {
+                        err = format!("ckpt {}: the car does not exist yet ({})", ck, e);
+                        if verbose {
+                            println!("  {}", err);
+                        }
+                        s.quit();
+                    }
+                    Err(e) => return Err(format!("ckpt {}: {}", ck, e)),
+                }
             }
             Err(e) => {
                 err = format!("ckpt {}: {}", ck, e);
@@ -734,6 +731,40 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         }
     }
     let mut srv = srv.ok_or(err)?;
+    let ck = derived.expect("derived at the handover rung");
+    // NO ANCHOR GIVEN: the derived car IS the anchor, built in this process.
+    // The post-step vis state (`phy+0x848`) is the copy that carries the
+    // wheel, gear and rpm fields the gather wants, with the layout the
+    // engine's reflection names: the 3x3 rotation 36 bytes before the position
+    // triple, `WorldVel` 12 after (VEHICLEVISSTATE.md). Its bias is the race
+    // start: it is refreshed from the body after the copy-out, so it holds the
+    // tick the clock word names. Expressed as `base+N` because it is only
+    // valid in THIS process, which is the only place it is used.
+    let derived_anchor: Anchors;
+    let anchors: Option<&Anchors> = match anchors {
+        Some(a) => Some(a),
+        None => {
+            let vis_pos = ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS;
+            derived_anchor = Anchors {
+                bias: ck.bias_post,
+                chain: format!("base{:+}", vis_pos as i64 - srv.base as i64),
+                member: 0,
+                clock_delta: ck.addr as i64 - srv.base as i64,
+                speed: 0.0,
+                quat_off: -36,
+                quat_kind: 2,
+                vel_off: 12,
+            };
+            if verbose {
+                println!(
+                    "anchor: the derived car's post-step vis state at {:#x} (base{:+}), rot -36 as 3x3, vel +12",
+                    vis_pos,
+                    vis_pos as i64 - srv.base as i64
+                );
+            }
+            Some(&derived_anchor)
+        }
+    };
     // NO POOL IS POSSIBLE HERE, and the reason is in the protocol rather than
     // in this function. The gather ends with `srv.go(...)`, which sends the
     // 'G' command and then calls `self.child.wait()`: 'G' tells the server to
@@ -781,64 +812,30 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // Factory'"'"'s decoded values is at best a no-op and at worst wrong -- on
     // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
     // nothing but decoys. Observing costs nothing and assumes nothing.
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    // THE CLOCK AND THE CAR, DERIVED in this process (`forkoracle::car`): the
+    // clock word is the tick loop's `sim+0x48`, whose address does not
+    // transfer between processes any more than the old scanned one did (on
+    // 252289 a transferred clock address read 0 in the clean process and the
+    // whole run collapsed to a single deduplicated instant).
     let mut layout = match anchors {
-        // The POSITION comes from a checkpoint where the car was moving (the
-        // early handover cannot locate it: a stationary car fails both the
-        // "moving triple" filter and the velocity test). The CLOCK is located
-        // here, in this process, because its address does NOT transfer -- on
-        // 252289 the transferred clock address read 0 in the clean process, the
-        // grid gate then matched every call, and the whole run collapsed to a
-        // single deduplicated instant.
-        Some(a) if a.chain == "validator" => {
-            // THE VALIDATOR'S OWN CAR, resolved IN THIS PROCESS: controller ->
-            // sim -> playground -> participant -> CGameVehiclePhy, every hop a
-            // pointer read, no scan, and the clock found and labelled beside
-            // it. Under the tick hook the pointer chains below read null (the
-            // default one is a dead stack frame -- POINTER.md §5 -- and the
-            // process now stops at the start of a tick, where that frame is
-            // not live), so `fk regen` lost the car on every map until this
-            // path existed (DATA, 2026-09-06). It is tried first; the chains
-            // stay as fallbacks.
-            let car = crate::validator::ValidatorCar::locate(
-                &mut srv,
-                probe,
-                &lrecs,
-                f.start_offset_ms,
-                bounds,
-                100000,
-                verbose,
-            )
-            .map_err(|e| format!("validator car: {}", e))?;
-            car.layout().clone()
-        }
-        Some(a) => {
-            let ck = crate::locate::find_clock2(
-                &mut srv,
-                probe,
-                &lrecs,
-                f.start_offset_ms,
-                100000,
-                verbose,
-            )
-            .map_err(|e| format!("clock: {}", e))?;
-            forkoracle::layout::Layout {
-                pos: a
-                    .resolve_in(srv.pid(), srv.base)
-                    .map_err(|e| format!("resolving the car chain: {}", e))?,
-                clock: ck.addr,
-                clock_bias: a.bias,
-                rms: 0.0,
-                max_dev: 0.0,
-                cps: 0,
-                vis: 0,
-                car: 0,
-            }
-        }
-        None => locate_v2(&mut srv, probe, &lrecs, f.start_offset_ms, bounds, 2000, 4000, verbose)
-            .map_err(|e| format!("locate {}", e))?,
+        // The POSITION comes from the anchor, resolved here; its bias is the
+        // anchor's own (a pre-step vis state lags the clock word by a tick).
+        Some(a) => forkoracle::layout::Layout {
+            pos: a
+                .resolve_in(srv.pid(), srv.base)
+                .map_err(|e| format!("resolving the car chain: {}", e))?,
+            quat: 0,
+            vel: 0,
+            wet: 0,
+            clock: ck.addr,
+            clock_bias: a.bias,
+            rms: 0.0,
+            max_dev: 0.0,
+            cps: 0,
+            vis: 0,
+            car: 0,
+        },
+        None => unreachable!("the derived anchor is always present"),
     };
     if let Some(b) = bias_override {
         layout.clock_bias = b;
@@ -1727,187 +1724,6 @@ pub fn name_of(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace(".Ghost.Gbx", "").replace(".Replay.Gbx", "")
 }
 
-fn discover_layout(
-    srv: &mut forkoracle::forksrv::ForkServer,
-    probe: usize,
-    recs: &[forkoracle::forksrv::Rec],
-    clock: u64,
-    pos: u64,
-) -> Option<(i64, u8, i64, f64)> {
-    let segs = [(clock, 4u32), ((pos as i64 - win_back()) as u64, win_len())];
-    let ts = crate::locate::gather_ticks(srv, probe, recs, &segs, 200, 1600, (0, 4 + win_len()));
-    if ts.len() < 40 {
-        return None;
-    }
-    let g = |t: &crate::locate::Tick, o: usize| -> f64 {
-        f32::from_le_bytes(t.rec[o..o + 4].try_into().unwrap()) as f64
-    };
-    let p0 = 4 + win_back() as usize;
-    let mut best_v: Option<(f64, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 12)).step_by(4) {
-        let mut ds: Vec<f64> = Vec::new();
-        for w in ts.windows(2) {
-            let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-            if dt <= 0.0 {
-                continue;
-            }
-            let mut d = 0.0;
-            for k in 0..3 {
-                let dv = (g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt - g(&w[0], o + k * 4);
-                d += dv * dv;
-            }
-            ds.push(d.sqrt());
-        }
-        if ds.is_empty() {
-            continue;
-        }
-        ds.sort_by(|a, b| a.total_cmp(b));
-        let med = ds[ds.len() / 2];
-        if med.is_finite() && best_v.map_or(true, |b: (f64, i64)| med < b.0) {
-            best_v = Some((med, o as i64 - p0 as i64));
-        }
-    }
-    let mut speeds: Vec<f64> = Vec::new();
-    for w in ts.windows(2) {
-        let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-        if dt > 0.0 {
-            let s: f64 = (0..3)
-                .map(|k| ((g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            speeds.push(s);
-        }
-    }
-    speeds.sort_by(|a, b| a.total_cmp(b));
-    let speed = if speeds.is_empty() { 0.0 } else { speeds[speeds.len() / 2] };
-    let (verr, voff) = best_v?;
-    if verr > (0.15 * speed).max(1.0) {
-        return None;
-    }
-    // ---- orientation: a unit quaternion OR an orthonormal 3x3, and it must
-    //      point roughly where the car is going.
-    let vyaw: Vec<Option<f64>> = ts
-        .iter()
-        .map(|t| {
-            let vx = g(t, (p0 as i64 + voff) as usize);
-            let vz = g(t, (p0 as i64 + voff) as usize + 8);
-            if (vx * vx + vz * vz).sqrt() > 3.0 {
-                Some(vz.atan2(vx))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let heading_spread = |qs: &[Option<[f64; 4]>]| -> Option<f64> {
-        let mut d: Vec<f64> = Vec::new();
-        for (i, q) in qs.iter().enumerate() {
-            let (Some(q), Some(vy)) = (q, vyaw[i]) else { continue };
-            let f = quat_fwd(*q);
-            if (f[0] * f[0] + f[2] * f[2]).sqrt() < 0.2 {
-                continue;
-            }
-            d.push(wrap(f[2].atan2(f[0]) - vy));
-        }
-        if d.len() < 20 {
-            return None;
-        }
-        // circular median, then the spread about it
-        let mut s: Vec<f64> = d.clone();
-        s.sort_by(|a, b| a.total_cmp(b));
-        let med = s[s.len() / 2];
-        let mut dev: Vec<f64> = d.iter().map(|x| wrap(x - med).abs()).collect();
-        dev.sort_by(|a, b| a.total_cmp(b));
-        Some(dev[(dev.len() as f64 * 0.9) as usize])
-    };
-    let mut best_o: Option<(f64, u8, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 16)).step_by(4) {
-        // quaternion candidate
-        let mut ok = true;
-        let mut varies = false;
-        let qs: Vec<Option<[f64; 4]>> = ts
-            .iter()
-            .map(|t| {
-                let q = [g(t, o), g(t, o + 4), g(t, o + 8), g(t, o + 12)];
-                let n: f64 = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-                if !n.is_finite() || (n - 1.0).abs() > 1e-4 {
-                    ok = false;
-                }
-                if q[0] != g(&ts[0], o) {
-                    varies = true;
-                }
-                // the record's convention is (x, y, z, w)
-                Some([q[0], q[1], q[2], q[3]])
-            })
-            .collect();
-        if ok && varies {
-            for order in 0..2 {
-                let qq: Vec<Option<[f64; 4]>> = qs
-                    .iter()
-                    .map(|q| {
-                        q.map(|q| {
-                            if order == 0 {
-                                q
-                            } else {
-                                [q[1], q[2], q[3], q[0]] // engine (w,x,y,z)
-                            }
-                        })
-                    })
-                    .collect();
-                if let Some(sp) = heading_spread(&qq) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, order, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-        // orthonormal 3x3 candidate
-        if o + 36 <= 4 + win_len() as usize {
-            let mut good = true;
-            let ms: Vec<Option<[f64; 4]>> = ts
-                .iter()
-                .map(|t| {
-                    let mut m = [0.0f64; 9];
-                    for k in 0..9 {
-                        m[k] = g(t, o + k * 4);
-                    }
-                    let row = |i: usize| [m[i * 3], m[i * 3 + 1], m[i * 3 + 2]];
-                    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    for i in 0..3 {
-                        let r = row(i);
-                        if (dot(r, r).sqrt() - 1.0).abs() > 1e-3 {
-                            good = false;
-                        }
-                    }
-                    if dot(row(0), row(1)).abs() > 1e-3
-                        || dot(row(0), row(2)).abs() > 1e-3
-                        || dot(row(1), row(2)).abs() > 1e-3
-                    {
-                        good = false;
-                    }
-                    Some(mat_to_quat(&m))
-                })
-                .collect();
-            if good {
-                if let Some(sp) = heading_spread(&ms) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, 2, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-    }
-    let (spread, kind, ooff) = best_o?;
-    if std::env::var("FKDBG").is_ok() {
-        println!(
-            "    orientation: kind {} at {:+}, heading spread p90 {:.1} deg",
-            kind,
-            ooff,
-            spread.to_degrees()
-        );
-    }
-    Some((ooff, kind, voff, speed))
-}
-
 // `measure_anchors_by_search` was HERE and is deleted (see the note at its old
 // call site in cmd/regen.rs). It measured anchors by sweeping mapped memory --
 // ~7.5 s per tick -- and was regen's fallback when no chain resolved. The
@@ -1985,7 +1801,7 @@ pub fn validator_live_chain(
     let work = PathBuf::from(format!("{}-vlc", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
-    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
     let root = srv.validator_controller;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
@@ -2022,44 +1838,34 @@ pub fn anchors_from_validator(
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let got = crate::validator::ValidatorCar::locate(
-        &mut srv,
-        probe,
-        &lrecs,
-        f.start_offset_ms,
-        bounds,
-        100000,
-        verbose,
-    );
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md): the copy-out in the
+    // driven CGameVehiclePhy -- quaternion at -16, velocity at +12 -- stamped
+    // by the tick loop's own clock with the race start as its bias.
+    let got = derived_clock(&srv);
     let base = srv.base;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    let v = got?;
-    let l = v.layout();
+    let ck = got?;
+    let pos = ck.car.pos();
     if verbose {
         println!(
             "  validator car at {:#x} (base{:+}) -- q at -16, vel after the position",
-            l.pos,
-            l.pos as i64 - base as i64
+            pos,
+            pos as i64 - base as i64
         );
     }
     Ok(vec![Anchors {
-        bias: l.clock_bias,
-        chain: format!("base{:+}", l.pos as i64 - base as i64),
+        bias: ck.bias_post,
+        chain: format!("base{:+}", pos as i64 - base as i64),
         member: 0,
-        clock_delta: l.clock as i64 - base as i64,
+        clock_delta: ck.addr as i64 - base as i64,
         speed: 0.0,
         quat_off: -16,
-        // KIND 0, not 1. `qualify2` -- which is what validated this very
-        // address inside `ValidatorCar::resolve` -- gathers 40 bytes from
-        // pos-16 and reads the quaternion as q(0),q(4),q(8),q(12): the
-        // (x,y,z,w) form, kind 0. Declaring kind 1 made the anchor self-check
-        // read the velocity as zero, so |d(pos)/dt - v| came out equal to the
-        // speed itself (277.79 against a median speed of 277.8) and a correct
-        // anchor was refused as "not the vehicle state".
+        // KIND 0: the copy-out is read as q(0),q(4),q(8),q(12) by the anchor
+        // self-check, the (x,y,z,w) form. Declaring kind 1 made it read the
+        // velocity as zero, so |d(pos)/dt - v| came out equal to the speed
+        // itself and a correct anchor was refused as "not the vehicle state".
         quat_kind: 0,
         vel_off: 12,
     }])
@@ -2089,22 +1895,12 @@ pub fn search_car_and_snapshot(
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
-    let mut cands = crate::locate::locate_candidates(
-        &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-    );
-    if cands.is_empty() {
-        cands = crate::locate::locate_positions_loose(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-        );
-    }
-    let hit = cands
-        .first()
-        .ok_or("the search found no car in this process")?;
-    let pos = hit.pos;
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    // No search: the car is derived, and the address handed back is the
+    // position of its post-step vis state -- the copy that carries the fields
+    // a carrier gathers -- in THIS process, beside a snapshot of that process.
+    let ck = derived_clock(&srv)?;
+    let pos = ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS;
     // Snapshot BEFORE the server goes away: `quit` reaps the child and
     // /proc/<pid>/maps with it.
     let snap = crate::ptr::Snapshot::take(srv.pid())?;
@@ -2112,7 +1908,7 @@ pub fn search_car_and_snapshot(
     let _ = std::fs::remove_dir_all(&work);
     if verbose {
         println!(
-            "search: the car is at {:#x} (base{:+}) in pid {}",
+            "derived: the car's vis state is at {:#x} (base{:+}) in pid {}",
             pos,
             pos as i64 - snap.module as i64,
             snap.pid

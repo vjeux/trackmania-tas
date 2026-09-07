@@ -11,14 +11,13 @@ use serde::{Deserialize, Serialize};
 /// are now FILLED by the env (G3: the live `CSceneVehicleVisState`), with the PHASE convention below.
 pub const STATE_VERSION: u32 = 2;
 
-/// LABEL CONVENTION (2026-09-06, measured against the tape by ENV, LEARN and INPUT): a record labelled `race_ms = T`
-/// holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input record
-/// `(T - start_offset) / 10` is read -- and the VIS-derived fields (gear, rpm, wheel_*, turbo, car) exactly as
-/// the ghost's own telemetry sample stamped T carries them, which is the engine's vis state = the car one tick
-/// earlier (T - 10). So: env row T and telemetry sample T agree on the vis fields with NO shift (`tmenv
-/// wheels-control` phase 0 ms on Summer 2026 - 01/02/03), and a telemetry sample's POSITION is the physics of
-/// T - 10 (DATA labels telemetry-derived pos/vel with that +10 ms lag). The phase is measured per map by the
-/// control, never assumed.
+/// LABEL CONVENTION (2026-09-07, the three-way check on Summer 2026 - 01 WR and Summer 2026 - 02 rank-1): a record
+/// labelled `race_ms = T` holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input
+/// record `(T - start_offset) / 10` is read -- and **the ghost's own telemetry sample stamped T, `fk regen
+/// --dump-truth` row T and the env's row T are the SAME tick**: pairwise |dpos| 0.1-0.5 mm at dt = 0, 0.8-1.0 m
+/// (one tick) at +-10 ms. DATA's telemetry-derived labels therefore need NO lag (`--lag 0`), and the vis-derived
+/// fields (gear, rpm, wheel_*, turbo, car) in row T are exactly what sample T carries (`tmenv wheels-control`
+/// phase 0 ms on 4 maps). Measured per map by the controls, never assumed.
 pub const VIS_PHASE_MS_DEFAULT: i32 = 0;
 
 /// One 10 ms tick of ground-truth car state. Units: metres, m/s, radians, seconds. World frame = the map's

@@ -1,77 +1,46 @@
-//! `fk liveness` — is this anchor the copy of the car that has the fields?
+//! `fk liveness` — do the wheel fields of the car's vis state move?
 //!
 //! The engine keeps several copies of the vehicle state. They hold the same
-//! position and pass every structural test a locator can apply — unit
-//! quaternion, velocity equal to the position's derivative — but only one of
-//! them has the surrounding fields alive. The others are bare position copies
-//! with dead memory around them, and a regeneration anchored on one of those
-//! writes zeroed wheel rotations and gear into a file that passes the whole
-//! acceptance gate, because none of those bytes affects the simulation.
+//! position and pass every structural test — unit quaternion, velocity equal to
+//! the position's derivative — but only the `CSceneVehicleVisState` has the
+//! surrounding fields alive; the others are bare position copies with dead
+//! memory around them, and a regeneration anchored on one of those writes
+//! zeroed wheel rotations and gear into a file that passes the whole acceptance
+//! gate, because none of those bytes affects the simulation.
 //!
-//! So this asks the question that needs no answer key: at the four wheel-record
-//! slots, do the rotation floats MOVE? Four live against four dead, nothing in
-//! between. It is a property of the copy, not of the run, and it costs one
-//! fork.
+//! The copy that carries the fields is no longer a question: it is the
+//! post-step vis state at `phy+0x848` of the DERIVED car (`forkoracle::car`,
+//! LOCATE.md), whose wheel records the engine's own reflection places at
+//! `+0xa8 + 44k` (`VEHICLEVISSTATE.md`). This command is the control for that:
+//! at the four wheel-record slots, do the rotation floats MOVE? Four live
+//! against four dead, nothing in between, one fork.
 //!
-//! Offsets are given relative to THIS driver's anchor — `Layout::pos`, the
-//! address the locator returns. The carrier-bytes table published by the
-//! byte-naming arm is relative to the live-wheeled copy's position triple,
-//! which on this fixture sits 408 bytes above; its `car + 88 + 44k` is this
-//! anchor's `car + 496 + 44k`.
-
-use crate::locate::{gather_ticks, locate_v2};
+//! Offsets are reported relative to the vis state's position triple
+//! (`vis + 0x50`), which is the anchor every carrier-bytes table uses.
+use crate::locate::gather_ticks;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
-use crate::traj;
 
-/// Wheel records, relative to `Layout::pos`.
-///
-/// **496 IS A FIXTURE CONSTANT, NOT A PROPERTY OF THE ENGINE, AND THIS IS THE
-/// BUG IN THIS FILE.** The locator's anchor and the copy of the car that holds
-/// the fields are two different objects; 496 is `WHEEL0 + 408` because on the
-/// one fixture this was measured on, the field copy sat 408 bytes above the
-/// anchor. That distance is NOT fixed: on untitled 01 (2026-08-23) it is 124
-/// bytes, and `fk regen` no longer assumes any value for it — it resolves the
-/// engine's own pointer (`fk ptr`) or searches. Run against a fixture with a
-/// different shadow, this command reads four unrelated floats and reports 0 of
-/// 4 live for a car whose wheels are turning: the exact false negative that
-/// reads like "the window does not reach the car".
-///
-/// Left in place, named, rather than silently corrected: the constant is
-/// honest about the one fixture it was measured on, and the fix is to take the
-/// pointer rather than to guess a better number. `--shadow` overrides it.
-pub const WHEEL0: i64 = 496;
-/// The shadow this file's default offsets assume, so the arithmetic above can
-/// be undone by a caller who knows better.
-pub const ASSUMED_SHADOW: i64 = 408;
+/// Wheel records, relative to the vis state's position triple: `vis + 0xa8`
+/// is `pos + 88`.
+pub const WHEEL0: i64 = 88;
 pub const WHEEL_STRIDE: i64 = crate::vislayout::WHEEL_STRIDE;
 /// Rotation within a wheel record.
 pub const WHEEL_ROT: i64 = crate::vislayout::WHEEL_ROT;
 
 pub struct LivenessOpts {
-    pub reference: Option<String>,
     /// Extra offsets to report, relative to this anchor.
     pub also: Vec<i64>,
 }
 
 pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: LivenessOpts) -> Result<(), String> {
-    let bounds = match &o.reference {
-        Some(p) => traj::Reference::load(p)?.bounds(400.0),
-        None => (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0),
-    };
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    let layout = locate_v2(
-        &mut s.srv,
-        probe,
-        &recs,
-        s.tape.start_offset_ms,
-        bounds,
-        2000,
-        4000,
-        true,
-    )?;
+    let car = forkoracle::car::locate(&s.srv)?;
+    println!("car: {}", car);
+    let layout = car.layout();
+    let anchor = car.vis() + forkoracle::car::build128182::POS_IN_VIS;
 
     let mut want: Vec<(String, i64)> = (0..4)
         .map(|k| (format!("wheel{k}_rot"), WHEEL0 + WHEEL_STRIDE * k + WHEEL_ROT))
@@ -83,13 +52,13 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: LivenessOpts) -> Resu
     let hi = want.iter().map(|w| w.1).max().unwrap() + 8;
     let segs = vec![
         (layout.clock, 4u32),
-        (layout.pos.wrapping_add(lo as u64), (hi - lo) as u32),
+        (anchor.wrapping_add(lo as u64), (hi - lo) as u32),
     ];
     let rows = gather_ticks(&mut s.srv, probe, &recs, &segs, 600, 4000, (0, 4));
     if rows.len() < 50 {
         return Err(format!("only {} ticks gathered", rows.len()));
     }
-    println!("\nanchor {:#x} (Layout::pos), {} ticks", layout.pos, rows.len());
+    println!("\nanchor {:#x} (vis state position), {} ticks", anchor, rows.len());
     println!("what\toffset\tdistinct\tmin\tmax\tverdict");
     let mut live = 0;
     for (name, off) in &want {

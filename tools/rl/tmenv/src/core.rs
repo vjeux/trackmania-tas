@@ -375,6 +375,9 @@ impl Core {
     pub fn ingest(&mut self, actions: &[Action], rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
         let mut info = Info::default();
         if self.done.is_some() {
+            // the episode is over, but a caller stepping past the end (a
+            // whole-tape control) still gets the car it is looking at
+            info.state = self.state();
             return (self.observe(), 0.0, self.done, info);
         }
         let mut reward = 0.0f32;
@@ -658,4 +661,12 @@ mod tests {
         assert!(oa.iter().zip(ob.iter()).all(|(x, y)| x.to_bits() == y.to_bits()));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The car's lateral offset from the route at the core's current row, metres
+/// (signed), for diagnostics that want it without a step.
+pub fn lateral_of(c: &Core) -> f32 {
+    let r = c.last_row();
+    let pr = c.track.probe_near([r.x as f32, r.y as f32, r.z as f32], Some(c.cur_s));
+    pr.lateral
 }

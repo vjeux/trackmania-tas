@@ -152,6 +152,7 @@ fn branch_req<'a>(sock: &'a str, from: usize, recs: &'a [Rec], k: u64) -> Branch
         sample_stride: 1,
         sample_max: 0,
         key: (0, 1),
+        watched: false,
     }
 }
 
