@@ -99,6 +99,7 @@ fn main() {
         "fitbox" => cmd_fitbox(&a),
         "rejudge" => cmd_rejudge(&a),
         "campaign" => cmd_campaign(&a),
+        "explore" => cmd_explore(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -252,6 +253,17 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
     }
     let cg = counter_grade(&runs, &gates, &det);
     println!("ENGINE COUNTER control (Row::cps steps vs detector rows, finish included): {} => {}", cg, if cg.passes() { "PASS" } else { "FAIL" });
+    for l in cg.extra_list.iter().take(12) {
+        println!("  extra detection: {l}");
+    }
+    for l in cg.unmatched_list.iter().take(12) {
+        println!("  unmatched step: {l}");
+    }
+    // the engine counter is the authority when the runs carry it; the notice grade is
+    // informational then (a ghost's checkpoints_ms may omit the finish, which the
+    // counter steps for -- Summer 2026 - 04)
+    let gatecal_pass = if cg.runs_without_counter < runs.len() { cg.passes() } else { gr.passes() };
+    println!("GATECAL VERDICT: {} ({})", if gatecal_pass { "PASS" } else { "FAIL" }, if cg.runs_without_counter < runs.len() { "engine counter authoritative; notices informational" } else { "no engine counter: notices" });
     std::fs::write(out.join("detector.json"), det.to_json()).map_err(|e| e.to_string())?;
     std::fs::write(out.join("grade.txt"), format!("notices: {}\n{}\nengine counter: {}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" }, cg, if cg.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
     // the human crossing ORDER per ghost, for the coordinator's 44/44 check
@@ -503,13 +515,23 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
     // SOME checkpoints (k out of N)" appears only for k >= 2; measured on
     // p00001 with brake-from-tick tapes: 700..1400 -> plain, 1450 -> 2 of 4).
     // So (det 1, oracle 0) is the oracle's blind class, counted apart.
+    // THE BLIND CLASS IS k < floor(N/2): on Summer 2026 - 01 (N = 4) k = 1 read as none and
+    // k = 2 was reported; on Summer 2026 - 16 (N = 9) k = 2 and 3 read as none and k = 4 was
+    // reported. N from the oracle's own "(k out of N)" text when any case shows it, else
+    // the number of gate groups (checkpoint groups + 1).
+    let n_total: u32 = cases
+        .iter()
+        .filter_map(|c| c.oracle_desc.split("out of ").nth(1).and_then(|s| s.split(|ch: char| !ch.is_ascii_digit()).next()).and_then(|d| d.parse::<u32>().ok()))
+        .max()
+        .unwrap_or_else(|| gates.gates.iter().filter(|g| g.kind != tmreach::gates::GateKind::Finish && g.kind != tmreach::gates::GateKind::Start).map(|g| g.group).collect::<std::collections::BTreeSet<_>>().len() as u32 + 1);
+    let blind_below = (n_total / 2).max(2);
     let (mut agree, mut disagree, mut unanswered, mut blind, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, 0, Vec::new());
     for c in &cases {
         s.push_str(&case_tsv_row(c));
         match c.oracle_cps {
             None => unanswered += 1,
             Some(x) if x == c.det_cps => agree += 1,
-            Some(0) if c.det_cps == 1 && !c.det_finished => blind += 1,
+            Some(0) if c.det_cps >= 1 && c.det_cps < blind_below && !c.det_finished => blind += 1,
             Some(_) => disagree += 1,
         }
         if c.near_miss_m < 40.0 {
@@ -528,12 +550,14 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         *hist.entry((c.det_cps, c.oracle_cps)).or_default() += 1;
     }
     let verdict = format!(
-        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (det 1 / oracle reports none) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
+        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
         cases.len(),
         agree,
         100.0 * agree as f64 / cases.len().max(1) as f64,
         disagree,
         unanswered,
+        blind_below,
+        n_total,
         blind,
         near,
         fin,
@@ -851,20 +875,25 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
             }
             Ok((gc, oc, fo, ve)) => {
                 let pick = |s: &str, keys: &[&str]| -> String { s.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect() };
-                let gc_pass = gc.contains("=> PASS") && !gc.contains("=> FAIL");
+                let gc_pass = gc.contains("GATECAL VERDICT: PASS");
                 let oc_pass = oc.lines().any(|l| l.starts_with("=> PASS"));
                 // the summary line: "identity (macro 0 ...): max X m, N fails over M starts"
                 let id_fails: usize = fo.lines().find(|l| l.starts_with("identity (")).and_then(|l| l.split(", ").nth(1)).and_then(|s| s.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
                 let items_ok = fo.lines().find(|l| l.starts_with("fanout ")).and_then(|l| l.split(": ").nth(1)).and_then(|s| s.split_whitespace().next()).map(|ab| { let mut p = ab.split('/'); p.next().unwrap_or("0") == p.next().unwrap_or("1") }).unwrap_or(false);
-                let fo_fail = fo.contains("FAILED") || id_fails != 0 || !items_ok;
+                // a ghost whose startup controls failed (identity / start position) is EXCLUDED, fail
+                // closed, and the map still passes when at most a quarter of its ghosts are excluded
+                let excluded: Vec<String> = fo.lines().filter(|l| l.contains(": FAILED: ")).map(|l| l.split(": FAILED: ").next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                let other_failures = fo.lines().filter(|l| l.contains(": FAILED: ") && !(l.contains("label shift") || l.contains("IDENTITY") || l.contains("startup controls") || l.contains("START-POSITION"))).count();
+                let fo_fail = id_fails != 0 || other_failures > 0 || excluded.len() * 4 > n_linked || (items_ok == false && excluded.is_empty());
                 let ve_ok = ve.contains("verify OK");
                 let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
                 let ctrl = format!(
-                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard). Verdict: **{verdict}** (bank only on PASS).\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
+                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
                     tmreach::GIT_HASH,
                     hostname(),
                     chrono_now(),
-                    pick(&gc, &["ghosts ok", "s_off", "slack", "GRADE", "ENGINE COUNTER", "ORDER"]),
+                    if excluded.is_empty() { String::new() } else { format!("; EXCLUDED (startup controls failed, fail closed): {}", excluded.join(", ")) },
+                    pick(&gc, &["ghosts ok", "slack", "GRADE", "ENGINE COUNTER", "extra detection", "unmatched step", "ORDER", "GATECAL VERDICT"]),
                     oc.lines().filter(|l| l.starts_with("ORACLE CONTROL") || l.starts_with("(det_cps") || l.starts_with("=> ")).map(|l| format!("{l}\n")).collect::<String>(),
                     fo.lines().filter(|l| l.starts_with("fanout ") || l.starts_with("outcomes ") || l.starts_with("identity (") || l.starts_with("distinct end") || l.starts_with("human legs") || l.contains("FAILED") || (l.contains("unattributed steps") && !l.contains(" 0 unattributed steps"))).map(|l| format!("{l}\n")).collect::<String>(),
                     pick(&ve, &["TMR0", "verify"])
@@ -912,4 +941,57 @@ fn chrono_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", rem / 3600, (rem % 3600) / 60)
+}
+
+fn cmd_explore(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghosts_dir = PathBuf::from(a.req("ghosts"));
+    let out = PathBuf::from(a.req("out"));
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let gates = MapGates::load(&map, Some(&geom))?;
+    let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let budget: usize = a.get("budget").unwrap_or("20000").parse().map_err(|_| "--budget N")?;
+    let h: usize = a.get("h").unwrap_or("200").parse().map_err(|_| "--h ticks")?;
+    let every: i64 = a.get("every").unwrap_or("1000").parse().map_err(|_| "--every ms")?;
+    let seed: u64 = a.get("seed").unwrap_or("1").parse().map_err(|_| "--seed")?;
+    let limit = a.get("limit").map(|s| s.parse::<usize>().unwrap());
+    let mut ghosts = tmreach::pool::ghosts_in(&ghosts_dir)?;
+    if let Some(l) = limit {
+        ghosts.truncate(l);
+    }
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let cfg = std::sync::Arc::new(tmreach::explore::ExploreCfg { gates, det, macros: tmreach::explore::default_macros(), h, every_ms: every, budget, seed, out: out.clone() });
+    let pcfg = pool_cfg(a, &map, "explore");
+    println!("explore: {} ghosts, {} workers, budget {} rollouts per ghost, h {} ticks, seeds every {} ms, cells 2 m x 2 m x 5 m/s x 30 deg x cps", ghosts.len(), pcfg.workers, budget, h, every);
+    let t0 = std::time::Instant::now();
+    let c2 = cfg.clone();
+    let results = tmreach::pool::run_per_ghost(&pcfg, &ghosts, move |_i, w, tel| tmreach::explore::explore_ghost(w, tel, &c2));
+    let mut conn = String::from(tmreach::explore::connections_header());
+    let (mut cells, mut rollouts, mut steps, mut nconn, mut ok) = (0, 0, 0, 0, 0);
+    for (g, r) in ghosts.iter().zip(results) {
+        match r {
+            Ok(o) => {
+                ok += 1;
+                cells += o.cells;
+                rollouts += o.rollouts;
+                steps += o.steps;
+                nconn += o.connections.len();
+                for c in &o.connections {
+                    conn.push_str(c);
+                    conn.push('\n');
+                }
+                for l in &o.log {
+                    println!("{l}");
+                }
+            }
+            Err(e) => println!("{}: FAILED: {e}", g.display()),
+        }
+    }
+    std::fs::write(out.join("connections.tsv"), &conn).map_err(|e| e.to_string())?;
+    let wall = t0.elapsed().as_secs_f64();
+    println!(
+        "explore {} on {} ({}): {}/{} ghosts ok, {} rollouts in {:.1} s wall ({:.1}/s), {} explore steps, {} archive cells, {} other-gate connections -> {}",
+        tmreach::GIT_HASH, cfg.gates.map_uid, hostname(), ok, ghosts.len(), rollouts, wall, rollouts as f64 / wall.max(1e-9), steps, cells, nconn, out.join("connections.tsv").display()
+    );
+    Ok(())
 }

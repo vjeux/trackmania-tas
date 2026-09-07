@@ -238,11 +238,16 @@ impl Detector {
             }
         }
         // a group already credited (-1) or credited in the rollout: keep only the
-        // FIRST gate of a group credited in the rollout
+        // FIRST gate of a group credited in the rollout; two gates of one group
+        // entered on the same row (a car on the seam of two adjacent 32 m gates,
+        // Summer 2026 - 04) keep the lower waypoint only
+        let mut group_taken: std::collections::HashSet<u32> = Default::default();
         for (gi, g) in gates.gates.iter().enumerate() {
             if g.kind != GateKind::Finish && out[gi] >= 0 {
                 if let Some(first) = group_row.get(&g.group) {
                     if *first >= 0 && out[gi] != *first {
+                        out[gi] = -1;
+                    } else if !group_taken.insert(g.group) {
                         out[gi] = -1;
                     }
                 }
@@ -265,6 +270,17 @@ impl Detector {
                 if t.inside(g, [r.x, r.y, r.z]) {
                     out[gi] = i as i32;
                     break;
+                }
+            }
+        }
+        // THE RACE ENDS AT THE FIRST FINISH CROSSING: any finish gate of any finish
+        // group ends it (Summer 2026 - 04 has 9 finish gates in 3 groups), so only the
+        // earliest finish crossing stands and nothing after it is a crossing
+        let race_end = gates.gates.iter().enumerate().filter(|(gi, g)| g.kind == GateKind::Finish && out[*gi] >= 0).map(|(gi, _)| out[gi]).min();
+        if let Some(end) = race_end {
+            for (gi, g) in gates.gates.iter().enumerate() {
+                if out[gi] > end || (out[gi] == end && g.kind == GateKind::Finish && gates.gates.iter().enumerate().any(|(gj, gg)| gj < gi && gg.kind == GateKind::Finish && out[gj] == end)) {
+                    out[gi] = -1;
                 }
             }
         }

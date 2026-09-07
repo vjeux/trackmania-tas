@@ -304,7 +304,8 @@ pub fn model_stats(runs: &[GhostRun], gates: &MapGates) -> Vec<(String, usize, f
 /// for road blocks (a human crossing at +10.25 was credited, rollouts at
 /// +11.2..+11.5 were not), GEOM half_width for items; vertical −6..+8 m about the gate centre (hypothesis).
 pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, Vec<String>) {
-    let mut by: std::collections::BTreeMap<String, (Vec<(f64, f64)>, f64, bool)> = Default::default();
+    // per model: (outside s, inside s) pairs, GEOM half_width, from_item, and the human crossings' |lat| max and up range
+    let mut by: std::collections::BTreeMap<String, (Vec<(f64, f64)>, f64, bool, f64, f64, f64)> = Default::default();
     for run in runs {
         for c in &run.crossings {
             let g = gates.gate(c.gate_wp).unwrap();
@@ -314,22 +315,33 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
                 _ => c.pm.zip(c.pmm),
             };
             if let Some((pin, pout)) = pair {
-                let s1 = g.local(pin).0;
+                let (s1, lat1, up1) = g.local(pin);
                 let s2 = g.local(pout).0;
                 let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
-                let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item));
+                let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
                 e.0.push((s2, s1));
+                e.3 = e.3.max(lat1.abs());
+                e.4 = e.4.min(up1);
+                e.5 = e.5.max(up1);
             }
         }
     }
     let mut per_model = Vec::new();
     let mut notes = Vec::new();
-    for (m, (v, hw, item)) in by {
+    for (m, (v, hw, item, lat_max, up_min, up_max)) in by {
         let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(&m)); // max s(T-2) and oracle refusals: must be OUTSIDE
         let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min); // min s(T-1): must be INSIDE
-        let s_off = 0.5 * (lo + hi);
-        notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT" } else { "" }));
-        per_model.push((m.clone(), Trigger { s_off, depth: 8.0, lat_half: lateral_half_extent(&m, hw, item), up_lo: -6.0, up_hi: 8.0 }));
+        // an INCONSISTENT model (no plane separates all outside from all inside rows) fires
+        // EARLY rather than missing: the plane goes 2 cm before the earliest inside row,
+        // so every human credit is inside (the engine counter decides the credit anyway;
+        // the geometry only attributes)
+        let s_off = if hi <= lo { hi - 0.02 } else { 0.5 * (lo + hi) };
+        // lateral: the model rule, widened to the humans' own crossings + 2 m; vertical:
+        // the humans' up range widened by 3 m below and 6 m above (jumps), at least −6..+8
+        let lat_half = lateral_half_extent(&m, hw, item).max(lat_max + 2.0);
+        let (up_lo, up_hi) = ((up_min - 3.0).min(-6.0), (up_max + 6.0).max(8.0));
+        notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}; human |lat| max {lat_max:.2} -> lat_half {lat_half:.1}; up {up_min:+.2}..{up_max:+.2} -> {up_lo:+.1}..{up_hi:+.1}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT (plane 2 cm before the earliest credited row)" } else { "" }));
+        per_model.push((m.clone(), Trigger { s_off, depth: 8.0, lat_half, up_lo, up_hi }));
     }
     (
         Detector {
@@ -386,6 +398,9 @@ pub struct CounterGrade {
     pub unmatched_steps: usize,
     pub extra_detections: usize,
     pub runs_without_counter: usize,
+    /// (ghost, waypoint, row, race_ms) of detections the counter did not step for, and steps no detection matched
+    pub extra_list: Vec<String>,
+    pub unmatched_list: Vec<String>,
 }
 
 impl std::fmt::Display for CounterGrade {
@@ -442,7 +457,16 @@ pub fn counter_grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> Cou
                     }
                     *g.off_by.entry(dt).or_default() += 1;
                 }
-                None => g.unmatched_steps += 1,
+                None => {
+                    g.unmatched_steps += 1;
+                    g.unmatched_list.push(format!("{} step at row {} race {} cps->{} at ({:.1}, {:.1}, {:.1})", run.ghost, s, crate::secs(run.flat[*s].time_ms + 10), run.flat[*s].cps, run.flat[*s].x, run.flat[*s].y, run.flat[*s].z));
+                }
+            }
+        }
+        for (j, u) in used.iter().enumerate() {
+            if !*u {
+                let gi = first.iter().position(|t| *t == dets[j] as i32).unwrap_or(0);
+                g.extra_list.push(format!("{} wp{} row {} race {}", run.ghost, gates.gates[gi].waypoint, dets[j], crate::secs(run.flat[dets[j]].time_ms + 10)));
             }
         }
         g.extra_detections += used.iter().filter(|u| !**u).count();
