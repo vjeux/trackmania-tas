@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
@@ -220,6 +220,7 @@ fn main() {
         "selftest" => selftest::run(&args),
         "region" => census::cmd_region(&args),
         "tiny-catalog" => tmmaps::tiny::catalog_cmd(&args),
+        "lineup" => tmmaps::tiny::lineup_cmd(&args),
         "tiny" => tmmaps::tiny::cmd(&args),
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
@@ -1223,6 +1224,8 @@ TINY MAPS (half-scale campaign: every authored block/item -> an embedded static 
   tmmaps tiny-batch DIR --out DIR [--mapgeom BIN --paks "--pak F:HASH …"] [same flags]
                                                     every .Map.Gbx of a directory; with --mapgeom each map gets
                                                     its own item library (OUT/NAME.lib.zip, .placements.tsv, .report.tsv)
+  tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch 16]
+        the map plus a row of stock (pack) items by name — a vegetation species survey
   tmmaps tiny-catalog MAP --mapping T --library Z --out F [--only NAME] [--lineup A,B]
         one block per model beside its items (or the listed item files), for a look
 

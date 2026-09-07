@@ -1025,3 +1025,48 @@ pub fn catalog_cmd(args: &[String]) {
     std::fs::write(&tsv_path, tsv).unwrap();
     println!("wrote {} ({} blocks x [original, item x1, item x{}]); grid {}", out.display(), grid.len(), scale, tsv_path.display());
 }
+
+/// `tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch M]`: the map
+/// unchanged plus a row of STOCK (pack) items by name — vegetation species —
+/// starting at X,Y,Z, `pitch` metres apart along +x, under author Nadeo. A
+/// species survey in one frame (which SpringTree is green, which is pink),
+/// on the real map so the editor renders it (a parked-block catalog map came
+/// out blank in GreenCoast).
+pub fn lineup_cmd(args: &[String]) {
+    let src = PathBuf::from(&args[2]);
+    let out = PathBuf::from(cli::flag(args, "--out").expect("lineup needs --out MAP"));
+    let list = cli::flag(args, "--stock").expect("lineup needs --stock A,B,C");
+    let at = vec3(&cli::flag(args, "--at").expect("lineup needs --at X,Y,Z"), "--at");
+    let pitch: f32 = cli::flag(args, "--pitch").unwrap_or("16").parse().expect("--pitch metres");
+    let names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    let source = MapFile::load(&src);
+    set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
+    let n = source.items.len();
+    let tmp0 = out.with_extension("lineup0.Map.Gbx");
+    let mut m = MapFile::load(&src);
+    m.append_item_clones(n + names.len());
+    m.write_to(&tmp0).expect("write slots");
+    let mut m = MapFile::load(&tmp0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    m.set_map_uid(&format!("Lin1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000));
+    for (k, name) in names.iter().enumerate() {
+        let i = n + k;
+        let pos = [at[0] + pitch * k as f32, at[1], at[2]];
+        m.set_item_model(i, name);
+        m.set_item_author(i, "Nadeo");
+        m.move_item(i, pos, 0.0, cell_for(pos));
+        m.set_item_scale(i, 1.0);
+        m.clear_item_variant(i);
+        m.set_item_color(i, 0);
+        println!("  {name} at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
+    }
+    let tmp1 = out.with_extension("lineup1.Map.Gbx");
+    m.write_to(&tmp1).expect("write models");
+    // variable-length splices (the password chunk) only after a write+reload
+    let mut m = MapFile::load(&tmp1);
+    m.remove_password();
+    m.write_to(&out).expect("write output");
+    let _ = std::fs::remove_file(&tmp0);
+    let _ = std::fs::remove_file(&tmp1);
+    println!("wrote {} ({} stock items in a row)", out.display(), names.len());
+}
