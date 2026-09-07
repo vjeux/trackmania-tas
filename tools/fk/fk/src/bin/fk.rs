@@ -25,6 +25,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk locate mirror   hard left vs hard right: which object answers first
   fk locate watch    under gdb: who writes each copy, and in what order
   fk liveness        do the wheel fields of the car's vis state move?
+  fk ladder check    deep fork points vs the root fork vs the plain oracle, cost per depth
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
@@ -138,6 +139,29 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     cmd::locate::watch(&engine, tape, num(rest, "--arm").unwrap_or(400) as u32)
                 }
                 _ => unreachable!(),
+            }
+        }
+        "ladder" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let rest = &a[2.min(a.len())..];
+            let (engine, tape, at) = common(rest)?;
+            match verb {
+                "check" => {
+                    let o = cmd::ladder::CheckOpts {
+                        n: num(rest, "--n").unwrap_or(200) as usize,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        span: num(rest, "--span").unwrap_or(60) as usize,
+                        spacing: num(rest, "--spacing").unwrap_or(100) as usize,
+                        cap: num(rest, "--cap").unwrap_or(32) as usize,
+                    };
+                    match cmd::ladder::check(&engine, tape, at, o)? {
+                        true => Ok(()),
+                        false => Err("deep fork points did not reproduce the root fork and the \
+                                      full validation on every candidate"
+                            .into()),
+                    }
+                }
+                _ => Err("fk ladder <check>  [--n N --seed S --span K --spacing S --cap C]".into()),
             }
         }
         "liveness" => {

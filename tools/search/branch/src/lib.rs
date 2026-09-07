@@ -271,6 +271,7 @@ impl Forest {
             // whenever the car does not move -- a countdown, a crash, a respawn
             // -- and shifts everything after it.
             key: (0, (segs.iter().map(|s| s.1).sum::<u32>()).max(1)),
+            watched: false,
         };
 
         let pid = match h {

@@ -41,8 +41,8 @@
 //! asked for **by the pid the node names in its own handshake**.
 
 use crate::forksrv::{
-    parse_probe, payload_branch, payload_probe, payload_run, read_frame, write_frame,
-    BranchReq, Rec,
+    parse_probe, payload_branch, payload_probe, payload_run, payload_watched, read_frame,
+    write_frame, BranchReq, Rec,
 };
 use std::os::raw::c_int;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -209,6 +209,30 @@ impl Node {
     pub fn run(&mut self, from: usize, recs: &[Rec]) -> Result<String, String> {
         self.check_forward(from)?;
         self.request(&payload_run(from, recs))
+    }
+
+    /// As [`Node::run`], with the armed watchdog evaluated in the child every
+    /// tick: the validator's JSON (empty when the child aborted itself) and
+    /// the summary block. The watchdog is armed on the ROOT server, once, and
+    /// every node inherits it; a node made with `BranchReq::watched` also
+    /// carries the evaluator's state up to its own tick, so the child's run
+    /// is the continuation of one watched run from the root, not a cold start.
+    pub fn run_watched(&mut self, from: usize, recs: &[Rec]) -> Result<(String, Vec<u8>), String> {
+        self.check_forward(from)?;
+        if self.dead {
+            return Err("this node has been destroyed".into());
+        }
+        write_frame(&mut self.sock, &payload_watched(from, recs))
+            .map_err(|e| format!("node {}: {}", self.pid, e))?;
+        let json = match read_frame(&mut self.sock) {
+            Some(v) => String::from_utf8_lossy(&v).into_owned(),
+            None => {
+                self.dead = true;
+                return Err(format!("node {} stopped answering", self.pid));
+            }
+        };
+        let sum = read_frame(&mut self.sock).unwrap_or_default();
+        Ok((json, sum))
     }
 
     /// Fork a child that appends and becomes a node of its own.
