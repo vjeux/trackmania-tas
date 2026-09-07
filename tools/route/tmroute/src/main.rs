@@ -640,7 +640,7 @@ fn has_flag(args: &[String], name: &str) -> bool { args.iter().any(|a| a == name
 /// GEOMETRIC planner's order, the R planner's order (`tmr plan`), and each one's agreement with the humans
 /// (EXACT / τ). `--also` adds maps without a human order (the failed / hypothesis maps) with what exists.
 pub fn cmd_table_r(args: &[String]) {
-    let pos = positionals(args, &["--geom", "--geo", "--r", "--hyb", "--also", "--train", "--held-out", "--title"], &[]);
+    let pos = positionals(args, &["--geom", "--geo", "--r", "--hyb", "--also", "--train", "--held-out", "--title", "--uids"], &[]);
     let root = pos.first().unwrap_or_else(|| die("table-r ROUTES_DIR --geom GEOM_DIR"));
     let geom = flag(args, "--geom").unwrap_or_else(|| die("--geom GEOM_DIR"));
     let geo_src = flag(args, "--geo").unwrap_or_else(|| "router-plan-cost".into());
@@ -652,8 +652,15 @@ pub fn cmd_table_r(args: &[String]) {
     let (train, held) = (list("--train"), list("--held-out"));
     let title = flag(args, "--title");
     let (mut unseen_n, mut unseen_r_ex, mut unseen_geo_ex) = (0usize, 0usize, 0usize);
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&geom).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+    // --uids: only these map dirs (the exhibit's ~35 maps) — a walk over all 500+ dirs on the bank mount is minutes
+    let only = list("--uids");
+    let mut dirs: Vec<PathBuf> = if only.is_empty() {
+        std::fs::read_dir(&geom).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect()
+    } else {
+        only.iter().chain(also.iter()).map(|u| Path::new(&geom).join(u)).filter(|p| p.is_dir()).collect()
+    };
     dirs.sort();
+    dirs.dedup();
     let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     let mut rows: Vec<(String, String)> = Vec::new();
     let (mut n_h, mut geo_ex, mut r_ex, mut both_have, mut geo_tau, mut r_tau, mut n_tau) = (0usize, 0usize, 0usize, 0usize, 0.0f64, 0.0f64, 0usize);

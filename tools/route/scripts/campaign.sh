@@ -96,9 +96,10 @@ if [ $step = plan-r ]; then
     timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_R:-1500} s" >> $P/plan-r/$u.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
   export -f plan_r_one mapfile_of; export TMR TMR_FLAGS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R
-  cat /tmp/plan-r.uids | xargs -P ${PAR:-6} -n 1 bash -c 'plan_r_one "$0"'
-  $R/tmroute index $RT --names $G
-  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
+  cat /tmp/plan-r.uids | xargs -P ${PAR:-3} -n 1 bash -c 'plan_r_one "$0"'
+  # no `index` here (a full walk of the bank mount is > 40 min); table-r reads only the exhibit's maps
+  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --uids $(cat /tmp/plan-r.uids | tr "\n" ",") --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
+  cp $P/table-r.md $P/table-r-$(date -u +%Y%m%dT%H%MZ)-$RV.md
   tail -1 $P/table-r.md
 fi
 if [ $step = tables ] || [ $step = all ]; then
