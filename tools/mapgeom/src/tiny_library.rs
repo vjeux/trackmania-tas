@@ -561,12 +561,30 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             deepened.push(format!("{name} {flags:08X}"));
                         }
                     }
-                    // waypoint: type from the block info, trigger = unit boxes,
-                    // spawn = variant spawn_loc scaled (Granady's items)
+                    // waypoint: type from the block info; the trigger is the
+                    // variant's own `*_Trigger.Shape.Gbx` scaled (for the road
+                    // checkpoints a 0.1 m plane across the middle of the block,
+                    // deck to ~8 m — where the original fires), the unit-box
+                    // volume only for a block without one; spawn = variant
+                    // spawn_loc scaled (Granady's items)
                     if let Some(wt) = bi.waypoint_type.filter(|t| (0..=2).contains(t) || *t == 4) {
                         m.waypoint_type = Some(wt);
                         if wt != 0 {
-                            m.trigger = Some(unit_box_trigger(&units, scale));
+                            let mut trig = None;
+                            for sp in &pk.variant.trigger_shapes {
+                                match crate::static_item::build::trigger_from_shape_file(store, sp, &crate::geom::IDENTITY, scale) {
+                                    Ok(t) => {
+                                        m.notes.push(format!("waypoint trigger from {}", sp.rsplit('\\').next().unwrap_or(sp)));
+                                        trig = Some(t);
+                                        break;
+                                    }
+                                    Err(e) => m.notes.push(format!("trigger shape {sp}: {e}; next")),
+                                }
+                            }
+                            m.trigger = Some(trig.unwrap_or_else(|| {
+                                m.notes.push("waypoint trigger: no shape in the block info, unit box".to_string());
+                                unit_box_trigger(&units, scale)
+                            }));
                         }
                         let sl = pk.variant.spawn_loc;
                         m.spawn = [sl[0] * scale, sl[1] * scale, sl[2] * scale];
