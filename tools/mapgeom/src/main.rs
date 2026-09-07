@@ -628,6 +628,28 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // item-fields <pack .Item.Gbx | file>: every chunk of a CGameItemModel
+        // as the item writer's classes read it, one line each (node contents
+        // elided) — what a pack item declares that ours does not (the
+        // 2026-09-07 detail-level probe).
+        "item-fields" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let m = load_any(&mut store, &p);
+            let mut lb = mapgeom::static_item::LookbackState::default();
+            lb.defined_nodes.extend(m.external_indices().iter().copied());
+            let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+            let item = mapgeom::static_item::item::CGameItemModel::parse(&mut r).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            println!("{p}: {} chunks, {} of {} body bytes read", item.chunks.len(), r.o, m.body.len());
+            for c in &item.chunks {
+                let s = format!("{c:?}");
+                let s = if s.len() > 400 { format!("{}…", &s[..400]) } else { s };
+                println!("  {s}");
+            }
+            for (i, e) in &m.externals {
+                println!("  external node {i}: {e}");
+            }
+        }
         // solid2-roundtrip <pack .Mesh.Gbx | file>: parse a CPlugSolid2Model body
         // with the item writer's classes and write it back — how faithfully the
         // writer reproduces a pack mesh (the flag cloth's inline-vertex frames,
@@ -1716,6 +1738,20 @@ fn describe(n: &Node) -> String {
                 s.visuals.len(),
                 s.material_names.join(" ")
             );
+            // The detail levels: which geoms (visual node, material slot)
+            // each lod-mask bit draws, and the switch distances.
+            if !s.lod_max_dist.is_empty() || s.geoms.iter().any(|g| g.lod != 1) {
+                d.push_str(&format!(
+                    "\n      lod_max_dist {:?} vis_cst_type {} geoms [{}]",
+                    s.lod_max_dist,
+                    s.vis_cst_type,
+                    s.geoms
+                        .iter()
+                        .map(|g| format!("v{}:m{}:lod{:x}", s.visuals.get(g.visual as usize).copied().unwrap_or(-1), g.material, g.lod))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
             for (name, node, iso) in &s.lights {
                 d.push_str(&format!(
                     "\n      light {name:?} node {node} at [{:.3}, {:.3}, {:.3}] rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}]",

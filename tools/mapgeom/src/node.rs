@@ -173,6 +173,11 @@ pub struct Solid2 {
     /// `light_insts` (model index, socket index) pairs.
     pub light_user_models: Vec<i32>,
     pub light_insts: Vec<(u32, u32)>,
+    /// The detail-level switch distances (`LodDistances`, v1+): level k of a
+    /// geom's `lod` bitmask draws while the camera is within `lod_max_dist[k]`.
+    pub lod_max_dist: Vec<f32>,
+    /// `VisCstType` (v2+).
+    pub vis_cst_type: u32,
 }
 
 /// A `CPlugLight` (0x0901D000) — the wrapper a Solid2's `lights` socket names

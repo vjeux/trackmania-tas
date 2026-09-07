@@ -46,10 +46,144 @@ pub struct BuildOpts {
 pub struct MergedVisual {
     pub visual: CPlugVisualIndexedTriangles,
     pub material: usize,
-    /// The shaded geom's detail-level mask (bit 0 = nearest). 1 for every
-    /// static visual (the item keeps LOD0 only); the pack's own mask for the
-    /// visuals of a tween part, which keeps all its levels.
+    /// The detail levels this visual draws at, as the SOURCE part's
+    /// `ShadedGeom::lod_mask` (bit k = level k of that part's ladder, bit 0 =
+    /// nearest; 0 = every level), and that part's ladder — its switch
+    /// distances, already scaled (level k spans `ladder[k-1]..ladder[k]`,
+    /// the level past the last distance is unbounded). The merged item's
+    /// ladder is the union of its parts' distances, and `remap_lod_mask`
+    /// moves the mask onto it by distance range at assembly.
     pub lod_mask: u32,
+    pub lod_ladder: Vec<f32>,
+}
+
+impl MergedVisual {
+    /// A visual drawn at every distance (a part without detail levels).
+    pub fn every_level(visual: CPlugVisualIndexedTriangles, material: usize) -> MergedVisual {
+        MergedVisual { visual, material, lod_mask: 0, lod_ladder: Vec::new() }
+    }
+}
+
+/// `TINY_LOD0_ONLY=1`: the bake of before 2026-09-07 — keep only the nearest
+/// detail level of every source model and write no switch distances (every
+/// tiny item at full detail at every distance).
+///
+/// How the game reads the ladder (measured 2026-09-07 on Summer 15's grass
+/// with `tmmaps lineup` probes of a half-size GateCheckpointCenter24m, ladder
+/// [32, 64, 128]): a geom draws when its mask has the current level's bit —
+/// an item whose geoms all lack bit 0 is invisible near, one with level-0
+/// geoms only is culled far — and the level advances with the CAMERA
+/// distance times the game's LOD bias: the level-0-only item was still drawn
+/// at 100 m and gone at 150 m, i.e. the 32 m step fired between 100 and
+/// 150 m (~x4; a stock ShowLights rig whose own ladder culls at 256 m was
+/// still drawn at 400 m, so the bias is the game's, not ours — resolution
+/// and quality settings of the render box). Both the item editor's
+/// CGameCommonItemEntityModel form and the pack's CPlugPrefab form behave the
+/// same, in the editor and in play. Nothing else was needed: the Solid2
+/// header words (flags, u05, u07, vis_cst_type, 0x090BB002) match the pack's.
+pub fn lod0_only() -> bool {
+    std::env::var_os("TINY_LOD0_ONLY").is_some()
+}
+
+/// A source part's detail ladder length: one more level than it has switch
+/// distances, and at least one past its highest mask bit (a mask bit with no
+/// distance is the unbounded last level).
+pub fn lod_levels_of(lod_max_dist: &[f32], geoms: &[ShadedGeom]) -> u32 {
+    let by_dist = lod_max_dist.len() as u32 + 1;
+    let by_mask = geoms.iter().map(|g| if g.lod_mask <= 0 { 1 } else { 32 - (g.lod_mask as u32).leading_zeros() }).max().unwrap_or(1);
+    by_dist.max(by_mask)
+}
+
+/// Two switch distances that are the same step (the parts of one item scale
+/// alike, so equal source distances stay equal; the slack absorbs float noise).
+fn same_dist(a: f32, b: f32) -> bool {
+    if a.is_infinite() || b.is_infinite() {
+        return a == b;
+    }
+    (a - b).abs() <= 1e-3 * a.abs().max(b.abs()).max(1.0)
+}
+
+/// `d` merged into a sorted, deduplicated ladder.
+pub fn merge_lod_ladder(ladder: &mut Vec<f32>, d: &[f32]) {
+    for x in d {
+        if !x.is_finite() || *x <= 0.0 || ladder.iter().any(|y| same_dist(*x, *y)) {
+            continue;
+        }
+        let at = ladder.iter().position(|y| *y > *x).unwrap_or(ladder.len());
+        ladder.insert(at, *x);
+    }
+}
+
+/// A part's mask moved onto the merged ladder by DISTANCE RANGE: the part's
+/// level k spans `part[k-1]..part[k]` (0 below the first distance, unbounded
+/// past the last), and every merged level whose span STARTS inside that
+/// range takes the bit. The merged ladder normally holds every distance of
+/// every part, so the spans tile exactly: a part keeps drawing precisely
+/// where its own ladder drew it, whatever the other parts' steps (Flag16m: a
+/// pole with [16, 64, 512] and a cloth with [16, 64, 128, 512] merge into
+/// [16, 64, 128, 512] with the pole's third level on bits 2 and 3 — the
+/// per-level max of before made a zero-width level [16, 64, 512, 512]). When
+/// the ladder was capped (`cap_lod_ladder`) a merged level may straddle a
+/// part's step; the level active at its start is drawn through it. A part
+/// without a ladder, or a mask of 0, draws at every level; a part whose
+/// ladder is longer than its masks (Nadeo's cull idiom: Sparkler8m lists
+/// [16, 128, 256] but draws nothing past bit 2) stays culled past its last
+/// distance, since no level of it starts there.
+pub fn remap_lod_mask(mask: u32, part: &[f32], merged: &[f32]) -> u32 {
+    let levels = merged.len() + 1;
+    let all = if levels >= 32 { u32::MAX } else { (1u32 << levels) - 1 };
+    if mask == 0 || part.is_empty() {
+        return all;
+    }
+    let mut out = 0u32;
+    for k in 0..32usize {
+        if mask & (1 << k) == 0 {
+            continue;
+        }
+        let lo = if k == 0 { 0.0 } else { part.get(k - 1).copied().unwrap_or(f32::INFINITY) };
+        let hi = part.get(k).copied().unwrap_or(f32::INFINITY);
+        if lo >= hi {
+            continue;
+        }
+        for j in 0..levels {
+            let jlo = if j == 0 { 0.0 } else { merged[j - 1] };
+            let starts_inside = (jlo > lo || same_dist(jlo, lo)) && jlo < hi && !same_dist(jlo, hi);
+            if starts_inside {
+                out |= 1 << j;
+            }
+        }
+    }
+    out
+}
+
+/// The most detail levels a static object's Solid2 may carry. Every pack
+/// static model surveyed (93 laddered Solid2s, 2026-09-07) has at most 3
+/// switch distances = 4 levels; the one 5-level model is a dyna object's
+/// mesh (Flag.Mesh.Gbx, [16, 64, 128, 512]). A static item merged to 5
+/// levels (Flag16m: pole + cloth, [8, 32, 64, 256]) crashed the client at
+/// map load with an assertion (ud2 at Trackmania.exe+0x1e9947, rax = 5,
+/// r9 = 4) — twice, once per ladder variant — so the merged ladder is capped
+/// at 4 levels.
+pub const MAX_LOD_LEVELS: usize = 4;
+
+/// Collapse a ladder to at most `max_dists` switch distances: while it is
+/// longer, the two closest adjacent steps (smallest ratio) become one, the
+/// larger distance dropped — the finer level then draws on through the
+/// removed step (see `remap_lod_mask`), which costs a little detail budget
+/// rather than any geometry.
+pub fn cap_lod_ladder(ladder: &mut Vec<f32>, max_dists: usize) {
+    while ladder.len() > max_dists && ladder.len() >= 2 {
+        let mut best = 1usize;
+        let mut best_ratio = f32::INFINITY;
+        for i in 1..ladder.len() {
+            let r = ladder[i] / ladder[i - 1].max(1e-6);
+            if r < best_ratio {
+                best_ratio = r;
+                best = i;
+            }
+        }
+        ladder.remove(best);
+    }
 }
 
 /// A light of the source model, ready for the item's Solid2 `lights` list.
@@ -144,18 +278,25 @@ pub struct Merged {
     /// prefab entity model, each with its kinematic constraint. Empty for a
     /// static item.
     pub dyna: Vec<DynaPart>,
-    /// Keep every detail level of the source (with its lod mask) instead of
-    /// the nearest one only — the tween cloth: ten or more instances of a
-    /// LOD0-only copy drew as garbage (giant black sails, or nothing) while
-    /// one or two drew right (2026-09-07); the pack's five levels are the
-    /// layout the many-instance draw path expects.
+    /// The item's detail ladder: switch distance of every level but the last
+    /// (level k draws while the camera is within `lod_max_dist[k]`; the last
+    /// level is unbounded), already SCALED by the item scale (a half-size
+    /// object switches at half the distance — the same size on screen) and
+    /// merged across the parts baked into the item as the UNION of their
+    /// distances (each part's masks are moved onto it by distance range at
+    /// assembly, `remap_lod_mask`; the union is capped at `MAX_LOD_LEVELS`
+    /// there). Empty = one level, no switching.
+    pub lod_max_dist: Vec<f32>,
+    /// Keep every detail level of the source whatever `TINY_LOD0_ONLY` says,
+    /// and never cap or fold its ladder — the tween cloth: ten or more
+    /// instances of a LOD0-only copy drew as garbage (giant black sails, or
+    /// nothing) while one or two drew right (2026-09-07); the pack's five
+    /// levels are the layout the many-instance draw path expects.
     pub all_lods: bool,
     /// Solid2 fields carried from the source mesh for a tween part: the pack's
     /// Flag.Mesh.Gbx says `vis_cst_type` 2 (its vertices are not constant —
-    /// the frames), `lod_max_dist` [16, 64, 128, 512] for its five levels,
-    /// `u07` -1; a static item says 1, [], 1.
+    /// the frames), `u07` -1; a static item says 1 and 1.
     pub vis_cst_type: Option<i32>,
-    pub lod_max_dist: Vec<f32>,
     pub solid2_u07: Option<i32>,
 }
 
@@ -486,6 +627,36 @@ impl Merged {
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
         let iso_entity_only = *iso;
         let s2 = so.solid2().ok_or("static object without an inline CPlugSolid2Model")?;
+        // The part's detail ladder. Every pack model measured (2026-09-07:
+        // RoadTech Straight_Air [64, 128] + masks 1/2/4, the gate prefabs
+        // [64, 128, 256] + masks 1/2/4/8, Beach Base1A [64] + masks 1/2)
+        // lists one distance per level but the last: level k draws while the
+        // camera is within lod_max_dist[k], the last level beyond. Scaled by
+        // the item scale and merged into the item's ladder (the union of the
+        // parts' distances; each part's masks are moved onto it by range at
+        // assembly, `remap_lod_mask`) — see `Merged::lod_max_dist`.
+        // `TINY_LOD0_ONLY=1` keeps the nearest level only, no ladder.
+        let lod0_only = lod0_only() && !self.all_lods;
+        let part_levels = if lod0_only { 1 } else { lod_levels_of(&s2.lod_max_dist, &s2.shaded_geoms) };
+        let mut part_ladder: Vec<f32> = Vec::new();
+        if part_levels > 1 {
+            let before = self.lod_max_dist.clone();
+            // a ladder shorter than its masks (a mask bit past the last
+            // distance): the extra levels take the last distance doubled
+            let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * scale).collect();
+            while (dists.len() as u32) + 1 < part_levels {
+                let last = dists.last().copied().unwrap_or(32.0 * scale);
+                dists.push(last * 2.0);
+            }
+            merge_lod_ladder(&mut part_ladder, &dists);
+            merge_lod_ladder(&mut self.lod_max_dist, &dists);
+            if self.lod_max_dist != before {
+                self.notes.push(format!("lod ladder: {} levels, distances {:?} (x{scale}); item ladder now {:?}", part_levels, s2.lod_max_dist, self.lod_max_dist));
+            }
+        }
+        // Which geoms are coarser levels only (no bit 0). Kept with their
+        // masks unless `TINY_LOD0_ONLY`.
+        let coarser = |g: &ShadedGeom| g.lod_mask > 0 && g.lod_mask & 1 == 0;
         // Light sources: a Solid2 `lights` socket = a name, an Iso4 in model
         // space and (in the packs) an EXTERNAL CPlugLight ref — Lamp.Mesh.Gbx
         // carries `Stadium\Media\Light\ItemLampSpot.Light.Gbx`. The socket's
@@ -625,14 +796,33 @@ impl Merged {
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
         if std::env::var_os("TINY_DUMP_DECLS").is_some() {
             self.notes.push(format!(
-                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?} material refs {:?} vis_cst_type {} flags {:#x} u05 {} u06 {:?} u07 {} lod_max_dist {:?} u10 {:?} u11 {} u12 {:?} u13 {} u15 {} u16 {} u17 {:?} u18 {} u19 {:?} boxes {}",
+                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} lod_max_dist {:?} vis_cst_type {} damage_zone {} flags {:#x} u05 {} u07 {} u11 {} u13 {} u15 {} u16 {} u18 {} u10 {:?} u12 {:?} u14 {} u17 {:?} u19 {:?} joints {:?} chunks {:x?} raw {:?} prelight {:?} geoms {:?} material refs {:?}",
                 s2.version,
                 s2.material_ids,
                 s2.materials_folder,
                 s2.u03,
                 s2.u04,
-                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>(), s2.materials.iter().map(|r| r.index).collect::<Vec<_>>(),
-                s2.vis_cst_type, s2.flags, s2.u05, s2.u06, s2.u07, s2.lod_max_dist, s2.u10, s2.u11, s2.u12, s2.u13, s2.u15, s2.u16, s2.u17, s2.u18, s2.u19, s2.boxes.len()
+                s2.lod_max_dist,
+                s2.vis_cst_type,
+                s2.damage_zone,
+                s2.flags,
+                s2.u05,
+                s2.u07,
+                s2.u11,
+                s2.u13,
+                s2.u15,
+                s2.u16,
+                s2.u18,
+                s2.u10,
+                s2.u12,
+                s2.u14.index,
+                s2.u17,
+                s2.u19,
+                s2.joints,
+                s2.chunks,
+                s2.raw.iter().map(|c| format!("{:08x}:{}", c.id, c.payload.iter().map(|b| format!("{b:02x}")).collect::<String>())).collect::<Vec<_>>(),
+                s2.pre_light_gen.as_ref().map(|p| (p.version, p.u01, p.u02, p.u03, p.u04, p.sprite_count, p.boxes.len(), p.uv_groups.len())),
+                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>(), s2.materials.iter().map(|r| r.index).collect::<Vec<_>>()
             ));
         }
         // Prefab-wide layer table for the voted (shared Techno3 id) materials:
@@ -644,7 +834,9 @@ impl Merged {
         let mut layer_votes: std::collections::BTreeMap<u32, std::collections::BTreeMap<usize, usize>> = Default::default();
         if !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
             for g in &s2.shaded_geoms {
-                if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() {
+                // the table is voted from the nearest level only: the collision
+                // mesh coincides with LOD0's triangles, not with a coarser sheet's
+                if coarser(g) {
                     continue;
                 }
                 let mi = g.material_index.max(0) as usize;
@@ -677,16 +869,19 @@ impl Merged {
         }
         for g in &s2.shaded_geoms {
             // A geom's lod mask says which detail levels draw it (bit 0 =
-            // nearest). The item is emitted with no lod distances, so every
-            // geom it carries draws at every distance: taking every level made
-            // the terrain tiles draw LOD0 and LOD1 coplanar (Beach: a coarse
-            // 22-vertex LOD1 sheet voted SeaFloor over the LOD0 grass — the
-            // "wide bright beaches with hard seams", 2026-09-06). Keep the
-            // nearest level only; `TINY_ALL_LODS=1` restores the old behaviour.
-            if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() && !self.all_lods {
-                self.notes.push(format!("visual {} (lod mask {}) skipped: not the nearest level", g.visual_index, g.lod_mask));
+            // nearest). Every level is kept with its mask and the ladder's
+            // switch distances are written (scaled), so a coarser sheet only
+            // draws once the camera is far enough — before 2026-09-07 the
+            // item carried no distances and every level drew at once,
+            // coplanar (Beach: a coarse 22-vertex LOD1 sheet voted SeaFloor
+            // over the LOD0 grass = the "wide bright beaches with hard
+            // seams"), which is why the nearest level alone was kept;
+            // `TINY_LOD0_ONLY=1` restores that bake.
+            if lod0_only && coarser(g) {
+                self.notes.push(format!("visual {} (lod mask {}) skipped: not the nearest level (TINY_LOD0_ONLY)", g.visual_index, g.lod_mask));
                 continue;
             }
+            let lod = (g.lod_mask.max(0) as u32, part_ladder.clone());
             let vis = match s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) {
                 Some(Node::Visual(v)) => v,
                 _ => {
@@ -694,7 +889,34 @@ impl Merged {
                     continue;
                 }
             };
-            let mat = slots.get(g.material_index as usize).copied().flatten().unwrap_or_else(|| self.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
+            let mi = g.material_index.max(0) as usize;
+            let mut mat = slots.get(mi).copied().flatten().unwrap_or_else(|| self.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
+            let mut is_voted = voted.get(mi).copied().unwrap_or(false);
+            // A coarser level's sheet under a shared Techno3 id material that
+            // no collision triangle coincides with (Beach Base1A's LOD1 slope,
+            // 25 vertices: its triangles are coarser than the collision's) has
+            // no vote of its own and would resolve to the id-pass link; it
+            // paints its layers per vertex like LOD0 does, so the prefab's
+            // layer table (voted from LOD0) dresses it, starting from the
+            // table entry of its most common layer id.
+            let is_id_pass = |m: &Merged, slot: usize| m.materials.get(slot).and_then(|m| m.link()).map(|l| l.contains("_Ids")).unwrap_or(false);
+            if !is_voted && coarser(g) && is_id_pass(self, mat) && !layer_table.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
+                if let Some(eff) = effective_layer_ids(vis) {
+                    let mut counts: std::collections::BTreeMap<u32, usize> = Default::default();
+                    for id in &eff {
+                        if layer_table.contains_key(id) {
+                            *counts.entry(*id).or_default() += 1;
+                        }
+                    }
+                    if let Some((id, _)) = counts.into_iter().max_by_key(|(_, n)| *n) {
+                        mat = layer_table[&id];
+                        is_voted = true;
+                        self.notes.push(format!("visual {} (lod mask {}): unvoted shared-id material dressed from the layer table (id {id:x} -> {})", g.visual_index, g.lod_mask, self.materials[mat].link().unwrap_or("?").rsplit('\\').next().unwrap_or("?")));
+                    }
+                }
+            }
+            let mat = mat;
+            let is_voted = is_voted;
             // Techno3 "_Ids" materials are the terrain id/mask pass (Land Base
             // carries a 4-vertex `Tech3 Block PyPxz_Ids` quad over its Land
             // quad): no look of their own, and as an item material they draw
@@ -801,8 +1023,7 @@ impl Merged {
             // by the collision material under each triangle instead — one
             // sub-visual per coincident surface material, unmatched triangles
             // staying with the voted majority. `TINY_NO_SPLIT=1` disables.
-            let mi = g.material_index.max(0) as usize;
-            if voted.get(mi).copied().unwrap_or(false) && !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
+            if is_voted && !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
                 let (pos, idx) = visual_triangles(&v);
                 let ntri = idx.len() / 3;
                 // Per-triangle collision material (None where no collision
@@ -882,7 +1103,7 @@ impl Merged {
                         let has_color = sv.stream().map(|s| s.decls.iter().any(|d| d.name() == N_COLOR0)).unwrap_or(false);
                         let gm = if !has_color { self.plain_variant_slot(gm) } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
-                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: 1 });
+                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: lod.0, lod_ladder: lod.1.clone() });
                     }
                     continue;
                 }
@@ -893,15 +1114,14 @@ impl Merged {
                         // triangles — but keep the per-triangle answer)
                         transform_visual(&mut v, iso, scale)?;
                         visual_slots.push((self.visuals.len(), only));
-                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: 1 });
+                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: lod.0, lod_ladder: lod.1.clone() });
                         continue;
                     }
                 }
             }
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
-            let lod_mask = if self.all_lods && g.lod_mask > 0 { g.lod_mask as u32 } else { 1 };
-            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask });
+            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone() });
         }
         if let Some(sf) = so.surface() {
             match &sf.surf {
@@ -926,8 +1146,12 @@ impl Merged {
                 },
             }
         } else if so.is_mesh_collidable {
-            // Collide against the visuals themselves.
+            // Collide against the visuals themselves — the nearest level's
+            // (a coarser level is the same surface, coarser).
             for (vi, mat) in visual_slots {
+                if self.visuals[vi].lod_mask > 0 && self.visuals[vi].lod_mask & 1 == 0 {
+                    continue;
+                }
                 let v = &self.visuals[vi].visual;
                 let phys = self.materials[mat].physics();
                 let (pos, idx) = visual_triangles(v);
@@ -1255,15 +1479,49 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     if let Some(t) = m.vis_cst_type {
         s2.vis_cst_type = t;
     }
-    s2.lod_max_dist = m.lod_max_dist.clone();
     if let Some(u) = m.solid2_u07 {
         s2.u07 = u;
     }
     let mut pre = m.visuals.clone();
+    // The item's detail ladder (see `Merged::lod_max_dist`): the union of the
+    // parts' distances, sorted; every visual's mask moved onto it by range
+    // (`remap_lod_mask`). With `TINY_LOD0_ONLY` nothing but level 0 was
+    // merged and the ladder is empty. A tween mesh (`all_lods`) keeps the
+    // pack's ladder whole — five levels are what its draw path expects.
+    let mut ladder: Vec<f32> = if lod0_only() && !m.all_lods { Vec::new() } else { m.lod_max_dist.clone() };
+    if !m.all_lods {
+        cap_lod_ladder(&mut ladder, MAX_LOD_LEVELS - 1);
+    }
+    for mv in pre.iter_mut() {
+        mv.lod_mask = remap_lod_mask(mv.lod_mask, &mv.lod_ladder, &ladder);
+        mv.lod_ladder = ladder.clone();
+    }
+    // a level the cap folded away leaves its geoms with no bit: never drawn,
+    // so not written
+    let dropped = pre.iter().filter(|mv| mv.lod_mask == 0).count();
+    if dropped > 0 {
+        pre.retain(|mv| mv.lod_mask != 0);
+        if pre.is_empty() {
+            return Err("every visual fell off the capped detail ladder".into());
+        }
+    }
     if std::env::var_os("TINY_NO_HARMONIZE").is_none() {
         harmonize_layouts(&mut pre);
     }
     let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { pre } else { coalesce(&pre) };
+    // TINY_LOD_TEST=vanish: the ladder is written but only the nearest level's
+    // geoms are kept, masked to level 0 alone — an item that must DISAPPEAR
+    // past its first switch distance if the game honours an embedded item's
+    // detail ladder (the 2026-09-07 probe: LOD1..3 of a gate look like LOD0
+    // at 100 m, as they should, so a switch cannot be seen on the real geometry).
+    let visuals: Vec<MergedVisual> = match std::env::var("TINY_LOD_TEST").as_deref() {
+        Ok("vanish") => visuals.into_iter().filter(|mv| mv.lod_mask & 1 != 0).map(|mut mv| { mv.lod_mask = 1; mv }).collect(),
+        // TINY_LOD_TEST=far: the coarser levels only (no level-0 geom): invisible
+        // near if the game reads the masks, visible everywhere if it draws
+        // every geom regardless
+        Ok("far") => visuals.into_iter().filter(|mv| mv.lod_mask & 1 == 0).collect(),
+        _ => visuals,
+    };
     // TINY_ONLY_MATS=a,b: keep only the visuals whose material link ends with one of these (minimising a crasher)
     let visuals: Vec<MergedVisual> = match std::env::var("TINY_ONLY_MATS") {
         Ok(list) => visuals.into_iter().filter(|mv| { let l = m.materials[mv.material].link().unwrap_or(""); list.split(',').any(|s| !s.is_empty() && l.ends_with(s)) }).collect(),
@@ -1280,14 +1538,27 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             used.push(mv.material);
         }
     }
-    // Geoms in material order: the game reads the shaded-geom list as
-    // material-sorted runs (every Nadeo item and every item that ever loaded
-    // here is non-decreasing in material index; the first split terrain items
+    // Geom order. Nadeo's prefabs are LEVEL-major: every level-0 geom, then
+    // every level-1 geom, ... (GateArchCenterCheckpoint24m: lod1 x6, lod2
+    // x6, lod4 x5, lod8 x4, the materials in no particular order inside a
+    // level), so same-material geoms next to each other are always of one
+    // level — whatever draw merging the client does on a run of one material
+    // (the FORMAT-RULES declaration rule) never fuses two levels. Inside a
+    // level the geoms are material-sorted: every item that ever loaded here
+    // is non-decreasing in material index (the first split terrain items
     // with (0,1,2,0,1,2,3,4) crashed the client at 0x140456507 reading a
-    // garbage material index, 2026-09-06). Stable, so same-material visuals
+    // garbage material index, 2026-09-06), and a one-level item keeps
+    // exactly that order. `TINY_LOD_ORDER=material` sorts material-major
+    // instead (level minor). Stable, so same-material same-level visuals
     // keep their relative order.
     let mut visuals = visuals;
-    visuals.sort_by_key(|mv| used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX));
+    let level_of = |mask: u32| -> u32 { if mask == 0 { 0 } else { mask.trailing_zeros() } };
+    let material_major = std::env::var("TINY_LOD_ORDER").map(|v| v == "material").unwrap_or(false);
+    if material_major {
+        visuals.sort_by_key(|mv| (used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX), level_of(mv.lod_mask), mv.lod_mask));
+    } else {
+        visuals.sort_by_key(|mv| (level_of(mv.lod_mask), used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX), mv.lod_mask));
+    }
     let per_visual = std::env::var_os("TINY_MAT_PER_VISUAL").is_some();
     for mv in &visuals {
         let mut v = mv.visual.clone();
@@ -1325,6 +1596,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         s2.visuals.push(inline(*next, Node::Visual(v)));
         *next += if has_stream { 2 } else { 1 };
     }
+    s2.lod_max_dist = ladder;
     let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
@@ -1401,6 +1673,15 @@ fn dyna_form_common() -> bool {
     std::env::var("TINY_DYNA_FORM").map(|v| v == "common").unwrap_or(false)
 }
 
+/// `TINY_STATIC_FORM=prefab`: a static item laid out like the pack's own
+/// items — `CGameItemModel -> CPlugPrefab { CPlugStaticObjectModel }` — instead
+/// of the item editor's `CGameCommonItemEntityModel` wrapper (the 2026-09-07
+/// probe of which form the game reads a detail ladder from; no waypoint
+/// trigger in this form yet).
+fn static_form_prefab() -> bool {
+    std::env::var("TINY_STATIC_FORM").map(|v| v == "prefab").unwrap_or(false)
+}
+
 /// Build the whole item tree from the merged geometry.
 pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     use super::item::*;
@@ -1411,14 +1692,15 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
     // (its solid) like the reference items, a moving item hands indices out
     // in write order from 2
-    let mut next = if m.dyna.is_empty() { 4i32 } else { 2i32 };
+    let prefab_form = !m.dyna.is_empty() || static_form_prefab();
+    let mut next = if !prefab_form { 4i32 } else { 2i32 };
     let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
     // The static geometry: one static object (mesh + collision) — the whole
     // item when nothing moves, else one entity of the prefab.
     let static_object = if m.visuals.is_empty() {
         None
     } else {
-        let mesh_index = if m.dyna.is_empty() { 3 } else { next_index(&mut next) };
+        let mesh_index = if !prefab_form { 3 } else { next_index(&mut next) };
         let s2 = build_solid2(m, opts, &mut next)?;
         let surface_index = next_index(&mut next);
         Some(CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(m))) })
@@ -1445,7 +1727,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         expr_validator: 0,
         u_byte: 1,
     };
-    let entity_model: Ref = if m.dyna.is_empty() {
+    let entity_model: Ref = if m.dyna.is_empty() && !static_form_prefab() {
         let so = static_object.ok_or("no visuals: nothing to build")?;
         inline(1, Node::EntityModel(common(inline(2, Node::StaticObject(so)))))
     } else {
@@ -2034,7 +2316,7 @@ pub fn coalesce(visuals: &[MergedVisual]) -> Vec<MergedVisual> {
             Some((s.decls.iter().map(|d| (d.flags1, d.flags2)).collect(), m.chunk_flags, s.compress_local3d, v.chunks.clone()))
         };
         let k = key(&mv.visual);
-        let target = out.iter_mut().find(|o| o.material == mv.material && key(&o.visual) == k && k.is_some() && o.visual.main.as_ref().map(|m| m.count as usize).unwrap_or(0) + main.count as usize <= 65000);
+        let target = out.iter_mut().find(|o| o.material == mv.material && o.lod_mask == mv.lod_mask && o.lod_ladder == mv.lod_ladder && key(&o.visual) == k && k.is_some() && o.visual.main.as_ref().map(|m| m.count as usize).unwrap_or(0) + main.count as usize <= 65000);
         match target {
             None => out.push(mv.clone()),
             Some(o) => append_visual(&mut o.visual, &mv.visual),
@@ -2694,7 +2976,8 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     mesh.no_split = true;
     mesh.all_lods = true;
     mesh.vis_cst_type = Some(src.s2.vis_cst_type);
-    mesh.lod_max_dist = src.s2.lod_max_dist.clone();
+    // its ladder ([16, 64, 128, 512], five levels) is registered, scaled, by
+    // add_static_object like every part's
     mesh.solid2_u07 = Some(src.s2.u07);
     let mesh_ext = src.mesh_ext.clone();
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
@@ -3125,4 +3408,84 @@ pub fn drop_element(s: &mut super::vstream::CPlugVertexStream, name: u32) {
     }
     s.decls = decls;
     s.elems = elems;
+}
+
+#[cfg(test)]
+mod lod_tests {
+    use super::*;
+
+    fn geom(mask: i32) -> ShadedGeom {
+        ShadedGeom { visual_index: 0, material_index: 0, u01: -1, lod_mask: mask, u02: 0 }
+    }
+
+    #[test]
+    fn ladder_length_is_distances_plus_one_or_highest_bit() {
+        // RoadTech Straight_Air: [64, 128] with masks 1/2/4
+        assert_eq!(lod_levels_of(&[64.0, 128.0], &[geom(1), geom(2), geom(4)]), 3);
+        // Sparkler8m: [16, 128, 256] with masks 1/2/4 only — the 4th level is
+        // empty (culled past 256 m)
+        assert_eq!(lod_levels_of(&[16.0, 128.0, 256.0], &[geom(1), geom(2), geom(4)]), 4);
+        // a mask bit past the distances counts as an unbounded last level
+        assert_eq!(lod_levels_of(&[64.0], &[geom(1), geom(2), geom(4)]), 3);
+        // no ladder at all
+        assert_eq!(lod_levels_of(&[], &[geom(1), geom(1)]), 1);
+        assert_eq!(lod_levels_of(&[], &[geom(0)]), 1);
+    }
+
+    #[test]
+    fn masks_move_onto_the_merged_ladder_by_range() {
+        // a 3-level part [32, 64] on a 4-level item [32, 64, 128]: its last
+        // level (past 64) spans bits 2 and 3
+        assert_eq!(remap_lod_mask(1, &[32.0, 64.0], &[32.0, 64.0, 128.0]), 1);
+        assert_eq!(remap_lod_mask(2, &[32.0, 64.0], &[32.0, 64.0, 128.0]), 2);
+        assert_eq!(remap_lod_mask(4, &[32.0, 64.0], &[32.0, 64.0, 128.0]), 4 | 8);
+        // a 2-level part [32] on the same item
+        assert_eq!(remap_lod_mask(2, &[32.0], &[32.0, 64.0, 128.0]), 2 | 4 | 8);
+        // Flag16m: pole [8, 32, 256] + cloth [8, 32, 64, 256] -> [8, 32, 64, 256];
+        // the pole's third level (32..256) spans bits 2 and 3, its fourth
+        // (past 256) bit 4
+        let mut merged = Vec::new();
+        merge_lod_ladder(&mut merged, &[8.0, 32.0, 256.0]);
+        merge_lod_ladder(&mut merged, &[8.0, 32.0, 64.0, 256.0]);
+        assert_eq!(merged, vec![8.0, 32.0, 64.0, 256.0]);
+        assert_eq!(remap_lod_mask(4, &[8.0, 32.0, 256.0], &merged), 4 | 8);
+        assert_eq!(remap_lod_mask(8, &[8.0, 32.0, 256.0], &merged), 16);
+        assert_eq!(remap_lod_mask(8, &[8.0, 32.0, 64.0, 256.0], &merged), 8);
+        // a culled part (Sparkler8m: [8, 64, 128], geoms up to bit 2) stays
+        // culled past 128 on a longer ladder
+        assert_eq!(remap_lod_mask(4, &[8.0, 64.0, 128.0], &[8.0, 64.0, 128.0, 256.0]), 4);
+        // a one-level part, or mask 0: every level
+        assert_eq!(remap_lod_mask(1, &[], &[32.0, 64.0]), 7);
+        assert_eq!(remap_lod_mask(0, &[32.0], &[32.0, 64.0]), 7);
+        // a multi-bit mask
+        assert_eq!(remap_lod_mask(7, &[32.0, 64.0], &[32.0, 64.0, 128.0]), 15);
+        // same ladder: unchanged
+        assert_eq!(remap_lod_mask(4, &[32.0, 64.0], &[32.0, 64.0]), 4);
+        // merging ignores duplicates and keeps the order
+        let mut l = vec![32.0, 128.0];
+        merge_lod_ladder(&mut l, &[64.0, 128.0, 32.0]);
+        assert_eq!(l, vec![32.0, 64.0, 128.0]);
+    }
+
+    #[test]
+    fn ladders_are_capped_at_four_levels() {
+        // Flag16m's union [8, 32, 64, 256]: the closest step pair is
+        // (32, 64), the larger goes
+        let mut l = vec![8.0, 32.0, 64.0, 256.0];
+        cap_lod_ladder(&mut l, MAX_LOD_LEVELS - 1);
+        assert_eq!(l, vec![8.0, 32.0, 256.0]);
+        // the cloth [8, 32, 64, 256] on the capped ladder: its level 2
+        // (32..64) is active at the start of the merged level 32..256, so it
+        // draws through it; level 3 (64..256) is never drawn
+        assert_eq!(remap_lod_mask(4, &[8.0, 32.0, 64.0, 256.0], &l), 4);
+        assert_eq!(remap_lod_mask(8, &[8.0, 32.0, 64.0, 256.0], &l), 0);
+        assert_eq!(remap_lod_mask(16, &[8.0, 32.0, 64.0, 256.0], &l), 8);
+        // the pole [8, 32, 256] is exact on it
+        assert_eq!(remap_lod_mask(4, &[8.0, 32.0, 256.0], &l), 4);
+        assert_eq!(remap_lod_mask(8, &[8.0, 32.0, 256.0], &l), 8);
+        // a short ladder is left alone
+        let mut s = vec![32.0, 64.0];
+        cap_lod_ladder(&mut s, 3);
+        assert_eq!(s, vec![32.0, 64.0]);
+    }
 }

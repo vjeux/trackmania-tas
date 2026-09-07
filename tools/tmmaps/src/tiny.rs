@@ -1302,9 +1302,17 @@ pub fn lineup_cmd(args: &[String]) {
     let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
     if let Some(files) = cli::flag(args, "--items") {
         for file in files.split(',').filter(|s| !s.is_empty()) {
+            // `F.Item.Gbx*8`: the same embedded item eight times in the row
+            // (one pose each with --place) — a distance ladder of one model
+            let (file, copies) = match file.rsplit_once('*') {
+                Some((f, n)) if n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => (f, n.parse::<usize>().unwrap().max(1)),
+                _ => (file, 1),
+            };
             let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("--items {file}: {e}"));
             let (ident, author) = crate::header::item_ident_author(&bytes).unwrap_or_else(|| panic!("--items {file}: no item header ident"));
-            names.push(ident.clone());
+            for _ in 0..copies {
+                names.push(ident.clone());
+            }
             embedded.push((ident, author, bytes));
         }
     }

@@ -1839,11 +1839,11 @@ impl<'a> Graph<'a> {
         if version < 1 {
             return Ok(());
         }
-        self.r.array(|r| r.f32())?; // lodDistances
+        out.lod_max_dist = self.r.array(|r| r.f32())?; // lodDistances
         if version < 2 {
             return Ok(());
         }
-        let _vis_cst = self.r.u32()?;
+        out.vis_cst_type = self.r.u32()?;
         if version < 3 {
             return Ok(());
         }

@@ -33,6 +33,15 @@ pub struct Outcome {
     pub result: Result<String, String>,
 }
 
+/// The report's word on an item's detail ladder: `", 3 lod levels [32, 64]"`
+/// (switch distances in metres, already scaled), nothing for a one-level item.
+fn lod_summary(m: &crate::static_item::build::Merged) -> String {
+    if m.lod_max_dist.is_empty() || crate::static_item::build::lod0_only() {
+        return String::new();
+    }
+    format!(", {} lod levels [{}]", m.lod_max_dist.len() + 1, m.lod_max_dist.iter().map(|d| format!("{d:.0}")).collect::<Vec<_>>().join(", "))
+}
+
 /// Block models whose picked variant has neither a prefab nor a solid draw
 /// NOTHING of their own: the DecoWall / Platform family is rendered entirely
 /// by the generated face-clip fillers (`DecoWallSlope2StraightFCT`,
@@ -618,7 +627,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         re_emitted += 1;
                     }
                 }
-                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips);
+                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m));
                 if nv == 0 {
                     outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) });
                     continue;
@@ -726,7 +735,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 item_alias_n += 1;
                 let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
                 let moving = if m.dyna.is_empty() { String::new() } else { format!(", {} moving part(s)", m.dyna.len()) };
-                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
+                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), lod_summary(&m), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
                 for (file, dds) in &m.pictures {
                     pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());

@@ -123,9 +123,34 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         total_mats += s2.custom_materials.len();
         let nmat = s2.custom_materials.len();
         let mut used = vec![0usize; nmat];
-        let mut prev_mat = -1i32;
         if s2.shaded_geoms.is_empty() {
             problems.push("no shaded geoms".into());
+        }
+        // The detail ladder: `lod_max_dist` has one switch distance per level
+        // but the last, so `levels` levels; every geom's mask must name only
+        // those, every level must be drawn by something (else the item
+        // vanishes at that distance), the distances must climb.
+        let levels = s2.lod_max_dist.len() as u32 + 1;
+        let all_levels: u32 = if levels >= 32 { u32::MAX } else { (1u32 << levels) - 1 };
+        let mut level_geoms = vec![0usize; levels as usize];
+        let mut level_verts = vec![0usize; levels as usize];
+        for (k, d) in s2.lod_max_dist.iter().enumerate() {
+            if !(*d > 0.0) || (k > 0 && *d < s2.lod_max_dist[k - 1]) {
+                problems.push(format!("lod_max_dist {:?}: level {k} distance {d} not positive and non-decreasing", s2.lod_max_dist));
+            }
+        }
+        let level_of = |mask: i32| -> u32 { if mask <= 0 { 0 } else { (mask as u32).trailing_zeros() } };
+        // Order: level-major with the materials sorted inside a level (the
+        // pack prefabs' layout, ours since 2026-09-07), or material-major with
+        // the levels sorted inside a material (`TINY_LOD_ORDER=material`);
+        // a one-level item is material-sorted either way (SH rule: the first
+        // unsorted split items crashed the client reading a garbage index).
+        let keys: Vec<(u32, i32)> = s2.shaded_geoms.iter().map(|g| (level_of(g.lod_mask), g.material_index)).collect();
+        let level_major = keys.windows(2).all(|w| w[0] <= w[1]);
+        let material_major = keys.windows(2).all(|w| (w[0].1, w[0].0) <= (w[1].1, w[1].0));
+        if !level_major && !material_major {
+            let first_bad = keys.windows(2).position(|w| w[0] > w[1]).unwrap_or(0) + 1;
+            problems.push(format!("geom {first_bad}: (level, material) {:?} after {:?} — geoms sorted neither level-major nor material-major", keys[first_bad], keys[first_bad - 1]));
         }
         for (gi, g) in s2.shaded_geoms.iter().enumerate() {
             if g.material_index < 0 || g.material_index as usize >= nmat {
@@ -133,16 +158,37 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             } else {
                 used[g.material_index as usize] += 1;
             }
-            if g.material_index < prev_mat {
-                problems.push(format!("geom {gi}: material index {} after {} (geoms not sorted by material)", g.material_index, prev_mat));
-            }
-            prev_mat = g.material_index;
             if g.visual_index < 0 || g.visual_index as usize >= s2.visuals.len() {
                 problems.push(format!("geom {gi}: visual index {} of {}", g.visual_index, s2.visuals.len()));
             }
-            if g.lod_mask != 1 {
-                problems.push(format!("geom {gi}: lod mask {}", g.lod_mask));
+            if g.lod_mask <= 0 || (g.lod_mask as u32) & !all_levels != 0 {
+                problems.push(format!("geom {gi}: lod mask {:#x} outside the {levels}-level ladder {:?}", g.lod_mask, s2.lod_max_dist));
             }
+            let nverts = s2.visuals.get(g.visual_index.max(0) as usize).and_then(|r| r.inline.as_deref()).and_then(|n| match n { super::Node::Visual(v) => v.main.as_ref().map(|m| m.count.max(0) as usize), _ => None }).unwrap_or(0);
+            for k in 0..levels {
+                if g.lod_mask > 0 && (g.lod_mask as u32) & (1 << k) != 0 {
+                    level_geoms[k as usize] += 1;
+                    level_verts[k as usize] += nverts;
+                }
+            }
+        }
+        // An empty LAST level is Nadeo's cull idiom (Sparkler8m: distances
+        // [16, 128, 256] but masks 1/2/4 only — the sparkler is not drawn
+        // past 256 m; 2 of the 93 laddered pack models surveyed 2026-09-07 do
+        // this); an empty level BEFORE a drawn one would make the item blink
+        // out and back in with distance.
+        let last_drawn = level_geoms.iter().rposition(|n| *n > 0);
+        for (k, n) in level_geoms.iter().enumerate() {
+            if *n == 0 && last_drawn.map(|l| k < l).unwrap_or(false) {
+                problems.push(format!("detail level {k} of {levels} is drawn by no geom while level {} is (the item blinks out between {} and {} m)", last_drawn.unwrap_or(0), s2.lod_max_dist.get(k.saturating_sub(1)).copied().unwrap_or(0.0), s2.lod_max_dist.get(k).copied().unwrap_or(f32::INFINITY)));
+            }
+        }
+        if facts {
+            let cull = match last_drawn {
+                Some(l) if l + 1 < levels as usize => format!(", culled beyond {} m", s2.lod_max_dist.get(l).copied().unwrap_or(0.0)),
+                _ => String::new(),
+            };
+            println!("{path}: {levels} detail level(s), switch distances {:?}, geoms per level {:?}, vertices per level {:?}{cull}", s2.lod_max_dist, level_geoms, level_verts);
         }
         for (mi, n) in used.iter().enumerate() {
             if *n == 0 {
