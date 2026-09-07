@@ -242,6 +242,9 @@ pub struct Merged {
     /// A gameplay gate's kind (`Turbo2`, `Boost`, …) from its own
     /// `<Kind>.TerrainModifier.Gbx`; the sign panels' logo (signlogo.rs).
     pub gate_kind: Option<String>,
+    /// A DecoPlatform block: its `Deco` material is drawn as the coloured
+    /// platform plastic (`PlatformTech`), the way the game shows it.
+    pub deco_as_platform: bool,
     /// Picture files the item's custom-texture materials name, to ride in
     /// the library archive next to the item: (file name, DDS bytes).
     pub pictures: Vec<(String, Vec<u8>)>,
@@ -494,6 +497,8 @@ impl Merged {
             }
             None => (link, physics),
         };
+        // a DecoPlatform block's `Deco` is the coloured platform plastic
+        let (link, physics) = if self.deco_as_platform && link == "Stadium\\Media\\Material\\Deco" { ("Stadium\\Media\\Material\\PlatformTech", 16u8) } else { (link, physics) };
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
             Some(stem) if !self.modifier.is_empty() => {

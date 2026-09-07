@@ -674,6 +674,13 @@ pub fn cmd(args: &[String]) {
     // authored structures (pillar feet, screen caps, wall faces) -- become
     // items too; the baked chunk itself is rewritten to all-Sea below.
     let mut baked_items = 0usize;
+    // cell -> colour of the authored (non-free) block there, for the fillers
+    let cell_colors: BTreeMap<(i32, i32, i32), u8> = source
+        .blocks
+        .iter()
+        .filter(|b| b.free_rot.is_none() && colors.block(b.index) != 0)
+        .map(|b| ((b.raw_coords[0] as i32, b.raw_coords[1] as i32, b.raw_coords[2] as i32), colors.block(b.index)))
+        .collect();
     for b in &source.baked {
         let Some(map) = mapping.baked_by_index.get(&b.index) else { continue };
         if map.model == "-" {
@@ -690,7 +697,31 @@ pub fn cmd(args: &[String]) {
         };
         baked_items += 1;
         let pos = transform(origin, source_anchor, target_anchor, scale);
-        let color = std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or(colors.baked(b.index));
+        // A generated filler's colour byte is 0 in the file: the game paints
+        // it with the authored block it finishes (Summer 20 cp3: the
+        // PlatformSlope2StartFCRightSmall filler is red plastic in the
+        // original, a white bar across the tiny road with colour 0). So a
+        // colourless filler takes the colour of its cell's authored block,
+        // else its vertical, else its horizontal neighbours (the modifier
+        // inheritance of tiny-library, cell for cell). TINY_BAKED_COLOR=N forces one.
+        let color = std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+            let own = colors.baked(b.index);
+            if own != 0 || b.free_rot.is_some() {
+                return own;
+            }
+            let c = (b.raw_coords[0] as i32, b.raw_coords[1] as i32, b.raw_coords[2] as i32);
+            let at = |dx: i32, dy: i32, dz: i32| -> Option<u8> { cell_colors.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).copied() };
+            let vote = |offsets: &[(i32, i32, i32)]| -> Option<u8> {
+                let mut votes: BTreeMap<u8, usize> = BTreeMap::new();
+                for &(dx, dy, dz) in offsets {
+                    if let Some(col) = at(dx, dy, dz) {
+                        *votes.entry(col).or_insert(0) += 1;
+                    }
+                }
+                votes.into_iter().max_by_key(|(_, n)| *n).map(|(col, _)| col)
+            };
+            at(0, 0, 0).or_else(|| vote(&[(0, 1, 0), (0, -1, 0)])).or_else(|| vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])).unwrap_or(0)
+        });
         specs.push(Spec {
             model: map.model.clone(),
             pos,
@@ -714,8 +745,8 @@ pub fn cmd(args: &[String]) {
     // list; an original item's slot (the GateStart items of 15/19/20/25) must
     // keep its record in place for the lookback table, so it is parked
     // under the map without its tag and a copy carries the start at the end.
-    // `TINY_START_LAST=0` keeps the source order for A/B.
-    if std::env::var("TINY_START_LAST").map(|v| v != "0").unwrap_or(true) {
+    // REFUTED the same afternoon (fp2: 02 spawned at the Goal, 20 at a checkpoint; the engine picks a FIXED item slot per map, the player project is locating the chunk that names it) — off unless `TINY_START_LAST=1`.
+    if std::env::var("TINY_START_LAST").map(|v| v == "1").unwrap_or(false) {
         let idx = specs.iter().position(|s| s.tag.as_deref() == Some("Spawn")).unwrap();
         if idx >= original_items {
             let s = specs.remove(idx);
@@ -728,26 +759,6 @@ pub fn cmd(args: &[String]) {
             copy.tag = Some("Spawn".to_string());
             specs.push(copy);
         }
-    }
-
-    // THE START IS THE LAST NON-GOAL WAYPOINT RECORD. The dedicated server (and
-    // the game) picks the map's start by ITEM-FILE ORDER, not by the waypoint
-    // type of the model, not by the placement's tag, not by position: the last
-    // waypoint placement that is not a Goal wins. Measured by the player
-    // project on a scratch copy of Summer 02 (2026-09-07): moving the Spawn
-    // record last put the engine start exactly on the Spawn item; moving it
-    // first left the start on a checkpoint 158 m away. Our natural emission
-    // order is the source's (blocks then items, in cell order), which put a
-    // checkpoint last on 23 of the 25 maps — the car started mid-track, and
-    // the checkpoint counter began at whatever it had already crossed.
-    // So the Spawn spec is moved to the END of the list; the Goal records that
-    // follow it in the source order do not matter (they are Goals), but keeping
-    // Spawn strictly last is the simplest rule that cannot be re-broken by a
-    // later change to emission order.
-    if let Some(at) = specs.iter().position(|s| s.tag.as_deref() == Some("Spawn")) {
-        let spawn = specs.remove(at);
-        println!("  start placement moved to the end of the item order (record {at} -> {}): the engine takes the LAST non-Goal waypoint as the start", specs.len());
-        specs.push(spawn);
     }
 
     let tmp0 = out.with_extension(format!("tiny-{}.slots.Map.Gbx", std::process::id()));

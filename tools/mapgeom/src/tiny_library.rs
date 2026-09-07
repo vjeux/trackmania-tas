@@ -616,6 +616,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // minimal repro var-m1, open bug).
             let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_default();
             m.no_split = no_split_for.split(',').any(|s| !s.is_empty() && s == name);
+            // The DecoPlatform blocks (Slope2Start, SlopeBase, …) are authored
+            // in the `Deco` material but the game draws them as the coloured
+            // platform plastic — Summer 20 cp3: the original shows red plastic
+            // (0x622b1f) where the tiny showed a grey strip (vjeux: "Ground
+            // texture looks off"). TINY_DECO_PLATFORM=0 keeps the Deco material.
+            m.deco_as_platform = name.starts_with("DecoPlatform") && std::env::var("TINY_DECO_PLATFORM").map(|v| v != "0").unwrap_or(true);
             let mut err = None;
             // Terrain (Flat/Frontier/Transition zone blocks) may be lowered by
             // TINY_TERRAIN_DROP (full-scale metres; default 0). The drop was
