@@ -146,3 +146,84 @@ alone.
 * `pred_core::Summary` gained `lag_max_ms` (§2) — `SUMMARY_BYTES` is 152. Shim
   and driver share the file, so both sides moved together.
 * Interface for the RL env (`branch::Forest`): unchanged; `watched: false`.
+
+### Windows at 25 / 50 / 75 / 90 % of the tape (2-minute searches, 24 workers, seed 42, baseline and ladder concurrent)
+
+| window (ticks) | baseline evals | ladder evals | ratio |
+|---|---|---|---|
+| 736–796 (25 %) | 63 060 | 88 500 | 1.40× |
+| 1301–1361 (50 %) | 54 930 | 132 180 | 2.41× |
+| 1867–1927 (75 %) | 46 350 | 117 090 | 2.53× |
+| 2206–2266 (90 %) | 45 210 | 198 270 | **4.39×** |
+
+Every candidate in these runs forked from a node (100 %); 24–33 nodes made per
+run. The baseline gets SLOWER as the window moves later because a late edit
+drives the whole track and finishes, while an early edit crashes the car and
+makes the rest of its ticks cheap — the same effect as in the per-depth table.
+
+---
+
+## 2. The incumbent-lag predicate — `lag:ms=X`
+
+### What
+
+A candidate that reaches a point of the incumbent's line X ms after the
+incumbent did is not going to beat it. That is the checkpoint split, judged at
+every tick instead of at the checkpoints: the reference line the watchdog
+already tracks is indexed by the incumbent's own tape tick, so the index of the
+nearest point IS the tick the incumbent was here, and `10 × (tick − index)` ms
+is how far behind the candidate is running. `pred_core::K_LAG`, one arm in the
+same `feed` the other five predicates live in; judged only inside the corridor
+(off the line the index means nothing, and `offref` is watching there);
+`need` defaults to 10 consecutive ticks so one tick of tracking jitter is not
+a verdict. `Summary::lag_max_ms` records the maximum lag of EVERY run, armed or
+not, which is how the threshold is measured rather than chosen.
+
+Score safety is the same argument as for every other predicate: aborting only
+removes ticks, progress is a maximum over ticks, so `progress(aborted) ≤
+progress(unarmed)` and a dead candidate cannot displace a live one. Measured
+below, 2000/2000 at both checkpoints.
+
+### Proof (`fk watch measure`, map 2 rank00001, 2000 candidates of the search's own operators over the whole editable tape, seed 7)
+
+The unarmed distribution of `lag_max_ms` by outcome is the control that sets X:
+
+| outcome (unarmed) | n | median | p90 | max lag |
+|---|---|---|---|---|
+| faster than the incumbent | 19 (tick 171) / 49 (tick 1200) | 0 ms | 0 ms | **0 ms** |
+| same ms or up to +50 | 458 / 643 | 0 | 30–40 | 60 ms |
+| +50 .. +200 ms | 70 / 131 | 80–90 | 160–170 | 200 ms |
+| +200 ms or worse | 55 / 87 | 480–550 | 1400–1570 | 2020 ms |
+| did not finish | 1398 / 1090 | 5490–7000 | 7760–20510 | 23470 ms |
+
+No candidate that beat the incumbent was ever behind it; nothing within +50 ms
+was ever more than 60 ms behind. So X = 100 ms has a 40 ms margin above the
+whole "+50 or better" class, X = 200 ms a 140 ms margin. Armed:
+
+| checkpoint | set | aborted | `lag` fired | faster-than-incumbent aborted | armed ms/cand | speedup vs observing | aborted after (% of tail) |
+|---|---|---|---|---|---|---|---|
+| tick 171 | crash+stuck+off | 64.6 % | — | — | 41.75 | 1.328× | 49 % |
+| tick 171 | + `lag:ms=200` | 65.7 % | 41.1 % | **0** | 39.86 | 1.394× | 44 % |
+| tick 171 | + `lag:ms=100` | 66.0 % | 48.4 % | **0** | 39.14 | 1.418× | 43 % |
+| tick 1200 | crash+stuck+off | 41.7 % | — | — | 29.45 | 1.142× | 57 % |
+| tick 1200 | + `lag:ms=200` | 43.6 % | 26.2 % | **0** | 28.29 | 1.196× | 48 % |
+
+Exactness 0 differ armed vs unarmed on the non-tripping candidates, 0 disagree
+with the full validation, 0 perturbed by watching, score safety 2000/2000 in
+every row. Honest reading of the gain: the predicate mostly fires EARLIER on
+candidates `crash`/`off` would have caught later — it moves the average abort
+from 49 % to 43 % of the tail and takes 4–7 % off the armed cost per
+candidate. It is a small lever with a measured zero false-positive rate, not a
+large one.
+
+### What to run
+
+`--pred behind:lag:ms=100,need=10,after=200` beside the shipped three, for an
+improvement-only search. With Metropolis annealing keep X at least twice the
+temperature in ms (a +100 ms candidate is accepted with probability e^(−100/T)),
+or the predicate kills what the temperature would have taken.
+
+### What was deleted
+
+Nothing was replaced; the predicate set gained a kind. `SUMMARY_BYTES` grew from
+148 to 152 for `lag_max_ms` (shim and driver share the file).
