@@ -758,11 +758,22 @@ fn cmd_verdict(args: &[String]) -> Result<(), String> {
     }
     println!("{:<40} {:<18} {:>4} {:>4} {}", "file", "verdict", "cps", "ncp", "server said");
     let mut missing = 0;
+    let mut past_end = 0;
     for f in &files {
         let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        // The tape's own end, so a finish AFTER it can be marked: the engine
+        // drives on past the last record on whatever memory holds, and the
+        // time it then reports depends on the rest of the batch (SEARCH.md §3).
+        let end_ms: Option<i64> = gbx::tape::Tape::from_file(&f.to_string_lossy())
+            .ok()
+            .and_then(|t| t.archives.first().map(|a| a.start_offset_ms as i64 + 10 * a.packets.len() as i64));
         match batch.answers.iter().find(|a| a.file == name) {
             Some(a) => {
                 let verdict = match a.verdict() {
+                    Some(tmauto::Verdict::Finish { ms }) if end_ms.map(|e| ms as i64 > e).unwrap_or(false) => {
+                        past_end += 1;
+                        format!("{} AFTER-TAPE", tmauto::Verdict::Finish { ms }.secs())
+                    }
                     Some(v) => v.secs(),
                     None => "REFUSED".to_string(),
                 };
@@ -787,6 +798,13 @@ fn cmd_verdict(args: &[String]) -> Result<(), String> {
                 println!("{:<40} {:<18} {:>4} {:>4} {}", name, "NOT READ", "-", "-", "the server reported nothing for this file");
             }
         }
+    }
+    if past_end > 0 {
+        eprintln!(
+            "\n{} file(s) finished AFTER their own tape ended (marked AFTER-TAPE). The engine drove on \
+             past the last record; that time depends on the rest of the batch and is not a result.",
+            past_end
+        );
     }
     if missing > 0 {
         return Err(format!("{} file(s) were not read by the server", missing));

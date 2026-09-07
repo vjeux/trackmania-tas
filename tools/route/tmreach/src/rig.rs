@@ -9,7 +9,6 @@
 use branch::{Advanced, Forest, Handle, TraceCfg, ROOT};
 use fk::session::{Checkpoint, Engine, Session};
 use fk::tape::Tape;
-use fk::validator::ValidatorCar;
 use forkoracle::forksrv::{rec_of, Rec};
 use forkoracle::layout::Row;
 use std::path::{Path, PathBuf};
@@ -30,14 +29,16 @@ pub struct Rolled {
 }
 
 pub struct Worker {
-    forest: Forest,
+    pub forest: Forest,
     pub tape: Tape,
     /// The root's probed consumed boundary: the first tick the root has NOT
     /// consumed.
     pub root_probe: usize,
     pub root_row: Row,
     pub ghost: PathBuf,
-    pub car: ValidatorCar,
+    pub car: forkoracle::car::Car,
+    /// The server module base (for re-deriving the car in a paused child).
+    pub module_base: u64,
     /// Wall time to launch the server, resolve the car and probe.
     pub startup_s: f64,
     /// Race time of a row = its label + this. MEASURED by the identity control
@@ -46,6 +47,12 @@ pub struct Worker {
     /// of `forkoracle::layout`, never a shift of the run). Until measured: the
     /// tick hook's own race clock at the root.
     pub label_shift: i64,
+    /// How many times the layout followed the live vehicle to another slot (car-switch maps).
+    pub car_switches: usize,
+    /// The map has car-switch gates (walks and rollouts go in 50-tick chunks so the layout follows the live vehicle).
+    pub car_switch_map: bool,
+    /// The telemetry time origin minus the label convention (0 unless the recorder was off).
+    pub telemetry_offset_ms: i64,
     /// The root's race time as the tick hook reports it (sim_ms − race_start), if
     /// in tick mode.
     pub root_race_ms_hook: Option<i64>,
@@ -130,16 +137,22 @@ impl Worker {
         let tape = Tape::load(&ghost.to_string_lossy())?;
         tape.codec_is_lossless()?;
         let mut s = Session::start(&engine, tape.clone(), Checkpoint::Clock(clock))?;
-        let probe = s.probe_tick()?;
+        let _probe = s.probe_tick()?;
         let recs = s.tape.tail_records(0);
-        let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-        let car = ValidatorCar::locate(&mut s.srv, probe, &recs, s.tape.start_offset_ms, wide, 40_000, verbose)?;
+        // THE CAR IS DERIVED (forkoracle::car::locate, the locate arm's single derivation for
+        // everyone): controller -> sim -> playground -> participant -> the driven vehicle slot.
+        let car = forkoracle::car::locate(&s.srv)?;
+        if verbose {
+            println!("car: {car}");
+        }
+        let module_base = forkoracle::car::module_base(s.srv.pid()).unwrap_or(0);
         let dir = work.join("traces");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+        let cfg = TraceCfg { layout: car.layout_with_engine(), dir, stride: 1, max: 400_000 };
         let hook = Some(s.srv.sim_ms as i64 - s.srv.race_start as i64);
+        let start_offset_ms = tape.start_offset_ms;
         let Session { srv, .. } = s;
-        let mut forest = Forest::new(srv, work, recs, Some(cfg))?;
+        let mut forest = Forest::new(srv, work, recs, Some(cfg), start_offset_ms)?;
         let root_probe = forest.probe_root()?;
         // The root's own state, captured once (a7aa56c ForkEnv::new).
         let (rows, h) = forest.advance(ROOT, &[], 0, 1)?;
@@ -154,8 +167,12 @@ impl Worker {
             root_row,
             ghost: ghost.to_path_buf(),
             car,
+            module_base,
             startup_s: t0.elapsed().as_secs_f64(),
             label_shift: 10,
+            telemetry_offset_ms: 0,
+            car_switches: 0,
+            car_switch_map: !car_switch_blocks(map).is_empty(),
             root_race_ms_hook: hook,
         })
     }
@@ -178,24 +195,24 @@ impl Worker {
         let mut all: Vec<Row> = Vec::new();
         let mut h = ROOT;
         let mut left = ticks;
-        for _ in 0..64 {
+        for _ in 0..400 {
             // tree::Node::branch checks `from` against the floor even for an
             // empty write, so a chained chunk is addressed at the floor.
             let from = if h == ROOT { 0 } else { self.forest.floor(h, None)? };
             let ask = if left <= 60 {
                 if to_end { left + 400 } else { left }
             } else {
-                ((left as f64 * 0.9) as u64).clamp(1, 1500)
+                ((left as f64 * 0.9) as u64).clamp(1, self.switch_chunk().unwrap_or(1500))
             };
-            let (rows, c) = match self.forest.advance_or_end(h, &[], from, ask)? {
-                Advanced::Node(mut rows, c) => {
+            let (rows, c) = match self.advance_following(h, &[], from, ask)? {
+                (mut rows, Some(c)) => {
                     drop_stale_tail(&mut rows);
                     if std::env::var("TMREACH_SEAMS").is_ok() {
                         eprintln!("seam: chunk rows {} .. {}", rows.first().map(|r| r.time_ms).unwrap_or(0), rows.last().map(|r| r.time_ms).unwrap_or(0));
                     }
                     (rows, c)
                 }
-                Advanced::RunEnded(rows) => {
+                (rows, None) => {
                     all.extend(rows);
                     h = ROOT;
                     break;
@@ -242,7 +259,74 @@ impl Worker {
     /// Fork `h`, write `recs` from `from`, run `k` ticks, read the rows, and
     /// destroy the child. One rollout. `exited` = the child ran the race to its
     /// end (finish, or out of tape) instead of pausing.
+    /// Before a fork from `h`: is the participant's LIVE vehicle still the one the layout
+    /// points at? A car-switch gate (Spring 2026 - 12: Rally) moves it; the layout's car block
+    /// and vis are re-pointed (clock and counter stay). Lifted from tmenv::forkenv
+    /// (player 4197027d), per the coordinator: one mechanism, not two. Returns whether it moved.
+    pub fn follow_live_car(&mut self, h: Handle) -> Result<bool, String> {
+        if !self.car_switch_map {
+            return Ok(false);
+        }
+        let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
+        let pid = self.forest.pid_of(h)?;
+        let (sim_ms, race_start) = self.forest.clock_of(h)?;
+        // THE SAME DERIVATION AS AT THE ROOT, in this process (tmenv::forkenv::follow_live_car,
+        // player 9f81d1d0): the driven slot is the one the copy-out loop does not skip.
+        let car = match forkoracle::car::resolve_with(self.car.controller, self.car.sim, self.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)) {
+            Ok(c) => c,
+            // inside a respawn window or before the spawn the derivation names no body
+            Err(_) => return Ok(false),
+        };
+        if car.pos() == cur.pos {
+            return Ok(false);
+        }
+        let mut l = car.layout_with_engine();
+        // the clock word and its bias never change within a process
+        l.clock = cur.clock;
+        l.clock_bias = cur.clock_bias;
+        self.forest.set_layout(l)?;
+        self.car_switches += 1;
+        Ok(true)
+    }
+
     pub fn rollout(&mut self, h: Handle, recs: &[Rec], from: usize, k: u64) -> Result<Rolled, String> {
+        let _ = self.follow_live_car(h)?;
+        // a car-switch map: 50-tick chunks, the layout re-pointed at the live vehicle between them
+        if let Some(chunk) = self.switch_chunk() {
+            if k > chunk {
+                let mut all: Vec<Row> = Vec::new();
+                let mut cur = h;
+                let mut done: u64 = 0;
+                let mut exited = false;
+                while done < k {
+                    let step = chunk.min(k - done);
+                    let lo = done as usize;
+                    let hi = ((done + step) as usize).min(recs.len());
+                    let part: &[Rec] = if lo < recs.len() { &recs[lo..hi] } else { &[] };
+                    match self.advance_following(cur, part, from + lo, step)? {
+                        (rows, Some(c)) => {
+                            all.extend(rows);
+                            if cur != h {
+                                self.forest.release(cur);
+                            }
+                            cur = c;
+                        }
+                        (rows, None) => {
+                            all.extend(rows);
+                            exited = true;
+                            break;
+                        }
+                    }
+                    done += step;
+                }
+                if cur != h {
+                    self.forest.release(cur);
+                }
+                // dedup keep-last per clock across chunk seams
+                all.dedup_by_key(|r| r.time_ms);
+                return Ok(Rolled { rows: all, exited });
+            }
+        }
         match self.forest.advance_or_end(h, recs, from, k)? {
             Advanced::Node(mut rows, c) => {
                 self.forest.release(c);
@@ -255,6 +339,7 @@ impl Worker {
 
     /// Like `rollout` but keep the child alive (for chained macros / explore).
     pub fn rollout_keep(&mut self, h: Handle, recs: &[Rec], from: usize, k: u64) -> Result<(Vec<Row>, Handle), String> {
+        let _ = self.follow_live_car(h)?;
         self.forest.advance(h, recs, from, k)
     }
 
@@ -341,5 +426,104 @@ pub fn extrapolate_exit(rows: &mut Vec<Row>) {
             r.z += last.vz * 0.01 * k as f64;
             rows.push(r);
         }
+    }
+}
+
+impl Worker {
+    /// Race time of the tape's last record (the run continues on heap contents after it).
+    pub fn race_of_tick_end(&self) -> i64 {
+        (self.n_ticks() as i64 - 1) * 10 + self.tape.start_offset_ms as i64 + self.label_shift
+    }
+}
+
+/// Blocks/items that switch the car (Snow/Rally/Desert gameplay gates) — the
+/// same test as tmenv::track::car_switch_blocks (player 4197027d).
+pub fn car_switch_blocks(map: &Path) -> Vec<String> {
+    let mf = match tmmaps::map::MapFile::try_load(map) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let is_switch = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        l.contains("gameplay") && (l.contains("snow") || l.contains("rally") || l.contains("desert"))
+    };
+    let mut out: Vec<String> = Vec::new();
+    for b in mf.blocks.iter().chain(mf.baked.iter()) {
+        if is_switch(&b.name) && !out.contains(&b.name) {
+            out.push(b.name.clone());
+        }
+    }
+    for it in &mf.items {
+        if is_switch(&it.model) && !out.contains(&it.model) {
+            out.push(it.model.clone());
+        }
+    }
+    out
+}
+
+impl Worker {
+    /// Chunk length for walks and rollouts: 50 ticks on a car-switch map (the
+    /// layout follows the live vehicle between chunks; rows after a switch
+    /// inside a chunk are stale), else the caller's own.
+    pub fn switch_chunk(&self) -> Option<u64> {
+        if self.car_switch_map { Some(50) } else { None }
+    }
+}
+
+impl Worker {
+    /// Advance `k` ticks from `h` with `recs`, and if the participant's live
+    /// vehicle changed during it (a car-switch gate), redo the stretch from `h`
+    /// ONE TICK AT A TIME so every row is read from the vehicle that was live at
+    /// that tick (the layout follows between ticks). Returns the rows and the
+    /// new node (`None` when the engine ended the run). `h` is kept.
+    pub fn advance_following(&mut self, h: Handle, recs: &[Rec], from: usize, k: u64) -> Result<(Vec<Row>, Option<Handle>), String> {
+        let _ = self.follow_live_car(h)?;
+        let before = self.forest.layout().map(|l| l.pos);
+        let (rows, node) = match self.forest.advance_or_end(h, recs, from, k)? {
+            Advanced::Node(rows, c) => (rows, Some(c)),
+            Advanced::RunEnded(rows) => (rows, None),
+        };
+        let moved = match node {
+            Some(c) => self.follow_live_car(c)?,
+            None => false,
+        };
+        if !moved || !self.car_switch_map {
+            return Ok((rows, node));
+        }
+        // the car switched inside this stretch: redo it tick by tick from `h`
+        if let Some(c) = node {
+            self.forest.release(c);
+        }
+        // restore the layout that was live at `h` (the node's own vehicle at fork time)
+        if let (Some(p), Some(mut l)) = (before, self.forest.layout().cloned()) {
+            if l.pos != p {
+                let _ = self.follow_live_car(h)?; // re-derives from h's live vehicle
+                l = self.forest.layout().cloned().unwrap_or(l);
+                let _ = l;
+            }
+        }
+        let mut all: Vec<Row> = Vec::new();
+        let mut cur = h;
+        for i in 0..k as usize {
+            let part: &[Rec] = if i < recs.len() { &recs[i..i + 1] } else { &[] };
+            let _ = self.follow_live_car(cur)?;
+            match self.forest.advance_or_end(cur, part, from + i, 1)? {
+                Advanced::Node(rows, c) => {
+                    all.extend(rows);
+                    if cur != h {
+                        self.forest.release(cur);
+                    }
+                    cur = c;
+                }
+                Advanced::RunEnded(rows) => {
+                    all.extend(rows);
+                    if cur != h {
+                        self.forest.release(cur);
+                    }
+                    return Ok((all, None));
+                }
+            }
+        }
+        Ok((all, Some(cur)))
     }
 }

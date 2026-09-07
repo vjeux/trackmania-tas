@@ -19,3 +19,4 @@ fk = { path = "../../fk/fk" }
 ghost = { path = "../../ghost" }
 gbx = { path = "../../gbx" }
 tmmaps = { path = "../../tmmaps" }
+tmstate = { path = "../../rl/tmstate" }

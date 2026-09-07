@@ -289,13 +289,33 @@ pub fn parse_many(text: &str) -> Vec<SimResult> {
 /// but the `Desc` says `reached some checkpoints (2 out of 2)`, and a search
 /// ladder that ranks DNFs by depth needs exactly that number. Reading it out of
 /// the sentence is not elegant; losing it is worse.
+///
+/// **A DNF the server describes WITHOUT a count passed none**, and that is a
+/// measurement, not a gap: `wrong simu` means the simulation diverged from the
+/// file's declared result, and the plain oracle cannot see a lone checkpoint at
+/// all (it reports k>=2 only). So the answer is `Some(0)` -- a LOWER BOUND, and
+/// the fork path says so explicitly by reading the engine's own counter
+/// instead (`participant+0xc70`, TICKHOOK.md 12.1).
+///
+/// Returning `None` here made this disagree with the fork on every such DNF --
+/// same verdict, different Option -- which is not a difference any consumer
+/// should have to reconcile: `fk tree exact` compared the two literally and
+/// failed 0 of 240 rows that agreed about everything real.
 fn cps_from_desc(desc: &str) -> Option<u32> {
-    let i = desc.find("checkpoint")?;
-    let rest = &desc[i..];
-    let open = rest.find('(')?;
-    let close = rest[open..].find(')')? + open;
-    rest[open + 1..close]
-        .split_whitespace()
-        .next()
-        .and_then(|v| v.parse::<u32>().ok())
+    if desc.is_empty() {
+        return None;
+    }
+    let count = (|| {
+        let i = desc.find("checkpoint")?;
+        let rest = &desc[i..];
+        let open = rest.find('(')?;
+        let close = rest[open..].find(')')? + open;
+        rest[open + 1..close]
+            .split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<u32>().ok())
+    })();
+    // described, but with no number in it: zero checkpoints is what this
+    // oracle can attest to
+    Some(count.unwrap_or(0))
 }

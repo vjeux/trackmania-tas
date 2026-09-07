@@ -2,10 +2,13 @@
 //!
 //! # What a tree node is
 //!
-//! The classic fork server has one fork point. Every candidate is a child that
+//! The root fork server has one fork point. Every candidate is a child that
 //! rewrites the tail of the input array, runs to the finish, prints a time and
 //! dies. Anything the child learned on the way is lost, so reaching a state
 //! 2000 ticks in costs a full re-simulation of those 2000 ticks, every time.
+//! (The tape search no longer pays that: `crate::ladder` keeps nodes along the
+//! tape being edited and forks each candidate from the deepest one that agrees
+//! with it — PERF.md §1.)
 //!
 //! A **node** is a fork child that stops after a few ticks and re-enters the
 //! fork server itself, on a socket of its own. It is a savestate: a paused
@@ -41,14 +44,22 @@
 //! asked for **by the pid the node names in its own handshake**.
 
 use crate::forksrv::{
-    parse_probe, payload_branch, payload_probe, payload_run, read_frame, write_frame,
-    BranchReq, Rec,
+    parse_probe, payload_branch, payload_probe, payload_run, payload_watched, read_frame,
+    write_frame, BranchReq, Rec,
 };
 use std::os::raw::c_int;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
 extern "C" {
+    fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
     fn kill(pid: c_int, sig: c_int) -> c_int;
 }
 const SIGKILL: c_int = 9;
@@ -100,7 +111,8 @@ impl Tree {
             match self.listener.accept() {
                 Ok((s, _)) => break s,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
                         return Err(format!(
                             "no branch node connected within {} ms -- the child either never \
                              reached its stop point or could not reach {}",
@@ -108,7 +120,16 @@ impl Tree {
                             self.path.display()
                         ));
                     }
-                    std::thread::sleep(std::time::Duration::from_micros(200));
+                    // Wait for the connection itself, not for a timer: this used
+                    // to sleep 200 us between attempts, which put up to 200 us
+                    // (and the scheduler's slack) between a node's hello and
+                    // the driver seeing it, on every branch (PERF.md §11).
+                    let left = (deadline - now).as_millis().min(i32::MAX as u128) as i32;
+                    unsafe {
+                        use std::os::fd::AsRawFd;
+                        let mut p = PollFd { fd: self.listener.as_raw_fd(), events: 1, revents: 0 };
+                        poll(&mut p, 1, left.max(1));
+                    }
                 }
                 Err(e) => return Err(format!("accept: {}", e)),
             }
@@ -337,11 +358,56 @@ impl Node {
         self.boundary = Some(tape_len);
     }
 
+    /// THE BOUNDARY FROM THE NODE'S OWN CLOCK. The engine copies record
+    /// `record_read_at(sim_ms, race_start, start_offset)` at the tick it is
+    /// stopped in front of (`forkoracle::clock`, the engine's own rule
+    /// transcribed), and `sim_ms` and `race_start` are what this node said in
+    /// its hello. Measured against the page-fault probe on 2015 nodes -- three
+    /// maps, k = 1..200, fresh and chained, a countdown checkpoint, and 155
+    /// nodes inside and just past the 31 respawn windows of YOU LOVE WATER --
+    /// residual 0 on every one (PERF.md §11, `fk tree clockprobe`). The probe
+    /// stays as the control: `Forest` runs it on a sample of nodes and aborts
+    /// on any disagreement.
+    pub fn clock_boundary(&self, start_offset_ms: i32) -> usize {
+        crate::clock::record_read_at(self.sim_ms, self.race_start, start_offset_ms).max(0) as usize
+    }
+
+    /// Adopt the clock's boundary as this node's.
+    pub fn adopt_clock_boundary(&mut self, start_offset_ms: i32) -> usize {
+        let b = self.clock_boundary(start_offset_ms);
+        self.boundary = Some(b);
+        b
+    }
+
     /// Fork a child that runs the tape to the finish and returns the
     /// validator's JSON. The node itself is untouched and can be forked again.
     pub fn run(&mut self, from: usize, recs: &[Rec]) -> Result<String, String> {
         self.check_forward(from, recs.len())?;
         self.request(&payload_run(from, recs))
+    }
+
+    /// As [`Node::run`], with the armed watchdog evaluated in the child every
+    /// tick: the validator's JSON (empty when the child aborted itself) and
+    /// the summary block. The watchdog is armed on the ROOT server, once, and
+    /// every node inherits it; a node made with `BranchReq::watched` also
+    /// carries the evaluator's state up to its own tick, so the child's run
+    /// is the continuation of one watched run from the root, not a cold start.
+    pub fn run_watched(&mut self, from: usize, recs: &[Rec]) -> Result<(String, Vec<u8>), String> {
+        self.check_forward(from, recs.len())?;
+        if self.dead {
+            return Err("this node has been destroyed".into());
+        }
+        write_frame(&mut self.sock, &payload_watched(from, recs))
+            .map_err(|e| format!("node {}: {}", self.pid, e))?;
+        let json = match read_frame(&mut self.sock) {
+            Some(v) => String::from_utf8_lossy(&v).into_owned(),
+            None => {
+                self.dead = true;
+                return Err(format!("node {} stopped answering", self.pid));
+            }
+        };
+        let sum = read_frame(&mut self.sock).unwrap_or_default();
+        Ok((json, sum))
     }
 
     /// Fork a child that appends and becomes a node of its own.

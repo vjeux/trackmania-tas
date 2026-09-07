@@ -28,3 +28,5 @@ pub mod oraclectl;
 pub mod human;
 pub mod gateprobe;
 pub mod fitbox;
+pub mod explore;
+pub mod effects;

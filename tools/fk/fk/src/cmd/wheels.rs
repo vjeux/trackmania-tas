@@ -107,11 +107,12 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: WheelsOpts) -> Result
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let recs = s.tape.tail_records(probe);
-    let world = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let car = crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, s.tape.start_offset_ms, world, 4000, false)
-        .map_err(|e| format!("the validator's ownership chain did not resolve: {}", e))?;
-    let lay = car.layout().clone();
-    let prov = car.provenance().clone();
+    let _ = &recs;
+    // The car is DERIVED (LOCATE.md), not located: the same objects the old
+    // validator chain named, without the sweep.
+    let car = forkoracle::car::locate(&s.srv).map_err(|e| format!("the car did not derive: {}", e))?;
+    let lay = car.layout();
+    let prov = Prov { participant: car.participant, playground: car.playground, sim: car.sim, controller: car.controller, vehicle: car.phy };
     let pid = s.srv.pid();
     println!(
         "validator car: CGameVehiclePhy {:#x}, position {:#x} (vehicle+{:#x}); clock {:#x} bias {:+}; probe tick {} (race {})",
@@ -280,7 +281,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: WheelsOpts) -> Result
 /// validator's participant, playground and sim objects (and a window around
 /// the stale vehicle) for 8-byte pointers equal to `state - 0x848` (the phy
 /// object, if the layout is the stadium car's) or to `state` itself.
-pub fn find_owner(pid: i32, prov: &crate::validator::ValidatorCarProvenance, state: u64) {
+pub fn find_owner(pid: i32, prov: &Prov, state: u64) {
     let phy = state.wrapping_sub(0x848);
     let targets = [("state", state), ("state-0x848 (phy?)", phy)];
     let regions: [(&str, u64, usize); 4] = [
@@ -310,7 +311,7 @@ pub fn find_owner(pid: i32, prov: &crate::validator::ValidatorCarProvenance, sta
 
 /// Dump the participant's vehicle-slot region as pointers/ids: what changes at a
 /// car transform. `participant+0x1100 .. +0x1200`.
-pub fn dump_slots(pid: i32, prov: &crate::validator::ValidatorCarProvenance) {
+pub fn dump_slots(pid: i32, prov: &Prov) {
     if let Some(buf) = procmem::read_at(pid, prov.participant + 0x1100, 0x100) {
         let mut o = 0;
         while o + 8 <= buf.len() {
@@ -330,7 +331,7 @@ pub fn dump_slots(pid: i32, prov: &crate::validator::ValidatorCarProvenance) {
 /// packs to the ghost's samples is known by then; this prints, for every slot,
 /// the phy pointer and its position, and every u32 in the participant that
 /// equals a slot index (0..3) — the candidates for the "current car" field.
-pub fn slots_report(pid: i32, prov: &crate::validator::ValidatorCarProvenance, live_phy: u64) {
+pub fn slots_report(pid: i32, prov: &Prov, live_phy: u64) {
     let mut live_slot: Option<usize> = None;
     for k in 0..4usize {
         let at = prov.participant + 0x1118 + 0x10 * k as u64;
@@ -359,7 +360,7 @@ pub fn slots_report(pid: i32, prov: &crate::validator::ValidatorCarProvenance, l
 
 /// Every 8-byte-aligned word in writable memory equal to `target`, printed
 /// relative to the validator objects when inside one of them.
-pub fn pointer_holders(pid: i32, prov: &crate::validator::ValidatorCarProvenance, target: u64, label: &str) {
+pub fn pointer_holders(pid: i32, prov: &Prov, target: u64, label: &str) {
     let mut n = 0;
     for r in procmem::maps(pid) {
         if !r.perms.starts_with("rw") || r.path == "[vvar]" || r.path == "[vsyscall]" || r.path == "[stack]" {
@@ -387,7 +388,7 @@ pub fn pointer_holders(pid: i32, prov: &crate::validator::ValidatorCarProvenance
 /// Offsets inside the CGameVehiclePhy where the LIVE slot's u32 differs from
 /// the other three slots (which agree among themselves): candidates for an
 /// "active" flag that would identify the live car without a position test.
-pub fn live_flag_candidates(pid: i32, prov: &crate::validator::ValidatorCarProvenance, live_phy: u64) {
+pub fn live_flag_candidates(pid: i32, prov: &Prov, live_phy: u64) {
     let mut phys = Vec::new();
     for k in 0..4usize {
         let at = prov.participant + 0x1118 + 0x10 * k as u64;
@@ -410,4 +411,15 @@ pub fn live_flag_candidates(pid: i32, prov: &crate::validator::ValidatorCarProve
         o += 4;
     }
     println!("  live-only u32 fields in the phy ({} of them): {}", out.len(), out.join("; "));
+}
+
+/// The validator objects the reports below print addresses relative to
+/// (what `ValidatorCarProvenance` used to carry; now read off `forkoracle::car::Car`).
+pub struct Prov {
+    pub participant: u64,
+    pub playground: u64,
+    pub sim: u64,
+    pub controller: u64,
+    /// The driven vehicle's `CGameVehiclePhy`.
+    pub vehicle: u64,
 }

@@ -47,6 +47,7 @@ pub mod core;
 pub mod forkenv;
 pub mod geom;
 pub mod template;
+pub mod sanity;
 pub mod track;
 
 pub use action::{Act, ActionSpace};

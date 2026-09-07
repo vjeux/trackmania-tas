@@ -7,7 +7,7 @@ use crate::macros::{build, Built, Macro};
 use crate::rig::{dist, pos, speed, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
-use crate::tmr::{CarState, Record, OUTCOME_ABORTED, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OFFWORLD, OUTCOME_OK};
+use crate::tmr::{CarState, FromRow, Record, OUTCOME_ABORTED, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OFFWORLD, OUTCOME_OK};
 use branch::Handle;
 use forkoracle::layout::Row;
 use std::sync::Arc;
@@ -22,6 +22,8 @@ pub struct FanoutCfg {
     pub floor_y: f64,
     /// Keep the per-tick rows of every rollout (for endpoints/plots). Costly.
     pub keep_rows: bool,
+    /// A longer horizon on a subsample of starts: (ticks, every k-th start).
+    pub long_horizon: Option<(u16, usize)>,
 }
 
 /// One savestate, as the fan-out actually used it.
@@ -56,7 +58,11 @@ pub struct Stats {
     pub unattributed: usize,
     /// Geometric crossings the engine did not credit.
     pub geometric_only: usize,
+    /// Finishes credited from the child's exit + geometry (the counter step was among the lost samples).
+    pub finish_from_exit: usize,
     pub distinct_cells: Vec<usize>,
+    /// Distinct end cells per start, per macro family.
+    pub family_cells: std::collections::BTreeMap<String, Vec<usize>>,
     pub switches: usize,
     pub rollout_secs: f64,
 }
@@ -64,6 +70,8 @@ pub struct Stats {
 pub struct GhostFanout {
     pub starts: Vec<StartRow>,
     pub records: Vec<Record>,
+    /// Parallel to `records`: the 4 sampled path points (TMP4 sidecar).
+    pub paths: Vec<[crate::tmr::PathPoint; crate::tmr::TMP4_POINTS]>,
     pub stats: Stats,
     /// (start index, macro, horizon, end position) for endpoints.tsv
     pub endpoints: Vec<(u32, u16, u16, [f32; 3])>,
@@ -139,7 +147,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         v.sort();
         v.into_iter().map(|(_, wp)| wp).collect()
     };
-    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new(), human_legs: 0, human_respawns: 0 };
+    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new(), human_legs: 0, human_respawns: 0, paths: Vec::new() };
     out.log.push(format!("{}: human gate order by detector {:?}", w.ghost.display(), human_order));
     let max_h = *cfg.horizons.iter().max().unwrap_or(&300) as usize;
 
@@ -194,10 +202,17 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         let start_id = start_id_base + this_index;
         let mut start_state: Option<CarState> = None;
         let mut cells: std::collections::HashSet<(i64, i64, i64)> = Default::default();
+        let mut fam_cells: std::collections::BTreeMap<&str, std::collections::HashSet<(i64, i64, i64)>> = Default::default();
         let flat_at = |label: i64| flat.iter().find(|r| r.time_ms == label);
         let airborne = flat_at(start_label).map(|r| r.vy.abs() > 2.0).unwrap_or(false);
+        let mut horizons: Vec<u16> = cfg.horizons.clone();
+        if let Some((lh, k)) = cfg.long_horizon {
+            if (this_index as usize) % k == 0 && f + lh as usize <= n {
+                horizons.push(lh);
+            }
+        }
 
-        for &h in &cfg.horizons {
+        for &h in &horizons {
             let h = h as usize;
             let base: Vec<(u8, u8, u8)> = (f..f + h).map(|t| (w.tape.steer[t], w.tape.accel[t], w.tape.brake[t])).collect();
             for m in cfg.lib.iter() {
@@ -210,7 +225,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 };
                 let t0 = std::time::Instant::now();
                 let ask = (h as f64 * 1.08) as u64 + 12;
-                let rolled = match w.rollout(new_node, &recs, f, ask) {
+                let mut rolled = match w.rollout(new_node, &recs, f, ask) {
                     Ok(r) => r,
                     Err(e) => {
                         out.log.push(format!("  start {start_id} macro {} h {h}: {e}", m.id));
@@ -241,11 +256,35 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                         }
                     }
                 }
+                if rolled.exited {
+                    // the last samples of an exiting child are lost: extend at constant velocity so a
+                    // finish crossing at the exit is in the rows (its end row is then ±3 ticks run to run)
+                    crate::rig::extrapolate_exit(&mut rolled.rows);
+                }
                 let win: Vec<Row> = rolled.rows.iter().filter(|r| r.time_ms >= first_label && r.time_ms <= end_label).cloned().collect();
                 let complete = win.last().map(|r| r.time_ms == end_label).unwrap_or(false);
                 // credits: the ENGINE counter says how many and when, the geometry says which
                 let cr = det.credits(gates, &win, &credited, 5);
-                let first = cr.gate_row.clone();
+                let mut first = cr.gate_row.clone();
+                // THE RACE ENDED (the child exited) with every checkpoint group credited and the
+                // geometry crossing a finish gate in the rows (the last ~5 samples of an exiting
+                // child are lost, the finish step among them, run to run): that IS the finish.
+                if rolled.exited && cr.engine {
+                    // DETERMINISM: whether the counter step at the finish is among the flushed rows
+                    // varies run to run, so an exit-finish is ALWAYS placed at the geometric crossing
+                    // row (the engine credits 1-2 ticks later); the record's outcome is finished
+                    let geo = det.first_crossings(gates, &win, &credited);
+                    let fin_geo = gates.gates.iter().enumerate().find(|(gi, g)| g.kind == GateKind::Finish && geo[*gi] >= 0).map(|(gi, _)| gi);
+                    if let Some(fgi) = fin_geo {
+                        let all_cps = gates.gates.iter().enumerate().filter(|(_, g)| g.kind != GateKind::Finish && g.kind != crate::gates::GateKind::Start).all(|(gi, _)| credited[gi] || first[gi] >= 0);
+                        if all_cps {
+                            if first[fgi] < 0 {
+                                out.stats.finish_from_exit += 1;
+                            }
+                            first[fgi] = geo[fgi];
+                        }
+                    }
+                }
                 if !cr.engine {
                     out.stats.no_counter += 1;
                 }
@@ -292,12 +331,30 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                     }
                 }
                 let start_speed = start_state.map(|s| s.speed as f64).unwrap_or(0.0);
-                let (mut outcome, path, vmin, vmax) = classify(&win, start_speed, cfg.floor_y, rolled.exited && !complete, finished_gate);
+                // a FINISHED rollout is classified over its rows up to the finish crossing (the rows
+                // past it are however many the exiting child flushed, run to run)
+                let finish_idx0 = if finished_gate { first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).map(|(_, t)| *t as usize) } else { None };
+                let win_cls: &[Row] = match finish_idx0 {
+                    Some(i) if i < win.len() => &win[..=i],
+                    _ => &win,
+                };
+                let (mut outcome, path, vmin, vmax) = classify(win_cls, start_speed, cfg.floor_y, rolled.exited && !complete, finished_gate);
                 if !complete && !rolled.exited {
                     outcome = OUTCOME_ABORTED;
                 }
                 out.stats.outcomes[outcome as usize] += 1;
-                let end_row = win.last().cloned();
+                // a FINISHED rollout ends at its finish-crossing row (the rows past it
+                // are however many the exiting child flushed: 0..3, run to run)
+                let finish_idx = if finished_gate { first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).map(|(_, t)| *t as usize) } else { None };
+                let end_row = match finish_idx {
+                    Some(i) => win.get(i).cloned(),
+                    None => win.last().cloned(),
+                };
+                // the sampled path ends where the record does
+                let win_eff: &[Row] = match finish_idx {
+                    Some(i) if i < win.len() => &win[..=i],
+                    _ => &win,
+                };
                 let Some(end_row) = end_row else {
                     out.stats.errors += 1;
                     out.log.push(format!("  start {start_id} macro {} h {h}: no rows in the window", m.id));
@@ -315,9 +372,12 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                     }
                 }
                 let end = CarState::from_row(&end_row, w.race_of(&end_row), cps_before + n_new as u8, finished_gate || (rolled.exited && !complete));
-                cells.insert(((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64));
+                let cell = ((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64);
+                cells.insert(cell);
+                fam_cells.entry(m.shape.family()).or_default().insert(cell);
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
                 out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });
+                out.paths.push(crate::tmr::path4(win_eff, &|r| w.race_of(r)));
             }
         }
         let Some(st) = start_state else {
@@ -326,6 +386,9 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         };
         out.starts.push(StartRow { start_id, ghost_md5: tel.md5.clone(), tick: f, state: st, cps_before });
         out.stats.distinct_cells.push(cells.len());
+        for (fam, c) in &fam_cells {
+            out.stats.family_cells.entry(fam.to_string()).or_default().push(c.len());
+        }
         if cells.len() <= 2 {
             out.stats.switches += 1;
             out.log.push(format!("  start {start_id} (tick {f}, {:.1} m/s): only {} distinct end cells over {} macros -- a switch, not a fan", st.speed, cells.len(), cfg.lib.len()));
@@ -344,6 +407,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
             out.human_respawns = h.respawns;
             out.starts.extend(h.starts);
             out.records.extend(h.records);
+            out.paths.extend(h.paths);
             out.log.extend(h.log);
         }
         Err(e) => out.log.push(format!("  human legs FAILED: {e}")),

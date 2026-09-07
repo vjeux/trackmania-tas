@@ -57,6 +57,7 @@ impl Gate {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct MapGates {
     pub map_uid: String,
     pub map_name: String,
@@ -94,8 +95,21 @@ impl MapGates {
     }
 
     pub fn load_geom(p: &Path) -> Result<MapGates, String> {
-        let txt = std::fs::read_to_string(p).map_err(|e| format!("{}: {}", p.display(), e))?;
-        let j = crate::json::parse(&txt).map_err(|e| format!("{}: {}", p.display(), e))?;
+        // gates.json lives on a network mount the GEOM arm rewrites: a read can catch a
+        // partial file ("unterminated string", seen three times). Re-read up to 5 times,
+        // 2 s apart, then fail closed.
+        let mut j = Err(String::new());
+        for attempt in 0..5 {
+            let txt = std::fs::read_to_string(p).map_err(|e| format!("{}: {}", p.display(), e))?;
+            j = crate::json::parse(&txt).map_err(|e| format!("{}: {}", p.display(), e));
+            if j.is_ok() {
+                break;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+        let j = j?;
         fn need<'a>(v: Option<&'a Json>, p: &Path, what: &str) -> Result<&'a Json, String> {
             v.ok_or_else(|| format!("{}: missing {}", p.display(), what))
         }
@@ -200,6 +214,9 @@ pub struct Detector {
     pub per_model: Vec<(String, Trigger)>,
     pub default: Trigger,
     pub provenance: String,
+    /// Gates whose GEOM normal points AGAINST the humans' travel (measured at
+    /// their crossings): the detector uses the negated normal for these.
+    pub flipped: Vec<u32>,
 }
 
 impl Detector {
@@ -238,11 +255,16 @@ impl Detector {
             }
         }
         // a group already credited (-1) or credited in the rollout: keep only the
-        // FIRST gate of a group credited in the rollout
+        // FIRST gate of a group credited in the rollout; two gates of one group
+        // entered on the same row (a car on the seam of two adjacent 32 m gates,
+        // Summer 2026 - 04) keep the lower waypoint only
+        let mut group_taken: std::collections::HashSet<u32> = Default::default();
         for (gi, g) in gates.gates.iter().enumerate() {
             if g.kind != GateKind::Finish && out[gi] >= 0 {
                 if let Some(first) = group_row.get(&g.group) {
                     if *first >= 0 && out[gi] != *first {
+                        out[gi] = -1;
+                    } else if !group_taken.insert(g.group) {
                         out[gi] = -1;
                     }
                 }
@@ -268,13 +290,24 @@ impl Detector {
                 }
             }
         }
+        // THE RACE ENDS AT THE FIRST FINISH CROSSING: any finish gate of any finish
+        // group ends it (Summer 2026 - 04 has 9 finish gates in 3 groups), so only the
+        // earliest finish crossing stands and nothing after it is a crossing
+        let race_end = gates.gates.iter().enumerate().filter(|(gi, g)| g.kind == GateKind::Finish && out[*gi] >= 0).map(|(gi, _)| out[gi]).min();
+        if let Some(end) = race_end {
+            for (gi, g) in gates.gates.iter().enumerate() {
+                if out[gi] > end || (out[gi] == end && g.kind == GateKind::Finish && gates.gates.iter().enumerate().any(|(gj, gg)| gj < gi && gg.kind == GateKind::Finish && out[gj] == end)) {
+                    out[gi] = -1;
+                }
+            }
+        }
         out
     }
 
     /// JSON, for `detector.json` beside the dataset.
     pub fn to_json(&self) -> String {
         let mut s = String::from("{\n  \"detector_version\": 1,\n  \"frame\": \"gate frame: s along GEOM normal from centre, lat horizontal, up = y - centre.y; car CENTRE (CGameVehiclePhy state pos)\",\n");
-        s.push_str(&format!("  \"provenance\": {},\n  \"default\": {},\n  \"per_model\": [\n", crate::json::quote(&self.provenance), trig_json(&self.default)));
+        s.push_str(&format!("  \"provenance\": {},\n  \"flipped_waypoints\": [{}],\n  \"default\": {},\n  \"per_model\": [\n", crate::json::quote(&self.provenance), self.flipped.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", "), trig_json(&self.default)));
         for (i, (m, t)) in self.per_model.iter().enumerate() {
             s.push_str(&format!("    {{\"model\": {}, \"trigger\": {}}}{}\n", crate::json::quote(m), trig_json(t), if i + 1 < self.per_model.len() { "," } else { "" }));
         }
@@ -297,10 +330,12 @@ impl Detector {
         for e in j.get("per_model").and_then(|v| v.arr()).ok_or("per_model")? {
             per_model.push((e.get("model").and_then(|v| v.str()).ok_or("model")?.to_string(), trig(e.get("trigger").ok_or("trigger")?)?));
         }
+        let flipped = j.get("flipped_waypoints").and_then(|v| v.arr()).map(|a| a.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()).unwrap_or_default();
         Ok(Detector {
             per_model,
             default: trig(j.get("default").ok_or("default")?)?,
             provenance: j.get("provenance").and_then(|v| v.str()).unwrap_or("").to_string(),
+            flipped,
         })
     }
 }
@@ -372,6 +407,22 @@ impl Detector {
                     }
                 }
             }
+            // platform blocks credit ~20 rows after the GEOM plane: a wider window before the
+            // centre fallback
+            for win in [win, 30] {
+                if best.is_some() {
+                    break;
+                }
+                for gi in 0..ng {
+                    if taken[gi] || geo[gi] < 0 {
+                        continue;
+                    }
+                    let d = (geo[gi] as i64 - s as i64).abs();
+                    if d as usize <= win && best.map(|(_, b)| d < b).unwrap_or(true) {
+                        best = Some((gi, d));
+                    }
+                }
+            }
             if best.is_none() {
                 // any uncredited gate whose trigger contains a row near the step
                 for gi in 0..ng {
@@ -379,8 +430,8 @@ impl Detector {
                         continue;
                     }
                     let t = self.trigger_for(&gates.gates[gi]);
-                    let lo = s.saturating_sub(win);
-                    let hi = (s + win).min(rows.len() - 1);
+                    let lo = s.saturating_sub(30);
+                    let hi = (s + 30).min(rows.len() - 1);
                     if let Some(i) = (lo..=hi).find(|&i| t.inside(&gates.gates[gi], [rows[i].x, rows[i].y, rows[i].z])) {
                         let d = (i as i64 - s as i64).abs();
                         if best.map(|(_, b)| d < b).unwrap_or(true) {
@@ -414,5 +465,33 @@ impl Detector {
         }
         let geometric_only = (0..ng).filter(|&gi| geo[gi] >= 0 && gate_row[gi] < 0 && !already[gi]).collect();
         Credits { gate_row, unattributed, geometric_only, engine: true }
+    }
+}
+
+impl MapGates {
+    /// Negate the normals of the detector's flipped gates (idempotent per load).
+    pub fn apply_flips(&mut self, det: &Detector) {
+        self.apply_flip_list(&det.flipped);
+    }
+
+    pub fn apply_flip_list(&mut self, flipped: &[u32]) {
+        for g in &mut self.gates {
+            if flipped.contains(&g.waypoint) {
+                g.normal = [-g.normal[0], -g.normal[1], -g.normal[2]];
+            }
+        }
+    }
+
+    /// Gates whose normal points against the humans' travel at their crossings:
+    /// `vel_at_crossing` = (waypoint, velocity) per crossing.
+    pub fn against_travel(&self, vel_at_crossing: &[(u32, [f64; 3])]) -> Vec<u32> {
+        let mut out = Vec::new();
+        for g in &self.gates {
+            let dots: Vec<f64> = vel_at_crossing.iter().filter(|(w, _)| *w == g.waypoint).map(|(_, v)| v[0] * g.normal[0] + v[1] * g.normal[1] + v[2] * g.normal[2]).collect();
+            if !dots.is_empty() && dots.iter().filter(|d| **d < 0.0).count() * 2 > dots.len() {
+                out.push(g.waypoint);
+            }
+        }
+        out
     }
 }

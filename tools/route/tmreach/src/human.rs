@@ -12,7 +12,7 @@ use crate::gates::{Detector, GateKind, MapGates};
 use crate::rig::{speed, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
-use crate::tmr::{CarState, Record, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OK};
+use crate::tmr::{CarState, FromRow, Record, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OK};
 use forkoracle::layout::Row;
 
 pub const HUMAN_MACRO: u16 = 65535;
@@ -21,6 +21,7 @@ pub const RESPAWN_MACRO: u16 = 65534;
 pub struct HumanOut {
     pub starts: Vec<crate::fanout::StartRow>,
     pub records: Vec<Record>,
+    pub paths: Vec<[crate::tmr::PathPoint; crate::tmr::TMP4_POINTS]>,
     pub legs: usize,
     pub respawns: usize,
     pub log: Vec<String>,
@@ -52,11 +53,57 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     // the flat run exits at the finish; the crossing row may be missing
     crate::rig::extrapolate_exit(&mut flat);
     let ng = gates.gates.len();
-    let first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
+    let mut first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
+    let mut synth_finish = false;
+    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new(), paths: Vec::new() };
+    // A finishing ghost whose finish step is among the samples the exiting
+    // child lost (0..5, run to run): the declared time is the finish, so the
+    // finish leg ends at the row of race floor10(declared) — the row whose tick
+    // the counter credits — synthesised when it is within 0.5 s past the trace.
+    if let Some(decl) = w.tape.declared_ms {
+        for (gi, g) in gates.gates.iter().enumerate() {
+            // DETERMINISM: whether the finish step is captured varies run to run, so the
+            // finish leg's end row is ALWAYS the declared-time row with the ghost's own
+            // telemetry position/velocity (cm-level vs the engine row), never the flushed rows
+            if g.kind == GateKind::Finish {
+                let want = decl as i64 - (decl as i64 % 10); // the row whose tick the counter credits (p00001: notice 19538 → step row race 19.530)
+                if let Some(i) = flat.iter().position(|r| w.race_of(r) == want) {
+                    // only when the counter shows every checkpoint credited (or the finish itself)
+                    if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 >= ng).unwrap_or(false) {
+                        // DETERMINISM: the rows near the exit are however many the child flushed
+                        // (0..5) plus extrapolation; anchor the finish row on the row 200 ms
+                        // before the finish, extrapolated at constant velocity, run to run
+                        // DETERMINISM: the engine rows near the exit are however many the child flushed;
+                        // the ghost's OWN telemetry (50 ms samples, Hermite to 1 ms) gives the finish
+                        // position deterministically; velocity from the telemetry over ±10 ms
+                        // (the telemetry ends AT the declared time: velocity by a backward difference)
+                        // (the telemetry's last sample can be up to 50 ms before the finish: the
+                        // position is extrapolated from it at its own velocity, deterministically)
+                        let te = tel.end_ms().min(want + w.telemetry_offset_ms);
+                        if let (Some(p), Some(pm)) = (tel.pos_at(te), tel.pos_at(te - 20)) {
+                            let v = [(p[0] - pm[0]) / 0.02, (p[1] - pm[1]) / 0.02, (p[2] - pm[2]) / 0.02];
+                            let dt = (want + w.telemetry_offset_ms - te) as f64 / 1000.0;
+                            let mut r = flat[i].clone();
+                            r.x = p[0] + v[0] * dt;
+                            r.y = p[1] + v[1] * dt;
+                            r.z = p[2] + v[2] * dt;
+                            r.vx = v[0];
+                            r.vy = v[1];
+                            r.vz = v[2];
+                            flat[i] = r;
+                        } else {
+                            out.log.push(format!("  finish leg: no telemetry at race {} -- engine row kept (may differ run to run)", crate::secs(want)));
+                        }
+                        synth_finish = first[gi] < 0;
+                        first[gi] = i as i32;
+                    }
+                }
+            }
+        }
+    }
     let mut events: Vec<(usize, usize)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (*t as usize, gi)).collect();
     events.sort();
     let respawns = respawn_ticks(&w.ghost);
-    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new() };
     // race-0 row index
     let race0 = flat.iter().position(|r| w.race_of(r) >= 0).unwrap_or(0);
     let mut leg_start = race0;
@@ -86,6 +133,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
             let _ = outcome0;
             let end = CarState::from_row(&flat[rr], w.race_of(&flat[rr]), cps, false);
             out.starts.push(mk_start(st, cps, start_id, w, tel));
+            out.paths.push(crate::tmr::path4(win, &|r| w.race_of(r)));
             out.records.push(Record {
                 start_id,
                 macro_id: RESPAWN_MACRO,
@@ -111,10 +159,11 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         }
         let end = CarState::from_row(&flat[row_idx], w.race_of(&flat[row_idx]), cps + 1, finished);
         out.starts.push(mk_start(st, cps, start_id, w, tel));
+        out.paths.push(crate::tmr::path4(win, &|r| w.race_of(r)));
         out.records.push(Record {
             start_id,
             macro_id: HUMAN_MACRO,
-            horizon_ticks: (row_idx - leg_start).min(65535) as u16,
+            horizon_ticks: (row_idx - leg_start + 1).min(65535) as u16,
             outcome: if finished { OUTCOME_FINISHED } else { OUTCOME_OK },
             end,
             gate_tick,
@@ -128,12 +177,13 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         leg_start = row_idx;
     }
     out.log.push(format!(
-        "{}: {} legs, {} respawn negatives ({} respawn presses in the tape), gates in order {:?}",
+        "{}: {} legs, {} respawn negatives ({} respawn presses in the tape), gates in order {:?}{}",
         w.ghost.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         out.legs,
         out.respawns,
         respawns.len(),
-        first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (gates.gates[gi].waypoint, crate::secs(w.race_of(&flat[*t as usize])))).collect::<Vec<_>>()
+        first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (gates.gates[gi].waypoint, crate::secs(w.race_of(&flat[*t as usize])))).collect::<Vec<_>>(),
+        if synth_finish { " (finish leg from the declared time: its counter step was among the exiting child's lost samples)" } else { "" }
     ));
 
     Ok(out)

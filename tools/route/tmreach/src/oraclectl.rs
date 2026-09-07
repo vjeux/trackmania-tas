@@ -38,11 +38,18 @@ pub struct Case {
     pub det_finished: bool,
     /// RACE time (label + shift) of the detector's finish-crossing row, if any.
     pub det_finish_ms: Option<i64>,
+    /// The finish falls AFTER the tape's own last record: the engine ran on heap contents
+    /// and the plain oracle's answer is batch-dependent (perf arm, 2026-09-07) -- its own class.
+    pub finish_after_tape: bool,
+    /// Race time of the tape's last record (the oracle's finish past it is the same class).
+    pub tape_end_ms: i64,
     /// Closest approach (m) to any gate the detector did NOT credit in the rollout.
     pub near_miss_m: f64,
     pub near_miss_gate: Option<u32>,
     pub rows: usize,
     pub exited: bool,
+    /// Rows the child traced past the assumed adjudication window (declared + grace).
+    pub rows_past_cut: usize,
     pub oracle_cps: Option<u32>,
     pub oracle_ms: Option<i64>,
     pub oracle_desc: String,
@@ -110,11 +117,13 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             }
             // the oracle adjudicates nothing later than the grace after the DECLARED time
             let cut = w.label_of_race(w.tape.declared_ms.unwrap_or(u32::MAX / 2) as i64 + ADJUDICATION_GRACE_MS);
+            let rows_past_cut = rolled.rows.iter().filter(|r| r.time_ms > cut).count();
             rolled.rows.retain(|r| r.time_ms <= cut);
             // detector over prefix + rollout
             let mut all = prefix.clone();
             all.extend(rolled.rows.iter().cloned());
-            let first = det.first_crossings(gates, &all, &vec![false; ng]);
+            // ENGINE-credited (Row::cps steps), geometry attributes -- what the dataset records
+            let first = det.credits(gates, &all, &vec![false; ng], 5).gate_row;
             let det_cps = first.iter().filter(|t| **t >= 0).count() as u32;
             let mut det_finished = false;
             let mut det_finish_ms = None;
@@ -170,10 +179,13 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
                 det_cps,
                 det_finished,
                 det_finish_ms,
+                finish_after_tape: det_finish_ms.map(|ms| ms > w.race_of_tick_end()).unwrap_or(false),
+                tape_end_ms: w.race_of_tick_end(),
                 near_miss_m: near,
                 near_miss_gate: near_gate,
                 rows: rolled.rows.len(),
                 exited: rolled.exited,
+                rows_past_cut,
                 oracle_cps: None,
                 oracle_ms: None,
                 oracle_desc: String::new(),

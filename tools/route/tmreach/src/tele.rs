@@ -14,7 +14,8 @@ pub struct Telemetry {
 
 impl Telemetry {
     pub fn load(path: &str) -> Result<Telemetry, String> {
-        let dec = decode_ghost(path).map_err(|e| format!("{}: {}", path, e))?;
+        // every vehicle entity merged by time: a car-switch map records one entity per car
+        let dec = gbx::record::decode_ghost_all_vehicles(path).map_err(|e| format!("{}: {}", path, e))?;
         if dec.samples.len() < 2 {
             return Err(format!("{}: {} telemetry samples", path, dec.samples.len()));
         }

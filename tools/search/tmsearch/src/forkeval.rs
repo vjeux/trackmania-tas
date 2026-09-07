@@ -1,9 +1,12 @@
-//! The fork evaluator: a paused simulator per worker, forked once per
-//! candidate, with a per-tick watchdog that stops paying for a candidate the
-//! moment it is clearly dead.
+//! The fork evaluator: a paused simulator per worker plus a ladder of savestate
+//! nodes along the tape it is editing; each candidate is forked from the
+//! deepest node that agrees with it (`forkoracle::ladder`, PERF.md §1), with a
+//! per-tick watchdog that stops paying for a candidate the moment it is clearly
+//! dead.
 //!
-//! Six to nine times faster than a full re-simulation, and **a gradient, not a
-//! result**. Two facts govern every use of it:
+//! Six to nine times faster than a full re-simulation from the root alone, and
+//! about twice that again with the ladder; **a gradient, not a result**. Two
+//! facts govern every use of it:
 //!
 //! * **It is only trustworthy near the reference it checkpointed on.** The
 //!   4700/4700 exactness evidence covers tapes that perturb a reference by a
@@ -42,8 +45,9 @@ use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
 use std::path::{Path, PathBuf};
 use forkoracle::forksrv::{ForkServer, Rec};
-use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
-use forkoracle::blind::{bounds_from, locate_blind as locate};
+use forkoracle::ladder::Ladder;
+use forkoracle::layout::{segments, tail_recs, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
+
 use forkoracle::pred::{outcome, GateRecord, Watch};
 
 /// The clock value the checkpoint should stop at, from the fitted relation
@@ -181,6 +185,34 @@ pub struct ForkEval {
     /// calibrated value is not within [`PLANE_TOL_MS`] of it removes itself.
     plane_off_ms: Option<f64>,
     start_offset_ms: i32,
+    /// DEEP FORK POINTS. Savestate nodes along the lineage this worker is
+    /// editing; a candidate forks from the deepest one that agrees with it
+    /// instead of from the server's checkpoint. See `forkoracle::ladder`.
+    ladder: Ladder,
+    /// The tick each candidate of the LAST batch was actually forked at,
+    /// indexed as the batch was, for the provenance record.
+    last_from: Vec<usize>,
+}
+
+/// Grid spacing of the deep fork points, in ticks, and how many a worker keeps.
+///
+/// Measured on map 2 (`fk ladder check`, 1000 candidates edited anywhere in a
+/// 2432-tick tape): at 100 ticks the ladder forks 96 % of candidates from a
+/// node and the average candidate re-simulates 1089 fewer ticks; the cost of
+/// making a node is ~12 ms once. A node is a paused engine process whose
+/// private pages are the ones its own ticks dirtied (a few MB); 32 of them per
+/// worker covers a 3200-tick tape at this spacing.
+pub const LADDER_SPACING: usize = 100;
+pub const LADDER_CAP: usize = 32;
+
+/// Every worker's ladder statistics, folded together at `finish` so the run
+/// can print one line about what the deep fork points did.
+static LADDER_TOTALS: std::sync::Mutex<forkoracle::ladder::Stats> =
+    std::sync::Mutex::new(forkoracle::ladder::Stats::ZERO);
+
+/// One line about the whole run's deep fork points.
+pub fn ladder_report() -> String {
+    format!("deep fork points: {}", LADDER_TOTALS.lock().map(|g| *g).unwrap_or(forkoracle::ladder::Stats::ZERO))
 }
 
 /// How far a worker's own calibrated crossing of the plane may sit from the
@@ -245,26 +277,6 @@ impl ForkEval {
         let brake: Vec<u8> = reference.brake.iter().map(|&v| v as u8).collect();
         let lrecs = tail_recs(&steer, &gas, &brake, from);
 
-        let rows: Vec<Row> = (0..watch.refline.n)
-            .map(|i| Row {
-                time_ms: 0,
-                x: watch.refline.xyz[3 * i] as f64,
-                y: watch.refline.xyz[3 * i + 1] as f64,
-                z: watch.refline.xyz[3 * i + 2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-                vis: forkoracle::layout::Vis::UNKNOWN,
-                cps: u32::MAX,
-            })
-            .collect();
-        let bounds = bounds_from(&rows, 200.0);
-
         // THE IDENTITY CONTROL, and the search never ran it before: is this
         // server simulating the tape we think it is? The decoded input array in
         // its memory is read back and compared tick for tick with the reference
@@ -281,37 +293,35 @@ impl ForkEval {
         forkoracle::layout::verify_tape(srv.pid(), srv.base, &refsteer, &gas, &brake)
             .map_err(|e| format!("this server is not simulating the tape we asked for: {}", e))?;
 
-        // Addresses are re-derived in THIS process, every time: the server is
-        // PIE and its heap is bimodal, so five consecutive runs give five
-        // different addresses. A failure is an abort, never a guess.
-        //
-        // ASK THE ENGINE, do not sweep for it. `locate_fast` reads the car out
-        // of the validator's own object and scans the paused parent for that
-        // exact position -- 0.2 s, where the blind sweep it replaces costs 3.6 s
-        // PER WORKER (37 forks, one per 64 KB window) and can be fooled by a
-        // stationary decoy. The sweep stays as the fallback for a server whose
-        // validator callback was never captured, and it is bounded there by the
-        // reference line as before.
-        // FK_FAST_LOCATE=1 selects `forkoracle::car::locate_fast` -- 0.2 s where
-        // this sweep costs 3.6 s per worker. It is NOT the default, and the
-        // reason is a measurement, not caution: with it the watchdog stopped
-        // tripping (4 of 8 candidates aborted before, 0 after) and the search
-        // ran 5.8x faster with 0 % finishers. The object it picks passes
-        // `fk trace`'s 3 mm control against ghost telemetry, and that trace's
-        // own quaternion and velocity self-checks, so its position, attitude
-        // and velocity are right -- something else the predicates read is not,
-        // and until that is named this path keeps the locator its numbers were
-        // measured with.
-        let layout = if std::env::var("FK_FAST_LOCATE").is_ok() {
-            forkoracle::car::locate_fast(&mut srv, from, &lrecs, false)
-                .map_err(|e| format!("the car's state was not located: {}", e))?
-        } else {
-            locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
-                .map_err(|e| format!("the car's state was not located: {}", e))?
-        };
+        // THE CAR, DERIVED. The dyna body record the physics step integrates,
+        // reached by the pointers the engine itself follows (`forkoracle::car`,
+        // `LOCATE.md`): thirty reads of the stopped parent, no fork, no scan,
+        // nothing to choose between. Addresses are re-derived in THIS process
+        // every time -- the server is PIE and its heap is bimodal -- and a
+        // failure is an abort with the broken hop's name, never a guess.
+        let car = forkoracle::car::locate(&srv)
+            .map_err(|e| format!("the car's state was not located: {}", e))?;
+        let layout = car.layout();
 
-        let ack = srv.arm(&watch.arm_payload(
-            layout.clock_bias + s.start_offset_ms as i64,
+        // EXIT AT THE FINISH. A candidate that finishes spends 5.8 ms after its
+        // last simulated tick on the validator's finish-and-print path, for a
+        // number the engine wrote milliseconds earlier. One calibration fork
+        // (of a tape that is about to be simulated thousands of times anyway)
+        // finds the word that holds it, and every candidate after that leaves
+        // as soon as it is written. See `forkoracle::finish` for why the word
+        // is measured per server rather than hardcoded.
+        //
+        // It needs the incumbent's own millisecond, which the master measured
+        // with the PLAIN oracle. Without it, or if the word cannot be found,
+        // the server keeps the JSON path -- the same answer, more slowly.
+        if let Some(ms) = s.incumbent_ms {
+            match forkoracle::finish::calibrate(&mut srv, from, &lrecs, ms) {
+                Ok((addr, _)) => eprintln!("fork: exit-at-finish armed on {:#x}", addr),
+                Err(e) => eprintln!("fork: exit-at-finish not armed ({})", e),
+            }
+        }
+
+        let ack = srv.arm(&watch.arm_payload(            layout.clock_bias + s.start_offset_ms as i64,
             R_CLOCK as u32,
             R_QUAT as u32,
             R_POS as u32,
@@ -375,6 +385,11 @@ impl ForkEval {
         } else {
             None
         };
+        // The deep fork points live in the worker's own directory, beside the
+        // server they fork from. Warm: every node carries the watchdog's state
+        // up to its own tick, which is what makes a deep fork's summary the
+        // root's summary.
+        let ladder = Ladder::new(&work.join("ladder"), probe, from, LADDER_SPACING, LADDER_CAP, true)?;
         Ok(ForkEval {
             srv,
             from,
@@ -389,6 +404,8 @@ impl ForkEval {
             last_gate: Vec::new(),
             plane_off_ms,
             start_offset_ms: s.start_offset_ms,
+            ladder,
+            last_from: Vec::new(),
         })
     }
 
@@ -414,15 +431,19 @@ impl Evaluator for ForkEval {
     fn evaluate(&mut self, cands: &[Inputs]) -> Vec<Outcome> {
         let mut out = Vec::with_capacity(cands.len());
         self.last_gate.clear();
+        self.last_from.clear();
+        // ONE node per batch at most, at the deepest grid tick below the prefix
+        // the whole batch shares -- every candidate is the worker's incumbent
+        // with edits inside one window, so that prefix is the incumbent up to
+        // the earliest edit. Making it costs the prefix the first candidate
+        // would have simulated anyway plus a fork and a probe; every candidate
+        // after that starts where the edits start.
+        if let Some(first) = cands.first() {
+            self.ladder.prepare(&mut self.srv, first, Ladder::common_prefix(cands));
+        }
         for c in cands {
-            let recs: Vec<Rec> = (self.from..c.len())
-                .map(|t| Rec {
-                    steer: c.steer[t] as f32 / 127.0,
-                    gas: if c.gas[t] { 1.0 } else { 0.0 },
-                    brake: if c.brake[t] { 1.0 } else { 0.0 },
-                })
-                .collect();
-            let (j, b) = self.srv.run_watched(self.from, &recs);
+            let (j, b, at) = self.ladder.run_watched(&mut self.srv, c);
+            self.last_from.push(at);
             let o = outcome(&j, &b);
             self.last_gate.push(o.gate());
             out.push(match (o.time, self.gate) {
@@ -456,7 +477,7 @@ impl Evaluator for ForkEval {
         let g = self.last_gate.get(idx).copied().flatten();
         Provenance {
             from_fork: true,
-            resume_tick: Some(self.from),
+            resume_tick: Some(self.last_from.get(idx).copied().unwrap_or(self.from)),
             distance: inputs.distance_from(&self.reference),
             gate: g,
             gate_edge: match (g, self.gate_seed_pos) {
@@ -467,6 +488,13 @@ impl Evaluator for ForkEval {
     }
 
     fn finish(self: Box<Self>) {
-        self.srv.quit();
+        let this = *self;
+        if let Ok(mut g) = LADDER_TOTALS.lock() {
+            g.add(&this.ladder.stats());
+        }
+        // The nodes die with the ladder, before the server they were forked
+        // from is told to quit.
+        drop(this.ladder);
+        this.srv.quit();
     }
 }
