@@ -9,7 +9,6 @@
 use branch::{Advanced, Forest, Handle, TraceCfg, ROOT};
 use fk::session::{Checkpoint, Engine, Session};
 use fk::tape::Tape;
-use fk::validator::ValidatorCar;
 use forkoracle::forksrv::{rec_of, Rec};
 use forkoracle::layout::Row;
 use std::path::{Path, PathBuf};
@@ -37,7 +36,9 @@ pub struct Worker {
     pub root_probe: usize,
     pub root_row: Row,
     pub ghost: PathBuf,
-    pub car: ValidatorCar,
+    pub car: forkoracle::car::Car,
+    /// The server module base (for re-deriving the car in a paused child).
+    pub module_base: u64,
     /// Wall time to launch the server, resolve the car and probe.
     pub startup_s: f64,
     /// Race time of a row = its label + this. MEASURED by the identity control
@@ -136,16 +137,22 @@ impl Worker {
         let tape = Tape::load(&ghost.to_string_lossy())?;
         tape.codec_is_lossless()?;
         let mut s = Session::start(&engine, tape.clone(), Checkpoint::Clock(clock))?;
-        let probe = s.probe_tick()?;
+        let _probe = s.probe_tick()?;
         let recs = s.tape.tail_records(0);
-        let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-        let car = ValidatorCar::locate(&mut s.srv, probe, &recs, s.tape.start_offset_ms, wide, 40_000, verbose)?;
+        // THE CAR IS DERIVED (forkoracle::car::locate, the locate arm's single derivation for
+        // everyone): controller -> sim -> playground -> participant -> the driven vehicle slot.
+        let car = forkoracle::car::locate(&s.srv)?;
+        if verbose {
+            println!("car: {car}");
+        }
+        let module_base = forkoracle::car::module_base(s.srv.pid()).unwrap_or(0);
         let dir = work.join("traces");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+        let cfg = TraceCfg { layout: car.layout_with_engine(), dir, stride: 1, max: 400_000 };
         let hook = Some(s.srv.sim_ms as i64 - s.srv.race_start as i64);
+        let start_offset_ms = tape.start_offset_ms;
         let Session { srv, .. } = s;
-        let mut forest = Forest::new(srv, work, recs, Some(cfg))?;
+        let mut forest = Forest::new(srv, work, recs, Some(cfg), start_offset_ms)?;
         let root_probe = forest.probe_root()?;
         // The root's own state, captured once (a7aa56c ForkEnv::new).
         let (rows, h) = forest.advance(ROOT, &[], 0, 1)?;
@@ -160,6 +167,7 @@ impl Worker {
             root_row,
             ghost: ghost.to_path_buf(),
             car,
+            module_base,
             startup_s: t0.elapsed().as_secs_f64(),
             label_shift: 10,
             telemetry_offset_ms: 0,
@@ -256,30 +264,26 @@ impl Worker {
     /// and vis are re-pointed (clock and counter stay). Lifted from tmenv::forkenv
     /// (player 4197027d), per the coordinator: one mechanism, not two. Returns whether it moved.
     pub fn follow_live_car(&mut self, h: Handle) -> Result<bool, String> {
-        let participant = self.car.provenance().participant;
-        if participant == 0 {
+        if !self.car_switch_map {
             return Ok(false);
         }
         let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
         let pid = self.forest.pid_of(h)?;
-        let Some((slot, phy)) = fk::validator::live_vehicle(pid, participant) else { return Ok(false) };
-        let pos = phy + fk::validator::STATE_POS_IN_VEHICLE;
-        if pos == cur.pos {
+        let (sim_ms, race_start) = self.forest.clock_of(h)?;
+        // THE SAME DERIVATION AS AT THE ROOT, in this process (tmenv::forkenv::follow_live_car,
+        // player 9f81d1d0): the driven slot is the one the copy-out loop does not skip.
+        let car = match forkoracle::car::resolve_with(self.car.controller, self.car.sim, self.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)) {
+            Ok(c) => c,
+            // inside a respawn window or before the spawn the derivation names no body
+            Err(_) => return Ok(false),
+        };
+        if car.pos() == cur.pos {
             return Ok(false);
         }
-        let Some(b) = forkoracle::procmem::read_at(pid, pos - 16, 40) else { return Ok(false) };
-        let f = |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
-        if !(0..10).all(|i| f(i * 4).is_finite()) {
-            return Ok(false);
-        }
-        let qn = (f(0).powi(2) + f(4).powi(2) + f(8).powi(2) + f(12).powi(2)).sqrt();
-        if (qn - 1.0).abs() > 1e-3 {
-            return Ok(false);
-        }
-        let mut l = cur;
-        l.pos = pos;
-        l.vis = phy + fk::validator::VIS_IN_VEHICLE;
-        l.car = slot;
+        let mut l = car.layout_with_engine();
+        // the clock word and its bias never change within a process
+        l.clock = cur.clock;
+        l.clock_bias = cur.clock_bias;
         self.forest.set_layout(l)?;
         self.car_switches += 1;
         Ok(true)

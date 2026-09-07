@@ -64,7 +64,16 @@ where
     F: Fn(usize, &mut Worker, &Telemetry) -> Result<R, String>,
 {
     let tel = Telemetry::load(&ghost.to_string_lossy())?;
-    let mut w = Worker::start(server, map, shim, work, ghost, verbose)?;
+    // a worker start (server boot + car derivation) can fail transiently under load (Summer
+    // 2026 - 01 p00041 under 30 workers + two campaigns: failed once, passed twice alone):
+    // one retry after 2 s before the ghost is failed closed
+    let mut w = match Worker::start(server, map, shim, work, ghost, verbose) {
+        Ok(w) => w,
+        Err(e1) => {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            Worker::start(server, map, shim, work, ghost, verbose).map_err(|e2| format!("{e2} (first attempt: {e1})"))?
+        }
+    };
     let r = f(gi, &mut w, &tel);
     drop(w);
     r

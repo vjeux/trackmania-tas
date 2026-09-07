@@ -1246,15 +1246,15 @@ fn cmd_effects(a: &Args) -> Result<(), String> {
     let (server, shim) = engine_paths(a);
     let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/effects-{}", std::process::id())));
     let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
-    let prov = w.car.provenance().clone();
+    let prov = w.car.clone();
     let layout = w.forest.layout().cloned().ok_or("no layout")?;
-    println!("vehicle {:#x} state_pos {:#x} vis {:#x} participant {:#x} clock {:#x} cps {:#x}", prov.vehicle, prov.state_pos, layout.vis, prov.participant, layout.clock, layout.cps);
+    println!("car {prov}; layout pos {:#x} vis {:#x} clock {:#x} cps {:#x}", layout.pos, layout.vis, layout.clock, layout.cps);
     let windows = vec![
-        tmreach::effects::Window { name: "vehicle", base: prov.vehicle.saturating_sub(0x8000), len: 0x18000 },
+        tmreach::effects::Window { name: "vehicle", base: prov.phy.saturating_sub(0x8000), len: 0x18000 },
         tmreach::effects::Window { name: "participant", base: prov.participant.saturating_sub(0x8000), len: 0x18000 },
         tmreach::effects::Window { name: "controller", base: prov.controller.saturating_sub(0x4000), len: 0x8000 },
         tmreach::effects::Window { name: "sim", base: prov.sim.saturating_sub(0x4000), len: 0x8000 },
-        tmreach::effects::Window { name: "players", base: prov.players.saturating_sub(0x2000), len: 0x4000 },
+        tmreach::effects::Window { name: "scene", base: prov.scene.saturating_sub(0x2000), len: 0x4000 },
         tmreach::effects::Window { name: "playground", base: prov.playground.saturating_sub(0x4000), len: 0x8000 },
     ];
     let t = std::time::Instant::now();
