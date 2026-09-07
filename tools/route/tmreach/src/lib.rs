@@ -17,3 +17,11 @@ pub fn secs(ms: i64) -> String {
 }
 pub mod gatecal;
 pub mod pool;
+pub mod json;
+
+/// The git hash of the build, for provenance lines.
+pub const GIT_HASH: &str = env!("TMREACH_GIT_HASH");
+pub mod fanout;
+pub mod macros;
+pub mod tmr;
+pub mod oraclectl;

@@ -7,7 +7,7 @@
 //! grading requires a candidate to fire within ±2 ticks of the credit on
 //! ≥ 95 % of crossings with no missed and no extra gate.
 
-use crate::gates::{Gate, MapGates, Volume};
+use crate::gates::{Detector, Gate, MapGates, Trigger};
 use crate::rig::{dist, pos, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
@@ -30,31 +30,6 @@ pub struct Crossing {
     pub pm: Option<[f64; 3]>,
     pub pp: Option<[f64; 3]>,
     pub speed: f64,
-}
-
-/// Local frame of a gate: `along` = the road axis (block dir / item yaw),
-/// `lat` = across it, both horizontal unit vectors.
-pub fn gate_axes(g: &Gate) -> ([f64; 3], [f64; 3]) {
-    let yaw = match (g.dir, g.yaw) {
-        // grid dir: 0 = +z? Measured below by gatecal, the convention is only
-        // a labelling: the grader tries both axis assignments.
-        (Some(d), _) => d as f64 * std::f64::consts::FRAC_PI_2,
-        (None, Some(y)) => y,
-        _ => 0.0,
-    };
-    let along = [yaw.sin(), 0.0, yaw.cos()];
-    let lat = [yaw.cos(), 0.0, -yaw.sin()];
-    (along, lat)
-}
-
-pub fn local(g: &Gate, p: [f64; 3]) -> (f64, f64, f64) {
-    let (along, lat) = gate_axes(g);
-    let d = [p[0] - g.centre[0], p[1] - g.centre[1], p[2] - g.centre[2]];
-    (
-        d[0] * along[0] + d[2] * along[2],
-        d[0] * lat[0] + d[2] * lat[2],
-        d[1],
-    )
 }
 
 pub fn nearest_gate<'a>(gates: &'a MapGates, p: [f64; 3]) -> (&'a Gate, f64) {
@@ -149,9 +124,9 @@ pub fn crossings_tsv_header() -> &'static str {
 
 pub fn crossing_tsv_row(c: &Crossing, gates: &MapGates) -> String {
     let g = gates.gates.iter().find(|g| g.waypoint == c.gate_wp).unwrap();
-    let (a0, l0, u0) = local(g, c.p0);
-    let (am, lm, um) = c.pm.map(|p| local(g, p)).unwrap_or((f64::NAN, f64::NAN, f64::NAN));
-    let (ap, lp, up) = c.pp.map(|p| local(g, p)).unwrap_or((f64::NAN, f64::NAN, f64::NAN));
+    let (a0, l0, u0) = g.local(c.p0);
+    let (am, lm, um) = c.pm.map(|p| g.local(p)).unwrap_or((f64::NAN, f64::NAN, f64::NAN));
+    let (ap, lp, up) = c.pp.map(|p| g.local(p)).unwrap_or((f64::NAN, f64::NAN, f64::NAN));
     format!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.2}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\n",
         c.ghost, c.cp_idx, c.cp_ms, c.row_ms, c.gate_wp, g.model, c.d_centre, c.speed, a0, l0, u0, am, lm, um, ap, lp, up, c.p0[0], c.p0[1], c.p0[2]
@@ -194,14 +169,14 @@ impl std::fmt::Display for Grade {
 
 /// `vol_of(gate)` gives the volume to test per gate. A crossing is credited
 /// when the car is first inside; each gate at most once per run.
-pub fn grade(runs: &[GhostRun], gates: &MapGates, vol_of: &dyn Fn(&Gate) -> Volume) -> Grade {
+pub fn grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> Grade {
     let mut g = Grade::default();
     for run in runs {
         // detector's first entry per gate, engine clock
         let mut first: Vec<Option<i64>> = vec![None; gates.gates.len()];
         for r in &run.flat {
             for (gi, gate) in gates.gates.iter().enumerate() {
-                if first[gi].is_none() && vol_of(gate).contains(gate.centre, pos(r)) {
+                if first[gi].is_none() && det.trigger_for(gate).inside(gate, pos(r)) {
                     first[gi] = Some(r.time_ms);
                 }
             }
@@ -231,4 +206,75 @@ pub fn grade(runs: &[GhostRun], gates: &MapGates, vol_of: &dyn Fn(&Gate) -> Volu
         }
     }
     g
+}
+
+/// The car centre in the GATE frame (s along the GEOM normal, lateral) at the
+/// NOTICE instant: engine label cp_ms − 10 (engine row t is race t+10, the
+/// G1 identity measurement), interpolated between the row before and the
+/// credited row. Negative s = before the gate centre.
+pub fn s_at_notice(c: &Crossing, g: &Gate) -> Option<(f64, f64)> {
+    let pm = c.pm?;
+    let d = [c.p0[0] - pm[0], c.p0[1] - pm[1], c.p0[2] - pm[2]];
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if n < 1e-6 {
+        return None;
+    }
+    let dir = [d[0] / n, d[1] / n, d[2] / n];
+    // fraction of the tick between the previous row and the credited row
+    let t_engine = (c.cp_ms - 10) as f64;
+    let f = ((t_engine - (c.row_ms - 10) as f64) / 10.0).clamp(0.0, 1.0);
+    let p = [pm[0] + f * d[0], pm[1] + f * d[1], pm[2] + f * d[2]];
+    let _ = dir;
+    let (s, lat, _up) = g.local(p);
+    Some((s, lat))
+}
+
+/// Per model: mean / sd / min / max of `s_at_notice`.
+pub fn model_stats(runs: &[GhostRun], gates: &MapGates) -> Vec<(String, usize, f64, f64, f64, f64)> {
+    let mut by: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+    for run in runs {
+        for c in &run.crossings {
+            let g = gates.gates.iter().find(|g| g.waypoint == c.gate_wp).unwrap();
+            if let Some((s, _)) = s_at_notice(c, g) {
+                by.entry(format!("wp{} {}", g.waypoint, g.model)).or_default().push(s);
+            }
+        }
+    }
+    by.into_iter()
+        .map(|(k, v)| {
+            let n = v.len() as f64;
+            let mean = v.iter().sum::<f64>() / n;
+            let sd = (v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n).sqrt();
+            let mn = v.iter().cloned().fold(f64::INFINITY, f64::min);
+            let mx = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            (k, v.len(), mean, sd, mn, mx)
+        })
+        .collect()
+}
+
+/// Fit the detector: per model, `s_off` = the mean `s_at_notice` over that
+/// model's crossings; lateral half-extent = GEOM half_width + 8 m and the
+/// vertical band −6..+8 m about the gate centre are HYPOTHESES for the
+/// 200-rollout oracle control to bound (humans only sample the road).
+pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> Detector {
+    let mut by: std::collections::BTreeMap<String, (Vec<f64>, f64)> = Default::default();
+    for run in runs {
+        for c in &run.crossings {
+            let g = gates.gate(c.gate_wp).unwrap();
+            if let Some((s, _)) = s_at_notice(c, g) {
+                let e = by.entry(g.model.clone()).or_insert((Vec::new(), g.half_width));
+                e.0.push(s);
+            }
+        }
+    }
+    let mut per_model = Vec::new();
+    for (m, (v, hw)) in by {
+        let mean = v.iter().sum::<f64>() / v.len() as f64;
+        per_model.push((m, Trigger { s_off: mean, depth: 8.0, lat_half: hw + 8.0, up_lo: -6.0, up_hi: 8.0 }));
+    }
+    Detector {
+        per_model,
+        default: Trigger { s_off: -1.0, depth: 8.0, lat_half: 16.0, up_lo: -6.0, up_hi: 8.0 },
+        provenance: provenance.to_string(),
+    }
 }

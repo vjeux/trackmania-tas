@@ -411,19 +411,19 @@ impl Forest {
             return Err(format!("branch mismatch: asked for pid {} and pid {} arrived on the socket", pid, node.pid));
         }
         if let Err(e) = node.probe() {
-            let pid = node.pid;
-            node.destroy();
-            self.tree.reaped(pid);
             if e.contains("ValidatedResult") {
-                // The probe child ran to the END of the race without touching
-                // another input record: this node paused inside the last tick
-                // (the tape ran out, the finish is a few ticks away). It is not
-                // a fork point, but everything it traced is real.
-                let trace = if trace_path.as_os_str().is_empty() { Vec::new() } else { self.read_trace(&trace_path)? };
-                let _ = std::fs::remove_file(&trace_path);
-                return Ok(Advanced::Exited(trace));
+                // The probe child ran to the END without another input read:
+                // every remaining record is already in the engine's buffer.
+                // The node is alive and can continue the reference, but owns
+                // no writable tick (measured: paused at 19.670 of a 19.798 run,
+                // 13 records left, probe reply = the validator's result).
+                node.assume_exhausted(self.reference.len());
+            } else {
+                let pid = node.pid;
+                node.destroy();
+                self.tree.reaped(pid);
+                return Err(format!("node {} could not probe its own boundary: {}", pid, e));
             }
-            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
         }
         let mut written = match h {
             ROOT => Vec::new(),

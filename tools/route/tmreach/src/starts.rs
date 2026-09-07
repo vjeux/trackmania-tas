@@ -108,9 +108,9 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     if pre_race {
         pass_a = dxz <= 6.0 && dy.abs() <= 12.0 && v0 <= 4.0;
         println!(
-            "START-POSITION control (LIVE): root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} cell {:?} -> \
+            "START-POSITION control (LIVE): root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} group {} -> \
              ({:.1}, {:.1}, {:.1}); d_xz {:.2} m, dy {:+.2} m, d3 {:.2} m  => {}",
-            w.root_probe, crate::secs(r0.time_ms), r0.x, r0.y, r0.z, v0, sp.waypoint, sp.model, sp.cell,
+            w.root_probe, crate::secs(r0.time_ms), r0.x, r0.y, r0.z, v0, sp.waypoint, sp.model, sp.group,
             sp.centre[0], sp.centre[1], sp.centre[2], dxz, dy, d3, if pass_a { "PASS" } else { "FAIL" }
         );
     } else {
