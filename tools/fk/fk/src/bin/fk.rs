@@ -161,7 +161,41 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                             .into()),
                     }
                 }
-                _ => Err("fk ladder <check>  [--n N --seed S --span K --spacing S --cap C]".into()),
+                "watched" => {
+                    let preds: Vec<String> = {
+                        let mut v: Vec<String> = rest
+                            .windows(2)
+                            .filter(|w| w[0] == "--pred")
+                            .map(|w| w[1].clone())
+                            .collect();
+                        if v.is_empty() {
+                            v = [
+                                "crash:speeddrop:frac=0.5,win=50,minpeak=15,after=200",
+                                "stuck:floor:speed=3,need=50,after=250",
+                                "off:offref:dist=20,need=10,after=200",
+                            ]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                        }
+                        v
+                    };
+                    let o = cmd::ladder::WatchedOpts {
+                        n: num(rest, "--n").unwrap_or(200) as usize,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        span: num(rest, "--span").unwrap_or(60) as usize,
+                        spacing: num(rest, "--spacing").unwrap_or(100) as usize,
+                        cap: num(rest, "--cap").unwrap_or(32) as usize,
+                        refcsv: flag(rest, "--refcsv").ok_or("fk ladder watched needs --refcsv F (fk trace's CSV of the reference)")?.to_string(),
+                        preds,
+                        finishmargin: flag(rest, "--finishmargin").map(|s| s.parse().unwrap_or(250.0)).unwrap_or(250.0),
+                    };
+                    match cmd::ladder::watched(&engine, tape, at, o)? {
+                        true => Ok(()),
+                        false => Err("a candidate forked from a warm node did not return the root's watched verdict".into()),
+                    }
+                }
+                _ => Err("fk ladder <check|watched>  [--n N --seed S --span K --spacing S --cap C] (watched: --refcsv F [--pred SPEC]...)".into()),
             }
         }
         "liveness" => {

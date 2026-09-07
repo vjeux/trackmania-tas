@@ -227,3 +227,200 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     s.srv.quit();
     Ok(bad == 0 && unstable == 0)
 }
+
+// ---------------------------------------------------------------- fk ladder watched
+
+pub struct WatchedOpts {
+    pub n: usize,
+    pub seed: u64,
+    pub span: usize,
+    pub spacing: usize,
+    pub cap: usize,
+    /// The reference line, as `fk trace` writes it.
+    pub refcsv: String,
+    /// The search's shipped predicate set unless told otherwise.
+    pub preds: Vec<String>,
+    pub finishmargin: f32,
+}
+
+/// THE WATCHED CONTROL: root `'W'` against warm-node `'W'`, summary for
+/// summary, byte for byte.
+///
+/// The watchdog is stateful -- a speed window, consecutive-tick counters,
+/// progress along the line, the gate and event records -- so a fork point deep
+/// in the tape only returns the root's verdict if the node it forks from
+/// carries the watchdog's state up to its own tick. That is what
+/// `BranchReq::watched` is for, and this is the measurement that says it
+/// works: the same candidates, the same armed predicates, one run from the
+/// checkpoint and one from the deepest node that agrees with the candidate,
+/// and the 148-byte summaries (trip, tick, value, progress, travelled, speeds,
+/// gate, event, plane crossing) must be IDENTICAL, as must the time.
+pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> Result<bool, String> {
+    use forkoracle::blind::{bounds_from, locate_blind};
+    use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
+    use forkoracle::pred::{outcome, parse_spec, RefLineData, Watch};
+    use forkoracle::pred_core::SUMMARY_BYTES;
+
+    engine.check()?;
+    std::fs::create_dir_all(&engine.work).map_err(|e| e.to_string())?;
+    let refp = engine.work.join("reference.Ghost.Gbx");
+    tape.write_reference(&refp)?;
+    let n = tape.n();
+    let ref_time = full_times(engine, &[refp.clone()], "ref")?.values().next().cloned().unwrap_or((None, None)).0;
+    println!("reference: {} ticks, oracle says {}", n, crate::secs_opt(ref_time));
+
+    let mut s = Session::start(engine, tape, at)?;
+    let root_tick = s.probe_tick()?;
+    let from = root_tick;
+    let start_offset_ms = s.tape.start_offset_ms;
+    println!(
+        "fork server up: input array {:#x}, checkpoint clock #{}, root tick {} (race {})",
+        s.srv.base, s.checkpoint_clock, root_tick, crate::secs(s.tape.race_ms(root_tick))
+    );
+
+    // The reference line, the car, the watchdog: armed exactly as the search
+    // arms them (`tmsearch::forkeval::ForkEval::start`).
+    let refline = RefLineData::from_csv(&o.refcsv, start_offset_ms, n)?;
+    let rows: Vec<Row> = (0..refline.n)
+        .map(|i| Row {
+            time_ms: 0,
+            x: refline.xyz[3 * i] as f64,
+            y: refline.xyz[3 * i + 1] as f64,
+            z: refline.xyz[3 * i + 2] as f64,
+            vx: 0.0,
+            vy: 0.0,
+            vz: 0.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 0.0,
+            wetness: 0.0,
+        })
+        .collect();
+    let bounds = bounds_from(&rows, 200.0);
+    let lrecs = tail_recs(&s.tape.steer, &s.tape.accel, &s.tape.brake, from);
+    let layout = locate_blind(&mut s.srv, from, &lrecs, start_offset_ms, 1, bounds, false)
+        .map_err(|e| format!("the car's state was not located: {}", e))?;
+    if let Some(ms) = ref_time {
+        match forkoracle::finish::calibrate(&mut s.srv, from, &lrecs, ms) {
+            Ok((addr, _)) => println!("exit-at-finish armed on {:#x}", addr),
+            Err(e) => println!("exit-at-finish not armed ({})", e),
+        }
+    }
+    let mut watch = Watch::new();
+    watch.corridor = 40.0;
+    watch.refline = refline;
+    watch.finish_s = match ref_time {
+        Some(t) => {
+            let tick = ((t - start_offset_ms as i64) / 10).max(0) as usize;
+            (watch.refline.s_at_tick(tick) - o.finishmargin).max(1.0)
+        }
+        None => 0.0,
+    };
+    for p in &o.preds {
+        watch.preds.push(parse_spec(p)?);
+    }
+    print!("{}", watch.describe());
+    let ack = s.srv.arm(&watch.arm_payload(
+        layout.clock_bias + start_offset_ms as i64,
+        R_CLOCK as u32,
+        R_QUAT as u32,
+        R_POS as u32,
+        R_VEL as u32,
+        REC_LEN as u32,
+        &segments(&layout),
+    ));
+    if !ack.starts_with("ARMED") {
+        return Err(format!("arming the watchdog failed: {}", ack));
+    }
+    println!("arm: {}", ack.trim());
+
+    let mut rng = Rng::new(o.seed);
+    let reference = Inputs::from_arrays(&s.tape.steer, &s.tape.accel, &s.tape.brake);
+    let mut cands: Vec<(Inputs, usize)> = Vec::new();
+    for _ in 0..o.n {
+        let (st, ac, br) = make_candidate(&s.tape, from, o.span, &mut rng);
+        let inp = Inputs::from_arrays(&st, &ac, &br);
+        let first = inp.distance_from(&reference).first_diff_tick.unwrap_or(n);
+        cands.push((inp, first));
+    }
+
+    // Root, watched.
+    let mut root: Vec<(Option<i64>, Vec<u8>, f64)> = Vec::with_capacity(o.n);
+    for (inp, _) in &cands {
+        let t0 = Instant::now();
+        let (j, b) = s.srv.run_watched(from, &records_from(&inp.steer_u8(), &inp.gas_u8(), &inp.brake_u8(), from));
+        let dt = t0.elapsed().as_secs_f64() * 1000.0;
+        root.push((outcome(&j, &b).time, b, dt));
+    }
+    // Ladder, watched, warm nodes.
+    let mut ladder = Ladder::new(&engine.work.join("ladder"), root_tick, from, o.spacing, o.cap, true)?;
+    let mut lad: Vec<(Option<i64>, Vec<u8>, f64, usize)> = Vec::with_capacity(o.n);
+    let mut prep_ms = 0.0;
+    for (inp, first) in &cands {
+        let t0 = Instant::now();
+        ladder.prepare(&mut s.srv, inp, *first);
+        prep_ms += t0.elapsed().as_secs_f64() * 1000.0;
+        let t1 = Instant::now();
+        let (j, b, at) = ladder.run_watched(&mut s.srv, inp);
+        let dt = t1.elapsed().as_secs_f64() * 1000.0;
+        lad.push((outcome(&j, &b).time, b, dt, at));
+    }
+
+    let (mut same, mut diff, mut trips, mut finished, mut deep) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for i in 0..o.n {
+        let r = &root[i];
+        let l = &lad[i];
+        let ro = outcome("", &r.1);
+        if ro.tripped().is_some() {
+            trips += 1;
+        }
+        if r.0.is_some() {
+            finished += 1;
+        }
+        if l.3 > from {
+            deep += 1;
+        }
+        if r.0 == l.0 && r.1[..SUMMARY_BYTES.min(r.1.len())] == l.1[..SUMMARY_BYTES.min(l.1.len())] {
+            same += 1;
+        } else {
+            diff += 1;
+            if diff <= 5 {
+                let lo = outcome("", &l.1);
+                println!(
+                    "DIFFERENT candidate {} (edit at tick {}, forked at {}): root time {} trip {:?} progress {:.2} travelled {:.2} nticks {} | ladder time {} trip {:?} progress {:.2} travelled {:.2} nticks {}",
+                    i,
+                    cands[i].1,
+                    l.3,
+                    crate::secs_opt(r.0),
+                    ro.tripped(),
+                    ro.progress(),
+                    ro.travelled(),
+                    ro.sum.map(|s| s.nticks).unwrap_or(0),
+                    crate::secs_opt(l.0),
+                    lo.tripped(),
+                    lo.progress(),
+                    lo.travelled(),
+                    lo.sum.map(|s| s.nticks).unwrap_or(0),
+                );
+            }
+        }
+    }
+    println!(
+        "watched equivalence: {}/{} candidates with IDENTICAL time and byte-identical {}-byte summary ({} tripped, {} finished, {} forked deeper than the root), {} DIFFERENT",
+        same, o.n, SUMMARY_BYTES, trips, finished, deep, diff
+    );
+    let rt: f64 = root.iter().map(|r| r.2).sum::<f64>() / o.n as f64;
+    let lt: f64 = lad.iter().map(|l| l.2).sum::<f64>() / o.n as f64;
+    println!(
+        "cost: root {:.2} ms/cand | ladder {:.2} ms/cand run + {:.2} making nodes | speedup {:.2}x",
+        rt,
+        lt,
+        prep_ms / o.n as f64,
+        rt / (lt + prep_ms / o.n as f64).max(1e-9)
+    );
+    println!("ladder: {}", ladder.stats());
+    drop(ladder);
+    s.srv.quit();
+    Ok(diff == 0)
+}
