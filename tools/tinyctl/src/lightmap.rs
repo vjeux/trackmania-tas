@@ -1,4 +1,4 @@
-//! `tinyctl lightmap MAP --out OUT.Map.Gbx [--quality Q] [--name NAME]` — the
+//! `tinyctl lightmap MAP --out OUT.Map.Gbx [--quality Q] [--name NAME] [--keep-uid|--uid U]` — the
 //! editor's lightmap for a tiny build, computed on the render box and the
 //! re-saved map pulled back (the devserver half of `shootctl lightmap`).
 //!
@@ -55,6 +55,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let saved = line.split('\t').nth(1).ok_or("lightmap: no path in the done file")?.to_string();
     let n = wsx.pull(&saved, &out)?;
     eprintln!("pulled {} ({n} bytes)", out.display());
+    // --keep-uid: the editor's re-save mints a new uid; the input's (or --uid U)
+    // goes back in, so a publish is an UPDATE of the existing record
+    let want_uid = match f("--uid") {
+        Some(u) => Some(u),
+        None if tmmaps::cli::has(args, "--keep-uid") => Some(tmmaps::header::read(map.to_str().unwrap_or_default())?.uid),
+        None => None,
+    };
+    if let Some(u) = want_uid {
+        let mut m = tmmaps::map::MapFile::load(&out);
+        m.set_map_uid(&u);
+        m.write_to(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        eprintln!("uid set back to {u}");
+    }
     // what the editor made of it
     let m = tmmaps::map::MapFile::load(&out);
     let lm = tmmaps::map::skip_chunks(&m.gbx.body).into_iter().find(|(id, ..)| *id == 0x0304_305B).map(|(_, _, _, size)| size).unwrap_or(0);
