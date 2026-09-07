@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tmreach::gates::{GateKind, MapGates};
 use tmreach::rig::Worker;
 use tmreach::starts::{run_on_worker, starts_tsv_header, starts_tsv_row, StartsOpts};
@@ -477,7 +477,7 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     // with --map (and --geom) the finish waypoints are known: a FINISHED record with no finish
     // gate credited is the old exit-as-finish class
     let finish_wps: Option<Vec<usize>> = a.get("map").map(|m| {
-        let g = MapGates::load(std::path::Path::new(m), a.get("geom").map(std::path::Path::new)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+        let g = MapGates::load(Path::new(m), a.get("geom").map(Path::new)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
         g.gates.iter().filter(|g| g.kind == GateKind::Finish).map(|g| g.waypoint as usize).collect()
     });
     for r in &shard.records {
@@ -946,9 +946,22 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
             let tdir = scratch.join(uid).join("tar");
             let _ = std::fs::remove_dir_all(&tdir);
             std::fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
-            let st = std::process::Command::new("tar").args(["xf", &tar.to_string_lossy(), "-C", &tdir.to_string_lossy()]).status().map_err(|e| e.to_string())?;
-            if !st.success() {
-                report.push_str(&format!("{name}\t{uid}\tSKIPPED: ghosts.tar did not extract\n"));
+            let extract = |tdir: &Path| -> bool {
+                let _ = std::fs::remove_dir_all(tdir);
+                let _ = std::fs::create_dir_all(tdir);
+                std::process::Command::new("tar").args(["xf", &tar.to_string_lossy(), "-C", &tdir.to_string_lossy()]).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+            };
+            let mut ok = extract(&tdir);
+            if !ok {
+                // the persistent-storage FUSE mount serves STALE objects for hours after another
+                // box's write (MODEL arm); a remount refreshes it instantly
+                println!("   ghosts.tar read partial: remounting private-30d and retrying");
+                let _ = std::process::Command::new("persistent-storage").args(["remount", "private-30d"]).status();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                ok = extract(&tdir);
+            }
+            if !ok {
+                report.push_str(&format!("{name}\t{uid}\tSKIPPED: ghosts.tar did not extract (after a remount)\n"));
                 continue;
             }
             tdir.join("ghosts")
