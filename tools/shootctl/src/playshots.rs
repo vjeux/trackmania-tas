@@ -122,14 +122,21 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
     if opts.carlog_ms > 0 {
-        // one call, one trajectory (the plugin caps a call at 30 s; longer
-        // logs are several calls back to back)
+        // one call per 5 s slice: a 24 s request never came back (the server
+        // serves a handler that yields, but not for that long), and the
+        // handler samples at a few Hz anyway (one row per server turn)
         let file = opts.outdir.join(format!("car-{}.tsv", opts.tag));
         let mut tsv = String::new();
         let mut left = opts.carlog_ms;
         while left > 0 {
-            let chunk = left.min(30_000);
-            let body = super::http_get(&format!("/carlog?ms={chunk}"), chunk / 1000 + 20)?;
+            let chunk = left.min(5_000);
+            let body = match super::http_get(&format!("/carlog?ms={chunk}"), chunk / 1000 + 20) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("{} carlog slice failed: {e}", el());
+                    break;
+                }
+            };
             for (i, row) in body.lines().enumerate() {
                 if i == 0 && !tsv.is_empty() {
                     continue; // one header
