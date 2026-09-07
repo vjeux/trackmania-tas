@@ -54,7 +54,8 @@ impl Nodes {
 /// Item / free gates carry an absolute road-level position: look DOWN a little.
 /// Grid gates' anchor is `cell base + 2` (the road): look up into the cell too.
 fn window(from_item: bool) -> (f32, f32) {
-    if from_item { (-6.0, 0.5) } else { (-2.5, 7.0) }
+    // +2.5 above: the tiny converter's gate items sit 1 m under their own road surface
+    if from_item { (-6.0, 2.5) } else { (-2.5, 7.0) }
 }
 
 impl SurfaceModel {

@@ -136,8 +136,13 @@ struct BuildOpts {
     max_rows: usize,
     /// Featurisation threads.
     threads: usize,
-    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off.
+    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off. Applied to TRAINING
+    /// maps only: a held-out map keeps a UNIFORM sample so the test population is the same in every round
+    /// (round 9's keep-fast on held-out rows changed Winter 2026 - 18's distance baseline from 98.6 to 78.3 % — the
+    /// test moved, not the model).
     keep_fast: f32,
+    /// Extra held-out uids (--held-out) — with the fnv rule, the maps whose rows stay uniform.
+    forced_held: Vec<String>,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -182,12 +187,17 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
         build_geometry(o.fv, &mp, &gates, false).map_err(|e| format!("{uid}: geometry build failed: {e}"))?
     };
     let feat = featurizer(&geo);
+    let held = data::held_out(&uid) || o.forced_held.contains(&uid);
+    let keep_fast = if held { 0.0 } else { o.keep_fast };
+    if held && o.keep_fast > 0.0 {
+        log.push(format!("  {uid}: HELD-OUT map — uniform sample (keep-fast {} applies to training maps only)", o.keep_fast));
+    }
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, o.keep_fast, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, keep_fast, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, o.keep_fast, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, keep_fast, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
     let _ = &rows;
@@ -213,7 +223,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), forced_held: flag(args, "--held-out").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -710,7 +720,7 @@ fn cmd_plan(args: &[String]) {
     for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
         println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
     }
-    let prov = provenance("plan");
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", provenance("plan")), None => provenance("plan") };
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {
@@ -924,7 +934,7 @@ fn cmd_watch(args: &[String]) {
                 // --gate-rows N caps the GATE rows separately (they need fewer: 60k/map trains the order prior as
                 // well as 150k did, and a 60-map round was taking an hour per head)
                 let cap = if kind == "gate" { flag(args, "--gate-rows").and_then(|s| s.parse().ok()).unwrap_or(o.max_rows).min(if o.max_rows > 0 { o.max_rows } else { usize::MAX }) } else { o.max_rows };
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, forced_held: o.forced_held.clone(), geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
