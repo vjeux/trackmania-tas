@@ -73,10 +73,10 @@ if [ $step = plan-r ]; then
   # the watcher rewrites the model pointers every ~40 min and the bank mount can serve a half-written or stale file
   # ("trailer says 1657 bytes of meta, 1059 remain" on 7 of 30 maps, 13:11Z run): remount, then SNAPSHOT both models
   # to /tmp so one table is one model
-  persistent-storage remount private-30d >/dev/null 2>&1 || true
+  # (no remount here: a remount while other pipelines hold files left the mount "Transport endpoint is not connected", 15:22Z)
   SNAP=/tmp/tmr-models-$(date -u +%Y%m%dT%H%MZ); mkdir -p $SNAP
   # copy, then prove the copy LOADS (a stale FUSE read gave a 700776-byte rl.tmw whose trailer said otherwise, 14:54Z)
-  snap_model() { local src=$1 dst=$2 i; for i in 1 2 3 4 5; do cp $src $dst && $TMR selftest --model $dst > $dst.selftest.txt 2>&1 && return 0; echo "  snapshot of $src did not load (try $i): $(tail -1 $dst.selftest.txt | cut -c1-100)"; persistent-storage remount private-30d >/dev/null 2>&1; sleep 20; done; return 1; }
+  snap_model() { local src=$1 dst=$2 i; for i in 1 2 3 4 5; do cp $src $dst && $TMR selftest --model $dst > $dst.selftest.txt 2>&1 && return 0; echo "  snapshot of $src did not load (try $i): $(tail -1 $dst.selftest.txt | cut -c1-100)"; sleep 20; done; return 1; }
   snap_model $MODEL_R $SNAP/r.tmw || { echo "gate model never loaded whole"; exit 1; }
   snap_model $MODEL_RL $SNAP/rl.tmw || { echo "local model never loaded whole"; exit 1; }
   W=$(dirname $MODEL_R); MODEL_R_PTR=$MODEL_R; MODEL_R=$SNAP/r.tmw; MODEL_RL=$SNAP/rl.tmw
