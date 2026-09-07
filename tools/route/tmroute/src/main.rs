@@ -554,7 +554,10 @@ pub fn cmd_human_batch(args: &[String]) {
             // a map the crawl brought that GEOM has not seen: build its gates.json from the crawled map file
             let mf = d.join("map.Map.Gbx");
             if mf.exists() {
-                match tmroute::gates::build(&mf, &prov) {
+                // a reader assertion on one odd map (tmmaps refusing to guess a free-block chunk) must not
+                // take the whole batch down: catch the panic, report, move on
+                let built = std::panic::catch_unwind(|| tmroute::gates::build(&mf, &prov)).unwrap_or_else(|_| Err("map reader panicked (see stderr)".to_string()));
+                match built {
                     Ok(g) => {
                         io::write_gates(&gp, &g).unwrap_or_else(|e| die(&e));
                         let ctl = if g.control_ok() { "OK" } else { "FAIL" };
