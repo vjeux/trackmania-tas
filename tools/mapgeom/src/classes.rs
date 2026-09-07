@@ -1800,15 +1800,15 @@ impl<'a> Graph<'a> {
         out.geoms = self.r.array(|r| {
             let visual = r.i32()?;
             let material = r.i32()?;
-            let _u01 = r.i32()?;
+            let u01 = r.i32()?;
             let lod = if version >= 1 { r.i32()? } else { 0 };
-            if version >= 32 {
-                r.i32()?;
-            }
+            let u02 = if version >= 32 { r.i32()? } else { 0 };
             Ok(ShadedGeom {
                 visual,
                 material,
                 lod,
+                u01,
+                u02,
             })
         })?;
         if version >= 6 {

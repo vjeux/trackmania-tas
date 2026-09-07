@@ -140,6 +140,10 @@ pub struct ShadedGeom {
     pub visual: i32,
     pub material: i32,
     pub lod: i32,
+    /// the two unexplained words (the second v32+), printed by `dump` — the
+    /// 2026-09-07 hunt for what marks a display geom
+    pub u01: i32,
+    pub u02: i32,
 }
 
 /// One `CPlugCrystal` layer: an editable mesh of n-gon faces, each with a

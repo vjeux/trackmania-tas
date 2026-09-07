@@ -1740,14 +1740,14 @@ fn describe(n: &Node) -> String {
             );
             // The detail levels: which geoms (visual node, material slot)
             // each lod-mask bit draws, and the switch distances.
-            if !s.lod_max_dist.is_empty() || s.geoms.iter().any(|g| g.lod != 1) {
+            if !s.lod_max_dist.is_empty() || s.geoms.iter().any(|g| g.lod != 1 || g.u01 != -1 || g.u02 != 0) {
                 d.push_str(&format!(
                     "\n      lod_max_dist {:?} vis_cst_type {} geoms [{}]",
                     s.lod_max_dist,
                     s.vis_cst_type,
                     s.geoms
                         .iter()
-                        .map(|g| format!("v{}:m{}:lod{:x}", s.visuals.get(g.visual as usize).copied().unwrap_or(-1), g.material, g.lod))
+                        .map(|g| format!("v{}:m{}:lod{:x}{}{}", s.visuals.get(g.visual as usize).copied().unwrap_or(-1), g.material, g.lod, if g.u01 != -1 { format!(":u01={}", g.u01) } else { String::new() }, if g.u02 != 0 { format!(":u02={}", g.u02) } else { String::new() }))
                         .collect::<Vec<_>>()
                         .join(" ")
                 ));
