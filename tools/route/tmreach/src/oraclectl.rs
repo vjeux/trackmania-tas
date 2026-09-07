@@ -108,6 +108,9 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             if rolled.exited {
                 crate::rig::extrapolate_exit(&mut rolled.rows);
             }
+            // the oracle adjudicates nothing later than the grace after the DECLARED time
+            let cut = w.label_of_race(w.tape.declared_ms.unwrap_or(u32::MAX / 2) as i64 + ADJUDICATION_GRACE_MS);
+            rolled.rows.retain(|r| r.time_ms <= cut);
             // detector over prefix + rollout
             let mut all = prefix.clone();
             all.extend(rolled.rows.iter().cloned());
@@ -231,3 +234,9 @@ pub fn case_tsv_row(c: &Case) -> String {
         c.tape.display()
     )
 }
+
+/// The plain oracle adjudicates nothing later than about this long after the
+/// file's DECLARED time: finishes at declared + 2.203 s were credited, a
+/// crossing at declared + 2.728 s was not (Summer 2026 - 01, 2026-09-07). The
+/// tape itself ends at its last input EVENT and says nothing about this.
+pub const ADJUDICATION_GRACE_MS: i64 = 2500;

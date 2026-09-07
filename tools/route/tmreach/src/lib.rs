@@ -26,3 +26,5 @@ pub mod macros;
 pub mod tmr;
 pub mod oraclectl;
 pub mod human;
+pub mod gateprobe;
+pub mod fitbox;

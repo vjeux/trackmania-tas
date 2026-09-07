@@ -291,7 +291,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
     let mut per_model = Vec::new();
     let mut notes = Vec::new();
     for (m, (v, hw, item)) in by {
-        let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max); // max s(T-2): must be OUTSIDE
+        let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(&m)); // max s(T-2) and oracle refusals: must be OUTSIDE
         let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min); // min s(T-1): must be INSIDE
         let s_off = 0.5 * (lo + hi);
         notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT" } else { "" }));
@@ -318,8 +318,20 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
 pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f64 {
     match model {
         "RoadTechCheckpoint" => 12.5,
-        "RoadTechFinish" => 10.0,
-        "GateCheckpointLeft32m" => 10.7,
+        "RoadTechFinish" => 12.5,
+        "GateCheckpointLeft32m" => 13.0,
         _ => geom_half_width + 2.0,
+    }
+}
+
+/// Constraints the ORACLE CONTROL added to the plane fit: the largest `s` at
+/// which the plain oracle refused to credit a car whose lateral / vertical
+/// position was inside the trigger (so the refusal is the plane's).
+///   GateCheckpointLeft32m: refused at s −2.150 (lat +10.95, up −3.24; p00301 t1355 m29),
+///   while a human at s(T−1) = −2.143 was credited → the plane is in (−2.150, −2.143].
+pub fn oracle_refused_max_s(model: &str) -> f64 {
+    match model {
+        "GateCheckpointLeft32m" => -2.150,
+        _ => f64::NEG_INFINITY,
     }
 }

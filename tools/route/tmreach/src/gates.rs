@@ -208,16 +208,60 @@ impl Detector {
     }
 
     /// First row index at which the car is inside each gate's trigger, or -1;
-    /// `already[gi]` marks gates credited before the rollout began. A gate
-    /// group fires once: the first gate of the group to be entered.
+    /// `already[gi]` marks gates credited before the rollout began. THE FINISH
+    /// IS ARMED ONLY WHEN EVERY CHECKPOINT GROUP HAS BEEN CREDITED (oracle
+    /// control: a car through the finish plane with checkpoints missing is not
+    /// finished), so its crossing is the first inside row at or after the last
+    /// checkpoint's crediting row. A group fires once: its first gate entered.
     pub fn first_crossings(&self, gates: &MapGates, rows: &[forkoracle::layout::Row], already: &[bool]) -> Vec<i32> {
         let mut out = vec![-1i32; gates.gates.len()];
+        let mut group_row: std::collections::HashMap<u32, i32> = Default::default();
+        // checkpoints (and multilap) first
         for (gi, g) in gates.gates.iter().enumerate() {
+            if g.kind == GateKind::Finish {
+                continue;
+            }
             if already.get(gi).copied().unwrap_or(false) {
+                group_row.insert(g.group, -1);
                 continue;
             }
             let t = self.trigger_for(g);
             for (i, r) in rows.iter().enumerate() {
+                if t.inside(g, [r.x, r.y, r.z]) {
+                    out[gi] = i as i32;
+                    let e = group_row.entry(g.group).or_insert(i as i32);
+                    if *e > i as i32 {
+                        *e = i as i32;
+                    }
+                    break;
+                }
+            }
+        }
+        // a group already credited (-1) or credited in the rollout: keep only the
+        // FIRST gate of a group credited in the rollout
+        for (gi, g) in gates.gates.iter().enumerate() {
+            if g.kind != GateKind::Finish && out[gi] >= 0 {
+                if let Some(first) = group_row.get(&g.group) {
+                    if *first >= 0 && out[gi] != *first {
+                        out[gi] = -1;
+                    }
+                }
+            }
+        }
+        // all checkpoint groups credited?
+        let all_groups: std::collections::BTreeSet<u32> = gates.gates.iter().filter(|g| g.kind != GateKind::Finish).map(|g| g.group).collect();
+        let armed_from: Option<i32> = if all_groups.iter().all(|grp| group_row.contains_key(grp)) {
+            Some(all_groups.iter().map(|grp| group_row[grp]).max().unwrap_or(-1).max(0))
+        } else {
+            None
+        };
+        for (gi, g) in gates.gates.iter().enumerate() {
+            if g.kind != GateKind::Finish || already.get(gi).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(from) = armed_from else { continue };
+            let t = self.trigger_for(g);
+            for (i, r) in rows.iter().enumerate().skip(from as usize) {
                 if t.inside(g, [r.x, r.y, r.z]) {
                     out[gi] = i as i32;
                     break;

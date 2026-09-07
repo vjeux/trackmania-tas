@@ -112,7 +112,10 @@ pub fn classify(rows: &[Row], start_speed: f64, floor_y: f64, exited: bool, fini
 }
 
 /// Fan out one ghost. `start_id_base` numbers this ghost's starts globally.
-pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_base: u32) -> Result<GhostFanout, String> {
+/// `shard = (k, n)`: only every n-th nominal start (index ≡ k mod n) is fanned
+/// out by this call, so one ghost can be split over n workers; the human legs
+/// are emitted by shard 0 only. Start ids: `start_id_base + grid index`.
+pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_base: u32, shard: (usize, usize)) -> Result<GhostFanout, String> {
     let o = StartsOpts { every_ms: cfg.every_ms, out: None, trace_out: None, verbose: false };
     let rep = run_on_worker(w, tel, &cfg.gates, &o)?;
     if !(rep.start_ctrl_pass && rep.identity.passes()) {
@@ -138,11 +141,17 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     let mut node: Option<Handle> = None;
     let mut cursor = w.root_probe; // records consumed at the current node (its probe)
     let mut next_ms = 0i64;
+    let mut grid_index: u32 = 0;
     let t_all = std::time::Instant::now();
     while next_ms + 10 * max_h as i64 <= label_of_tick(w, n) {
         // the nominal start: state after record k, label next_ms
         let k = ((next_ms - off) / 10).max(0) as usize;
         next_ms += cfg.every_ms;
+        let this_index = grid_index;
+        grid_index += 1;
+        if (this_index as usize) % shard.1 != shard.0 {
+            continue;
+        }
         if k + 1 <= cursor {
             continue; // the chain is already past it
         }
@@ -176,7 +185,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         let cps_before = credited.iter().filter(|c| **c).count() as u8;
         // the human's next gate from here
         let next_gate: Option<usize> = human_order.iter().find(|wp| !credited[gates.gates.iter().position(|g| g.waypoint == **wp).unwrap()]).map(|wp| gates.gates.iter().position(|g| g.waypoint == *wp).unwrap());
-        let start_id = start_id_base + out.starts.len() as u32;
+        let start_id = start_id_base + this_index;
         let mut start_state: Option<CarState> = None;
         let mut cells: std::collections::HashSet<(i64, i64, i64)> = Default::default();
         let flat_at = |label: i64| flat.iter().find(|r| r.time_ms == label);
@@ -311,7 +320,8 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     }
     // G4: the human's own legs (positives) and respawn negatives, ids after the
     // fan-out's starts.
-    let hb = start_id_base + out.starts.len() as u32;
+    let hb = start_id_base + 500;
+    if shard.0 == 0 {
     match crate::human::human_from_flat(w, tel, flat.clone(), gates, det, hb) {
         Ok(h) => {
             out.human_legs = h.legs;
@@ -321,6 +331,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
             out.log.extend(h.log);
         }
         Err(e) => out.log.push(format!("  human legs FAILED: {e}")),
+    }
     }
     out.log.push(format!(
         "{}: {} starts, {} rollouts in {:.1} s wall ({:.1}/s), outcomes ok/crash/off/fin/abort {:?}, identity max {:.4} m ({} fails), start-row blend max {:.4} m, noop {}, errors {}",
