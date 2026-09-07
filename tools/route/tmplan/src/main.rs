@@ -360,16 +360,25 @@ fn cmd_local(args: &[String]) {
     };
     // --materials: triangle count per (placement kind, material) — the reader check the converter asked for
     if has(args, "--materials") {
-        let mut hist: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
+        // AREA-weighted, up-facing (n.y > 0.7): a road deck is 256 big Asphalt triangles, its lips 4 480 tiny Rubber
+        // ones — counting triangles called the tiny roads Rubber (F20)
+        let mut hist: BTreeMap<(String, &'static str), (usize, f64)> = BTreeMap::new();
         for t in &scene.tris {
+            let e1 = [t.v[1][0] - t.v[0][0], t.v[1][1] - t.v[0][1], t.v[1][2] - t.v[0][2]];
+            let e2 = [t.v[2][0] - t.v[0][0], t.v[2][1] - t.v[0][1], t.v[2][2] - t.v[0][2]];
+            let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let l = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+            if l < 1e-6 || nrm[1].abs() / l < 0.7 { continue; }
             let k = format!("{:?}", scene.placements[t.tag as usize].kind);
-            *hist.entry((k, mapgeom::scene::physics_name(t.mat))).or_default() += 1;
+            let e = hist.entry((k, mapgeom::scene::physics_name(t.mat))).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += (l / 2.0) as f64;
         }
         let mut v: Vec<_> = hist.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
-        println!("  materials (kind, physics → triangles):");
-        for ((k, m), n) in v.iter().take(30) {
-            println!("    {k:<10} {m:<20} {n}");
+        v.sort_by(|a, b| b.1 .1.partial_cmp(&a.1 .1).unwrap());
+        println!("  up-facing surfaces (kind, physics → area m², triangles):");
+        for ((k, m), (n, a)) in v.iter().take(30) {
+            println!("    {k:<10} {m:<20} {a:>10.0} m²  {n:>8} tris");
         }
     }
     // specials census
