@@ -464,3 +464,34 @@ impl GateTracker {
         t.n_gates() > 0 && self.hit.len() == t.n_gates() && self.hit.iter().all(|x| *x)
     }
 }
+
+/// The car-switch ("transform") blocks: `Gameplay{Snow,Rally,Desert}` blocks
+/// and items re-bind the participant's vehicle to another car model. The
+/// validator's car chain used to read slot 0 (Stadium) unconditionally and
+/// FREEZE at the switch (INPUT arm, 2026-09-06: the participant holds four
+/// vehicles at +0x1118/+0x1128/+0x1138/+0x1148 = Stadium/Snow/Rally/Desert;
+/// the live one is the slot whose u32 at phy+0x10 != 0xffffffff). Until the
+/// readout follows the live slot, an env on such a map silently reports a
+/// frozen car -- so it is refused, by name, before any server starts.
+pub fn car_switch_blocks(map: &std::path::Path) -> Vec<String> {
+    let mf = match tmmaps::map::MapFile::try_load(map) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let is_switch = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        l.contains("gameplay") && (l.contains("snow") || l.contains("rally") || l.contains("desert"))
+    };
+    let mut out: Vec<String> = Vec::new();
+    for b in mf.blocks.iter().chain(mf.baked.iter()) {
+        if is_switch(&b.name) && !out.contains(&b.name) {
+            out.push(b.name.clone());
+        }
+    }
+    for it in &mf.items {
+        if is_switch(&it.model) && !out.contains(&it.model) {
+            out.push(it.model.clone());
+        }
+    }
+    out
+}

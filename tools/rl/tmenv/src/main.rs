@@ -31,6 +31,8 @@ fn has(a: &[String], k: &str) -> bool {
 #[derive(Clone)]
 struct Paths {
     server: PathBuf,
+    /// `--allow-car-switch`: run on a transform map anyway.
+    allow_car_switch: bool,
     map: PathBuf,
     shim: PathBuf,
     work: PathBuf,
@@ -60,6 +62,7 @@ fn paths(a: &[String]) -> Paths {
         work,
         reference: PathBuf::from(flag(a, "--ref").unwrap_or_default()),
         geom: flag(a, "--geom").map(PathBuf::from),
+        allow_car_switch: a.iter().any(|x| x == "--allow-car-switch"),
     }
 }
 
@@ -266,6 +269,17 @@ fn drive(env: &mut ForkEnv, actions: &dyn Fn(usize) -> usize, max_steps: usize) 
 /// order and the wrong first gate -- all of it silently, because the geometry is
 /// self-consistent either way and only the reward is nonsense.
 fn measured_track(p: &Paths) -> Result<tmenv::Track, String> {
+    // REFUSE car-switch maps (see `tmenv::track::car_switch_blocks`) unless
+    // told otherwise: the validator car freezes at the switch and every row
+    // after it would be a stale copy.
+    let sw = tmenv::track::car_switch_blocks(&p.map);
+    if !sw.is_empty() && !p.allow_car_switch {
+        return Err(format!(
+            "this map has car-switch blocks ({}) and the env's car readout does not yet follow the live vehicle \
+             slot -- refused (pass --allow-car-switch to run anyway, knowing the car may freeze at the switch)",
+            sw.join(", ")
+        ));
+    }
     // `--geom geom.json` (the DATA arm's TrackGeom: field-median line, WR line,
     // router output) takes precedence over the cartographer's pack/route, which
     // on Summer 2026 - 01 runs on another road for its first ~150 m
