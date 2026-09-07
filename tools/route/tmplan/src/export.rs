@@ -35,7 +35,7 @@ pub fn export(
         let (from, to) = (w[0], w[1]);
         let e = plan.edges[li];
         let raw: Vec<[f32; 3]> = match e.kind {
-            EdgeKind::Surface => surf.path_points(nodes, fields, from, to).unwrap_or_else(|| vec![nodes.pos[from], nodes.pos[to]]),
+            EdgeKind::Surface | EdgeKind::Learned => surf.path_points(nodes, fields, from, to).unwrap_or_else(|| vec![nodes.pos[from], nodes.pos[to]]),
             _ => vec![nodes.pos[from], nodes.pos[to]],
         };
         let leg_pts = tmroute::human::resample(&raw, 2.0);
@@ -65,6 +65,8 @@ pub fn export(
         let connection = match e.kind {
             EdgeKind::Surface => ConnectionClass::Road,
             EdgeKind::Flight => if dy < -8.0 { ConnectionClass::Drop } else { ConnectionClass::Jump },
+            // a learned leg over a surface path is a road leg R agreed with; without a path it is R's guess
+            EdgeKind::Learned => if surf.path_points(nodes, fields, from, to).is_some() { ConnectionClass::Road } else { ConnectionClass::Unknown },
             EdgeKind::None => ConnectionClass::Unknown,
         };
         let v = e.arrival.speed();

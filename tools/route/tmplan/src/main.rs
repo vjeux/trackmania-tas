@@ -199,7 +199,7 @@ fn cmd_legs(args: &[String]) {
         let pb = nodes.pos[b];
         let prof = surf.chord_profile(pa, pb, step, reach);
         let mats: Vec<String> = prof.materials().iter().map(|(m, f)| format!("{m} {:.0}%", f * 100.0)).collect();
-        let tag = match e.kind { EdgeKind::Surface => "surface", EdgeKind::Flight => "NO-SURFACE-PATH", EdgeKind::None => "none" };
+        let tag = match e.kind { EdgeKind::Surface => "surface", EdgeKind::Flight => "NO-SURFACE-PATH", EdgeKind::Learned => "learned", EdgeKind::None => "none" };
         println!(
             "  leg {li}: g{} → g{} [{}]  surface path {}  chord {:.1} m horiz, dy {:+.1} m  gaps {} (longest {:.1} m)  beneath the chord: {}",
             if a == 0 { "spawn".into() } else { nodes.groups[a].to_string() },
@@ -342,8 +342,7 @@ fn cmd_local(args: &[String]) {
             s
         }
         None => {
-            let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER"));
-            let paths: Vec<String> = ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"].iter().map(|n| format!("{server}/Packs/{n}")).filter(|p| Path::new(p).exists()).collect();
+            let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
             let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
             let m = tmmaps::map::MapFile::load(Path::new(&map));
             let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked"), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
@@ -443,8 +442,7 @@ fn cmd_local(args: &[String]) {
 /// (for the stable family id table in mapgeom::local).
 fn cmd_families(args: &[String]) {
     let gdir = flag(args, "--gates-dir").unwrap_or_else(|| die("--gates-dir GEOM_DIR"));
-    let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER"));
-    let paths: Vec<String> = ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"].iter().map(|n| format!("{server}/Packs/{n}")).filter(|p| Path::new(p).exists()).collect();
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let mut census: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // family → (placements, triangles)
     for map in args.iter().filter(|a| a.ends_with(".Map.Gbx")) {
