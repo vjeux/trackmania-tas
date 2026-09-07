@@ -245,15 +245,23 @@ fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile,
     println!("    {:>3} {:>8} {:>9} {:>10} {:>10} {:>9} {:>9}", "leg", "to", "length_m", "pred_ms", "human_ms", "v_pred", "v_human");
     let mut bucket = StateBucket::of_speed(0.0);
     let mut tot_pred = 0i32;
+    let mut tsv = vec!["map\tleg\tfrom_group\tto_group\tto_waypoint\tgraph_len_m\tpred_ms\thuman_best_ms\tv_implied\tverdict".to_string()];
     for li in 0..modal.len() {
         let (a, b) = (visit[li], visit[li + 1]);
         let e = est.estimate(bucket, if li == 0 { None } else { Some(visit[li - 1]) }, a, b);
         let human_ms = rows.iter().filter(|r| r.0 == modal).map(|r| r.1[li] - if li == 0 { 0 } else { r.1[li - 1] }).min().unwrap();
         let l = len[a][b];
-        println!("    {:>3} {:>8} {:>9.0} {:>10} {:>10} {:>9.1} {:>9.1}", li, format!("g{}", modal[li]), l, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, 1000.0 * l / human_ms.max(1) as f32);
+        let v_h = 1000.0 * l / human_ms.max(1) as f32;
+        // A human leg whose surface-graph path implies > 130 m/s, or has no path at all, was
+        // NOT driven along the graph: the humans used a connection the surface reader lacks.
+        let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 130.0 { "MISSING-CONNECTION (graph detour)" } else { "surface" };
+        println!("    {:>3} {:>8} {:>9.0} {:>10} {:>10} {:>9.1} {:>9.1}  {}", li, format!("g{}", modal[li]), l, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, v_h, verdict);
+        tsv.push(format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{}\t{}\t{:.1}\t{}", gates.map_name, li, if a == 0 { "spawn".to_string() } else { nodes.groups[a].to_string() }, modal[li], gates.group_rep(modal[li]).map_or(u32::MAX, |g| g.waypoint), l, e.expected_ms, human_ms, v_h, verdict));
         tot_pred += e.expected_ms.max(0);
         bucket = e.arrival;
     }
     println!("    lap: predicted {} vs human best {}", io::secs(tot_pred), io::secs(best_lap));
-    let _ = gates;
+    if let Some(out) = flag(args, "--legs-out") {
+        std::fs::write(&out, tsv.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+    }
 }

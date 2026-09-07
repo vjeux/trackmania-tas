@@ -287,12 +287,19 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // 1×1 cell is local (16, 2, 16) through the placement rotation, and the
         // road axis is local +Z through the same rotation (tilted pieces included).
         let mut free_axis: Option<[f32; 3]> = None;
+        // A road/platform piece's crossing point is its road centre (16, 2, 16); a gate
+        // structure's is mid-arch (16, 8, 16) — Poland 2026's finish is a GateFinish rolled
+        // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
+        // exactly where the rotated local frame puts the arch.
         let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
-        let centre = match (w.pos, w.free_rot.filter(|_| road_piece)) {
+        let local_c = if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        let centre = match (w.pos, w.free_rot) {
             (Some(p), Some(rot)) => {
                 let m = turned(p, rot);
-                free_axis = Some(apply(&m, [16.0, 2.0, 17.0]).iter().zip(apply(&m, [16.0, 2.0, 16.0]).iter()).map(|(a, b)| a - b).collect::<Vec<f32>>().try_into().unwrap());
-                apply(&m, [16.0, ROAD_ABOVE_BASE, 16.0])
+                let c = apply(&m, local_c);
+                let c2 = apply(&m, [local_c[0], local_c[1], local_c[2] + 1.0]);
+                free_axis = Some([c2[0] - c[0], c2[1] - c[1], c2[2] - c[2]]);
+                c
             }
             (Some(p), None) => p,
             (None, _) => [

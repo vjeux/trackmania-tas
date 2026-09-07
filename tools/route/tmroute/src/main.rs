@@ -419,6 +419,7 @@ fn main() {
         "consensus" => cmd_consensus(rest),
         "index" => cmd_index(rest),
         "table" => cmd_table(rest),
+        "human-batch" => cmd_human_batch(rest),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -517,3 +518,93 @@ pub fn cmd_table(args: &[String]) {
     println!();
     println!("planner order == cartographer order over the checkpoints the cartographer knew: {n_carto_exact}/{n_carto_cmp}; planner == human modal: {n_human_exact}/{n_human_cmp}. τ = Kendall tau over shared groups; * = the two orders cover different checkpoint sets (F1).");
 }
+
+/// `tmroute human-batch --data DATA/v0/maps --geom GEOM_DIR --routes ROUTES_DIR [--unverified]`
+/// For every map dir with ghosts: verified ghosts (sidecar `verdict == "exact"`) → human-orders.tsv +
+/// consensus.txt + routes/<uid>/route-router-human-0.json (+ gates.json normals oriented "human").
+/// With --unverified, ghosts whose verdict is null are ALSO run, into the *.unverified.* files only.
+pub fn cmd_human_batch(args: &[String]) {
+    let data = flag(args, "--data").unwrap_or_else(|| die("--data DIR (…/v0/maps)"));
+    let geom = flag(args, "--geom").unwrap_or_else(|| die("--geom GEOM_DIR"));
+    let routes = flag(args, "--routes").unwrap_or_else(|| die("--routes ROUTES_DIR"));
+    let unverified = has_flag(args, "--unverified");
+    let prov = tmroute::provenance("tmroute human-batch");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&data).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    for d in dirs {
+        let uid = d.file_name().unwrap().to_string_lossy().to_string();
+        let gp = Path::new(&geom).join(&uid).join("gates.json");
+        if !gp.exists() {
+            // a map the crawl brought that GEOM has not seen: build its gates.json from the crawled map file
+            let mf = d.join("map.Map.Gbx");
+            if mf.exists() {
+                match tmroute::gates::build(&mf, &prov) {
+                    Ok(g) => {
+                        io::write_gates(&gp, &g).unwrap_or_else(|e| die(&e));
+                        let ctl = if g.control_ok() { "OK" } else { "FAIL" };
+                        let line = format!("{}\t{}\tdeclared {}\tcp_groups {}\tfinish_groups {}\tcontrol {}\tyoff {}\tresid {:+.1}\tgates {}\toriented 0\n", g.map_name, g.map_uid, g.declared_checkpoints, g.checkpoint_groups, g.finish_groups, ctl, g.yoff, g.yoff_residual, g.gates.len() - 1);
+                        let _ = std::fs::write(Path::new(&geom).join(&uid).join("gates.txt"), &line);
+                        print!("NEW gates.json: {line}");
+                    }
+                    Err(e) => eprintln!("{uid}: gates.json build failed: {e}"),
+                }
+            }
+        }
+        let Ok(mut gates) = io::read_gates(&gp) else { eprintln!("{uid}: no gates.json, skipped"); continue };
+        let gdir = d.join("ghosts");
+        let Ok(rd) = std::fs::read_dir(&gdir) else { continue };
+        let mut exact = Vec::new();
+        let mut pending = Vec::new();
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map_or(true, |x| x != "Gbx") || !p.to_string_lossy().ends_with(".Ghost.Gbx") { continue; }
+            let side = p.with_extension("").with_extension("json");
+            let verdict = std::fs::read_to_string(&side).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v.get("verdict").and_then(|x| x.as_str().map(|s| s.to_string())));
+            match verdict.as_deref() {
+                Some("exact") => exact.push(p.to_string_lossy().to_string()),
+                Some(_) => {}
+                None => pending.push(p.to_string_lossy().to_string()),
+            }
+        }
+        let run = |ghost_paths: &[String], suffix: &str, bank_route: bool, gates: &mut GatesFile| {
+            if ghost_paths.is_empty() { return; }
+            let runs = load_runs(ghost_paths);
+            let rows = make_rows(&runs, gates);
+            let mut lines = vec![human::ORDERS_HEADER.to_string()];
+            lines.extend(rows.iter().map(human::order_row));
+            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), lines.join("\n") + "\n");
+            let c = human::consensus(gates, &runs, &rows, &prov);
+            let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+            let mut out = format!(
+                "{}\t{}\truns {}\tusable {}\tdistinct_orders {}\tmodal_groups [{}]\tmodal_n {}\tshare {:.2}\tagree {}\n",
+                gates.map_name, gates.map_uid, c.n_runs, c.n_finished_ok, c.distinct_orders, j(&c.modal_group_order), c.n_modal, c.share, if c.agree { "YES" } else { "no" }
+            );
+            for n in &c.notes { out.push_str(&format!("  note: {n}\n")); }
+            let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
+            for r in &rows { if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints { *counts.entry(r.order_group.clone()).or_default() += 1; } }
+            for (k, v) in &counts { out.push_str(&format!("  order [{}] x{}\n", j(k), v)); }
+            if let Some(route) = &c.route {
+                out.push_str(&format!("  route: {} pts, {:.1} m, {} legs, predicted {}, valid {}\n", route.pts.len(), route.s.last().copied().unwrap_or(0.0), route.legs.as_ref().map_or(0, |l| l.len()), io::secs(route.route.as_ref().unwrap().predicted_ms), route.validate().is_empty()));
+                if bank_route && c.agree {
+                    let f = Path::new(&routes).join(&uid).join(io::route_file_name("router-human", 0));
+                    io::write_route(&f, route).unwrap_or_else(|e| die(&e));
+                    out.push_str(&format!("wrote {}\n", f.display()));
+                    let mut dirs = BTreeMap::new();
+                    for l in route.legs.as_ref().unwrap() {
+                        let g = gates.by_waypoint(l.map_waypoint).map(|g| g.group).unwrap();
+                        for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
+                    }
+                    let n = tmroute::gates::orient(gates, &dirs, "human");
+                    io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
+                    out.push_str(&format!("oriented {n} gate normals from human crossings\n"));
+                }
+            }
+            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), &out);
+            print!("{}", out.lines().next().unwrap_or(""));
+            println!("\t[{} ghosts{}]", ghost_paths.len(), suffix);
+        };
+        run(&exact, "", true, &mut gates);
+        if unverified { run(&pending, ".unverified", false, &mut gates); }
+    }
+}
+fn has_flag(args: &[String], name: &str) -> bool { args.iter().any(|a| a == name) }
