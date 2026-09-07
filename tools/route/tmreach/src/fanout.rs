@@ -270,13 +270,18 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 // geometry crossing a finish gate in the rows (the last ~5 samples of an exiting
                 // child are lost, the finish step among them, run to run): that IS the finish.
                 if rolled.exited && cr.engine {
+                    // DETERMINISM: whether the counter step at the finish is among the flushed rows
+                    // varies run to run, so an exit-finish is ALWAYS placed at the geometric crossing
+                    // row (the engine credits 1-2 ticks later); the record's outcome is finished
                     let geo = det.first_crossings(gates, &win, &credited);
-                    let fin_geo = gates.gates.iter().enumerate().find(|(gi, g)| g.kind == GateKind::Finish && geo[*gi] >= 0 && first[*gi] < 0).map(|(gi, _)| gi);
+                    let fin_geo = gates.gates.iter().enumerate().find(|(gi, g)| g.kind == GateKind::Finish && geo[*gi] >= 0).map(|(gi, _)| gi);
                     if let Some(fgi) = fin_geo {
                         let all_cps = gates.gates.iter().enumerate().filter(|(_, g)| g.kind != GateKind::Finish && g.kind != crate::gates::GateKind::Start).all(|(gi, _)| credited[gi] || first[gi] >= 0);
                         if all_cps {
+                            if first[fgi] < 0 {
+                                out.stats.finish_from_exit += 1;
+                            }
                             first[fgi] = geo[fgi];
-                            out.stats.finish_from_exit += 1;
                         }
                     }
                 }
