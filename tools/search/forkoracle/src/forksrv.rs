@@ -670,11 +670,15 @@ impl ForkServer {
 
     /// Tell the shim which address holds this race's finish time, so children
     /// can stop the moment the engine records one. See `crate::finish`.
-    pub fn set_finish_word(&mut self, addr: u64, exhausted: u64, cp: u64) -> String {
+    /// `last_tape_clock` is the clock of the tape's final record -- past it the
+    /// engine simulates on whatever the input array holds, so nothing after it
+    /// is this tape's result. It is arithmetic, not a measurement: see
+    /// `crate::finish`.
+    pub fn set_finish_word(&mut self, addr: u64, last_tape_clock: u64, cp: u64) -> String {
         let mut p = Vec::with_capacity(25);
         p.push(b'Y');
         p.extend_from_slice(&addr.to_le_bytes());
-        p.extend_from_slice(&exhausted.to_le_bytes());
+        p.extend_from_slice(&last_tape_clock.to_le_bytes());
         p.extend_from_slice(&cp.to_le_bytes());
         self.arm(&p)
     }
@@ -1036,25 +1040,24 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     //
     // A DNF cps recorded before this change is a lower bound: do not compare
     // one naively with a new one (see SEARCH.md).
-    // A FINISH AFTER THE TAPE'S LAST RECORD IS NOT A FINISH.
+    // A FINISH AFTER THE TAPE'S LAST RECORD IS FLAGGED, NOT SUPPRESSED.
     //
-    // Past the end the engine keeps simulating on whatever the input array
-    // holds, so a candidate can cross the line on heap contents -- and the
-    // plain oracle's verdict for that is BATCH-DEPENDENT (the perf arm measured
-    // one tape DNF alone and 26.839 in a batch of 520). The JSON reports it as
-    // an ordinary finish; the shim knows better, because the tape-exhausted
-    // word fires first. Such a candidate is a DNF here, with its checkpoint
-    // count, and never a time.
-    if let Some(l) = text.lines().find(|l| l.trim().starts_with("FKPASTEND ")) {
-        let _ = l;
-        let cps = text.lines().find_map(|l| {
-            l.trim()
-                .strip_prefix("FKCPS ")
-                .and_then(|r| r.split_whitespace().next())
-                .and_then(|v| v.parse::<u32>().ok())
-        });
-        return (None, cps);
-    }
+    // Past the end the engine simulates on whatever follows the input array, so
+    // such a time was not produced by this tape alone -- and the perf arm
+    // measured the plain oracle giving one such tape a BATCH-DEPENDENT verdict
+    // (DNF alone, 26.839 in a batch of 520).
+    //
+    // But it is the same time the JSON reports and the same time a full
+    // validation reports: past the array both read zero-filled pages, and only
+    // a reused dirty allocation differs. Returning a DNF instead cost 19 of 50
+    // candidates at map 2 `tick:2380`, all of which the full validation scored
+    // as finishes with the same millisecond -- and the class is not rare, since
+    // the tape ends at the reference's finish and every slower candidate is in
+    // it. So `FKPASTEND` rides in the output for whoever is deciding what to
+    // BANK, and the verdict here stays the engine's.
+    //
+    // `text.contains("FKPASTEND")` is the test for that consumer.
+
     let engine_cps = text.lines().find_map(|l| {
         l.trim()
             .strip_prefix("FKCPS ")

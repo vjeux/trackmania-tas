@@ -1006,6 +1006,8 @@ struct Timing {
     cps: u64,
     /// The tick at which the tape ran out, 0 if it never did.
     exhausted_clock: u64,
+    /// 1 if the finish was recorded AFTER the tape had run out.
+    finish_past_end: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -1018,12 +1020,16 @@ static RESULT_WORD: AtomicUsize = AtomicUsize::new(0);
 /// same child produces both numbers and they can be compared (`fk tickhook
 /// finishcheck`).
 static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
-/// The word the engine zeroes when the tape's inputs run out, and the value it
-/// holds while they have not.
-static EXHAUSTED_WORD: AtomicUsize = AtomicUsize::new(0);
-static EXHAUSTED_LIVE: AtomicUsize = AtomicUsize::new(0);
+/// The clock of the tape's LAST record: past it the engine is simulating on
+/// whatever the input array holds, so nothing after it is this tape's result.
+/// Sent by the driver, which knows exactly how many records it wrote.
+static LAST_TAPE_CLOCK: AtomicUsize = AtomicUsize::new(0);
 /// Has this child passed the end of its tape?
 static EXHAUSTED_SEEN: AtomicUsize = AtomicUsize::new(0);
+/// May a child that has passed the end LEAVE, instead of letting the validator
+/// finish? Opt-in: it changes the verdict for a candidate that crosses the line
+/// just past the last record.
+static DNF_FAST: AtomicUsize = AtomicUsize::new(0);
 /// The participant's checkpoint counter.
 static CP_WORD: AtomicUsize = AtomicUsize::new(0);
 /// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
@@ -1165,28 +1171,64 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
             }
         }
     }
-    // HAS THE TAPE RUN OUT? Tracked on every tick, whatever mode we are in,
-    // because a finish AFTER the last record is not a finish.
+    // HAS THE TAPE RUN OUT? A COMPARISON, not a memory read.
     //
-    // The engine keeps simulating past the tape's end on whatever the input
-    // array happens to hold, so a candidate can "finish" on heap contents --
-    // and the plain oracle's verdict for that case is BATCH-DEPENDENT (the perf
-    // arm measured a tape that is a DNF alone and 26.839 in a batch of 520).
-    // The JSON reports such a finish as a finish. This does not: the exhausted
-    // word (`participant+0x188`, 2 -> 0 one tick after the last record) fires
-    // first, so a finish seen after it is reported as its own class and never
-    // as a time.
-    if IS_CHILD.load(Ordering::Relaxed) != 0 && EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0 {
-        let e = EXHAUSTED_WORD.load(Ordering::Relaxed);
-        if e != 0
-            && std::ptr::read_volatile(e as *const u32) as usize
-                != EXHAUSTED_LIVE.load(Ordering::Relaxed)
-        {
-            EXHAUSTED_SEEN.store(1, Ordering::Relaxed);
-            let t = timing();
-            if !t.is_null() {
-                (*t).exhausted_clock = n;
-            }
+    // Past its last record the engine keeps simulating on whatever the input
+    // array holds, so a candidate can cross the line on heap contents -- and
+    // the plain oracle's verdict for that is BATCH-DEPENDENT (the perf arm
+    // measured one tape DNF alone and 26.839 in a batch of 520). The JSON
+    // reports it as an ordinary finish; this does not.
+    //
+    // THE FIRST VERSION OF THIS READ A WORD IN THE PARTICIPANT that goes 2 -> 0
+    // one tick after the last record (`fk tickhook dnf` found it). That was a
+    // measurement standing in for a fact the driver already knows, and it cost
+    // a real regression: on Kacky Reloaded #290 that word also moves AT THE
+    // FINISH, so a genuine finish 4-7 ticks inside the tape fired the guard
+    // first and was reported as a DNF -- intermittently, because whether the
+    // word had settled by the finish tick depends on the engine's wall-clock
+    // frame partition. Two of three runs of the same seed disagreed.
+    //
+    // The tape's last tick is not a thing to discover: the driver knows how
+    // many records it sent and the clock is the record index. So it sends the
+    // number, and this is one compare against the clock we already have --
+    // exact on every map, identical on every run, and no per-map word to be
+    // wrong about.
+    // WHERE THE TAPE ENDS -- reported, never used to overrule a verdict.
+    //
+    // A candidate that crosses the line after its tape's last record finished
+    // on inputs that are not in the tape, and the perf arm measured the plain
+    // oracle giving such a tape a BATCH-DEPENDENT time (DNF alone, 26.839 in a
+    // batch of 520). So the class is real and worth flagging.
+    //
+    // It is NOT worth overruling the verdict with, and the measurement says so:
+    // suppressing the time turned 19 of 50 candidates at map 2 `tick:2380` and
+    // 14 of 50 at 145875 into DNFs that the full validation -- and the fork
+    // itself, before this -- both scored as finishes, with the SAME
+    // millisecond. Past the array both processes read zero-filled pages, so
+    // they agree; the batch case differs because a reused allocation is dirty.
+    // And the class is not rare: the tape ends AT the reference's finish, so
+    // every candidate slower than the incumbent is in it.
+    //
+    // Refusing to bank one is a decision for whoever banks. Reporting it is
+    // this layer's job: `FKPASTEND` rides beside the time.
+    //
+    // +1, and it is not slack: the engine WRITES the result one tick after the
+    // tick that detects the crossing (measured on three tapes, TICKHOOK.md
+    // 10.2). A finish detected on the tape's last tick therefore lands at
+    // `last + 1`, and refusing it would turn a genuine finish into a DNF --
+    // which is exactly the regression this replaced, arrived at from the other
+    // side. Anything past THAT is the engine driving on heap contents; the
+    // coast is hundreds of ticks long, so nothing real sits in the gap.
+    let last = LAST_TAPE_CLOCK.load(Ordering::Relaxed) as u64;
+    if IS_CHILD.load(Ordering::Relaxed) != 0
+        && last != 0
+        && n > last + 1
+        && EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0
+    {
+        EXHAUSTED_SEEN.store(1, Ordering::Relaxed);
+        let t = timing();
+        if !t.is_null() {
+            (*t).exhausted_clock = n;
         }
     }
     let mode = EXIT_AT_FINISH.load(Ordering::Relaxed);
@@ -1197,12 +1239,21 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
             if v as usize != RESULT_SENTINEL.load(Ordering::Relaxed) {
                 let t = timing();
                 if !t.is_null() && (*t).finish_sim_ms == 0 {
-                    // a finish recorded after the tape ran out is the engine
-                    // driving on heap contents: record WHEN, never as a time
-                    if EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0 {
-                        (*t).finish_sim_ms = v as u64;
-                    }
+                    // REPORTED, NOT SUPPRESSED, when it lands past the tape's
+                    // end. The time is still the engine's own answer for this
+                    // simulation and it still equals the JSON's -- see the
+                    // comment on the guard above for why refusing it was wrong.
+                    (*t).finish_sim_ms = v as u64;
                     (*t).finish_clock = n;
+                    // THE FLAG IS TAKEN HERE, at the finish, not at exit: by
+                    // the time a child ends, EVERY run has passed the tape's
+                    // end (the engine coasts hundreds of ticks), so an
+                    // exit-time test marks every finisher and says nothing.
+                    // What matters is whether the tape had already run out
+                    // WHEN THE LINE WAS CROSSED.
+                    if EXHAUSTED_SEEN.load(Ordering::Relaxed) != 0 {
+                        (*t).finish_past_end = 1;
+                    }
                 }
                 if mode == 1 {
                     _exit(0);
@@ -1211,10 +1262,19 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                 // no finish yet -- has the tape run out? then this candidate's
                 // answer is already final: it did not finish, and the only
                 // other thing the driver wants is how far it got.
-                let e = EXHAUSTED_WORD.load(Ordering::Relaxed);
-                if e != 0
-                    && std::ptr::read_volatile(e as *const u32) as usize
-                        != EXHAUSTED_LIVE.load(Ordering::Relaxed)
+                // THE EXIT IS GATED; THE FLAG IS NOT.
+                //
+                // Leaving at the tape's end saves the 6.02 ms epilogue on a
+                // candidate that did not finish -- but "has not finished YET"
+                // is not "did not finish": a candidate can cross the line one
+                // to four ticks past the last record, and a child that left
+                // at the record would report a DNF where the full validation
+                // reports a time. Measured, when this gate was briefly lost:
+                // 10 of 50 at map 2 `tick:2380` and 8 of 50 at 145875.
+                // So the exit stays opt-in (`FKSHIM_DNF_FAST=1`) and the
+                // default child runs on and lets the engine answer.
+                if EXHAUSTED_SEEN.load(Ordering::Relaxed) != 0
+                    && DNF_FAST.load(Ordering::Relaxed) != 0
                 {
                     let t = timing();
                     if !t.is_null() && (*t).dnf_clock == 0 {
@@ -2183,14 +2243,17 @@ unsafe fn forkserver() {
                 if readable(cp as usize, 4) {
                     CP_WORD.store(cp as usize, Ordering::SeqCst);
                 }
-                // The tape-exhausted EXIT is separate and stays opt-in: it
-                // saves the 6.02 ms epilogue but ends the child early, which
-                // is a behaviour change where the counter is only a
-                // measurement change.
-                if exh >= 0x1000 && readable(exh as usize, 4) && readable(cp as usize, 4) {
-                    EXHAUSTED_WORD.store(exh as usize, Ordering::SeqCst);
-                    EXHAUSTED_LIVE.store(*(exh as *const u32) as usize, Ordering::SeqCst);
-                }
+                // THE TAPE'S LAST CLOCK -- a number the driver already knows,
+                // not an address to read. Always armed: it is what makes a
+                // finish past the tape's end detectable. The EXIT on it stays
+                // opt-in (`FKSHIM_DNF_FAST`), because saving the 6.02 ms
+                // epilogue ends the child early, which is a behaviour change,
+                // where reading the counter is only a measurement change.
+                LAST_TAPE_CLOCK.store(exh as usize, Ordering::SeqCst);
+                DNF_FAST.store(
+                    if std::env::var("FKSHIM_DNF_FAST").is_ok() { 1 } else { 0 },
+                    Ordering::SeqCst,
+                );
             }
             EXIT_AT_FINISH.store(
                 if std::env::var("FKSHIM_FINISH_CHECK").is_ok() { 2 } else { 1 },
@@ -2940,7 +3003,7 @@ unsafe fn forkserver() {
             {
                 // the child may have left at the finish with the answer
                 let tp = timing();
-                if !tp.is_null() && (*tp).exhausted_clock != 0 && (*tp).finish_clock != 0 && (*tp).finish_sim_ms == 0 {
+                if !tp.is_null() && (*tp).finish_past_end != 0 {
                     out.extend_from_slice(b"\nFKPASTEND clock ");
                     utoa((*tp).finish_clock, &mut out);
                     out.push(b'\n');
@@ -3073,7 +3136,7 @@ unsafe fn forkserver() {
         // simulation -- the validator's finish and print path, the JSON, the
         // pipe and the parse.
         let tp = timing();
-        if !tp.is_null() && (*tp).exhausted_clock != 0 && (*tp).finish_clock != 0 && (*tp).finish_sim_ms == 0 {
+        if !tp.is_null() && (*tp).finish_past_end != 0 {
             out.extend_from_slice(b"\nFKPASTEND clock ");
             utoa((*tp).finish_clock, &mut out);
             out.push(b'\n');

@@ -1651,10 +1651,21 @@ pub fn finishcheck(
         rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (rng >> 33) as u64
     };
+    // THE TAPE ENDS AT A TICK, NOT AT A MILLISECOND.
+    //
+    // The last record is consumed by tick `probe + tail - 1`, and a crossing
+    // PARTWAY THROUGH that tick is still driven by the tape -- it just carries a
+    // timestamp a few ms past the record's own. Comparing milliseconds called
+    // 111 of 200 legitimate finishes "past the end" on 145875, where most
+    // candidates cross during the very tick the tape ends on.
+    let last_record_tick = probe as i64 + tail as i64 - 1;
+    let finish_tick_of = |ms: i64| (ms - s.tape.start_offset_ms as i64).div_euclid(10);
     let (mut agree, mut fast_only, mut slow_only, mut disagree) = (0usize, 0, 0, 0);
     let (mut cps_ok, mut cps_bad, mut cps_off) = (0usize, 0usize, 0usize);
     let mut cps_above = 0usize;
     let mut past = 0usize;
+    let mut past_bad = 0usize;
+    let (mut late, mut late_unflagged) = (0usize, 0usize);
     let (mut finishers, mut dnfs) = (0usize, 0usize);
     let mut worst: Vec<String> = Vec::new();
     for c in 0..n {
@@ -1691,6 +1702,50 @@ pub fn finishcheck(
         // the DNF half: the child that ran out of tape reports its checkpoint
         // count, and the JSON says the same thing in prose
         let past_end = out.lines().any(|l| l.trim().starts_with("FKPASTEND "));
+        if past_end {
+            past += 1;
+            // AND CHECK THE CLASSIFICATION, do not just count it: a genuine
+            // finish is at or before the tape's own last race ms, so a
+            // PAST-END verdict on a time inside the tape would be this guard
+            // mislabelling a real finish -- the failure mode that made its
+            // first version a regression.
+            if let Some(t) = slow {
+                if finish_tick_of(t) <= last_record_tick {
+                    past_bad += 1;
+                    if worst.len() < 8 {
+                        worst.push(format!(
+                            "c{:04}: called PAST-END but the JSON finished at {} ms = tick {}, \
+                             inside the tape (last record tick {})",
+                            c,
+                            t,
+                            finish_tick_of(t),
+                            last_record_tick
+                        ));
+                    }
+                }
+            }
+        }
+        // Is the class even PRESENT in this sample? A flag that reads 0 because
+        // nothing crossed late is not the same as a flag that is broken, and
+        // only the JSON's own time can tell the two apart.
+        if let Some(t) = slow {
+            if finish_tick_of(t) > last_record_tick {
+                late += 1;
+                if !past_end {
+                    late_unflagged += 1;
+                    if worst.len() < 8 {
+                        worst.push(format!(
+                            "c{:04}: the JSON finished at {} ms = tick {}, past the tape's last \
+                             record tick {}, and the guard did NOT flag it",
+                            c,
+                            t,
+                            finish_tick_of(t),
+                            last_record_tick
+                        ));
+                    }
+                }
+            }
+        }
         let engine_cps = out
             .lines()
             .find_map(|l| l.trim().strip_prefix("FKCPS "))
@@ -1759,20 +1814,6 @@ pub fn finishcheck(
                     worst.push(format!("c{:04}: fast {} vs JSON {}", c, a, b));
                 }
             }
-            _ if past_end => {
-                // THE GUARD WORKING, not a disagreement: the engine crossed the
-                // line after the tape's last record, driving on heap contents.
-                // The JSON calls that a finish and its time is
-                // batch-dependent; the fast path calls it what it is.
-                past += 1;
-                if worst.len() < 6 {
-                    worst.push(format!(
-                        "c{:04}: finished PAST THE TAPE'S END -- the JSON says {:?}, which is a \
-                         batch-dependent number",
-                        c, slow
-                    ));
-                }
-            }
             (Some(a), None) => {
                 fast_only += 1;
                 if worst.len() < 10 {
@@ -1799,18 +1840,21 @@ pub fn finishcheck(
          \x20 DNF cps: engine ABOVE the JSON bound   {}\n\
          \x20 DNF cps: engine WRONG (below, or != a measured >=2)  {}\n\
          \x20 DNF cps: no engine count                {}\n\
-         \x20 finished PAST the tape's end (guard fired)  {}",
+         \x20 finished PAST the tape's end (guard fired)  {}\n\
+         \x20 of those, WRONGLY (the JSON finished inside the tape)  {}\n\
+         \x20 the JSON itself finished past the tape's end   {}\n\
+         \x20 of those, NOT flagged by the guard             {}",
         n, finishers, dnfs, agree, disagree, fast_only, slow_only, cps_ok, cps_above, cps_bad,
-        cps_off, past
+        cps_off, past, past_bad, late, late_unflagged
     );
     for w in &worst {
         println!("  {}", w);
     }
     s.srv.quit();
-    if disagree + fast_only + slow_only + cps_bad > 0 {
+    if disagree + fast_only + slow_only + cps_bad + past_bad + late_unflagged > 0 {
         return Err(format!(
             "{} of {} candidates disagree -- the fast path is NOT the validator's answer",
-            disagree + fast_only + slow_only + cps_bad,
+            disagree + fast_only + slow_only + cps_bad + past_bad + late_unflagged,
             n
         ));
     }

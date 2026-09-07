@@ -859,7 +859,11 @@ behavioural change is that a 1-CP DNF now correctly outranks a 0-CP one.
 > not compare one naively with a new one; the same run can read 0 then and 1
 > now without anything having changed about the driving.
 
-### 12.2 A finish after the tape's last record is not a finish
+### 12.2 A finish after the tape's last record is FLAGGED (and the first
+### version of this was a regression)
+
+**This section originally said such a finish is not a finish, and made the fork
+report a DNF. That was wrong twice over, and the perf arm caught it.**
 
 Past the end of its tape the engine keeps simulating on whatever the input
 array happens to hold, so a candidate can cross the finish line on heap
@@ -950,3 +954,81 @@ candidates**. `0xffffffff` is a value someone chose; `0` is what memory is. A
 map whose sentinel is `0` pays the calibration fork, which proves the word by
 watching it take that race's own answer — and 126859, which cannot be
 calibrated reliably at all, keeps the JSON path.
+
+---
+
+## 13. The past-the-end guard, and two ways it was wrong
+
+The perf arm reported an intermittent regression on `ebbd39a`: `fk server check`
+on Kacky Reloaded #290 gave `47/50, 3 MISMATCHES` in two runs of three and
+50/50 in the others — same seed, same candidates, alternating verdicts. All
+three were finishes 4–7 ticks INSIDE the tape.
+
+### 13.1 A measured stand-in for a known fact
+
+The guard asked a WORD whether the tape had run out: `participant+0x188`, which
+`fk tickhook dnf` had watched go `2 -> 0` one tick after the last record. On
+that map the same word also moves **at the finish**, so a genuine finish tripped
+the guard and was scored a DNF — intermittently, because whether the word had
+settled by the finish tick depends on the engine's wall-clock frame partition.
+
+The tape's last tick was never something to discover. **The clock IS the record
+index**: a child resuming at boundary tick `probe` with `n` records consumes its
+last at `probe + n - 1`, and the driver knows both numbers before the child
+exists. It is now sent with the finish word and the child does one compare.
+Exact on every map, identical on every run, nothing per-map to be wrong about.
+
+`forkoracle::finish::last_tape_clock` replaces `EXHAUSTED_IN_PARTICIPANT`.
+
+**+1, and it is not slack**: the engine writes the result one tick after the
+tick that detects the crossing (§10.2), so a finish detected on the tape's last
+tick lands at `last + 1`. Refusing that would be the same regression from the
+other side.
+
+### 13.2 Flagging is not overruling
+
+With the arithmetic right, suppressing the time still turned **19 of 50**
+candidates at map 2 `tick:2380` and 14 of 50 at 145875 into DNFs that the full
+validation scored as finishes — with the same millisecond.
+
+Past the array both processes read **zero-filled pages**, so they agree; the
+batch-dependent case the perf arm measured differs because a reused allocation
+is dirty. And the class is not rare: **the tape ends at the reference's finish,
+so every candidate slower than the incumbent is in it.**
+
+So the verdict stays the engine's and `FKPASTEND` rides beside it. Refusing to
+BANK one is a decision for whoever banks; this layer reports.
+
+Two further corrections the controls forced:
+
+* **the exit must stay gated.** Replacing the word with the clock accidentally
+  ungated the tape-exhausted EXIT, and a child that leaves at the last record
+  never reaches a crossing one to four ticks later: 10 of 50 and 8 of 50 wrong
+  DNFs. `FKSHIM_DNF_FAST=1` gates the exit; the flag is always on.
+* **the flag is taken at the finish, not at exit.** By the time any child ends
+  it has passed the tape's end — the engine coasts hundreds of ticks — so an
+  exit-time test marks every finisher and says nothing.
+
+### 13.3 The control has to be in ticks
+
+`fk tickhook finishcheck` now cross-checks the classification against the JSON's
+own time, and its first version compared MILLISECONDS: it called 111 of 200
+legitimate finishes on 145875 "past the end". A crossing partway through the
+tape's last tick is still driven by the tape — it just carries a timestamp a few
+ms past that record's own. The comparison is between TICK INDICES.
+
+With both right they agree exactly:
+
+| map, checkpoint | flagged past-end | JSON agrees it is late | flagged wrongly | late but unflagged |
+|---|---|---|---|---|
+| map 2, `tick:171` | 24 | 24 | **0** | **0** |
+| map 2, `tick:2313` | 0 | 0 | **0** | **0** |
+| 145875, `tick:400` | 3 | 3 | **0** | **0** |
+| 126859, `tick:1500` | 2 | 2 | **0** | **0** |
+
+### 13.4 Back to green
+
+`fk server check`, five (map, checkpoint) pairs across three maps, **250/250
+identical, 0 mismatches**, and `tick:2380` — the pair that failed — run three
+times for **50/50 every time**. Deterministic, which the word-based version was
+not. search 151/151, fk 38/38.

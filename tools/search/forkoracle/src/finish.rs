@@ -44,16 +44,23 @@ pub const RESULT_PTR_IN_CONTROLLER: u64 = 0x1a88;
 /// every map measured; the calibration fork exists for the ones where it is not.
 pub const FINISH_SIM_MS_IN_RESULT: u64 = 0xa4;
 
-/// `participant + this` is 2 while the tape still has records to feed and 0
-/// from one tick after the last one -- on a finisher and on a DNF alike.
+/// THE TAPE'S LAST TICK IS ARITHMETIC, NOT A MEASUREMENT.
 ///
-/// Found the same way as the finish word: `fk tickhook dnf` steers a candidate
-/// off the road and asks which words in the participant settle near the end.
-/// Six do, all at the same instant, one tick after the tape's last record;
-/// this is the first. A child that reaches it with no finish recorded knows it
-/// did not finish, and the checkpoint counter says how far it got -- which is
-/// the whole of what the driver reads from the JSON's `Desc` line.
-pub const EXHAUSTED_IN_PARTICIPANT: u64 = 0x188;
+/// The clock IS the record index: a child resuming at boundary tick `probe`
+/// with `n` records consumes its last one at `probe + n - 1`. The driver knows
+/// both numbers before the child exists.
+///
+/// The first version of this READ A WORD instead -- `participant+0x188`, which
+/// goes 2 -> 0 one tick after the last record on the maps `fk tickhook dnf` was
+/// run on. It cost a regression: on Kacky Reloaded #290 that word also moves at
+/// the FINISH, so a genuine finish 4-7 ticks inside the tape tripped the
+/// past-the-end guard and was scored a DNF -- in two runs of three, because
+/// whether the word had settled by the finish tick depends on the engine's
+/// wall-clock frame partition. A measured stand-in for a known fact is a bug
+/// waiting for a map.
+pub fn last_tape_clock(probe_clock: u64, n_records: usize) -> u64 {
+    probe_clock + n_records as u64 - 1
+}
 
 /// How much of the block to watch. The record was at +0xa4 on two maps and
 /// past +0x400 on a third; 32 KB covers every one seen and costs nothing,
@@ -128,7 +135,7 @@ pub fn calibrate(
             if v == u32::MAX {
                 let ack = srv.set_finish_word(
                     w,
-                    chain.participant + EXHAUSTED_IN_PARTICIPANT,
+                    last_tape_clock(srv.clock, recs.len()),
                     chain.participant + crate::car::CP_COUNT_IN_PARTICIPANT,
                 );
                 if ack.starts_with("FINISH") {
@@ -157,7 +164,7 @@ pub fn calibrate(
                 // counter (`car::CP_COUNT_IN_PARTICIPANT`).
                 let ack = srv.set_finish_word(
                     addr,
-                    chain.participant + EXHAUSTED_IN_PARTICIPANT,
+                    last_tape_clock(srv.clock, recs.len()),
                     chain.participant + crate::car::CP_COUNT_IN_PARTICIPANT,
                 );
                 if !ack.starts_with("FINISH") {
