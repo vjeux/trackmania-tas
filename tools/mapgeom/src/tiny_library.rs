@@ -720,10 +720,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         };
         match res {
-            Ok((out, m)) if !m.visuals.is_empty() => {
+            // a moving item (rotor, tube) may have NO static visuals: all of
+            // its geometry rides on the dyna parts
+            Ok((out, m)) if !m.visuals.is_empty() || !m.dyna.is_empty() => {
                 item_alias_n += 1;
                 let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
-                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
+                let moving = if m.dyna.is_empty() { String::new() } else { format!(", {} moving part(s)", m.dyna.len()) };
+                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
                 for (file, dds) in &m.pictures {
                     pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
