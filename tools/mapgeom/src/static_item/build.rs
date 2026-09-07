@@ -82,7 +82,15 @@ impl MergedVisual {
 /// same, in the editor and in play. Nothing else was needed: the Solid2
 /// header words (flags, u05, u07, vis_cst_type, 0x090BB002) match the pack's.
 pub fn lod0_only() -> bool {
-    std::env::var_os("TINY_LOD0_ONLY").is_some()
+    std::env::var_os("TINY_LOD0_ONLY").is_some() || lod_pick().is_some()
+}
+
+/// `TINY_LOD_PICK=N`: like TINY_LOD0_ONLY but the single level kept is level
+/// N (its geoms; a part without a level N keeps its nearest) — the size
+/// lever for a map Nadeo refuses to store (Summer 21 at 36 MB: HTTP 413;
+/// the visual meshes of the nearest level are a third of the bytes).
+pub fn lod_pick() -> Option<u32> {
+    std::env::var("TINY_LOD_PICK").ok().and_then(|v| v.parse().ok())
 }
 
 /// A source part's detail ladder length: one more level than it has switch
@@ -901,9 +909,19 @@ impl Merged {
             // over the LOD0 grass = the "wide bright beaches with hard
             // seams"), which is why the nearest level alone was kept;
             // `TINY_LOD0_ONLY=1` restores that bake.
-            if lod0_only && coarser(g) {
-                self.notes.push(format!("visual {} (lod mask {}) skipped: not the nearest level (TINY_LOD0_ONLY)", g.visual_index, g.lod_mask));
-                continue;
+            if lod0_only {
+                // the one level kept: N of TINY_LOD_PICK when the part has it, else the nearest
+                // TINY_LOD_PICK_MIN_VERTS=N: a part whose nearest level has fewer than N
+                // vertices keeps that level (small parts stay sharp; only the heavy
+                // ones — a 50 000-vertex gate arch — go one level coarser)
+                let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
+                let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let pick = lod_pick().filter(|_| level0_verts >= min_verts).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0);
+                let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
+                if !keep {
+                    self.notes.push(format!("visual {} (lod mask {}) skipped: not level {pick} (TINY_LOD0_ONLY/TINY_LOD_PICK)", g.visual_index, g.lod_mask));
+                    continue;
+                }
             }
             let lod = (g.lod_mask.max(0) as u32, part_ladder.clone());
             let vis = match s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) {
