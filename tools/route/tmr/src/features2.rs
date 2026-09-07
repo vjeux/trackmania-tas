@@ -341,7 +341,12 @@ pub fn features2(s: &CarState, t: &Target2, geo: &Geo2, h_ticks: u16, out: &mut 
         out[o + 51] = s.rpm / 12000.0;
         out[o + 52] = if s.turbo.is_finite() { s.turbo } else { 0.0 };
     }
-    // o+53 effects flag + 10 one-hot + remaining + strength (o+53..o+66), o+66 car kind flag + 4 (o+66..o+71): reserved, 0
+    // o+53 effects flag + 10 one-hot + remaining + strength (o+53..o+66): reserved, 0
+    // o+66 car kind: flag + one-hot (Stadium, Snow, Rally, Desert) when the record carries it
+    if s.car != u8::MAX {
+        out[o + 66] = 1.0;
+        one_hot(&mut out[o + 67..o + 71], (s.car as usize).min(3));
+    }
     debug_assert!(o + 71 <= OFF2_PATH);
 
     // ── path samples: ground-following / ballistic arc at current speed for h

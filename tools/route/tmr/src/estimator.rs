@@ -96,6 +96,7 @@ impl<'a> REstimator<'a> {
             turbo: f32::NAN,
             cps: 0,
             finished: false,
+            car: u8::MAX,
         }
     }
 
@@ -232,6 +233,7 @@ impl<'a> Chained<'a> {
             turbo: f32::NAN,
             cps: 0,
             finished: false,
+            car: u8::MAX,
         }
     }
 
