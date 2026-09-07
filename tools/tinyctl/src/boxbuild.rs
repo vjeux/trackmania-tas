@@ -32,14 +32,14 @@ pub fn box_build_cmd(args: &[String]) -> Result<(), String> {
     let _ = wsx.sh(&format!("rm -f {done}"));
     if have && !tmmaps::cli::has(args, "--bootstrap") {
         eprintln!("box has tinyctl: running selfbuild there …");
-        let out = wsx.sh(&format!("{BOX_TOOLS}/tinyctl selfbuild --detach --repo {BOX_REPO} --cargo {BOX_CARGO} --crates {crates} --done {done} --log {log}"))?;
+        let out = wsx.sh(&format!("{BOX_TOOLS}/tinyctl selfbuild --detach --branch main --repo {BOX_REPO} --cargo {BOX_CARGO} --crates {crates} --done {done} --log {log}"))?;
         if wsx.verbose {
             eprintln!("{}", out.trim());
         }
     } else {
         eprintln!("bootstrapping: no tinyctl on the box yet (or --bootstrap); one detached shell line, once …");
         let ps: String = crates.split(',').map(|c| format!("-p {c}")).collect::<Vec<_>>().join(" ");
-        let line = format!("cd {BOX_REPO} && git pull --ff-only && {BOX_CARGO} build --release {ps}; echo \"BUILD rc=$?\"");
+        let line = format!("cd {BOX_REPO} && git fetch -q origin && git checkout -q -B main origin/main && cd tools && {BOX_CARGO} build --release {ps}; echo \"BUILD rc=$?\"");
         let cmd = format!("nohup sh -c '{line}; if grep -q \"BUILD rc=0\" {log}; then echo OK > {done}; else echo FAILED > {done}; fi' > {log} 2>&1 < /dev/null &");
         wsx.sh(&cmd)?;
     }
@@ -78,10 +78,26 @@ pub fn selfbuild_cmd(args: &[String]) -> Result<(), String> {
     }
     let t0 = std::time::Instant::now();
     let result = (|| -> Result<String, String> {
-        let pull = Command::new("git").args(["pull", "--ff-only"]).current_dir(&repo).output().map_err(|e| format!("git: {e}"))?;
-        println!("git pull: {}{}", String::from_utf8_lossy(&pull.stdout).trim(), String::from_utf8_lossy(&pull.stderr).trim());
-        if !pull.status.success() {
-            return Err(format!("git pull failed ({})", pull.status));
+        // `--branch B`: put the checkout ON that branch at origin's tip (the
+        // render box is a build host, never a place to develop; its local
+        // branch is reset). Without it, a plain fast-forward pull of whatever
+        // branch is checked out.
+        if let Some(branch) = f("--branch") {
+            let fetch = Command::new("git").args(["fetch", "-q", "origin"]).current_dir(&repo).output().map_err(|e| format!("git: {e}"))?;
+            if !fetch.status.success() {
+                return Err(format!("git fetch failed: {}", String::from_utf8_lossy(&fetch.stderr).trim()));
+            }
+            let co = Command::new("git").args(["checkout", "-q", "-B", &branch, &format!("origin/{branch}")]).current_dir(&repo).output().map_err(|e| format!("git: {e}"))?;
+            println!("git checkout -B {branch} origin/{branch}: {}{}", String::from_utf8_lossy(&co.stdout).trim(), String::from_utf8_lossy(&co.stderr).trim());
+            if !co.status.success() {
+                return Err(format!("git checkout failed ({})", co.status));
+            }
+        } else {
+            let pull = Command::new("git").args(["pull", "--ff-only"]).current_dir(&repo).output().map_err(|e| format!("git: {e}"))?;
+            println!("git pull: {}{}", String::from_utf8_lossy(&pull.stdout).trim(), String::from_utf8_lossy(&pull.stderr).trim());
+            if !pull.status.success() {
+                return Err(format!("git pull failed ({})", pull.status));
+            }
         }
         let head = Command::new("git").args(["rev-parse", "--short", "HEAD"]).current_dir(&repo).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         let mut c = Command::new(&cargo);

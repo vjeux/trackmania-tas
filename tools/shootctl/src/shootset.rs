@@ -372,6 +372,13 @@ fn probe(nonce: usize) -> Result<String, String> {
     while t0.elapsed().as_secs() < 40 {
         std::thread::sleep(Duration::from_millis(500));
         if let Ok(text) = std::fs::read_to_string(&out) {
+            // the plugin writes the file in one go, but a read can still land
+            // mid-write: accept it only once a second read agrees
+            std::thread::sleep(Duration::from_millis(300));
+            let again = std::fs::read_to_string(&out).unwrap_or_default();
+            if again != text {
+                continue;
+            }
             if text.ends_with('\n') && text.contains("\nblocks\t") {
                 let mut items = 0;
                 let mut loaded = 0;

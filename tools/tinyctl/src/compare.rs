@@ -259,14 +259,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             tsv.push_str(&format!("{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\n", f.view, f.row, f.col, f.color, f.edge_o, f.edge_t, f.severity));
         }
         if let Some(ff) = ffmpeg {
+            // a Windows ffmpeg (…/ffmpeg.exe on the render box) cannot read a WSL
+            // path: hand it C:/… spellings
+            let win = ff.ends_with(".exe");
+            let arg = |p: &Path| -> String {
+                let s = p.to_string_lossy().into_owned();
+                if win { crate::wsx::to_win(&s) } else { s }
+            };
             let out = o.with_file_name(format!("cmp-{}.jpg", o.file_name().unwrap().to_string_lossy().trim_end_matches("-o.png").trim_start_matches("cmp-")));
             let st = std::process::Command::new(ff)
                 .args(["-nostdin", "-y", "-loglevel", "error", "-i"])
-                .arg(o)
+                .arg(arg(o))
                 .arg("-i")
-                .arg(t)
+                .arg(arg(t))
                 .args(["-filter_complex", "[0:v]scale=960:-1[a];[1:v]scale=960:-1[b];[a][b]hstack", "-q:v", "4"])
-                .arg(&out)
+                .arg(arg(&out))
                 .status();
             match st {
                 Ok(s) if s.success() => println!("             {}", out.display()),
