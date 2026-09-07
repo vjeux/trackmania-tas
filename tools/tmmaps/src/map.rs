@@ -690,7 +690,9 @@ impl MapFile {
                 // for one -- as this did -- hides the single fact that decides
                 // how it must be moved.
                 pos: b.free_pos,
-                yaw: Some(yaw),
+                // A FREE block's real yaw is the first f32 of its 0x0304305F rotation
+                // triple; its `dir` byte is as dead as its cell bytes.
+                yaw: Some(b.free_rot.map(|r| r[0]).unwrap_or(yaw)),
                 dir: Some(b.dir),
             });
         }

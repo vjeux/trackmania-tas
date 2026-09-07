@@ -1,0 +1,17 @@
+[package]
+name = "tmplan"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tmplan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmplan"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tmroute = { path = "../tmroute" }

@@ -1,0 +1,20 @@
+[package]
+name = "tmroute"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tmroute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmroute"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The map reader (waypoints, header, census) and the ghost decoder. Both are
+# path crates of the main tools workspace; this workspace compiles its own copy.
+tmmaps = { path = "../../tmmaps" }
+gbx = { path = "../../gbx" }

@@ -1,0 +1,423 @@
+//! `tmroute` CLI.
+//!
+//!   tmroute show ROUTE.json                       gate order, per-leg bands, status (seconds with a decimal)
+//!   tmroute agree A.json B.json [--gates G.json]  order agreement: exact + Kendall tau (by checkpoint group when --gates)
+//!   tmroute gates MAP.Map.Gbx --out gates.json [--orient-from PACK.pack.json ROUTE.route.json]
+//!                                                 gates.json (INTERFACES §3) with the declared-count control
+//!   tmroute from-cartographer PACK.pack.json ROUTE.route.json --gates gates.json --out route.json
+//!   tmroute human-orders --gates gates.json --out human-orders.tsv GHOST...
+//!   tmroute consensus --gates gates.json --orders human-orders.tsv --out route.json [--gates-out gates.json] GHOST...
+//!   tmroute index ROUTES_DIR [--names gates_dir]  rebuild routes.tsv
+//!   tmroute validate ROUTE.json
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use tmroute::gates::GatesFile;
+use tmroute::human;
+use tmroute::io;
+use tmroute::metrics;
+use tmroute::types::*;
+
+fn die(msg: &str) -> ! {
+    eprintln!("tmroute: {msg}");
+    std::process::exit(2)
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+}
+fn flag_n(args: &[String], name: &str, n: usize) -> Option<Vec<String>> {
+    let i = args.iter().position(|a| a == name)?;
+    let v: Vec<String> = args[i + 1..].iter().take(n).cloned().collect();
+    (v.len() == n).then_some(v)
+}
+/// Positional arguments: everything not a flag or a flag's value(s).
+fn positionals(args: &[String], flags1: &[&str], flags2: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if flags1.contains(&a.as_str()) {
+            i += 2;
+            continue;
+        }
+        if flags2.contains(&a.as_str()) {
+            i += 3;
+            continue;
+        }
+        if a.starts_with("--") {
+            i += 1;
+            continue;
+        }
+        out.push(a.clone());
+        i += 1;
+    }
+    out
+}
+
+fn f3(v: [f32; 3]) -> String {
+    format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2])
+}
+fn band(v: [f32; 2], unit: &str) -> String {
+    if v[0].is_nan() {
+        "-".into()
+    } else {
+        format!("{:.1}..{:.1} {unit}", v[0], v[1])
+    }
+}
+
+fn cmd_show(args: &[String]) {
+    let p = args.first().unwrap_or_else(|| die("show: ROUTE.json"));
+    let g = io::read_route(Path::new(p)).unwrap_or_else(|e| die(&e));
+    let errs = g.validate();
+    println!("{}  source {}  geom_version {}", g.map_uid, g.source, g.geom_version);
+    println!("  centreline {} pts, {:.1} m, {} gates, spawn {} yaw {:.3}", g.pts.len(), g.s.last().copied().unwrap_or(0.0), g.gates.len(), f3(g.spawn), g.spawn_yaw);
+    if let Some(r) = &g.route {
+        let st = match &r.status {
+            RouteStatus::Hypothesis => "HYPOTHESIS".to_string(),
+            RouteStatus::Certified { ms, ghost_md5, oracle_box } => format!("CERTIFIED {} ghost {} on {}", io::secs(*ms), ghost_md5, oracle_box),
+        };
+        println!("  route v{} {} rank {}  predicted {}  {}", r.route_version, r.source, r.rank, io::secs(r.predicted_ms), st);
+        println!("  order (map waypoints, finish last): {}", r.gate_order.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" → "));
+        println!("  produced_by: {}", r.produced_by);
+    }
+    if let Some(legs) = &g.legs {
+        println!("  {:>3} {:>4} {:>8} {:>8} {:<8} {:<16} {:<28} {:>6} {:<16} {:>7} {:>9}  evidence", "leg", "wp", "s_start", "s_end", "conn", "speed", "heading (tol)", "", "height", "p_reach", "exp");
+        for l in legs {
+            let ev = match &l.evidence {
+                LegEvidence::Human { runs, best_ms } => format!("Human runs={runs} best={}", io::secs(*best_ms)),
+                LegEvidence::Rollout { reached, tried } => format!("Rollout {reached}/{tried}"),
+                LegEvidence::Predicted => "Predicted".into(),
+                LegEvidence::Driven { ms, ghost_md5 } => format!("Driven {} {}", io::secs(*ms), ghost_md5),
+            };
+            println!(
+                "  {:>3} {:>4} {:>8.1} {:>8.1} {:<8} {:<16} {:<28} {:>6} {:<16} {:>7} {:>9}  {}",
+                l.gate_idx,
+                l.map_waypoint,
+                l.s_start,
+                l.s_end,
+                format!("{:?}", l.connection),
+                band(l.arrival_speed, "m/s"),
+                f3(l.arrival_heading),
+                if l.arrival_heading_tol.is_nan() { "-".to_string() } else { format!("±{:.0}°", l.arrival_heading_tol.to_degrees()) },
+                band(l.arrival_height, "m"),
+                if l.p_reach.is_nan() { "-".to_string() } else { format!("{:.2}", l.p_reach) },
+                io::secs(l.expected_ms),
+                ev
+            );
+        }
+    }
+    if errs.is_empty() {
+        println!("  valid: yes");
+    } else {
+        println!("  valid: NO");
+        for e in errs {
+            println!("    - {e}");
+        }
+        std::process::exit(1);
+    }
+}
+
+fn cmd_validate(args: &[String]) {
+    let mut bad = 0;
+    for p in args {
+        match io::read_route(Path::new(p)) {
+            Ok(g) => {
+                let e = g.validate();
+                if e.is_empty() {
+                    println!("{p}: ok");
+                } else {
+                    bad += 1;
+                    println!("{p}: INVALID");
+                    for x in e {
+                        println!("  - {x}");
+                    }
+                }
+            }
+            Err(e) => {
+                bad += 1;
+                println!("{p}: {e}");
+            }
+        }
+    }
+    if bad > 0 {
+        std::process::exit(1);
+    }
+}
+
+fn cmd_agree(args: &[String]) {
+    let pos = positionals(args, &["--gates"], &[]);
+    if pos.len() != 2 {
+        die("agree A.json B.json [--gates gates.json]");
+    }
+    let a = io::read_route(Path::new(&pos[0])).unwrap_or_else(|e| die(&e));
+    let b = io::read_route(Path::new(&pos[1])).unwrap_or_else(|e| die(&e));
+    let (mut oa, mut ob) = (a.gate_order(), b.gate_order());
+    let mut by = "waypoint";
+    if let Some(gp) = flag(args, "--gates") {
+        let g = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+        oa = metrics::to_groups(&oa, &g);
+        ob = metrics::to_groups(&ob, &g);
+        by = "checkpoint group";
+    }
+    let tau = metrics::kendall_tau(&oa, &ob);
+    let (only_a, only_b) = metrics::symmetric_difference(&oa, &ob);
+    let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    println!("A {}  {}", a.route.as_ref().map(|r| r.source.clone()).unwrap_or(a.source.clone()), j(&oa));
+    println!("B {}  {}", b.route.as_ref().map(|r| r.source.clone()).unwrap_or(b.source.clone()), j(&ob));
+    println!("by {by}: exact {}  kendall_tau {:.3}  shared {}  only_A [{}]  only_B [{}]", metrics::exact(&oa, &ob), tau, oa.iter().filter(|x| ob.contains(x)).count(), j(&only_a), j(&only_b));
+}
+
+fn cartographer_dirs(pack: &Path, route: &Path, gates: &GatesFile) -> BTreeMap<u32, [f32; 3]> {
+    // Orient gates.json normals from the cartographer's tour tangents.
+    let mut dirs = BTreeMap::new();
+    let Ok(imp) = tmroute::cartographer::import(pack, route, gates, "orient") else { return dirs };
+    for l in imp.geom.legs.unwrap_or_default() {
+        let g = gates.by_waypoint(l.map_waypoint).map(|g| g.group).unwrap();
+        for r in gates.gates_of_group(g) {
+            dirs.insert(r.waypoint, l.arrival_heading);
+        }
+    }
+    dirs
+}
+
+fn cmd_gates(args: &[String]) {
+    let pos = positionals(args, &["--out"], &["--orient-from"]);
+    let map = pos.first().unwrap_or_else(|| die("gates MAP.Map.Gbx --out gates.json [--orient-from PACK ROUTE]"));
+    let prov = tmroute::provenance("tmroute gates");
+    let mut g = tmroute::gates::build(Path::new(map), &prov).unwrap_or_else(|e| die(&e));
+    let mut oriented = 0;
+    if let Some(v) = flag_n(args, "--orient-from", 2) {
+        let dirs = cartographer_dirs(Path::new(&v[0]), Path::new(&v[1]), &g);
+        oriented = tmroute::gates::orient(&mut g, &dirs, "cartographer");
+    }
+    let ctl = if g.control_ok() { "OK" } else { "FAIL" };
+    println!(
+        "{}\t{}\tdeclared {}\tcp_groups {}\tfinish_groups {}\tcontrol {}\tyoff {}\tresid {:+.1}\tgates {}\toriented {}",
+        g.map_name, g.map_uid, g.declared_checkpoints, g.checkpoint_groups, g.finish_groups, ctl, g.yoff, g.yoff_residual, g.gates.len() - 1, oriented
+    );
+    for r in &g.gates {
+        println!(
+            "  wp {:>2} {:<10} grp {:>3} link {:>2} {:<32} c {} n {} hw {:>4.1} hh {:.1} {} {}",
+            r.waypoint,
+            format!("{:?}", r.kind),
+            if r.group == u32::MAX { "-".to_string() } else { r.group.to_string() },
+            r.link_order,
+            r.model,
+            f3(r.centre),
+            f3(r.normal),
+            r.half_width,
+            r.half_height,
+            if r.from_item { "item" } else { "block" },
+            r.normal_source
+        );
+    }
+    if let Some(out) = flag(args, "--out") {
+        io::write_gates(Path::new(&out), &g).unwrap_or_else(|e| die(&e));
+        println!("wrote {out}");
+    }
+    if !g.control_ok() {
+        std::process::exit(1);
+    }
+}
+
+fn cmd_from_cartographer(args: &[String]) {
+    let pos = positionals(args, &["--gates", "--out"], &[]);
+    if pos.len() != 2 {
+        die("from-cartographer PACK.pack.json ROUTE.route.json --gates gates.json --out route.json");
+    }
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates required"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let prov = tmroute::provenance("tmroute from-cartographer");
+    let imp = tmroute::cartographer::import(Path::new(&pos[0]), Path::new(&pos[1]), &gates, &prov).unwrap_or_else(|e| die(&e));
+    let errs = imp.geom.validate();
+    println!(
+        "{}\t{}\tlegs {}\tlength {:.1} m\tmissing_groups {:?}\tvalid {}",
+        imp.map_name,
+        imp.geom.map_uid,
+        imp.geom.legs.as_ref().map_or(0, |l| l.len()),
+        imp.geom.s.last().copied().unwrap_or(0.0),
+        imp.missing_groups,
+        errs.is_empty()
+    );
+    for e in &errs {
+        println!("  - {e}");
+    }
+    if let Some(out) = flag(args, "--out") {
+        io::write_route(Path::new(&out), &imp.geom).unwrap_or_else(|e| die(&e));
+        println!("wrote {out}");
+    }
+}
+
+fn load_runs(paths: &[String]) -> Vec<human::Run> {
+    let mut runs = Vec::new();
+    for p in paths {
+        match human::load_run(Path::new(p)) {
+            Ok(r) => runs.push(r),
+            Err(e) => eprintln!("skip {p}: {e}"),
+        }
+    }
+    runs
+}
+
+fn make_rows(runs: &[human::Run], gates: &GatesFile) -> Vec<human::OrderRow> {
+    let mut idx: Vec<usize> = (0..runs.len()).collect();
+    idx.sort_by_key(|&i| if runs[i].declared_ms > 0 { runs[i].declared_ms } else { i32::MAX });
+    let mut rank_of = vec![0u32; runs.len()];
+    for (r, &i) in idx.iter().enumerate() {
+        rank_of[i] = r as u32 + 1;
+    }
+    runs.iter()
+        .enumerate()
+        .map(|(i, run)| {
+            let cr = human::crossings(run, gates, 40.0);
+            let unmatched = cr.iter().filter(|c| c.is_none()).count();
+            let max_d = cr.iter().flatten().map(|c| c.dist_xz).fold(0.0f32, f32::max);
+            human::OrderRow {
+                md5: run.md5.clone(),
+                rank: rank_of[i],
+                ms: run.declared_ms,
+                order_wp: cr.iter().map(|c| c.as_ref().map_or(u32::MAX, |c| c.waypoint)).collect(),
+                order_group: cr.iter().map(|c| c.as_ref().map_or(u32::MAX, |c| c.group)).collect(),
+                respawns: run.respawns,
+                cp_ms: run.splits_ms.clone(),
+                unmatched,
+                max_dist_xz: max_d,
+                file: run.path.clone(),
+            }
+        })
+        .collect()
+}
+
+fn cmd_human_orders(args: &[String]) {
+    let ghosts = positionals(args, &["--gates", "--out"], &[]);
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("human-orders --gates gates.json --out human-orders.tsv GHOST..."));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let runs = load_runs(&ghosts);
+    let rows = make_rows(&runs, &gates);
+    let mut lines = vec![human::ORDERS_HEADER.to_string()];
+    let mut ok = 0;
+    let mut bad_count = 0;
+    let mut unmatched = 0;
+    for r in &rows {
+        lines.push(human::order_row(r));
+        if r.unmatched > 0 {
+            unmatched += 1;
+        }
+        if gates.declared_checkpoints > 0 && r.cp_ms.len() as i32 != gates.declared_checkpoints {
+            bad_count += 1;
+        } else if r.unmatched == 0 {
+            ok += 1;
+        }
+    }
+    println!("{}", lines.join("\n"));
+    let mut dists: Vec<f32> = rows.iter().map(|r| r.max_dist_xz).collect();
+    eprintln!(
+        "{}: {} ghosts; split count == declared ({}) on {}; wrong split count {}; with unmatched crossings {}; max XZ residual to gate centre P50 {:.1} m P90 {:.1} m max {:.1} m",
+        gates.map_name,
+        rows.len(),
+        gates.declared_checkpoints,
+        ok + unmatched.min(0),
+        bad_count,
+        unmatched,
+        human::percentile(&mut dists.clone(), 50.0),
+        human::percentile(&mut dists.clone(), 90.0),
+        human::percentile(&mut dists, 100.0)
+    );
+    if let Some(out) = flag(args, "--out") {
+        std::fs::write(&out, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+        eprintln!("wrote {out}");
+    }
+}
+
+fn cmd_consensus(args: &[String]) {
+    let ghosts = positionals(args, &["--gates", "--out", "--gates-out", "--orders"], &[]);
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("consensus --gates gates.json --out route.json [--gates-out gates.json] [--orders human-orders.tsv] GHOST..."));
+    let mut gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let runs = load_runs(&ghosts);
+    let rows = make_rows(&runs, &gates);
+    if let Some(o) = flag(args, "--orders") {
+        let mut lines = vec![human::ORDERS_HEADER.to_string()];
+        lines.extend(rows.iter().map(human::order_row));
+        std::fs::write(&o, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+    }
+    let prov = tmroute::provenance("tmroute consensus");
+    let c = human::consensus(&gates, &runs, &rows, &prov);
+    let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    println!(
+        "{}\t{}\truns {}\tusable {}\tdistinct_orders {}\tmodal_groups [{}]\tmodal_n {}\tshare {:.2}\tagree {}",
+        gates.map_name, gates.map_uid, c.n_runs, c.n_finished_ok, c.distinct_orders, j(&c.modal_group_order), c.n_modal, c.share, if c.agree { "YES" } else { "no" }
+    );
+    for n in &c.notes {
+        println!("  note: {n}");
+    }
+    // every distinct order, with its count
+    let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
+    for r in &rows {
+        if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints {
+            *counts.entry(r.order_group.clone()).or_default() += 1;
+        }
+    }
+    for (k, v) in &counts {
+        println!("  order [{}] x{}", j(k), v);
+    }
+    if let Some(route) = &c.route {
+        let errs = route.validate();
+        println!("  route: {} pts, {:.1} m, {} legs, predicted {}, valid {}", route.pts.len(), route.s.last().copied().unwrap_or(0.0), route.legs.as_ref().map_or(0, |l| l.len()), io::secs(route.route.as_ref().unwrap().predicted_ms), errs.is_empty());
+        for e in &errs {
+            println!("    - {e}");
+        }
+        if let Some(out) = flag(args, "--out") {
+            io::write_route(Path::new(&out), route).unwrap_or_else(|e| die(&e));
+            println!("wrote {out}");
+        }
+        // human crossing directions orient the gates.json normals
+        if let Some(go) = flag(args, "--gates-out") {
+            let mut dirs = BTreeMap::new();
+            for l in route.legs.as_ref().unwrap() {
+                let g = gates.by_waypoint(l.map_waypoint).map(|g| g.group).unwrap();
+                for r in gates.gates_of_group(g) {
+                    dirs.insert(r.waypoint, l.arrival_heading);
+                }
+            }
+            let n = tmroute::gates::orient(&mut gates, &dirs, "human");
+            io::write_gates(Path::new(&go), &gates).unwrap_or_else(|e| die(&e));
+            println!("oriented {n} gate normals from human crossings → {go}");
+        }
+    }
+}
+
+fn cmd_index(args: &[String]) {
+    let pos = positionals(args, &["--names"], &[]);
+    let root = pos.first().unwrap_or_else(|| die("index ROUTES_DIR [--names GEOM_DIR]"));
+    let names_dir = flag(args, "--names").map(PathBuf::from);
+    let names = |uid: &str| -> String {
+        names_dir
+            .as_ref()
+            .and_then(|d| io::read_gates(&d.join(uid).join("gates.json")).ok())
+            .map(|g| g.map_name)
+            .unwrap_or_else(|| uid.to_string())
+    };
+    let (n, out) = io::rebuild_index(Path::new(root), &names).unwrap_or_else(|e| die(&e));
+    println!("{n} routes → {}", out.display());
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(cmd) = args.first() else {
+        eprintln!("usage: tmroute show|validate|agree|gates|from-cartographer|human-orders|consensus|index ... (see src/main.rs)");
+        std::process::exit(2);
+    };
+    let rest = &args[1..];
+    match cmd.as_str() {
+        "show" => cmd_show(rest),
+        "validate" => cmd_validate(rest),
+        "agree" => cmd_agree(rest),
+        "gates" => cmd_gates(rest),
+        "from-cartographer" => cmd_from_cartographer(rest),
+        "human-orders" => cmd_human_orders(rest),
+        "consensus" => cmd_consensus(rest),
+        "index" => cmd_index(rest),
+        other => die(&format!("unknown command {other}")),
+    }
+}
