@@ -364,7 +364,25 @@ fn stage_map(map: &str) -> Result<String, String> {
     let data = std::fs::read(&wsl).map_err(|e| format!("{wsl}: {e}"))?;
     std::fs::create_dir_all(MAPS_SHOOT).map_err(|e| format!("{MAPS_SHOOT}: {e}"))?;
     let tmp = format!("{MAPS_SHOOT}/.{name}.tmp");
-    std::fs::write(&tmp, &data).and_then(|_| std::fs::rename(&tmp, &dst)).map_err(|e| format!("{dst}: {e}"))?;
+    std::fs::write(&tmp, &data).map_err(|e| format!("{tmp}: {e}"))?;
+    // OneDrive takes a fresh file for a moment (scan/upload) and the rename
+    // through the 9P mount answers EACCES while it holds it (Summer 07: the
+    // first shootset died on `s07Orig.Map.Gbx: Permission denied` and left
+    // the .tmp behind). Retry for a while, then write the destination
+    // directly — the read-back below is what proves the copy either way.
+    let mut renamed = Ok(());
+    for attempt in 0..10 {
+        renamed = std::fs::rename(&tmp, &dst);
+        if renamed.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500 + 250 * attempt));
+    }
+    if let Err(e) = renamed {
+        eprintln!("{dst}: rename from the temp copy kept failing ({e}); writing it directly");
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::write(&dst, &data).map_err(|e| format!("{dst}: {e}"))?;
+    }
     let back = std::fs::read(&dst).map_err(|e| format!("{dst}: {e}"))?;
     if back != data {
         return Err(format!("{dst}: the staged copy does not match the source ({} vs {} bytes)", back.len(), data.len()));
