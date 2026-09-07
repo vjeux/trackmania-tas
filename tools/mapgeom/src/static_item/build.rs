@@ -98,6 +98,12 @@ pub struct Merged {
     /// Sockets whose light file is still to be read from the store: (path,
     /// socket with the composed iso, scale). `resolve_pending_lights` drains it.
     pub pending_lights: Vec<(String, super::solid2::Light, f32)>,
+    /// A gameplay gate's kind (`Turbo2`, `Boost`, …) from its own
+    /// `<Kind>.TerrainModifier.Gbx`; the sign panels' logo (signlogo.rs).
+    pub gate_kind: Option<String>,
+    /// Picture files the item's custom-texture materials name, to ride in
+    /// the library archive next to the item: (file name, DDS bytes).
+    pub pictures: Vec<(String, Vec<u8>)>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
@@ -299,6 +305,18 @@ pub fn restore_depth(m: &mut Merged, water: f32, keep: f32, scale: f32) {
 impl Merged {
     /// Slot of a game material, adding it when new.
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
+        // A gameplay gate's sign panels (signlogo.rs): every panel of the item,
+        // whatever its game material, shares ONE slot per kind — the picture
+        // material — so the row and the beam square are one draw, not two
+        // equal materials (which the format rules refuse).
+        let pseudo;
+        let (link, physics) = match super::signlogo::enabled().then(|| super::signlogo::sign_kind(link, self.gate_kind.as_deref())).flatten() {
+            Some(kind) => {
+                pseudo = super::signlogo::pseudo_link(&kind);
+                (pseudo.as_str(), 32u8)
+            }
+            None => (link, physics),
+        };
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
             Some(stem) if !self.modifier.is_empty() => {
@@ -590,13 +608,14 @@ impl Merged {
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
         if std::env::var_os("TINY_DUMP_DECLS").is_some() {
             self.notes.push(format!(
-                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?} material refs {:?}",
+                "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} geoms {:?} material refs {:?} vis_cst_type {} flags {:#x} u05 {} u06 {:?} u07 {} lod_max_dist {:?} u10 {:?} u11 {} u12 {:?} u13 {} u15 {} u16 {} u17 {:?} u18 {} u19 {:?} boxes {}",
                 s2.version,
                 s2.material_ids,
                 s2.materials_folder,
                 s2.u03,
                 s2.u04,
-                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>(), s2.materials.iter().map(|r| r.index).collect::<Vec<_>>()
+                s2.shaded_geoms.iter().map(|g| (g.visual_index, g.material_index, g.u01, g.lod_mask, g.u02)).collect::<Vec<_>>(), s2.materials.iter().map(|r| r.index).collect::<Vec<_>>(),
+                s2.vis_cst_type, s2.flags, s2.u05, s2.u06, s2.u07, s2.lod_max_dist, s2.u10, s2.u11, s2.u12, s2.u13, s2.u15, s2.u16, s2.u17, s2.u18, s2.u19, s2.boxes.len()
             ));
         }
         // Prefab-wide layer table for the voted (shared Techno3 id) materials:
@@ -689,6 +708,15 @@ impl Merged {
                     continue;
                 }
             }
+            // (A gameplay gate's sign panels — the row along the arch on
+            // `SpecialSign<Kind>` / the kind folder's `Sign`, the beam square on
+            // `SpecialSignOff` / `SignOff` — are kept as geometry: their LED
+            // shader shows a display the live gate feeds, so what they SHOW is
+            // fixed at the material (signlogo.rs / `sign_logo_material`), not by
+            // dropping one of them. Checked in the data first: the two panels
+            // are ordinary geoms of the same Solid2 with identical records
+            // (TINY_DUMP_DECLS on Special24m.Prefab.Gbx: u01 -1, same lod
+            // mask, u02 0; no u10/u12/u19 tables, flags 0) — no on/off flag.)
             let mut v = vis.clone();
             // A visual read in the pack's inline-vertex form is written back
             // that way only while it keeps its frame table (the flag cloth with
@@ -1273,6 +1301,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
         let inst = custom_texture_material(&inst, &opts.ident);
+        let inst = sign_logo_material(&inst, m);
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
@@ -1787,6 +1816,34 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))
+}
+
+/// A gameplay gate's LED sign panel as a plain self-lit picture of the kind's
+/// logo (signlogo.rs: the live gate feeds the panels' `_DispIn` shader a
+/// display the static item cannot). `TINY_SIGN_LOGO=off` keeps the game
+/// material (dark row, ⊗ on the beam).
+pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
+    let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
+    let Some(kind) = super::signlogo::kind_of_pseudo(&link).map(|s| s.to_string()) else { return inst.clone() };
+    let file = super::signlogo::logo_file(&kind);
+    if !m.pictures.iter().any(|(f, _)| *f == file) {
+        // no picture was produced for this kind (no pack texture): the pseudo
+        // link would resolve to nothing — fall back to the kind's Sign material
+        let mut owned = inst.clone();
+        if let Some(main) = owned.main.as_mut() {
+            main.link = crate::crystal_model::Id::Str(format!("Stadium\\Media\\Modifier\\{kind}\\Sign"));
+        }
+        return owned;
+    }
+    let mut owned = inst.clone();
+    if let Some(main) = owned.main.as_mut() {
+        main.is_using_game_material = false;
+        main.model = crate::crystal_model::Id::Str("TDSNI".into());
+        main.material_name = crate::crystal_model::Id::Str(format!("SignLogo{kind}"));
+        main.link = crate::crystal_model::Id::Null;
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+    }
+    owned
 }
 
 /// Crystal virtual links resolved to the real game-material paths the
@@ -2689,6 +2746,12 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     // X = folder + suffix (`ItemObstacleLevel1` = `ItemObstacle` + `Level1`).
     if let Some((links, suffix)) = item_modifier_links(store, item_path) {
         m.notes.push(format!("modifier {} ({} materials)", suffix, links.len()));
+        // a gameplay gate's kind folder (`Modifier\Turbo2\{Sign,SignOff,…}`)
+        if suffix.is_empty() && links.iter().any(|l| l.ends_with("\\Sign")) {
+            if let Some(kind) = links[0].strip_prefix("Stadium\\Media\\Modifier\\").and_then(|r| r.split('\\').next()) {
+                m.gate_kind = Some(kind.to_string());
+            }
+        }
         m.modifier = links;
         m.modifier_suffix = suffix;
     }
@@ -2739,6 +2802,24 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     // caller places its trees as stock items from `m.veget`.
     if m.visuals.is_empty() && !m.veget.is_empty() {
         return Ok((Vec::new(), m));
+    }
+    // The gate sign panels' pictures (signlogo.rs), one per kind the item's
+    // materials name; `sign_logo_material` re-points the panels at them.
+    if super::signlogo::enabled() {
+        let kinds: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().and_then(super::signlogo::kind_of_pseudo).map(|s| s.to_string())).collect();
+        for kind in kinds {
+            let file = super::signlogo::logo_file(&kind);
+            if m.pictures.iter().any(|(f, _)| *f == file) {
+                continue;
+            }
+            match super::signlogo::logo_dds(store, &kind) {
+                Ok(dds) => {
+                    m.notes.push(format!("sign logo {kind}: {} ({} bytes)", file, dds.len()));
+                    m.pictures.push((file, dds));
+                }
+                Err(e) => m.notes.push(format!("sign logo {kind}: {e}; game material kept")),
+            }
+        }
     }
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;

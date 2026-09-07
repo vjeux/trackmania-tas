@@ -78,7 +78,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let el = || format!("[{:6.1}s]", t0.elapsed().as_secs_f64());
     let d = super::lock::lock_dir();
     let owner = format!("playshots-{}", opts.tag);
-    super::lock::acquire(&d, &owner, 600, 0).map_err(|e| format!("lock: {e}"))?;
+    super::lock::acquire(&d, &owner, 1500, 0).map_err(|e| format!("lock: {e}"))?; // eight threads queue on one game (see shootset.rs)
     let _guard = super::shootset::LockGuard::new(d, owner);
     let staged = super::shootset::stage_map(&opts.map)?;
     let game_map = super::game_path(&staged)?;

@@ -249,7 +249,10 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let _lock = if opts.lock {
         let d = super::lock::lock_dir();
         let owner = format!("shootset-{}-{}", opts.tag, opts.side);
-        super::lock::acquire(&d, &owner, 600, 0).map_err(|e| format!("lock: {e}"))?;
+        // 1500 s: eight threads queue on this one game now (2026-09-07 17:15,
+        // a two-view set timed out at 600 s behind lights-play, playshots-m15
+        // and shootset-f08); tinyctl shoot polls the done file for 1800 s.
+        super::lock::acquire(&d, &owner, 1500, 0).map_err(|e| format!("lock: {e}"))?;
         Some(LockGuard { dir: d, owner })
     } else {
         None

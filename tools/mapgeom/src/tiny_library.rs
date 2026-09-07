@@ -335,6 +335,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let depth_keep: f32 = std::env::var("TINY_DEPTH_KEEP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let mut deepened: Vec<String> = Vec::new();
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    // picture files (gate sign logos) the items name: added after the ident pass below (they are not GBX)
+    let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut outcomes: Vec<Outcome> = Vec::new();
     // key -> (alias or "-", footprint sx, sz)
     let mut block_map: BTreeMap<(String, u32, String), (String, u32, u32)> = BTreeMap::new();
@@ -637,6 +639,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
                 let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
+                for (file, dds) in &m.pictures {
+                    pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
+                }
                 remember(&ident);
                 item_map.insert(key, ident.clone());
                 outcomes.push(Outcome { alias: ident, kind: "item", source: source_name, placements: *n, result: Ok(summary) });
@@ -697,6 +702,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // every embedded item claims the map's collection (header + body idents)
     for bytes in files.values_mut() {
         *bytes = crate::tiny_assets::set_ident_collection(bytes, collection);
+    }
+    // the pictures the items' custom-texture materials name (gate sign logos,
+    // signlogo.rs) ride NEXT TO THE ITEMS — the one place the game resolves an
+    // item's texture file name from
+    if !pictures.is_empty() {
+        println!("  pictures: {} sign logo DDS into Items/ ({})", pictures.len(), pictures.keys().map(|k| k.rsplit('/').next().unwrap_or(k)).collect::<Vec<_>>().join(" "));
+        files.extend(pictures);
     }
     // TINY_PICTURES=DIR: the pictures the screen/gate materials were re-pointed
     // at (`custom_texture_material`) ride in the archive NEXT TO THE ITEMS —

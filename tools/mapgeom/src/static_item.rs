@@ -38,6 +38,7 @@ pub mod build;
 pub mod bake;
 pub mod check;
 pub mod light;
+pub mod signlogo;
 pub mod cli;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
