@@ -74,9 +74,12 @@ if [ $step = plan-r ]; then
   # ("trailer says 1657 bytes of meta, 1059 remain" on 7 of 30 maps, 13:11Z run): remount, then SNAPSHOT both models
   # to /tmp so one table is one model
   persistent-storage remount private-30d >/dev/null 2>&1 || true
-  SNAP=/tmp/tmr-models-$(date -u +%Y%m%dT%H%MZ); mkdir -p $SNAP; cp $MODEL_R $SNAP/r.tmw && cp $MODEL_RL $SNAP/rl.tmw || { echo "model copy failed"; exit 1; }
+  SNAP=/tmp/tmr-models-$(date -u +%Y%m%dT%H%MZ); mkdir -p $SNAP
+  # copy, then prove the copy LOADS (a stale FUSE read gave a 700776-byte rl.tmw whose trailer said otherwise, 14:54Z)
+  snap_model() { local src=$1 dst=$2 i; for i in 1 2 3 4 5; do cp $src $dst && $TMR selftest --model $dst > $dst.selftest.txt 2>&1 && return 0; echo "  snapshot of $src did not load (try $i): $(tail -1 $dst.selftest.txt | cut -c1-100)"; persistent-storage remount private-30d >/dev/null 2>&1; sleep 20; done; return 1; }
+  snap_model $MODEL_R $SNAP/r.tmw || { echo "gate model never loaded whole"; exit 1; }
+  snap_model $MODEL_RL $SNAP/rl.tmw || { echo "local model never loaded whole"; exit 1; }
   W=$(dirname $MODEL_R); MODEL_R_PTR=$MODEL_R; MODEL_R=$SNAP/r.tmw; MODEL_RL=$SNAP/rl.tmw
-  $TMR selftest --model $MODEL_R > $SNAP/selftest.txt 2>&1 || { echo "snapshot model fails tmr selftest: $(tail -1 $SNAP/selftest.txt)"; exit 1; }
   # which r-v<N> the latest pointer is (by md5), and the maps it trained on (its .md)
   RV=""; for f in $W/r-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_R)" ] && RV=$(basename $f .tmw); done
   RLV=""; for f in $W/rl-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_RL)" ] && RLV=$(basename $f .tmw); done

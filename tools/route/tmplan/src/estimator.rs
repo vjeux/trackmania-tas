@@ -44,6 +44,9 @@ pub enum EdgeKind {
     Surface,
     /// No surface path; a ballistic/drag-limited flight chord was allowed.
     Flight,
+    /// Priced by a LEARNED estimator (R's chain) — the hybrid used it because the surface graph had no
+    /// path or its path was a detour.
+    Learned,
     /// Nothing: the estimator refuses this leg.
     None,
 }
@@ -255,5 +258,57 @@ impl<'a> EdgeEstimator for Geometric<'a> {
             None => base.into(),
             Some(f) => format!("{base}+flight(h<={:.0},rise<={:.0},x{:.1})", f.max_horiz, f.max_rise, f.cost_mult),
         }
+    }
+}
+
+/// The HYBRID estimator (coordinator, 2026-09-07 14:52Z): the geometric estimator is the strong prior on
+/// roads — a leg the surface graph connects is priced geometrically, unless the graph's path is a DETOUR
+/// (path length > `detour_ratio` × the straight chord, the F8 signature of a missing connection: humans
+/// fly what the graph walks around) — then, and whenever the graph has no path at all, the leg is priced
+/// by the learned estimator (R's chained local head). Every edge records which one priced it
+/// (`EdgeKind::Surface` / `Flight` = geometric, `EdgeKind::Learned` = R).
+pub struct Hybrid<'a> {
+    pub geo: &'a dyn EdgeEstimator,
+    pub learned: &'a dyn EdgeEstimator,
+    /// Surface path length / chord above which the graph is not trusted (2.0: the F8 detours are 2.4–5×).
+    pub detour_ratio: f32,
+    /// Node positions (for the chord) and the surface path lengths.
+    pub nodes: &'a Nodes,
+    pub len: &'a [Vec<f32>],
+    /// Count of legs priced by each side (interior mutability so the beam can report it).
+    pub counts: std::cell::Cell<(u32, u32)>,
+}
+
+impl<'a> Hybrid<'a> {
+    fn chord(&self, a: usize, b: usize) -> f32 {
+        let p = self.nodes.pos[a];
+        let q = self.nodes.pos[b];
+        ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+    }
+}
+
+impl<'a> EdgeEstimator for Hybrid<'a> {
+    fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
+        let g = self.geo.estimate(bucket, prev, from, to);
+        let has_path = self.len[from][to].is_finite() && g.kind == EdgeKind::Surface;
+        let detour = has_path && self.len[from][to] > self.detour_ratio * self.chord(from, to).max(20.0);
+        if has_path && !detour {
+            let (a, b) = self.counts.get();
+            self.counts.set((a + 1, b));
+            return g;
+        }
+        let r = self.learned.estimate(bucket, prev, from, to);
+        if r.kind != EdgeKind::None && r.expected_ms > 0 {
+            let (a, b) = self.counts.get();
+            self.counts.set((a, b + 1));
+            return Edge { kind: EdgeKind::Learned, ..r };
+        }
+        // R refused: fall back to whatever geometry had (a detour path or a flight chord, or nothing)
+        let (a, b) = self.counts.get();
+        self.counts.set((a + 1, b));
+        g
+    }
+    fn name(&self) -> String {
+        format!("hybrid(geo: {}, learned: {}, detour > {:.1}×)", self.geo.name(), self.learned.name(), self.detour_ratio)
     }
 }

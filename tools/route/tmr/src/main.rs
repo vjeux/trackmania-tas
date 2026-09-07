@@ -635,22 +635,43 @@ fn cmd_plan(args: &[String]) {
     } else {
         None
     };
-    let est_dyn: &dyn EdgeEstimator = match &chained {
-        Some(c) => c,
-        None => &est,
+    // --estimator hybrid (GEOM arm, coordinator 14:52Z): geometric on road legs, R's chain where the surface graph
+    // has no path or a detour (tmplan::estimator::Hybrid); needs --local
+    let hybrid_on = flag(args, "--estimator").as_deref() == Some("hybrid");
+    let (d_m, len_m, drop_m, fields_m) = surf.distance_matrix_full(nodes);
+    let dirs_m = surf.directions(nodes, &fields_m);
+    let leg_specials = surf.leg_specials(nodes, &fields_m, gates);
+    let geo = tmplan::estimator::Geometric { time_model: tmplan::estimator::TimeModel::Cost, d: &d_m, len: &len_m, nodes, flight: None, surface: Some(surf), dirs: Some(&dirs_m), drop: Some(&drop_m), drop_penalty: 0.0, specials: Some((&leg_specials, gates)) };
+    let chained_h = if hybrid_on {
+        let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator hybrid needs --local rl.tmw"));
+        let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
+        if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
+        if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        Some(c)
+    } else { None };
+    let hybrid = chained_h.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(2.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained) {
+        (Some(h), _) => h,
+        (None, Some(c)) => c,
+        (None, None) => &est,
     };
     let t0 = std::time::Instant::now();
     let plans = tmplan::planner::beam(nodes, est_dyn, width, top_k, StateBucket::of_speed(0.0));
     println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64());
+    if let Some(h) = &hybrid {
+        let (ng, nr) = h.counts.get();
+        println!("  hybrid pricing: {ng} edge queries geometric, {nr} learned");
+    }
     let prov = provenance("plan");
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {
         let (g, wp) = order_str(&nodes, &gates, &p.visit);
-        let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}", e.p_reach, tmr::secs(e.expected_ms as i64))).collect();
+        let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}{}", e.p_reach, tmr::secs(e.expected_ms as i64), match e.kind { tmplan::estimator::EdgeKind::Learned => "R", tmplan::estimator::EdgeKind::Flight => "F", _ => "" })).collect();
         println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
         if let Some(dir) = &out_dir {
-            let source = flag(args, "--source").unwrap_or_else(|| "router-plan-r".into());
+            let source = flag(args, "--source").unwrap_or_else(|| if hybrid_on { "router-plan-hyb".into() } else { "router-plan-r".into() });
             let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
