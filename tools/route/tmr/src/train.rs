@@ -23,11 +23,14 @@ pub struct TrainCfg {
     pub patience: usize,
     /// Global gradient-norm clip.
     pub clip: f64,
+    /// Input Gaussian noise (normalised units) and hidden dropout, training only.
+    pub noise: f64,
+    pub dropout: f64,
 }
 
 impl Default for TrainCfg {
     fn default() -> TrainCfg {
-        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0 }
+        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0, noise: 0.0, dropout: 0.0 }
     }
 }
 
@@ -157,8 +160,8 @@ fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
 }
 
 /// (total, bce, ticks_mse, band_nll) on one batch.
-fn losses(t: &Trainable, bt: &Batch, cfg: &TrainCfg) -> candle_core::Result<(Tensor, f32, f32, f32)> {
-    let out = t.forward(&bt.x)?;
+fn losses(t: &Trainable, bt: &Batch, cfg: &TrainCfg, training: bool) -> candle_core::Result<(Tensor, f32, f32, f32)> {
+    let out = if training { t.forward_reg(&bt.x, cfg.noise, cfg.dropout)? } else { t.forward(&bt.x)? };
     let logit = out.narrow(1, O_REACH, 1)?.squeeze(1)?;
     // numerically stable BCE with logits: max(x,0) − x·y + ln(1 + e^{−|x|})
     // (candle_nn::loss::binary_cross_entropy_with_logit goes through sigmoid→log and
@@ -229,7 +232,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         if h % 10 == 0 { val.push(i) } else { fit.push(i) }
     }
     let val_set = train_set.subset(&val);
-    let mut log = vec![format!("train: {} rows fit, {} rows val (by start id), dims {:?}, {} params, ablation {}, batch {}, lr {}, wd {}, w_ticks {}, w_band {}", fit.len(), val.len(), dims, t.n_params(), cfg.ablation, cfg.batch, cfg.lr, cfg.weight_decay, cfg.w_ticks, cfg.w_band)];
+    let mut log = vec![format!("train: {} rows fit, {} rows val (by start id), dims {:?}, {} params, ablation {}, batch {}, lr {}, wd {}, w_ticks {}, w_band {}, noise {}, dropout {}", fit.len(), val.len(), dims, t.n_params(), cfg.ablation, cfg.batch, cfg.lr, cfg.weight_decay, cfg.w_ticks, cfg.w_band, cfg.noise, cfg.dropout)];
     if verbose {
         eprintln!("{}", log[0]);
     }
@@ -247,7 +250,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         let (mut clipped, mut gmax) = (0usize, 0f64);
         for chunk in fit.chunks(cfg.batch) {
             let bt = batch(train_set, chunk, dev).map_err(|e| e.to_string())?;
-            let (loss, b, tk, bn) = losses(&t, &bt, cfg).map_err(|e| e.to_string())?;
+            let (loss, b, tk, bn) = losses(&t, &bt, cfg, true).map_err(|e| e.to_string())?;
             // global-norm gradient clipping (cfg.clip), then the AdamW step
             let mut grads = loss.backward().map_err(|e| e.to_string())?;
             let vars = t.varmap.all_vars();
@@ -281,7 +284,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         let vidx: Vec<usize> = (0..val_set.n).collect();
         for chunk in vidx.chunks(8192) {
             let bt = batch(&val_set, chunk, dev).map_err(|e| e.to_string())?;
-            let (loss, b, tk, bn) = losses(&t, &bt, cfg).map_err(|e| e.to_string())?;
+            let (loss, b, tk, bn) = losses(&t, &bt, cfg, false).map_err(|e| e.to_string())?;
             let w = chunk.len() as f64;
             vl += loss.to_scalar::<f32>().map_err(|e| e.to_string())? as f64 * w;
             vb += b as f64 * w;

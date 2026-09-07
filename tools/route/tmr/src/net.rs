@@ -66,12 +66,25 @@ impl Trainable {
 
     /// `(B, OUT)` for a `(B, in)` batch.
     pub fn forward(&self, x: &Tensor) -> CResult<Tensor> {
+        self.forward_reg(x, 0.0, 0.0)
+    }
+
+    /// Training-time forward with regularisation: Gaussian `noise` (in normalised units) on the
+    /// inputs and `dropout` on every hidden activation. Both 0 = the plain forward (eval).
+    pub fn forward_reg(&self, x: &Tensor, noise: f64, dropout: f64) -> CResult<Tensor> {
         let mut h = x.broadcast_sub(&self.mean)?.broadcast_mul(&self.inv_std)?;
+        if noise > 0.0 {
+            let nz = h.randn_like(0.0, noise)?;
+            h = (h + nz)?;
+        }
         let n = self.layers.len();
         for (i, l) in self.layers.iter().enumerate() {
             h = l.forward(&h)?;
             if i + 1 < n {
                 h = h.relu()?;
+                if dropout > 0.0 {
+                    h = candle_nn::ops::dropout(&h, dropout as f32)?;
+                }
             }
         }
         Ok(h)

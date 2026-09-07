@@ -5,7 +5,7 @@
 //!   tmr build [--kind gate|local] [--fv 1|2] [--max-rows N] --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
 //!                                        TMR0 shards → labelled rows per map (<uid>.rows + manifest.tsv)
 //!   tmr train [--kind gate|local] --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
-//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
+//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
@@ -355,6 +355,12 @@ fn cmd_train(args: &[String]) {
     if let Some(s) = flag(args, "--seed") {
         cfg.seed = s.parse().unwrap_or_else(|_| die("--seed N"));
     }
+    if let Some(v) = flag(args, "--noise") {
+        cfg.noise = v.parse().unwrap_or_else(|_| die("--noise σ"));
+    }
+    if let Some(v) = flag(args, "--dropout") {
+        cfg.dropout = v.parse().unwrap_or_else(|_| die("--dropout p"));
+    }
     if let Some(w) = flag(args, "--wd") {
         cfg.weight_decay = w.parse().unwrap_or_else(|_| die("--wd X"));
     }
@@ -383,6 +389,7 @@ fn cmd_train(args: &[String]) {
         "ablation": cfg.ablation,
         "kind": kind_of(args),
         "mirror_augmentation": mirror,
+        "noise": cfg.noise, "dropout": cfg.dropout, "weight_decay": cfg.weight_decay, "lr": cfg.lr, "hidden_cfg": cfg.hidden,
         "hidden": cfg.hidden,
         "epochs_run": rep.epochs_run,
         "best_epoch": rep.best_epoch,
