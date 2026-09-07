@@ -278,6 +278,7 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
     let gatecal_pass = if cg.runs_without_counter < runs.len() { cg.passes() } else { gr.passes() };
     println!("GATECAL VERDICT: {} ({})", if gatecal_pass { "PASS" } else { "FAIL" }, if cg.runs_without_counter < runs.len() { "engine counter authoritative; notices informational" } else { "no engine counter: notices" });
     std::fs::write(out.join("detector.json"), det.to_json()).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("gate-clouds.tsv"), gate_clouds_tsv(&runs, &gates)).map_err(|e| e.to_string())?;
     std::fs::write(out.join("grade.txt"), format!("notices: {}\n{}\nengine counter: {}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" }, cg, if cg.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
     // the human crossing ORDER per ghost, for the coordinator's 44/44 check
     let mut orders: std::collections::BTreeMap<String, usize> = Default::default();

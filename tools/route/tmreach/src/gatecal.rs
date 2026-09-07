@@ -624,3 +624,40 @@ pub fn probe_rotation_hypotheses(runs: &[GhostRun], gates: &MapGates) -> Vec<Str
     }
     out
 }
+
+/// Per gate: the cloud of CREDITED rows (the engine counter's step row when
+/// present, else the notice row) in world coordinates and in the gate's own
+/// frame (s along the normal, lat, up from the GEOM centre), with the row
+/// before each credit (outside) — what a gate frame must reproduce. For the
+/// GEOM arm when a block family's frame is off.
+pub fn gate_clouds_tsv(runs: &[GhostRun], gates: &MapGates) -> String {
+    let mut s = String::from("waypoint\tmodel\tkind\tgeom_centre\tgeom_normal\tgeom_half_width\tn\tcredited_world_mean\tcredited_world_min\tcredited_world_max\tcredited_s_min\tcredited_s_max\tcredited_lat_min\tcredited_lat_max\tcredited_up_min\tcredited_up_max\toutside_s_max\tspeed_mean\n");
+    for g in &gates.gates {
+        let mut pts: Vec<([f64; 3], [f64; 3], f64)> = Vec::new(); // (credited pos, outside pos, speed)
+        for run in runs {
+            for c in run.crossings.iter().filter(|c| c.gate_wp == g.waypoint) {
+                let pin = c.p_step.unwrap_or(c.p0);
+                let pout = c.p_step_prev.or(c.pm).unwrap_or(c.p0);
+                pts.push((pin, pout, c.speed));
+            }
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let n = pts.len() as f64;
+        let mean = |f: &dyn Fn(&([f64; 3], [f64; 3], f64)) -> f64| pts.iter().map(f).sum::<f64>() / n;
+        let mn = |f: &dyn Fn(&([f64; 3], [f64; 3], f64)) -> f64| pts.iter().map(f).fold(f64::INFINITY, f64::min);
+        let mx = |f: &dyn Fn(&([f64; 3], [f64; 3], f64)) -> f64| pts.iter().map(f).fold(f64::NEG_INFINITY, f64::max);
+        let sl = |p: &([f64; 3], [f64; 3], f64)| g.local(p.0);
+        s.push_str(&format!(
+            "{}\t{}\t{:?}\t({:.2}, {:.2}, {:.2})\t({:.3}, {:.3}, {:.3})\t{:.1}\t{}\t({:.2}, {:.2}, {:.2})\t({:.2}, {:.2}, {:.2})\t({:.2}, {:.2}, {:.2})\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}\t{:.1}\n",
+            g.waypoint, g.model, g.kind, g.centre[0], g.centre[1], g.centre[2], g.normal[0], g.normal[1], g.normal[2], g.half_width, pts.len(),
+            mean(&|p| p.0[0]), mean(&|p| p.0[1]), mean(&|p| p.0[2]),
+            mn(&|p| p.0[0]), mn(&|p| p.0[1]), mn(&|p| p.0[2]),
+            mx(&|p| p.0[0]), mx(&|p| p.0[1]), mx(&|p| p.0[2]),
+            mn(&|p| sl(p).0), mx(&|p| sl(p).0), mn(&|p| sl(p).1), mx(&|p| sl(p).1), mn(&|p| sl(p).2), mx(&|p| sl(p).2),
+            mx(&|p| g.local(p.1).0), mean(&|p| p.2)
+        ));
+    }
+    s
+}
