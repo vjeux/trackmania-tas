@@ -57,6 +57,7 @@ impl Gate {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct MapGates {
     pub map_uid: String,
     pub map_name: String,
@@ -213,6 +214,9 @@ pub struct Detector {
     pub per_model: Vec<(String, Trigger)>,
     pub default: Trigger,
     pub provenance: String,
+    /// Gates whose GEOM normal points AGAINST the humans' travel (measured at
+    /// their crossings): the detector uses the negated normal for these.
+    pub flipped: Vec<u32>,
 }
 
 impl Detector {
@@ -303,7 +307,7 @@ impl Detector {
     /// JSON, for `detector.json` beside the dataset.
     pub fn to_json(&self) -> String {
         let mut s = String::from("{\n  \"detector_version\": 1,\n  \"frame\": \"gate frame: s along GEOM normal from centre, lat horizontal, up = y - centre.y; car CENTRE (CGameVehiclePhy state pos)\",\n");
-        s.push_str(&format!("  \"provenance\": {},\n  \"default\": {},\n  \"per_model\": [\n", crate::json::quote(&self.provenance), trig_json(&self.default)));
+        s.push_str(&format!("  \"provenance\": {},\n  \"flipped_waypoints\": [{}],\n  \"default\": {},\n  \"per_model\": [\n", crate::json::quote(&self.provenance), self.flipped.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(", "), trig_json(&self.default)));
         for (i, (m, t)) in self.per_model.iter().enumerate() {
             s.push_str(&format!("    {{\"model\": {}, \"trigger\": {}}}{}\n", crate::json::quote(m), trig_json(t), if i + 1 < self.per_model.len() { "," } else { "" }));
         }
@@ -326,10 +330,12 @@ impl Detector {
         for e in j.get("per_model").and_then(|v| v.arr()).ok_or("per_model")? {
             per_model.push((e.get("model").and_then(|v| v.str()).ok_or("model")?.to_string(), trig(e.get("trigger").ok_or("trigger")?)?));
         }
+        let flipped = j.get("flipped_waypoints").and_then(|v| v.arr()).map(|a| a.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()).unwrap_or_default();
         Ok(Detector {
             per_model,
             default: trig(j.get("default").ok_or("default")?)?,
             provenance: j.get("provenance").and_then(|v| v.str()).unwrap_or("").to_string(),
+            flipped,
         })
     }
 }
@@ -459,5 +465,33 @@ impl Detector {
         }
         let geometric_only = (0..ng).filter(|&gi| geo[gi] >= 0 && gate_row[gi] < 0 && !already[gi]).collect();
         Credits { gate_row, unattributed, geometric_only, engine: true }
+    }
+}
+
+impl MapGates {
+    /// Negate the normals of the detector's flipped gates (idempotent per load).
+    pub fn apply_flips(&mut self, det: &Detector) {
+        self.apply_flip_list(&det.flipped);
+    }
+
+    pub fn apply_flip_list(&mut self, flipped: &[u32]) {
+        for g in &mut self.gates {
+            if flipped.contains(&g.waypoint) {
+                g.normal = [-g.normal[0], -g.normal[1], -g.normal[2]];
+            }
+        }
+    }
+
+    /// Gates whose normal points against the humans' travel at their crossings:
+    /// `vel_at_crossing` = (waypoint, velocity) per crossing.
+    pub fn against_travel(&self, vel_at_crossing: &[(u32, [f64; 3])]) -> Vec<u32> {
+        let mut out = Vec::new();
+        for g in &self.gates {
+            let dots: Vec<f64> = vel_at_crossing.iter().filter(|(w, _)| *w == g.waypoint).map(|(_, v)| v[0] * g.normal[0] + v[1] * g.normal[1] + v[2] * g.normal[2]).collect();
+            if !dots.is_empty() && dots.iter().filter(|d| **d < 0.0).count() * 2 > dots.len() {
+                out.push(g.waypoint);
+            }
+        }
+        out
     }
 }

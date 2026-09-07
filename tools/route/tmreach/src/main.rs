@@ -230,7 +230,18 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
         println!("  {k}: n {n}  s mean {mean:+.3} sd {sd:.3} min {mn:+.3} max {mx:+.3}");
     }
     let prov = format!("tmreach gatecal {} {} ghosts on {} ({}), gates {}", tmreach::GIT_HASH, runs.len(), gates.map_uid, hostname(), gates.source);
-    let (det, notes) = fit(&runs, &gates, &prov);
+    // GEOM normals pointing AGAINST the humans' travel at their crossings are flipped
+    // for the detector (Summer 2026 - 12: a RoadDirtFinish and RoadDirtCheckpoints credited
+    // at s = +14.6 and +2.5 "past" the centre -- the normal, not the trigger, was backwards)
+    let vels: Vec<(u32, [f64; 3])> = runs.iter().flat_map(|r| r.crossings.iter().filter_map(|c| c.row_step.as_ref().map(|s| (c.gate_wp, [s.vx, s.vy, s.vz])))).collect();
+    let flips = gates.against_travel(&vels);
+    let mut gates = (*gates).clone();
+    gates.apply_flip_list(&flips);
+    if !flips.is_empty() {
+        println!("GEOM normals flipped for the detector (humans cross them against the normal): {:?}", flips);
+    }
+    let (mut det, notes) = fit(&runs, &gates, &prov);
+    det.flipped = flips;
     println!("\nFITTED DETECTOR (plane at per-model s_off from the crediting geometry, credited tick = T-1; lat 10 m road / GEOM item, up -6..+8: see gatecal::fit):");
     for n in &notes {
         println!("  {n}");
@@ -291,9 +302,11 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let out = PathBuf::from(a.req("out"));
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
-    let gates = std::sync::Arc::new(MapGates::load(&map, Some(&geom))?);
     let det_path = PathBuf::from(a.req("detector"));
     let det = std::sync::Arc::new(tmreach::gates::Detector::from_json(&std::fs::read_to_string(&det_path).map_err(|e| e.to_string())?)?);
+    let mut gates_m = MapGates::load(&map, Some(&geom))?;
+    gates_m.apply_flips(&det);
+    let gates = std::sync::Arc::new(gates_m);
     let lib = std::sync::Arc::new(tmreach::macros::library_v0());
     let horizons: Vec<u16> = a.get("horizons").unwrap_or("200,400").split(',').map(|s| s.parse().unwrap()).collect();
     let limit = a.get("limit").map(|s| s.parse::<usize>().unwrap()).unwrap_or(usize::MAX);
@@ -498,9 +511,11 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
     let out = PathBuf::from(a.req("out"));
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
-    let gates = std::sync::Arc::new(MapGates::load(&map, Some(&geom))?);
     let det_path = PathBuf::from(a.req("detector"));
     let det = std::sync::Arc::new(tmreach::gates::Detector::from_json(&std::fs::read_to_string(&det_path).map_err(|e| e.to_string())?)?);
+    let mut gates_m = MapGates::load(&map, Some(&geom))?;
+    gates_m.apply_flips(&det);
+    let gates = std::sync::Arc::new(gates_m);
     let lib = std::sync::Arc::new(tmreach::macros::library_v0());
     // every k-th ghost, a stratified macro subset: hold gas straight / hard left / hard right / brake, base-steer, ramp, doublet, reference
     let stride = a.get("ghost-stride").map(|s| s.parse::<usize>().unwrap()).unwrap_or(4);
@@ -613,8 +628,9 @@ fn cmd_gateprobe(a: &Args) -> Result<(), String> {
     let gate_wp: u32 = a.req("gate").parse().map_err(|_| "--gate N")?;
     let targets: Vec<f64> = a.get("stops").unwrap_or("-9,-7,-5,-3,-1,1").split(',').map(|s| s.parse().unwrap()).collect();
     let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
-    let gates = MapGates::load(&map, Some(&geom))?;
     let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
     let (server, shim) = engine_paths(a);
     let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/probe-{}", std::process::id())));
     let tel = Telemetry::load(&ghost.to_string_lossy())?;
@@ -690,8 +706,9 @@ fn cmd_fitbox(a: &Args) -> Result<(), String> {
 fn cmd_rejudge(a: &Args) -> Result<(), String> {
     let map = PathBuf::from(a.req("map"));
     let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
-    let gates = MapGates::load(&map, Some(&geom))?;
     let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
     let crossings = tmreach::fitbox::load_crossings(&PathBuf::from(a.req("crossings")))?;
     let mut offsets: std::collections::HashMap<String, i64> = Default::default();
     let mut declared: std::collections::HashMap<String, i64> = Default::default();
@@ -999,8 +1016,9 @@ fn cmd_explore(a: &Args) -> Result<(), String> {
     let ghosts_dir = PathBuf::from(a.req("ghosts"));
     let out = PathBuf::from(a.req("out"));
     let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
-    let gates = MapGates::load(&map, Some(&geom))?;
     let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
     let budget: usize = a.get("budget").unwrap_or("20000").parse().map_err(|_| "--budget N")?;
     let h: usize = a.get("h").unwrap_or("200").parse().map_err(|_| "--h ticks")?;
     let every: i64 = a.get("every").unwrap_or("1000").parse().map_err(|_| "--every ms")?;

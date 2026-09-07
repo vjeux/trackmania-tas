@@ -7,7 +7,7 @@
 //! grading requires a candidate to fire within ±2 ticks of the credit on
 //! ≥ 95 % of crossings with no missed and no extra gate.
 
-use crate::gates::{Detector, Gate, MapGates, Trigger};
+use crate::gates::{Detector, Gate, GateKind, MapGates, Trigger};
 use crate::rig::{dist, pos, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
@@ -348,6 +348,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
             per_model,
             default: Trigger { s_off: -2.0, depth: 8.0, lat_half: 10.0, up_lo: -6.0, up_hi: 8.0 },
             provenance: provenance.to_string(),
+            flipped: Vec::new(),
         },
         notes,
     )
@@ -398,6 +399,8 @@ pub struct CounterGrade {
     pub unmatched_steps: usize,
     pub extra_detections: usize,
     pub runs_without_counter: usize,
+    /// Finish detections in the trace's last 5 rows whose counter step the exiting child lost.
+    pub finish_steps_lost: usize,
     /// (ghost, waypoint, row, race_ms) of detections the counter did not step for, and steps no detection matched
     pub extra_list: Vec<String>,
     pub unmatched_list: Vec<String>,
@@ -407,8 +410,8 @@ impl std::fmt::Display for CounterGrade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} counter steps: {} matched by a detector crossing on the same row, off-by hist {:?} (within ±2 ticks: {}), {} steps with no detection within 30 rows, {} detections with no step; {} runs had no counter",
-            self.steps, self.exact, self.off_by, self.off_by.iter().filter(|(k, _)| k.abs() <= 2).map(|(_, n)| *n).sum::<usize>(), self.unmatched_steps, self.extra_detections, self.runs_without_counter
+            "{} counter steps: {} matched by a detector crossing on the same row, off-by hist {:?} (within ±2 ticks: {}), {} steps with no detection within 30 rows, {} detections with no step ({} finish steps lost at the child's exit); {} runs had no counter",
+            self.steps, self.exact, self.off_by, self.off_by.iter().filter(|(k, _)| k.abs() <= 2).map(|(_, n)| *n).sum::<usize>(), self.unmatched_steps, self.extra_detections, self.finish_steps_lost, self.runs_without_counter
         )
     }
 }
@@ -469,13 +472,21 @@ pub fn counter_grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> Cou
                 }
             }
         }
+        let mut extra_here = 0;
         for (j, u) in used.iter().enumerate() {
             if !*u {
                 let gi = first.iter().position(|t| *t == dets[j] as i32).unwrap_or(0);
+                // a finish detected within the last 5 rows of the trace: its counter step is
+                // among the samples the exiting child lost (Summer 2026 - 12 r004), not an extra
+                if gates.gates[gi].kind == GateKind::Finish && dets[j] + 5 >= run.flat.len() {
+                    g.finish_steps_lost += 1;
+                    continue;
+                }
+                extra_here += 1;
                 g.extra_list.push(format!("{} wp{} row {} race {}", run.ghost, gates.gates[gi].waypoint, dets[j], crate::secs(run.flat[dets[j]].time_ms + 10)));
             }
         }
-        g.extra_detections += used.iter().filter(|u| !**u).count();
+        g.extra_detections += extra_here;
     }
     g
 }
