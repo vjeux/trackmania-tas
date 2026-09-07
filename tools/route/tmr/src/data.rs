@@ -1,0 +1,385 @@
+//! From a TMR0 reach directory to labelled rows: one row per (record, candidate
+//! gate). The label rule (BRIEF-MODEL §Data): gate w reached within h ⇔
+//! `gate_tick[w] ≥ 0`; candidates are the gates NOT yet credited at the start
+//! (from the ghost's own order in geom/<uid>/human-orders.tsv and the start's
+//! `cps_before`), within the plausibility radius `radius_m(h)`, the finish
+//! only when it is ARMED (every checkpoint group credited — gen/CONTROL.md).
+//!
+//! Rows are cached per map as `<uid>.rows` (`TMRW` header, feature version,
+//! DIM, n rows, then `[features DIM f32][labels NLAB f32]` per row) because the
+//! surface probes cost a scene build per map.
+
+use crate::features::{self, Probe, Target, DIM};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tmreach::tmr::{read_shard, CarState};
+use tmroute::gates::{GatesFile, WpKind};
+
+pub const NLAB: usize = 12;
+pub const L_Y: usize = 0; // 1 reached, 0 not
+pub const L_TICKS: usize = 1; // gate_tick (positives) else -1
+pub const L_BAND: usize = 2; // 1 = the record's end state IS the arrival state (band labels valid)
+pub const L_ASPEED: usize = 3; // arrival speed m/s
+pub const L_ADY: usize = 4; // arrival height − gate centre y
+pub const L_AANG: usize = 5; // angle between arrival velocity and the gate normal, rad
+pub const L_DIST: usize = 6; // 3-D distance start → gate centre (the baseline's number)
+pub const L_REC: usize = 7; // record index in the shard
+pub const L_WP: usize = 8; // map waypoint of the candidate
+pub const L_HUMAN: usize = 9; // 1 = human leg record (macro HUMAN_MACRO)
+pub const L_START: usize = 10; // start_id
+pub const L_H: usize = 11; // horizon ticks
+
+/// Plausibility radius for a candidate: what a car could cover in h ticks at
+/// 150 m/s plus slack. Logged per map beside the count of positives it would
+/// have excluded (must be 0 — a positive outside it is a label bug).
+pub fn radius_m(h: u16) -> f32 {
+    (60.0 + 1.5 * h as f32).min(1500.0)
+}
+
+/// A record's end state is the ARRIVAL state at gate w when the crossing is
+/// within this many ticks of the horizon (human legs: exactly 0).
+pub const BAND_SLACK_TICKS: i32 = 5;
+
+#[derive(Clone, Debug)]
+pub struct StartInfo {
+    pub ghost_md5: String,
+    pub race_ms: i32,
+    pub state: CarState,
+    pub cps_before: u8,
+    pub source: String,
+}
+
+pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
+    let s = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut out = HashMap::new();
+    for (i, line) in s.lines().enumerate() {
+        if i == 0 || line.is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 16 {
+            return Err(format!("{}:{}: {} fields", p.display(), i + 1, f.len()));
+        }
+        let g = |k: usize| f[k].parse::<f32>().map_err(|e| format!("{}:{}: field {k}: {e}", p.display(), i + 1));
+        let id: u32 = f[0].parse().map_err(|e| format!("{}:{}: {e}", p.display(), i + 1))?;
+        let race_ms: i32 = f[3].parse().unwrap_or(0);
+        let cps_before: u8 = f[14].parse().unwrap_or(0);
+        let vel = [g(7)?, g(8)?, g(9)?];
+        let mut st = CarState {
+            race_ms,
+            pos: [g(4)?, g(5)?, g(6)?],
+            vel,
+            quat: [g(10)?, g(11)?, g(12)?, g(13)?],
+            ang_vel: [f32::NAN; 3],
+            speed: (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt(),
+            gear: u8::MAX,
+            rpm: f32::NAN,
+            wheel_contact: [u8::MAX; 4],
+            wheel_material: [u8::MAX; 4],
+            wheel_slip: [f32::NAN; 4],
+            turbo: f32::NAN,
+            cps: cps_before,
+            finished: false,
+        };
+        st.cps = cps_before;
+        out.insert(id, StartInfo { ghost_md5: f[1].to_string(), race_ms, state: st, cps_before, source: f[15].to_string() });
+    }
+    Ok(out)
+}
+
+/// ghost_md5 → gate order (map waypoints, finish last) from human-orders.tsv
+/// (+ the .unverified file). Column `order` is the 4th.
+pub fn read_orders(geom_dir: &Path) -> HashMap<String, Vec<u32>> {
+    let mut out = HashMap::new();
+    for name in ["human-orders.tsv", "human-orders.unverified.tsv"] {
+        let Ok(s) = std::fs::read_to_string(geom_dir.join(name)) else { continue };
+        for (i, line) in s.lines().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 4 {
+                continue;
+            }
+            let order: Vec<u32> = f[3].split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if !order.is_empty() {
+                out.entry(f[0].to_string()).or_insert(order);
+            }
+        }
+    }
+    out
+}
+
+/// The modal order from consensus.txt (`order [g1,g2,..] xN` lines are GROUP
+/// ids; we take the first human-orders row instead when there is one). Used
+/// only as the fallback when a start's ghost is unknown.
+pub fn fallback_order(orders: &HashMap<String, Vec<u32>>) -> Option<Vec<u32>> {
+    // most common order
+    let mut count: HashMap<&Vec<u32>, usize> = HashMap::new();
+    for o in orders.values() {
+        *count.entry(o).or_insert(0) += 1;
+    }
+    count.into_iter().max_by_key(|(_, c)| *c).map(|(o, _)| o.clone())
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct BuildStats {
+    pub records: usize,
+    pub rows: usize,
+    pub positives: usize,
+    pub human_rows: usize,
+    pub human_pos: usize,
+    pub band_rows: usize,
+    pub finish_candidates: usize,
+    pub positives_beyond_400: usize,
+    pub positives_outside_radius: usize,
+    pub credited_reached: usize,
+    pub unknown_ghost_starts: usize,
+    pub skipped_no_start: usize,
+    pub waypoint_ge_32: usize,
+    pub candidates_per_record: f64,
+}
+
+/// One map's rows in memory.
+pub struct Rows {
+    pub map_uid: String,
+    pub x: Vec<f32>,
+    pub lab: Vec<f32>,
+    pub n: usize,
+}
+
+impl Rows {
+    pub fn feat(&self, i: usize) -> &[f32] {
+        &self.x[i * DIM..(i + 1) * DIM]
+    }
+    pub fn lab(&self, i: usize) -> &[f32] {
+        &self.lab[i * NLAB..(i + 1) * NLAB]
+    }
+    pub fn write(&self, p: &Path) -> Result<(), String> {
+        let mut b = Vec::with_capacity(32 + self.x.len() * 4 + self.lab.len() * 4);
+        b.extend_from_slice(b"TMRW");
+        b.extend_from_slice(&features::FEATURE_VERSION.to_le_bytes());
+        b.extend_from_slice(&(DIM as u32).to_le_bytes());
+        b.extend_from_slice(&(NLAB as u32).to_le_bytes());
+        b.extend_from_slice(&(self.n as u64).to_le_bytes());
+        let uid = self.map_uid.as_bytes();
+        b.extend_from_slice(&(uid.len() as u32).to_le_bytes());
+        b.extend_from_slice(uid);
+        for i in 0..self.n {
+            for v in self.feat(i).iter().chain(self.lab(i)) {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        std::fs::write(p, b).map_err(|e| format!("{}: {e}", p.display()))
+    }
+    pub fn read(p: &Path) -> Result<Rows, String> {
+        let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        if b.len() < 28 || &b[0..4] != b"TMRW" {
+            return Err(format!("{}: not a TMRW rows file", p.display()));
+        }
+        let u32at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let fv = u32at(4);
+        let dim = u32at(8) as usize;
+        let nlab = u32at(12) as usize;
+        let n = u64::from_le_bytes(b[16..24].try_into().unwrap()) as usize;
+        let ul = u32at(24) as usize;
+        if fv != features::FEATURE_VERSION || dim != DIM || nlab != NLAB {
+            return Err(format!("{}: feature version {fv}/dim {dim}/nlab {nlab} — rebuild (code has {}/{DIM}/{NLAB})", p.display(), features::FEATURE_VERSION));
+        }
+        let uid = String::from_utf8_lossy(&b[28..28 + ul]).to_string();
+        let body = &b[28 + ul..];
+        if body.len() != n * (DIM + NLAB) * 4 {
+            return Err(format!("{}: body {} bytes, header says {} rows", p.display(), body.len(), n));
+        }
+        let mut x = Vec::with_capacity(n * DIM);
+        let mut lab = Vec::with_capacity(n * NLAB);
+        for i in 0..n {
+            let o = i * (DIM + NLAB) * 4;
+            for k in 0..DIM {
+                x.push(f32::from_le_bytes(body[o + 4 * k..o + 4 * k + 4].try_into().unwrap()));
+            }
+            let o2 = o + DIM * 4;
+            for k in 0..NLAB {
+                lab.push(f32::from_le_bytes(body[o2 + 4 * k..o2 + 4 * k + 4].try_into().unwrap()));
+            }
+        }
+        Ok(Rows { map_uid: uid, x, lab, n })
+    }
+}
+
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Build the rows of one map. `probe` = the map's geometry (or `Probe::none()`
+/// for the geometry-free ablation build).
+pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &Probe, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
+    let shard = read_shard(&reach_dir.join("samples.tmr"))?;
+    let starts = read_starts(&reach_dir.join("starts.tsv"))?;
+    let orders = read_orders(geom_dir);
+    let fallback = fallback_order(&orders);
+    let n_cp_groups = gates.checkpoint_group_ids().len() as u8;
+    let group_size: HashMap<u32, u32> = {
+        let mut m = HashMap::new();
+        for g in &gates.gates {
+            *m.entry(g.group).or_insert(0) += 1;
+        }
+        m
+    };
+    let mut st = BuildStats { records: shard.records.len(), ..Default::default() };
+    let mut rows = Rows { map_uid: gates.map_uid.clone(), x: Vec::new(), lab: Vec::new(), n: 0 };
+    let mut buf = vec![0f32; DIM];
+    let mut cand_total = 0usize;
+    let candidates: Vec<&tmroute::gates::GateRec> = gates.gates.iter().filter(|g| g.kind != WpKind::Start).collect();
+    for (ri, r) in shard.records.iter().enumerate() {
+        let Some(s) = starts.get(&r.start_id) else {
+            st.skipped_no_start += 1;
+            continue;
+        };
+        let order = match orders.get(&s.ghost_md5) {
+            Some(o) => o.clone(),
+            None => {
+                st.unknown_ghost_starts += 1;
+                fallback.clone().unwrap_or_default()
+            }
+        };
+        let credited: Vec<u32> = order.iter().take(s.cps_before as usize).cloned().collect();
+        let armed = s.cps_before >= n_cp_groups;
+        let radius = radius_m(r.horizon_ticks);
+        let is_human = r.macro_id == tmreach::human::HUMAN_MACRO;
+        // groups touched in this record (a crossed group's siblings are neither positive nor negative)
+        let mut crossed_groups: Vec<u32> = Vec::new();
+        for g in &candidates {
+            if (g.waypoint as usize) < 32 && r.gate_tick[g.waypoint as usize] >= 0 {
+                crossed_groups.push(g.group);
+            }
+        }
+        for g in &candidates {
+            let wp = g.waypoint as usize;
+            if wp >= 32 {
+                st.waypoint_ge_32 += 1;
+                continue;
+            }
+            let reached = r.gate_tick[wp] >= 0;
+            if credited.contains(&g.waypoint) {
+                if reached {
+                    st.credited_reached += 1;
+                }
+                continue;
+            }
+            if g.kind == WpKind::Finish && !armed {
+                continue;
+            }
+            if !reached && crossed_groups.contains(&g.group) {
+                continue;
+            }
+            let d = dist3(s.state.pos, g.centre);
+            if reached && d > 400.0 {
+                st.positives_beyond_400 += 1;
+            }
+            if d > radius {
+                if reached {
+                    st.positives_outside_radius += 1;
+                } else {
+                    continue;
+                }
+            }
+            cand_total += 1;
+            let t = Target::of_gate(g, *group_size.get(&g.group).unwrap_or(&1));
+            features::features(&s.state, &t, probe, r.horizon_ticks, &mut buf);
+            rows.x.extend_from_slice(&buf);
+            let mut lab = [0f32; NLAB];
+            lab[L_Y] = if reached { 1.0 } else { 0.0 };
+            lab[L_TICKS] = if reached { r.gate_tick[wp] as f32 } else { -1.0 };
+            let band_ok = reached && (r.horizon_ticks as i32 - r.gate_tick[wp] as i32).abs() <= BAND_SLACK_TICKS;
+            lab[L_BAND] = if band_ok { 1.0 } else { 0.0 };
+            if band_ok {
+                let e = &r.end;
+                let sp = if e.speed.is_finite() { e.speed } else { crate::frame::norm3(e.vel) };
+                lab[L_ASPEED] = sp;
+                lab[L_ADY] = e.pos[1] - g.centre[1];
+                let ang = match crate::frame::unit3(e.vel) {
+                    Some(u) => (u[0] * g.normal[0] + u[1] * g.normal[1] + u[2] * g.normal[2]).clamp(-1.0, 1.0).acos(),
+                    None => 0.0,
+                };
+                lab[L_AANG] = ang;
+                st.band_rows += 1;
+            }
+            lab[L_DIST] = d;
+            lab[L_REC] = ri as f32;
+            lab[L_WP] = g.waypoint as f32;
+            lab[L_HUMAN] = if is_human { 1.0 } else { 0.0 };
+            lab[L_START] = r.start_id as f32;
+            lab[L_H] = r.horizon_ticks as f32;
+            rows.lab.extend_from_slice(&lab);
+            rows.n += 1;
+            st.rows += 1;
+            if reached {
+                st.positives += 1;
+            }
+            if is_human {
+                st.human_rows += 1;
+                if reached {
+                    st.human_pos += 1;
+                }
+            }
+            if g.kind == WpKind::Finish {
+                st.finish_candidates += 1;
+            }
+        }
+    }
+    st.candidates_per_record = cand_total as f64 / st.records.max(1) as f64;
+    log.push(format!(
+        "{} ({}): {} records → {} rows ({:.2} candidates/record), {} positives ({:.1} %), human rows {} ({} pos), band rows {}, finish candidates {}; positives beyond 400 m {}, outside radius(h) {}, already-credited-yet-reached {}, unknown-ghost starts {}, records without a start {}, waypoints ≥ 32 {}",
+        gates.map_name, gates.map_uid, st.records, st.rows, st.candidates_per_record, st.positives, 100.0 * st.positives as f64 / st.rows.max(1) as f64,
+        st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.credited_reached, st.unknown_ghost_starts, st.skipped_no_start, st.waypoint_ge_32
+    ));
+    let _ = PathBuf::new();
+    Ok((rows, st))
+}
+
+/// The player's split rule: fnv1a64(map_uid) % 10 == 0 ⇒ held out.
+pub fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+pub fn held_out(map_uid: &str) -> bool {
+    fnv1a64(map_uid) % 10 == 0
+}
+
+/// Every `<uid>/samples.tmr` under a reach root (`reach/v0`), or the dir itself when it is a shard dir.
+pub fn shard_dirs(root: &Path) -> Vec<PathBuf> {
+    if root.join("samples.tmr").exists() {
+        return vec![root.to_path_buf()];
+    }
+    let mut v: Vec<PathBuf> = std::fs::read_dir(root)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.join("samples.tmr").exists()).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// The map uid of a shard dir: the directory name, unless it is a scratch
+/// name, in which case the shard's starts' geom is looked up by the detector's
+/// provenance — simpler: read it from `FANOUT.log`'s first line (`fanout <hash> on <uid>`).
+pub fn shard_map_uid(dir: &Path) -> Option<String> {
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    if name.len() == 27 && !name.contains('-') {
+        return Some(name);
+    }
+    let log = std::fs::read_to_string(dir.join("FANOUT.log")).ok()?;
+    for line in log.lines() {
+        if let Some(rest) = line.strip_prefix("fanout ") {
+            let mut it = rest.split_whitespace();
+            let _hash = it.next()?;
+            if it.next()? == "on" {
+                return Some(it.next()?.to_string());
+            }
+        }
+    }
+    None
+}

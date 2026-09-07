@@ -5,12 +5,13 @@
 #   tmroute  (GEOM arm)  route/gate types (re-exported from tools/rl/tmstate) + I/O + metrics +
 #                        gates/human-orders/consensus
 #   tmplan   (GEOM arm)  beam-search planner over a pluggable EdgeEstimator
+#   tmr      (MODEL arm) the reachability model R: features, candle trainer, .tmw loader, two-gate eval, R as EdgeEstimator (`tmr plan`)
 #
 # Release profile pins -O3 + LTO like fk/search: tmreach's rollout loop is on the hot path
 # (the planner and the route tools do not mind).
 [workspace]
 resolver = "2"
-members = ["tmreach", "tmroute", "tmplan"]
+members = ["tmreach", "tmroute", "tmplan", "tmr"]
 
 [workspace.package]
 version = "0.1.0"
