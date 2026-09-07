@@ -55,8 +55,8 @@ mod tests {
             half_width: vec![4.0; 4],
             s: vec![0.0, 2.0, 4.0, 6.0],
             gates: vec![
-                Gate { kind: GateKind::Checkpoint, centre: [0.0, 12.0, 2.0], normal: [0.0, 0.0, 1.0], half_width: 8.0, s: 2.0 },
-                Gate { kind: GateKind::Finish, centre: [0.0, 12.0, 6.0], normal: [0.0, 0.0, 1.0], half_width: 8.0, s: 6.0 },
+                Gate { kind: GateKind::Checkpoint, centre: [0.0, 12.0, 2.0], normal: [0.0, 0.0, 1.0], half_width: 8.0, s: 2.0, map_waypoint: 3 },
+                Gate { kind: GateKind::Finish, centre: [0.0, 12.0, 6.0], normal: [0.0, 0.0, 1.0], half_width: 8.0, s: 6.0, map_waypoint: 1 },
             ],
             spawn: [0.0, 10.0, 0.0],
             spawn_yaw: 0.0,

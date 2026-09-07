@@ -409,7 +409,7 @@ pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by
         let (centre, _axis, half) = gates.group_geometry(group).unwrap();
         let rep = gates.group_rep(group).unwrap();
         let kind = if li + 1 == n_legs { GateKind::Finish } else if rep.kind == WpKind::Multilap { GateKind::Multilap } else { GateKind::Checkpoint };
-        tg_gates.push(Gate { kind, centre, normal: [mean[0], 0.0, mean[2]], half_width: half, s: s_acc });
+        tg_gates.push(Gate { kind, centre, normal: [mean[0], 0.0, mean[2]], half_width: half, s: s_acc, map_waypoint: rep.waypoint });
         legs.push(Leg {
             gate_idx: li as u32,
             map_waypoint: rep.waypoint,

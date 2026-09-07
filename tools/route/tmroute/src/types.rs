@@ -22,7 +22,7 @@ pub enum GateKind {
 }
 
 /// A gate in race order along the route's centreline.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Gate {
     pub kind: GateKind,
     pub centre: [f32; 3],
@@ -31,11 +31,19 @@ pub struct Gate {
     pub half_width: f32,
     /// Arc length along `pts` at which the gate is crossed.
     pub s: f32,
+    /// Index of this gate in the .Map.Gbx per `tmmaps waypoints` (u32::MAX unknown) — what makes gate
+    /// orders comparable across sources. (tmstate added it 2026-09-07; same serde default.)
+    #[serde(default = "u32_max")]
+    pub map_waypoint: u32,
+}
+
+fn u32_max() -> u32 {
+    u32::MAX
 }
 
 /// The route the observation is computed against (player) — and, with `legs`
 /// and `route` filled, a ROUTE the driver follows leg by leg.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackGeom {
     pub geom_version: u32,
     pub map_uid: String,
@@ -60,7 +68,7 @@ pub struct TrackGeom {
 
 /// Leg i ends at gates[gate_idx]; leg 0 starts at spawn, leg i>0 starts at
 /// legs[i-1]'s gate. legs.len() == gates.len(); the last leg ends at the finish.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// Index into TrackGeom.gates (race order).
     pub gate_idx: u32,
@@ -72,18 +80,19 @@ pub struct Leg {
     pub s_end: f32,
     pub connection: ConnectionClass,
     /// [lo, hi] m/s at the gate.
-    #[serde(with = "nanf::pair")]
+    #[serde(with = "nanf::arr2")]
     pub arrival_speed: [f32; 2],
     /// Unit vector, world frame, direction of travel through the gate.
+    #[serde(with = "nanf::arr3")]
     pub arrival_heading: [f32; 3],
     /// Cone half-angle, rad.
-    #[serde(with = "nanf")]
+    #[serde(with = "nanf::scalar")]
     pub arrival_heading_tol: f32,
     /// [lo, hi] world y at the gate (a jump-through vs a drive-through).
-    #[serde(with = "nanf::pair")]
+    #[serde(with = "nanf::arr2")]
     pub arrival_height: [f32; 2],
     /// R's P(reach this gate from the band at the previous one); NaN if not from R.
-    #[serde(with = "nanf")]
+    #[serde(with = "nanf::scalar")]
     pub p_reach: f32,
     /// R's expected leg time; -1 if not from R.
     pub expected_ms: i32,
@@ -123,7 +132,7 @@ pub enum RouteStatus {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RouteMeta {
     pub route_version: u32,
     /// "router-human" | "router-plan" | "router-rl" | "router-explore" | "cartographer"
@@ -209,29 +218,51 @@ impl TrackGeom {
     }
 }
 
-/// JSON has no NaN. INTERFACES §1 uses NaN for "not from R" / "unknown band";
-/// on the wire that is `null`, and `null` reads back as NaN. Every f32 field
-/// of `Leg` that may be unknown goes through this module.
+/// JSON has no NaN: an "unknown" f32 serializes as `null` and reads back as NaN, so route/geom files interchange
+/// with the ROUTE FINDER's `tmroute::types::nanf`. Use `#[serde(with = "nanf::scalar")]` / `arr2` / `arr3`.
 pub mod nanf {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
-        if v.is_nan() { s.serialize_none() } else { s.serialize_some(v) }
+
+    fn to_opt(x: f32) -> Option<f32> {
+        if x.is_nan() {
+            None
+        } else {
+            Some(x)
+        }
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
-        Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
-    }
-    pub mod pair {
+
+    pub mod scalar {
         use super::*;
-        pub fn serialize<S: Serializer>(v: &[f32; 2], s: S) -> Result<S::Ok, S::Error> {
-            let o: [Option<f32>; 2] = [
-                if v[0].is_nan() { None } else { Some(v[0]) },
-                if v[1].is_nan() { None } else { Some(v[1]) },
-            ];
-            o.serialize(s)
+        pub fn serialize<S: Serializer>(x: &f32, s: S) -> Result<S::Ok, S::Error> {
+            to_opt(*x).serialize(s)
         }
-        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 2], D::Error> {
-            let o = <[Option<f32>; 2]>::deserialize(d)?;
-            Ok([o[0].unwrap_or(f32::NAN), o[1].unwrap_or(f32::NAN)])
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+            Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
         }
     }
+
+    macro_rules! arr {
+        ($name:ident, $n:expr) => {
+            pub mod $name {
+                use super::*;
+                pub fn serialize<S: Serializer>(x: &[f32; $n], s: S) -> Result<S::Ok, S::Error> {
+                    let v: Vec<Option<f32>> = x.iter().map(|&f| to_opt(f)).collect();
+                    v.serialize(s)
+                }
+                pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; $n], D::Error> {
+                    let v = Vec::<Option<f32>>::deserialize(d)?;
+                    if v.len() != $n {
+                        return Err(serde::de::Error::custom(format!("expected {} floats, got {}", $n, v.len())));
+                    }
+                    let mut out = [f32::NAN; $n];
+                    for (o, x) in out.iter_mut().zip(v) {
+                        *o = x.unwrap_or(f32::NAN);
+                    }
+                    Ok(out)
+                }
+            }
+        };
+    }
+    arr!(arr2, 2);
+    arr!(arr3, 3);
 }

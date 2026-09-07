@@ -15,3 +15,6 @@ path = "src/main.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tmroute = { path = "../tmroute" }
+tmmaps = { path = "../../tmmaps" }
+# The cartographer's surface graph (mapgeom::surf/pack/packrun/yoff), ported from its bundle.
+mapgeom = { path = "../../mapgeom" }

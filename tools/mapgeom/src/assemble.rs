@@ -315,6 +315,69 @@ impl<'a> Assembler<'a> {
         out
     }
 
+    /// Blocks split by placement regime: `(grid, free)`.
+    ///
+    /// A GRID block's world height is `8*cy + yoff`; a FREE block's is an
+    /// absolute number in the file and does not move with `yoff` at all. Every
+    /// caller that sweeps `yoff` needs the two apart, because sweeping a scene
+    /// that mixes them means rebuilding it — reading the pack again — once per
+    /// candidate, and it also hides the fact that half the map did not move.
+    ///
+    /// The grid half is built at **`yoff = 0`**, so a candidate `yoff` is a
+    /// pure vertical translation of it and the sweep is arithmetic.
+    pub fn map_split(&mut self, m: &MapFile) -> (Scene, Scene) {
+        let mut grid = Scene::default();
+        let mut free_s = Scene::default();
+        for b in &m.blocks {
+            let free = b.flags & FREE_BLOCK_FLAG != 0;
+            let size = match self.block_model(&b.name) {
+                Some(lm) => lm.size,
+                None => {
+                    self.note(&b.name, false);
+                    continue;
+                }
+            };
+            let xf: Xform = if free {
+                match (b.free_pos, b.free_rot) {
+                    (Some(p), Some(r)) => place::free(p, r),
+                    (Some(p), None) => place::free(p, [0.0; 3]),
+                    _ => continue,
+                }
+            } else {
+                place::grid_block(b.coords(), b.dir, size, 0.0)
+            };
+            self.note(&b.name, true);
+            if let Some(lm) = self.block_model(&b.name) {
+                let s = &lm.scene;
+                if free {
+                    free_s.append(s, &xf);
+                } else {
+                    grid.append(s, &xf);
+                }
+            }
+        }
+        (grid, free_s)
+    }
+
+    /// Only the map's ITEMS, placed. Items carry absolute positions, so this
+    /// scene does not move with `yoff` either.
+    pub fn map_items(&mut self, m: &MapFile) -> Scene {
+        let mut out = Scene::default();
+        for it in &m.items {
+            if self.item_model(&it.model).is_none() {
+                self.note(&it.model, false);
+                continue;
+            }
+            let xf = place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+            if let Some(lm) = self.item_model(&it.model) {
+                let s = &lm.scene;
+                out.append(s, &xf);
+                self.note(&it.model, true);
+            }
+        }
+        out
+    }
+
     fn note(&mut self, name: &str, ok: bool) {
         let e = self.used.entry(name.to_string()).or_insert((0, ok));
         e.0 += 1;

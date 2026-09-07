@@ -418,6 +418,91 @@ fn main() {
         "human-orders" => cmd_human_orders(rest),
         "consensus" => cmd_consensus(rest),
         "index" => cmd_index(rest),
+        "table" => cmd_table(rest),
         other => die(&format!("unknown command {other}")),
     }
+}
+
+/// `tmroute table ROUTES_DIR --geom GEOM_DIR [--plan-source router-plan]`
+/// The campaign table (BRIEF R6): per map, cartographer vs human modal vs
+/// planner order, agreement by checkpoint GROUP, human share from consensus.txt.
+pub fn cmd_table(args: &[String]) {
+    let pos = positionals(args, &["--geom", "--plan-source"], &[]);
+    let root = pos.first().unwrap_or_else(|| die("table ROUTES_DIR --geom GEOM_DIR"));
+    let geom = flag(args, "--geom").unwrap_or_else(|| die("--geom GEOM_DIR"));
+    let plan_source = flag(args, "--plan-source").unwrap_or_else(|| "router-plan".into());
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&geom).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    let mut n_carto_cmp = 0;
+    let mut n_carto_exact = 0;
+    let mut n_human_cmp = 0;
+    let mut n_human_exact = 0;
+    dirs.sort();
+    for d in dirs {
+        let uid = d.file_name().unwrap().to_string_lossy().to_string();
+        let Ok(g) = io::read_gates(&d.join("gates.json")) else { continue };
+        let load = |src: &str| io::read_route(&Path::new(root).join(&uid).join(io::route_file_name(src, 0))).ok().map(|r| metrics::to_groups(&r.gate_order(), &g));
+        let carto = load("cartographer");
+        let human = load("router-human");
+        let plan = load(&plan_source);
+        // human share from consensus.txt
+        let share = std::fs::read_to_string(d.join("consensus.txt")).ok().and_then(|s| {
+            let l = s.lines().next()?.to_string();
+            let sh = l.split('\t').find(|f| f.starts_with("share "))?.trim_start_matches("share ").to_string();
+            let n = l.split('\t').find(|f| f.starts_with("runs "))?.trim_start_matches("runs ").to_string();
+            Some(format!("{sh} ({n} runs)"))
+        }).unwrap_or_else(|| "-".into());
+        let cmp = |a: &Option<Vec<u32>>, b: &Option<Vec<u32>>| -> String {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    let (oa, ob) = metrics::symmetric_difference(a, b);
+                    let tau = metrics::kendall_tau(a, b);
+                    let ex = metrics::exact(a, b);
+                    format!("{}{} τ={:.2}{}", if ex { "EXACT" } else { "differ" }, if oa.is_empty() && ob.is_empty() { "" } else { "*" }, tau, if oa.is_empty() && ob.is_empty() { String::new() } else { format!(" (only A {:?}, only B {:?})", oa, ob) })
+                }
+                _ => "-".into(),
+            }
+        };
+        let pc = cmp(&plan, &carto);
+        let ph = cmp(&plan, &human);
+        if plan.is_some() && carto.is_some() {
+            n_carto_cmp += 1;
+            // exact over the checkpoints the cartographer knew: compare the plan restricted to carto's set
+            let p = plan.as_ref().unwrap();
+            let c = carto.as_ref().unwrap();
+            let pr: Vec<u32> = p.iter().copied().filter(|x| c.contains(x)).collect();
+            if pr == *c {
+                n_carto_exact += 1;
+            }
+        }
+        if plan.is_some() && human.is_some() {
+            n_human_cmp += 1;
+            if plan == human {
+                n_human_exact += 1;
+            }
+        }
+        rows.push((
+            g.map_name.clone(),
+            format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                if uid.starts_with("Tin") { format!("{} (tiny)", g.map_name) } else { g.map_name.clone() },
+                g.checkpoint_groups,
+                carto.as_ref().map_or("—".into(), |v| j(v)),
+                human.as_ref().map_or("—".into(), |v| j(v)),
+                share,
+                plan.as_ref().map_or("— (no plan)".into(), |v| j(v)),
+                pc,
+                ph
+            ),
+        ));
+    }
+    rows.sort();
+    println!("| map | CP groups | cartographer order (groups) | human modal order | human share | planner ({plan_source}) order | planner vs cartographer | planner vs human |");
+    println!("|---|--:|---|---|---|---|---|---|");
+    for (_, r) in &rows {
+        println!("{r}");
+    }
+    println!();
+    println!("planner order == cartographer order over the checkpoints the cartographer knew: {n_carto_exact}/{n_carto_cmp}; planner == human modal: {n_human_exact}/{n_human_cmp}. τ = Kendall tau over shared groups; * = the two orders cover different checkpoint sets (F1).");
 }

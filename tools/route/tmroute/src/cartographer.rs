@@ -111,7 +111,7 @@ pub fn import(pack: &Path, route: &Path, gates: &GatesFile, produced_by: &str) -
         let rep = gates.group_rep(*g).unwrap();
         let kind = if i + 1 == groups.len() { GateKind::Finish } else if rep.kind == crate::gates::WpKind::Multilap { GateKind::Multilap } else { GateKind::Checkpoint };
         let n = dirs[i];
-        tg_gates.push(Gate { kind, centre, normal: n, half_width: half, s: gate_s[i] });
+        tg_gates.push(Gate { kind, centre, normal: n, half_width: half, s: gate_s[i], map_waypoint: rep.waypoint });
         legs.push(Leg {
             gate_idx: i as u32,
             map_waypoint: rep.waypoint,
