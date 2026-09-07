@@ -55,6 +55,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     let ng = gates.gates.len();
     let mut first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
     let mut synth_finish = false;
+    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new(), paths: Vec::new() };
     // A finishing ghost whose finish step is among the samples the exiting
     // child lost (0..5, run to run): the declared time is the finish, so the
     // finish leg ends at the row of race floor10(declared) — the row whose tick
@@ -75,15 +76,18 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                         // DETERMINISM: the engine rows near the exit are however many the child flushed;
                         // the ghost's OWN telemetry (50 ms samples, Hermite to 1 ms) gives the finish
                         // position deterministically; velocity from the telemetry over ±10 ms
-                        if let (Some(p), Some(pm), Some(pp)) = (tel.pos_at(want), tel.pos_at(want - 10), tel.pos_at(want + 10)) {
+                        // (the telemetry ends AT the declared time: velocity by a backward difference)
+                        if let (Some(p), Some(pm)) = (tel.pos_at(want), tel.pos_at(want - 20)) {
                             let mut r = flat[i].clone();
                             r.x = p[0];
                             r.y = p[1];
                             r.z = p[2];
-                            r.vx = (pp[0] - pm[0]) / 0.02;
-                            r.vy = (pp[1] - pm[1]) / 0.02;
-                            r.vz = (pp[2] - pm[2]) / 0.02;
+                            r.vx = (p[0] - pm[0]) / 0.02;
+                            r.vy = (p[1] - pm[1]) / 0.02;
+                            r.vz = (p[2] - pm[2]) / 0.02;
                             flat[i] = r;
+                        } else {
+                            out.log.push(format!("  finish leg: no telemetry at race {} -- engine row kept (may differ run to run)", crate::secs(want)));
                         }
                         synth_finish = first[gi] < 0;
                         first[gi] = i as i32;
@@ -95,7 +99,6 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     let mut events: Vec<(usize, usize)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (*t as usize, gi)).collect();
     events.sort();
     let respawns = respawn_ticks(&w.ghost);
-    let mut out = HumanOut { starts: Vec::new(), records: Vec::new(), legs: 0, respawns: 0, log: Vec::new(), paths: Vec::new() };
     // race-0 row index
     let race0 = flat.iter().position(|r| w.race_of(r) >= 0).unwrap_or(0);
     let mut leg_start = race0;
