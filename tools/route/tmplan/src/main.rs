@@ -258,7 +258,7 @@ fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile,
         let v_h = 1000.0 * l / human_ms.max(1) as f32;
         // A human leg whose surface-graph path implies > 130 m/s, or has no path at all, was
         // NOT driven along the graph: the humans used a connection the surface reader lacks.
-        let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 130.0 { "MISSING-CONNECTION (graph detour)" } else { "surface" };
+        let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 150.0 { "MISSING-CONNECTION (graph detour)" } else if v_h > 130.0 { "SUSPECT (130-150 m/s: booster or detour)" } else { "surface" };
         println!("    {:>3} {:>8} {:>9.0} {:>7.1} {:>10} {:>10} {:>9.1} {:>9.1}  {}", li, format!("g{}", modal[li]), l, drop, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, v_h, verdict);
         tsv.push(format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.1}\t{}\t{}\t{:.1}\t{}", gates.map_name, li, if a == 0 { "spawn".to_string() } else { nodes.groups[a].to_string() }, modal[li], gates.group_rep(modal[li]).map_or(u32::MAX, |g| g.waypoint), l, drop, e.expected_ms, human_ms, v_h, verdict));
         tot_pred += e.expected_ms.max(0);
