@@ -40,6 +40,10 @@ use crate::procmem;
 /// points at is what varies, which is why the rest is measured.
 pub const RESULT_PTR_IN_CONTROLLER: u64 = 0x1a88;
 
+/// `result_block + this` -> the finish time in simulation ms. Structural on
+/// every map measured; the calibration fork exists for the ones where it is not.
+pub const FINISH_SIM_MS_IN_RESULT: u64 = 0xa4;
+
 /// `participant + this` is 2 while the tape still has records to feed and 0
 /// from one tick after the last one -- on a finisher and on a DNF alike.
 ///
@@ -97,6 +101,42 @@ pub fn calibrate(
     }
     bases.push(("the playground".into(), chain.playground));
     bases.push(("the simulation".into(), chain.sim));
+    // THE STRUCTURAL PATH FIRST: no fork at all.
+    //
+    // vjeux: "We shouldn't have to do 51 fork boundary calibrations or any of
+    // this kind of things." The block IS reachable by a pointer
+    // (`controller+0x1a88`, allocated at `0x118c22d`), and on the maps where
+    // the record lives at `+0xa4` of it the address needs no measuring: read
+    // the pointer, add the offset, and CHECK -- while the race is running the
+    // word must hold one of the two "nothing yet" markers. That check is what
+    // keeps this honest: a build or a map that puts the record elsewhere fails
+    // it and falls through to the measurement below, rather than reporting a
+    // wrong number.
+    if block >= 0x1000 {
+        let w = block + FINISH_SIM_MS_IN_RESULT;
+        if let Some(v) = procmem::read_at(pid, w, 4)
+            .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
+        {
+            // ONLY the unambiguous marker. A word holding 0 looks exactly like a
+            // word that has never been written, and taking it is not a
+            // near-miss: on 126859 this accepted a zeroed word at the right
+            // offset of the right block and reported 46 wrong finish times in
+            // 150 candidates. `0xffffffff` is a value someone chose; `0` is
+            // what memory is. A map whose sentinel is 0 pays the calibration
+            // fork below, which proves the word by watching it take this
+            // race's own answer.
+            if v == u32::MAX {
+                let ack = srv.set_finish_word(
+                    w,
+                    chain.participant + EXHAUSTED_IN_PARTICIPANT,
+                    chain.participant + crate::car::CP_COUNT_IN_PARTICIPANT,
+                );
+                if ack.starts_with("FINISH") {
+                    return Ok((w, v));
+                }
+            }
+        }
+    }
     let mut tried: Vec<String> = Vec::new();
     // 32 KB of each base first -- that is where it is on every map but one --
     // then 256 KB, which costs a fork per base and only happens on a map the

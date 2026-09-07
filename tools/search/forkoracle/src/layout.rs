@@ -412,6 +412,20 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
 /// `fk trace` against a ghost's own telemetry reads **median 3.1 mm, max 6.8 mm,
 /// 100 % of ticks within 5 cm** with this bias, and median 796 mm -- one tick of
 /// travel -- with the second term left out.
+///
+/// # THE BIAS BELONGS TO THE OBJECT, NOT TO THE CLOCK
+///
+/// This is calibrated for the VIS STATE, which is what `segments()` gathers and
+/// what every offset here describes. The validator's own `CGameVehiclePhy` holds
+/// the same car ONE TICK LATER (`fk tickhook reads` measures the pair every run:
+/// 0.8360 m apart at 83.58 m/s = 1.00 ticks), so a row read from THAT object
+/// wants `-10` where this wants `-20`.
+///
+/// The tm-player project's ENV arm reached the opposite sign from three
+/// harnesses and was right about its own object: it reads physics rows. Both
+/// conventions are correct and carrying one across objects is a one-tick error,
+/// which is 0.84 m at racing speed. The bias therefore travels in the same
+/// `Layout` as the address it was measured for -- never as a free constant.
 pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, String> {
     let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
         .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;

@@ -908,3 +908,43 @@ rather than assumed: 100/100 exact on that map with the lever refused, and the
 `finishcheck` row above is from a run where it did calibrate. Whoever picks
 this up: the record is reachable (the backward pointer scan finds it every
 time), so the answer is a chain, not a bigger window.
+
+### 12.5 The clock bias belongs to the OBJECT
+
+§9.4 fixed the bias by one tick and proved it with `fk trace` (3.1 mm against
+ghost telemetry, against 796 mm — one tick of travel — with the old value). The
+tm-player project's ENV arm then reached the **opposite** sign from three
+independent harnesses, and both results are correct:
+
+| the row is read from | its bias | who reads it |
+|---|---|---|
+| the **vis state** (`…:+0x4e8`, what `segments()` gathers) | `-20` | this project's sampler, `fk trace`, the watchdog |
+| the validator's **`CGameVehiclePhy`** (`phy+0x12f0`) | `-10` | tmenv, the open-loop control, `ValidatorCar` |
+
+They are the same car one tick apart — `fk tickhook reads` measures exactly
+that pair on every run (0.8360 m at 83.58 m/s = 1.00 ticks). Carrying either
+bias across to the other object is a one-tick error, which is **0.84 m at
+racing speed** and is precisely the class of defect that produced 21 false
+positives in §11.
+
+So the bias is not a constant anywhere: it travels in the same `Layout` as the
+address it was measured for.
+
+### 12.6 The finish word without a fork, where the engine allows it
+
+vjeux: *"We shouldn't have to do 51 fork boundary calibrations or any of this
+kind of things."*
+
+The result block is reachable by a pointer — `controller+0x1a88`, allocated at
+`0x118c22d` — and on the maps where the record sits at `+0xa4` of it the
+address needs no measuring at all: read the pointer, add the offset, check that
+the word holds the "nothing yet" marker while the race is running. Map 2 and
+145875 now arm the lever with **no calibration fork**.
+
+**The check must demand `0xffffffff`, not "a marker".** Accepting `0` as well
+looked harmless and was not: on 126859 it matched a zeroed word at the right
+offset of the right block and reported **46 wrong finish times in 150
+candidates**. `0xffffffff` is a value someone chose; `0` is what memory is. A
+map whose sentinel is `0` pays the calibration fork, which proves the word by
+watching it take that race's own answer — and 126859, which cannot be
+calibrated reliably at all, keeps the JSON path.
