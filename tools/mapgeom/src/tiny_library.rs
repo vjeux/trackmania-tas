@@ -967,7 +967,46 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz ; i@item_index<TAB>ITEM|stock model|-\n");
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
+    // Generated fillers the game does not draw but the tiny did: the Deco
+    // WALL vertical clips (`DecoWall*VFC*`) recorded in the cells of the
+    // DecoPlatform slopes and the water — Summer 20 cp3 (vjeux: "Ground
+    // texture looks off and there's a big bar"): a grey band across the red
+    // platform and a white bar at the water's edge, gone with exactly those
+    // 11 fillers dropped (A/B/C shoots 2026-09-07 15:19: OpenTech and the
+    // rest changed nothing). TINY_DROP_BAKED=glob,glob (default
+    // `DecoWall*VFC*`; `-` for none) names the baked blocks left out.
+    let drop_baked: Vec<String> = std::env::var("TINY_DROP_BAKED").unwrap_or_else(|_| "DecoWall*VFC*".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
+    let glob_match = |pat: &str, name: &str| -> bool {
+        // `*` matches any run; anchored at both ends
+        let parts: Vec<&str> = pat.split('*').collect();
+        if parts.len() == 1 {
+            return pat == name;
+        }
+        let mut rest = name;
+        for (i, p) in parts.iter().enumerate() {
+            if i == 0 {
+                if !rest.starts_with(p) {
+                    return false;
+                }
+                rest = &rest[p.len()..];
+            } else if i == parts.len() - 1 {
+                return rest.ends_with(p);
+            } else if let Some(at) = rest.find(p) {
+                rest = &rest[at + p.len()..];
+            } else {
+                return false;
+            }
+        }
+        true
+    };
+    let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| b.name != "Sea").map(|b| ("b@", b))) {
+        if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
+            mapping.push_str(&format!("b@{}\t-\n", b.index));
+            *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
+            rows += 1;
+            continue;
+        }
         let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
         match block_map.get(&(b.name.clone(), b.flags, modk)) {
             Some((alias, sx, sz)) => {
@@ -1019,6 +1058,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         println!("  sea floor at source depth under {} shore tile models at the water row (TINY_DEEPEN=0 to keep it halved): {}", deepened.len(), deepened.join(", "));
     }
     println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height)", rows, out_mapping.display(), sunk_rows);
+    if !dropped_baked.is_empty() {
+        println!("  baked fillers left out (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+    }
     if !missing_blocks.is_empty() {
         println!("  BLOCK PLACEMENTS WITHOUT A MODEL:");
         for (k, n) in &missing_blocks {

@@ -188,7 +188,8 @@ pub fn cmd_census(args: &[String]) {
             e.pos[0],
             e.pos[1],
             e.pos[2],
-            b.free_rot.unwrap_or([0.0;3])[0],
+            // a grid block's yaw from its direction byte (0..3 quarter turns); a free block's from its rotation
+            b.free_rot.map(|r| r[0]).unwrap_or(match b.dir & 3 { 0 => 0.0, 1 => -std::f32::consts::FRAC_PI_2, 2 => std::f32::consts::PI, _ => std::f32::consts::FRAC_PI_2 }),
             b.free_rot.unwrap_or([0.0;3])[1],
             b.free_rot.unwrap_or([0.0;3])[2],
             b.waypoint_tag.clone().unwrap_or_default()
