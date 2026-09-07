@@ -81,6 +81,7 @@ pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
             turbo: f32::NAN,
             cps: cps_before,
             finished: false,
+            car: u8::MAX, // starts.tsv has no car column; the records' end state carries it (copied per row)
         };
         st.cps = cps_before;
         out.insert(id, StartInfo { ghost_md5: f[1].to_string(), race_ms, state: st, cps_before, source: f[15].to_string() });
@@ -290,7 +291,9 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
             }
             cand_total += 1;
             let t = TargetSpec { centre: g.centre, normal: g.normal, half_width: g.half_width, group_size: *group_size.get(&g.group).unwrap_or(&1), kind: TargetKind::of_wp(g.kind), collected_share: s.cps_before as f32 / n_cp_groups.max(1) as f32 };
-            specs.push(Spec { state: s.state, target: t, h: r.horizon_ticks });
+            let mut cs = s.state;
+            cs.car = r.end.car;
+            specs.push(Spec { state: cs, target: t, h: r.horizon_ticks });
             let mut lab = [0f32; NLAB];
             lab[L_Y] = if reached { 1.0 } else { 0.0 };
             lab[L_TICKS] = if reached { r.gate_tick[wp] as f32 } else { -1.0 };
@@ -476,11 +479,13 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     // approximated by the STRAIGHT segment start → endpoint: positives at fractions PASS_FRACS of it with
     // ticks ≈ f·h (the endpoint itself at f = 1 carries the real arrival state; interior points carry none);
     // a negative must be > R_NEG from EVERY segment of the cloud, not only from the endpoints.
-    let mut push_row = |rows: &mut (Vec<Spec>, Vec<f32>), s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32| {
+    let mut push_row = |rows: &mut (Vec<Spec>, Vec<f32>), s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32, car: u8| {
         let d = dist3(s.state.pos, target);
         let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
         let t = TargetSpec { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
-        rows.0.push(Spec { state: s.state, target: t, h });
+        let mut st = s.state;
+        st.car = car;
+        rows.0.push(Spec { state: st, target: t, h });
         let mut lab = [0f32; NLAB];
         lab[L_Y] = y;
         lab[L_TICKS] = if y > 0.5 { ticks } else { -1.0 };
@@ -529,16 +534,17 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
             }
         }
         extent_sum += ends.iter().map(|e| dist3(c, e.pos) as f64).sum::<f64>() / ends.len() as f64;
+        let car = ends[0].car;
         // positives: the endpoints (real arrival state) and the interior passage points
         for e in &ends {
-            push_row(&mut rows, s, key.0, e.pos, h, h as f32, 1.0, Some(e), gi as f32);
+            push_row(&mut rows, s, key.0, e.pos, h, h as f32, 1.0, Some(e), gi as f32, car);
             st.positives += 1;
             for f in PASS_FRACS {
                 let p = [sp[0] + (e.pos[0] - sp[0]) * f, sp[1] + (e.pos[1] - sp[1]) * f, sp[2] + (e.pos[2] - sp[2]) * f];
                 if dist3(sp, p) < R_LOCAL {
                     continue; // the start itself is not a target
                 }
-                push_row(&mut rows, s, key.0, p, h, (h as f32 * f).max(1.0), 1.0, None, gi as f32);
+                push_row(&mut rows, s, key.0, p, h, (h as f32 * f).max(1.0), 1.0, None, gi as f32, car);
                 st.positives += 1;
                 st.passage_positives += 1;
             }
@@ -587,7 +593,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
                 st.rejected_near_endpoint += 1;
                 continue;
             }
-            push_row(&mut rows, s, key.0, p, h, -1.0, 0.0, None, gi as f32);
+            push_row(&mut rows, s, key.0, p, h, -1.0, 0.0, None, gi as f32, car);
             st.negatives += 1;
             match kind {
                 0 => st.neg_radial += 1,
@@ -857,4 +863,11 @@ pub fn frame_control(reach_dir: &Path) -> Result<(f32, usize), String> {
     let rows: Vec<([f32; 3], [f32; 4])> = starts.values().map(|s| (s.state.vel, s.state.quat)).collect();
     let (acc, n) = crate::frame::alignment(&rows, 5.0);
     Ok((acc[2], n))
+}
+
+/// All three axes' mean dot with the velocity direction (rows > 5 m/s).
+pub fn frame_control_axes(reach_dir: &Path) -> Result<([f32; 3], usize), String> {
+    let starts = read_starts(&reach_dir.join("starts.tsv"))?;
+    let rows: Vec<([f32; 3], [f32; 4])> = starts.values().map(|s| (s.state.vel, s.state.quat)).collect();
+    Ok(crate::frame::alignment(&rows, 5.0))
 }

@@ -147,11 +147,16 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
     let uid = data::shard_map_uid(d).ok_or_else(|| format!("{}: cannot tell its map uid (dir name or FANOUT.log)", d.display()))?;
     let build_hash = data::shard_build_hash(d);
     // FRAME control before anything is built from this shard (fail closed)
-    let (fz, nf) = data::frame_control(d)?;
-    if nf >= 20 && fz < 0.9 {
-        return Err(format!("{uid} (build {build_hash}): FRAME control FAILED — mean dot(velocity, local +Z) = {fz:.3} over {nf} starts; the quaternion convention changed, fix frame.rs before building rows"));
+    // A convention change shows as ANOTHER axis carrying the velocity (or none); a low +Z mean alone is
+    // physics: Spring 2026 - 08 has 140 of 675 starts driving in REVERSE (dot < −0.9), Summer 2026 - 18
+    // 297 of 1812 sideways at ~90 m/s (|dot| < 0.3). Fail only when +Z is not the dominant axis.
+    let (acc, nf) = data::frame_control_axes(d)?;
+    let fz = acc[2];
+    let other = acc[0].abs().max(acc[1].abs());
+    if nf >= 20 && (fz < 0.3 || other > fz) {
+        return Err(format!("{uid} (build {build_hash}): FRAME control FAILED — mean dot(velocity, rotated local axis): +X {:+.3} +Y {:+.3} +Z {:+.3} over {nf} starts; forward is not local +Z, fix frame.rs before building rows", acc[0], acc[1], fz));
     }
-    log.push(format!("  {uid}: generator build {build_hash}, frame control +Z {fz:.3} over {nf} starts → PASS"));
+    log.push(format!("  {uid}: generator build {build_hash}, frame control +Z {fz:.3} (X {:+.3}, Y {:+.3}) over {nf} starts → PASS{}", acc[0], acc[1], if fz < 0.9 { " (low mean: reverse / sideways driving on this map, not a convention change)" } else { "" }));
     let gdir = o.geom.join(&uid);
     // the bank is an object store another box writes into: a gates.json mid-rewrite reads truncated.
     // Keep the last good copy in the cache and fall back to it, saying so.
@@ -894,6 +899,9 @@ fn cmd_watch(args: &[String]) {
                         cmd.args([pass, &v]);
                     }
                 }
+                if has(args, "--no-mirror") {
+                    cmd.arg("--no-mirror");
+                }
                 cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
                 match cmd.spawn() {
                     Ok(ch) => children.push((suffix.clone(), model, ch)),
@@ -958,6 +966,9 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
     match fv {
         1 => {
             let (s, _nodes) = tmplan::surface::SurfaceModel::build(map, gates, verbose, false)?;
+            if s.full.triangle_count() < 1000 {
+                return Err("SurfaceModel plumb index is empty — pak or map missing; refusing to build features on it".into());
+            }
             Ok(Geometry::V1(s))
         }
         2 => {
@@ -965,6 +976,9 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
             let m = tmmaps::map::MapFile::load(map);
             let t0 = std::time::Instant::now();
             let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            if scene.tris.len() < 1000 {
+                return Err(format!("LocalScene has only {} triangles — the pak or the map is not what it should be (a wiped /tmp/tmp/server reads as an empty scene); refusing to build features on it", scene.tris.len()));
+            }
             if verbose {
                 eprintln!("  LocalScene: {} triangles, {} placements, yoff {} in {:.1} s", scene.tris.len(), scene.placements.len(), gates.yoff, t0.elapsed().as_secs_f64());
             }
