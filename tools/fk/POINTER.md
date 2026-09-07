@@ -10,18 +10,36 @@ the answer as a pointer.
 (`date=2026-05-15_18_00 git=128182-0de74ece09e`):
 
 ```text
-vehicles = *( *(module + 0x1e45148) + 0x148 )      the engine's vehicle array
-car[k]   = *(vehicles + 8k)            k = 0..3    four vehicle objects
-state    = car[k] + 0x46c                          the simulated car's vis state
-position = state + 0x50                            CARRIER.md's `car` anchor
+state    = *( *( *(module + 0x1d56e48) ) + 0xd8 ) + 0x4e8   the vis state
+position = state + 0x50                                     CARRIER.md's `car` anchor
 ```
 
 written as one spec, which is what `fk` takes and what
 [`fk::ptr::DEFAULT_CHAIN`](fk/src/ptr.rs) holds:
 
 ```text
+mod+0x1d56e48:0:+0xd8:+0x4e8
+```
+
+The first version of this walked a POOL instead, and it is kept as
+`fk::ptr::LEGACY_CHAIN` because it still resolves and names a copy of the car
+with no wheel data:
+
+```text
+vehicles = *( *(module + 0x1e45148) + 0x148 )      the engine's vehicle array
+car[k]   = *(vehicles + 8k)            k = 0..3    four vehicle objects
+state    = car[k] + 0x46c                          a vis state with no wheels
+
 mod+0x1e45148:0:+0x148#4x8+0x46c
 ```
+
+**Neither is the identity path any more.** `mod+0x1d56e48` holds the address of
+a STACK FRAME (§ below), so it is only walkable while that frame is live: on
+map 2 it dereferences to null and every `fk trace` on that map died with "the
+chain is stale". The car's identity now comes from the VALIDATOR's own
+ownership chain (`VALIDATOR_CAR.md`), which is typed, needs no search, and
+resolved on every map tried; these chains remain for `fk ptr` and for the
+wheel-bearing vis state the carrier gathers from.
 
 The vehicle objects are **0x1e08 bytes** apart and each vis state is a
 **member** of one — which is why the first version of this search found nothing
