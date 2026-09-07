@@ -123,7 +123,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     let file = std::fs::File::open(csv).map_err(|e| format!("{csv}: {e}"))?;
     let mut rd = BufReader::with_capacity(1 << 20, file);
-    let mut line = String::new();
+    let mut raw: Vec<u8> = Vec::new();
 
     let mut images: Vec<Image> = Vec::new(); // of the chosen pid
     let mut all_images: Vec<(u64, Image)> = Vec::new(); // (pid, image) until the pid is known
@@ -260,12 +260,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
 
     loop {
-        line.clear();
-        let n = rd.read_line(&mut line).map_err(|e| format!("{csv}: {e}"))?;
+        raw.clear();
+        let n = rd.read_until(b'\n', &mut raw).map_err(|e| format!("{csv}: {e}"))?;
         if n == 0 {
             break;
         }
         n_lines += 1;
+        // tracerpt writes ANSI: a process name with a high byte is not UTF-8
+        let line = String::from_utf8_lossy(&raw);
         let l = line.trim_start();
         let Some(kind) = l.split(',').next() else { continue };
         match kind.trim() {
