@@ -863,7 +863,13 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
     if a.has("newest-first") {
         order.sort_by_key(|u| rank(&maps[*u].0));
     }
-    for uid in order {
+    // --partition k/n: this process takes the maps at index k mod n of the ordered list (two
+    // campaign processes overlap one's oracle phase with the other's fan-out)
+    let (pk, pn): (usize, usize) = a.get("partition").map(|s| { let mut p = s.split('/'); (p.next().unwrap().parse().unwrap(), p.next().unwrap().parse().unwrap()) }).unwrap_or((0, 1));
+    for (mi, uid) in order.into_iter().enumerate() {
+        if mi % pn != pk {
+            continue;
+        }
         let (name, exact, total) = &maps[uid];
         if let Some(fl) = &filter {
             if !fl.contains(uid) {
