@@ -187,6 +187,7 @@ impl Default for Info {
     }
 }
 
+#[derive(Clone)]
 pub struct Core {
     pub cfg: CoreCfg,
     pub track: Arc<Track>,
@@ -199,7 +200,6 @@ pub struct Core {
     last_gain_tick: usize,
     off_run: usize,
     tick: usize,
-    prev_action: usize,
     /// The last `tmobs::N_PREV` actions, oldest first: the observation's
     /// action-history block.
     prev_actions: Vec<Action>,
@@ -225,7 +225,6 @@ impl Core {
             last_gain_tick: 0,
             off_run: 0,
             tick: 0,
-            prev_action: usize::MAX,
             prev_actions: Vec::new(),
             cur_s: 0.0,
             done: None,
@@ -277,7 +276,6 @@ impl Core {
         self.tick = tick0;
         self.last_gain_tick = tick0;
         self.off_run = 0;
-        self.prev_action = usize::MAX;
         self.prev_actions.clear();
         self.done = None;
         self.cur_s = 0.0;
@@ -309,7 +307,12 @@ impl Core {
     /// Every tick is examined, not just the last: a gate collected in the
     /// middle of a ten-tick macro is collected, and a car that left the
     /// corridor and came back within one macro really did leave it.
-    pub fn ingest(&mut self, action: usize, rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
+    ///
+    /// `actions` are the per-TICK inputs the chunk wrote, in order; row `j`
+    /// is paired with `actions[min(j, last)]` for the observation's action
+    /// history (the last `tmobs::N_PREV` TICKS, which is what a recorded ghost
+    /// gives the DATA arm too).
+    pub fn ingest(&mut self, actions: &[Action], rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
         let mut info = Info::default();
         if self.done.is_some() {
             return (self.observe(), 0.0, self.done, info);
@@ -317,10 +320,13 @@ impl Core {
         let mut reward = 0.0f32;
         let ticks = rows.len();
 
-        for r in rows {
+        for (j, r) in rows.iter().enumerate() {
             self.prev = Some(self.cur);
             self.cur = *r;
             self.tick += 1;
+            if let Some(a) = actions.get(j.min(actions.len().saturating_sub(1))) {
+                self.push_action(*a);
+            }
 
             let p = self.pos();
             let pr = self.track.probe_near(p, Some(self.cur_s));
@@ -377,8 +383,6 @@ impl Core {
             _ => {}
         }
 
-        self.prev_action = action;
-        self.push_action(action);
         info.tick = self.tick;
         info.state = self.state();
         info.race_s = self.cur.time_ms as f32 / 1000.0;
@@ -428,9 +432,8 @@ impl Core {
         &self.prev_actions
     }
 
-    fn push_action(&mut self, action: usize) {
-        let a = self.acts.get(action);
-        self.prev_actions.push(Action { steer: a.steer as i8, gas: a.gas != 0, brake: a.brake != 0 });
+    fn push_action(&mut self, a: Action) {
+        self.prev_actions.push(a);
         if self.prev_actions.len() > tmobs::N_PREV {
             let drop = self.prev_actions.len() - tmobs::N_PREV;
             self.prev_actions.drain(0..drop);
@@ -529,7 +532,8 @@ mod tests {
                     row(t, z, -30.0)
                 })
                 .collect();
-            let (obs, _r, done, info) = core.ingest(step % 20, &rows);
+            let act = tmstate::Action { steer: ((step as i32 % 5) * 60 - 120) as i8, gas: true, brake: step % 7 == 0 };
+            let (obs, _r, done, info) = core.ingest(&[act; 10], &rows);
             let st = core.state();
             let again = tmobs::observe(&track.geom, &st, core.prev_actions());
             assert!(

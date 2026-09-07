@@ -25,6 +25,7 @@
 //! a fact about the measurement, not a detail.
 
 use crate::action::{Act, ActionSpace};
+use tmstate::Action;
 use crate::core::{Core, CoreCfg, Done, Info};
 use branch::{ClockCal, Forest, Handle, TraceCfg, ROOT};
 use fk::session::{Checkpoint, Engine, Session};
@@ -75,6 +76,28 @@ pub struct ForkEnv {
     finish_ms: Option<i64>,
     /// How the race clock was labelled for this server.
     pub clock_cal: ClockCal,
+    /// Reset-anywhere: kept states, and the nodes no step may release.
+    snaps: std::collections::HashMap<u64, Snap>,
+    pinned: std::collections::HashSet<Handle>,
+    next_snap: u64,
+}
+
+/// A kept state, for `reset_to`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StateId(pub u64);
+
+/// The longest chunk one `step_ticks` fork runs.
+pub const MAX_CHUNK: usize = 50;
+
+struct Snap {
+    node: Handle,
+    core: Core,
+    spans: Vec<Span>,
+    trace: Vec<Row>,
+    last_end: usize,
+    gap: usize,
+    overlap: usize,
+    finish_ms: Option<i64>,
 }
 
 /// Ticks to run past the root before taking the clock calibration probe. The
@@ -140,6 +163,9 @@ impl ForkEnv {
             overlap: 0,
             finish_ms: None,
             clock_cal,
+            snaps: std::collections::HashMap::new(),
+            pinned: std::collections::HashSet::new(),
+            next_snap: 1,
         })
     }
 
@@ -151,11 +177,10 @@ impl ForkEnv {
         self.core.acts.n()
     }
 
+    /// Back to the root: the start of the race.
     pub fn reset(&mut self) -> Result<Vec<f32>, String> {
-        if self.cur != ROOT {
-            self.forest.release(self.cur);
-            self.cur = ROOT;
-        }
+        self.leave_cur();
+        self.cur = ROOT;
         self.spans.clear();
         self.trace.clear();
         self.last_end = self.forest.floor(ROOT, None)?;
@@ -166,20 +191,114 @@ impl ForkEnv {
         Ok(self.core.reset(self.root_row, t0))
     }
 
+    /// Release the current node unless it is the root or a snapshot.
+    fn leave_cur(&mut self) {
+        if self.cur != ROOT && !self.pinned.contains(&self.cur) {
+            self.forest.release(self.cur);
+        }
+    }
+
+    /// **Reset-anywhere, half one: keep THIS state.**
+    ///
+    /// The current node -- a live paused engine -- is pinned so no later step
+    /// releases it, and everything the core and the bookkeeping know about the
+    /// episode so far is copied beside it. Costs nothing now (the node already
+    /// exists) and one paused process for as long as the snapshot is held;
+    /// `drop_snapshot` frees it. Snapshotting at the root is allowed and cheap.
+    pub fn snapshot(&mut self) -> StateId {
+        let id = StateId(self.next_snap);
+        self.next_snap += 1;
+        if self.cur != ROOT {
+            self.pinned.insert(self.cur);
+        }
+        self.snaps.insert(
+            id.0,
+            Snap {
+                node: self.cur,
+                core: self.core.clone(),
+                spans: self.spans.clone(),
+                trace: self.trace.clone(),
+                last_end: self.last_end,
+                gap: self.gap,
+                overlap: self.overlap,
+                finish_ms: self.finish_ms,
+            },
+        );
+        id
+    }
+
+    /// **Reset-anywhere, half two: continue from a kept state.**
+    ///
+    /// The episode resumes from the snapshot's node -- forking it, so the
+    /// snapshot itself survives and can be reset to again -- with the core and
+    /// the tape bookkeeping exactly as they were. The next `step` writes from
+    /// that node's own probed floor, like any other step.
+    pub fn reset_to(&mut self, id: &StateId) -> Result<Vec<f32>, String> {
+        if !self.snaps.contains_key(&id.0) {
+            return Err(format!("no such snapshot: {:?}", id));
+        }
+        self.leave_cur();
+        let s = &self.snaps[&id.0];
+        self.cur = s.node;
+        self.core = s.core.clone();
+        self.spans = s.spans.clone();
+        self.trace = s.trace.clone();
+        self.last_end = s.last_end;
+        self.gap = s.gap;
+        self.overlap = s.overlap;
+        self.finish_ms = s.finish_ms;
+        Ok(self.core.observe())
+    }
+
+    /// Forget a snapshot and, unless another snapshot or the episode still
+    /// stands on it, kill its node.
+    pub fn drop_snapshot(&mut self, id: &StateId) {
+        if let Some(s) = self.snaps.remove(&id.0) {
+            let still_used = s.node == ROOT
+                || s.node == self.cur
+                || self.snaps.values().any(|o| o.node == s.node);
+            if !still_used {
+                self.pinned.remove(&s.node);
+                self.forest.release(s.node);
+            } else if !self.snaps.values().any(|o| o.node == s.node) {
+                // the episode stands on it: unpin, so leaving it releases it
+                self.pinned.remove(&s.node);
+            }
+        }
+    }
+
+    pub fn snapshots(&self) -> usize {
+        self.snaps.len()
+    }
+
+    /// One macro of the discrete action table, held for `cfg.k_ticks` ticks.
     pub fn step(&mut self, action: usize) -> Result<(Vec<f32>, f32, Option<Done>, Info), String> {
+        let a = self.core.acts.get(action);
+        let act = Action { steer: a.steer as i8, gas: a.gas != 0, brake: a.brake != 0 };
+        let k = self.core.cfg.k_ticks;
+        self.step_ticks(&vec![act; k])
+    }
+
+    /// **The general step: one input per tick, 1..=`MAX_CHUNK` of them, one
+    /// fork.** Reward is summed over the chunk, `done` is the first
+    /// termination inside it, the observation is the state at its end.
+    pub fn step_ticks(&mut self, chunk: &[Action]) -> Result<(Vec<f32>, f32, Option<Done>, Info), String> {
         if self.core.done().is_some() {
             return Err("step on a finished episode: call reset".into());
         }
-        let k = self.core.cfg.k_ticks;
+        if chunk.is_empty() || chunk.len() > MAX_CHUNK {
+            return Err(format!("a chunk is 1..={MAX_CHUNK} ticks, not {}", chunk.len()));
+        }
+        let k = chunk.len();
         let from = self.forest.floor(self.cur, None)?;
-        // One record more than the macro, and one tick more of running: the
+        // One record more than the chunk, and one tick more of running: the
         // child pauses on an `lroundf` count, i.e. somewhere INSIDE a tick, so
         // the last row it traces is that tick's state part-way through its
         // update. Measured: the final row of an episode 0.538 m from the flat
         // re-simulation of the same tape while every earlier row agreed to
         // 0.000000 m (the earlier partials had been superseded by the next
-        // child's completed row). So the macro is held for k+1 ticks, the
-        // child runs ~k+1, and only ticks the clock has moved PAST are
+        // child's completed row). So the last input is held one tick longer,
+        // the child runs ~k+1, and only ticks the clock has moved PAST are
         // ingested -- a tick is complete once a row with a later clock exists.
         // The trailing partial is re-traced, completed, by the next step.
         let held = k + 1;
@@ -194,15 +313,15 @@ impl ForkEnv {
             self.overlap += self.last_end - from;
         }
 
-        let a = self.core.acts.get(action);
-        let r = rec_of(a.steer, a.gas, a.brake);
-        let recs = vec![r; held];
+        let mut recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
+        recs.push(*recs.last().unwrap());
         let (all_rows, h) = self.forest.advance(self.cur, &recs, from, held as u64)?;
-        if self.cur != ROOT {
-            self.forest.release(self.cur);
-        }
+        self.leave_cur();
         self.cur = h;
-        self.spans.push(Span { from, k: held, act: a });
+        for (i, a) in chunk.iter().enumerate() {
+            let k1 = if i + 1 == k { 2 } else { 1 };
+            self.spans.push(Span { from: from + i, k: k1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
+        }
         self.last_end = from + held;
 
         let last_clock = all_rows.last().map(|r| r.time_ms);
@@ -213,7 +332,7 @@ impl ForkEnv {
 
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
-        let out = self.core.ingest(action, &rows);
+        let out = self.core.ingest(chunk, &rows);
         if self.finish_ms.is_none()
             && before < self.core.track.n_gates()
             && self.core.gates_hit() >= self.core.track.n_gates()

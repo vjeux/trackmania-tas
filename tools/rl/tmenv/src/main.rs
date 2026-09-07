@@ -93,6 +93,7 @@ fn main() {
         Some("from-template") => from_template(&a),
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
+        Some("reset-anywhere-control") => reset_anywhere_control(&a),
         _ => {
             eprintln!(
                 "tmenv -- the RL environment over our own instrument\n\
@@ -2251,4 +2252,178 @@ fn geom_export(a: &[String]) {
         g.spawn[1],
         g.spawn[2]
     );
+}
+
+// ------------------------------------------------- reset-anywhere-control
+
+/// A small deterministic generator for the controls (splitmix64).
+struct Sm(u64);
+impl Sm {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// G4: does `reset_to(snapshot)` resume EXACTLY the kept state? See
+/// env/controls/2026-09-06-G4-reset-anywhere/BAR.md for the bar; this prints
+/// the numbers it asks for.
+fn reset_anywhere_control(a: &[String]) {
+    let p = paths(a);
+    let n_states: usize = num(a, "--states", 50);
+    let tail_steps: usize = num(a, "--tail", 5);
+    let seed: u64 = num(a, "--seed", 20260906);
+    let tol: f64 = num(a, "--tol", 0.02);
+    let bank = flag(a, "--bank").map(PathBuf::from);
+    if let Some(b) = &bank {
+        std::fs::create_dir_all(b).unwrap_or_else(|e| die(e.to_string()));
+    }
+    println!("# tmenv reset-anywhere-control  states {n_states}  tail {tail_steps} steps  seed {seed}");
+    let (mut env, _rig, _tape) = build_env(&p, a, &p.work.join("ra"));
+    let n_act = env.n_actions();
+    let mut rng = Sm(seed);
+
+    // ---- collect states over random rollouts, remembering each one's prefix
+    struct Kept {
+        id: tmenv::forkenv::StateId,
+        prefix: Vec<usize>,
+        state: tmstate::CarState,
+        hist: Vec<tmstate::Action>,
+    }
+    let mut kept: Vec<Kept> = Vec::new();
+    let mut episodes = 0usize;
+    while kept.len() < n_states {
+        env.reset().unwrap_or_else(|e| die(e));
+        episodes += 1;
+        let mut prefix: Vec<usize> = Vec::new();
+        // a forward bias so the car actually goes somewhere
+        loop {
+            let act = if rng.below(3) == 0 { rng.below(n_act) } else { ActionSpace::default().forward() };
+            let (_o, _r, d, _i) = env.step(act).unwrap_or_else(|e| die(e));
+            prefix.push(act);
+            if d.is_some() {
+                break;
+            }
+            if rng.below(2) == 0 && kept.len() < n_states {
+                let id = env.snapshot();
+                kept.push(Kept {
+                    id,
+                    prefix: prefix.clone(),
+                    state: env.core.state(),
+                    hist: env.core.prev_actions().to_vec(),
+                });
+            }
+            if prefix.len() >= 120 {
+                break;
+            }
+        }
+    }
+    println!("kept {} states over {} episodes; {} live snapshots", kept.len(), episodes, env.snapshots());
+
+    // ---- for each: resume + tail (A), replay from root (B), a different tail (C)
+    let mut agree = 0usize;
+    let mut disagree = 0usize;
+    let mut neg_differ = 0usize;
+    let mut neg_same = 0usize;
+    let mut neg_same_slow = 0usize;
+    let mut worst = 0.0f64;
+    for (i, k) in kept.iter().enumerate() {
+        let tail: Vec<usize> = (0..tail_steps).map(|_| rng.below(n_act)).collect();
+        let tail_c: Vec<usize> = (0..tail_steps).map(|_| rng.below(n_act)).collect();
+
+        // A: resume
+        let obs_a = env.reset_to(&k.id).unwrap_or_else(|e| die(e));
+        let st_a0 = env.core.state();
+        let obs_a0_again = tmobs::observe(&env.core.track.geom, &st_a0, env.core.prev_actions());
+        let obs_ok = obs_a.iter().zip(obs_a0_again.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+        let same_state = format!("{:?}", st_a0) == format!("{:?}", k.state) && env.core.prev_actions() == &k.hist[..];
+        let t_snap = st_a0.race_ms as i64;
+        let mut done_a = None;
+        for &act in &tail {
+            let (_o, _r, d, _i) = env.step(act).unwrap_or_else(|e| die(e));
+            done_a = d;
+            if d.is_some() {
+                break;
+            }
+        }
+        let rec_a = env.rollout_record();
+        let rows_a: Vec<forkoracle::layout::Row> = rec_a.trace.iter().filter(|r| r.time_ms > t_snap).cloned().collect();
+        let st_a = env.core.state();
+
+        // B: replay from the root
+        env.reset().unwrap_or_else(|e| die(e));
+        let mut done_b = None;
+        for &act in k.prefix.iter().chain(tail.iter()) {
+            let (_o, _r, d, _i) = env.step(act).unwrap_or_else(|e| die(e));
+            done_b = d;
+            if d.is_some() {
+                break;
+            }
+        }
+        let rec_b = env.rollout_record();
+        let st_b = env.core.state();
+        let cmp = control::compare(&rows_a, &rec_b.trace, tol);
+        let states_eq = format!("{:?}", st_a) == format!("{:?}", st_b);
+        let ok = same_state && obs_ok && cmp.same(tol) && cmp.max_pos_err == 0.0 && states_eq && done_a == done_b;
+        worst = worst.max(if cmp.max_pos_err.is_finite() { cmp.max_pos_err } else { f64::INFINITY });
+        if ok {
+            agree += 1;
+        } else {
+            disagree += 1;
+            println!(
+                "  state {i:2}: DISAGREE  snapshot-state-equal {same_state}  obs-equal {obs_ok}  {cmp}  final-states-equal {states_eq}  done A {done_a:?} B {done_b:?}"
+            );
+        }
+
+        // C: the negative half -- a different tail from the same state must differ
+        env.reset_to(&k.id).unwrap_or_else(|e| die(e));
+        for &act in &tail_c {
+            let (_o, _r, d, _i) = env.step(act).unwrap_or_else(|e| die(e));
+            if d.is_some() {
+                break;
+            }
+        }
+        let rec_c = env.rollout_record();
+        let rows_c: Vec<forkoracle::layout::Row> = rec_c.trace.iter().filter(|r| r.time_ms > t_snap).cloned().collect();
+        let neg = control::compare(&rows_a, &rows_c, tol);
+        let differs = tail != tail_c && !neg.same(tol);
+        if differs {
+            neg_differ += 1;
+        } else {
+            neg_same += 1;
+            if k.state.speed < 1.0 {
+                neg_same_slow += 1;
+            }
+            println!(
+                "  state {i:2}: negative did NOT differ (speed {:.2} m/s, same tail {})  {neg}",
+                k.state.speed,
+                tail == tail_c
+            );
+        }
+        if let Some(b) = &bank {
+            bank_traj(&b.join(format!("state{i:02}-A-resume.csv")), &rows_a);
+            bank_traj(&b.join(format!("state{i:02}-B-replay.csv")), &rec_b.trace);
+        }
+        if i % 10 == 9 {
+            println!("  ... {} of {} done (agree {agree}, disagree {disagree}, negatives differ {neg_differ} / same {neg_same})", i + 1, kept.len());
+        }
+    }
+    println!();
+    println!("resume == replay      : {agree} agree, {disagree} disagree (worst max |dp| {worst:.6} m)");
+    println!("different tail differs: {neg_differ} differ, {neg_same} same ({neg_same_slow} of those at < 1 m/s)");
+    let pass = disagree == 0 && agree == kept.len() && neg_differ >= (kept.len() * 9 + 9) / 10 && neg_same == neg_same_slow;
+    println!("G4 reset-anywhere    {}", if pass { "PASS" } else { "FAIL" });
+    for k in &kept {
+        env.drop_snapshot(&k.id);
+    }
+    println!("snapshots after drop  {}", env.snapshots());
+    if !pass {
+        std::process::exit(1);
+    }
 }
