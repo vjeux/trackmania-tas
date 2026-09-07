@@ -140,6 +140,12 @@ pub struct Run {
     /// the end of the run to the next steer change after it. usize::MAX = none.
     pub since_change: usize,
     pub until_change: usize,
+    /// The APPLIED steer scale the telemetry records while the tape holds ±127,
+    /// in the segment before this event's onset and in the segment from its
+    /// onset to the next event: (mode of |steer| rounded to 0.05, samples used,
+    /// distinct values). NaN / 0 when no full-lock sample exists there.
+    pub scale_before: (f32, u32, u32),
+    pub scale_after: (f32, u32, u32),
 }
 
 #[derive(Clone, Debug)]
@@ -328,6 +334,8 @@ pub fn scan(files: &[String], digital_bar: f64) -> Census {
                     }
                     d
                 },
+                scale_before: (f32::NAN, 0, 0),
+                scale_after: (f32::NAN, 0, 0),
             };
             if !words.contains(&w) {
                 words.push(w);
@@ -336,6 +344,8 @@ pub fn scan(files: &[String], digital_bar: f64) -> Census {
             runs.push(r);
             i = j;
         }
+        let lo = runs.len() - nruns;
+        fill_scales(f, ar, &steer, &mut runs[lo..]);
         ghosts.push(GhostRow {
             id,
             ticks: n,
@@ -619,6 +629,24 @@ pub fn render(c: &Census) -> String {
         s.push_str(&format!("| word0 bit {} | word0 0x{:x} | - | {} | {} |\n", bit, m, runs, g.len()));
     }
 
+    // applied steer scale transitions per word (telemetry, full-lock samples)
+    s.push_str("\n## Applied steer scale (telemetry |steer| while the tape holds ±127) before → after each event\n\nOnly events with ≥ 3 full-lock samples on both sides. `x→y (n)`.\n\n| word | transitions (before→after: runs) |\n|---|---|\n");
+    for w in &keys {
+        let mut tr: BTreeMap<String, usize> = BTreeMap::new();
+        for r in c.runs.iter().filter(|r| r.word == **w) {
+            if r.scale_before.1 >= 3 && r.scale_after.1 >= 3 {
+                *tr.entry(format!("{:.2}→{:.2}", r.scale_before.0, r.scale_after.0)).or_default() += 1;
+            }
+        }
+        if tr.is_empty() {
+            continue;
+        }
+        let mut v: Vec<(String, usize)> = tr.into_iter().collect();
+        v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let txt: Vec<String> = v.iter().map(|(k, n)| format!("{k} ({n})")).collect();
+        s.push_str(&format!("| `{}` | {} |\n", w.label(), txt.join(", ")));
+    }
+
     // co-occurrence: words appearing in the same ghost
     s.push_str("\n## Words per ghost\n\n| distinct non-plain words in ghost | ghosts |\n|---:|---:|\n");
     let mut per: BTreeMap<usize, usize> = BTreeMap::new();
@@ -632,11 +660,11 @@ pub fn render(c: &Census) -> String {
 }
 
 pub fn runs_tsv(c: &Census) -> String {
-    let mut s = String::from("file\tmap\trank\tdeclared_ms\tdigital\tword0\tflags\tlabel\ttick_from\ttick_to\tlen\trace_ms_from\tphase\tsteer_before\tsteer_on\tsteer_last\tsteer_after\taccel_on\tbrake_on\tsteer0\tsteer127\tsteerpartial\tsteer_changes\tedge_on\tedge_off\tonset_lit\trespawn\tsince_change\tuntil_change\n");
+    let mut s = String::from("file\tmap\trank\tdeclared_ms\tdigital\tword0\tflags\tlabel\ttick_from\ttick_to\tlen\trace_ms_from\tphase\tsteer_before\tsteer_on\tsteer_last\tsteer_after\taccel_on\tbrake_on\tsteer0\tsteer127\tsteerpartial\tsteer_changes\tedge_on\tedge_off\tonset_lit\trespawn\tsince_change\tuntil_change\tscale_before\tn_before\tscale_after\tn_after\tdistinct_after\n");
     for r in &c.runs {
         let g = &c.ghosts[r.ghost];
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t0x{:x}\t0x{:x}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t0x{:x}\t0x{:x}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{:.2}\t{}\t{}\n",
             g.id.path,
             g.id.map,
             g.id.rank,
@@ -665,7 +693,12 @@ pub fn runs_tsv(c: &Census) -> String {
             r.onset_lit as u8,
             r.respawn_in_run as u8,
             r.since_change as i64,
-            r.until_change as i64
+            r.until_change as i64,
+            r.scale_before.0,
+            r.scale_before.1,
+            r.scale_after.0,
+            r.scale_after.1,
+            r.scale_after.2
         ));
     }
     s
@@ -743,5 +776,63 @@ fn collect(p: &str, out: &mut Vec<String>) {
         }
     } else if p.ends_with(".Ghost.Gbx") || p.ends_with(".Replay.Gbx") {
         out.push(p.to_string());
+    }
+}
+
+/// The telemetry's applied steer (byte 14 of each 50 ms sample, `Sample.steer`)
+/// while the tape holds full lock, per segment between events. Aligned at shift
+/// 0: sample t carries the input of the tick that starts at race t (DATA arm's
+/// echo measurement), so the tape tick is `(t - start_offset_ms) / 10`.
+fn fill_scales(path: &str, ar: &gbx::tape::Archive, steer: &[i8], runs: &mut [Run]) {
+    if runs.is_empty() {
+        return;
+    }
+    let dec = match gbx::record::decode_ghost(path) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    if dec.sample_period_ms.map(|p| p != 50).unwrap_or(false) {
+        return; // a multi-car record: the picked entity is not necessarily the driver
+    }
+    let n = steer.len();
+    let mut onsets: Vec<usize> = runs.iter().map(|r| r.tick_from).collect();
+    onsets.sort_unstable();
+    onsets.dedup();
+    // segment boundaries: [0, onsets..., n]
+    let mut bounds = vec![0usize];
+    bounds.extend(onsets.iter().copied());
+    bounds.push(n);
+    let seg_of = |tick: usize| -> usize { bounds.iter().rposition(|b| *b <= tick).unwrap_or(0) };
+    let nseg = bounds.len() - 1;
+    let mut vals: Vec<Vec<i32>> = vec![Vec::new(); nseg];
+    for s in &dec.samples {
+        let t = s.time_ms as i64 - ar.start_offset_ms as i64;
+        if t < 0 || t % 10 != 0 {
+            continue;
+        }
+        let tick = (t / 10) as usize;
+        if tick >= n || (steer[tick] != 127 && steer[tick] != -127) {
+            continue;
+        }
+        let v = (s.steer.abs() * 20.0).round() as i32; // units of 0.05
+        let k = seg_of(tick).min(nseg - 1);
+        vals[k].push(v);
+    }
+    let summarize = |v: &Vec<i32>| -> (f32, u32, u32) {
+        if v.is_empty() {
+            return (f32::NAN, 0, 0);
+        }
+        let mut c: BTreeMap<i32, u32> = BTreeMap::new();
+        for x in v {
+            *c.entry(*x).or_default() += 1;
+        }
+        let (mode, _) = c.iter().max_by_key(|(_, n)| **n).unwrap();
+        (*mode as f32 / 20.0, v.len() as u32, c.len() as u32)
+    };
+    for r in runs.iter_mut() {
+        let k = bounds.iter().position(|b| *b == r.tick_from).unwrap_or(0);
+        // segment k starts at this onset; segment k-1 ends at it
+        r.scale_after = summarize(&vals[k.min(nseg - 1)]);
+        r.scale_before = if k >= 1 { summarize(&vals[k - 1]) } else { (f32::NAN, 0, 0) };
     }
 }

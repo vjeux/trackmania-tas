@@ -9,3 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 gbx = { path = "../../gbx" }
+tmenv = { path = "../tmenv" }
+forkoracle = { path = "../../search/forkoracle" }

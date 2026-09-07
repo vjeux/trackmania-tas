@@ -193,6 +193,150 @@ fn main() {
             write_back(&c, &t, out, enc);
             println!("wrote {out}");
         }
+        "trace" => trace_cmd(rest),
+        "tdiff" => tdiff_cmd(rest),
         o => die(format!("unknown op {o}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Engine trajectory of a tape, in one piece (tmenv::control::flat_trace).
+// ---------------------------------------------------------------------------
+
+/// `tminput trace --tape FILE --map MAP --out CSV [--ticks N] [--work DIR]`
+///
+/// One fresh server, one child running the WHOLE tape from the earliest stop,
+/// the car resolved from validator ownership (no scan), one row per engine
+/// tick: `race_ms,x,y,z,vx,vy,vz,qw,qx,qy,qz,wetness,cps,speed,yaw,yaw_rate`.
+/// Yaw is about the map's up axis (y), from the quaternion; yaw_rate is its
+/// per-tick difference in rad/s.
+pub fn trace_cmd(rest: &[String]) {
+    let tape = need(rest, "--tape");
+    let map = need(rest, "--map");
+    let out = need(rest, "--out");
+    let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER not set"));
+    let shim = std::env::var("FK_SHIM").unwrap_or_else(|_| die("FK_SHIM not set"));
+    let work = flag(rest, "--work").cloned().unwrap_or_else(|| format!("/tmp/tminput-trace-{}", std::process::id()));
+    let t = Tape::from_file(tape).unwrap_or_else(|e| die(e));
+    let ticks: u64 = flag(rest, "--ticks").map(|s| s.parse().unwrap_or_else(|_| die("--ticks N"))).unwrap_or(t.n() as u64 + 300);
+    std::fs::create_dir_all(&work).unwrap_or_else(|e| die(e));
+    let rows = tmenv::control::flat_trace(
+        std::path::Path::new(&server),
+        std::path::Path::new(map),
+        std::path::Path::new(&shim),
+        std::path::Path::new(&work),
+        std::path::Path::new(tape),
+        ticks,
+    )
+    .unwrap_or_else(|e| die(e));
+    let mut s = String::from("race_ms,x,y,z,vx,vy,vz,qw,qx,qy,qz,wetness,cps,speed,yaw,yaw_rate\n");
+    let mut prev_yaw: Option<f64> = None;
+    for r in &rows {
+        let speed = (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt();
+        // car forward axis = rotate (0,0,1) by q; yaw = atan2(fx, fz)
+        let (w, x, y, z) = (r.qw, r.qx, r.qy, r.qz);
+        let fx = 2.0 * (x * z + w * y);
+        let fz = 1.0 - 2.0 * (x * x + y * y);
+        let yaw = fx.atan2(fz);
+        let rate = match prev_yaw {
+            Some(p) => {
+                let mut d = yaw - p;
+                while d > std::f64::consts::PI {
+                    d -= 2.0 * std::f64::consts::PI;
+                }
+                while d < -std::f64::consts::PI {
+                    d += 2.0 * std::f64::consts::PI;
+                }
+                d * 100.0
+            }
+            None => 0.0,
+        };
+        prev_yaw = Some(yaw);
+        s.push_str(&format!(
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.7},{:.7},{:.7},{:.7},{:.4},{},{:.4},{:.6},{:.5}\n",
+            r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.qw, r.qx, r.qy, r.qz, r.wetness,
+            if r.cps == u32::MAX { -1 } else { r.cps as i64 },
+            speed, yaw, rate
+        ));
+    }
+    std::fs::write(out, s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+    eprintln!(
+        "{} rows, race {:.3} .. {:.3}, final cps {}",
+        rows.len(),
+        rows.first().map(|r| r.time_ms).unwrap_or(0) as f64 / 1000.0,
+        rows.last().map(|r| r.time_ms).unwrap_or(0) as f64 / 1000.0,
+        rows.last().map(|r| r.cps as i64).unwrap_or(-1)
+    );
+}
+
+/// `tminput tdiff A.csv B.csv [--tol M]`: first tick where two traces diverge
+/// (position distance > tol), and the distance at a few later instants.
+pub fn tdiff_cmd(rest: &[String]) {
+    let a = rest.first().unwrap_or_else(|| die("tminput tdiff A.csv B.csv"));
+    let b = rest.get(1).unwrap_or_else(|| die("tminput tdiff A.csv B.csv"));
+    let tol: f64 = flag(rest, "--tol").map(|s| s.parse().unwrap_or_else(|_| die("--tol M"))).unwrap_or(1e-4);
+    // Reads `fk trace` / `tmtraj` 30-column CSVs (time_ms,x,y,z,...,yaw at 9,
+    // steer at 18) and tminput's own 16-column trace (yaw at 14, yaw_rate 15).
+    let load = |p: &str| -> Vec<(i64, [f64; 3], f64, f64)> {
+        let txt = std::fs::read_to_string(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+        let mut lines = txt.lines();
+        let head: Vec<&str> = lines.next().unwrap_or("").split(',').collect();
+        let col = |name: &str| head.iter().position(|h| *h == name);
+        let (cx, cy, cz) = (col("x").unwrap_or(1), col("y").unwrap_or(2), col("z").unwrap_or(3));
+        let cyaw = col("yaw").unwrap_or(9);
+        let csteer = col("steer");
+        let mut prev: Option<f64> = None;
+        lines
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split(',').collect();
+                if f.len() <= cyaw {
+                    return None;
+                }
+                let g = |i: usize| f[i].parse::<f64>().ok();
+                let yaw = g(cyaw)?;
+                let extra = match csteer {
+                    Some(c) => g(c).unwrap_or(f64::NAN),
+                    None => {
+                        let r = prev.map(|p| (yaw - p) * 100.0).unwrap_or(0.0);
+                        r
+                    }
+                };
+                prev = Some(yaw);
+                Some((f[0].parse().ok()?, [g(cx)?, g(cy)?, g(cz)?], yaw, extra))
+            })
+            .collect()
+    };
+    let ra = load(a);
+    let rb = load(b);
+    let mb: std::collections::HashMap<i64, ([f64; 3], f64, f64)> = rb.iter().map(|r| (r.0, (r.1, r.2, r.3))).collect();
+    let mut first: Option<i64> = None;
+    let mut shared = 0;
+    let mut maxd = 0.0f64;
+    let mut printed = 0;
+    for (t, p, yaw, rate) in &ra {
+        if let Some((q, yb, rb_)) = mb.get(t) {
+            shared += 1;
+            let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            maxd = maxd.max(d);
+            if d > tol && first.is_none() {
+                first = Some(*t);
+            }
+            if first.is_some() && printed < 30 && (*t - first.unwrap()) % 10 == 0 {
+                println!(
+                    "race {:.3}  |dpos| {:.6} m  yaw A {:.5} B {:.5}  steer|rate A {:.4} B {:.4}",
+                    *t as f64 / 1000.0,
+                    d,
+                    yaw,
+                    yb,
+                    rate,
+                    rb_
+                );
+                printed += 1;
+            }
+        }
+    }
+    match first {
+        Some(t) => println!("FIRST DIVERGENCE at race {:.3} (tol {tol} m); {shared} shared ticks, max |dpos| {maxd:.4} m", t as f64 / 1000.0),
+        None => println!("IDENTICAL over {shared} shared ticks (tol {tol} m), max |dpos| {maxd:.2e} m"),
     }
 }

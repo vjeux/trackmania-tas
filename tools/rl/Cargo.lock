@@ -1072,7 +1072,9 @@ dependencies = [
 name = "tminput"
 version = "0.1.0"
 dependencies = [
+ "forkoracle",
  "gbx",
+ "tmenv",
 ]
 
 [[package]]
