@@ -150,6 +150,12 @@ pub struct Archive {
     /// The original bitstream, kept so `Encoding::Verbatim` can be proved
     /// against it byte for byte.
     pub orig_bitstream: Vec<u8>,
+    /// Packets the header COUNTS that the bitstream does not carry. 2021-era
+    /// recordings (Winter/Spring 2021 campaigns) declare 5 more packets than
+    /// their bitstream holds; the game reads zeros past the end, and so does the
+    /// decoder -- but a re-encode must not WRITE them, or the verbatim identity
+    /// fails by 5 phantom packets (69 bits each). They are not in `packets`.
+    pub short_by: usize,
 }
 
 impl Archive {
@@ -189,9 +195,18 @@ fn decode_archive(a: &mut Archive, bitstream: &[u8], packet_count: usize) -> Res
     let sb = a.state_bits();
     let mut r = BitReader::new(bitstream);
     let mut prev = Packet::blank();
+    let trace = std::env::var("GBX_TAPE_TRACE").is_ok();
     let mut out = Vec::with_capacity(packet_count);
+    let total_bits = bitstream.len() * 8;
+    let mut short_by = 0usize;
     for _ in 0..packet_count {
         let mut p = Packet::blank();
+        let pos0 = r.pos;
+        if r.pos >= total_bits {
+            // the header counts more packets than the bitstream holds
+            short_by = packet_count - out.len();
+            break;
+        }
         if r.bit() == 1 {
             p.state = StateEnc::Prev;
             let (w, f) = unpack_word(pack_prev(prev.word0, prev.flags));
@@ -260,10 +275,21 @@ fn decode_archive(a: &mut Archive, bitstream: &[u8], packet_count: usize) -> Res
                 }
             }
         }
+        if trace { eprintln!("R {} pos {} -> {} mode {} state {:?} mouse {:?} vsame {}", out.len(), pos0, r.pos, p.mode, p.state, p.mouse, p.vsame); }
+        if r.ended_early() {
+            // the packet started inside the bitstream and ran off its end: a
+            // partial packet the game reads as zeros. Not ours to re-encode;
+            // its bits stay in the tail. (2021-era files end with one of these
+            // plus 4-5 counted packets that have no bits at all.)
+            short_by = packet_count - out.len();
+            r.pos = pos0;
+            break;
+        }
         prev = p.clone();
         out.push(p);
     }
     a.packets = out;
+    a.short_by = short_by;
     a.orig_bits_used = r.pos;
     a.tail = bitstream[(r.pos >> 3).min(bitstream.len())..].to_vec();
     Ok(())
@@ -284,8 +310,11 @@ pub fn encode_archive(a: &Archive, enc: Encoding) -> Vec<u8> {
     // has to agree, or the very first same-bit is expanded and every byte after
     // it shifts.
     let blank = Packet::blank();
+    let trace = std::env::var("GBX_TAPE_TRACE").is_ok();
+    let mut idx = 0usize;
     let mut prev: &Packet = &blank;
     for p in &a.packets {
+        let pos0 = w.pos;
         match p.state {
             StateEnc::Prev => w.bit(1),
             StateEnc::Lit(l) => {
@@ -349,6 +378,8 @@ pub fn encode_archive(a: &Archive, enc: Encoding) -> Vec<u8> {
                 }
             }
         }
+        if trace { eprintln!("W {} pos {} -> {} mode {} state {:?} mouse {:?} vsame {} same {}", idx, pos0, w.pos, p.mode, p.state, p.mouse, p.vsame, same); }
+        idx += 1;
         prev = p;
     }
     // Trailing bytes. A real recording's bitstream is longer than its packets
@@ -458,6 +489,7 @@ impl Tape {
                 orig_bits_used: 0,
                 tail: Vec::new(),
                 orig_bitstream: pay[o..o + bl].to_vec(),
+                short_by: 0,
             };
             decode_archive(&mut a, &pay[o..o + bl], pc)?;
             archives.push(a);
@@ -486,7 +518,7 @@ impl Tape {
             out.extend_from_slice(&a.format_version.to_le_bytes());
             out.extend_from_slice(&a.field0.to_le_bytes());
             out.extend_from_slice(&a.start_offset_ms.to_le_bytes());
-            out.extend_from_slice(&(a.packets.len() as u32).to_le_bytes());
+            out.extend_from_slice(&((a.packets.len() + a.short_by) as u32).to_le_bytes());
             out.extend_from_slice(&(bs.len() as u32).to_le_bytes());
             out.extend_from_slice(&bs);
         }
@@ -639,14 +671,15 @@ impl Tape {
         );
         for (ai, a) in self.archives.iter().enumerate() {
             s.push_str(&format!(
-                "@archive {} format_version={} field0={} start_offset_ms={} packets={} bitstream_bytes={} bits_used={}\n",
+                "@archive {} format_version={} field0={} start_offset_ms={} packets={} bitstream_bytes={} bits_used={}{}\n",
                 ai,
                 a.format_version,
                 a.field0,
                 a.start_offset_ms,
                 a.packets.len(),
                 a.orig_bitstream_len,
-                a.orig_bits_used
+                a.orig_bits_used,
+                if a.short_by > 0 { format!(" short_by={}", a.short_by) } else { String::new() }
             ));
             if !a.tail.is_empty() {
                 let hex: String = a.tail.iter().map(|b| format!("{:02x}", b)).collect();
@@ -698,6 +731,7 @@ impl Tape {
                     orig_bits_used: kv_num(&kv, "bits_used").unwrap_or(0) as usize,
                     tail: Vec::new(),
                     orig_bitstream: Vec::new(),
+                    short_by: kv_num(&kv, "short_by").unwrap_or(0) as usize,
                 });
                 continue;
             }
