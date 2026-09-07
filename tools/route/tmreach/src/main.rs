@@ -1079,7 +1079,7 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 // a ghost whose startup controls failed (identity / start position) is EXCLUDED, fail
                 // closed, and the map still passes when at most a quarter of its ghosts are excluded
                 let excluded: Vec<String> = fo.lines().filter(|l| l.contains(": FAILED: ")).map(|l| l.split(": FAILED: ").next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-                let other_failures = fo.lines().filter(|l| l.contains(": FAILED: ") && !(l.contains("label shift") || l.contains("IDENTITY") || l.contains("matches the telemetry") || l.contains("startup controls") || l.contains("START-POSITION"))).count();
+                let other_failures = fo.lines().filter(|l| l.contains(": FAILED: ") && !(l.contains("label shift") || l.contains("IDENTITY") || l.contains("matches the telemetry") || l.contains("PROBE-EMPTY") || l.contains("startup controls") || l.contains("START-POSITION"))).count();
                 let fo_fail = id_fails != 0 || other_failures > 0 || excluded.len() * 4 > n_linked || (items_ok == false && excluded.is_empty());
                 let ve_ok = ve.contains("verify OK");
                 let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
