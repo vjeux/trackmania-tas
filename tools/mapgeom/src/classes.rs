@@ -1160,6 +1160,207 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
 
+            // ------------------------------------ CPlugLight (0x0901D000)
+            // The wrapper a Solid2 `lights` socket names (`.Light.Gbx`):
+            // its GxLight, an optional animation, and (0x002) the NightOnly /
+            // ReflectByGround flags. Layouts: GBX.NET CPlugLight.chunkl.
+            0x0901D000 | 0x0901D002 => {
+                let gx = self.noderef()?;
+                let _func_light = self.noderef()?;
+                let _bitmap_flare = self.noderef()?;
+                let _bitmap_projector = self.noderef()?;
+                let l = acc.light_mut();
+                l.gx_node = gx;
+                if cid == 0x0901D002 {
+                    l.flags = self.r.u32()?;
+                }
+                Ok(())
+            }
+            0x0901D003 => {
+                let v = self.r.u32()?;
+                let image_anim = self.noderef()?;
+                let a = self.r.f32()?;
+                let b = self.r.f32()?;
+                if v >= 1 {
+                    self.r.lookback()?;
+                }
+                let l = acc.light_mut();
+                l.image_anim = image_anim;
+                l.anim_period = [a, b];
+                Ok(())
+            }
+            0x0901D004 => {
+                let _v = self.r.u32()?;
+                let gx = self.noderef()?;
+                let mut tail = [0i32; 5];
+                for t in tail.iter_mut() {
+                    *t = self.r.i32()?;
+                }
+                let l = acc.light_mut();
+                l.gx_node = gx;
+                l.tail = tail;
+                Ok(())
+            }
+            // GxLight (0x04001000) and its subclasses, inline in a CPlugLight.
+            0x04001008 => {
+                let l = acc.light_mut();
+                l.color = self.r.vec3()?;
+                l.intensity = self.r.f32()?;
+                l.gx_flags = self.r.u32()?;
+                l.shadow_intensity = self.r.f32()?;
+                l.flare_intensity = self.r.f32()?;
+                l.shadow_rgb = self.r.vec3()?;
+                Ok(())
+            }
+            0x04001009 => {
+                let l = acc.light_mut();
+                l.color = self.r.vec3()?;
+                l.gx_flags = self.r.u32()?;
+                l.intensity = self.r.f32()?;
+                l.diffuse_intensity = self.r.f32()?;
+                let _specular_intens = self.r.f32()?;
+                let _specular_power = self.r.f32()?;
+                l.shadow_intensity = self.r.f32()?;
+                l.flare_intensity = self.r.f32()?;
+                l.shadow_rgb = self.r.vec3()?;
+                Ok(())
+            }
+            0x0400100A => {
+                let _v = self.r.u32()?;
+                let l = acc.light_mut();
+                l.color = self.r.vec3()?;
+                l.gx_flags = self.r.u32()?;
+                l.intensity = self.r.f32()?;
+                l.diffuse_intensity = self.r.f32()?;
+                l.shadow_intensity = self.r.f32()?;
+                l.flare_intensity = self.r.f32()?;
+                l.shadow_rgb = self.r.vec3()?;
+                Ok(())
+            }
+            // GxLightAmbient: ShadeMinY, ShadeMaxY
+            0x04005000 => {
+                acc.light_mut();
+                self.r.take(8)?;
+                Ok(())
+            }
+            // GxLightPoint: FlareSize [, FlareBiasZ]
+            0x04003003 | 0x04003004 => {
+                let l = acc.light_mut();
+                l.flare_size = self.r.f32()?;
+                if cid == 0x04003004 {
+                    l.flare_bias_z = self.r.f32()?;
+                }
+                Ok(())
+            }
+            // GxLightBall
+            0x04002002 => {
+                let l = acc.light_mut();
+                l.radius = self.r.f32()?;
+                l.att_htnlr = [self.r.f32()?, self.r.f32()?];
+                l.emitting_radius = self.r.f32()?;
+                l.ambient_rgb = self.r.vec3()?;
+                Ok(())
+            }
+            0x04002006 => {
+                let l = acc.light_mut();
+                l.ball_flags = self.r.u32()?;
+                l.radius = self.r.f32()?;
+                l.radius_specular = self.r.f32()?;
+                l.radius_shadow = self.r.f32()?;
+                l.radius_flare = self.r.f32()?;
+                l.emitting_radius = self.r.f32()?;
+                l.att_htnlr = [self.r.f32()?, self.r.f32()?];
+                l.ambient_rgb = self.r.vec3()?;
+                Ok(())
+            }
+            0x04002008 => {
+                let l = acc.light_mut();
+                l.ball_flags = self.r.u32()?;
+                l.radius = self.r.f32()?;
+                l.radius_specular = self.r.f32()?;
+                l.radius_shadow = self.r.f32()?;
+                l.radius_flare = self.r.f32()?;
+                l.emitting_radius = self.r.f32()?;
+                l.emitting_cylinder_len_z = self.r.f32()?;
+                l.att_htnlr = [self.r.f32()?, self.r.f32()?];
+                l.ambient_rgb = self.r.vec3()?;
+                l.att_hyper2 = [self.r.f32()?, self.r.f32()?];
+                Ok(())
+            }
+            0x04002009 => {
+                acc.light_mut().ball_u09 = self.r.f32()?;
+                Ok(())
+            }
+            0x0400200A => {
+                acc.light_mut().ball_u0a = self.r.f32()?;
+                Ok(())
+            }
+            // GxLightFrustum
+            0x0400A004 => {
+                acc.light_mut();
+                self.r.take(32)?;
+                Ok(())
+            }
+            0x0400A006 => {
+                acc.light_mut();
+                self.r.take(4 + 24 + 4)?;
+                Ok(())
+            }
+            // GxLightSpot
+            0x0400B001 => {
+                let l = acc.light_mut();
+                l.angle_inner = self.r.f32()?;
+                l.angle_outer = self.r.f32()?;
+                l.angle_flare = self.r.f32()?;
+                l.falloff_exponent = self.r.f32()?;
+                Ok(())
+            }
+            0x0400B002 | 0x0400B003 => {
+                let v = if cid == 0x0400B003 { self.r.u32()? } else { 0 };
+                let l = acc.light_mut();
+                l.spot_flags = self.r.u32()?;
+                l.angle_inner = self.r.f32()?;
+                l.angle_outer = self.r.f32()?;
+                l.angle_flare = self.r.f32()?;
+                l.angle_inner_shadow = self.r.f32()?;
+                l.angle_outer_shadow = self.r.f32()?;
+                l.falloff_exponent = self.r.f32()?;
+                if cid == 0x0400B003 {
+                    if v >= 1 {
+                        l.spot_bytes = [self.r.u8()?, self.r.u8()?];
+                    } else {
+                        self.r.i32()?;
+                    }
+                }
+                Ok(())
+            }
+            // GxLightDirectional
+            0x04007001 => {
+                acc.light_mut();
+                self.r.take(16)?;
+                Ok(())
+            }
+            0x04007002 => {
+                acc.light_mut();
+                self.r.take(24)?;
+                Ok(())
+            }
+            0x04007003 => {
+                acc.light_mut();
+                self.r.take(12)?;
+                Ok(())
+            }
+            0x04007004 => {
+                acc.light_mut();
+                self.r.take(16)?;
+                Ok(())
+            }
+            0x04007005 => {
+                acc.light_mut();
+                self.r.take(8)?;
+                Ok(())
+            }
+
             // CPlugSpawnModel: where the car appears on a start/checkpoint
             // gate. The location's translation is geometry; the gravity
             // vector is a direction.
@@ -2042,7 +2243,32 @@ fn compose(outer: &[f32; 12], inner: &[f32; 12]) -> [f32; 12] {
 fn known(_class_id: u32, cid: u32) -> bool {
     crate::blockinfo::known(cid) || matches!(
         cid,
-        0x09005000
+        0x0901D000
+            | 0x0901D002
+            | 0x0901D003
+            | 0x0901D004
+            | 0x04001008
+            | 0x04001009
+            | 0x0400100A
+            | 0x04005000
+            | 0x04003003
+            | 0x04003004
+            | 0x04002002
+            | 0x04002006
+            | 0x04002008
+            | 0x04002009
+            | 0x0400200A
+            | 0x0400A004
+            | 0x0400A006
+            | 0x0400B001
+            | 0x0400B002
+            | 0x0400B003
+            | 0x04007001
+            | 0x04007002
+            | 0x04007003
+            | 0x04007004
+            | 0x04007005
+            | 0x09005000
             | 0x09005010
             | 0x09005011
             | 0x09005017

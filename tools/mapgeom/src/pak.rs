@@ -84,6 +84,11 @@ impl PakEntry {
     pub fn is_encrypted(&self) -> bool {
         !self.force_no_crypt() && !self.public_file()
     }
+    /// Bit 32 (GBX.NET `DontUseDummyWrite`): the game does NOT perturb the
+    /// cipher with each node's parent class id while reading this file.
+    pub fn dont_use_dummy_write(&self) -> bool {
+        self.flags & 0x1_0000_0000 != 0
+    }
     pub fn path(&self) -> String {
         if self.folder.is_empty() {
             self.name.clone()

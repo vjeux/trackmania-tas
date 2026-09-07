@@ -169,6 +169,62 @@ pub struct Solid2 {
     pub material_nodes: Vec<i32>,
 }
 
+/// A `CPlugLight` (0x0901D000) — the wrapper a Solid2's `lights` socket names
+/// — or the `GxLight*` node inside it (0x0400B000 spot, 0x04002000 ball,
+/// 0x0400A000 frustum, 0x04007000 directional, 0x04005000 ambient), as the
+/// `.Light.Gbx` files of the packs carry them. Layouts: GBX.NET
+/// `CPlugLight.chunkl` / `GxLight*.chunkl`, read off
+/// `Stadium\Media\Light\ItemLampSpot.Light.Gbx` (2026-09-07).
+#[derive(Clone, Debug, Default)]
+pub struct LightInfo {
+    /// The wrapper's GxLight node (chunk 0x0901D000/004), -1 on a GxLight.
+    pub gx_node: i32,
+    /// Chunk 0x0901D003: the animation image node, its period range.
+    pub image_anim: i32,
+    pub anim_period: [f32; 2],
+    /// CPlugLight flags (0x0901D002): 1 NightOnly, 2 ReflectByGround, 4
+    /// DuplicateGxLight, 8 SceneLightOnlyWhenTreeVisible.
+    pub flags: u32,
+    /// The five ints of chunk 0x0901D004 (a noderef among them?).
+    pub tail: [i32; 5],
+    // --- GxLight (0x0400100A)
+    pub color: [f32; 3],
+    /// 1 DoLighting, 2 LightMapOnly, 4 ShadowGen, 8 Specular, 16 LensFlare,
+    /// 32 Sprite, 64.. EnableGroup0-3.
+    pub gx_flags: u32,
+    pub intensity: f32,
+    pub diffuse_intensity: f32,
+    pub shadow_intensity: f32,
+    pub flare_intensity: f32,
+    pub shadow_rgb: [f32; 3],
+    // --- GxLightPoint (0x04003004)
+    pub flare_size: f32,
+    pub flare_bias_z: f32,
+    // --- GxLightBall (0x04002008)
+    pub ball_flags: u32,
+    pub radius: f32,
+    pub radius_specular: f32,
+    pub radius_shadow: f32,
+    pub radius_flare: f32,
+    pub emitting_radius: f32,
+    pub emitting_cylinder_len_z: f32,
+    pub att_htnlr: [f32; 2],
+    pub ambient_rgb: [f32; 3],
+    pub att_hyper2: [f32; 2],
+    /// 0x04002009 / 0x0400200A, one float each.
+    pub ball_u09: f32,
+    pub ball_u0a: f32,
+    // --- GxLightSpot (0x0400B003)
+    pub spot_flags: u32,
+    pub angle_inner: f32,
+    pub angle_outer: f32,
+    pub angle_flare: f32,
+    pub angle_inner_shadow: f32,
+    pub angle_outer_shadow: f32,
+    pub falloff_exponent: f32,
+    pub spot_bytes: [u8; 2],
+}
+
 #[derive(Clone, Debug)]
 pub enum Node {
     Prefab(Prefab),
@@ -197,6 +253,8 @@ pub enum Node {
     Genealogy(crate::blockinfo::GenealogyRaw),
     /// `CPlugRoadChunk` / `CPlugPlacementPatch`.
     RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
+    /// `CPlugLight` or a `GxLight*` (the class id says which).
+    Light(u32, Box<LightInfo>),
     Other(u32),
 }
 
@@ -220,6 +278,7 @@ impl Node {
             Node::AutoTerrain(_) => crate::blockinfo::C_AUTO_TERRAIN,
             Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
+            Node::Light(c, _) => *c,
             Node::Other(c) => *c,
         }
     }
@@ -257,6 +316,10 @@ pub struct Graph<'a> {
     pub collector_name: String,
     /// One block-info accumulator per node body being read, innermost last.
     pub bi_stack: Vec<crate::blockinfo::BiAcc>,
+    /// Where every chunked node body began, as (body offset, class id), in
+    /// read order: the points where the game "dummy-writes" the node's parent
+    /// class id into a pak file's cipher (`parents.rs`, `pakfile.rs`).
+    pub node_starts: Vec<(usize, u32)>,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -271,7 +334,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new() }
     }
 
     /// Parse a whole file body, rooted at `class_id`.
@@ -330,6 +393,7 @@ impl<'a> Graph<'a> {
         if no_body_chunks(class_id) {
             return self.plain_body(class_id);
         }
+        self.node_starts.push((self.r.o, class_id));
         let mut acc = Acc::new(class_id);
         self.bi_stack.push(crate::blockinfo::BiAcc::default());
         let walked = self.node_chunks(class_id, &mut acc);
@@ -409,6 +473,7 @@ pub struct Acc {
     pub crystals: Vec<CrystalMesh>,
     pub material_name: String,
     pub physics_id: u8,
+    pub light: Option<Box<LightInfo>>,
     pub touched: bool,
 }
 
@@ -429,8 +494,14 @@ impl Acc {
             crystals: Vec::new(),
             material_name: String::new(),
             physics_id: 0,
+            light: None,
             touched: false,
         }
+    }
+    /// The light accumulator, created on the first light chunk.
+    pub fn light_mut(&mut self) -> &mut LightInfo {
+        self.touched = true;
+        self.light.get_or_insert_with(|| Box::new(LightInfo { gx_node: -1, image_anim: -1, ..LightInfo::default() }))
     }
     fn finish(self, class_id: u32, bi: crate::blockinfo::BiAcc) -> Node {
         if let Some(n) = bi.finish(class_id) {
@@ -438,6 +509,9 @@ impl Acc {
         }
         if !self.touched {
             return Node::Other(class_id);
+        }
+        if let Some(l) = self.light {
+            return Node::Light(class_id, l);
         }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
@@ -488,6 +562,7 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::AutoTerrain(_) => "CGameCtnAutoTerrain",
         Node::Genealogy(_) => "CGameCtnZoneGenealogy",
         Node::RoadChunk(_) => "CPlugRoadChunk",
+        Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
         Node::Other(_) => "other",
     }
 }

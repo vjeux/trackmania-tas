@@ -254,8 +254,13 @@ fn main() {
                 let p = e.path();
                 if pat.is_empty() || p.to_uppercase().contains(&pat) {
                     println!(
-                        "{}\tclass 0x{:08X}\t{} bytes",
-                        p, e.class_id, e.uncompressed_size
+                        "{}\tclass 0x{:08X}\t{} bytes\tflags 0x{:x}{}{}",
+                        p,
+                        e.class_id,
+                        e.uncompressed_size,
+                        e.flags,
+                        if e.is_compressed() { " lz4" } else { " raw" },
+                        if e.dont_use_dummy_write() { "" } else { " dummywrite" }
                     );
                     n += 1;
                 }
@@ -1538,6 +1543,30 @@ fn describe(n: &Node) -> String {
             r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
             r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
         ),
+        Node::Light(c, l) => {
+            if *c == 0x0901D000 {
+                format!(
+                    "CPlugLight gx=node {} flags 0x{:x} image_anim={} period {:?} tail {:?}",
+                    l.gx_node, l.flags, l.image_anim, l.anim_period, l.tail
+                )
+            } else {
+                let kind = match *c {
+                    0x0400B000 => "GxLightSpot",
+                    0x04002000 => "GxLightBall",
+                    0x0400A000 => "GxLightFrustum",
+                    0x04007000 => "GxLightDirectional",
+                    0x04005000 => "GxLightAmbient",
+                    0x04003000 => "GxLightPoint",
+                    _ => "GxLight",
+                };
+                format!(
+                    "{kind} color [{:.3}, {:.3}, {:.3}] intensity {} diffuse {} shadow {} flare {} gxflags 0x{:x} shadow_rgb {:?}\n      flare size {} bias_z {} | ball flags 0x{:x} radius {} spec {} shadow {} flare {} emitting r {} cyl {} attHTnLR {:?} ambient {:?} hyper2 {:?} u09 {} u0a {}\n      spot flags 0x{:x} inner {} outer {} flare {} inner_sh {} outer_sh {} falloff {} bytes {:?}",
+                    l.color[0], l.color[1], l.color[2], l.intensity, l.diffuse_intensity, l.shadow_intensity, l.flare_intensity, l.gx_flags, l.shadow_rgb,
+                    l.flare_size, l.flare_bias_z, l.ball_flags, l.radius, l.radius_specular, l.radius_shadow, l.radius_flare, l.emitting_radius, l.emitting_cylinder_len_z, l.att_htnlr, l.ambient_rgb, l.att_hyper2, l.ball_u09, l.ball_u0a,
+                    l.spot_flags, l.angle_inner, l.angle_outer, l.angle_flare, l.angle_inner_shadow, l.angle_outer_shadow, l.falloff_exponent, l.spot_bytes
+                )
+            }
+        }
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

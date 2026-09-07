@@ -365,7 +365,7 @@ impl<'a> Collector<'a> {
                     }
                 }
             }
-            Node::Variant(_) | Node::BlockUnit(_) | Node::Mobil(_) | Node::AutoTerrain(_) | Node::Genealogy(_) | Node::RoadChunk(_) => {}
+            Node::Variant(_) | Node::BlockUnit(_) | Node::Mobil(_) | Node::AutoTerrain(_) | Node::Genealogy(_) | Node::RoadChunk(_) | Node::Light(..) => {}
             Node::Other(c) => {
                 *self.stats.unhandled.entry(*c).or_insert(0) += 1;
             }

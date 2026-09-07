@@ -41,6 +41,7 @@ pub mod names;
 pub mod node;
 pub mod pak;
 pub mod pakfile;
+pub mod parents;
 pub mod place;
 pub mod probe;
 pub mod reader;

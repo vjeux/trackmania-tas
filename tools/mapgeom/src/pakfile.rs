@@ -84,6 +84,9 @@ pub fn read_file(
     }
     // raw (possibly still compressed) bytes
     let raw: Vec<u8> = if e.is_encrypted() {
+        if !e.is_compressed() && !e.dont_use_dummy_write() {
+            return decrypt_with_dummy_writes(data, base, e, key, version);
+        }
         let mut r = crate::pak::CipherReader::new(data, base, key, version);
         r.take(e.compressed_size.max(0) as usize)
     } else {
@@ -128,4 +131,77 @@ pub fn read_file(
         return Ok(hist[dict_len..].to_vec());
     }
     Ok(hist[dict_len..dict_len + want].to_vec())
+}
+
+/// Decrypt `n` bytes at `base`, folding each scheduled `(offset, class)` into
+/// the cipher's IV perturbation when the read reaches `offset` — the game's
+/// "dummy write" of a node's parent class id at the start of its body
+/// (`parents.rs`). `schedule` is sorted by offset.
+fn decrypt_scheduled(data: &[u8], base: usize, key: &[u8; 16], version: i32, n: usize, schedule: &[(usize, u32)]) -> Vec<u8> {
+    let mut r = crate::pak::CipherReader::new(data, base, key, version);
+    let mut out = Vec::with_capacity(n);
+    let mut pos = 0usize;
+    for &(off, class) in schedule {
+        let off = off.min(n);
+        if off > pos {
+            out.extend(r.take(off - pos));
+            pos = off;
+        }
+        r.initialize(&class.to_le_bytes(), 0, 4);
+    }
+    if n > pos {
+        out.extend(r.take(n - pos));
+    }
+    out
+}
+
+/// The node-body starts of a (partially) decrypted Gbx file, as
+/// (file offset, parent class id folded there), in read order: the main node
+/// at the start of the body, then every inline node right after its class id.
+/// The walk stops at the first byte it cannot read; what it found before that
+/// is right as long as the bytes were.
+fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
+    let Ok(g) = crate::container::Gbx::parse(plain) else { return Vec::new() };
+    let body_start = plain.len() - g.body.len();
+    let mut out = vec![(body_start, crate::parents::dummy_write_class(class_id))];
+    let externals: Vec<(u32, String)> = g.refs.iter().map(|e| (e.node_index, e.name.clone())).collect();
+    let mut graph = crate::node::Graph::new(&g.body, g.num_nodes, &externals);
+    let _ = graph.node_body(class_id);
+    for (off, c) in &graph.node_starts {
+        // the main node's own start is `body_start` (its class id sits in
+        // the header, not in the body)
+        if *off == 0 {
+            continue;
+        }
+        out.push((body_start + off, crate::parents::dummy_write_class(*c)));
+    }
+    out
+}
+
+/// An encrypted, uncompressed, dummy-written pak file: decrypt, find where its
+/// node bodies begin, decrypt again with those perturbations, repeat until the
+/// walk finds nothing new. Each round extends the correctly decrypted prefix
+/// past at least one more 0x100 boundary, so it ends within `num_nodes` rounds.
+fn decrypt_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32) -> Result<Vec<u8>, String> {
+    let n = e.compressed_size.max(0) as usize;
+    let mut schedule: Vec<(usize, u32)> = Vec::new();
+    let mut plain = decrypt_scheduled(data, base, key, version, n, &schedule);
+    for _round in 0..256 {
+        let points = dummy_write_points(&plain, e.class_id);
+        let Some(first_new) = points.iter().find(|p| !schedule.contains(p)) else { break };
+        // a perturbation folded at `off` lands at the next 0x100 boundary
+        // (a start exactly on the boundary still lands there: the cipher
+        // re-keys when the byte AFTER it is asked for). Bytes before that
+        // boundary were decrypted right, so every new start up to it is real.
+        let boundary = (first_new.0 + 0xFF) & !0xFF;
+        let before = schedule.len();
+        let fresh: Vec<(usize, u32)> = points.iter().filter(|p| p.0 <= boundary && !schedule.contains(p)).copied().collect();
+        schedule.extend(fresh);
+        if schedule.len() == before {
+            break;
+        }
+        schedule.sort();
+        plain = decrypt_scheduled(data, base, key, version, n, &schedule);
+    }
+    Ok(plain)
 }
