@@ -291,7 +291,6 @@ pub fn count(engine: &Engine, tape: Tape, o: CountOpts) -> Result<(), String> {
         &g,
         &[
             ("LD_PRELOAD", shim.clone()),
-            ("FKSHIM_VALIDATOR_CAR", "1".into()),
         ],
         to,
     )?;
@@ -579,8 +578,7 @@ pub fn find(engine: &Engine, tape: Tape, o: FindOpts) -> Result<(), String> {
                 ("LD_PRELOAD", shim.clone()),
                     ("FKSHIM_TICK_UNSAFE", "1".into()),
                 ("FKSHIM_TICK_FN_OFF", format!("{:#x}", t)),
-                ("FKSHIM_VALIDATOR_CAR", "1".into()),
-            ],
+                ],
             Duration::from_secs(120),
         );
         let verdict = match res {
@@ -789,11 +787,32 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
         tails.iter().map(|t| t.1).collect::<std::collections::BTreeSet<_>>().len()
     );
 
-    // 3. THE RACE CLOCK. The locator picks a u32 by its `+10 every tick`
-    //    signature; the hook knows this tick's race time exactly, so the value
-    //    can be compared rather than trusted.
+    // 3+4. THE CAR AND THE CLOCK, found two ways that share no evidence: the
+    //    VALIDATOR'S OWN ownership chain (typed, no search) and the blind
+    //    locator the search uses (a float triple whose derivative matches the
+    //    velocity 12 bytes later).
+    //
+    //    The blind one is given a box around the validator car, because that is
+    //    how production runs it -- `tmsearch` bounds it by the reference line --
+    //    and because UNBOUNDED it does not work: with the whole world allowed it
+    //    picked a STATIONARY object 1624 m from the car on 126859 and 1192 m on
+    //    145875, both of which pass its own self-consistency test (nothing moves,
+    //    so d(pos)/dt matches a zero velocity). A 200 m box does not choose
+    //    between candidates 0.8 m apart; it excludes ones a kilometre away.
     let recs = s.tape.tail_records(probe);
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    let world = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    let car = crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, off, world, 4000, false)
+        .map_err(|e| format!("the validator's ownership chain did not resolve: {}", e))?;
+    let cpos = {
+        let b = read_at(pid, car.layout().pos, 12).ok_or("cannot read the validator car")?;
+        [
+            f32::from_le_bytes(b[0..4].try_into().unwrap()) as f64,
+            f32::from_le_bytes(b[4..8].try_into().unwrap()) as f64,
+            f32::from_le_bytes(b[8..12].try_into().unwrap()) as f64,
+        ]
+    };
+    let r = 200.0;
+    let bounds = (cpos[0] - r, cpos[0] + r, cpos[1] - r, cpos[1] + r, cpos[2] - r, cpos[2] + r);
     let layout = forkoracle::blind::locate_blind(&mut s.srv, probe, &recs, off, 1, bounds, false)
         .map_err(|e| format!("the blind locator could not find the car: {}", e))?;
     let clk = read_at(pid, layout.clock, 4)
@@ -831,13 +850,8 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
         ),
     );
 
-    // 4. THE CAR. Two locators that share no evidence: the blind one (a float
-    //    triple whose derivative matches the velocity 12 bytes later) and the
-    //    validator's own ownership chain (controller -> sim -> playground ->
-    //    participant -> vehicle -> +0x12f0).
-    match crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, off, bounds, 4000, false)
     {
-        Ok(car) => {
+        {
             let p = car.provenance();
             println!(
                 "  validator chain: controller {:#x} -> sim {:#x} -> playground {:#x} -> \
@@ -889,7 +903,6 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
                 cclk - race_ms
             );
         }
-        Err(e) => check(false, format!("the validator's ownership chain did not resolve: {}", e)),
     }
 
     // 5. THE SIMULATION CLOCK the hook cross-checks on every tick.

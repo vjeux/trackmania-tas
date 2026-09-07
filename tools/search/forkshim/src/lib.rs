@@ -761,9 +761,12 @@ fn main_module_base() -> usize {
         .unwrap_or(0)
 }
 
-/// Install the one-shot validator callback trap before `main` starts. Gating it
-/// keeps `forkshim` usable with `shimhost`, whose text obviously has no server
-/// instruction at this offset.
+/// Install the one-shot validator callback trap before `main` starts.
+///
+/// Unconditional since the clock needs it: the race start is read through the
+/// captured validation simulation. A host with no server text falls out at the
+/// `in_main_text` check, so `shimhost` and every other non-server host are
+/// handled by fact rather than by an env var.
 /// Is this code a preloaded shared object, or was it linked into the host?
 /// The shim only ever hooks in the first case.
 fn loaded_as_shared_object() -> bool {
@@ -815,10 +818,6 @@ fn in_main_text(base: usize, off: usize, n: usize) -> bool {
 }
 
 unsafe extern "C" fn install_validator_trace() {
-    // Unconditional: the clock reads the race start through the captured
-    // validation simulation (see `race_start_now`). A host with no server text
-    // falls out at the `in_main_text` check below.
-    let _ = &VALIDATOR_SIM;
     let base = main_module_base();
     MODULE_BASE.store(base, Ordering::SeqCst);
     if base == 0 {

@@ -361,11 +361,7 @@ impl ForkServer {
         c.args(["/nodaemon", "/validatepath=."])
             .current_dir(dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(outf))
-            // Enables the one-shot, build-checked hook at the validator's
-            // simulation-binding callback. `start_raw` deliberately does not
-            // set this: its shimhost tests do not contain that server code.
-            .env("FKSHIM_VALIDATOR_CAR", "1");
+            .stdout(Stdio::from(outf));
         let srv = ForkServer::start_raw(dir, c, key, shim, ckpt)?;
         if srv.validator_controller == 0 || srv.validation_sim == 0 {
             return Err(
