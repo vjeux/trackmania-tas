@@ -1037,6 +1037,19 @@ struct Timing {
     exhausted_clock: u64,
     /// 1 if the finish was recorded AFTER the tape had run out.
     finish_past_end: u64,
+    /// INTER-TICK GAPS (perf arm, PERF.md §4): ticks whose entry came more
+    /// than 80 us after the previous one, the sum of what those gaps exceeded
+    /// 80 us by, and the largest gap. A frame boundary inside the tick loop
+    /// shows up here; so does a preemption on a loaded box.
+    gap_big: u64,
+    gap_excess_us: u64,
+    gap_max_us: u64,
+    /// THE CENSUS, written by a child that leaves early (`leave`), since the
+    /// parent cannot read /proc of a child that has already gone: minor
+    /// faults, resident KB, private-dirty KB. 0 when not measured.
+    census_minflt: u64,
+    census_rss_kb: u64,
+    census_pdirty_kb: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -1152,6 +1165,15 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
             let now = now_us();
             if (*t).first_tick_us == 0 {
                 (*t).first_tick_us = now;
+            } else {
+                let gap = now.saturating_sub((*t).last_tick_us);
+                if gap > 80 {
+                    (*t).gap_big += 1;
+                    (*t).gap_excess_us += gap - 80;
+                }
+                if gap > (*t).gap_max_us {
+                    (*t).gap_max_us = gap;
+                }
             }
             (*t).last_tick_us = now;
             (*t).ticks += 1;
@@ -1888,6 +1910,18 @@ pub const EXIT_MARK: &[u8] = b"\nFKEXIT\n";
 
 /// `_exit(0)` for a child whose answer is in the shared pages: mark, then go.
 unsafe fn leave(fd: c_int) -> ! {
+    if CENSUS.load(Ordering::Relaxed) != 0 {
+        // Measurement mode only: the parent cannot read /proc of a child that
+        // is already gone, so the child counts itself before it goes.
+        if let Some((m, r, d)) = child_census(getpid()) {
+            let t = timing();
+            if !t.is_null() {
+                (*t).census_minflt = m;
+                (*t).census_rss_kb = r;
+                (*t).census_pdirty_kb = d;
+            }
+        }
+    }
     write_all(fd, EXIT_MARK);
     _exit(0)
 }
@@ -3355,7 +3389,18 @@ unsafe fn forkserver() {
             // did this candidate fault in, and how many did it dirty? Behind an
             // env var because it is two /proc reads per candidate, and it is
             // what says whether huge pages or MADV_DONTFORK could pay.
-            let census = if CENSUS.load(Ordering::Relaxed) != 0 { child_census(pid) } else { None };
+            let census = if CENSUS.load(Ordering::Relaxed) != 0 {
+                child_census(pid).or_else(|| {
+                    let t = timing();
+                    if !t.is_null() && (*t).census_minflt != 0 {
+                        Some(((*t).census_minflt, (*t).census_rss_kb, (*t).census_pdirty_kb))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             kill(pid, SIGKILL);
             close(rfd);
             let tp = timing();
@@ -3415,6 +3460,14 @@ unsafe fn forkserver() {
                 utoa(rss_kb, &mut out);
                 out.extend_from_slice(b" pdirty_kb ");
                 utoa(pdirty_kb, &mut out);
+                if !tp.is_null() {
+                    out.extend_from_slice(b" gap_big ");
+                    utoa((*tp).gap_big, &mut out);
+                    out.extend_from_slice(b" gap_excess_us ");
+                    utoa((*tp).gap_excess_us, &mut out);
+                    out.extend_from_slice(b" gap_max_us ");
+                    utoa((*tp).gap_max_us, &mut out);
+                }
             }
             out.push(b'\n');
             send_frame(res, &out);

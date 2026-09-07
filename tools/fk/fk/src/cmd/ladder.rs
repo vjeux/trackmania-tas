@@ -120,12 +120,14 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     let mut root_res = Vec::with_capacity(o.n);
     let mut root_ms = Vec::with_capacity(o.n);
     let mut root_census = Vec::with_capacity(o.n);
+    let mut root_gaps = Vec::with_capacity(o.n);
     for (_, inp, _) in &cands {
         let t0 = Instant::now();
         let out = s.srv.run(from, &records_from(&inp.steer_u8(), &inp.gas_u8(), &inp.brake_u8(), from));
         root_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
         root_res.push(parse_result(&out));
         root_census.push(census_of(&out));
+        root_gaps.push(gaps_of(&out));
     }
 
     // THE LADDER: the same candidates, in the same order, each from the deepest
@@ -138,6 +140,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     let mut lad_ms = Vec::with_capacity(o.n);
     let mut lad_at = Vec::with_capacity(o.n);
     let mut lad_census = Vec::with_capacity(o.n);
+    let mut lad_gaps = Vec::with_capacity(o.n);
     let mut prep_ms = 0.0f64;
     for (_, inp, first) in &cands {
         let t0 = Instant::now();
@@ -148,26 +151,57 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         lad_ms.push(t1.elapsed().as_secs_f64() * 1000.0);
         lad_res.push(parse_result(&out));
         lad_census.push(census_of(&out));
+        lad_gaps.push(gaps_of(&out));
         lad_at.push(at);
     }
     let st = ladder.stats();
 
-    // EXACTNESS, three ways.
-    let (mut ok, mut bad, mut finished) = (0usize, 0usize, 0usize);
+    // EXACTNESS, three ways -- and one class kept apart.
+    //
+    // A finish whose millisecond is PAST THE TAPE'S OWN END (the engine drives
+    // on past the last record, on heap contents) is not a finish: the shim
+    // reports it as a DNF (TICKHOOK.md, the exhausted word), the plain oracle
+    // reports a time that depends on what else was in its batch (PERF.md §1).
+    // Root and ladder must still agree with each other there; against the
+    // plain oracle that class is reported, not counted.
+    let tape_end_ms = s.tape.start_offset_ms as i64 + 10 * n as i64;
+    let (mut ok, mut bad, mut finished, mut past_end, mut past_end_split) = (0usize, 0usize, 0usize, 0usize, 0usize);
     for (i, (p, _, first)) in cands.iter().enumerate() {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         let g = full.get(&name).cloned().unwrap_or((None, None));
-        if g.0.is_some() {
-            finished += 1;
-        }
         let r = root_res[i];
         let l = lad_res[i];
+        // The DNF checkpoint count: root and ladder always agree (same
+        // parser, same counter); against the plain oracle only when it
+        // reported one -- and since the fork reads the engine's counter the
+        // oracle's Desc line is a LOWER BOUND, so >= is the test there.
+        let fork_same = r.0 == l.0 && (r.0.is_some() || r.1 == l.1);
+        if let Some(t) = g.0 {
+            if t > tape_end_ms {
+                past_end += 1;
+                if !fork_same {
+                    past_end_split += 1;
+                }
+                if past_end <= 3 {
+                    println!(
+                        "after its own tape: {} (edit at tick {}) -- plain oracle {} past the tape's end at {}; root {}  ladder {}{}",
+                        name,
+                        first,
+                        crate::secs(t),
+                        crate::secs(tape_end_ms),
+                        show(r),
+                        show(l),
+                        if fork_same { "" } else { "  ROOT AND LADDER DISAGREE" }
+                    );
+                }
+                continue;
+            }
+            finished += 1;
+        }
         let same_time = r.0 == g.0 && l.0 == g.0;
-        // A DNF's checkpoint count is compared too: root and ladder always
-        // (same parser), and against the plain oracle when it reported one.
         let same_cps = g.0.is_some()
             || match g.1 {
-                Some(c) => r.1 == Some(c) && l.1 == Some(c),
+                Some(c) => r.1.map(|x| x >= c).unwrap_or(false) && l.1 == r.1,
                 None => r.1 == l.1,
             };
         if same_time && same_cps {
@@ -188,8 +222,14 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         }
     }
     println!(
-        "exactness: {}/{} identical across full validation, root fork and ladder ({} finished, {} DNF), {} MISMATCHES",
-        ok, o.n, finished, o.n - finished, bad
+        "exactness: {}/{} identical across full validation, root fork and ladder ({} finished, {} DNF), {} MISMATCHES; {} more finished AFTER their own tape ended (kept apart: the plain oracle's verdict there is batch-dependent), root and ladder disagreeing on {} of them",
+        ok,
+        o.n - past_end,
+        finished,
+        o.n - past_end - finished,
+        bad,
+        past_end,
+        past_end_split
     );
 
     // COST, per depth band.
@@ -233,9 +273,15 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
             r.0, r.1 / 1024.0, r.2 / 1024.0, l.0, l.1 / 1024.0, l.2 / 1024.0
         );
     }
+    if let (Some(r), Some(l)) = (census_mean(&root_gaps), census_mean(&lad_gaps)) {
+        println!(
+            "inter-tick gaps > 80 us: a root child had {:.1} of them, {:.0} us in excess of 80 in total, the largest {:.0} us; a ladder child {:.1} / {:.0} us / {:.0} us",
+            r.0, r.1, r.2, l.0, l.1, l.2
+        );
+    }
     drop(ladder);
     s.srv.quit();
-    Ok(bad == 0 && unstable == 0)
+    Ok(bad == 0 && unstable == 0 && past_end_split == 0)
 }
 
 // ---------------------------------------------------------------- fk ladder watched
@@ -444,6 +490,16 @@ fn census_of(out: &str) -> Option<(u64, u64, u64)> {
         line[i..].split_whitespace().next()?.parse().ok()
     };
     Some((f(" minflt ")?, f(" rss_kb ")?, f(" pdirty_kb ")?))
+}
+
+/// The inter-tick gap fields beside the census: `(gap_big, gap_excess_us, gap_max_us)`.
+fn gaps_of(out: &str) -> Option<(u64, u64, u64)> {
+    let line = out.lines().find(|l| l.contains(" gap_big "))?;
+    let f = |k: &str| -> Option<u64> {
+        let i = line.find(k)? + k.len();
+        line[i..].split_whitespace().next()?.parse().ok()
+    };
+    Some((f(" gap_big ")?, f(" gap_excess_us ")?, f(" gap_max_us ")?))
 }
 
 /// Mean of the census over a set of replies, when every reply carried one.
