@@ -864,3 +864,10 @@ pub fn frame_control(reach_dir: &Path) -> Result<(f32, usize), String> {
     let (acc, n) = crate::frame::alignment(&rows, 5.0);
     Ok((acc[2], n))
 }
+
+/// All three axes' mean dot with the velocity direction (rows > 5 m/s).
+pub fn frame_control_axes(reach_dir: &Path) -> Result<([f32; 3], usize), String> {
+    let starts = read_starts(&reach_dir.join("starts.tsv"))?;
+    let rows: Vec<([f32; 3], [f32; 4])> = starts.values().map(|s| (s.state.vel, s.state.quat)).collect();
+    Ok(crate::frame::alignment(&rows, 5.0))
+}
