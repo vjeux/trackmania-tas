@@ -625,6 +625,10 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
             // adjudication end is not pinned (declared + 2.5 s holds on Summer 2026 - 01;
             // Summer 2026 - 11 credited a checkpoint later than that) -- counted apart
             _ if c.finish_after_tape || c.oracle_ms.map(|t| t > c.tape_end_ms).unwrap_or(false) => after_tape += 1,
+            // the tape ran to its end in the fork child (exited) and the plain oracle credits MORE:
+            // the oracle kept simulating on heap contents past the tape and the coasting car
+            // crossed a gate the tape never drove it to (Fall 2025 - 03/07) -- the same class
+            Some(x) if x > c.det_cps && c.exited => after_tape += 1,
             Some(x) if x > c.det_cps && c.rows_past_cut > 0 && !finished_case(c) => tail += 1,
             Some(_) => disagree += 1,
         }
