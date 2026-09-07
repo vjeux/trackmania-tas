@@ -174,6 +174,53 @@ pub fn transform_visual(v: &mut CPlugVisualIndexedTriangles, iso: &Xform, scale:
     Ok(())
 }
 
+/// Remap every position of the merged item (visual streams and collision
+/// vertices) through `f`; bounding boxes recomputed. Visuals with packed
+/// positions are left alone (they never reach a merged item: transform_visual
+/// refused them first).
+pub fn remap_positions(m: &mut Merged, f: &dyn Fn([f32; 3]) -> [f32; 3]) {
+    for mv in &mut m.visuals {
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let mut positions = Vec::new();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter_mut()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                for q in p.iter_mut() {
+                    *q = f(*q);
+                }
+                positions = p.clone();
+            }
+        }
+        if !positions.is_empty() {
+            main.bounding_box = bbox(&positions);
+        }
+    }
+    for v in &mut m.surf_vertices {
+        *v = f(*v);
+    }
+}
+
+/// The sea floor keeps its depth. A shore tile at the water row (BlueBay's
+/// Beach) slopes from the sand through the shallows down to a sea-floor apron
+/// a cell wide; halved with the rest of the tile that apron sits at half its
+/// depth, and the water over it turns dark: a rectangle of shaded sea around
+/// every island, one tiny cell wide, where the original shows open sea
+/// (Summer 06 start island, top-down). Below `water` (the surface, in the
+/// item's scaled frame) the first `keep` metres keep the tile's scale — the
+/// visible shallows — and every metre beyond regains its source depth
+/// (divided by `scale`), so the apron sinks back to where the water hides it.
+pub fn restore_depth(m: &mut Merged, water: f32, keep: f32, scale: f32) {
+    remap_positions(m, &|p| {
+        let depth = water - p[1];
+        if depth <= keep {
+            p
+        } else {
+            [p[0], water - keep - (depth - keep) / scale, p[2]]
+        }
+    });
+}
+
 impl Merged {
     /// Slot of a game material, adding it when new.
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {

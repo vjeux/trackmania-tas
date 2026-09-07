@@ -196,6 +196,31 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for b in source.blocks.iter().chain(source.baked.iter().filter(|b| b.name != "Sea")) {
         *keys.entry((b.name.clone(), b.flags)).or_insert(0) += 1;
     }
+    // Cell rows per key: a shore tile whose every placement sits at the water
+    // row gets its sea floor back at source depth (`restore_depth`).
+    let mut rows_by_key: BTreeMap<(String, u32), std::collections::BTreeSet<u8>> = BTreeMap::new();
+    for b in source.blocks.iter().chain(source.baked.iter()) {
+        rows_by_key.entry((b.name.clone(), b.flags)).or_default().insert(b.raw_coords[1]);
+    }
+    // The water row and the surface's height above that row's floor, from the
+    // collection's fixed plane: the zone prefabs put their water quad about
+    // local +7 (BlueBay 7, RedIsland 7.5, WhiteShore 7, GreenCoast 7.2).
+    let water = if matches!(collection, 0x1c | 0x10 | 0x1d | 0xf) {
+        let ground_y = tmmaps::map::ground_y(collection);
+        let plane = tmmaps::tiny::fixed_plane(collection);
+        let row = ((plane - 7.0 - ground_y) / 8.0).round();
+        Some((row as u8, plane - (ground_y + 8.0 * row)))
+    } else {
+        None
+    };
+    // TINY_DEEPEN=0 leaves the halved sea floor; TINY_DEPTH_KEEP=m (tiny
+    // metres below the surface that keep the tile's scale, default 0: the
+    // Beach apron is only 0.8..3 m deep in the source and the sea over it
+    // reads as open sea from 3 m down, so every underwater vertex takes its
+    // source depth)
+    let deepen = std::env::var("TINY_DEEPEN").map(|v| v != "0").unwrap_or(true);
+    let depth_keep: f32 = std::env::var("TINY_DEPTH_KEEP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let mut deepened: Vec<String> = Vec::new();
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut outcomes: Vec<Outcome> = Vec::new();
     // key -> (alias or "-", footprint sx, sz)
@@ -296,13 +321,19 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_default();
             m.no_split = no_split_for.split(',').any(|s| !s.is_empty() && s == name);
             let mut err = None;
-            // Terrain (Flat/Frontier/Transition zone blocks) is lowered by
-            // TERRAIN_DROP (full-scale metres): the Land plane and a road deck
-            // in the same cell are coplanar in the source (the game resolves
-            // that in its terrain pass), and as two items they z-fight into
-            // grass stripes across the road (2026-09-06).
+            // Terrain (Flat/Frontier/Transition zone blocks) may be lowered by
+            // TINY_TERRAIN_DROP (full-scale metres; default 0). The drop was
+            // 0.2 while a road deck and the Land plane of the same cell were
+            // both items (coplanar at +2 in the source: grass stripes across
+            // the road, 2026-09-06); since `tmmaps tiny` hides the tile under
+            // every deck (`stands_in_for_tile`) the drop only opened a 0.1 m
+            // step between a deck and its lowered neighbours — a black line
+            // across the sand in front of Summer 06's start (the tile meshes
+            // have no skirts). The pairs that still share a cell (pillar feet,
+            // DecoTerrainHD, deco shores: `tmmaps shared-cells`) coexist with
+            // their tile in the original too, so they are not coplanar.
             let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
-            let drop: f32 = std::env::var("TINY_TERRAIN_DROP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.2);
+            let drop: f32 = std::env::var("TINY_TERRAIN_DROP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             for (p, tr, rot) in &prefabs {
                 let mut at = crate::geom::IDENTITY;
                 if let Some(t) = tr {
@@ -324,6 +355,15 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             match err {
                 Some(e) => Err(e),
                 None => {
+                    // A terrain tile at the water row: the sea floor regains
+                    // its depth (the apron under the water would otherwise
+                    // sit at half depth and shade the sea a cell wide).
+                    if let (true, true, Some((wrow, wlocal))) = (deepen, terrain, water) {
+                        if rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false) {
+                            crate::static_item::build::restore_depth(&mut m, wlocal * scale, depth_keep, scale);
+                            deepened.push(format!("{name} {flags:08X}"));
+                        }
+                    }
                     // waypoint: type from the block info, trigger = unit boxes,
                     // spawn = variant spawn_loc scaled (Granady's items)
                     if let Some(wt) = bi.waypoint_type.filter(|t| (0..=2).contains(t) || *t == 4) {
@@ -501,6 +541,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         std::fs::write(r, &rep).unwrap();
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
+    if !deepened.is_empty() {
+        println!("  sea floor at source depth under {} shore tile models at the water row (TINY_DEEPEN=0 to keep it halved): {}", deepened.len(), deepened.join(", "));
+    }
     println!("  mapping: {} rows -> {}", rows, out_mapping.display());
     if !missing_blocks.is_empty() {
         println!("  BLOCK PLACEMENTS WITHOUT A MODEL:");

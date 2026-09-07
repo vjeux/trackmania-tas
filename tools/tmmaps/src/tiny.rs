@@ -5,7 +5,7 @@
 
 use crate::{
     census, cli,
-    map::{MapFile, FREE_BLOCK_FLAG},
+    map::{BlockRec, MapFile, FREE_BLOCK_FLAG},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -139,6 +139,88 @@ fn read_mapping(path: &Path) -> Mappings {
 /// BlueBay sea surface (7: the land plane, block top y 10, halves to 8.5
 /// above it — the verified Summer 01 mapping, spawn 16 -> 11.5); the Stadium
 /// grass (10: the full-size floor the genealogy regenerates stays the floor).
+/// A block that stands in for the terrain tile of its cell: the game draws
+/// only the replacement. Two families: a block named after the zone it
+/// replaces (`PlatformGrassOnLandHillSlopeBase`, `RoadTechStraightOnBeach` —
+/// `On<zone>` with or without the zone's trailing digit, OnLandHill covers
+/// LandHill1/2) and a GROUND-variant block (flags bit 12) whose family covers
+/// its whole cell with a deck: platforms, roads, stands, deco platforms
+/// (Summer 04's PlatformDirtCheckpoint shared its cell with a Grass tile whose
+/// grass-blade shader poked tufts up through the dirt deck). Pillars,
+/// DecoTerrainHD detail meshes and wall pillars do not cover the cell and keep
+/// their tile.
+pub fn stands_in_for_tile(name: &str, flags: u32, zones: &BTreeSet<String>) -> bool {
+    if zones.contains(name) {
+        return false;
+    }
+    let replaces = |zone: &str| {
+        let stem = zone.trim_end_matches(|c: char| c.is_ascii_digit());
+        name.contains(&format!("On{zone}")) || (!stem.is_empty() && name.contains(&format!("On{stem}")))
+    };
+    let covers_cell = flags & (1 << 12) != 0 && ["Platform", "Road", "OpenTechRoad", "DecoPlatform", "Stand"].iter().any(|p| name.starts_with(p));
+    zones.iter().any(|z| replaces(z)) || covers_cell
+}
+
+/// The cells whose terrain tile is hidden by a stand-in block (see
+/// `stands_in_for_tile`), keyed by the raw file cell.
+pub fn replaced_cells(source: &MapFile, zones: &BTreeSet<String>) -> BTreeSet<[u8; 3]> {
+    source.blocks.iter().filter(|b| stands_in_for_tile(&b.name, b.flags, zones)).map(|b| b.raw_coords).collect()
+}
+
+/// `tmmaps shared-cells MAP [--all]`: every cell where a terrain tile shares
+/// its cell with another authored block, and whether the tile survives the
+/// tiny transform. The tiles that survive beside a block are the coplanar
+/// pairs the terrain drop was invented for (2026-09-06: Land plane and road
+/// deck both at +2 z-fought as two items); once every deck hides its tile the
+/// remaining pairs decide whether the drop is still needed at all. Without
+/// `--all` only the surviving pairs are listed.
+pub fn shared_cells_cmd(args: &[String]) {
+    let source = MapFile::load(Path::new(&args[2]));
+    let all = args.iter().any(|a| a == "--all");
+    let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
+    let replaced = replaced_cells(&source, &zones);
+    let mut by_cell: BTreeMap<[u8; 3], (Vec<&BlockRec>, Vec<&BlockRec>)> = BTreeMap::new();
+    for b in &source.blocks {
+        let e = by_cell.entry(b.raw_coords).or_default();
+        if zones.contains(&b.name) {
+            e.0.push(b);
+        } else {
+            e.1.push(b);
+        }
+    }
+    let mut pairs: BTreeMap<(String, String, &str), usize> = BTreeMap::new();
+    let mut listed = 0usize;
+    println!("cell\ttile\tstatus\tother blocks (flags)");
+    for (cell, (tiles, others)) in &by_cell {
+        if tiles.is_empty() || others.is_empty() {
+            continue;
+        }
+        let status = if replaced.contains(cell) { "hidden" } else { "kept" };
+        if !all && status == "hidden" {
+            for t in tiles {
+                for o in others {
+                    *pairs.entry((t.name.clone(), o.name.clone(), status)).or_default() += 1;
+                }
+            }
+            continue;
+        }
+        listed += 1;
+        let (x, y, z) = tiles[0].coords();
+        let tile_names: Vec<&str> = tiles.iter().map(|t| t.name.as_str()).collect();
+        let other_names: Vec<String> = others.iter().map(|o| format!("{} ({:08X}{})", o.name, o.flags, if o.flags & (1 << 12) != 0 { " ground" } else { "" })).collect();
+        println!("{x},{y},{z}\t{}\t{status}\t{}", tile_names.join("+"), other_names.join(", "));
+        for t in tiles {
+            for o in others {
+                *pairs.entry((t.name.clone(), o.name.clone(), status)).or_default() += 1;
+            }
+        }
+    }
+    eprintln!("{listed} cells listed; tile/block pairs:");
+    for ((t, o, status), n) in &pairs {
+        eprintln!("  {n:4} × {t} + {o}  [{status}]");
+    }
+}
+
 pub fn fixed_plane(collection: u32) -> f32 {
     match collection {
         0x1c => 7.0,
@@ -449,24 +531,7 @@ pub fn cmd(args: &[String]) {
     // genealogy chunk; a replacement block names its zone after "On", with or
     // without the zone's trailing digit (OnLandHill covers LandHill1/2).
     let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-    let replaces = |name: &str, zone: &str| {
-        let stem = zone.trim_end_matches(|c: char| c.is_ascii_digit());
-        name.contains(&format!("On{zone}")) || (!stem.is_empty() && name.contains(&format!("On{stem}")))
-    };
-    // A GROUND-variant block whose family covers its whole cell with a deck
-    // (platforms, roads, stands, deco platforms) hides the terrain tile under
-    // it as well: Summer 04's PlatformDirtCheckpoint shares its cell with a
-    // Grass tile whose grass-blade shader poked tufts up through the dirt
-    // deck (the 0.2 m terrain drop is 0.1 m at half scale, the blades are
-    // taller). Pillars, DecoTerrainHD detail meshes and wall pillars keep
-    // their tile: they do not cover the cell.
-    let covers_cell = |name: &str, flags: u32| flags & (1 << 12) != 0 && ["Platform", "Road", "OpenTechRoad", "DecoPlatform", "Stand"].iter().any(|p| name.starts_with(p));
-    let mut replaced_cells: BTreeSet<[u8; 3]> = BTreeSet::new();
-    for b in &source.blocks {
-        if !zones.contains(&b.name) && (zones.iter().any(|z| replaces(&b.name, z)) || covers_cell(&b.name, b.flags)) {
-            replaced_cells.insert(b.raw_coords);
-        }
-    }
+    let replaced_cells = replaced_cells(&source, &zones);
     let mut replaced_terrain = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
