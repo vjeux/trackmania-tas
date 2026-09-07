@@ -618,6 +618,8 @@ fn cmd_plan(args: &[String]) {
     let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    // --beam-budget-s: wall-clock cap on the beam; past it the best partials are completed greedily (BEAM-CAPPED)
+    tmplan::planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
     if has(args, "--matrix") {
         println!("R edge matrix from rest (p_reach / expected s / h used), spawn = node 0:");
         for i in 0..nodes.pos.len() {
@@ -726,10 +728,10 @@ fn cmd_plan(args: &[String]) {
     for (k, p) in plans.iter().enumerate() {
         let (g, wp) = order_str(&nodes, &gates, &p.visit);
         let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}{}", e.p_reach, tmr::secs(e.expected_ms as i64), match e.kind { tmplan::estimator::EdgeKind::Learned => "R", tmplan::estimator::EdgeKind::Flight => "F", _ => "" })).collect();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]{}", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "), if p.capped { "  BEAM-CAPPED (greedy completion of the best partial at the time budget)" } else { "" });
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| if hybrid_on { "router-plan-hyb".into() } else { "router-plan-r".into() });
-            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
+            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &if p.capped { format!("{prov}; BEAM-CAPPED (greedy completion at the time budget)") } else { prov.clone() });
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
                 r.source = source.clone();

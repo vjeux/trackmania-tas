@@ -93,6 +93,7 @@ fn cmd_plan(args: &[String]) {
     let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0), specials: Some((&leg_specials, &gates)) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
     human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
     let plans = planner::beam_laps(&nodes, &nodes.kinds, gates.laps, &est, width, top_k, StateBucket::of_speed(0.0));
     if gates.laps > 1 {
@@ -121,7 +122,7 @@ fn cmd_plan(args: &[String]) {
         let flights = p.edges.iter().filter(|e| e.kind == EdgeKind::Flight).count();
         let len: f32 = p.edges.iter().map(|e| e.length_m).sum();
         let drop: f32 = p.visit.windows(2).map(|w| surf.path_drop(&nodes, &fields, w[0], w[1])).filter(|d| d.is_finite()).sum();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  drop {:.0} m  flight legs {}  groups [{}]  waypoints [{}]", io::secs(p.total_ms), p.p_reach, len, drop, flights, g, w);
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  drop {:.0} m  flight legs {}  groups [{}]  waypoints [{}]{}", io::secs(p.total_ms), p.p_reach, len, drop, flights, g, w, if p.capped { "  BEAM-CAPPED" } else { "" });
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| "router-plan".into());
             let mut route = tmplan::export::export(&gates, &nodes, &surf, &fields, p, k as u32, &est.name(), &prov);
@@ -183,7 +184,7 @@ fn cmd_legs(args: &[String]) {
         }
         let ms: i32 = edges.iter().map(|e| e.expected_ms.max(0)).sum();
         let logp: f32 = edges.iter().map(|e| e.p_reach.max(1e-6).ln()).sum();
-        plans = vec![planner::Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 }];
+        plans = vec![planner::Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32, capped: false }];
     }
     let step: f32 = flag(args, "--step").and_then(|s| s.parse().ok()).unwrap_or(4.0);
     let reach: f32 = flag(args, "--reach").and_then(|s| s.parse().ok()).unwrap_or(40.0);
