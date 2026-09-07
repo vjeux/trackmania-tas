@@ -41,6 +41,8 @@ pub struct Case {
     /// The finish falls AFTER the tape's own last record: the engine ran on heap contents
     /// and the plain oracle's answer is batch-dependent (perf arm, 2026-09-07) -- its own class.
     pub finish_after_tape: bool,
+    /// Race time of the tape's last record (the oracle's finish past it is the same class).
+    pub tape_end_ms: i64,
     /// Closest approach (m) to any gate the detector did NOT credit in the rollout.
     pub near_miss_m: f64,
     pub near_miss_gate: Option<u32>,
@@ -178,6 +180,7 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
                 det_finished,
                 det_finish_ms,
                 finish_after_tape: det_finish_ms.map(|ms| ms > w.race_of_tick_end()).unwrap_or(false),
+                tape_end_ms: w.race_of_tick_end(),
                 near_miss_m: near,
                 near_miss_gate: near_gate,
                 rows: rolled.rows.len(),

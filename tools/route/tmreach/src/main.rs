@@ -599,7 +599,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
             // child traced rows past that window: the extra credit fell in the tail whose
             // adjudication end is not pinned (declared + 2.5 s holds on Summer 2026 - 01;
             // Summer 2026 - 11 credited a checkpoint later than that) -- counted apart
-            _ if c.finish_after_tape => after_tape += 1,
+            _ if c.finish_after_tape || c.oracle_ms.map(|t| t > c.tape_end_ms).unwrap_or(false) => after_tape += 1,
             Some(x) if x > c.det_cps && c.rows_past_cut > 0 && !finished_case(c) => tail += 1,
             Some(_) => disagree += 1,
         }
