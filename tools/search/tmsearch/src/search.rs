@@ -205,6 +205,12 @@ struct Best {
     outcome: Outcome,
 }
 
+/// How long a claim waits for company before it is certified alone, and how
+/// many claims certify together at most (the server itself takes them in
+/// fifteens). PERF.md §7.
+pub const CERT_LATENCY: std::time::Duration = std::time::Duration::from_secs(2);
+pub const CERT_BATCH: usize = 15;
+
 struct Report {
     outcome: Outcome,
     inputs: Inputs,
@@ -233,7 +239,7 @@ pub fn run_with_sink<E, F, S>(
 where
     E: Evaluator + 'static,
     F: Fn(usize) -> Result<E, String> + Send + Sync + 'static,
-    S: FnMut(Outcome, &Inputs, &Provenance) -> Result<Outcome, ()>,
+    S: FnMut(&[(Outcome, &Inputs, &Provenance)]) -> Vec<Result<Outcome, ()>>,
 {
     let n = start.len();
     let best = Arc::new(RwLock::new(Best { inputs: start.clone(), outcome: start_outcome }));
@@ -478,27 +484,32 @@ where
     let mut fin = 0u64;
     let mut last_print = Instant::now();
 
-    for rep in rx {
-        total += rep.evals;
-        fin += rep.finished;
-
-        let better = {
-            let g = best.read().unwrap();
-            rep.outcome > g.outcome
-        };
-        if better {
-            // THE GUARD. The claim goes to the sink -- in production, the plain
-            // oracle -- before it goes anywhere else, and a refusal rolls the
-            // global incumbent back rather than trusting the search's own
-            // arithmetic.
-            match sink(rep.outcome, &rep.inputs, &rep.prov) {
+    // THE CERTIFICATION QUEUE (PERF.md §7). A claim is not sent to the oracle
+    // the moment it arrives: it waits up to `CERT_LATENCY` for company, or
+    // until `CERT_BATCH` are waiting, and the batch goes to the sink in ONE
+    // launch. The oracle's cost is the launch, not the file, and a search
+    // leaving a weak seed produces claims faster than one launch at a time can
+    // certify them -- the global incumbent then lags by minutes while the
+    // workers migrate toward a stale best.
+    let mut pending: Vec<Report> = Vec::new();
+    let mut oldest: Option<Instant> = None;
+    // Judge the pending claims and move the incumbent to the best confirmed.
+    let mut flush = |pending: &mut Vec<Report>, incumbent: &mut Outcome, total: u64| {
+        if pending.is_empty() {
+            return;
+        }
+        let claims: Vec<(Outcome, &Inputs, &Provenance)> =
+            pending.iter().map(|r| (r.outcome, &r.inputs, &r.prov)).collect();
+        let verdicts = sink(&claims);
+        for (rep, verdict) in pending.iter().zip(verdicts) {
+            match verdict {
                 Ok(confirmed) => {
                     let mut g = best.write().unwrap();
                     if confirmed > g.outcome {
                         let prev = g.outcome;
                         g.outcome = confirmed;
                         g.inputs = rep.inputs.clone();
-                        incumbent = confirmed;
+                        *incumbent = confirmed;
                         drop(g);
                         eprintln!(
                             "*** {} (was {})  {}  {}  evals={}  op={}",
@@ -539,6 +550,51 @@ where
                          The PHANTOM_ file and the incumbent before it are both kept."
                     );
                 }
+            }
+        }
+        pending.clear();
+    };
+
+    loop {
+        // Wake when a report arrives, when the oldest pending claim has waited
+        // long enough, or once a second to keep the clock and the print alive.
+        let wait = match oldest {
+            Some(t) => CERT_LATENCY.saturating_sub(t.elapsed()),
+            None => std::time::Duration::from_secs(1),
+        };
+        match rx.recv_timeout(wait) {
+            Ok(rep) => {
+                total += rep.evals;
+                fin += rep.finished;
+                let better = {
+                    let g = best.read().unwrap();
+                    rep.outcome > g.outcome
+                };
+                if better {
+                    // THE GUARD. The claim goes to the sink -- in production,
+                    // the plain oracle -- before it goes anywhere else, and a
+                    // refusal rolls the global incumbent back rather than
+                    // trusting the search's own arithmetic.
+                    if oldest.is_none() {
+                        oldest = Some(Instant::now());
+                    }
+                    pending.push(rep);
+                    if pending.len() >= CERT_BATCH {
+                        flush(&mut pending, &mut incumbent, total);
+                        oldest = None;
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                flush(&mut pending, &mut incumbent, total);
+                break;
+            }
+        }
+        if let Some(t) = oldest {
+            if t.elapsed() >= CERT_LATENCY {
+                flush(&mut pending, &mut incumbent, total);
+                oldest = None;
             }
         }
 
@@ -589,9 +645,13 @@ where
         cfg,
         start,
         start_outcome,
-        |o, inputs, prov| match bank.offer(&p, inputs, o, prov) {
-            Ok(b) => Ok(b.confirmed),
-            Err(_) => Err(()),
+        |claims| {
+            let cs: Vec<(&Inputs, Outcome, &Provenance)> =
+                claims.iter().map(|(o, i, pv)| (*i, *o, *pv)).collect();
+            bank.offer_many(&p, &cs)
+                .into_iter()
+                .map(|r| r.map(|b| b.confirmed).map_err(|_| ()))
+                .collect()
         },
         make,
     );

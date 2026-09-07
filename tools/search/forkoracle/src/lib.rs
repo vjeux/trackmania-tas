@@ -21,6 +21,7 @@ pub mod finish;
 pub mod tickhook_sig;
 pub mod forksrv;
 pub mod tree;
+pub mod ladder;
 pub mod pred;
 pub mod layout;
 

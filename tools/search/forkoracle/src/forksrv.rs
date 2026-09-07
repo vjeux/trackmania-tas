@@ -68,8 +68,19 @@ pub const REC_BRAKE: usize = 12;
 
 /// `'R'`: fork, rewrite ticks `from..` with `recs`, run to the finish.
 pub fn payload_run(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'R', from, recs)
+}
+
+/// `'W'`: as `'R'`, with the armed watchdog evaluated in the child every tick.
+/// Two frames come back: the validator's JSON (empty when the child aborted
+/// itself) and the fixed-size summary out of the shared page.
+pub fn payload_watched(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'W', from, recs)
+}
+
+fn payload_tail(cmd: u8, from: usize, recs: &[Rec]) -> Vec<u8> {
     let mut p = Vec::with_capacity(5 + recs.len() * 16);
-    p.push(b'R');
+    p.push(cmd);
     p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
     for (i, r) in recs.iter().enumerate() {
         p.extend_from_slice(&((from + i) as u32).to_le_bytes());
@@ -112,7 +123,18 @@ pub struct BranchReq<'a> {
     pub sample_max: u32,
     /// Dedup key `(offset, length)` inside the gathered record.
     pub key: (u32, u32),
+    /// **A WARM NODE.** The child runs its ticks with the armed watchdog
+    /// evaluating them, and the node keeps that evaluator state: a candidate
+    /// forked from it later continues the SAME watched run the root would have
+    /// made, with the same speed history, the same progress, the same gate
+    /// record, instead of a cold evaluator that has seen nothing. It is what
+    /// lets a deep fork point return the identical verdict to a shallow one.
+    /// Refused with a state trace (`segs`), which uses the same per-tick hook.
+    pub watched: bool,
 }
+
+/// The flag word a `'B'` payload ends with. Bit 0: `watched`.
+pub const BRANCH_FLAG_WATCHED: u32 = 1;
 
 /// `'B'`: the branch. See the shim's handler for the field order.
 pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
@@ -139,6 +161,10 @@ pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
         p.extend_from_slice(&r.gas.to_le_bytes());
         p.extend_from_slice(&r.brake.to_le_bytes());
     }
+    // Trailing flags, after the patches, so a shim that predates them reads a
+    // plain branch: the same optional-tail convention `'S'` uses for its
+    // budget and gate.
+    p.extend_from_slice(&(if b.watched { BRANCH_FLAG_WATCHED } else { 0 }).to_le_bytes());
     p
 }
 
@@ -701,15 +727,7 @@ impl ForkServer {
     /// tick. Returns the validator's JSON (empty when the child was aborted)
     /// and the raw summary block.
     pub fn run_watched(&mut self, from: usize, recs: &[Rec]) -> (String, Vec<u8>) {
-        let mut p = Vec::with_capacity(5 + recs.len() * 16);
-        p.push(b'W');
-        p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
-        for (i, r) in recs.iter().enumerate() {
-            p.extend_from_slice(&((from + i) as u32).to_le_bytes());
-            p.extend_from_slice(&r.steer.to_le_bytes());
-            p.extend_from_slice(&r.gas.to_le_bytes());
-            p.extend_from_slice(&r.brake.to_le_bytes());
-        }
+        let p = payload_watched(from, recs);
         self.cmd_w
             .write_all(&(p.len() as u32).to_le_bytes())
             .unwrap();

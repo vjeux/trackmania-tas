@@ -25,6 +25,7 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk locate mirror   hard left vs hard right: which object answers first
   fk locate watch    under gdb: who writes each copy, and in what order
   fk liveness        do the wheel fields of the car's vis state move?
+  fk ladder check    deep fork points vs the root fork vs the plain oracle, cost per depth
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
@@ -138,6 +139,63 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     cmd::locate::watch(&engine, tape, num(rest, "--arm").unwrap_or(400) as u32)
                 }
                 _ => unreachable!(),
+            }
+        }
+        "ladder" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let rest = &a[2.min(a.len())..];
+            let (engine, tape, at) = common(rest)?;
+            match verb {
+                "check" => {
+                    let o = cmd::ladder::CheckOpts {
+                        n: num(rest, "--n").unwrap_or(200) as usize,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        span: num(rest, "--span").unwrap_or(60) as usize,
+                        spacing: num(rest, "--spacing").unwrap_or(100) as usize,
+                        cap: num(rest, "--cap").unwrap_or(32) as usize,
+                    };
+                    match cmd::ladder::check(&engine, tape, at, o)? {
+                        true => Ok(()),
+                        false => Err("deep fork points did not reproduce the root fork and the \
+                                      full validation on every candidate"
+                            .into()),
+                    }
+                }
+                "watched" => {
+                    let preds: Vec<String> = {
+                        let mut v: Vec<String> = rest
+                            .windows(2)
+                            .filter(|w| w[0] == "--pred")
+                            .map(|w| w[1].clone())
+                            .collect();
+                        if v.is_empty() {
+                            v = [
+                                "crash:speeddrop:frac=0.5,win=50,minpeak=15,after=200",
+                                "stuck:floor:speed=3,need=50,after=250",
+                                "off:offref:dist=20,need=10,after=200",
+                            ]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                        }
+                        v
+                    };
+                    let o = cmd::ladder::WatchedOpts {
+                        n: num(rest, "--n").unwrap_or(200) as usize,
+                        seed: num(rest, "--seed").unwrap_or(1) as u64,
+                        span: num(rest, "--span").unwrap_or(60) as usize,
+                        spacing: num(rest, "--spacing").unwrap_or(100) as usize,
+                        cap: num(rest, "--cap").unwrap_or(32) as usize,
+                        refcsv: flag(rest, "--refcsv").ok_or("fk ladder watched needs --refcsv F (fk trace's CSV of the reference)")?.to_string(),
+                        preds,
+                        finishmargin: flag(rest, "--finishmargin").map(|s| s.parse().unwrap_or(250.0)).unwrap_or(250.0),
+                    };
+                    match cmd::ladder::watched(&engine, tape, at, o)? {
+                        true => Ok(()),
+                        false => Err("a candidate forked from a warm node did not return the root's watched verdict".into()),
+                    }
+                }
+                _ => Err("fk ladder <check|watched>  [--n N --seed S --span K --spacing S --cap C] (watched: --refcsv F [--pred SPEC]...)".into()),
             }
         }
         "liveness" => {
@@ -310,6 +368,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     tape,
                     at,
                     cmd::tree::CostOpts {
+                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
                         reps: num(rest, "--reps").unwrap_or(11) as usize,
                         ks: ns("--ks", "1,5,10,20,50,200,1000"),
                         depth: num(rest, "--depth").unwrap_or(50) as usize,
@@ -317,6 +376,14 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         allow_load: has(rest, "--allow-load"),
                         trace: has(rest, "--trace"),
                     },
+                ),
+                "clockprobe" => cmd::tree::clockprobe(
+                    &engine,
+                    tape,
+                    at,
+                    &ns("--ks", "1,10,50,200"),
+                    num(rest, "--reps").unwrap_or(50) as usize,
+                    flag(rest, "--respawns"),
                 ),
                 "exact" => match cmd::tree::exact(
                     &engine,
@@ -337,6 +404,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     tape,
                     at,
                     cmd::tree::ScaleOpts {
+                        load_limit: flag(rest, "--load-limit").map(|s| s.parse().unwrap()).unwrap_or(2.0),
                         servers: num(rest, "--servers").unwrap_or(16) as usize,
                         secs: num(rest, "--secs").unwrap_or(30) as u64,
                         k: num(rest, "--k").unwrap_or(10) as u64,

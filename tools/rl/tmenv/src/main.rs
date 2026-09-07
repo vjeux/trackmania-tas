@@ -2267,8 +2267,9 @@ fn probe_scan(a: &[String]) {
             let dir = work.join("traces");
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
             let cfg = branch::TraceCfg { layout: control::env_layout(&car), dir, stride: 1, max: 4000 };
+            let off = s.tape.start_offset_ms;
             let fk::session::Session { srv, .. } = s;
-            let mut f = branch::Forest::new(srv, &work, recs, Some(cfg)).unwrap_or_else(|e| die(e));
+            let mut f = branch::Forest::new(srv, &work, recs, Some(cfg), off).unwrap_or_else(|e| die(e));
             f.probe_root().unwrap_or_else(|e| die(e));
             let (rows, h) = f.advance(branch::ROOT, &[], 0, 2).unwrap_or_else(|e| die(e));
             f.release(h);

@@ -74,19 +74,26 @@ impl Rng {
     }
 }
 
-use forkoracle::tree::{checkpoint_stability, load1, mem_available_mb, mem_of, require_headroom};
+fn load1() -> f64 {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
+        .unwrap_or(f64::NAN)
+}
 
-/// Refuse a timing batch with no headroom. The gate is a PROXY; the direct
-/// control is `checkpoint_stability`, run around every batch.
-fn require_idle(concurrency: usize, allow: bool) -> Result<f64, String> {
-    match require_headroom(concurrency) {
-        Ok(l) => Ok(l),
-        Err(e) if allow => {
-            eprintln!("fk tree: {}\nfk tree: --allow-load was given; SAY SO IN THE REPORT.", e);
-            Ok(load1())
-        }
-        Err(e) => Err(e),
+/// Refuse a timing batch on a busy box. See the module header.
+fn require_idle(limit: f64, allow: bool) -> Result<f64, String> {
+    let l = load1();
+    if !allow && l > limit {
+        return Err(format!(
+            "load average is {:.2} (limit {:.2}) -- refusing to publish a TIMING batch taken \
+             under load. `lroundf` moves in whole ~62-call chunks under contention, so a fixed \
+             checkpoint lands at a different simulation point and the number would be about the \
+             load. Pass --allow-load to measure anyway, and say so in the report.",
+            l, limit
+        ));
     }
+    Ok(l)
 }
 
 /// Median rather than mean: one scheduling stall should not set the headline.
@@ -115,15 +122,14 @@ fn pct(v: &[f64], p: f64) -> f64 {
 /// shared**. `Private_Dirty` is that number, and it is the one that decides
 /// whether a 500-node beam fits.
 fn private_dirty_mb(pid: i32) -> Option<f64> {
-    mem_of(pid).map(|m| m.private_dirty_mb)
-}
-
-/// Proportional set size: shared pages divided among their sharers, so SUMMING
-/// this over a tree gives the tree's true unique footprint. `Private_Dirty`
-/// does not -- a node's dirty pages stop counting as private the moment it has
-/// a child, so a 50-node chain understates itself by an order of magnitude.
-fn pss_mb(pid: i32) -> Option<f64> {
-    mem_of(pid).map(|m| m.pss_mb)
+    let s = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", pid)).ok()?;
+    for l in s.lines() {
+        if let Some(v) = l.strip_prefix("Private_Dirty:") {
+            let kb: f64 = v.trim().trim_end_matches("kB").trim().parse().ok()?;
+            return Some(kb / 1024.0);
+        }
+    }
+    None
 }
 
 fn recs_from(steer: &[u8], accel: &[u8], brake: &[u8], from: usize) -> Vec<Rec> {
@@ -191,103 +197,6 @@ fn locate_layout(srv: &ForkServer) -> Option<Layout> {
     }
 }
 
-// ---------------------------------------------------------------- fk tree tape
-
-/// Rewrite a container's input tape with a VARIED steer channel, in place of
-/// its own.
-///
-/// # Why this is a command and not a shell loop
-///
-/// The synthesized rung-0 container carries a constant tape — full gas, steer 0
-/// for every tick — which is the right thing for a container whose job is to
-/// prove the format. It is the wrong thing to fork on: **the shim finds the
-/// engine's decoded input array by searching its own address space for the
-/// reference's steer sequence as f32 at stride 32.** A constant channel gives
-/// that search nothing to lock onto — `write_key` looks for the most
-/// distinctive 24-tick window and there is none — so the locate either fails
-/// outright or matches the first stretch of zeroes it meets, which is worse: a
-/// base that is not the input array, in a mechanism whose whole job is to
-/// rewrite records at that base.
-///
-/// So the tape gets varied before anything forks on it. Doing it with a
-/// sequence of `ghost tape set` calls would be a shell pipeline standing in for
-/// a tool; this is the tool.
-///
-/// The steer values walk a coarse ladder — the same alphabet the explorer will
-/// use — rather than being uniform noise, so the tape is also a plausible
-/// shape of thing to branch from.
-pub fn tape_vary(tape: &Tape, out: &Path, seed: u64, amp: i32) -> Result<(), String> {
-    // The codec's own control, first: if the decode lost something, every
-    // candidate written from this tape carries the loss and every comparison
-    // between them still agrees.
-    tape.codec_is_lossless()?;
-    let n = tape.n();
-    let mut rng = Rng::new(seed);
-    let (mut st, mut ac, mut br) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
-    if amp > 0 {
-        // GENTLE. Steer jitters within +-amp, one value per tick, full gas, no
-        // brake. Two requirements pull in opposite directions and this is where
-        // they meet:
-        //
-        //  * the shim needs a DISTINCTIVE steer channel to find the input array
-        //    at all (see below), which wants variety;
-        //  * the run has to LAST, because the engine stops simulating when the
-        //    car's run ends -- and a coarse ladder drives it off the track in
-        //    about two and a half seconds, which leaves a branch sweep no room.
-        //
-        // A small jitter satisfies both: 2*amp+1 distinct byte values, and a
-        // car going essentially straight.
-        for t in 0..n {
-            let d = rng.below((2 * amp + 1) as usize) as i32 - amp;
-            st[t] = (d as i8) as u8;
-            ac[t] = 1;
-            br[t] = 0;
-        }
-    } else {
-        // COARSE: the macro alphabet the explorer will use, held for a few
-        // ticks at a time. A plausible shape of thing to branch from, and it
-        // does not last.
-        let mut t = 0usize;
-        while t < n {
-            let (s, g, b) = macro_action(&mut rng);
-            let k = 4 + rng.below(12);
-            for u in t..(t + k).min(n) {
-                st[u] = s;
-                ac[u] = g;
-                br[u] = b;
-            }
-            t += k;
-        }
-    }
-    tape.write_candidate(&st, &ac, &br, out)?;
-    let distinct = {
-        let mut seen = [false; 256];
-        let mut d = 0;
-        for v in &st {
-            if !seen[*v as usize] {
-                seen[*v as usize] = true;
-                d += 1;
-            }
-        }
-        d
-    };
-    println!(
-        "wrote {} -- {} ticks, {} distinct steer values, amp {}",
-        out.display(),
-        n,
-        distinct,
-        amp
-    );
-    if distinct < 4 {
-        return Err(format!(
-            "only {} distinct steer values: the shim's input-array search would have nothing to \
-             lock onto, and a locate that matches the wrong thing is worse than one that fails",
-            distinct
-        ));
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------- fk tree cost
 
 pub struct CostOpts {
@@ -295,14 +204,14 @@ pub struct CostOpts {
     pub ks: Vec<u64>,
     pub depth: usize,
     pub seed: u64,
+    pub load_limit: f64,
     pub allow_load: bool,
     pub trace: bool,
 }
 
 /// Q1: what does a branch cost, against every baseline, on this box.
 pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<(), String> {
-    // Two processes at a time: the server and one child.
-    let load = require_idle(2, o.allow_load)?;
+    let load = require_idle(o.load_limit, o.allow_load)?;
     let n_ticks = tape.n();
     let mut s = Session::start(engine, tape, at)?;
     println!(
@@ -392,20 +301,20 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     if let Some(c) = &cfg {
         std::fs::create_dir_all(&c.dir).map_err(|e| e.to_string())?;
     }
-    let mut f = Forest::new(srv, &engine.work, reference, cfg)?;
+    let mut f = Forest::new(srv, &engine.work, reference, cfg, tape.start_offset_ms)?;
     f.probe_root()?;
     let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
 
     println!(
-        "\n      k    branch(ms)   probe(ms)    total(ms)   consumed   dirtied(MB)   MB/tick   trace rows"
+        "\n      k    branch(ms)   probe(ms)    total(ms)   ticks consumed   trace rows"
     );
     let mut rows: Vec<(f64, f64)> = Vec::new();
-    let mut probe_all: Vec<f64> = Vec::new();
+    let mut phases: Vec<(u64, branch::Timeline)> = Vec::new();
     for &k in &o.ks {
         let reps = if k > 500 { o.reps.min(3).max(1) } else { o.reps };
+        let tl0 = f.timeline();
         let (mut bt, mut pt) = (Vec::new(), Vec::new());
         let (mut trace_rows, mut consumed) = (0usize, 0usize);
-        let mut dirty_mb = f64::NAN;
         let mut trace_err: Option<String> = None;
         for _ in 0..reps {
             let t = Instant::now();
@@ -422,19 +331,14 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             let total = t.elapsed().as_secs_f64() * 1000.0;
             trace_rows = trace.len();
             consumed = f.probed_boundary(h).map(|b| b.saturating_sub(root_b)).unwrap_or(0);
-            // What k ticks of REAL PHYSICS dirtied. Read while the node is
-            // still a leaf: private pages stop being private the moment it has
-            // a child of its own.
-            dirty_mb = f.node_pid(h).and_then(private_dirty_mb).unwrap_or(f64::NAN);
             // The split between branching and probing is MEASURED, not
-            // apportioned: one more REAL probe on the live node costs exactly
-            // one probe. (Timing `floor` instead measured nothing at all --
-            // it reads the cached boundary, and the column read 0.000 ms.)
+            // apportioned: one more probe on the live node costs exactly one
+            // probe.
             let tp = Instant::now();
-            let _ = f.reprobe(h)?;
+            let _ = f.floor(h, None)?;
             let ptime = tp.elapsed().as_secs_f64() * 1000.0;
             f.release(h);
-            bt.push(total - ptime); // `total` already contains one probe, done inside `advance`
+            bt.push(total - ptime);
             pt.push(ptime);
         }
         if let Some(e) = trace_err {
@@ -446,18 +350,34 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         }
         let (b, p) = (med(&bt), med(&pt));
         println!(
-            "  {:5}   {:9.3}   {:9.3}    {:9.3}   {:8}   {:11.2}   {:7.4}   {:10}",
+            "  {:5}   {:9.3}   {:9.3}    {:9.3}   {:14}   {:10}",
             k,
             b,
             p,
             b + p,
             consumed,
-            dirty_mb,
-            dirty_mb / consumed.max(1) as f64,
             if layout.is_some() { trace_rows.to_string() } else { "UNMEASURED".into() }
         );
         rows.push((k as f64, b));
-        probe_all.extend_from_slice(&pt);
+        let tl1 = f.timeline();
+        phases.push((
+            k,
+            branch::Timeline {
+                branches: tl1.branches - tl0.branches,
+                branch_us: tl1.branch_us - tl0.branch_us,
+                accept_us: tl1.accept_us - tl0.accept_us,
+                probe_us: tl1.probe_us - tl0.probe_us,
+                trace_us: tl1.trace_us - tl0.trace_us,
+            },
+        ));
+    }
+    // WHERE THE TIME GOES, phase by phase (PERF.md §11): the request and the
+    // parent's fork; from the reply to the new node's hello (the child's
+    // setup, its k ticks, its socket, the driver's polling); the node's own
+    // boundary probe; reading the trace file back.
+    println!("\nwhere a branch's time goes, by phase (means):");
+    for (k, tl) in &phases {
+        println!("  k={:<5} {}", k, tl);
     }
 
     if rows.len() >= 2 {
@@ -479,36 +399,20 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             "     no-tree fallback, from the SAME instrument: a branch of {} ticks = {:.3} ms",
             remaining, modelled_full
         );
-        // THE PER-NODE COST IS BRANCH + PROBE. Every node probes its OWN
-        // boundary -- inheriting one is the defect this component exists for --
-        // so a schedule quoted off the branch alone is quoting an optional
-        // cost as if it were the whole one. It is not optional.
-        let cores = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
-        let probe = med(&probe_all);
-        let node10 = a + slope * 10.0 + probe;
-        let fallback = a + slope * remaining as f64 + probe;
+        let macro10 = a + slope * 10.0;
         println!(
-            "\nPER-NODE COST = branch + its own probe (the probe is NOT optional):\n  \
-             k=10 macro : {:.3} + {:.3} = {:.3} ms  ->  {:.1} min per 3.4 M-eval pass on {} cores\n  \
-             no-tree    : {:.3} + {:.3} = {:.3} ms  ->  {:.1} min for the same pass\n  \
-             the tree is worth {:.1}x",
-            a + slope * 10.0,
-            probe,
-            node10,
-            3.4e6 * node10 / 1000.0 / 60.0 / cores as f64,
-            cores,
-            a + slope * remaining as f64,
-            probe,
-            fallback,
-            3.4e6 * fallback / 1000.0 / 60.0 / cores as f64,
-            fallback / node10
+            "     one k=10 macro = {:.3} ms  ->  {:.1} min per 3.4 M-eval forward pass on {} cores",
+            macro10,
+            3.4e6 * macro10 / 1000.0
+                / 60.0
+                / std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1) as f64,
+            std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0)
         );
     }
 
     // ---- A4: depth. Per-generation cost and PRIVATE dirty memory.
     if o.depth > 0 {
         println!("\n  gen   branch(ms)   private dirty(MB)   next floor tick");
-        let mem_free_before = mem_available_mb();
         let mut rng = Rng::new(o.seed);
         let mut h = ROOT;
         let mut chain: Vec<Handle> = Vec::new();
@@ -534,34 +438,16 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             chain.push(nh);
             h = nh;
         }
-        // THE BEAM FOOTPRINT, from two instruments with different sources --
-        // checks that agree prove nothing if they share one.
-        // (1) sum of PSS: shared pages divided among their sharers, so the sum
-        //     over the children of one engine is mostly that ENGINE redistributed
-        //     among its sharers -- it is not the beam.s extra cost.
-        let pss: f64 = chain.iter().filter_map(|x| f.node_pid(*x)).filter_map(pss_mb).sum();
         let live: Vec<f64> =
             chain.iter().filter_map(|x| f.node_pid(*x)).filter_map(private_dirty_mb).collect();
-        // (2) what the kernel says it lost while the beam was alive.
-        let avail_drop = mem_free_before - mem_available_mb();
+        let total: f64 = live.iter().sum();
         println!(
-            "  {} live nodes. Three views, and they answer different questions:\n    \
-             marginal, per node   : {:.2} MB private dirty -- what one more node COSTS\n    \
-             share of the engine  : {:.2} MB PSS each ({:.1} MB summed, which is mostly the \
-             shared engine redistributed)\n    \
-             system-wide          : MemAvailable fell {:.1} MB ({:.2} MB per node), which also \
-             carries kernel page tables neither of the above counts\n  \
-             A 500-node beam is therefore {:.2}-{:.2} GB against {:.0} GB free -- comfortable on \
-             either reading, and the exact figure is UNMEASURED between them.",
+            "  {} live nodes hold {:.1} MB of private dirty pages ({:.2} MB each) -- a 500-node \
+             beam would be {:.1} GB",
             chain.len(),
-            live.iter().sum::<f64>() / chain.len().max(1) as f64,
-            pss / chain.len().max(1) as f64,
-            pss,
-            avail_drop,
-            avail_drop / chain.len().max(1) as f64,
-            500.0 * (live.iter().sum::<f64>() / chain.len().max(1) as f64) / 1024.0,
-            500.0 * (avail_drop.max(0.0) / chain.len().max(1) as f64) / 1024.0,
-            mem_available_mb() / 1024.0
+            total,
+            total / chain.len().max(1) as f64,
+            500.0 * total / chain.len().max(1) as f64 / 1024.0
         );
         if gt.len() >= 4 {
             let (a, slope) = fit(&gt);
@@ -581,18 +467,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             f.release(x);
         }
     }
-    // THE DIRECT CONTROL. A load gate only says the box looked quiet; this asks
-    // the engine whether its checkpoint stayed put while the batch ran.
-    let after = f.root_mut().probe_tick().map_err(|e| {
-        format!("the closing boundary probe failed ({e}) -- the batch is UNMEASURED")
-    })?;
-    checkpoint_stability(root_b, after)?;
-    println!(
-        "\ncheckpoint stability: the root probed tick {} before the batch and {} after -- the \
-         simulation point did not move",
-        root_b, after
-    );
-    println!("(load1 {:.2} at the start, {:.2} at the end)", load, load1());
+    println!("\n(load1 {:.2} at the start, {:.2} at the end)", load, load1());
     Ok(())
 }
 
@@ -655,7 +530,7 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
 
     let (steer0, accel0, brake0) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
     let reference = recs_from(&steer0, &accel0, &brake0, 0);
-    let mut f = Forest::new(srv, &engine.work, reference, None)?;
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
 
     let mut rng = Rng::new(o.seed);
@@ -916,6 +791,7 @@ pub struct ScaleOpts {
     pub secs: u64,
     pub k: u64,
     pub seed: u64,
+    pub load_limit: f64,
     pub allow_load: bool,
 }
 
@@ -927,7 +803,7 @@ pub struct ScaleOpts {
 /// credit the time to the local one; the directory lock refuses sharing rather
 /// than racing.
 pub fn scale(engine: &Engine, tape: Tape, at: Checkpoint, o: ScaleOpts) -> Result<(), String> {
-    let load = require_idle(o.servers * 2, o.allow_load)?;
+    let load = require_idle(o.load_limit, o.allow_load)?;
     // ONE measured checkpoint for everybody: `Fraction` costs a full validation
     // every time it is resolved, and resolving it per server would put a
     // hundred server launches inside a throughput measurement.
@@ -991,7 +867,7 @@ fn scale_worker(
     s.probe_tick()?;
     let (srv, tape, _) = split(s);
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
-    let mut f = Forest::new(srv, &e.work, reference, None)?;
+    let mut f = Forest::new(srv, &e.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
     up.fetch_add(1, Ordering::Relaxed);
     let t0 = Instant::now();
@@ -999,6 +875,215 @@ fn scale_worker(
         let (_, h) = f.advance(ROOT, &[], 0, k)?;
         f.release(h);
         done.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// `fk tree clockprobe`: does the node's own clock say where its boundary is?
+///
+/// Every node probes its boundary by forking a child that walks into the
+/// protected input array (1.5 ms, PERF.md §11). The tick hook's clock is
+/// published in the node's hello for free. If `boundary - f(clock)` is one
+/// constant on every node of a map, the clock IS the probe, and the fork is
+/// spent on a number already known. This measures the residual over many
+/// branches at several `k`, and prints its distribution; it decides nothing
+/// by itself.
+pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps: usize, respawns: Option<&str>) -> Result<(), String> {
+    // RESPAWN WINDOWS. The tape's own respawn inputs (bit 31 of a packet's
+    // state literal) name the ticks where the vehicle is removed and put back;
+    // that is where a clock-vs-record assumption would break if anywhere. With
+    // `--respawns FILE` every respawn tick after the checkpoint gets nodes
+    // planted 1, 5, 20 and 60 ticks after it (chained), so the boundary is
+    // checked inside the window and on the way out of it.
+    let respawn_ticks: Vec<usize> = match respawns {
+        Some(path) => {
+            let t = gbx::tape::Tape::from_file(path)?;
+            let a = t.archives.first().ok_or("no input archive")?;
+            a.packets.iter().enumerate().filter(|(_, p)| p.respawn()).map(|(i, _)| i).collect()
+        }
+        None => Vec::new(),
+    };
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.probe_tick()?;
+    s.assert_running_our_tape()?;
+    let (srv, tape, _) = split(s);
+    let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
+    f.probe_root()?;
+    let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
+    println!("root: probed boundary {} (start offset {} ms)", root_b, tape.start_offset_ms);
+    println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", "k", "boundary", "clock", "sim_ms", "race_start", "boundary - (sim_ms - race_start - start_offset)/10");
+    let mut residuals: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut chain: Vec<Handle> = Vec::new();
+    for &k in ks {
+        for r in 0..reps {
+            // alternate: from the root, and from the previous node (a chain),
+            // so both fresh and deep nodes are in the sample
+            let parent = if r % 2 == 0 || chain.is_empty() { ROOT } else { *chain.last().unwrap() };
+            let from = f.probed_boundary(parent).unwrap_or(0);
+            let (_, h) = f.advance(parent, &[], from, k)?;
+            let (clock, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            // Before the race starts the engine has read no record: the boundary
+            // is 0 whatever the countdown clock says (measured: fork-probe 0 at
+            // sim_ms 2030..2120 with race_start 2200 on map 2).
+            let derived = if sim_ms < race_start {
+                0
+            } else {
+                (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10
+            };
+            let res = b - derived;
+            *residuals.entry(res).or_insert(0) += 1;
+            if r < 2 {
+                println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", k, b, clock, sim_ms, race_start, res);
+            }
+            if parent != ROOT && chain.len() > 4 {
+                f.release(chain.remove(0));
+            }
+            chain.push(h);
+        }
+    }
+    // Inside every respawn window after the checkpoint.
+    let mut in_windows = 0usize;
+    for &rt in respawn_ticks.iter().filter(|&&t| t > root_b + 1) {
+        // a node just before the respawn, then chained nodes 1, 5, 20, 60 ticks past it
+        let mut from = root_b;
+        let mut parent = ROOT;
+        let mut steps: Vec<u64> = vec![(rt - 1 - root_b) as u64, 2, 4, 15, 40];
+        if steps[0] == 0 {
+            steps.remove(0);
+        }
+        for k in steps {
+            let (_, h) = match f.advance(parent, &[], from, k) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("respawn at tick {}: advance by {} from {} failed: {}", rt, k, from, e);
+                    break;
+                }
+            };
+            let (_, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            let derived = if sim_ms < race_start { 0 } else { (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10 };
+            *residuals.entry(b - derived).or_insert(0) += 1;
+            in_windows += 1;
+            if b - derived != 0 {
+                println!("respawn at tick {}: node at boundary {} derived {} -> residual {}", rt, b, derived, b - derived);
+            }
+            if parent != ROOT {
+                f.release(parent);
+            }
+            parent = h;
+            from = b as usize;
+        }
+        if parent != ROOT {
+            f.release(parent);
+        }
+    }
+    if !respawn_ticks.is_empty() {
+        println!("\nrespawns in the tape: {} ({} after the checkpoint); {} nodes planted inside and just past their windows", respawn_ticks.len(), respawn_ticks.iter().filter(|&&t| t > root_b + 1).count(), in_windows);
+    }
+    println!("\nresidual boundary - (sim_ms - race_start - start_offset)/10 over {} nodes:", residuals.values().sum::<usize>());
+    for (r, n) in &residuals {
+        println!("  {:>6}: {}", r, n);
+    }
+    if residuals.len() == 1 {
+        println!("ONE constant on every node: the clock says where the boundary is.");
+    } else {
+        println!("{} distinct residuals: the clock alone does not give the boundary here.", residuals.len());
+    }
+    Ok(())
+}
+/// Rewrite a container's input tape with a VARIED steer channel, in place of
+/// its own.
+///
+/// # Why this is a command and not a shell loop
+///
+/// The synthesized rung-0 container carries a constant tape — full gas, steer 0
+/// for every tick — which is the right thing for a container whose job is to
+/// prove the format. It is the wrong thing to fork on: **the shim finds the
+/// engine's decoded input array by searching its own address space for the
+/// reference's steer sequence as f32 at stride 32.** A constant channel gives
+/// that search nothing to lock onto — `write_key` looks for the most
+/// distinctive 24-tick window and there is none — so the locate either fails
+/// outright or matches the first stretch of zeroes it meets, which is worse: a
+/// base that is not the input array, in a mechanism whose whole job is to
+/// rewrite records at that base.
+///
+/// So the tape gets varied before anything forks on it. Doing it with a
+/// sequence of `ghost tape set` calls would be a shell pipeline standing in for
+/// a tool; this is the tool.
+///
+/// The steer values walk a coarse ladder — the same alphabet the explorer will
+/// use — rather than being uniform noise, so the tape is also a plausible
+/// shape of thing to branch from.
+pub fn tape_vary(tape: &Tape, out: &Path, seed: u64, amp: i32) -> Result<(), String> {
+    // The codec's own control, first: if the decode lost something, every
+    // candidate written from this tape carries the loss and every comparison
+    // between them still agrees.
+    tape.codec_is_lossless()?;
+    let n = tape.n();
+    let mut rng = Rng::new(seed);
+    let (mut st, mut ac, mut br) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
+    if amp > 0 {
+        // GENTLE. Steer jitters within +-amp, one value per tick, full gas, no
+        // brake. Two requirements pull in opposite directions and this is where
+        // they meet:
+        //
+        //  * the shim needs a DISTINCTIVE steer channel to find the input array
+        //    at all (see below), which wants variety;
+        //  * the run has to LAST, because the engine stops simulating when the
+        //    car's run ends -- and a coarse ladder drives it off the track in
+        //    about two and a half seconds, which leaves a branch sweep no room.
+        //
+        // A small jitter satisfies both: 2*amp+1 distinct byte values, and a
+        // car going essentially straight.
+        for t in 0..n {
+            let d = rng.below((2 * amp + 1) as usize) as i32 - amp;
+            st[t] = (d as i8) as u8;
+            ac[t] = 1;
+            br[t] = 0;
+        }
+    } else {
+        // COARSE: the macro alphabet the explorer will use, held for a few
+        // ticks at a time. A plausible shape of thing to branch from, and it
+        // does not last.
+        let mut t = 0usize;
+        while t < n {
+            let (s, g, b) = macro_action(&mut rng);
+            let k = 4 + rng.below(12);
+            for u in t..(t + k).min(n) {
+                st[u] = s;
+                ac[u] = g;
+                br[u] = b;
+            }
+            t += k;
+        }
+    }
+    tape.write_candidate(&st, &ac, &br, out)?;
+    let distinct = {
+        let mut seen = [false; 256];
+        let mut d = 0;
+        for v in &st {
+            if !seen[*v as usize] {
+                seen[*v as usize] = true;
+                d += 1;
+            }
+        }
+        d
+    };
+    println!(
+        "wrote {} -- {} ticks, {} distinct steer values, amp {}",
+        out.display(),
+        n,
+        distinct,
+        amp
+    );
+    if distinct < 4 {
+        return Err(format!(
+            "only {} distinct steer values: the shim's input-array search would have nothing to \
+             lock onto, and a locate that matches the wrong thing is worse than one that fails",
+            distinct
+        ));
     }
     Ok(())
 }

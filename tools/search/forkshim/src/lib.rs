@@ -189,6 +189,16 @@ static VALIDATOR_PARTICIPANT_COUNT_ARG: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_ARMED: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_SOCK_LEN: AtomicUsize = AtomicUsize::new(0);
 static mut BRANCH_SOCK: [u8; 108] = [0; 108];
+/// WARM NODES (`BranchReq::watched`). A branch child asked to run its ticks
+/// with the armed watchdog sets `BRANCH_WARMING` while it consumes them; when it
+/// re-enters the fork server it clears that and sets `NODE_WARM`: this
+/// process's `EVAL` now holds the watched run's state -- speed history,
+/// progress, gate and event records -- up to its own tick, and a `'W'` child
+/// forked from it CONTINUES that run instead of resetting. That is what makes a
+/// candidate forked 1800 ticks in return the summary the root would have
+/// returned. Both are inherited by descendants, which is the point.
+static BRANCH_WARMING: AtomicUsize = AtomicUsize::new(0);
+static NODE_WARM: AtomicUsize = AtomicUsize::new(0);
 /// The input array's base, found once by `locate` and inherited by every
 /// descendant. Re-verified, never merely trusted.
 static CACHED_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -315,6 +325,49 @@ static GATE_MOD: AtomicU64 = AtomicU64::new(0);
 static GATE_PHASE: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_PREV: AtomicUsize = AtomicUsize::new(0); // *mut u8, len SAMPLE_LEN
 static SAMPLE_BUF: AtomicUsize = AtomicUsize::new(0); // *mut u8, len 8 + SAMPLE_LEN
+/// THE SAMPLE RING (PERF.md §5). An 'S' child used to `write` every sample down
+/// a pipe: one syscall and one wake-up of the polling parent per tick, ~15 us
+/// on top of a 24 us tick. Now the parent maps a MAP_SHARED buffer before the
+/// fork -- `[u64 used][samples...]` -- and the child copies each sample into
+/// it; the parent reads it once, after the child is done. Bytes are identical
+/// to what the pipe carried, in the same order. When the ring is full the
+/// child goes on down the pipe, so the blob is `ring ++ pipe` and no sample is
+/// lost. 0 = no ring (the trace and 'G' paths write to a file and keep it).
+static SAMPLE_RING: AtomicUsize = AtomicUsize::new(0);
+static SAMPLE_RING_CAP: AtomicUsize = AtomicUsize::new(0);
+/// Largest ring the parent will map: samples past it take the pipe.
+const SAMPLE_RING_MAX: usize = 64 << 20;
+
+/// Make sure the process holds a ring of at least `want` bytes (plus the
+/// header), mapping a bigger one if needed, and reset its `used` word. Called
+/// in the PARENT before the fork, so the child inherits the mapping.
+unsafe fn sample_ring_prepare(want: usize) {
+    // A FRESH MAPPING FOR EVERY RUN, never a reused one. A child that has
+    // been told to die may still be on another core for a few microseconds,
+    // and a reused ring whose header the parent has just reset is exactly
+    // where its last sample would land: on top of the next run's first. Each
+    // child gets its own pages and keeps them until it is gone; the parent
+    // unmaps its reference after reading. ~20 us per run.
+    sample_ring_release();
+    let need = (want.min(SAMPLE_RING_MAX) + 8 + 4095) & !4095;
+    let p = mmap(std::ptr::null_mut(), need, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if p as isize == -1 || p.is_null() {
+        return; // no ring: the pipe carries everything, as before
+    }
+    *(p as *mut u64) = 0;
+    SAMPLE_RING.store(p as usize, Ordering::SeqCst);
+    SAMPLE_RING_CAP.store(need, Ordering::SeqCst);
+}
+
+/// Drop the parent's reference to the current ring (the child that used it
+/// keeps its own until it exits).
+unsafe fn sample_ring_release() {
+    let cur = SAMPLE_RING.swap(0, Ordering::SeqCst);
+    let cap = SAMPLE_RING_CAP.swap(0, Ordering::SeqCst);
+    if cur != 0 {
+        munmap(cur as *mut c_void, cap);
+    }
+}
 
 /// Gather the watched segments out, if the key slice changed. Called from the
 /// tick hook in the child only.
@@ -330,7 +383,7 @@ unsafe fn do_sample(clock: u64) {
     // stop this from ever being reached again.
     let dl = SAMPLE_DEADLINE.load(Ordering::Relaxed);
     if dl != 0 && clock > dl {
-        _exit(0)
+        leave(1)
     }
     let stride = SAMPLE_STRIDE.load(Ordering::Relaxed);
     let gm = GATE_MOD.load(Ordering::Relaxed);
@@ -362,7 +415,7 @@ unsafe fn do_sample(clock: u64) {
     let n = SAMPLE_LEFT.load(Ordering::Relaxed);
     if n == 0 {
         if SAMPLE_EXIT.load(Ordering::Relaxed) != 0 {
-            _exit(0)
+            leave(1)
         }
         SAMPLE_STRIDE.store(0, Ordering::Relaxed);
         SAMPLE_NEXT.store(u64::MAX, Ordering::Relaxed);
@@ -446,6 +499,20 @@ unsafe fn do_sample(clock: u64) {
     }
     std::ptr::copy_nonoverlapping(clock.to_le_bytes().as_ptr(), buf, 8);
     SAMPLE_LEFT.store(n - 1, Ordering::Relaxed);
+    // Into the ring while it fits -- no syscall, no wake-up -- then down the
+    // pipe. The parent reads `ring ++ pipe`, so the order is the pipe's.
+    let ring = SAMPLE_RING.load(Ordering::Relaxed);
+    if ring != 0 {
+        let used = *(ring as *const u64) as usize;
+        if 8 + used + 8 + len <= SAMPLE_RING_CAP.load(Ordering::Relaxed) {
+            std::ptr::copy_nonoverlapping(buf, (ring + 8 + used) as *mut u8, 8 + len);
+            *(ring as *mut u64) = (used + 8 + len) as u64;
+            return;
+        }
+        // Full: everything from here on takes the pipe, and never the ring
+        // again, so the two halves stay in order.
+        SAMPLE_RING.store(0, Ordering::Relaxed);
+    }
     write_all(
         SAMPLE_FD.load(Ordering::Relaxed),
         std::slice::from_raw_parts(buf, 8 + len),
@@ -489,6 +556,7 @@ extern "C" {
         fd: c_int,
         off: i64,
     ) -> *mut c_void;
+    fn munmap(addr: *mut c_void, len: usize) -> c_int;
 }
 const PROT_RW: c_int = 3;
 const MAP_SHARED: c_int = 1;
@@ -598,7 +666,26 @@ unsafe fn watch_eval(rec: *const u8, clock: i64) {
     if trip >= 0 {
         // dead candidate: stop paying for it. The parent sees EOF on the JSON
         // pipe and reads the verdict out of the shared page.
-        _exit(0)
+        if BRANCH_WARMING.load(Ordering::Relaxed) != 0 {
+            // A branch child warming up on the lineage's own ticks tripped: it
+            // cannot become a node, and a driver waiting on the socket must
+            // not sit out its timeout to learn that. Connect and say so; the
+            // hello fails to parse as READY and the driver falls back.
+            let path = &*core::ptr::addr_of!(BRANCH_SOCK);
+            let n = BRANCH_SOCK_LEN.load(Ordering::SeqCst);
+            let fd = connect_unix(&path[..n]);
+            if fd >= 0 {
+                let mut m = Vec::with_capacity(64);
+                m.extend_from_slice(b"ERR tripped pred ");
+                utoa(trip as u64, &mut m);
+                m.extend_from_slice(b" tick ");
+                utoa(tick.max(0) as u64, &mut m);
+                send_frame(fd, &m);
+            }
+            _exit(0)
+        }
+        // A candidate: its verdict is in the shared page; say so and go.
+        leave(1)
     }
 }
 
@@ -1009,6 +1096,19 @@ struct Timing {
     exhausted_clock: u64,
     /// 1 if the finish was recorded AFTER the tape had run out.
     finish_past_end: u64,
+    /// INTER-TICK GAPS (perf arm, PERF.md §4): ticks whose entry came more
+    /// than 80 us after the previous one, the sum of what those gaps exceeded
+    /// 80 us by, and the largest gap. A frame boundary inside the tick loop
+    /// shows up here; so does a preemption on a loaded box.
+    gap_big: u64,
+    gap_excess_us: u64,
+    gap_max_us: u64,
+    /// THE CENSUS, written by a child that leaves early (`leave`), since the
+    /// parent cannot read /proc of a child that has already gone: minor
+    /// faults, resident KB, private-dirty KB. 0 when not measured.
+    census_minflt: u64,
+    census_rss_kb: u64,
+    census_pdirty_kb: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -1124,6 +1224,15 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
             let now = now_us();
             if (*t).first_tick_us == 0 {
                 (*t).first_tick_us = now;
+            } else {
+                let gap = now.saturating_sub((*t).last_tick_us);
+                if gap > 80 {
+                    (*t).gap_big += 1;
+                    (*t).gap_excess_us += gap - 80;
+                }
+                if gap > (*t).gap_max_us {
+                    (*t).gap_max_us = gap;
+                }
             }
             (*t).last_tick_us = now;
             (*t).ticks += 1;
@@ -1257,7 +1366,7 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                     }
                 }
                 if mode == 1 {
-                    _exit(0);
+                    leave(1);
                 }
             } else {
                 // no finish yet -- has the tape run out? then this candidate's
@@ -1283,7 +1392,7 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                         (*t).dnf_clock = n;
                     }
                     if mode == 1 {
-                        _exit(0);
+                        leave(1);
                     }
                 }
             }
@@ -1887,6 +1996,262 @@ unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
     true
 }
 
+/// THE EXIT MARKER. A candidate child that has its answer leaves with
+/// `_exit`, and the parent used to learn that from EOF on the pipe. But EOF
+/// arrives only when the kernel closes the child's files, and `do_exit` tears
+/// the address space down FIRST -- every COW'd page and every page table of a
+/// 150 MB process, 2-3 ms -- so the parent sat through the teardown of a child
+/// whose answer was already in the shared page. Measured on map 2 at tick
+/// 2313: 2.34 ms between a finisher's last tick and the parent's answer, of
+/// which the pipe and the parse are 0.06.
+///
+/// So the child writes these bytes down its result pipe right before it goes.
+/// The parent treats them exactly like `"IsValid"` -- the run is over, read
+/// the pages, answer the driver -- and the teardown happens on whatever core
+/// the kernel puts it on while the next candidate is already running. Every
+/// store into the shared pages precedes the `write` syscall, so a parent that
+/// has seen the marker sees them.
+pub const EXIT_MARK: &[u8] = b"\nFKEXIT\n";
+
+/// `_exit(0)` for a child whose answer is in the shared pages: mark, then go.
+unsafe fn leave(fd: c_int) -> ! {
+    if CENSUS.load(Ordering::Relaxed) != 0 {
+        // Measurement mode only: the parent cannot read /proc of a child that
+        // is already gone, so the child counts itself before it goes.
+        if let Some((m, r, d)) = child_census(getpid()) {
+            let t = timing();
+            if !t.is_null() {
+                (*t).census_minflt = m;
+                (*t).census_rss_kb = r;
+                (*t).census_pdirty_kb = d;
+            }
+        }
+    }
+    write_all(fd, EXIT_MARK);
+    _exit(0)
+}
+
+/// Has the child said it is done, one way or the other?
+fn child_done(out: &[u8]) -> bool {
+    out.windows(9).any(|w| w == b"\"IsValid\"") || out.windows(EXIT_MARK.len()).any(|w| w == EXIT_MARK)
+}
+
+// ------------------------------------------------------------- the standby
+//
+// THE FORK ITSELF, OFF THE CRITICAL PATH. `fork()` of the paused engine costs
+// 1.0-1.9 ms -- the kernel copying ~150 MB worth of page tables -- and the
+// parent used to pay it between receiving a candidate and starting it. Now every
+// fork point keeps ONE child forked ahead of time, blocked on a pipe, waiting
+// for a candidate. Handing it the payload costs ~40 KB down a pipe and a
+// wake-up; the fork of the NEXT standby happens right after the hand-off, while
+// this candidate simulates, so it is paid on a core the parent was not using.
+//
+// A standby is a copy of the parent's state at the moment it was forked, and
+// the parent is a paused simulation whose state does not change between
+// candidates -- EXCEPT through commands that change what a child inherits ('A'
+// arms the watchdog, 'C' the chain, 'Y' the finish word ...). So every command
+// other than 'R'/'W' kills the standby first, and the next candidate forks
+// synchronously as before and pre-forks a fresh one behind it.
+//
+// If the parent dies, the standby's command pipe reads EOF and it exits: no
+// orphan. If the standby died, the hand-off fails and the parent falls back to
+// a synchronous fork for that candidate.
+
+struct Standby {
+    pid: c_int,
+    cmd_w: c_int,
+    res_r: c_int,
+}
+static mut STANDBY: Standby = Standby { pid: 0, cmd_w: -1, res_r: -1 };
+
+enum Launched {
+    /// In the parent: the child's pid and the read end of its result pipe.
+    Parent(c_int, c_int),
+    /// In the child, with the candidate applied: return to the simulation.
+    Child,
+    Failed(&'static [u8]),
+}
+
+/// The child side of a candidate: the payload's patches, the watchdog if it
+/// is a `'W'`, and the timing page's first stamp.
+unsafe fn apply_candidate(payload: &[u8], base: usize) {
+    let tp = timing();
+    if !tp.is_null() {
+        (*tp).child_us = now_us();
+    }
+    let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+    for i in 0..n {
+        let o = 5 + i * 16;
+        let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
+        apply_patch(base, tick, payload.as_ptr().add(o + 4));
+    }
+    if payload[0] == b'W' {
+        let cfg = &*core::ptr::addr_of!(WCFG);
+        // A WARM NODE's child continues the run the node has been watching
+        // since the root; a cold one starts from nothing.
+        if NODE_WARM.load(Ordering::SeqCst) == 0 {
+            let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+            ev.reset();
+            ev.np = cfg.np;
+            ev.preds = cfg.preds;
+            ev.rl = cfg.rl;
+            ev.finish_s = cfg.finish_s;
+            ev.plane_x = cfg.plane_x;
+            ev.gate = cfg.gate;
+            ev.fire = cfg.fire;
+            WPREV_VALID.store(0, Ordering::SeqCst);
+            WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+        }
+        WATCH_ON.store(1, Ordering::SeqCst);
+        SAMPLE_STRIDE.store(1, Ordering::SeqCst);
+        SAMPLE_NEXT.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Fork the next standby. In the parent, records it and returns `Parent`
+/// (with dummy fds: the caller is not launching anything). In the child,
+/// BLOCKS until a candidate arrives, applies it and returns `Child` -- the
+/// caller then returns to the simulation exactly as a freshly forked child
+/// would.
+unsafe fn standby_fork(base: usize) -> Launched {
+    let mut c = [0i32; 2];
+    let mut r = [0i32; 2];
+    if pipe(c.as_mut_ptr()) != 0 {
+        return Launched::Failed(b"ERR pipe");
+    }
+    if pipe(r.as_mut_ptr()) != 0 {
+        close(c[0]);
+        close(c[1]);
+        return Launched::Failed(b"ERR pipe");
+    }
+    fflush(std::ptr::null_mut());
+    let pid = fork();
+    if pid < 0 {
+        for fd in [c[0], c[1], r[0], r[1]] {
+            close(fd);
+        }
+        return Launched::Failed(b"ERR fork");
+    }
+    if pid == 0 {
+        IS_CHILD.store(1, Ordering::SeqCst);
+        close(c[1]);
+        close(r[0]);
+        dup2(r[1], 1);
+        close(r[1]);
+        setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
+        // Wait for the candidate. EOF means the parent is gone or has no use
+        // for us: leave, rather than hold a 150 MB address space for ever.
+        let mut lenb = [0u8; 4];
+        if !read_exact(c[0], &mut lenb) {
+            _exit(0)
+        }
+        let len = u32::from_le_bytes(lenb) as usize;
+        if len < 5 {
+            _exit(0)
+        }
+        let mut payload = vec![0u8; len];
+        if !read_exact(c[0], &mut payload) {
+            _exit(0)
+        }
+        close(c[0]);
+        apply_candidate(&payload, base);
+        return Launched::Child;
+    }
+    close(c[0]);
+    close(r[1]);
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    sb.pid = pid;
+    sb.cmd_w = c[1];
+    sb.res_r = r[0];
+    Launched::Parent(pid, -1)
+}
+
+/// `FKSHIM_CENSUS=1`: append the child's page-fault count and its resident and
+/// dirtied memory to every FKTIME line. Read at the first entry of the fork
+/// server so the hot path pays one relaxed load.
+static CENSUS: AtomicUsize = AtomicUsize::new(0);
+
+/// `(minflt, rss_kb, private_dirty_kb)` of a live child, from `/proc`.
+/// `None` if the child is already gone.
+unsafe fn child_census(pid: c_int) -> Option<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    // field 10 (1-based) is minflt; the comm field may contain spaces, so count
+    // from the closing parenthesis.
+    let after = &stat[stat.rfind(')')? + 2..];
+    let minflt: u64 = after.split_whitespace().nth(7)?.parse().ok()?;
+    let roll = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", pid)).ok()?;
+    let mut rss = 0u64;
+    let mut pdirty = 0u64;
+    for line in roll.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("Rss:") => rss = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            Some("Private_Dirty:") => pdirty = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+    Some((minflt, rss, pdirty))
+}
+
+/// End the standby, if there is one. Called before any command whose effect a
+/// child must inherit, and at 'Q'.
+unsafe fn standby_kill() {
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    if sb.pid > 0 {
+        kill(sb.pid, SIGKILL);
+        close(sb.cmd_w);
+        close(sb.res_r);
+    }
+    sb.pid = 0;
+    sb.cmd_w = -1;
+    sb.res_r = -1;
+}
+
+/// A child for this candidate: the standby, handed the payload, if one is
+/// alive; else a synchronous fork that applies the payload itself.
+unsafe fn launch(payload: &[u8], base: usize) -> Launched {
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    if sb.pid > 0 {
+        let (pid, cmd_w, res_r) = (sb.pid, sb.cmd_w, sb.res_r);
+        sb.pid = 0;
+        sb.cmd_w = -1;
+        sb.res_r = -1;
+        let mut frame = Vec::with_capacity(4 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        let ok = write_all(cmd_w, &frame);
+        close(cmd_w);
+        if ok {
+            return Launched::Parent(pid, res_r);
+        }
+        // The standby is gone (or its pipe is): reap what is left and fork
+        // this one the old way.
+        kill(pid, SIGKILL);
+        close(res_r);
+    }
+    let mut fds = [0i32; 2];
+    if pipe(fds.as_mut_ptr()) != 0 {
+        return Launched::Failed(b"ERR pipe");
+    }
+    let pid = fork();
+    if pid < 0 {
+        close(fds[0]);
+        close(fds[1]);
+        return Launched::Failed(b"ERR fork");
+    }
+    if pid == 0 {
+        IS_CHILD.store(1, Ordering::SeqCst);
+        close(fds[0]);
+        dup2(fds[1], 1);
+        close(fds[1]);
+        setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
+        apply_candidate(payload, base);
+        return Launched::Child;
+    }
+    close(fds[1]);
+    Launched::Parent(pid, fds[0])
+}
+
 unsafe fn write_all(fd: c_int, buf: &[u8]) -> bool {
     let mut sent = 0usize;
     while sent < buf.len() {
@@ -2076,6 +2441,18 @@ unsafe fn forkserver() {
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
+    if !branch && env_str(b"FKSHIM_CENSUS\0").is_some() {
+        CENSUS.store(1, Ordering::SeqCst);
+    }
+    // A warm branch stops watching here -- a paused node runs no ticks -- and
+    // keeps what the watchdog saw: every `'W'` child of this node continues
+    // from it.
+    if branch && BRANCH_WARMING.swap(0, Ordering::SeqCst) != 0 {
+        WATCH_ON.store(0, Ordering::SeqCst);
+        SAMPLE_STRIDE.store(0, Ordering::SeqCst);
+        SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+        NODE_WARM.store(1, Ordering::SeqCst);
+    }
 
     // The trace file this child wrote while it consumed its k ticks. Closed
     // BEFORE the handshake, so the driver that reads it after READY reads a
@@ -2246,17 +2623,31 @@ unsafe fn forkserver() {
         } else {
             let mut lenb = [0u8; 4];
             if !read_exact(cmd, &mut lenb) {
+                standby_kill();
                 _exit(0);
             }
             len = u32::from_le_bytes(lenb) as usize;
             let mut pl = vec![0u8; len];
             if len > 0 && !read_exact(cmd, &mut pl) {
+                standby_kill();
                 _exit(0);
             }
             payload = pl;
         }
         if len == 0 || payload[0] == b'Q' {
+            standby_kill();
             _exit(0);
+        }
+        // Anything that is not a candidate may change what a child inherits
+        // (the watchdog, the chain, the finish word, a branch's patches ...):
+        // the standby forked before it is stale. End it; the next candidate
+        // forks synchronously and pre-forks a fresh one behind itself.
+        // 'P' is the exception: the probe forks a child that walks into ITS OWN
+        // protected copy of the array and dies; the parent's state is untouched
+        // (the ENV arm confirmed it, PERF.md §11), so a standby forked before a
+        // probe is still an exact copy.
+        if payload[0] != b'R' && payload[0] != b'W' && payload[0] != b'P' {
+            standby_kill();
         }
         if payload[0] == b'Y' {
             // 'Y' u64 addr -- THE FINISH WORD, calibrated by the driver.
@@ -2428,11 +2819,15 @@ unsafe fn forkserver() {
                     break;
                 }
             }
+            // The probe child has said its tick (or timed out): SIGKILL it and walk
+            // away. There used to be a `waitpid` here, and it made the probe cost
+            // 3.5 ms instead of 1.6: waitpid returns only after the kernel has
+            // torn the child's 150 MB address space down, the same wait the
+            // exit marker took off the candidate path (PERF.md §3.1, §11).
+            // SIGCHLD is ignored, so there is no zombie to reap.
             kill(pid, SIGKILL);
-            let mut st = 0i32;
-            waitpid(pid, &mut st, 0);
             close(fds[0]);
-            if out.is_empty() && st == 0 && !branch {
+            if out.is_empty() && !branch {
                 // THE CHILD RAN THE RACE WITHOUT TOUCHING THIS ARRAY and exited
                 // normally: `base` is a copy the engine never reads. Move to the
                 // next candidate copy and probe again -- the driver sees only the
@@ -2453,9 +2848,7 @@ unsafe fn forkserver() {
                 // The probe child wrote NOTHING: it died before it faulted on the
                 // array. Say how, so the driver can tell a dead child from a
                 // silent one (seen under concurrent start-up of several servers).
-                out.extend_from_slice(b"PROBE-EMPTY wstatus ");
-                utoa(st as u32 as u64, &mut out);
-                out.extend_from_slice(b" base ");
+                out.extend_from_slice(b"PROBE-EMPTY base ");
                 utoa(base as u64, &mut out);
                 out.extend_from_slice(b" n ");
                 utoa(key.steer.len() as u64, &mut out);
@@ -2510,9 +2903,33 @@ unsafe fn forkserver() {
             let skeyoff = u32::from_le_bytes(payload[o + 16..o + 20].try_into().unwrap()) as usize;
             o += 20;
             let poff = o;
+            // OPTIONAL trailing flags after the patches (an older driver sends
+            // none): bit 0 = warm node, see `BRANCH_WARMING`.
+            let bflags = {
+                let f = poff + np * 16;
+                if payload.len() >= f + 4 {
+                    u32::from_le_bytes(payload[f..f + 4].try_into().unwrap())
+                } else {
+                    0
+                }
+            };
+            let warm = bflags & 1 != 0;
             if slen == 0 || slen > 107 {
                 send_frame(res, b"ERR socklen");
                 continue;
+            }
+            // Refused BEFORE the fork, with a reason, rather than in a child
+            // that dies where nobody can read why.
+            if warm {
+                let cfg = &*core::ptr::addr_of!(WCFG);
+                if cfg.out.is_null() || cfg.nseg == 0 {
+                    send_frame(res, b"ERR not armed: a warm node needs the watchdog armed first");
+                    continue;
+                }
+                if nseg > 0 && tlen > 0 {
+                    send_frame(res, b"ERR a warm node cannot also write a state trace");
+                    continue;
+                }
             }
             fflush(std::ptr::null_mut());
             let pid = fork();
@@ -2529,6 +2946,14 @@ unsafe fn forkserver() {
             }
             // ---- child: becomes a node of the tree
             IS_CHILD.store(1, Ordering::SeqCst);
+            // A REPORT PAGE OF ITS OWN. The timing page is MAP_SHARED and a
+            // fork inherits the mapping, so without this a node's children
+            // would report into the ROOT's page -- and since that page now
+            // carries a finish time and a checkpoint count, a candidate could
+            // read the previous candidate's. Ownership, not zeroing, is the
+            // guard: every node gets a fresh page and its children write there.
+            TIMING.store(0, Ordering::SeqCst);
+            timing_init();
             for i in 0..np {
                 let q = poff + i * 16;
                 let tick = u32::from_le_bytes(payload[q..q + 4].try_into().unwrap()) as usize;
@@ -2539,11 +2964,42 @@ unsafe fn forkserver() {
                 b[..slen].copy_from_slice(&sock);
                 BRANCH_SOCK_LEN.store(slen, Ordering::SeqCst);
             }
-            // The state trace, if the driver asked for one. Same sampler the
-            // 'S' path uses, aimed at a file instead of a pipe: nobody is
-            // reading the other end yet, and a pipe that fills would stall the
-            // simulation we are trying to time.
-            if nseg > 0 && tlen > 0 {
+            if warm {
+                // THE WARM NODE. Run the ticks to the stop point exactly as a
+                // `'W'` child would, on a report page of this lineage's own,
+                // and keep the evaluator afterwards (see `NODE_WARM`). A node
+                // made from a node that is already warm continues ITS state
+                // rather than resetting: the run this lineage represents began
+                // at the root and has been watched ever since.
+                let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
+                let p = mmap(std::ptr::null_mut(), 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+                if p as isize == -1 || p.is_null() {
+                    log(b"FKSHIM: warm branch could not map its report page\n");
+                    _exit(94)
+                }
+                cfg.out = p as *mut u8;
+                if NODE_WARM.load(Ordering::SeqCst) == 0 {
+                    let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+                    ev.reset();
+                    ev.np = cfg.np;
+                    ev.preds = cfg.preds;
+                    ev.rl = cfg.rl;
+                    ev.finish_s = cfg.finish_s;
+                    ev.plane_x = cfg.plane_x;
+                    ev.gate = cfg.gate;
+                    ev.fire = cfg.fire;
+                    WPREV_VALID.store(0, Ordering::SeqCst);
+                    WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+                }
+                BRANCH_WARMING.store(1, Ordering::SeqCst);
+                WATCH_ON.store(1, Ordering::SeqCst);
+                SAMPLE_STRIDE.store(1, Ordering::SeqCst);
+                SAMPLE_NEXT.store(0, Ordering::SeqCst);
+            } else if nseg > 0 && tlen > 0 {
+                // The state trace, if the driver asked for one. Same sampler the
+                // 'S' path uses, aimed at a file instead of a pipe: nobody is
+                // reading the other end yet, and a pipe that fills would stall the
+                // simulation we are trying to time.
                 let fd = open(tracep.as_ptr() as *const c_char, 577, 0o644);
                 if fd < 0 {
                     log(b"FKSHIM: branch could not open its trace file\n");
@@ -2564,6 +3020,7 @@ unsafe fn forkserver() {
                 }
                 SAMPLE_FD.store(fd, Ordering::SeqCst);
                 TRACE_FD.store(fd, Ordering::SeqCst);
+                SAMPLE_RING.store(0, Ordering::SeqCst); // a trace goes to its file, never to an inherited ring
                 SAMPLE_LEFT.store(smax, Ordering::SeqCst);
                 SAMPLE_EXIT.store(0, Ordering::SeqCst);
                 SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
@@ -2648,6 +3105,9 @@ unsafe fn forkserver() {
                 }
             };
             fflush(std::ptr::null_mut());
+            // The ring the child will fill: room for every sample it may take,
+            // capped; the pipe takes the overflow.
+            sample_ring_prepare((smax as usize).saturating_mul(8 + slen));
             let t_start = now_us();
             let mut fds = [0i32; 2];
             let mut sfds = [0i32; 2];
@@ -2750,7 +3210,10 @@ unsafe fn forkserver() {
                         revents: 0,
                     },
                 ];
-                if json_done && samples_eof {
+                // Once the child has said it is done, every sample it will ever
+                // produce is in the ring or already in the pipe: do not wait for
+                // EOF, which comes after its teardown.
+                if json_done {
                     break;
                 }
                 let pr = poll(pfds.as_mut_ptr(), 2, 60000);
@@ -2775,7 +3238,7 @@ unsafe fn forkserver() {
                             t_first = now_us();
                         }
                         out.extend_from_slice(&buf[..r as usize]);
-                        if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                        if child_done(&out) {
                             json_done = true;
                             // the child is finished simulating, so every sample
                             // it will ever write is already in the pipe; kill it
@@ -2786,14 +3249,15 @@ unsafe fn forkserver() {
                 }
             }
             if !samples_eof {
-                // drain whatever the pipe still holds
+                // drain whatever the pipe already holds -- without waiting: the
+                // child wrote its last sample before it said it was done
                 loop {
                     let mut pfd = PollFd {
                         fd: sfds[0],
                         events: POLLIN,
                         revents: 0,
                     };
-                    if poll(&mut pfd, 1, 200) <= 0 {
+                    if poll(&mut pfd, 1, 0) <= 0 {
                         break;
                     }
                     let r = real_read()(sfds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
@@ -2806,6 +3270,29 @@ unsafe fn forkserver() {
             kill(pid, SIGKILL);
             close(fds[0]);
             close(sfds[0]);
+            // The ring first, then whatever overflowed down the pipe: the order
+            // the child produced them in.
+            let ring = SAMPLE_RING.load(Ordering::Relaxed);
+            if ring != 0 {
+                let used = (*(ring as *const u64) as usize).min(SAMPLE_RING_CAP.load(Ordering::Relaxed) - 8);
+                if CENSUS.load(Ordering::Relaxed) != 0 {
+                    logn(b"FKSHIM ring_used ", used as u64);
+                    logn(b"FKSHIM ring_pipe ", samples.len() as u64);
+                    logn(b"FKSHIM ring_slen ", slen as u64);
+                }
+                let mut all = Vec::with_capacity(used + samples.len());
+                all.extend_from_slice(std::slice::from_raw_parts((ring + 8) as *const u8, used));
+                all.extend_from_slice(&samples);
+                samples = all;
+            }
+            sample_ring_release();
+            if CENSUS.load(Ordering::Relaxed) != 0 {
+                // Measurement mode: what a sampled run cost, and how many ticks it
+                // ran, on the server log.
+                logn(b"FKSHIM S_done_us ", now_us() - t_start);
+                let tp = timing();
+                logn(b"FKSHIM S_ticks ", if tp.is_null() { 0 } else { (*tp).ticks });
+            }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
             out.extend_from_slice(b" first_us ");
@@ -2986,6 +3473,7 @@ unsafe fn forkserver() {
             SAMPLE_STRIDE.store(sstride.max(1), Ordering::SeqCst);
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
             CHAIN_ARMED.store(true, Ordering::SeqCst);
+            SAMPLE_RING.store(0, Ordering::SeqCst); // the clean run writes its file
             send_frame(res, b"GO");
             return;
         }
@@ -3018,80 +3506,67 @@ unsafe fn forkserver() {
             send_frame(res, &ack);
             continue;
         }
-        if payload[0] == b'W' {
-            // Run one candidate with the watchdog armed. Same wire shape as
-            // 'R'; two frames come back: the validator's JSON (empty if the
-            // child was aborted) and the fixed-size summary.
-            let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+        if payload[0] == b'W' || payload[0] == b'R' {
+            // ONE CANDIDATE. 'R' runs it plain and answers with the validator's
+            // JSON (or the FKFINISH line); 'W' runs it with the armed watchdog
+            // and answers with two frames, the JSON and the fixed-size summary.
+            // Same wire shape, same child, same parent loop.
+            let watched = payload[0] == b'W';
+            if payload.len() < 5 {
+                send_frame(res, b"ERR short");
+                if watched {
+                    send_frame(res, b"");
+                }
+                continue;
+            }
             let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
-            if cfg.out.is_null() || cfg.nseg == 0 {
+            if watched && (cfg.out.is_null() || cfg.nseg == 0) {
                 send_frame(res, b"ERR not armed");
                 send_frame(res, b"");
                 continue;
             }
-            // clear the shared report before the fork, so a child that dies
-            // without writing cannot be mistaken for one that reported -- and
-            // the timing page with it, or this candidate inherits the previous
-            // one's finish time
-            std::ptr::write_bytes(cfg.out, 0, SUMMARY_BYTES);
+            // Clear the shared pages before the child runs, so a child that
+            // dies without writing cannot be mistaken for one that reported --
+            // and the timing page with them, or this candidate inherits the
+            // previous one's finish time.
+            if watched {
+                std::ptr::write_bytes(cfg.out, 0, SUMMARY_BYTES);
+            }
             {
                 let tp = timing();
                 if !tp.is_null() {
                     std::ptr::write_bytes(tp as *mut u8, 0, std::mem::size_of::<Timing>());
                 }
             }
-            fflush(std::ptr::null_mut());
+            fflush(std::ptr::null_mut()); // no half-written stdio in the child
             let t_start = now_us();
-            let mut fds = [0i32; 2];
-            if pipe(fds.as_mut_ptr()) != 0 {
-                send_frame(res, b"ERR pipe");
-                send_frame(res, b"");
-                continue;
-            }
-            let pid = fork();
-            if pid < 0 {
-                close(fds[0]);
-                close(fds[1]);
-                send_frame(res, b"ERR fork");
-                send_frame(res, b"");
-                continue;
-            }
-            if pid == 0 {
-                IS_CHILD.store(1, Ordering::SeqCst);
-                close(fds[0]);
-                dup2(fds[1], 1);
-                close(fds[1]);
-                setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
-                for i in 0..n {
-                    let o = 5 + i * 16;
-                    let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                    apply_patch(base, tick, payload.as_ptr().add(o + 4));
+            let (pid, rfd) = match launch(&payload, base) {
+                Launched::Parent(p, r) => (p, r),
+                Launched::Child => return, // the candidate's simulator: resume
+                Launched::Failed(m) => {
+                    send_frame(res, m);
+                    if watched {
+                        send_frame(res, b"");
+                    }
+                    continue;
                 }
-                let ev = &mut *core::ptr::addr_of_mut!(EVAL);
-                ev.reset();
-                ev.np = cfg.np;
-                ev.preds = cfg.preds;
-                ev.rl = cfg.rl;
-                ev.finish_s = cfg.finish_s;
-                ev.plane_x = cfg.plane_x;
-                ev.gate = cfg.gate;
-                ev.fire = cfg.fire;
-                WPREV_VALID.store(0, Ordering::SeqCst);
-                WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
-                WATCH_ON.store(1, Ordering::SeqCst);
-                SAMPLE_STRIDE.store(1, Ordering::SeqCst);
-                SAMPLE_NEXT.store(0, Ordering::SeqCst);
-                return; // resume the simulation, watched
-            }
+            };
             let t_forked = now_us();
+            // THE NEXT CANDIDATE'S CHILD, forked now, while this one simulates:
+            // the fork's millisecond lands on a core the parent was not using.
+            // In the child this call blocks until a candidate arrives, applies
+            // it and returns `Child` -- then it is that candidate's simulator.
+            if let Launched::Child = standby_fork(base) {
+                return;
+            }
+            // ---- parent: collect the child's answer, then stop it dead
             let mut t_first = 0u64;
-            close(fds[1]);
             let mut out: Vec<u8> = Vec::with_capacity(4096);
             let mut buf = [0u8; 4096];
             let mut done = false;
             while !done {
                 let mut pfd = PollFd {
-                    fd: fds[0],
+                    fd: rfd,
                     events: POLLIN,
                     revents: 0,
                 };
@@ -3100,7 +3575,7 @@ unsafe fn forkserver() {
                     out.extend_from_slice(b"\nFKSHIM-TIMEOUT\n");
                     break;
                 }
-                let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
+                let r = real_read()(rfd, buf.as_mut_ptr() as *mut c_void, buf.len());
                 if r <= 0 {
                     break; // the child aborted itself, or finished and closed
                 }
@@ -3108,39 +3583,65 @@ unsafe fn forkserver() {
                     t_first = now_us();
                 }
                 out.extend_from_slice(&buf[..r as usize]);
-                if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                // everything we need is in ValidatedResult/Desc, which precede
+                // IsValid, or in the shared pages once the child has marked its
+                // exit; stopping here skips the DeclaredResult block and the
+                // Inputs RLE
+                if child_done(&out) {
                     done = true;
                 }
             }
+            // SIGKILL and walk away: tearing down a 150 MB address space costs
+            // milliseconds, and SIGCHLD=SIG_IGN makes the kernel reap for us, so
+            // the next candidate does not have to wait for it.
+            //
+            // THE CENSUS, first, while the child is still there: how many pages
+            // did this candidate fault in, and how many did it dirty? Behind an
+            // env var because it is two /proc reads per candidate, and it is
+            // what says whether huge pages or MADV_DONTFORK could pay.
+            let census = if CENSUS.load(Ordering::Relaxed) != 0 {
+                child_census(pid).or_else(|| {
+                    let t = timing();
+                    if !t.is_null() && (*t).census_minflt != 0 {
+                        Some(((*t).census_minflt, (*t).census_rss_kb, (*t).census_pdirty_kb))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             kill(pid, SIGKILL);
-            close(fds[0]);
-            {
-                // the child may have left at the finish with the answer
-                let tp = timing();
-                if !tp.is_null() && (*tp).finish_past_end != 0 {
-                    out.extend_from_slice(b"\nFKPASTEND clock ");
-                    utoa((*tp).finish_clock, &mut out);
-                    out.push(b'\n');
-                }
-                if !tp.is_null() && (*tp).cps != 0 {
-                    out.extend_from_slice(b"\nFKCPS ");
-                    utoa((*tp).cps - 1, &mut out);
-                    out.push(b'\n');
-                }
-                if !tp.is_null() && (*tp).dnf_cps != 0 {
-                    out.extend_from_slice(b"\nFKDNF cps ");
-                    utoa((*tp).dnf_cps - 1, &mut out);
-                    out.extend_from_slice(b" clock ");
-                    utoa((*tp).dnf_clock, &mut out);
-                    out.push(b'\n');
-                }
-                if !tp.is_null() && (*tp).finish_sim_ms != 0 {
-                    out.extend_from_slice(b"\nFKFINISH race_ms ");
-                    utoa((*tp).finish_sim_ms - RACE_START.load(Ordering::Relaxed), &mut out);
-                    out.extend_from_slice(b" clock ");
-                    utoa((*tp).finish_clock, &mut out);
-                    out.push(b'\n');
-                }
+            close(rfd);
+            let tp = timing();
+            if !tp.is_null() && (*tp).finish_past_end != 0 {
+                out.extend_from_slice(b"\nFKPASTEND clock ");
+                utoa((*tp).finish_clock, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).cps != 0 {
+                out.extend_from_slice(b"\nFKCPS ");
+                utoa((*tp).cps - 1, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).dnf_cps != 0 {
+                out.extend_from_slice(b"\nFKDNF cps ");
+                utoa((*tp).dnf_cps - 1, &mut out);
+                out.extend_from_slice(b" clock ");
+                utoa((*tp).dnf_clock, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).finish_sim_ms != 0 {
+                // The child read the race result out of the engine and left.
+                // Report it in the RACE ms the driver speaks, on its own line,
+                // so `parse_result` never has to guess whether a truncated JSON
+                // was a DNF or a child that knew the answer.
+                let rs = RACE_START.load(Ordering::Relaxed);
+                out.extend_from_slice(b"\nFKFINISH race_ms ");
+                utoa((*tp).finish_sim_ms - rs, &mut out);
+                out.extend_from_slice(b" clock ");
+                utoa((*tp).finish_clock, &mut out);
+                out.push(b'\n');
             }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
@@ -3148,149 +3649,48 @@ unsafe fn forkserver() {
             utoa(t_first.saturating_sub(t_forked), &mut out);
             out.extend_from_slice(b" done_us ");
             utoa(now_us() - t_start, &mut out);
+            // The child's own timeline, out of the shared page: when it
+            // started, when it ran its first and last tick, and how many.
+            // Everything between `last_tick_us` and `done_us` is what the
+            // candidate pays AFTER the simulation.
+            if !tp.is_null() {
+                out.extend_from_slice(b" child_us ");
+                utoa((*tp).child_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" tick1_us ");
+                utoa((*tp).first_tick_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" tickN_us ");
+                utoa((*tp).last_tick_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" ticks ");
+                utoa((*tp).ticks, &mut out);
+            }
+            if let Some((minflt, rss_kb, pdirty_kb)) = census {
+                out.extend_from_slice(b" minflt ");
+                utoa(minflt, &mut out);
+                out.extend_from_slice(b" rss_kb ");
+                utoa(rss_kb, &mut out);
+                out.extend_from_slice(b" pdirty_kb ");
+                utoa(pdirty_kb, &mut out);
+                if !tp.is_null() {
+                    out.extend_from_slice(b" gap_big ");
+                    utoa((*tp).gap_big, &mut out);
+                    out.extend_from_slice(b" gap_excess_us ");
+                    utoa((*tp).gap_excess_us, &mut out);
+                    out.extend_from_slice(b" gap_max_us ");
+                    utoa((*tp).gap_max_us, &mut out);
+                }
+            }
             out.push(b'\n');
-            let mut sum = [0u8; SUMMARY_BYTES];
-            std::ptr::copy_nonoverlapping(cfg.out, sum.as_mut_ptr(), SUMMARY_BYTES);
             send_frame(res, &out);
-            send_frame(res, &sum);
+            if watched {
+                let mut sum = [0u8; SUMMARY_BYTES];
+                std::ptr::copy_nonoverlapping(cfg.out, sum.as_mut_ptr(), SUMMARY_BYTES);
+                send_frame(res, &sum);
+            }
             continue;
         }
-        // 'R' u32 n, then n * (u32 tick, f32 steer, f32 gas, f32 brake)
-        let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
-        fflush(std::ptr::null_mut()); // no half-written stdio in the child
-        // Zero the timing page before every fork, so the child's report is this
-        // candidate's and never the previous one's.
-        {
-            let tp = timing();
-            if !tp.is_null() {
-                std::ptr::write_bytes(tp as *mut u8, 0, std::mem::size_of::<Timing>());
-            }
-        }
-        let t_start = now_us();
-        let mut fds = [0i32; 2];
-        if pipe(fds.as_mut_ptr()) != 0 {
-            send_frame(res, b"ERR pipe");
-            continue;
-        }
-        let pid = fork();
-        if pid < 0 {
-            close(fds[0]);
-            close(fds[1]);
-            send_frame(res, b"ERR fork");
-            continue;
-        }
-        if pid == 0 {
-            // ---- child: becomes the candidate's simulator
-            IS_CHILD.store(1, Ordering::SeqCst);
-            let tp = timing();
-            if !tp.is_null() {
-                (*tp).child_us = now_us();
-            }
-            close(fds[0]);
-            dup2(fds[1], 1);
-            close(fds[1]);
-            setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
-            for i in 0..n {
-                let o = 5 + i * 16;
-                let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                apply_patch(base, tick, payload.as_ptr().add(o + 4));
-            }
-            return; // resume the simulation, with the tail rewritten
-        }
-        // The timing page is zeroed before every fork so the child's report is
-        // this candidate's, never the previous one's.
-        // ---- parent: collect the child's JSON, then stop it dead
-        let t_forked = now_us();
-        let mut t_first = 0u64;
-        close(fds[1]);
-        let mut out: Vec<u8> = Vec::with_capacity(4096);
-        let mut buf = [0u8; 4096];
-        let mut done = false;
-        while !done {
-            let mut pfd = PollFd {
-                fd: fds[0],
-                events: POLLIN,
-                revents: 0,
-            };
-            let pr = poll(&mut pfd, 1, 20000);
-            if pr <= 0 {
-                out.extend_from_slice(b"\nFKSHIM-TIMEOUT\n");
-                break;
-            }
-            let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
-            if r <= 0 {
-                break;
-            }
-            if t_first == 0 {
-                t_first = now_us();
-            }
-            out.extend_from_slice(&buf[..r as usize]);
-            // everything we need is in ValidatedResult/Desc, which precede IsValid;
-            // stopping here skips the DeclaredResult block and the Inputs RLE
-            if out.windows(9).any(|w| w == b"\"IsValid\"") {
-                done = true;
-            }
-        }
-        if pid > 0 {
-            // SIGKILL and walk away: tearing down a 150 MB address space costs
-            // milliseconds, and SIGCHLD=SIG_IGN makes the kernel reap for us, so
-            // the next candidate does not have to wait for it.
-            kill(pid, SIGKILL);
-        }
-        close(fds[0]);
-        out.extend_from_slice(b"\nFKTIME fork_us ");
-        utoa(t_forked - t_start, &mut out);
-        out.extend_from_slice(b" first_us ");
-        utoa(t_first.saturating_sub(t_forked), &mut out);
-        out.extend_from_slice(b" done_us ");
-        utoa(now_us() - t_start, &mut out);
-        // The child's own timeline, out of the shared page: when it started,
-        // when it ran its first and last tick, and how many. Everything between
-        // `last_tick_us` and `done_us` is what the candidate pays AFTER the
-        // simulation -- the validator's finish and print path, the JSON, the
-        // pipe and the parse.
-        let tp = timing();
-        if !tp.is_null() && (*tp).finish_past_end != 0 {
-            out.extend_from_slice(b"\nFKPASTEND clock ");
-            utoa((*tp).finish_clock, &mut out);
-            out.push(b'\n');
-        }
-        if !tp.is_null() && (*tp).cps != 0 {
-            out.extend_from_slice(b"\nFKCPS ");
-            utoa((*tp).cps - 1, &mut out);
-            out.push(b'\n');
-        }
-        if !tp.is_null() && (*tp).dnf_cps != 0 {
-            out.extend_from_slice(b"\nFKDNF cps ");
-            utoa((*tp).dnf_cps - 1, &mut out);
-            out.extend_from_slice(b" clock ");
-            utoa((*tp).dnf_clock, &mut out);
-            out.push(b'\n');
-        }
-        if !tp.is_null() && (*tp).finish_sim_ms != 0 {
-            // The child read the race result out of the engine and left. Report
-            // it in the RACE ms the driver speaks, on its own line, so
-            // `parse_result` never has to guess whether a truncated JSON was a
-            // DNF or a child that knew the answer.
-            let rs = RACE_START.load(Ordering::Relaxed);
-            out.extend_from_slice(b"\nFKFINISH race_ms ");
-            utoa((*tp).finish_sim_ms - rs, &mut out);
-            out.extend_from_slice(b" clock ");
-            utoa((*tp).finish_clock, &mut out);
-            out.push(b'\n');
-        }
-        if !tp.is_null() {
-            out.extend_from_slice(b" child_us ");
-            utoa((*tp).child_us.saturating_sub(t_start), &mut out);
-            out.extend_from_slice(b" tick1_us ");
-            utoa((*tp).first_tick_us.saturating_sub(t_start), &mut out);
-            out.extend_from_slice(b" tickN_us ");
-            utoa((*tp).last_tick_us.saturating_sub(t_start), &mut out);
-            out.extend_from_slice(b" ticks ");
-            utoa((*tp).ticks, &mut out);
-        }
-        out.push(b'\n');
-        send_frame(res, &out);
+        // An unknown command byte. Answer, so the driver's frame count stays in
+        // step, rather than treating the payload as a run.
+        send_frame(res, b"ERR unknown command");
     }
 }
 

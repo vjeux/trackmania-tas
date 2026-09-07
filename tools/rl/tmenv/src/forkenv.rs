@@ -148,7 +148,7 @@ impl ForkEnv {
         let reference = tape.tail_records(0);
         let probe = srv.probe_tick()?;
         let _ = probe;
-        let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg)?;
+        let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg, tape.start_offset_ms)?;
         forest.probe_root()?;
 
         // The state at the root, captured once: the root never moves, so every

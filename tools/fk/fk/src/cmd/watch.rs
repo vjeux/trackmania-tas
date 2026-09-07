@@ -1087,6 +1087,97 @@ fn audit(c: &Cfg) {
         c.n
     );
 
+    // ---- 5. THE INCUMBENT LAG, measured on every candidate (PERF.md §2)
+    //
+    // `lag_max_ms` is in every summary whether or not a `lag` predicate is
+    // armed: how far behind the incumbent the run got, at the same point of
+    // the line. The observing pass is the unarmed truth, so this table is the
+    // one that sets the predicate's threshold: the largest lag any candidate
+    // FASTER than the incumbent ever showed is the floor under X, and a
+    // predicate armed at X aborts nothing that would have beaten it exactly
+    // when every faster candidate sits below that line.
+    if let Some(best) = s.ref_time {
+        let lag_of = |o: &Outcome| o.sum.map(|x| x.lag_max_ms).unwrap_or(f32::NEG_INFINITY);
+        let mut bands: Vec<(&str, Vec<f32>)> = vec![
+            ("faster than the incumbent", Vec::new()),
+            ("same ms or up to +50", Vec::new()),
+            ("+50 .. +200 ms", Vec::new()),
+            ("+200 ms or worse", Vec::new()),
+            ("did not finish", Vec::new()),
+        ];
+        for r in &rows {
+            let l = lag_of(&r.obs);
+            if !l.is_finite() {
+                continue;
+            }
+            let b = match r.obs.time {
+                Some(t) if t < best => 0,
+                Some(t) if t - best <= 50 => 1,
+                Some(t) if t - best <= 200 => 2,
+                Some(_) => 3,
+                None => 4,
+            };
+            bands[b].1.push(l);
+        }
+        println!("\nINCUMBENT LAG  largest lag behind the incumbent over the run, by outcome (unarmed):");
+        println!("  {:<28} {:>5}  {:>9}  {:>9}  {:>9}", "outcome", "n", "median", "p90", "max");
+        for (name, v) in bands.iter_mut() {
+            if v.is_empty() {
+                continue;
+            }
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!(
+                "  {:<28} {:>5}  {:>7.0} ms  {:>7.0} ms  {:>7.0} ms",
+                name,
+                v.len(),
+                v[v.len() / 2],
+                v[(v.len() * 9 / 10).min(v.len() - 1)],
+                v[v.len() - 1]
+            );
+        }
+        let floor = bands[0].1.last().copied();
+        match floor {
+            Some(f) => println!(
+                "  the largest lag of any candidate that BEAT the incumbent: {:.0} ms -- a `lag` \
+                 threshold must sit above this; every faster candidate stayed under it",
+                f
+            ),
+            None => println!("  no candidate beat the incumbent in this set, so this set cannot bound the threshold"),
+        }
+        // If a lag predicate is armed: what did it kill, and was any of it fast?
+        for (pi, np) in s.watch.preds.iter().enumerate() {
+            if np.pred.kind != forkoracle::pred_core::K_LAG {
+                continue;
+            }
+            let killed: Vec<&Row1> = rows
+                .iter()
+                .filter(|r| matches!(r.w.tripped(), Some((p, _, _)) if p as usize == pi))
+                .collect();
+            let fast = killed.iter().filter(|r| r.obs.time.map(|t| t < best).unwrap_or(false)).count();
+            let fin = killed.iter().filter(|r| r.obs.time.is_some()).count();
+            let mut saved = 0.0f64;
+            for r in &killed {
+                if let Some((_, tick, _)) = r.w.tripped() {
+                    let end = r.obs.sum.map(|x| x.last_tick).unwrap_or(n as i32) as f64;
+                    saved += (end - tick as f64).max(0.0);
+                }
+            }
+            println!(
+                "  `{}` (ms={:.0}, need={}) aborted {} of {} ({:.1}%): {} would have finished, {} of them FASTER than the incumbent{}; {:.0} ticks saved per abort on average",
+                np.name,
+                np.pred.p[0],
+                np.pred.need,
+                killed.len(),
+                c.n,
+                100.0 * killed.len() as f64 / c.n as f64,
+                fin,
+                fast,
+                if fast == 0 { " -- NO FALSE POSITIVE" } else { " -- FALSE POSITIVES" },
+                if killed.is_empty() { 0.0 } else { saved / killed.len() as f64 }
+            );
+        }
+    }
+
     // ---- optional per-candidate dump
     if !c.out.is_empty() {
         let mut o = String::from(

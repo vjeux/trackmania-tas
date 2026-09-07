@@ -275,8 +275,9 @@ pub fn flat_trace(
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 400_000 };
+    let off = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
-    let mut f = Forest::new(srv, work, reference, Some(cfg))?;
+    let mut f = Forest::new(srv, work, reference, Some(cfg), off)?;
     f.probe_root()?;
     let (rows, h) = f.advance(ROOT, &[], 0, ticks)?;
     f.release(h);
@@ -310,8 +311,9 @@ pub fn measure_spawn(
     let dir = work.join("spawn-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 4_000 };
+    let off = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
-    let mut f = Forest::new(srv, work, recs, Some(cfg))?;
+    let mut f = Forest::new(srv, work, recs, Some(cfg), off)?;
     f.probe_root()?;
     let (rows, h) = f.advance(ROOT, &[], 0, 200)?;
     f.release(h);
@@ -362,8 +364,9 @@ pub fn flat_trace_or_end(
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: env_layout(&car), dir, stride: 1, max: 400_000 };
+    let off = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
-    let mut f = Forest::new(srv, work, reference, Some(cfg))?;
+    let mut f = Forest::new(srv, work, reference, Some(cfg), off)?;
     f.probe_root()?;
     match f.advance_or_end(ROOT, &[], 0, ticks)? {
         branch::Advanced::Node(rows, h) => {

@@ -147,8 +147,13 @@ fn the_guard_refuses_a_dnf_claim_for_a_tape_that_finishes() {
 }
 
 /// A mutated candidate: whatever the oracle says about it, the guard's verdict
-/// and the oracle's answer are the same statement. This is the loop the search
-/// runs thousands of times, once.
+/// and the oracle's answer are the same statement -- with the one exception
+/// the guard makes on purpose. This template's tape ends one tick after its
+/// own finish, so a mutant that is SLOWER finishes after the tape's last
+/// record; the oracle still prints a time for it, and that time is not a
+/// result (SEARCH.md §3): the guard must refuse it as `PHANTOM_pastend_*`. A
+/// mutant that finishes inside its tape is banked under the oracle's time.
+/// This is the loop the search runs thousands of times, once.
 #[test]
 fn a_mutated_candidate_is_banked_only_under_the_time_it_actually_does() {
     let Some(srv) = server() else { return };
@@ -168,8 +173,23 @@ fn a_mutated_candidate_is_banked_only_under_the_time_it_actually_does() {
     };
     let _ = std::fs::remove_file(&f);
 
-    let banked = bank.offer(&p, &s, claim, &nowhere()).expect("the oracle's own answer was refused");
-    assert_eq!(banked.confirmed, claim);
+    let end_ms = p.start_offset_ms as i64 + 10 * p.n() as i64;
+    match truth.time_ms {
+        Some(ms) if ms > end_ms => {
+            let err = bank
+                .offer(&p, &s, claim, &nowhere())
+                .expect_err("a finish after the tape's own end was banked");
+            assert!(
+                err.path.file_name().unwrap().to_string_lossy().starts_with("PHANTOM_pastend_"),
+                "refused, but not as a past-the-end finish: {}",
+                err.path.display()
+            );
+        }
+        _ => {
+            let banked = bank.offer(&p, &s, claim, &nowhere()).expect("the oracle's own answer was refused");
+            assert_eq!(banked.confirmed, claim);
+        }
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -278,5 +298,184 @@ fn a_failure_is_banked_on_the_ladder_the_search_ranks_on() {
         b.confirmed, claim,
         "the bank returned a failure on a different ladder from the one the search ranks on"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// What a verdict looks like when two of them are compared: the same claim
+/// must get the same answer whichever way it was certified.
+fn shape(r: &Result<tmsearch::guard::Banked, tmsearch::guard::Phantom>) -> String {
+    match r {
+        Ok(b) => format!("OK {}", b.confirmed),
+        Err(ph) => format!(
+            "PHANTOM claimed {} actual {} kind {}",
+            ph.claimed,
+            ph.actual.map(|a| a.to_string()).unwrap_or_else(|| "none".into()),
+            ph.path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .split('_')
+                .nth(1)
+                .unwrap_or("")
+                .to_string()
+        ),
+    }
+}
+
+/// BATCHED CERTIFICATION (PERF.md §7): `offer_many` on N mutated tapes must
+/// return, claim for claim, the verdict `offer` returns one launch at a time --
+/// confirmed with the same time, or refused for the same reason with the same
+/// oracle answer. `TM_CERT_N` sets N (default 30; the proof run used 500), and
+/// the wall time of both ways is printed.
+///
+/// The claims are the tapes' own oracle times where the oracle finished them
+/// (so most confirm) and a lie of 22.000 on every third tape (so the phantom
+/// path is exercised in the same batch); a DNF is claimed as a DNF.
+#[test]
+fn offer_many_gives_every_claim_the_verdict_offer_gives_it_alone() {
+    let Some(srv) = server() else { return };
+    let n: usize = std::env::var("TM_CERT_N").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+    let p = Patcher::build(GHOST).unwrap();
+    let mut rng = Rng::new(11);
+    let mut tapes = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut s = p.template.clone();
+        // one to three local edits in the last third: finishes, DNFs and
+        // past-the-end finishes all occur
+        for _ in 0..(1 + (rng.next_u64() % 3) as usize) {
+            mutate(&mut s, &mut rng, 1500, 2400, OpSet::Local);
+        }
+        tapes.push(s);
+    }
+    // The truth, in one launch, to build the claims.
+    let d = scratch("cert-truth");
+    let files: Vec<PathBuf> = tapes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let f = d.join(format!("t{}.Ghost.Gbx", i));
+            std::fs::write(&f, p.file(s)).unwrap();
+            f
+        })
+        .collect();
+    let refs: Vec<&Path> = files.iter().map(|f| f.as_path()).collect();
+    let truth = ghost::oracle::validate_many(&srv, &refs, MapsMode::One(Path::new(MAP)), "cert-truth").unwrap();
+    let claims: Vec<Outcome> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let name = f.file_name().unwrap().to_string_lossy().into_owned();
+            let r = truth.iter().find(|r| r.file == name).expect("the oracle read every file");
+            match r.time_ms {
+                Some(_) if i % 3 == 2 => Outcome::fin(22000),
+                Some(ms) => Outcome::fin(ms),
+                None => Outcome::Dnf(Progress::Checkpoints { cps: r.cps.unwrap_or(0), seg_ms: None }),
+            }
+        })
+        .collect();
+    let _ = std::fs::remove_dir_all(&d);
+
+    // ONE AT A TIME.
+    let d1 = scratch("cert-one");
+    let mut one = Bank::new(&d1, &srv, Path::new(MAP), None).unwrap();
+    let t = std::time::Instant::now();
+    let single: Vec<String> = tapes
+        .iter()
+        .zip(&claims)
+        .map(|(s, c)| shape(&one.offer(&p, s, *c, &nowhere())))
+        .collect();
+    let t_one = t.elapsed();
+
+    // ALL AT ONCE (in the search's batches of CERT_BATCH).
+    let d2 = scratch("cert-many");
+    let mut many = Bank::new(&d2, &srv, Path::new(MAP), None).unwrap();
+    let t = std::time::Instant::now();
+    let mut batched: Vec<String> = Vec::with_capacity(n);
+    for chunk in tapes.iter().zip(&claims).collect::<Vec<_>>().chunks(tmsearch::search::CERT_BATCH) {
+        let cs: Vec<(&forkoracle::inputs::Inputs, Outcome, &Provenance)> =
+            chunk.iter().map(|(s, c)| (*s, **c, &NOWHERE)).collect();
+        batched.extend(many.offer_many(&p, &cs).iter().map(shape));
+    }
+    let t_many = t.elapsed();
+
+    let mut differ = 0;
+    for (i, (a, b)) in single.iter().zip(&batched).enumerate() {
+        if a != b {
+            differ += 1;
+            if differ <= 5 {
+                eprintln!("claim {}: alone -> {} | batched -> {}", i, a, b);
+            }
+        }
+    }
+    let confirmed = single.iter().filter(|s| s.starts_with("OK")).count();
+    let pastend = single.iter().filter(|s| s.contains("kind pastend")).count();
+    eprintln!(
+        "certification: {} claims ({} confirmed, {} phantoms of which {} finished after their own tape); \
+         one at a time {:.1} s, batched by {} {:.1} s ({:.1}x); {} verdicts differ",
+        n,
+        confirmed,
+        n - confirmed,
+        pastend,
+        t_one.as_secs_f64(),
+        tmsearch::search::CERT_BATCH,
+        t_many.as_secs_f64(),
+        t_one.as_secs_f64() / t_many.as_secs_f64().max(1e-9),
+        differ
+    );
+    assert_eq!(differ, 0, "batched certification changed {} verdict(s)", differ);
+    assert_eq!(one.confirmed, many.confirmed);
+    assert_eq!(one.phantoms, many.phantoms);
+    let _ = std::fs::remove_dir_all(&d1);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+static NOWHERE: Provenance = Provenance {
+    from_fork: false,
+    resume_tick: None,
+    distance: Distance { first_diff_tick: None, diff_ticks: 0, ticks: 0, max_steer_delta: 0 },
+    gate: None,
+    gate_edge: None,
+};
+
+/// A FINISH AFTER THE TAPE'S OWN LAST RECORD IS REFUSED, whatever the plain
+/// oracle said its time was (SEARCH.md §3, PERF.md §1): the template braked
+/// over its last ticks finishes a few ticks after its own end, the oracle
+/// reports a time for it, and the guard must keep it as `PHANTOM_pastend_*`
+/// rather than bank a millisecond that depends on the batch it was in.
+#[test]
+fn the_guard_refuses_a_finish_after_the_tapes_own_end() {
+    let Some(srv) = server() else { return };
+    let p = Patcher::build(GHOST).unwrap();
+    let n = p.n();
+    let mut s = p.template.clone();
+    for t in n - 30..n {
+        // brake, no gas, straight, over the last 0.3 s
+        s.steer[t] = 0;
+        s.gas[t] = false;
+        s.brake[t] = true;
+    }
+    let d = scratch("guard-pastend");
+    let f = d.join("late.Ghost.Gbx");
+    std::fs::write(&f, p.file(&s)).unwrap();
+    let truth = validate(&srv, &f, MapsMode::One(Path::new(MAP)), "pastend").unwrap();
+    let end_ms = p.start_offset_ms as i64 + 10 * n as i64;
+    let Some(ms) = truth.time_ms else {
+        eprintln!("SKIP: braking the last 0.3 s made the template a DNF, not a late finish");
+        let _ = std::fs::remove_dir_all(&d);
+        return;
+    };
+    assert!(ms > end_ms, "the braked template finished at {} inside its tape (end {}); the fixture no longer makes a late finish", ms, end_ms);
+    let mut bank = Bank::new(&d, &srv, Path::new(MAP), None).unwrap();
+    let err = bank
+        .offer(&p, &s, Outcome::fin(ms), &nowhere())
+        .expect_err("the guard banked a finish that happened after the tape's last record");
+    assert!(
+        err.path.file_name().unwrap().to_string_lossy().starts_with("PHANTOM_pastend_"),
+        "refused, but not as a past-the-end finish: {}",
+        err.path.display()
+    );
+    assert_eq!(err.actual, None);
+    assert_eq!(bank.phantoms, 1);
+    assert_eq!(bank.confirmed, 0);
     let _ = std::fs::remove_dir_all(&d);
 }

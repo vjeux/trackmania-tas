@@ -73,7 +73,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--lo --hi --window --stride` | which ticks may be edited, and the sliding window over them |
 | `--temp SECONDS --migrate P` | Metropolis temperature and island migration |
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
-| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
+| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog. Every candidate is forked from the deepest savestate node that agrees with it, not from the checkpoint (PERF.md §1) |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
 | `--fire --fire-at --fire-need --fire-where --after-key --after-ticks --after-from` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 
@@ -234,6 +234,28 @@ migration moves a state made by one worker into another.
 `tests/loop_invariants.rs` runs the loop against a fake oracle with per-worker
 floors of 100/140/170/181 and fails if any candidate differs from the reference
 below 181. Reverting the floor to each worker's own makes it fail at tick 100.
+
+### A finish AFTER the tape's last record is not a finish
+
+The engine does not stop when the input tape runs out: it keeps simulating past
+the last record, and what it drives on is whatever the process's heap holds
+there. So a tape that has not finished when its records end can still cross the
+line seconds later -- and WHETHER it does depends on what else the same server
+launch validated. Measured (PERF.md §1, Kacky Reloaded #290, a 2598-tick tape
+ending at race 24.43): one candidate is DNF when validated alone or in a batch
+of 8, and 26.839 in a batch of 520 or 1000 (deterministic for a given batch);
+six more candidates in that batch got times past the tape's end. The fork
+server, which simulates the same tape in the process it was loaded into, says
+DNF for all of them, as does the single-file validation.
+
+The rule: **a finish whose millisecond is past the tape's own end is not a
+result and is never banked or certified.** Certification validates a file
+ALONE, or pads the tape to its declared time plus a margin, and any verdict
+with `finish_ms > start_offset_ms + 10 * ticks` is refused as
+"finished after its own tape", not reported as a time. The guard is already
+inside this rule -- a claim is a finish inside the tape and the written file is
+validated by itself -- and item 7's batched certification proves that it
+never moves a verdict for a claim inside its tape.
 
 ---
 
