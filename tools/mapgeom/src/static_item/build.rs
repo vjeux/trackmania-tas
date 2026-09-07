@@ -1254,6 +1254,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
+        let inst = custom_texture_material(&inst);
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
@@ -2610,6 +2611,65 @@ pub fn env_name(collection: u32) -> &'static str {
         0xf => "GreenCoast",
         _ => "BlueBay",
     }
+}
+
+/// `TINY_MAT_CUSTOM="Stem=mode[:path],…"`: rewrite one material link into
+/// the engine's CUSTOM-texture form (the ManiaPlanet item-editor material:
+/// `IsUsingGameMaterial` off, a shading `Model`, textures named by path) —
+/// the probe of 2026-09-07 for whether a texture referenced by PATH becomes
+/// a fid the game's skin remap (the in-game advertisement) can reach.
+/// Modes: `base` (Model TDSN, BaseTexture = path), `basefile` (same with the
+/// file name), `user` (UserTextures slot 0 = path, Model TDSN), `linkuser`
+/// (game link kept, UserTextures slot 0 = path). Experiments only.
+pub fn custom_texture_material(inst: &CPlugMaterialUserInst) -> CPlugMaterialUserInst {
+    let Ok(list) = std::env::var("TINY_MAT_CUSTOM") else { return inst.clone() };
+    let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
+    let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
+    for entry in list.split(',') {
+        let Some((from, spec)) = entry.split_once('=') else { continue };
+        if from != stem {
+            continue;
+        }
+        let (mode, path) = spec.split_once(':').unwrap_or((spec, ""));
+        let mut owned = inst.clone();
+        let Some(main) = owned.main.as_mut() else { return owned };
+        match mode {
+            "base" | "basefile" => {
+                main.is_using_game_material = false;
+                main.model = crate::crystal_model::Id::Str("TDSN".into());
+                main.material_name = crate::crystal_model::Id::Str(stem.clone());
+                main.base_texture = path.to_string();
+                main.link = crate::crystal_model::Id::Null;
+            }
+            "user" => {
+                main.is_using_game_material = false;
+                main.model = crate::crystal_model::Id::Str("TDSN".into());
+                main.material_name = crate::crystal_model::Id::Str(stem.clone());
+                main.link = crate::crystal_model::Id::Null;
+                main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: path.to_string() }];
+            }
+            "linkuser" => {
+                main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: path.to_string() }];
+            }
+            // tex:MODEL:slot=path;slot=path — any shading model, any slots
+            "tex" => {
+                let (model, slots) = path.split_once(':').unwrap_or((path, ""));
+                main.is_using_game_material = false;
+                main.model = crate::crystal_model::Id::Str(model.to_string());
+                main.material_name = crate::crystal_model::Id::Str(stem.clone());
+                main.link = crate::crystal_model::Id::Null;
+                main.user_textures = slots
+                    .split(';')
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|s| s.split_once('='))
+                    .map(|(slot, p)| crate::crystal_model::UserTexture { u01: slot.parse().unwrap_or(0), texture: p.to_string() })
+                    .collect();
+            }
+            _ => {}
+        }
+        return owned;
+    }
+    inst.clone()
 }
 
 pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {

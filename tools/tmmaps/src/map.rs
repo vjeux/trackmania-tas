@@ -1828,6 +1828,25 @@ impl MapFile {
         self.raw_splices.push((it.waypoint_region, bytes));
     }
 
+    /// Give a placement a skin: the v8 tail's `packDesc` FileRef (a
+    /// `Skins\…` path inside the map archive or the game's skins, plus the
+    /// flags bit 2 that announces it), replacing one already there. `None`
+    /// removes it. A variable-length edit: write and reload first, like the
+    /// waypoint tags. The MODEL must declare a skin folder (header chunk
+    /// 0x090F4000) for the game to apply the file.
+    pub fn set_item_skin(&mut self, item_index: usize, skin: Option<&crate::header::FileRef>) {
+        let it = self.items[item_index].clone();
+        let flags_off = it.waypoint_region.1;
+        let after_scale = flags_off + 2 + 12 + 4;
+        let region = it.skin_region.unwrap_or((after_scale, after_scale));
+        let (flags, bytes) = match skin {
+            Some(f) => (it.flags | 4, f.encode()),
+            None => (it.flags & !4, Vec::new()),
+        };
+        self.raw_patches.push((flags_off, flags.to_le_bytes().to_vec()));
+        self.raw_splices.push((region, bytes));
+    }
+
     /// Remove both editor-password controls. `needUnlock` lives in the block
     /// chunk; `0x03043029` carries the 16-byte password hash plus CRC32.
     /// Rewrite the baked-blocks chunk 0x03043048 of a written map so that

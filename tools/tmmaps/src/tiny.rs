@@ -1230,6 +1230,23 @@ pub fn lineup_cmd(args: &[String]) {
     // variable-length splices (the password chunk) only after a write+reload
     let mut m = MapFile::load(&tmp1);
     m.remove_password();
+    // --skin K=PATH,…: the K-th item of the row (0-based) gets a placement skin
+    // (`Skins\Any\Advertisement6x1\X.png` — a file put into the archive with
+    // --extra, or one of the game's). The 2026-09-07 probe: does an explicit
+    // skin reach an embedded item's screen where the default advertisement
+    // did not?
+    if let Some(list) = cli::flag(args, "--skin") {
+        for entry in list.split(',').filter(|s| !s.is_empty()) {
+            let (k, path) = entry.split_once('=').unwrap_or_else(|| panic!("--skin wants K=Skins\\…, got {entry:?}"));
+            let k: usize = k.parse().unwrap_or_else(|_| panic!("--skin: {k:?} is not a row index"));
+            assert!(k < names.len(), "--skin {k}: the row has {} items", names.len());
+            let mut checksum = [0u8; 32];
+            checksum[0] = 2; // what the game writes for its own skins (Summer 15: every LightColors ref)
+            let f = crate::header::FileRef { version: 3, checksum, path: path.to_string(), url: String::new() };
+            m.set_item_skin(n + k, Some(&f));
+            println!("  skin on {} ({}): {path}", names[k], n + k);
+        }
+    }
     if !embedded.is_empty() {
         // the same file placed several times is ONE archive entry / manifest row
         let mut seen: Vec<&str> = Vec::new();
@@ -1238,6 +1255,18 @@ pub fn lineup_cmd(args: &[String]) {
         for (ident, _, bytes) in &unique {
             let bytes = crate::header::set_ident_collection(bytes, map_collection);
             zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes);
+        }
+        // --extra ARCHIVE/PATH=LOCAL,…: more files into the map's archive next
+        // to the items (a texture an item names by path, a skin zip a
+        // placement points at) — the 2026-09-07 probe of what an embedded
+        // item can reach inside its own archive.
+        if let Some(list) = cli::flag(args, "--extra") {
+            for entry in list.split(',').filter(|s| !s.is_empty()) {
+                let (name, local) = entry.split_once('=').unwrap_or_else(|| panic!("--extra wants ARCHIVE/PATH=LOCALFILE, got {entry:?}"));
+                let bytes = std::fs::read(local).unwrap_or_else(|e| panic!("--extra {local}: {e}"));
+                zip = crate::header::zip_add(&zip, name, &bytes);
+                println!("  archive file {name} ({} bytes)", bytes.len());
+            }
         }
         let manifest: Vec<(&str, &str)> = unique.iter().map(|(id, a, _)| (id.as_str(), a.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);

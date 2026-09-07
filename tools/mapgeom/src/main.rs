@@ -332,6 +332,46 @@ fn main() {
                 let check = tmmaps::header::game_skin(&grafted).map(|s| s.summary()).unwrap_or_else(|| "NOT READ BACK".into());
                 println!("wrote {out} ({} bytes): {check}", grafted.len());
             }
+            // --dir DIR --out OUT [--where collector|model|both]: the BODY's skin
+            // directory fields of one of OUR items — CGameCtnCollector 0x2E001010
+            // `SkinDirectory` and/or CGameItemModel 0x2E00201E `SkinDirNameCustom`
+            // — set to DIR (`Any\Advertisement6x1\`). The 2026-09-07 probe of
+            // which declaration the game reads for a custom item.
+            if let Some(dir) = flag(&a.rest, "--dir") {
+                let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out OUT with --dir".to_string()));
+                let which = flag(&a.rest, "--where").unwrap_or_else(|| "both".to_string());
+                let mut f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(die);
+                let mut set = Vec::new();
+                for c in f.item.chunks.iter_mut() {
+                    match c {
+                        mapgeom::static_item::item::ItemChunk::Skin { skin_directory, extra, .. } if which != "model" => {
+                            *skin_directory = dir.clone();
+                            // the trailing ref is only written for an EMPTY directory
+                            *extra = if dir.is_empty() { Some(mapgeom::static_item::null_ref()) } else { None };
+                            set.push("0x2E001010 SkinDirectory");
+                        }
+                        mapgeom::static_item::item::ItemChunk::Archetype { skin_dir: Some(s), .. } if which != "collector" => {
+                            *s = dir.clone();
+                            set.push("0x2E00201E SkinDirNameCustom");
+                        }
+                        _ => {}
+                    }
+                }
+                let written = mapgeom::static_item::write_file(&f);
+                std::fs::write(&out, &written).unwrap_or_else(|e| die(e.to_string()));
+                let back = mapgeom::static_item::parse_file(&written).unwrap_or_else(die);
+                let dirs: Vec<String> = back
+                    .item
+                    .chunks
+                    .iter()
+                    .filter_map(|c| match c {
+                        mapgeom::static_item::item::ItemChunk::Skin { skin_directory, .. } => Some(format!("collector={skin_directory:?}")),
+                        mapgeom::static_item::item::ItemChunk::Archetype { skin_dir, .. } => Some(format!("model={skin_dir:?}")),
+                        _ => None,
+                    })
+                    .collect();
+                println!("wrote {out} ({} bytes): set [{}] -> {}", written.len(), set.join(", "), dirs.join(" "));
+            }
         }
         "resolve" => {
             let store = open(&a);
@@ -600,9 +640,64 @@ fn main() {
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".into()));
             let author = flag(&a.rest, "--author").unwrap_or_else(|| ident.clone());
             let (old_name, old_author) = tmmaps::header::item_ident_author(&bytes).unwrap_or_else(|| die(format!("{inp}: no header ident")));
-            let renamed = mapgeom::tiny_assets::rename_item_ident(&bytes, &old_name, &old_author, &ident, &author);
+            let mut renamed = mapgeom::tiny_assets::rename_item_ident(&bytes, &old_name, &old_author, &ident, &author);
+            // --ancestor N: the reference table's ancestor level (how many
+            // folders up from the file's own the external paths start) — the
+            // 2026-09-07 probe of where an embedded item's folder sits in the
+            // game's file tree (its pack refs resolve from `Stadium\Items\`,
+            // not from a map archive's `Items\`).
+            if let Some(n) = flag(&a.rest, "--ancestor") {
+                let n: u32 = n.parse().unwrap_or_else(|_| die("--ancestor N".into()));
+                let mut g = tmmaps::gbx::Gbx::parse(&renamed);
+                if g.ref_table.len() < 8 || u32::from_le_bytes(g.ref_table[0..4].try_into().unwrap()) == 0 {
+                    die::<()>(format!("{inp}: no external references to re-root"));
+                }
+                let old = u32::from_le_bytes(g.ref_table[4..8].try_into().unwrap());
+                g.ref_table[4..8].copy_from_slice(&n.to_le_bytes());
+                let body = g.body.clone();
+                renamed = if g.comp.is_some() { g.write_body_recompressed(&body) } else { g.write_body_uncompressed(&body) };
+                println!("  reference table ancestor level {old} -> {n}");
+            }
             std::fs::write(&out, &renamed).expect("write");
             println!("wrote {out}: ident {old_name:?} by {old_author:?} -> {ident:?} by {author:?} ({} bytes)", renamed.len());
+        }
+        // dds-from-raw IN.rgba WxH OUT.dds: an uncompressed RGBA8 DDS (128-byte
+        // header + BGRA rows) from ffmpeg's `-f rawvideo -pix_fmt rgba` bytes —
+        // the texture format the game's own images use, for the archive-texture
+        // probe of 2026-09-07 (PNG/JPG user textures never resolved).
+        "dds-from-raw" => {
+            let inp = a.rest.get(1).cloned().unwrap_or_else(|| die("dds-from-raw IN.rgba WxH OUT.dds".to_string()));
+            let dims = a.rest.get(2).cloned().unwrap_or_else(|| die("dds-from-raw IN.rgba WxH OUT.dds".to_string()));
+            let out = a.rest.get(3).cloned().unwrap_or_else(|| die("dds-from-raw IN.rgba WxH OUT.dds".to_string()));
+            let (w, h) = dims.split_once('x').map(|(w, h)| (w.parse::<u32>().unwrap_or(0), h.parse::<u32>().unwrap_or(0))).unwrap_or((0, 0));
+            let rgba = std::fs::read(&inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            if w == 0 || h == 0 || rgba.len() != (w * h * 4) as usize {
+                die::<()>(format!("{inp}: {} bytes is not {w}x{h} RGBA", rgba.len()));
+            }
+            let mut d = Vec::with_capacity(128 + rgba.len());
+            d.extend_from_slice(b"DDS ");
+            let mut hdr = [0u32; 31];
+            hdr[0] = 124; // header size
+            hdr[1] = 0x0000_100F; // CAPS | HEIGHT | WIDTH | PIXELFORMAT | PITCH
+            hdr[2] = h;
+            hdr[3] = w;
+            hdr[4] = w * 4; // pitch
+            hdr[18] = 32; // pixel format size
+            hdr[19] = 0x41; // RGB | ALPHAPIXELS
+            hdr[21] = 32; // bit count
+            hdr[22] = 0x00FF_0000; // R
+            hdr[23] = 0x0000_FF00; // G
+            hdr[24] = 0x0000_00FF; // B
+            hdr[25] = 0xFF00_0000; // A
+            hdr[26] = 0x1000; // caps: TEXTURE
+            for v in hdr {
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+            for px in rgba.chunks(4) {
+                d.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            }
+            std::fs::write(&out, &d).unwrap_or_else(|e| die(e.to_string()));
+            println!("wrote {out}: {w}x{h} RGBA8 DDS, {} bytes", d.len());
         }
         // A client crash dump: where it died, in objdump addresses. CRASH.md.
         "crash" => {

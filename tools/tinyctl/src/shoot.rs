@@ -75,6 +75,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         Some("t") => vec!["t"],
         _ => vec!["o", "t"],
     };
+    // --settle-ms MS goes through to shootset (the pause before each shot; the
+    // in-game advertisements rotate, so a skin probe repeats one view with a
+    // longer pause to see every state)
+    let settle_arg = f("--settle-ms").map(|ms| format!(" --settle-ms {ms}")).unwrap_or_default();
     for side in &sides {
         let map = if *side == "o" { &r_orig } else { &r_tiny };
         // shootset maps the camera through the anchor for --side t only, so
@@ -85,7 +89,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}") } else { String::new() };
         // --shadows Q: compute the lightmap on both sides before shooting
         let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
-        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}");
+        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}");
         eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {
