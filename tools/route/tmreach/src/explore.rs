@@ -195,7 +195,13 @@ pub fn explore_ghost(w: &mut Worker, tel: &Telemetry, cfg: &ExploreCfg) -> Resul
             for gi in &new_gates {
                 let already: Vec<usize> = (0..ng).filter(|i| credited[*i]).collect();
                 let human_next = human_order.iter().find(|g| !already.contains(g)).copied();
-                if Some(*gi) != human_next {
+                // a SIBLING of the human's next gate (same linked group -- Summer 2026 - 04 has
+                // three adjacent 32 m gates in one group and three finish groups) is not novel
+                let novel = match human_next {
+                    Some(hn) => gates.gates[hn].group != gates.gates[*gi].group,
+                    None => true,
+                };
+                if novel {
                     let mut full_chain = chain.to_vec();
                     full_chain.push((m.id, h));
                     // write the tape: human prefix to f, then the chain, then brake to the end
