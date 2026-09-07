@@ -210,7 +210,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -1114,6 +1114,7 @@ fn main() {
         "census" => census::cmd_census(&args),
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
+        "mediatracker" => tmmaps::mediatracker::cmd(&args),
         "chunks" => {
             // Every skippable chunk in the body, with its size. Needed to
             // reason about FREE blocks (0x0304305F) and to tell at a glance
@@ -1122,6 +1123,17 @@ fn main() {
             let g = gbx::Gbx::load(Path::new(&args[2])).unwrap();
             let only: Option<u32> = flag(&args, "--only").map(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).expect("--only CHUNKID (hex)"));
             let hex: usize = flag(&args, "--hex").and_then(|s| s.parse().ok()).unwrap_or(0);
+            // `--at OFF --hex N`: the decompressed body at an absolute offset
+            // (the non-skippable chunks -- the MediaTracker 0x03043049 -- have
+            // no PIKS header and never appear in the table below).
+            if let Some(at) = flag(&args, "--at").and_then(|s| s.parse::<usize>().ok()) {
+                let end = (at + hex.max(256)).min(g.body.len());
+                println!("body {} bytes; {at}..{end}:", g.body.len());
+                for (i, row) in g.body[at..end].chunks(16).enumerate() {
+                    println!("  {:08x}: {:<48} {}", at + i * 16, row.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "), row.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
+                }
+                return;
+            }
             println!("chunk\toff\tpayload\tsize");
             for (cid, off, payload, size) in map::skip_chunks(&g.body) {
                 if only.map(|c| c != cid).unwrap_or(false) {

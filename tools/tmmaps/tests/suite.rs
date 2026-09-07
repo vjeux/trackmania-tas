@@ -169,3 +169,67 @@ fn block_removal_roundtrips_and_reparses() {
         }
     }
 }
+
+/// The MediaTracker (chunk 0x03043049, `mediatracker.rs`): the reader walks
+/// every clip of the fixtures to exactly the chunk's end, re-emitting it
+/// unchanged reproduces the chunk byte for byte, a transform moves every
+/// camera key and trigger cell and reads back after a write with the rest of
+/// the map intact, and stripping leaves every slot null.
+#[test]
+fn mediatracker_roundtrips_transforms_and_strips() {
+    for name in ["map1.Map.Gbx", "map2.Map.Gbx", "goth.Map.Gbx"] {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+        let m = tmmaps::map::MapFile::load(&fixture);
+        let mt = m.mediatracker().unwrap_or_else(|| panic!("{name}: no MediaTracker chunk")).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!mt.clips().is_empty(), "{name}: no clips read");
+        assert_eq!(mt.emit(&m.gbx.body), &m.gbx.body[mt.start..mt.end], "{name}: re-emitting the chunk unchanged differs");
+        mt.check_offsets(&m.gbx.body).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let cells_before: usize = mt.slots().iter().map(|(_, s)| match s { tmmaps::mediatracker::Slot::Group(g) => g.triggers.iter().map(|t| t.coords.len()).sum(), _ => 0 }).sum();
+        assert!(cells_before > 0, "{name}: no trigger cells");
+
+        // a transform: half scale about the origin, then +100 in x and z
+        let point = |p: [f32; 3]| [p[0] * 0.5 + 100.0, p[1] * 0.5, p[2] * 0.5 + 100.0];
+        let cell = |c: [i32; 3]| vec![[c[0] / 2 + 10, c[1], c[2] / 2 + 10]];
+        let before = mt.camera_positions();
+        let mut t = mt.clone();
+        let (keys, _verts, (c0, c1), _left) = t.transform(&point, 0.5, &cell);
+        assert!(keys > 0, "{name}: no camera key moved");
+        assert_eq!(c0, cells_before);
+        assert!(c1 <= c0 && c1 > 0, "{name}: trigger cells {c0} -> {c1}");
+        let out = std::env::temp_dir().join(format!("tmmaps-mt-{}-{name}", std::process::id()));
+        let mut w = tmmaps::map::MapFile::load(&fixture);
+        w.set_mediatracker(&t);
+        w.write_to(&out).expect("write transformed map");
+        let re = tmmaps::map::MapFile::load(&out);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(re.items.len(), m.items.len(), "{name}: items changed");
+        assert_eq!(re.blocks.len(), m.blocks.len(), "{name}: blocks changed");
+        assert_eq!(re.baked.len(), m.baked.len(), "{name}: baked changed");
+        let mt2 = re.mediatracker().unwrap().unwrap_or_else(|e| panic!("{name}: reread: {e}"));
+        let after = mt2.camera_positions();
+        assert_eq!(before.len(), after.len(), "{name}: key count changed");
+        for (a, b) in before.iter().zip(&after) {
+            let e = point(*a);
+            let moved = (0..3).all(|k| (e[k] - b[k]).abs() < 1e-3);
+            let kept = (0..3).all(|k| (a[k] - b[k]).abs() < 1e-3); // a camera hung on the car
+            assert!(moved || kept, "{name}: key {a:?} came back {b:?}, expected {e:?}");
+        }
+        let cells_after: usize = mt2.slots().iter().map(|(_, s)| match s { tmmaps::mediatracker::Slot::Group(g) => g.triggers.iter().map(|t| t.coords.len()).sum(), _ => 0 }).sum();
+        assert_eq!(cells_after, c1, "{name}: trigger cells after the write");
+        assert_eq!(mt2.clips().len(), mt.clips().len(), "{name}: clip count");
+        assert_eq!(mt2.trigger_size, mt.trigger_size);
+
+        // strip: every slot null, the rest of the map intact
+        let mut s = mt.clone();
+        s.strip = true;
+        let mut w = tmmaps::map::MapFile::load(&fixture);
+        w.set_mediatracker(&s);
+        w.write_to(&out).expect("write stripped map");
+        let re = tmmaps::map::MapFile::load(&out);
+        let _ = std::fs::remove_file(&out);
+        let mt3 = re.mediatracker().unwrap().unwrap_or_else(|e| panic!("{name}: stripped reread: {e}"));
+        assert!(mt3.clips().is_empty(), "{name}: clips survived the strip");
+        assert_eq!(mt3.trigger_size, mt.trigger_size);
+        assert_eq!(re.items.len(), m.items.len(), "{name}: items changed by the strip");
+    }
+}

@@ -17,6 +17,7 @@
 
 mod boxbuild;
 mod compare;
+mod play;
 mod png;
 mod probe;
 mod publish;
@@ -42,6 +43,9 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         compare there, pull the sheets: cmpdiff-sNN-crops.png / -overview.png
         (--ab: --orig is a tiny build too — an A/B of two tiny outputs — and is
         shot through the anchor like the tiny side)
+  tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300] [--timeout 600] [--outdir D]
+        the map in PLAY mode on the box (shootctl playshots): N timed frames from
+        the playground opening — the MediaTracker intro — as one stacked sheet
   tinyctl compare --views VIEWS.tsv --dir DIR --tag sNN [--color 50] [--edge 16] [--keep-hud]
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]
@@ -82,6 +86,7 @@ fn main() {
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
         "compare" => compare::cmd(rest),
+        "play" => play::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
         "upload" => upload::cmd(rest),

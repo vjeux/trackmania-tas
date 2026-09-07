@@ -319,6 +319,55 @@ fn transform(
     ]
 }
 
+/// One MediaTracker trigger cell of the source (the trigger grid divides a
+/// block cell into `ts` = 3×1×3 boxes of 32/3 × 8 × 32/3 m; row 0 at the
+/// collection's ground) -> the trigger cells of the target its transformed
+/// box covers. The box comes out half-size, so per axis it lies in one target
+/// cell or straddles two; a straddled cell counts when the box covers at
+/// least a fifth of it. Covering every cell merely TOUCHED (a sliver of a
+/// metre) would double the volume's footprint — a 16 m tiny road would fire
+/// its camera 8 m off each side, onto a neighbouring road — while the cell
+/// centre alone can leave a one-row-tall trigger a row below the car; the
+/// fifth keeps the car's band (deck +1..+3 m) inside on every collection's
+/// row phase (Stadium boxes sit at row offsets 1..5 / 5..9, BlueBay's at
+/// 3.5..7.5 / 7.5..11.5).
+fn trigger_cells(c: [i32; 3], ts: [i32; 3], point: &dyn Fn([f32; 3]) -> [f32; 3]) -> Vec<[i32; 3]> {
+    let unit = [32.0 / ts[0].max(1) as f32, 8.0 / ts[1].max(1) as f32, 32.0 / ts[2].max(1) as f32];
+    let origin = [0.0, ground(), 0.0];
+    let lo = [origin[0] + c[0] as f32 * unit[0], origin[1] + c[1] as f32 * unit[1], origin[2] + c[2] as f32 * unit[2]];
+    let hi = [lo[0] + unit[0], lo[1] + unit[1], lo[2] + unit[2]];
+    let a = point(lo);
+    let b = point(hi);
+    let cells_on = |k: usize| -> Vec<i32> {
+        let (x0, x1) = (a[k].min(b[k]), a[k].max(b[k]));
+        let first = ((x0 - origin[k]) / unit[k]).floor() as i32;
+        let last = ((x1 - origin[k]) / unit[k]).floor() as i32;
+        let mut out = Vec::new();
+        for i in first.max(0)..=last.max(0) {
+            let (c0, c1) = (origin[k] + i as f32 * unit[k], origin[k] + (i + 1) as f32 * unit[k]);
+            let overlap = x1.min(c1) - x0.max(c0);
+            if overlap >= 0.2 * unit[k] - 1e-4 {
+                out.push(i);
+            }
+        }
+        if out.is_empty() {
+            // a degenerate box (scale ~0): the cell under its centre
+            out.push((((x0 + x1) * 0.5 - origin[k]) / unit[k]).floor().max(0.0) as i32);
+        }
+        out
+    };
+    let (xs, ys, zs) = (cells_on(0), cells_on(1), cells_on(2));
+    let mut out = Vec::with_capacity(xs.len() * ys.len() * zs.len());
+    for x in &xs {
+        for y in &ys {
+            for z in &zs {
+                out.push([*x, *y, *z]);
+            }
+        }
+    }
+    out
+}
+
 fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
     let c = |v: f32, divisor: f32| (v / divisor).floor().clamp(0.0, 255.0) as i32;
     (
@@ -785,6 +834,46 @@ pub fn cmd(args: &[String]) {
     if std::env::var("TINY_LIGHTMAP").map(|v| v != "keep").unwrap_or(true) {
         let n = m.strip_lightmap();
         println!("  stored lightmap stripped ({n} bytes)");
+    }
+    // The MediaTracker (chunk 0x03043049, `mediatracker.rs`): the intro, the
+    // in-game and the end-race clips fly cameras over FULL-SIZE coordinates
+    // and fire from full-size trigger cells; both go through the items'
+    // transform (times, angles and fields of view stay: the clip lasts the
+    // same seconds over a half-size map). Blocks whose layout the reader does
+    // not know are copied verbatim and listed. TINY_MEDIATRACKER=keep leaves
+    // the chunk alone, =strip drops every clip (A/B).
+    let mt_mode = std::env::var("TINY_MEDIATRACKER").unwrap_or_default();
+    if mt_mode != "keep" {
+        match m.mediatracker() {
+            None => println!("  MediaTracker: no chunk 0x03043049 in this map"),
+            Some(Err(e)) => eprintln!("  WARNING: MediaTracker left untouched, its cameras fly over the full-size layout: {e}"),
+            Some(Ok(mut mt)) => {
+                if mt_mode == "strip" {
+                    mt.strip = true;
+                    println!("  MediaTracker: every clip dropped (TINY_MEDIATRACKER=strip)");
+                } else {
+                    let ts = mt.trigger_size.unwrap_or([3, 1, 3]);
+                    let point = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
+                    let cell = |c: [i32; 3]| trigger_cells(c, ts, &point);
+                    let (keys, verts, (c0, c1), left) = mt.transform(&point, scale, &cell);
+                    let opaque = mt.opaque_blocks();
+                    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+                    for (class, _) in &opaque {
+                        *kinds.entry(crate::mediatracker::class_name(*class)).or_default() += 1;
+                    }
+                    println!(
+                        "  MediaTracker: {} clips; {keys} camera keys and {verts} triangle vertices moved through the transform, trigger cells {c0} -> {c1} (grid {}x{}x{} per block), {left} blocks left alone ({} kept verbatim: {})",
+                        mt.clips().len(),
+                        ts[0], ts[1], ts[2],
+                        opaque.len(),
+                        kinds.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(" ")
+                    );
+                }
+                m.set_mediatracker(&mt);
+            }
+        }
+    } else {
+        println!("  MediaTracker kept untouched (TINY_MEDIATRACKER=keep)");
     }
     if library.as_os_str() != "-" {
         let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
