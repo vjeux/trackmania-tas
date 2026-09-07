@@ -527,3 +527,56 @@ Cumulative, the tape search on map 2 at 24 workers: **569 evals/s (tickhook @
 485319b) → 1,384 evals/s (this branch), 2.43×, in the same ten minutes on the
 same box, both guarded, both 0 phantoms** — and 3,419 evals/s at 64 workers
 alone on the box.
+
+---
+
+## 11. The branch, itemised — and the probe that was a fork spent on a known number
+
+The RL env's step is a branch: `'B'` to the current node, the new node's hello,
+its boundary probe, the trace read. Measured with a per-phase timeline in
+`Forest::advance` (`fk tree cost` prints it; map 2, k = 10, 21 reps, idle box):
+
+| phase | this morning | no `waitpid` | boundary from the clock |
+|---|---|---|---|
+| request + the parent's fork | 1.41 ms | 1.43 | 1.40 |
+| reply → the node's hello (setup, 10 ticks, socket, the driver's polling) | 0.70 | 0.64 | 0.71 |
+| the boundary probe | **3.50** | **1.54** | **0.00** (1 in 50 sampled: 0.03 avg) |
+| **a k = 10 branch** | **5.61 ms** | **3.61** | **2.11** |
+| fit | — | 3.61 ms + 13.9 µs/tick | **2.08 ms + 13.5 µs/tick** |
+
+**The `waitpid`.** The probe forks a child that walks into the protected input
+array and reports the record it faults on; the parent then killed it and
+`waitpid`-ed — which returns only after the kernel has torn the child's 150 MB
+address space down. The same wait the exit marker took off the candidate path
+(§3.1). Deleted: kill and walk away, SIGCHLD is ignored. −2 ms per node.
+
+**The probe itself.** The remaining 1.54 ms was a fork spent on a number the
+node had already sent: its hello carries `sim_ms` and `race_start`, and the
+engine's own rule for which record a tick copies is transcribed in
+`forkoracle::clock::record_read_at(sim_ms, race_start, start_offset_ms)` (0
+before race −10 ms, the index after). `fk tree clockprobe` measured the fork
+probe against it:
+
+| sweep | nodes | residual |
+|---|---|---|
+| map 2, Kacky Reloaded #290, get jiggy with it — k = 1/10/50/200, fresh from the root and chained | 1000 each | 0 on all 3000 |
+| map 2, a checkpoint in the COUNTDOWN (tick 60; race starts at 158), k = 1..200 across the start | 160 | 0 (the probe reads record 0 before race −10 ms, as the rule says) |
+| YOU LOVE WATER (284238, 440.238, **31 respawns**): checkpoints 1000..41000, plus 155 nodes planted just before, 1, 5, 20 and 60 ticks past EVERY respawn | 960 + 555 | 0 |
+
+So `Forest` now takes the boundary of every node from its own clock
+(`Node::adopt_clock_boundary`) — the node's own measurement, never a parent's —
+and keeps the fork probe as **the control**: the root is probed AND clocked and
+the two must agree (`boundary_tick`), and one node in `PROBE_SAMPLE = 50` is
+probed as well; a disagreement is a **hard error out of `advance`**, never a
+number to pick between. `Forest::new` gained the tape's `start_offset_ms`
+(tmenv passes its tape's). `fk tree clockprobe --respawns TAPE` is the
+standing sweep.
+
+Not done, and why: a pre-forked standby for `'B'` children. The env's node
+lives hello → `'P'` → one `'B'` → killed, with microseconds of driver time in
+between; a single-threaded node can only hide a fork behind time it would
+otherwise spend idle, and there is none in that chain — pre-forking before the
+hello delays the hello by the fork, after the probe it is still in flight when
+the `'B'` arrives. It pays only for pinned nodes and the ladder's rungs, which
+the R/W standby already serves. `'P'` no longer kills a standby (the probe
+child is its own copy; the parent is untouched — the ENV arm confirmed).

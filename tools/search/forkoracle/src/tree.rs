@@ -207,6 +207,27 @@ impl Node {
         self.boundary
     }
 
+    /// THE BOUNDARY FROM THE NODE'S OWN CLOCK. The engine copies record
+    /// `record_read_at(sim_ms, race_start, start_offset)` at the tick it is
+    /// stopped in front of (`forkoracle::clock`, the engine's own rule
+    /// transcribed), and `sim_ms` and `race_start` are what this node said in
+    /// its hello. Measured against the page-fault probe on 2015 nodes -- three
+    /// maps, k = 1..200, fresh and chained, a countdown checkpoint, and 155
+    /// nodes inside and just past the 31 respawn windows of YOU LOVE WATER --
+    /// residual 0 on every one (PERF.md §11, `fk tree clockprobe`). The probe
+    /// stays as the control: `Forest` runs it on a sample of nodes and aborts
+    /// on any disagreement.
+    pub fn clock_boundary(&self, start_offset_ms: i32) -> usize {
+        crate::clock::record_read_at(self.sim_ms, self.race_start, start_offset_ms).max(0) as usize
+    }
+
+    /// Adopt the clock's boundary as this node's.
+    pub fn adopt_clock_boundary(&mut self, start_offset_ms: i32) -> usize {
+        let b = self.clock_boundary(start_offset_ms);
+        self.boundary = Some(b);
+        b
+    }
+
     /// Fork a child that runs the tape to the finish and returns the
     /// validator's JSON. The node itself is untouched and can be forked again.
     pub fn run(&mut self, from: usize, recs: &[Rec]) -> Result<String, String> {

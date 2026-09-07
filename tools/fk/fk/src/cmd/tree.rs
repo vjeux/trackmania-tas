@@ -301,7 +301,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     if let Some(c) = &cfg {
         std::fs::create_dir_all(&c.dir).map_err(|e| e.to_string())?;
     }
-    let mut f = Forest::new(srv, &engine.work, reference, cfg)?;
+    let mut f = Forest::new(srv, &engine.work, reference, cfg, tape.start_offset_ms)?;
     f.probe_root()?;
     let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
 
@@ -530,7 +530,7 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
 
     let (steer0, accel0, brake0) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
     let reference = recs_from(&steer0, &accel0, &brake0, 0);
-    let mut f = Forest::new(srv, &engine.work, reference, None)?;
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
 
     let mut rng = Rng::new(o.seed);
@@ -867,7 +867,7 @@ fn scale_worker(
     s.probe_tick()?;
     let (srv, tape, _) = split(s);
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
-    let mut f = Forest::new(srv, &e.work, reference, None)?;
+    let mut f = Forest::new(srv, &e.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
     up.fetch_add(1, Ordering::Relaxed);
     let t0 = Instant::now();
@@ -888,13 +888,27 @@ fn scale_worker(
 /// spent on a number already known. This measures the residual over many
 /// branches at several `k`, and prints its distribution; it decides nothing
 /// by itself.
-pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps: usize) -> Result<(), String> {
+pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps: usize, respawns: Option<&str>) -> Result<(), String> {
+    // RESPAWN WINDOWS. The tape's own respawn inputs (bit 31 of a packet's
+    // state literal) name the ticks where the vehicle is removed and put back;
+    // that is where a clock-vs-record assumption would break if anywhere. With
+    // `--respawns FILE` every respawn tick after the checkpoint gets nodes
+    // planted 1, 5, 20 and 60 ticks after it (chained), so the boundary is
+    // checked inside the window and on the way out of it.
+    let respawn_ticks: Vec<usize> = match respawns {
+        Some(path) => {
+            let t = gbx::tape::Tape::from_file(path)?;
+            let a = t.archives.first().ok_or("no input archive")?;
+            a.packets.iter().enumerate().filter(|(_, p)| p.respawn()).map(|(i, _)| i).collect()
+        }
+        None => Vec::new(),
+    };
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     s.assert_running_our_tape()?;
     let (srv, tape, _) = split(s);
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
-    let mut f = Forest::new(srv, &engine.work, reference, None)?;
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
     let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
     println!("root: probed boundary {} (start offset {} ms)", root_b, tape.start_offset_ms);
@@ -910,7 +924,14 @@ pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps:
             let (_, h) = f.advance(parent, &[], from, k)?;
             let (clock, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
             let b = b.ok_or("node without a boundary")? as i64;
-            let derived = (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10;
+            // Before the race starts the engine has read no record: the boundary
+            // is 0 whatever the countdown clock says (measured: fork-probe 0 at
+            // sim_ms 2030..2120 with race_start 2200 on map 2).
+            let derived = if sim_ms < race_start {
+                0
+            } else {
+                (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10
+            };
             let res = b - derived;
             *residuals.entry(res).or_insert(0) += 1;
             if r < 2 {
@@ -921,6 +942,45 @@ pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps:
             }
             chain.push(h);
         }
+    }
+    // Inside every respawn window after the checkpoint.
+    let mut in_windows = 0usize;
+    for &rt in respawn_ticks.iter().filter(|&&t| t > root_b + 1) {
+        // a node just before the respawn, then chained nodes 1, 5, 20, 60 ticks past it
+        let mut from = root_b;
+        let mut parent = ROOT;
+        let mut steps: Vec<u64> = vec![(rt - 1 - root_b) as u64, 2, 4, 15, 40];
+        if steps[0] == 0 {
+            steps.remove(0);
+        }
+        for k in steps {
+            let (_, h) = match f.advance(parent, &[], from, k) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("respawn at tick {}: advance by {} from {} failed: {}", rt, k, from, e);
+                    break;
+                }
+            };
+            let (_, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            let derived = if sim_ms < race_start { 0 } else { (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10 };
+            *residuals.entry(b - derived).or_insert(0) += 1;
+            in_windows += 1;
+            if b - derived != 0 {
+                println!("respawn at tick {}: node at boundary {} derived {} -> residual {}", rt, b, derived, b - derived);
+            }
+            if parent != ROOT {
+                f.release(parent);
+            }
+            parent = h;
+            from = b as usize;
+        }
+        if parent != ROOT {
+            f.release(parent);
+        }
+    }
+    if !respawn_ticks.is_empty() {
+        println!("\nrespawns in the tape: {} ({} after the checkpoint); {} nodes planted inside and just past their windows", respawn_ticks.len(), respawn_ticks.iter().filter(|&&t| t > root_b + 1).count(), in_windows);
     }
     println!("\nresidual boundary - (sim_ms - race_start - start_offset)/10 over {} nodes:", residuals.values().sum::<usize>());
     for (r, n) in &residuals {

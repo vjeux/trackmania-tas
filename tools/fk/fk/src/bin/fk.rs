@@ -383,6 +383,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     at,
                     &ns("--ks", "1,10,50,200"),
                     num(rest, "--reps").unwrap_or(50) as usize,
+                    flag(rest, "--respawns"),
                 ),
                 "exact" => match cmd::tree::exact(
                     &engine,

@@ -157,6 +157,10 @@ impl std::fmt::Display for Timeline {
     }
 }
 
+/// One node in this many gets the page-fault probe beside its clock boundary,
+/// and the two must agree (PERF.md §11).
+pub const PROBE_SAMPLE: u64 = 50;
+
 pub struct Forest {
     root: ForkServer,
     tree: Tree,
@@ -164,6 +168,11 @@ pub struct Forest {
     nodes: HashMap<Handle, Held>,
     next: u64,
     timeline: Timeline,
+    /// The tape's start offset: the boundary of every node is
+    /// `record_read_at(sim_ms, race_start, start_offset_ms)` from its hello.
+    start_offset_ms: i32,
+    /// How many nodes the sampled probe has checked, and agreed on.
+    pub probes_checked: u64,
     /// The root's own probed boundary. Probed once, for the root, like any
     /// other node.
     root_boundary: Option<usize>,
@@ -177,11 +186,17 @@ impl Forest {
     ///
     /// `reference` is the tape the server is simulating, tick for tick. It is
     /// held so every answer can report how far the evaluated tape was from it.
+    ///
+    /// `start_offset_ms` is the tape's: every node's boundary is computed from
+    /// its own clock with it (`Node::clock_boundary`), and one node in
+    /// [`PROBE_SAMPLE`] is also page-fault probed; a disagreement is a hard
+    /// error from `advance`, never a number to pick between.
     pub fn new(
         root: ForkServer,
         work: &Path,
         reference: Vec<Rec>,
         cfg: Option<TraceCfg>,
+        start_offset_ms: i32,
     ) -> Result<Forest, String> {
         let tree = Tree::new(work)?;
         Ok(Forest {
@@ -191,6 +206,8 @@ impl Forest {
             nodes: HashMap::new(),
             next: 1,
             timeline: Timeline::default(),
+            start_offset_ms,
+            probes_checked: 0,
             root_boundary: None,
             reference,
         })
@@ -204,7 +221,9 @@ impl Forest {
     /// Probe the root's own consumed boundary. Must be called before the first
     /// `advance` from `ROOT`.
     pub fn probe_root(&mut self) -> Result<usize, String> {
-        let t = self.root.probe_tick()?;
+        // The page-fault probe AND the clock, required to agree: the root is
+        // the first control point of the forest's boundaries.
+        let t = self.root.boundary_tick(self.start_offset_ms)?;
         self.root_boundary = Some(t);
         Ok(t)
     }
@@ -321,6 +340,7 @@ impl Forest {
 
         let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
         let t2 = std::time::Instant::now();
+        let (node_sim_ms, node_race_start) = (node.sim_ms, node.race_start);
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -332,13 +352,34 @@ impl Forest {
                 pid, node.pid
             ));
         }
-        // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
-        // abort. Not "fall back to the parent's" -- that is the defect.
-        if let Err(e) = node.probe() {
-            let pid = node.pid;
-            node.destroy();
-            self.tree.reaped(pid);
-            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+        // EVERY NODE'S BOUNDARY IS ITS OWN: from the clock it reported in its
+        // hello (the engine's own rule, `record_read_at`), never inherited from
+        // a parent -- inheriting is the defect that produced 312 false
+        // finishes. One node in PROBE_SAMPLE is also page-fault probed, and a
+        // disagreement is a hard abort: not "fall back to the probe", not
+        // "prefer the clock" -- the two are measured from opposite sides and
+        // their disagreement means the hook or the record layout is not what
+        // TICKHOOK.md says.
+        let derived = node.adopt_clock_boundary(self.start_offset_ms);
+        if self.timeline.branches % PROBE_SAMPLE == 0 {
+            match node.probe() {
+                Ok(p) if p == derived => self.probes_checked += 1,
+                Ok(p) => {
+                    let pid = node.pid;
+                    node.destroy();
+                    self.tree.reaped(pid);
+                    return Err(format!(
+                        "CLOCK / PROBE DISAGREEMENT on node {}: its hello says sim_ms {} race_start {} (record {} with start offset {}), the page-fault probe says it reads record {} next. Nothing this forest measures can be trusted until that is explained.",
+                        pid, node_sim_ms, node_race_start, derived, self.start_offset_ms, p
+                    ));
+                }
+                Err(e) => {
+                    let pid = node.pid;
+                    node.destroy();
+                    self.tree.reaped(pid);
+                    return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+                }
+            }
         }
         let t3 = std::time::Instant::now();
 
