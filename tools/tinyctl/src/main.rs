@@ -43,7 +43,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]
         per-cell colour/edge diff of cmp-<tag><view>-o.png vs -t.png
-  tinyctl publish-map NN --map TINY.Map.Gbx [--items-dir DIR] [--name N]
+  tinyctl publish-map NN --map TINY.Map.Gbx [--items-dir DIR --paks "--pak F:KEY …"] [--name N]
                 [--club 43788] [--campaign 155555] [--position P] [--playcheck]
         item-check gate, push, upload/update on Nadeo Services, campaign
         playlist, stored-bytes md5 readback, optional play + screenshot

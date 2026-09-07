@@ -314,7 +314,27 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
         }
         let mut rest: Vec<String> = vec!["item-check".into()];
         rest.extend(items.iter().cloned());
-        let mut open = || mapgeom::store::DataStore::empty();
+        // the material-link rule needs the packs: `--paks "--pak F:KEY …"`
+        // like probe (an empty store fails every link as "no .Material.Gbx")
+        let paks = f("--paks").ok_or("publish-map --items-dir needs --paks \"--pak FILE:KEY …\" so item-check can resolve the material links (or drop --items-dir)")?;
+        let mut open = || {
+            let mut store = mapgeom::store::DataStore::empty();
+            let toks: Vec<&str> = paks.split_whitespace().collect();
+            let mut i = 0;
+            while i < toks.len() {
+                if toks[i] == "--pak" {
+                    if let Some((p, k)) = toks.get(i + 1).and_then(|s| s.rsplit_once(':')) {
+                        if let Err(e) = store.add_pak(p, k) {
+                            eprintln!("--paks: {p}: {e}");
+                        }
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            store
+        };
         match mapgeom::static_item::check::run(&rest, &mut open) {
             Ok(()) => println!("item-check: {} items ok", items.len()),
             Err(e) => return Err(format!("item-check refused the library ({e}) — not publishing")),
