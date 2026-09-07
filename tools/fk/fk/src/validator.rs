@@ -436,3 +436,34 @@ mod tests {
         assert!(e.contains("CGameVehiclePhy"), "{e}");
     }
 }
+
+/// The participant's LIVE vehicle, read from a paused process: `(slot, phy)`
+/// with slot 0 Stadium, 1 Snow, 2 Rally, 3 Desert (WHEELS.md §1; the live one
+/// is the slot whose u32 at phy+0x10 is not -1). `None` when no slot says it is
+/// live or the reads fail -- the caller keeps what it had. For following a car
+/// switch inside an episode: the participant address is the same in every
+/// fork of the server.
+pub fn live_vehicle(pid: i32, participant: u64) -> Option<(u8, u64)> {
+    let o = BUILD_128182;
+    let mut live: Vec<(u8, u64)> = Vec::new();
+    for k in 0..4u64 {
+        let class = procmem::read_at(pid, participant + o.participant_vehicle_class + 0x10 * k, 4)
+            .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))?;
+        if class != CGAME_VEHICLE_PHY {
+            continue;
+        }
+        let phy = procmem::read_at(pid, participant + o.participant_vehicle + 0x10 * k, 8)
+            .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))?;
+        if phy == 0 {
+            continue;
+        }
+        let flag = procmem::read_at(pid, phy + 0x10, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))?;
+        if flag != 0xffff_ffff {
+            live.push((k as u8, phy));
+        }
+    }
+    if live.len() == 1 { Some(live[0]) } else { None }
+}
+
+/// Where a `CGameVehiclePhy`'s physics position sits (ValidatorCar.pos).
+pub const STATE_POS_IN_VEHICLE: u64 = 0x12f0;

@@ -3040,6 +3040,9 @@ fn open_loop_control(a: &[String]) {
                 })
                 .collect();
             let (_o, _r, dn, info) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
+            if info.car_switched {
+                println!("  car switch followed at env tick {t}: now car slot {} (race {:.3})", info.state.car, info.state.race_ms as f64 / 1000.0);
+            }
             let nt = env.next_tick().unwrap_or(t + k);
             if nt != t + k {
                 drift += 1;

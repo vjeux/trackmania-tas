@@ -492,6 +492,35 @@ impl Forest {
         Ok(rows)
     }
 
+
+    /// The process a node is paused in -- the root's fork server for `ROOT`,
+    /// else the branch child -- for a caller that reads engine memory beside
+    /// the sampler (e.g. the participant's LIVE vehicle slot across a switch).
+    pub fn pid_of(&self, h: Handle) -> Result<i32, String> {
+        if h == ROOT {
+            return Ok(self.root.pid());
+        }
+        Ok(self.held(h)?.node.pid)
+    }
+
+    /// The layout the trace is gathered and decoded with.
+    pub fn layout(&self) -> Option<&Layout> {
+        self.cfg.as_ref().map(|c| &c.layout)
+    }
+
+    /// Replace the layout for every LATER fork: the segments the child gathers
+    /// and the decode of its rows. The clock address and bias must not change
+    /// (labels would move); the car block and the vis state may -- that is how
+    /// a car switch is followed.
+    pub fn set_layout(&mut self, l: Layout) -> Result<(), String> {
+        let cfg = self.cfg.as_mut().ok_or("no trace configuration")?;
+        if cfg.layout.clock != l.clock || cfg.layout.clock_bias != l.clock_bias {
+            return Err("set_layout: the clock address/bias must not change".into());
+        }
+        cfg.layout = l;
+        Ok(())
+    }
+
     fn held(&self, h: Handle) -> Result<&Held, String> {
         self.nodes.get(&h).ok_or_else(|| format!("no such handle: {:?}", h))
     }

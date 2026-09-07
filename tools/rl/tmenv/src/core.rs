@@ -175,6 +175,9 @@ pub struct Info {
     pub dprog: f32,
     /// True if the airborne guard suppressed a no-progress cut this step.
     pub air_guarded: bool,
+    /// The participant's live vehicle slot changed during this step (a
+    /// car-switch block): the readout followed it from this step on.
+    pub car_switched: bool,
 }
 
 impl Default for Info {
@@ -191,6 +194,7 @@ impl Default for Info {
             height: 0.0,
             dprog: 0.0,
             air_guarded: false,
+            car_switched: false,
         }
     }
 }
@@ -482,8 +486,9 @@ impl Core {
         st.finished = self.is_finished();
         // G3: the live vis state (gear, rpm, wheels, turbo, car). Wheel order is
         // remapped from the engine's FL, FR, RR, RL to tmstate's FL, FR, RL, RR.
-        // These describe the car one tick before `race_ms` (tmstate
-        // VIS_PHASE_MS_DEFAULT; measured per map by `tmenv wheels-control`).
+        // They are what the ghost's telemetry sample stamped `race_ms` carries
+        // (the engine's vis state, the car one tick earlier); see tmstate's
+        // LABEL CONVENTION and `tmenv wheels-control` (phase 0 ms measured).
         let v = &r.vis;
         if v.known {
             const ENGINE_TO_TMSTATE: [usize; 4] = [0, 1, 3, 2];

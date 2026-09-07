@@ -555,6 +555,23 @@ pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, Str
     let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
         .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
     let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
-    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 20;
+    // THE LABEL IS THE TAPE'S CLOCK, NOT THE TELEMETRY'S. A row labelled race T is
+    // the physics state at time T: the state BEFORE input record
+    // (T - start_offset) / 10 is read, i.e. after the tick whose record is
+    // (T - 10 - start_offset) / 10. The stopped parent sits at the start of the
+    // tick at race `sim_ms - race_start`; the state present there is at that
+    // time, and the counter -- the FINISHED tick's round time -- reads 10 less.
+    //
+    // Measured three ways against the TAPE (2026-09-06, ENV + LEARN + INPUT):
+    // with -10 a ghost's own inputs fed at record (T - offset) / 10 reproduce
+    // its run to the millisecond (19.812, 19.556, 22.718) and `fk trace
+    // --reference` agrees to mm; with -20 (55a1598) the same feed is one record
+    // early (0.078 m at 0.5 s, off the road by 9-13 s) and fk trace reads
+    // 0.99 m. The -20 came from comparing rows to the ghost's TELEMETRY
+    // samples, which are written from the vis state -- the PREVIOUS tick's car
+    // -- so sample t holds the physics of label t + 10: that lag belongs to the
+    // sample stream (DATA labels telemetry with it; `tmenv wheels-control`
+    // measures it per map), not to the race clock.
+    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 10;
     Ok(counter - sampled_state_race_ms)
 }

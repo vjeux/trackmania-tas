@@ -65,6 +65,11 @@ pub struct ForkEnv {
     pub core: Core,
     forest: Forest,
     cur: Handle,
+    /// The validator's participant object (same address in every fork), for
+    /// following the LIVE vehicle slot across a car switch; 0 = unknown.
+    participant: u64,
+    /// Set by `follow_live_car` when the slot changed before a fork.
+    car_switched: bool,
     reference: Vec<Rec>,
     n_ticks: usize,
     /// Race time of the tick after the tape's last record: `n * 10 + start_offset`.
@@ -158,6 +163,8 @@ impl ForkEnv {
             core,
             forest,
             cur: ROOT,
+            participant: 0,
+            car_switched: false,
             reference,
             n_ticks,
             tape_end_ms: n_ticks as i64 * 10 + tape.start_offset_ms as i64,
@@ -427,6 +434,8 @@ impl ForkEnv {
             self.overlap += self.last_end - from;
         }
 
+        self.car_switched = false;
+        let _ = self.follow_live_car()?;
         let recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
         let (rows, ended) = match self.forest.advance_or_end(self.cur, &recs, from, k as u64)? {
             branch::Advanced::Node(rows, h) => {
@@ -455,6 +464,7 @@ impl ForkEnv {
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
         let mut out = self.core.ingest(chunk, &rows);
+        out.3.car_switched = self.car_switched;
         if ended {
             // Reported whatever the core had already decided: there is no
             // engine left to step, and a caller that keeps stepping (as a
@@ -472,6 +482,53 @@ impl ForkEnv {
         Ok(out)
     }
 
+    /// Tell the env where the validator's participant lives, so every fork
+    /// first checks which vehicle slot is LIVE (`fk::validator::live_vehicle`)
+    /// and re-points the sampled car block + vis state at it. Without this a
+    /// car-switch block leaves the readout on a frozen car (measured on Spring
+    /// 2026 - 12: the trace has no rows for 3.72–9.30 s and 17.49–21.57 s -- the
+    /// sampler deduplicates a state that no longer changes).
+    pub fn set_participant(&mut self, participant: u64) {
+        self.participant = participant;
+    }
+
+    /// Before a fork from `cur`: is the live vehicle still the one the layout
+    /// points at? If not, move the layout (car block, vis; clock/counter stay).
+    /// Returns whether it moved. Cheap: 8 small reads of the paused process.
+    fn follow_live_car(&mut self) -> Result<bool, String> {
+        if self.participant == 0 {
+            return Ok(false);
+        }
+        let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
+        let pid = self.forest.pid_of(self.cur)?;
+        let Some((slot, phy)) = fk::validator::live_vehicle(pid, self.participant) else {
+            return Ok(false);
+        };
+        let pos = phy + fk::validator::STATE_POS_IN_VEHICLE;
+        if pos == cur.pos {
+            return Ok(false);
+        }
+        // the whole-state check the tick-hook session insists on: a unit
+        // quaternion and finite position/velocity at the new address, else it
+        // is not a vehicle state and we keep what we had
+        let Some(b) = forkoracle::procmem::read_at(pid, pos - 16, 40) else { return Ok(false) };
+        let f = |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        if !(0..10).all(|i| f(i * 4).is_finite()) {
+            return Ok(false);
+        }
+        let qn = (f(0).powi(2) + f(4).powi(2) + f(8).powi(2) + f(12).powi(2)).sqrt();
+        if (qn - 1.0).abs() > 1e-3 {
+            return Ok(false);
+        }
+        let mut l = cur;
+        l.pos = pos;
+        l.vis = phy + fk::validator::VIS_IN_VEHICLE;
+        l.car = slot;
+        self.forest.set_layout(l)?;
+        self.car_switched = true;
+        Ok(true)
+    }
+
     /// Run `k` more ticks WITHOUT writing any input: past the tape's last
     /// record the engine reads its default record, and the validator keeps
     /// simulating until the finish or its own cut-off -- a car that was still
@@ -484,6 +541,7 @@ impl ForkEnv {
         if self.run_ended {
             return Ok((Vec::new(), true));
         }
+        let _ = self.follow_live_car()?;
         let (rows, ended) = match self.forest.advance_or_end(self.cur, &[], 0, k.clamp(1, MAX_CHUNK) as u64)? {
             branch::Advanced::Node(rows, h) => {
                 self.leave_cur();
@@ -822,6 +880,7 @@ pub fn build_at_start(
     )?;
     let tcfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 200_000 };
     let mut env = ForkEnv::new(s, &rig.engine, track, acts, cfg, Some(tcfg))?;
+    env.set_participant(car.provenance().participant);
     let row = {
         env.reset()?;
         env.core.last_row()

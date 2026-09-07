@@ -11,12 +11,15 @@ use serde::{Deserialize, Serialize};
 /// are now FILLED by the env (G3: the live `CSceneVehicleVisState`), with the PHASE convention below.
 pub const STATE_VERSION: u32 = 2;
 
-/// The vis-derived fields (gear, rpm, wheel_*, turbo) describe the car ONE TICK before `race_ms` on every map
-/// measured so far (Summer 2026 - 01/02/03: `tmenv wheels-control` phase +10 ms) -- the engine's vis state is
-/// the previous tick's car. Position/velocity/orientation are the physics state AT `race_ms`. A consumer that
-/// needs them aligned shifts the vis fields forward by one record. The phase is measured per map by the
-/// control, never assumed; a map with a different phase gets a note in its geom sidecar.
-pub const VIS_PHASE_MS_DEFAULT: i32 = 10;
+/// LABEL CONVENTION (2026-09-06, measured against the tape by ENV, LEARN and INPUT): a record labelled `race_ms = T`
+/// holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input record
+/// `(T - start_offset) / 10` is read -- and the VIS-derived fields (gear, rpm, wheel_*, turbo, car) exactly as
+/// the ghost's own telemetry sample stamped T carries them, which is the engine's vis state = the car one tick
+/// earlier (T - 10). So: env row T and telemetry sample T agree on the vis fields with NO shift (`tmenv
+/// wheels-control` phase 0 ms on Summer 2026 - 01/02/03), and a telemetry sample's POSITION is the physics of
+/// T - 10 (DATA labels telemetry-derived pos/vel with that +10 ms lag). The phase is measured per map by the
+/// control, never assumed.
+pub const VIS_PHASE_MS_DEFAULT: i32 = 0;
 
 /// One 10 ms tick of ground-truth car state. Units: metres, m/s, radians, seconds. World frame = the map's
 /// (x east, y UP, z). Fields the source cannot provide are NaN (floats) / u8::MAX (small ints) — never zero.
