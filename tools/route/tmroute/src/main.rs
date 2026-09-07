@@ -182,14 +182,24 @@ fn cartographer_dirs(pack: &Path, route: &Path, gates: &GatesFile) -> BTreeMap<u
 }
 
 fn cmd_gates(args: &[String]) {
-    let pos = positionals(args, &["--out"], &["--orient-from"]);
-    let map = pos.first().unwrap_or_else(|| die("gates MAP.Map.Gbx --out gates.json [--orient-from PACK ROUTE]"));
+    let pos = positionals(args, &["--out", "--engine-flips"], &["--orient-from"]);
+    let map = pos.first().unwrap_or_else(|| die("gates MAP.Map.Gbx --out gates.json [--orient-from PACK ROUTE] [--engine-flips flipped-normals.tsv]"));
     let prov = tmroute::provenance("tmroute gates");
     let mut g = tmroute::gates::build(Path::new(map), &prov).unwrap_or_else(|e| die(&e));
     let mut oriented = 0;
+    // the GEN arm's engine-credited sign FIRST (it is relative to the placement normal) and it wins:
+    // `orient` never touches an "engine" gate
+    if let Some(fp) = flag(args, "--engine-flips") {
+        let flips = tmroute::gates::read_flips(Path::new(&fp)).unwrap_or_else(|e| die(&e));
+        if let Some(w) = flips.get(&g.map_uid) {
+            let n = tmroute::gates::orient_engine(&mut g, w);
+            oriented = g.gates.len() - 1;
+            eprintln!("engine sign: {} gates, {n} flipped against placement", oriented);
+        }
+    }
     if let Some(v) = flag_n(args, "--orient-from", 2) {
         let dirs = cartographer_dirs(Path::new(&v[0]), Path::new(&v[1]), &g);
-        oriented = tmroute::gates::orient(&mut g, &dirs, "cartographer");
+        oriented += tmroute::gates::orient(&mut g, &dirs, "cartographer");
     }
     let ctl = if g.control_ok() { "OK" } else { "FAIL" };
     println!(
@@ -211,6 +221,9 @@ fn cmd_gates(args: &[String]) {
             if r.from_item { "item" } else { "block" },
             r.normal_source
         );
+    }
+    for s in &g.specials {
+        println!("  special {:<16} {:<36} c {} axis {} hw {:>4.1} {}{}", s.kind, s.model, f3(s.centre), f3(s.axis), s.half_width, if s.from_item { "item" } else { "block" }, s.car.as_ref().map_or(String::new(), |c| format!(" → car {c}")));
     }
     if let Some(out) = flag(args, "--out") {
         io::write_gates(Path::new(&out), &g).unwrap_or_else(|e| die(&e));
@@ -304,7 +317,7 @@ fn cmd_human_orders(args: &[String]) {
         if r.unmatched > 0 {
             unmatched += 1;
         }
-        if gates.declared_checkpoints > 0 && r.cp_ms.len() as i32 != gates.declared_checkpoints {
+        if gates.declared_checkpoints > 0 && r.cp_ms.len() as i32 != gates.expected_splits() {
             bad_count += 1;
         } else if r.unmatched == 0 {
             ok += 1;
@@ -316,7 +329,7 @@ fn cmd_human_orders(args: &[String]) {
         "{}: {} ghosts; split count == declared ({}) on {}; wrong split count {}; with unmatched crossings {}; max XZ residual to gate centre P50 {:.1} m P90 {:.1} m max {:.1} m",
         gates.map_name,
         rows.len(),
-        gates.declared_checkpoints,
+        gates.expected_splits(),
         ok + unmatched.min(0),
         bad_count,
         unmatched,
@@ -325,7 +338,7 @@ fn cmd_human_orders(args: &[String]) {
         human::percentile(&mut dists, 100.0)
     );
     if let Some(out) = flag(args, "--out") {
-        std::fs::write(&out, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+        io::write_atomic(Path::new(&out), (lines.join("\n") + "\n").as_bytes()).unwrap_or_else(|e| die(&e));
         eprintln!("wrote {out}");
     }
 }
@@ -339,7 +352,7 @@ fn cmd_consensus(args: &[String]) {
     if let Some(o) = flag(args, "--orders") {
         let mut lines = vec![human::ORDERS_HEADER.to_string()];
         lines.extend(rows.iter().map(human::order_row));
-        std::fs::write(&o, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+        io::write_atomic(Path::new(&o), (lines.join("\n") + "\n").as_bytes()).unwrap_or_else(|e| die(&e));
     }
     let prov = tmroute::provenance("tmroute consensus");
     let cert = flag(args, "--certified-by");
@@ -355,7 +368,7 @@ fn cmd_consensus(args: &[String]) {
     // every distinct order, with its count
     let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
     for r in &rows {
-        if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints {
+        if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.expected_splits() {
             *counts.entry(r.order_group.clone()).or_default() += 1;
         }
     }
@@ -546,7 +559,7 @@ pub fn cmd_human_batch(args: &[String]) {
                         io::write_gates(&gp, &g).unwrap_or_else(|e| die(&e));
                         let ctl = if g.control_ok() { "OK" } else { "FAIL" };
                         let line = format!("{}\t{}\tdeclared {}\tcp_groups {}\tfinish_groups {}\tcontrol {}\tyoff {}\tresid {:+.1}\tgates {}\toriented 0\n", g.map_name, g.map_uid, g.declared_checkpoints, g.checkpoint_groups, g.finish_groups, ctl, g.yoff, g.yoff_residual, g.gates.len() - 1);
-                        let _ = std::fs::write(Path::new(&geom).join(&uid).join("gates.txt"), &line);
+                        let _ = io::write_atomic(&Path::new(&geom).join(&uid).join("gates.txt"), line.as_bytes());
                         print!("NEW gates.json: {line}");
                     }
                     Err(e) => eprintln!("{uid}: gates.json build failed: {e}"),
@@ -575,7 +588,7 @@ pub fn cmd_human_batch(args: &[String]) {
             let rows = make_rows(&runs, gates);
             let mut lines = vec![human::ORDERS_HEADER.to_string()];
             lines.extend(rows.iter().map(human::order_row));
-            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), lines.join("\n") + "\n");
+            let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), (lines.join("\n") + "\n").as_bytes());
             let c = human::consensus(gates, &runs, &rows, &prov, if bank_route { Some(oracle_box.as_str()) } else { None });
             let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
             let mut out = format!(
@@ -584,7 +597,7 @@ pub fn cmd_human_batch(args: &[String]) {
             );
             for n in &c.notes { out.push_str(&format!("  note: {n}\n")); }
             let mut counts: BTreeMap<Vec<u32>, usize> = BTreeMap::new();
-            for r in &rows { if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.declared_checkpoints { *counts.entry(r.order_group.clone()).or_default() += 1; } }
+            for r in &rows { if r.unmatched == 0 && r.cp_ms.len() as i32 == gates.expected_splits() { *counts.entry(r.order_group.clone()).or_default() += 1; } }
             for (k, v) in &counts { out.push_str(&format!("  order [{}] x{}\n", j(k), v)); }
             if let Some(route) = &c.route {
                 out.push_str(&format!("  route: {} pts, {:.1} m, {} legs, predicted {}, valid {}\n", route.pts.len(), route.s.last().copied().unwrap_or(0.0), route.legs.as_ref().map_or(0, |l| l.len()), io::secs(route.route.as_ref().unwrap().predicted_ms), route.validate().is_empty()));
@@ -592,17 +605,23 @@ pub fn cmd_human_batch(args: &[String]) {
                     let f = Path::new(&routes).join(&uid).join(io::route_file_name("router-human", 0));
                     io::write_route(&f, route).unwrap_or_else(|e| die(&e));
                     out.push_str(&format!("wrote {}\n", f.display()));
+                }
+                // the SIGN of every gate normal from the humans' travel — verified or not: 19 unanimous runs settle a
+                // sign; the cartographer's tour tangent got it wrong on 6/7 gates of Summer 2026 - 10 (GEN arm,
+                // engine-credited rows). Verified runs override an unverified orientation, never the reverse.
+                let already_human = gates.gates.iter().any(|g| g.normal_source == "human");
+                if c.agree && (bank_route || !already_human) {
                     let mut dirs = BTreeMap::new();
                     for l in route.legs.as_ref().unwrap() {
                         let g = gates.by_waypoint(l.map_waypoint).map(|g| g.group).unwrap();
                         for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
                     }
-                    let n = tmroute::gates::orient(gates, &dirs, "human");
+                    let n = tmroute::gates::orient(gates, &dirs, if bank_route { "human" } else { "human-unverified" });
                     io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
-                    out.push_str(&format!("oriented {n} gate normals from human crossings\n"));
+                    out.push_str(&format!("oriented {n} gate normals from human crossings ({})\n", if bank_route { "verified" } else { "unverified" }));
                 }
             }
-            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), &out);
+            let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), out.as_bytes());
             print!("{}", out.lines().next().unwrap_or(""));
             println!("\t[{} ghosts{}]", ghost_paths.len(), suffix);
         };

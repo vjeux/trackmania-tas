@@ -96,6 +96,9 @@ pub struct GatesFile {
     pub author_ms: i32,
     /// Header word: checkpoints including the finish. -1 if the header is older than v13.
     pub declared_checkpoints: i32,
+    /// Header word: laps (1 = a plain race; 2+ = a lap race whose `StartFinish` line is crossed every lap).
+    #[serde(default = "one")]
+    pub laps: u32,
     /// Checkpoint groups (excluding finish groups).
     pub checkpoint_groups: u32,
     pub finish_groups: u32,
@@ -104,15 +107,31 @@ pub struct GatesFile {
     pub yoff_residual: f32,
     pub spawn: Spawn,
     pub gates: Vec<GateRec>,
+    /// Transformation gates and car-state blocks (boosters, reactors, …) with geometry.
+    #[serde(default)]
+    pub specials: Vec<SpecialRec>,
     pub produced_by: String,
 }
 
+fn one() -> u32 {
+    1
+}
+
 impl GatesFile {
-    /// The two-sided control: groups + 1 finish == declared.
+    /// The control against the header: checkpoint groups + 1 for the lap line (`StartFinish`, when the map
+    /// has one) + 1 for a plain finish (when the map has one) == declared. Winter 2026 - 10 (2 laps, no
+    /// separate finish): 5 + 1 = 6; Fall 2024 - 24 (2 laps, lap line AND two finish lines): 5 + 1 + 1 = 7;
+    /// an ordinary map: CPs + 1.
     pub fn control_ok(&self) -> bool {
-        self.declared_checkpoints >= 0
-            && self.checkpoint_groups as i32 + 1 == self.declared_checkpoints
-            && self.finish_groups >= 1
+        let has_lap_line = self.gates.iter().any(|g| g.kind == WpKind::Multilap);
+        let has_finish = self.gates.iter().any(|g| g.kind == WpKind::Finish);
+        let expected = self.checkpoint_groups as i32 + has_lap_line as i32 + has_finish as i32;
+        self.declared_checkpoints >= 0 && expected == self.declared_checkpoints && self.finish_groups >= 1
+    }
+    /// Splits a FINISHED run declares: every checkpoint and the lap line each lap, the finish last —
+    /// `laps × (checkpoint groups + 1)`; a plain race: checkpoints + 1 = the header count.
+    pub fn expected_splits(&self) -> i32 {
+        self.laps.max(1) as i32 * (self.checkpoint_groups as i32 + 1)
     }
     pub fn group_ids(&self) -> Vec<u32> {
         let mut g: Vec<u32> = self
@@ -139,7 +158,7 @@ impl GatesFile {
         let mut g: Vec<u32> = self
             .gates
             .iter()
-            .filter(|g| g.kind == WpKind::Finish)
+            .filter(|g| matches!(g.kind, WpKind::Finish | WpKind::Multilap))
             .map(|g| g.group)
             .collect();
         g.sort_unstable();
@@ -150,7 +169,7 @@ impl GatesFile {
         let mut g: Vec<u32> = self
             .gates
             .iter()
-            .filter(|g| g.kind == WpKind::Checkpoint || g.kind == WpKind::Multilap)
+            .filter(|g| g.kind == WpKind::Checkpoint)
             .map(|g| g.group)
             .collect();
         g.sort_unstable();
@@ -194,6 +213,9 @@ pub fn gate_dims(model: &str) -> (f32, f32) {
     if m.contains("32m") {
         return (16.0, 4.0); // GateCheckpointLeft32m: pieces 20 m from the 8 m centre piece → 16
     }
+    if m.contains("24m") {
+        return (12.0, 4.0);
+    }
     if m.contains("16m") {
         return (8.0, 4.0); // Right16m sits 24 m from Left32m: 16 + 8
     }
@@ -207,7 +229,7 @@ pub fn gate_dims(model: &str) -> (f32, f32) {
         return (16.0, 4.0); // a full 32 m platform cell
     }
     if m.starts_with("Road") {
-        return (8.0, 4.0); // the road inside a 32 m cell is ~16 m wide
+        return (12.5, 4.0); // GEN arm: humans cross road blocks out to |lat| 11.8 m, the walls sit at 12.75
     }
     (8.0, 4.0)
 }
@@ -240,17 +262,17 @@ pub fn yoff_cellmode(m: &tmmaps::map::MapFile) -> (f32, f32) {
     (yoff, mode as f32 - yoff)
 }
 
-fn kind_of(tag: &str, model: &str) -> WpKind {
+/// The file TAG decides (the header count agrees with it on 207/207 crawled maps): `StartFinish` is the
+/// lap line — in a single-lap race the FINISH (Winter 2026 - 10: a `RoadTechMultilap` block beside a
+/// plain `RoadTechStart`); a `GateMultilap*` ITEM tagged `Checkpoint` is a checkpoint (Fall 2024 - 24 has
+/// two beside two real finishes, and its header counts them as checkpoints).
+fn kind_of(tag: &str, _model: &str) -> WpKind {
+    if tag == "StartFinish" {
+        return WpKind::Multilap;
+    }
     match tag {
         "Spawn" => WpKind::Start,
         "Goal" => WpKind::Finish,
-        "Checkpoint" | "LinkedCheckpoint" => {
-            if model.contains("Multilap") {
-                WpKind::Multilap
-            } else {
-                WpKind::Checkpoint
-            }
-        }
         _ => WpKind::Checkpoint,
     }
 }
@@ -294,12 +316,17 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
         // exactly where the rotated local frame puts the arch.
         let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
-        let local_c = if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        // A 2×2-cell DIAGONAL piece: the GEN arm measured Summer 2026 - 07's `RoadDirtDiagLeftCheckpoint`
+        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32); DiagRight is the
+        // mirror (16, 0.5, 32) — a GUESS until a DiagRight gate is measured. Its axis runs along the diagonal.
+        let diag = w.name.contains("Diag");
+        let local_c = if diag && w.name.contains("DiagRight") { [16.0, 0.5, 32.0] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.7071, 0.0, -0.7071] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
         let centre = match (w.pos, w.free_rot) {
             (Some(p), Some(rot)) => {
                 let m = turned(p, rot);
                 let c = apply(&m, local_c);
-                let c2 = apply(&m, [local_c[0], local_c[1], local_c[2] + 1.0]);
+                let c2 = apply(&m, [local_c[0] + local_axis[0], local_c[1] + local_axis[1], local_c[2] + local_axis[2]]);
                 free_axis = Some([c2[0] - c[0], c2[1] - c[1], c2[2] - c[2]]);
                 c
             }
@@ -316,7 +343,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             tag: w.tag.clone(),
             order: w.order,
             centre,
-            yaw: w.yaw.unwrap_or(0.0),
+            // yaw such that (sin yaw, 0, cos yaw) is the road axis: a free block's rotated local axis, else the placement yaw
+            yaw: match free_axis { Some(a) => a[0].atan2(a[2]), None => w.yaw.unwrap_or(0.0) },
             model: w.name.clone(),
             from_item,
             grid: w.pos.is_none(),
@@ -352,10 +380,20 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             // A row of grid FINISH blocks is still one finish line (any finish ends the race;
             // Summer 2026 - 18 has six `Goal` blocks side by side); only CHECKPOINT grid
             // blocks are kept apart.
-            let grid_pair = a.grid && b.grid && a.kind != WpKind::Finish;
-            let near = same_tag && !grid_pair && dxz <= GROUP_XZ && dy <= GROUP_Y;
-            let stacked = same_tag && dxz <= STACK_XZ;
-            if linked || near || stacked {
+            // Distance merges rows of ITEMS / free blocks only (Fall 2025 - 24: a RoadTechCheckpoint
+            // grid block 32 m from a gate item is a second checkpoint; the header says so).
+            let both_placed = !a.grid && !b.grid;
+            let is_finish = matches!(a.kind, WpKind::Finish | WpKind::Multilap);
+            // a ROW is pieces of one kind (item–item or free–free) with parallel axes; Summer 2024 - 23 has a
+            // free `GateCheckpoint` 22 m from an item `GateCheckpointLeft32m`, at right angles: two checkpoints
+            let same_regime = a.from_item == b.from_item;
+            let parallel = ((a.yaw - b.yaw).cos()).abs() > 0.9;
+            let near = same_tag && ((both_placed && same_regime && parallel) || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
+            // two touching pieces are one gate whatever their tags (Fall 2024 - 24 has a
+            // LinkedCheckpoint piece 2 m from a plain Checkpoint piece of the same row)
+            let stacked = dxz <= STACK_XZ && dy <= GROUP_Y * 3.0;
+            let mixed = both_placed && (a.tag == "LinkedCheckpoint") != (b.tag == "LinkedCheckpoint") && dxz <= 4.0 && dy <= GROUP_Y;
+            if linked || near || stacked || mixed {
                 let (ra, rb) = (find(&mut parent, i), find(&mut parent, j));
                 if ra != rb {
                     parent[ra] = rb;
@@ -367,7 +405,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
     let mut gid: Vec<u32> = vec![u32::MAX; n];
     let mut next = 0u32;
     let mut root_to_gid: BTreeMap<usize, u32> = BTreeMap::new();
-    for pass in [WpKind::Checkpoint, WpKind::Multilap, WpKind::Finish] {
+    for pass in [WpKind::Checkpoint, WpKind::Finish, WpKind::Multilap] {
         for i in 0..n {
             if raws[i].kind != pass {
                 continue;
@@ -381,11 +419,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             gid[i] = g;
         }
     }
-    let cp_groups = root_to_gid
-        .iter()
-        .filter(|(r, _)| matches!(raws[**r].kind, WpKind::Checkpoint | WpKind::Multilap))
-        .count() as u32;
-    let fin_groups = root_to_gid.iter().filter(|(r, _)| raws[**r].kind == WpKind::Finish).count() as u32;
+    let cp_groups = root_to_gid.iter().filter(|(r, _)| raws[**r].kind == WpKind::Checkpoint).count() as u32;
+    let fin_groups = root_to_gid.iter().filter(|(r, _)| matches!(raws[**r].kind, WpKind::Finish | WpKind::Multilap)).count() as u32;
 
     let spawn_i = raws.iter().position(|r| r.kind == WpKind::Start).ok_or("map has no Spawn waypoint")?;
     let spawn = Spawn {
@@ -423,12 +458,14 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         map_name: strip_fmt(&h.name),
         author_ms,
         declared_checkpoints: h.nb_checkpoints.map(|v| v as i32).unwrap_or(-1),
+        laps: h.nb_laps.unwrap_or(1).max(1),
         checkpoint_groups: cp_groups,
         finish_groups: fin_groups,
         yoff,
         yoff_residual: resid,
         spawn,
         gates,
+        specials: specials(&m, yoff),
         produced_by: format!("{produced_by}; parked block waypoints skipped: {parked}"),
     })
 }
@@ -470,9 +507,14 @@ pub fn strip_fmt(s: &str) -> String {
 
 /// Orient every gate's normal along a reference direction (dot > 0), recording
 /// the source. `dirs` maps waypoint → direction of travel.
+/// Flip the sign of the gate normals whose arrival direction `dirs` opposes; `source` is recorded.
+/// A gate already oriented by the ENGINE (GEN arm's credited rows, `orient_engine`) is never touched.
 pub fn orient(g: &mut GatesFile, dirs: &BTreeMap<u32, [f32; 3]>, source: &str) -> usize {
     let mut n = 0;
     for gate in &mut g.gates {
+        if gate.normal_source == "engine" {
+            continue;
+        }
         if let Some(d) = dirs.get(&gate.waypoint) {
             let dot = gate.normal[0] * d[0] + gate.normal[2] * d[2];
             if dot < 0.0 {
@@ -531,4 +573,215 @@ pub fn turned(pos: [f32; 3], rot: [f32; 3]) -> Xform {
     let (sr, cr) = rot[2].sin_cos();
     let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
     compose(&compose(&m, &pitch), &roll)
+}
+
+// ---------------------------------------------------------------------------
+// specials: transformation gates and car-state blocks (coordinator, 2026-09-07)
+// ---------------------------------------------------------------------------
+
+/// A gameplay placement the planner must see: a TRANSFORMATION gate (`car` set:
+/// the leg after it is driven by that car) or a physics block (booster, turbo,
+/// reactor, slow-motion, reset, no-engine, no-brake, no-steer, fragile, cruise,
+/// bumper). Not a waypoint; nothing forces the route through it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpecialRec {
+    /// `mapgeom::local::Special` name: "TransformSnow", "Boost2", "Turbo", "Reset", …
+    pub kind: String,
+    /// "Stadium" | "Snow" | "Rally" | "Desert" for a transformation gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub car: Option<String>,
+    pub model: String,
+    pub centre: [f32; 3],
+    /// Unit axis through the gate / along the pad (sign unknown), XZ.
+    pub axis: [f32; 3],
+    pub half_width: f32,
+    pub half_height: f32,
+    pub from_item: bool,
+    /// block index / item index in the map (see `tmmaps census`).
+    pub index: u32,
+}
+
+/// Every gameplay placement of the map with its geometry. Grid blocks at their
+/// cell centre (`y = 8·cy + yoff + 2`), free blocks through their placement
+/// rotation, items at their position. A `GateExpandable*` structure is several
+/// records (the pieces) — they are grouped by 34 m / 6 m into one record here,
+/// like gate rows.
+pub fn specials(m: &tmmaps::map::MapFile, yoff: f32) -> Vec<SpecialRec> {
+    use mapgeom::local::Special;
+    struct P {
+        kind: Special,
+        model: String,
+        centre: [f32; 3],
+        yaw: f32,
+        from_item: bool,
+        index: u32,
+        hw: f32,
+    }
+    let mut ps: Vec<P> = Vec::new();
+    let mut push = |kind: Special, model: &str, centre: [f32; 3], yaw: f32, from_item: bool, index: u32| {
+        if kind == Special::None || kind.is_waypoint() {
+            return;
+        }
+        let (hw, _) = gate_dims(model);
+        ps.push(P { kind, model: model.to_string(), centre, yaw, from_item, index, hw });
+    };
+    for (baked, list) in [(false, &m.blocks), (true, &m.baked)] {
+        for b in list.iter() {
+            let kind = Special::of_name(&b.name);
+            if kind == Special::None || kind.is_waypoint() {
+                continue;
+            }
+            let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+            let (centre, yaw) = if free {
+                match b.free_pos {
+                    Some(p) => {
+                        let rot = b.free_rot.unwrap_or([0.0; 3]);
+                        let mm = turned(p, rot);
+                        let c = apply(&mm, [16.0, ROAD_ABOVE_BASE, 16.0]);
+                        let c2 = apply(&mm, [16.0, ROAD_ABOVE_BASE, 17.0]);
+                        (c, (c2[0] - c[0]).atan2(c2[2] - c[2]))
+                    }
+                    None => continue,
+                }
+            } else {
+                let (cx, cy, cz) = b.coords();
+                ([32.0 * cx as f32 + 16.0, 8.0 * cy as f32 + yoff + ROAD_ABOVE_BASE, 32.0 * cz as f32 + 16.0], if b.dir & 1 == 0 { 0.0 } else { std::f32::consts::FRAC_PI_2 })
+            };
+            let _ = baked;
+            push(kind, &b.name, centre, yaw, false, b.index as u32);
+        }
+    }
+    for it in &m.items {
+        let kind = Special::of_name(&it.model);
+        push(kind, &it.model, it.pos, it.yaw, true, it.index as u32);
+    }
+    // group pieces of one structure: same kind within 34 m XZ / 6 m Y
+    let n = ps.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut Vec<usize>, mut a: usize) -> usize {
+        while p[a] != a {
+            p[a] = p[p[a]];
+            a = p[a];
+        }
+        a
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if ps[i].kind != ps[j].kind {
+                continue;
+            }
+            let dx = ps[i].centre[0] - ps[j].centre[0];
+            let dz = ps[i].centre[2] - ps[j].centre[2];
+            let dxz = (dx * dx + dz * dz).sqrt();
+            let dy = (ps[i].centre[1] - ps[j].centre[1]).abs();
+            // a row (34 m / 6 m) or a vertical STACK of expandable pieces (same XZ, 8 m steps)
+            if (dxz <= GROUP_XZ && dy <= GROUP_Y) || dxz <= STACK_XZ {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    groups
+        .into_values()
+        .map(|members| {
+            let k = members.len() as f32;
+            let mut c = [0.0f32; 3];
+            let mut y_min = f32::INFINITY;
+            for &i in &members {
+                for a in 0..3 {
+                    c[a] += ps[i].centre[a] / k;
+                }
+                y_min = y_min.min(ps[i].centre[1]);
+            }
+            // a vertical stack of pieces is driven through at its BOTTOM row
+            c[1] = y_min;
+            let first = &ps[members[0]];
+            let (sy, cy) = first.yaw.sin_cos();
+            let axis = [sy, 0.0, cy];
+            // extent along the row
+            let row = [-axis[2], 0.0, axis[0]];
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for &i in &members {
+                let d = (ps[i].centre[0] - c[0]) * row[0] + (ps[i].centre[2] - c[2]) * row[2];
+                lo = lo.min(d - ps[i].hw);
+                hi = hi.max(d + ps[i].hw);
+            }
+            SpecialRec {
+                kind: first.kind.name(),
+                car: first.kind.car().map(|s| s.to_string()),
+                model: first.model.clone(),
+                centre: [c[0], c[1] + 4.0, c[2]],
+                axis,
+                half_width: if members.len() == 1 { first.hw } else { ((hi - lo) / 2.0).max(first.hw) },
+                half_height: 4.0,
+                from_item: first.from_item,
+                index: first.index,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod diag_tests {
+    use super::*;
+    /// GEN arm measurement (gen/g2/GEOM-GATE-FRAMES.md): Summer 2026 - 07 wp5 `RoadDirtDiagLeftCheckpoint`, a FREE
+    /// block at anchor (1014, 101.067, 576) rot (−π, 0, 0.5236), credits its checkpoint with the car centre at
+    /// world mean (973.85, 124.84, 545.27). Which LOCAL point is that? (rigid transform → R^T (g − t))
+    #[test]
+    fn diag_left_local_trigger() {
+        let m = turned([1014.0, 101.067, 576.0], [-3.1416, 0.0, 0.5236]);
+        let g = [973.85f32, 124.84, 545.27];
+        let d = [g[0] - m[9], g[1] - m[10], g[2] - m[11]];
+        // columns of R are m[0..3], m[3..6], m[6..9]; local = R^T d
+        let local = [
+            m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+            m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+            m[6] * d[0] + m[7] * d[1] + m[8] * d[2],
+        ];
+        eprintln!("DIAG local trigger = ({:.2}, {:.2}, {:.2})", local[0], local[1], local[2]);
+        // and where (16, 2, 16) lands, for the record
+        let c = apply(&m, [16.0, 2.0, 16.0]);
+        eprintln!("(16,2,16) → ({:.2}, {:.2}, {:.2})", c[0], c[1], c[2]);
+        assert!(local[0].is_finite());
+    }
+}
+
+/// The GEN arm's engine-credited sign (gen/g2/flipped-normals.tsv: `uid \t map \t [wp, wp, …]`): the listed
+/// waypoints are crossed AGAINST the PLACEMENT normal, so this takes a freshly built (placement-signed) file,
+/// flips them, and marks every gate `normal_source = "engine"` — the authority over human and cartographer signs.
+pub fn orient_engine(g: &mut GatesFile, flipped: &[u32]) -> usize {
+    let mut n = 0;
+    for gate in &mut g.gates {
+        if gate.kind == WpKind::Start {
+            continue;
+        }
+        if flipped.contains(&gate.waypoint) {
+            gate.normal = [-gate.normal[0], 0.0, -gate.normal[2]];
+            n += 1;
+        }
+        gate.normal_source = "engine".to_string();
+    }
+    n
+}
+
+/// Parse `flipped-normals.tsv` → uid → flipped waypoints.
+pub fn read_flips(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u32>>, String> {
+    let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = BTreeMap::new();
+    for line in s.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 3 || cols[0] == "uid" {
+            continue;
+        }
+        let wps: Vec<u32> = cols[2].trim_matches(|c| c == '[' || c == ']').split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        out.insert(cols[0].to_string(), wps);
+    }
+    Ok(out)
 }

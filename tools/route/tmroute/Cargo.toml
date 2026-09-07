@@ -20,3 +20,5 @@ tmmaps = { path = "../../tmmaps" }
 gbx = { path = "../../gbx" }
 # The route types: the player's shared data crate (coord/INTERFACES.md §tmstate + the route additions).
 tmstate = { path = "../../rl/tmstate" }
+# `mapgeom::local::Special` — the one name→gameplay-kind reader (transformation gates, boosters …).
+mapgeom = { path = "../../mapgeom" }
