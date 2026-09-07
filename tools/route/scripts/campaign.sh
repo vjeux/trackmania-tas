@@ -90,7 +90,10 @@ if [ $step = plan-r ]; then
   TRAIN=$( [ -n "$RV" ] && grep -E "^  train " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
   HELD=$( [ -n "$RV" ] && grep -E "^  HELD-OUT " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
   echo "gate prior $RV ($(md5sum < $MODEL_R | cut -c1-8)) chain $RLV ($(md5sum < $MODEL_RL | cut -c1-8)) flags $TMR_FLAGS run $(date -u +%Y-%m-%dT%H:%MZ); trained on: $TRAIN held-out: $HELD" | tee $P/plan-r/MODELS.txt
-  { for d in $G/*/; do u=$(basename $d); [ -f $d/consensus.txt ] || [ -f $d/consensus.unverified.txt ] || continue; grep -q "modal_groups \[[0-9]" $d/consensus*.txt 2>/dev/null && echo $u; done; for u in $HYP; do echo $u; done; } | sort -u > /tmp/plan-r.uids
+  # the exhibit's map set: geom/human-maps.tsv (written by human-batch) + the hypothesis maps; the old walk over
+  # every dir of the bank mount took 16 min
+  if [ -f $G/human-maps.tsv ]; then { tail -n +2 $G/human-maps.tsv | cut -f1; for u in $HYP; do echo $u; done; } | sort -u > /tmp/plan-r.uids
+  else { for d in $G/*/; do u=$(basename $d); [ -f $d/consensus.txt ] || [ -f $d/consensus.unverified.txt ] || continue; grep -q "modal_groups \[[0-9]" $d/consensus*.txt 2>/dev/null && echo $u; done; for u in $HYP; do echo $u; done; } | sort -u > /tmp/plan-r.uids; fi
   echo "plan-r over $(wc -l < /tmp/plan-r.uids) maps"
   # per map: the HYBRID first (geometric on roads, R where the graph has nothing — fast), then pure R; each under a
   # wall-clock cap (the chained estimator costs ~5 s per edge evaluation: Poland 2026 ran > 90 min un-capped)

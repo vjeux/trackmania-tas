@@ -546,6 +546,7 @@ pub fn cmd_human_batch(args: &[String]) {
     // who certified the verified ghosts: the DATA arm's plain-oracle resim (its box, from its STATUS.md)
     let oracle_box = flag(args, "--oracle-box").unwrap_or_else(|| "tm-player DATA resim (devvm62680)".into());
     let prov = tmroute::provenance("tmroute human-batch");
+    let human_maps: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&data).unwrap_or_else(|e| die(&e.to_string())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect();
     dirs.sort();
     for d in dirs {
@@ -628,10 +629,19 @@ pub fn cmd_human_batch(args: &[String]) {
             let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), out.as_bytes());
             print!("{}", out.lines().next().unwrap_or(""));
             println!("\t[{} ghosts{}]", ghost_paths.len(), suffix);
+            if !c.modal_group_order.is_empty() {
+                human_maps.borrow_mut().push(format!("{}\t{}\t{}\t{}\t{}", gates.map_uid, gates.map_name, if suffix.is_empty() { "verified" } else { "unverified" }, if c.agree { "agree" } else { "split" }, j(&c.modal_group_order)));
+            }
         };
         run(&exact, "", true, &mut gates);
         if unverified { run(&pending, ".unverified", false, &mut gates); }
     }
+    // one file listing the maps that have a human modal order — the exhibit's map set, so plan-r need not walk
+    // 600 dirs on the bank mount (16 min at 17:07Z) to find ~30
+    let mut lines = vec!["map_uid\tmap_name\tghosts\tconsensus\tmodal_groups".to_string()];
+    lines.extend(human_maps.borrow().iter().cloned());
+    let _ = io::write_atomic(&Path::new(&geom).join("human-maps.tsv"), (lines.join("\n") + "\n").as_bytes());
+    eprintln!("human-maps.tsv: {} rows", lines.len() - 1);
 }
 fn has_flag(args: &[String], name: &str) -> bool { args.iter().any(|a| a == name) }
 
