@@ -833,6 +833,8 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
                 rms: 0.0,
                 max_dev: 0.0,
                 cps: 0,
+                vis: 0,
+                car: 0,
             }
         }
         None => locate_v2(&mut srv, probe, &lrecs, f.start_offset_ms, bounds, 2000, 4000, verbose)

@@ -654,6 +654,11 @@ impl Rig {
     pub fn session_clock(&self, clock: u64) -> Result<Session, String> {
         Session::start(&self.engine, self.tape.clone(), Checkpoint::Clock(clock))
     }
+
+    /// A session paused at this tape's ROOT (`control::root_clock_for`).
+    pub fn session_root(&self) -> Result<Session, String> {
+        self.session_clock(crate::control::root_clock_for(self.tape.start_offset_ms))
+    }
 }
 
 /// How to pick the root, and how hard to look for the car.
@@ -774,7 +779,15 @@ pub fn build_at_start(
     // record 0 only), so the floor is judged in RACE time: the reference may
     // own at most `max_root_floor_ms` of the race.
     let floor_race_ms = |probe: usize, tape: &Tape| probe as i64 * 10 + tape.start_offset_ms as i64;
-    let mut s = rig.session_clock(root.clock)?;
+    // The default root follows the tape (`control::root_clock_for`): race -10
+    // with a countdown prefix, race 0 for a tape whose record 0 is race 0. An
+    // explicit `RootCfg.clock` other than the default is honoured as given.
+    let root_clock = if root.clock == crate::control::EARLIEST_CLOCK {
+        crate::control::root_clock_for(rig.tape.start_offset_ms)
+    } else {
+        root.clock
+    };
+    let mut s = rig.session_clock(root_clock)?;
     let mut probe = s.probe_tick()?;
     let mut tries = 1usize;
     while floor_race_ms(probe, &s.tape) > root.max_root_floor_ms && tries < root.max_root_tries {
@@ -787,7 +800,7 @@ pub fn build_at_start(
             );
         }
         drop(s);
-        s = rig.session_clock(root.clock)?;
+        s = rig.session_clock(root_clock)?;
         probe = s.probe_tick()?;
         tries += 1;
     }
@@ -831,7 +844,7 @@ pub fn build_at_start(
         eprintln!(
             "  env root: tick clock {}, root probe {probe} (write floor; {tries} server start{}), car from \
              validator ownership; race clock labelled from the engine (bias {}), root row race {:.3}",
-            root.clock,
+            root_clock,
             if tries == 1 { "" } else { "s" },
             car.layout().clock_bias,
             row.time_ms as f64 / 1000.0

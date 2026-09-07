@@ -47,6 +47,9 @@ pub enum Done {
 pub struct CoreCfg {
     /// Ticks held per action.
     pub k_ticks: usize,
+    /// `tmobs` layout version: 1 = the 80 floats (LEARN's v1 policies), 2 = 100
+    /// floats with the G3 vehicle blocks appended.
+    pub obs_version: u32,
     /// Episode cap in ticks. Must not exceed the container's declared time, or
     /// the engine stops before the cap and the truncation looks like a crash.
     pub max_ticks: usize,
@@ -118,6 +121,7 @@ impl Default for CoreCfg {
     fn default() -> Self {
         CoreCfg {
             k_ticks: 10,
+            obs_version: 1,
             max_ticks: 4000,
 
             // Break-even speed is `c_time / c_prog` = 30 m/s. Above it a step
@@ -476,6 +480,23 @@ impl Core {
         };
         st.cps = self.gates_hit().min(u8::MAX as usize) as u8;
         st.finished = self.is_finished();
+        // G3: the live vis state (gear, rpm, wheels, turbo, car). Wheel order is
+        // remapped from the engine's FL, FR, RR, RL to tmstate's FL, FR, RL, RR.
+        // These describe the car one tick before `race_ms` (tmstate
+        // VIS_PHASE_MS_DEFAULT; measured per map by `tmenv wheels-control`).
+        let v = &r.vis;
+        if v.known {
+            const ENGINE_TO_TMSTATE: [usize; 4] = [0, 1, 3, 2];
+            st.gear = v.gear;
+            st.rpm = v.rpm;
+            for (i, k) in ENGINE_TO_TMSTATE.iter().enumerate() {
+                st.wheel_contact[i] = v.wheel_contact[*k] as u8;
+                st.wheel_material[i] = v.wheel_material[*k];
+                st.wheel_slip[i] = v.wheel_slip[*k];
+            }
+            st.turbo = v.turbo_time;
+            st.car = v.car;
+        }
         st
     }
 
@@ -497,7 +518,7 @@ impl Core {
     /// into a `CarState` goes through the same function and gets the same
     /// floats (`tmobs` is the ONE observation function; INTERFACES.md).
     pub fn observe(&self) -> Vec<f32> {
-        let o = tmobs::observe(&self.track.geom, &self.state(), &self.prev_actions);
+        let o = tmobs::observe_version(self.cfg.obs_version, &self.track.geom, &self.state(), &self.prev_actions);
         assert!(
             self.obs_dim == 0 || o.len() == self.obs_dim,
             "the observation is {} wide but this Core was built at {}",
@@ -523,6 +544,7 @@ pub fn zero_row() -> Row {
         qw: 1.0,
         wetness: 0.0,
         cps: u32::MAX,
+        vis: forkoracle::layout::Vis::UNKNOWN,
     }
 }
 

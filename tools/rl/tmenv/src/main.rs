@@ -98,6 +98,7 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("wheels-control") => wheels_control(&a),
         Some("run-end") => run_end_cmd(&a),
         Some("tape-diff") => tape_diff(&a),
         Some("open-loop-control") => open_loop_control(&a),
@@ -320,6 +321,7 @@ fn build_env_shared(
     let cfg = CoreCfg {
         k_ticks: num(a, "--k", 10),
         max_ticks: num(a, "--max-ticks", 3000),
+        obs_version: num(a, "--obs-version", 1),
         ..Default::default()
     };
     let mut root = tmenv::forkenv::RootCfg { verbose: !has(a, "--quiet"), ..Default::default() };
@@ -3233,4 +3235,139 @@ fn run_end_cmd(a: &[String]) {
         last.map(|r| r.cps).unwrap_or(0),
         steps.join(" ")
     );
+    if let Some(r) = last {
+        println!("last row vis: {:?}", r.vis);
+    }
+    // a few mid-run rows, to see the fields move
+    for r in rows.iter().skip(300).step_by(400).take(4) {
+        let v = &r.vis;
+        println!(
+            "  race {:.3}: car {} gear {} rpm {:.0} steer_applied {:+.3} gas {:.1} brake {} turbo {:.2} ground {} contact {:?} material {:?} slip {:?} wet {:.3} front {:.1} lat {:.1}",
+            r.time_ms as f64 / 1000.0, v.car, v.gear, v.rpm, v.steer_applied, v.gas, v.braking, v.turbo_time, v.ground_contact, v.wheel_contact, v.wheel_material,
+            v.wheel_slip.iter().map(|x| format!("{x:.2}")).collect::<Vec<_>>(), v.wetness, v.front_speed, v.lateral_speed
+        );
+    }
+}
+
+// ----------------------------------------------------------- wheels-control
+
+/// THE G3 KNOWN-ANSWER: the live vis state, packed by the game's own 116-byte
+/// sample writer (`fk::vislayout::pack`), against the template ghost's raw
+/// 50 ms samples -- byte for byte, at several shifts, so the PHASE between the
+/// vis state and the sample clock is MEASURED for this map (the coordinator's
+/// rule: it lags a tick on some maps and none on others; never hard-code it).
+/// A frozen copy scores 50-58 % on this test (INPUT arm); the live car ~96 %
+/// over the predicted bytes with gear/rpm/steer/contact at 100 %.
+fn wheels_control(a: &[String]) {
+    use fk::vislayout::{State, STATE_SIZE};
+    let p = paths(a);
+    let ghosts: Vec<String> = flag(a, "--ghosts")
+        .map(|s| s.split(',').map(|g| g.trim().to_string()).collect())
+        .unwrap_or_else(|| vec![p.reference.to_string_lossy().into_owned()]);
+    let shifts: Vec<i64> = vec![-20, -10, 0, 10, 20];
+    struct Win<'a> {
+        b: &'a [u8],
+    }
+    impl State for Win<'_> {
+        fn f32(&self, off: usize) -> f32 {
+            self.b.get(off..off + 4).map(|x| f32::from_le_bytes(x.try_into().unwrap())).unwrap_or(0.0)
+        }
+        fn u32(&self, off: usize) -> u32 {
+            self.b.get(off..off + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap())).unwrap_or(0)
+        }
+        fn u8(&self, off: usize) -> u8 {
+            self.b.get(off).copied().unwrap_or(0)
+        }
+        fn covers_state(&self) -> bool {
+            self.b.len() >= STATE_SIZE as usize
+        }
+    }
+    // the sample bytes the bar is read from (WHEELS.md §3)
+    let groups: &[(&str, &[usize])] = &[
+        ("gear b91", &[91]),
+        ("rpm b16-17", &[16, 17]),
+        ("applied steer b14", &[14]),
+        ("dampers b23", &[23]),
+        ("materials b24/26/28/30", &[24, 26, 28, 30]),
+        ("contact/turbo b31", &[31]),
+        ("wheel rot b25/27/29 (u16 lo)", &[25, 27, 29]),
+    ];
+    println!("# tmenv wheels-control  {} ghost(s)  shifts {:?} ms", ghosts.len(), shifts);
+    let mut all_pass = true;
+    let mut phases: Vec<i64> = Vec::new();
+    for (gi, g) in ghosts.iter().enumerate() {
+        let work = p.work.join(format!("wheels-{gi}"));
+        std::fs::create_dir_all(&work).unwrap_or_else(|e| die(e.to_string()));
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let ticks = (d.n() + 100) as u32;
+        let (rows, bias, car) =
+            tmenv::control::gather_vis(&p.server, &p.map, &p.shim, &work, Path::new(g), ticks).unwrap_or_else(|e| die(e));
+        let dec = gbx::record::decode_ghost(g).unwrap_or_else(|e| die(e.to_string()));
+        let mut key: std::collections::BTreeMap<i64, Vec<u8>> = std::collections::BTreeMap::new();
+        for (i, smp) in dec.samples.iter().enumerate() {
+            if let Some(raw) = dec.raw_sample(i) {
+                key.insert(smp.time_ms as i64, raw.to_vec());
+            }
+        }
+        println!("{g}\n  car slot {car}, {} ticks gathered, {} raw samples of {} B", rows.len(), key.len(), dec.sample_size);
+        let mut best: Option<(f64, i64, Vec<(usize, usize)>, usize)> = None;
+        for shift in &shifts {
+            let mut agree = vec![(0usize, 0usize); 116];
+            let mut paired = 0usize;
+            for t in &rows {
+                let race = t.clock as i64 - bias + shift;
+                let Some(want) = key.get(&race) else { continue };
+                paired += 1;
+                let pk = fk::vislayout::pack(&Win { b: &t.vis });
+                for b in 0..116.min(want.len()) {
+                    agree[b].1 += 1;
+                    if pk[b] == want[b] {
+                        agree[b].0 += 1;
+                    }
+                }
+            }
+            let (mut sum, mut n) = (0.0, 0);
+            for b in (0..116usize).filter(|b| !gbx::sample::UNPREDICTED.contains(b) && !gbx::sample::DEAD_IN_SERVER.contains(b)) {
+                if agree[b].1 > 0 {
+                    sum += agree[b].0 as f64 / agree[b].1 as f64;
+                    n += 1;
+                }
+            }
+            let score = if n > 0 { sum / n as f64 } else { 0.0 };
+            println!("  shift {:+3} ms: mean exact {:.2} % over {} paired instants", shift, 100.0 * score, paired);
+            if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
+                best = Some((score, *shift, agree, paired));
+            }
+        }
+        let Some((score, shift, agree, paired)) = best else {
+            die("no paired instants".into());
+        };
+        phases.push(shift);
+        let mut pass = paired >= 50;
+        println!("  PHASE for this map: sample t = vis state at race t {:+} ms  (mean exact {:.2} %)", shift, 100.0 * score);
+        for (name, bytes) in groups {
+            let (mut ok, mut n) = (0usize, 0usize);
+            for b in *bytes {
+                ok += agree[*b].0;
+                n += agree[*b].1;
+            }
+            let rate = if n > 0 { ok as f64 / n as f64 } else { 0.0 };
+            let bar = match *name {
+                "gear b91" | "rpm b16-17" | "applied steer b14" | "contact/turbo b31" => 0.99,
+                _ => 0.95,
+            };
+            let verdict = if rate >= bar { "PASS" } else { "FAIL" };
+            pass &= rate >= bar;
+            println!("    {:<30} {:6.2} %  (bar {:.0} %)  {}", name, 100.0 * rate, 100.0 * bar, verdict);
+        }
+        all_pass &= pass;
+    }
+    println!(
+        "WHEELS  {}  (phases {:?} ms)",
+        if all_pass { "PASS -- the live vis state IS the ghost's own sample source" } else { "FAIL" },
+        phases
+    );
+    if !all_pass {
+        std::process::exit(1);
+    }
 }

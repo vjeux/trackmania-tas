@@ -394,6 +394,7 @@ fn setup(c: &Cfg) -> Setup {
                 qz: 0.0,
                 qw: 0.0,
                 wetness: 0.0,
+                vis: forkoracle::layout::Vis::UNKNOWN,
                 cps: u32::MAX,
             })
             .collect();
