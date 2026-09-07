@@ -839,7 +839,10 @@ fn cmd_watch(args: &[String]) {
             if let Some(p) = flag(args, "--geo-dropout") {
                 variants.push(("-gd".into(), vec!["--geo-dropout".into(), p]));
             }
+            // the variants of a kind run CONCURRENTLY (a candle CPU training uses ~4 cores whatever the thread
+            // count: the matmuls parallelise, the rest does not), the kinds one after the other (RAM).
             for (kind, prefix) in [("gate", "r"), ("local", "rl")] {
+            let mut children: Vec<(String, PathBuf, std::process::Child)> = Vec::new();
             for (suffix, extra) in &variants {
                 let model = bank.join(format!("{prefix}-v{version}{suffix}.tmw"));
                 let report = bank.join(format!("{prefix}-v{version}{suffix}.md"));
@@ -853,21 +856,25 @@ fn cmd_watch(args: &[String]) {
                         cmd.args([pass, &v]);
                     }
                 }
-                let out = cmd.output();
-                match out {
+                cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+                match cmd.spawn() {
+                    Ok(ch) => children.push((suffix.clone(), model, ch)),
+                    Err(e) => summary.push_str(&format!("[{kind}{suffix}] train could not start: {e}\n")),
+                }
+            }
+            for (suffix, model, ch) in children {
+                match ch.wait_with_output() {
                     Ok(out) => {
                         let s = String::from_utf8_lossy(&out.stdout).to_string();
-                        // keep the gate lines for STATUS
                         for line in s.lines().filter(|l| l.contains("two-gate:") || l.starts_with("| ")) {
                             summary.push_str(&format!("[{kind}{suffix}] {line}\n"));
                         }
                         if !out.status.success() {
-                            summary.push_str(&format!("[{kind}] train FAILED: {}\n", String::from_utf8_lossy(&out.stderr)));
+                            summary.push_str(&format!("[{kind}{suffix}] train FAILED: {}\n", String::from_utf8_lossy(&out.stderr)));
                         }
                     }
-                    Err(e) => summary.push_str(&format!("[{kind}] train could not start: {e}\n")),
+                    Err(e) => summary.push_str(&format!("[{kind}{suffix}] train failed to finish: {e}\n")),
                 }
-                // latest pointer
                 let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest{suffix}.tmw")));
             }
             }
