@@ -1294,6 +1294,12 @@ pub fn lineup_cmd(args: &[String]) {
     // (0 Default 1 White 2 Green 3 Blue 4 Red 5 Black); an item past the list
     // keeps the default (stock 0, embedded 1). A stock flag at Green next to
     // ours at Green is the hue-mask oracle.
+    // --scales 1,1.001,…: one placement scale per item of the row (1 past the
+    // list) — does a scale of its own keep an item out of the game's
+    // instanced draw of identical placements? (2026-09-07)
+    let scales: Vec<f32> = cli::flag(args, "--scales")
+        .map(|s| s.split(',').filter(|c| !c.is_empty()).map(|c| c.trim().parse::<f32>().expect("--scales wants floats")).collect())
+        .unwrap_or_default();
     let colors: Vec<u8> = cli::flag(args, "--colors")
         .map(|s| s.split(',').filter(|c| !c.is_empty()).map(|c| c.trim().parse::<u8>().expect("--colors wants bytes 0..5")).collect())
         .unwrap_or_default();
@@ -1346,7 +1352,7 @@ pub fn lineup_cmd(args: &[String]) {
         // a donor pivot of a few metres turned every yawed pusher of the
         // play-mode tests 3-4 m sideways of the car (2026-09-07)
         m.set_item_frame(i, [yaw, 0.0, 0.0], [0.0; 3]);
-        m.set_item_scale(i, 1.0);
+        m.set_item_scale(i, scales.get(k).copied().unwrap_or(1.0));
         m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
         let color = colors.get(k).copied().unwrap_or(if k < n_stock { 0 } else { 1 });
         m.set_item_color(i, color);

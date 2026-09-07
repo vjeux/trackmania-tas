@@ -677,7 +677,7 @@ fn main() {
             );
             for vr in &s2.visuals {
                 if let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() {
-                    println!("  visual: {} vertices, {} sub-visuals, inline form {}, {} uv sets (flags {}), chunks {:x?}", v.main.as_ref().map(|m| m.count).unwrap_or(0), v.sub_visuals.len(), v.inline_form, v.inline_uv_sets, v.inline_uv_flags, v.chunks);
+                    println!("  visual: {} vertices, {} sub-visuals, inline form {}, {} uv sets (flags {}), chunks {:x?}, u_node {} v3d_node {} u_float {} morph {:?} splits {} chunk_flags {:#x} version {} bbox {:?} bitmap_elems {} uv_groups {} u02 {} u03 {} u04 {:?}", v.main.as_ref().map(|m| m.count).unwrap_or(0), v.sub_visuals.len(), v.inline_form, v.inline_uv_sets, v.inline_uv_flags, v.chunks, v.u_node.index, v.v3d_node.index, v.u_float, v.morph, v.splits.len(), v.main.as_ref().map(|m| m.chunk_flags).unwrap_or(0), v.main.as_ref().map(|m| m.version).unwrap_or(0), v.main.as_ref().map(|m| m.bounding_box).unwrap_or([0.0; 6]), v.main.as_ref().map(|m| m.bitmap_elems.len()).unwrap_or(0), v.main.as_ref().map(|m| m.uv_groups.len()).unwrap_or(0), v.main.as_ref().map(|m| m.u02).unwrap_or(0), v.main.as_ref().map(|m| m.u03).unwrap_or(0), v.main.as_ref().map(|m| m.u04.clone()).unwrap_or_default());
                 }
             }
             if let Some(out_path) = flag(&a.rest, "--out") {

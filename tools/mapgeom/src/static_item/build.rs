@@ -298,6 +298,9 @@ pub struct Merged {
     /// the frames), `u07` -1; a static item says 1 and 1.
     pub vis_cst_type: Option<i32>,
     pub solid2_u07: Option<i32>,
+    /// Write NO PreLightGen (the pack's dyna meshes — Flag.Mesh.Gbx — carry
+    /// none; a static item always gets one).
+    pub no_prelight: bool,
 }
 
 /// One `CPlugDynaObjectModel` entity of the source prefab, scaled: its mesh
@@ -1655,7 +1658,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             s2.lights.push(socket);
         }
     }
-    s2.pre_light_gen = Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight));
+    s2.pre_light_gen = if m.no_prelight { None } else { Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight)) };
     s2.file_write_time = m.file_write_time;
     Ok(s2)
 }
@@ -2922,6 +2925,7 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     // its ladder ([16, 64, 128, 512], five levels) is registered, scaled, by
     // add_static_object like every part's
     mesh.solid2_u07 = Some(src.s2.u07);
+    mesh.no_prelight = src.s2.pre_light_gen.is_none();
     let mesh_ext = src.mesh_ext.clone();
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
