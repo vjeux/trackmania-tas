@@ -19,6 +19,11 @@ pub struct Opts {
     pub every_ms: u64,
     pub first_ms: u64,
     pub timeout_s: u64,
+    /// `--carlog-ms MS`: after the playground opens, record the live car
+    /// (`/carlog`, one row per frame: race time, position, velocity, speed)
+    /// for MS milliseconds into `OUTDIR/car-<tag>.tsv` before the shots —
+    /// the spawn point is the first row, a shove is a velocity that appears.
+    pub carlog_ms: u64,
     pub detach: bool,
 }
 
@@ -37,6 +42,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         every_ms: num("--every-ms", 3000)?,
         first_ms: num("--first-ms", 4000)?,
         timeout_s: num("--timeout", 300)?,
+        carlog_ms: num("--carlog-ms", 0)?,
         detach: args.iter().any(|a| a == "--detach"),
     })
 }
@@ -46,7 +52,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--timeout S] [--detach]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--timeout S] [--detach]");
             return 2;
         }
     };
@@ -115,6 +121,30 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
+    if opts.carlog_ms > 0 {
+        // one call, one trajectory (the plugin caps a call at 30 s; longer
+        // logs are several calls back to back)
+        let file = opts.outdir.join(format!("car-{}.tsv", opts.tag));
+        let mut tsv = String::new();
+        let mut left = opts.carlog_ms;
+        while left > 0 {
+            let chunk = left.min(30_000);
+            let body = super::http_get(&format!("/carlog?ms={chunk}"), chunk / 1000 + 20)?;
+            for (i, row) in body.lines().enumerate() {
+                if i == 0 && !tsv.is_empty() {
+                    continue; // one header
+                }
+                tsv.push_str(row);
+                tsv.push('\n');
+            }
+            left -= chunk;
+        }
+        std::fs::write(&file, &tsv).map_err(|e| format!("{}: {e}", file.display()))?;
+        let rows = tsv.lines().count().saturating_sub(1);
+        let line = format!("carlog\t{rows} rows over {} ms\t{}", opts.carlog_ms, file.display());
+        println!("{} {line}", el());
+        lines.push(line);
+    }
     std::thread::sleep(Duration::from_millis(opts.first_ms));
     for k in 0..opts.shots {
         if k > 0 {
