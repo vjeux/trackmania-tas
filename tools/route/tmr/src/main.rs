@@ -265,12 +265,24 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<bool>) {
     (rows, held)
 }
 
-fn map_names() -> HashMap<String, String> {
+fn map_names(cache: Option<&Path>) -> HashMap<String, String> {
     let mut m = HashMap::new();
+    // the cache's last-good copies first (the bank's gates.json may be mid-rewrite)
+    if let Some(c) = cache {
+        if let Ok(rd) = std::fs::read_dir(c) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().ends_with(".gates.json") {
+                    if let Ok(g) = tmroute::io::read_gates(&e.path()) {
+                        m.insert(g.map_uid, g.map_name);
+                    }
+                }
+            }
+        }
+    }
     if let Ok(rd) = std::fs::read_dir(default_geom()) {
         for e in rd.flatten() {
             if let Ok(g) = tmroute::io::read_gates(&e.path().join("gates.json")) {
-                m.insert(g.map_uid, g.map_name);
+                m.entry(g.map_uid).or_insert(g.map_name);
             }
         }
     }
@@ -333,7 +345,7 @@ fn eval_sets(w: &Weights, rows: &[Rows], held: &[bool], keep: &[&str], dev: &can
 
 fn cmd_train(args: &[String]) {
     let (rows, held) = load_cache(args);
-    let names = map_names();
+    let names = map_names(flag(args, "--cache").map(PathBuf::from).as_deref());
     let mut cfg = TrainCfg::default();
     if let Some(a) = flag(args, "--ablation") {
         cfg.ablation = a;
@@ -432,7 +444,7 @@ fn cmd_eval(args: &[String]) {
     let abl = meta.get("ablation").and_then(|a| a.as_str()).unwrap_or("full").to_string();
     let keep = tmr::feat::ablation_keep(w.fv, &abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
     let (rows, held) = load_cache(args);
-    let names = map_names();
+    let names = map_names(flag(args, "--cache").map(PathBuf::from).as_deref());
     let dev = candle_core::Device::Cpu;
     let mut report = format!("# tmr eval — {} — model {} ({}), ablation {}\n\n## Split\n{}\n", provenance("eval"), model.display(), meta.get("produced_by").and_then(|p| p.as_str()).unwrap_or("?"), abl, split_summary(&rows, &held, &names));
     eval_sets(&w, &rows, &held, &keep, &dev, &names, &mut report);
