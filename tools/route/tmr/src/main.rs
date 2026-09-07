@@ -136,8 +136,13 @@ struct BuildOpts {
     max_rows: usize,
     /// Featurisation threads.
     threads: usize,
-    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off.
+    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off. Applied to TRAINING
+    /// maps only: a held-out map keeps a UNIFORM sample so the test population is the same in every round
+    /// (round 9's keep-fast on held-out rows changed Winter 2026 - 18's distance baseline from 98.6 to 78.3 % — the
+    /// test moved, not the model).
     keep_fast: f32,
+    /// Extra held-out uids (--held-out) — with the fnv rule, the maps whose rows stay uniform.
+    forced_held: Vec<String>,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -148,17 +153,13 @@ struct BuildOpts {
 fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, String), String> {
     let uid = data::shard_map_uid(d).ok_or_else(|| format!("{}: cannot tell its map uid (dir name or FANOUT.log)", d.display()))?;
     let build_hash = data::shard_build_hash(d);
-    // FRAME control before anything is built from this shard (fail closed)
-    // A convention change shows as ANOTHER axis carrying the velocity (or none); a low +Z mean alone is
-    // physics: Spring 2026 - 08 has 140 of 675 starts driving in REVERSE (dot < −0.9), Summer 2026 - 18
-    // 297 of 1812 sideways at ~90 m/s (|dot| < 0.3). Fail only when +Z is not the dominant axis.
+    // FRAME control is per generator BUILD, pooled over the build's shards (`frame_gate`, run by the caller before
+    // any shard of that build is built): "velocity along +Z" per MAP is a physics assertion that fails on ice, dirt
+    // and drift (Winter 2026 - 16: 35 % of starts sideways, an ICE map driven by the Stadium car — coordinator
+    // 22:33Z), while a convention change moves the velocity to ANOTHER body axis across ALL shards of a build.
+    // Per shard only the alignment is logged.
     let (acc, nf) = data::frame_control_axes(d)?;
-    let fz = acc[2];
-    let other = acc[0].abs().max(acc[1].abs());
-    if nf >= 20 && (fz < 0.3 || other > fz) {
-        return Err(format!("{uid} (build {build_hash}): FRAME control FAILED — mean dot(velocity, rotated local axis): +X {:+.3} +Y {:+.3} +Z {:+.3} over {nf} starts; forward is not local +Z, fix frame.rs before building rows", acc[0], acc[1], fz));
-    }
-    log.push(format!("  {uid}: generator build {build_hash}, frame control +Z {fz:.3} (X {:+.3}, Y {:+.3}) over {nf} starts → PASS{}", acc[0], acc[1], if fz < 0.9 { " (low mean: reverse / sideways driving on this map, not a convention change)" } else { "" }));
+    log.push(format!("  {uid}: generator build {build_hash}, alignment +X {:+.3} +Y {:+.3} +Z {:+.3} over {nf} starts{}", acc[0], acc[1], acc[2], if acc[2] < 0.6 { " (low +Z: drift / reverse on this map — the build-level gate decides)" } else { "" }));
     let gdir = o.geom.join(&uid);
     // the bank is an object store another box writes into: a gates.json mid-rewrite reads truncated.
     // Keep the last good copy in the cache and fall back to it, saying so.
@@ -182,12 +183,17 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
         build_geometry(o.fv, &mp, &gates, false).map_err(|e| format!("{uid}: geometry build failed: {e}"))?
     };
     let feat = featurizer(&geo);
+    let held = data::held_out(&uid) || o.forced_held.contains(&uid);
+    let keep_fast = if held { 0.0 } else { o.keep_fast };
+    if held && o.keep_fast > 0.0 {
+        log.push(format!("  {uid}: HELD-OUT map — uniform sample (keep-fast {} applies to training maps only)", o.keep_fast));
+    }
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, o.keep_fast, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, keep_fast, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, o.keep_fast, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, keep_fast, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
     let _ = &rows;
@@ -213,7 +219,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), forced_held: flag(args, "--held-out").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -232,7 +238,12 @@ fn cmd_build(args: &[String]) {
     }
     let mut manifest = String::from(MANIFEST_HEADER);
     let mut log = Vec::new();
+    let refused = frame_gate(&dirs, &mut log);
     for d in dirs {
+        if refused.contains(&data::shard_build_hash(&d)) {
+            eprintln!("  {}: skipped — its generator build failed the FRAME gate", d.display());
+            continue;
+        }
         match build_one(&d, &o, &mut log) {
             Ok((m, line)) => {
                 println!("{line}");
@@ -608,6 +619,8 @@ fn cmd_plan(args: &[String]) {
     let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    // --beam-budget-s: wall-clock cap on the beam; past it the best partials are completed greedily (BEAM-CAPPED)
+    tmplan::planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
     if has(args, "--matrix") {
         println!("R edge matrix from rest (p_reach / expected s / h used), spawn = node 0:");
         for i in 0..nodes.pos.len() {
@@ -710,16 +723,16 @@ fn cmd_plan(args: &[String]) {
     for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
         println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
     }
-    let prov = provenance("plan");
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", provenance("plan")), None => provenance("plan") };
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {
         let (g, wp) = order_str(&nodes, &gates, &p.visit);
         let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}{}", e.p_reach, tmr::secs(e.expected_ms as i64), match e.kind { tmplan::estimator::EdgeKind::Learned => "R", tmplan::estimator::EdgeKind::Flight => "F", _ => "" })).collect();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]{}", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "), if p.capped { "  BEAM-CAPPED (greedy completion of the best partial at the time budget)" } else { "" });
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| if hybrid_on { "router-plan-hyb".into() } else { "router-plan-r".into() });
-            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
+            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &if p.capped { format!("{prov}; BEAM-CAPPED (greedy completion at the time budget)") } else { prov.clone() });
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
                 r.source = source.clone();
@@ -904,8 +917,24 @@ fn cmd_watch(args: &[String]) {
             }
             o.max_rows = cap;
         }
+        // FRAME gate per generator build (pooled over its shards) — only for shards that need building
+        let pending: Vec<PathBuf> = dirs
+            .iter()
+            .filter(|d| {
+                let Some(uid) = data::shard_map_uid(d) else { return false };
+                let Ok(meta) = std::fs::metadata(d.join("samples.tmr")) else { return false };
+                let fresh = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().zip(meta.modified().ok()).map_or(false, |(a, b)| a > b);
+                !(fresh(&o.out.join(rows_file_name(&uid, "gate"))) && fresh(&o.out.join(rows_file_name(&uid, "local"))))
+            })
+            .cloned()
+            .collect();
+        let refused = if pending.is_empty() { std::collections::HashSet::new() } else { frame_gate(&pending, &mut log) };
         for d in dirs {
             let Some(uid) = data::shard_map_uid(&d) else { continue };
+            if refused.contains(&data::shard_build_hash(&d)) {
+                log.push(format!("  {uid}: skipped — its generator build failed the FRAME gate"));
+                continue;
+            }
             let shard = d.join("samples.tmr");
             let Ok(meta) = std::fs::metadata(&shard) else { continue };
             let rows_f = o.out.join(rows_file_name(&uid, "gate"));
@@ -924,7 +953,7 @@ fn cmd_watch(args: &[String]) {
                 // --gate-rows N caps the GATE rows separately (they need fewer: 60k/map trains the order prior as
                 // well as 150k did, and a 60-map round was taking an hour per head)
                 let cap = if kind == "gate" { flag(args, "--gate-rows").and_then(|s| s.parse().ok()).unwrap_or(o.max_rows).min(if o.max_rows > 0 { o.max_rows } else { usize::MAX }) } else { o.max_rows };
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, forced_held: o.forced_held.clone(), geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
@@ -1193,4 +1222,43 @@ fn cmd_report(args: &[String]) {
     if let Some(o) = out {
         std::fs::write(&o, &s).unwrap_or_else(|e| die(&e.to_string()));
     }
+}
+
+/// The build-level FRAME gate: pool the velocity/axis alignment over every shard of each generator build; a
+/// build whose pooled +Z is not the dominant axis (or < 0.3) is refused — its shards are skipped with a loud
+/// line. Returns the set of refused build hashes.
+fn frame_gate(dirs: &[PathBuf], log: &mut Vec<String>) -> std::collections::HashSet<String> {
+    let mut by_build: HashMap<String, ([f64; 3], usize, Vec<String>)> = HashMap::new();
+    for d in dirs {
+        let Some(uid) = data::shard_map_uid(d) else { continue };
+        let h = data::shard_build_hash(d);
+        if let Ok((acc, n)) = data::frame_control_axes(d) {
+            let e = by_build.entry(h).or_insert(([0.0; 3], 0, Vec::new()));
+            for a in 0..3 {
+                e.0[a] += acc[a] as f64 * n as f64;
+            }
+            e.1 += n;
+            e.2.push(uid);
+        }
+    }
+    let mut refused = std::collections::HashSet::new();
+    let mut builds: Vec<_> = by_build.into_iter().collect();
+    builds.sort_by(|a, b| a.0.cmp(&b.0));
+    for (h, (sum, n, maps)) in builds {
+        if n == 0 {
+            continue;
+        }
+        let m = [sum[0] / n as f64, sum[1] / n as f64, sum[2] / n as f64];
+        let other = m[0].abs().max(m[1].abs());
+        // dominance only: an ice map alone in its build pools to +Z 0.296 (Winter 2026 - 16) and is physics
+        let ok = m[2] > 0.1 && m[2] > other;
+        log.push(format!(
+            "  FRAME gate build {h}: {} shards, {n} starts, pooled mean dot +X {:+.3} +Y {:+.3} +Z {:+.3} → {}",
+            maps.len(), m[0], m[1], m[2], if ok { "PASS (+Z dominant)" } else { "REFUSED — forward is not local +Z for this build; fix frame.rs before building its rows" }
+        ));
+        if !ok {
+            refused.insert(h);
+        }
+    }
+    refused
 }

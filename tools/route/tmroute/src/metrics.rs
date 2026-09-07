@@ -63,3 +63,17 @@ mod tests {
         assert_eq!(symmetric_difference(&[1, 2, 9], &[1, 2, 7]), (vec![9], vec![7]));
     }
 }
+
+/// FNV-1a 64 of a map uid — the MODEL arm's split rule: `fnv1a64(uid) % 10 == 0` is HELD OUT of R's
+/// training forever, so those maps are the honest reserve for the exhibit.
+pub fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+pub fn fnv_held_out(uid: &str) -> bool {
+    fnv1a64(uid) % 10 == 0
+}
