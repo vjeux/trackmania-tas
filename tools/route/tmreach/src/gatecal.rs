@@ -29,6 +29,8 @@ pub struct Crossing {
     /// Position at the credited row, one before, one after.
     pub p0: [f64; 3],
     pub pm: Option<[f64; 3]>,
+    /// Two rows before the credited row.
+    pub pmm: Option<[f64; 3]>,
     pub pp: Option<[f64; 3]>,
     pub speed: f64,
 }
@@ -102,6 +104,7 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
             d_centre: d,
             p0: pos(r0),
             pm: idx.checked_sub(1).map(|j| pos(&rep.flat[j])),
+            pmm: idx.checked_sub(2).map(|j| pos(&rep.flat[j])),
             pp: rep.flat.get(idx + 1).map(pos),
             speed: crate::rig::speed(r0),
         });
@@ -191,7 +194,8 @@ pub fn grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> Grade {
             match first[gi] {
                 None => g.missed += 1,
                 Some(t) => {
-                    let dt = (t - c.row_ms) / 10;
+                    // expected credited row = T−1 (see `fit`)
+                    let dt = (t - (c.row_ms - 10)) / 10;
                     *g.dt_hist.entry(dt).or_default() += 1;
                     if dt.abs() <= 2 {
                         g.within2 += 1;
@@ -254,29 +258,68 @@ pub fn model_stats(runs: &[GhostRun], gates: &MapGates) -> Vec<(String, usize, f
         .collect()
 }
 
-/// Fit the detector: per model, `s_off` = the mean `s_at_notice` over that
-/// model's crossings; lateral half-extent = GEOM half_width + 8 m and the
-/// vertical band −6..+8 m about the gate centre are HYPOTHESES for the
-/// 200-rollout oracle control to bound (humans only sample the road).
-pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> Detector {
-    let mut by: std::collections::BTreeMap<String, (Vec<f64>, f64)> = Default::default();
+/// Fit the detector from the CREDITING geometry, per model.
+///
+/// The credited tick is the row BEFORE the first row at/after the notice
+/// (T−1): the engine's notice time falls inside the tick after the one whose
+/// state was credited. Established by the oracle control, not assumed: a
+/// rollout that braked to a stop with its centre 1.73 m before a
+/// RoadTechCheckpoint centre and rolled back was credited by the plain oracle,
+/// while the human crossings' first-row-at-the-notice sits at −0.35..+0.21 —
+/// no centre plane satisfies both under the T assignment, and every one in
+/// (max s(T−2), min s(T−1)] does under T−1. The finish rows of 31 finishing
+/// rollouts agree (detector row 17–25 ms after the oracle's finish under T,
+/// ≤ 1 tick under T−1).
+///
+/// So per model: s_off = midpoint of (max over crossings of s at T−2, min of s
+/// at T−1]; the interval's width is the slack and is printed. Lateral: 10.75 m
+/// for road blocks (a human crossing at +10.25 was credited, rollouts at
+/// +11.2..+11.5 were not), GEOM half_width for items; vertical −6..+8 m about the gate centre (hypothesis).
+pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, Vec<String>) {
+    let mut by: std::collections::BTreeMap<String, (Vec<(f64, f64)>, f64, bool)> = Default::default();
     for run in runs {
         for c in &run.crossings {
             let g = gates.gate(c.gate_wp).unwrap();
-            if let Some((s, _)) = s_at_notice(c, g) {
-                let e = by.entry(g.model.clone()).or_insert((Vec::new(), g.half_width));
-                e.0.push(s);
+            if let (Some(pm), Some(pmm)) = (c.pm, c.pmm) {
+                let s1 = g.local(pm).0;
+                let s2 = g.local(pmm).0;
+                let e = by.entry(g.model.clone()).or_insert((Vec::new(), g.half_width, g.from_item));
+                e.0.push((s2, s1));
             }
         }
     }
     let mut per_model = Vec::new();
-    for (m, (v, hw)) in by {
-        let mean = v.iter().sum::<f64>() / v.len() as f64;
-        per_model.push((m, Trigger { s_off: mean, depth: 8.0, lat_half: hw + 8.0, up_lo: -6.0, up_hi: 8.0 }));
+    let mut notes = Vec::new();
+    for (m, (v, hw, item)) in by {
+        let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max); // max s(T-2): must be OUTSIDE
+        let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min); // min s(T-1): must be INSIDE
+        let s_off = 0.5 * (lo + hi);
+        notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT" } else { "" }));
+        per_model.push((m.clone(), Trigger { s_off, depth: 8.0, lat_half: lateral_half_extent(&m, hw, item), up_lo: -6.0, up_hi: 8.0 }));
     }
-    Detector {
-        per_model,
-        default: Trigger { s_off: -1.0, depth: 8.0, lat_half: 16.0, up_lo: -6.0, up_hi: 8.0 },
-        provenance: provenance.to_string(),
+    (
+        Detector {
+            per_model,
+            default: Trigger { s_off: -2.0, depth: 8.0, lat_half: 10.0, up_lo: -6.0, up_hi: 8.0 },
+            provenance: provenance.to_string(),
+        },
+        notes,
+    )
+}
+
+/// Lateral half-extent of a model's trigger, from the ORACLE CONTROL on
+/// Summer 2026 - 01 (tmreach oraclectl, 2026-09-07, 1056 tapes): the largest
+/// |lat| the plain oracle credited and the smallest it refused.
+///   RoadTechCheckpoint   credited at +11.77 and −11.76; nothing refused below 16 → 12.5 (bounded [11.77, 16))
+///   RoadTechFinish       credited at +8.91; refused at +11.22, +11.29, +11.31, +11.33, +11.51 → 10.0 (bounded [8.91, 11.22))
+///   GateCheckpointLeft32m credited at +10.50 (human); refused at +10.95 → 10.7 (bounded [10.50, 10.95))
+/// Unknown models: the GEOM half_width + 2 m, flagged in CONTROL.md until a
+/// control bounds them.
+pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f64 {
+    match model {
+        "RoadTechCheckpoint" => 12.5,
+        "RoadTechFinish" => 10.0,
+        "GateCheckpointLeft32m" => 10.7,
+        _ => geom_half_width + 2.0,
     }
 }

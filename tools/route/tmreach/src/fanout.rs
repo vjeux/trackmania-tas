@@ -63,6 +63,8 @@ pub struct GhostFanout {
     pub endpoints: Vec<(u32, u16, u16, [f32; 3])>,
     pub other_connections: Vec<String>,
     pub log: Vec<String>,
+    pub human_legs: usize,
+    pub human_respawns: usize,
 }
 
 /// Engine label of the state after record `k`.
@@ -128,7 +130,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         v.sort();
         v.into_iter().map(|(_, wp)| wp).collect()
     };
-    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new() };
+    let mut out = GhostFanout { starts: Vec::new(), records: Vec::new(), stats: Stats::default(), endpoints: Vec::new(), other_connections: Vec::new(), log: Vec::new(), human_legs: 0, human_respawns: 0 };
     out.log.push(format!("{}: human gate order by detector {:?}", w.ghost.display(), human_order));
     let max_h = *cfg.horizons.iter().max().unwrap_or(&300) as usize;
 
@@ -306,6 +308,19 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     }
     if let Some(h) = node {
         w.release(h);
+    }
+    // G4: the human's own legs (positives) and respawn negatives, ids after the
+    // fan-out's starts.
+    let hb = start_id_base + out.starts.len() as u32;
+    match crate::human::human_from_flat(w, tel, flat.clone(), gates, det, hb) {
+        Ok(h) => {
+            out.human_legs = h.legs;
+            out.human_respawns = h.respawns;
+            out.starts.extend(h.starts);
+            out.records.extend(h.records);
+            out.log.extend(h.log);
+        }
+        Err(e) => out.log.push(format!("  human legs FAILED: {e}")),
     }
     out.log.push(format!(
         "{}: {} starts, {} rollouts in {:.1} s wall ({:.1}/s), outcomes ok/crash/off/fin/abort {:?}, identity max {:.4} m ({} fails), start-row blend max {:.4} m, noop {}, errors {}",

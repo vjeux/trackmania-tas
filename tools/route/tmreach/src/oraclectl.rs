@@ -1,7 +1,7 @@
 //! `tmreach oraclectl` — G2 control (ii): varied rollouts written as full
 //! tapes and re-simulated by the PLAIN oracle (no shim, no fork). The oracle's
 //! checkpoint count for each tape must equal the detector's count over the
-//! same run (human prefi        c.det_finish_ms.map(crate::secs).unwrap_or("-".into()), + macro + brake tail). Bar: N/N.
+//! same run (human prefix + macro + brake tail). Bar: N/N.
 
 use crate::fanout::{credited_before, label_of_tick};
 use crate::gates::{Detector, GateKind, MapGates};
@@ -23,6 +23,8 @@ pub struct CtlCfg {
     pub horizon: usize,
     /// Macro ids to run per start (a subset of the library).
     pub macro_ids: Vec<u16>,
+    /// Write every case's per-tick rows beside its tape (diagnosis).
+    pub save_rows: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -102,7 +104,10 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             for _ in f + cfg.horizon..n {
                 recs.push(rec_of(0, 0, 1));
             }
-            let rolled = w.rollout(new_node, &recs, f, (n - f) as u64 + 400)?;
+            let mut rolled = w.rollout(new_node, &recs, f, (n - f) as u64 + 400)?;
+            if rolled.exited {
+                crate::rig::extrapolate_exit(&mut rolled.rows);
+            }
             // detector over prefix + rollout
             let mut all = prefix.clone();
             all.extend(rolled.rows.iter().cloned());
@@ -149,6 +154,9 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             }
             let tape_path = cfg.out.join("tapes").join(format!("g{gi}-{name}-t{f}-m{}.Ghost.Gbx", m.id));
             std::fs::create_dir_all(tape_path.parent().unwrap()).map_err(|e| e.to_string())?;
+            if cfg.save_rows {
+                crate::starts::write_trace(&tape_path.with_extension("rows.tsv"), &rolled.rows)?;
+            }
             w.tape.write_candidate(&s, &g, &b, &tape_path)?;
             let _ = credited;
             cases.push(Case {
@@ -212,7 +220,7 @@ pub fn case_tsv_row(c: &Case) -> String {
         c.oracle_cps.map(|x| x.to_string()).unwrap_or("-".into()),
         if c.oracle_cps == Some(c.det_cps) { "yes" } else { "NO" },
         c.det_finished,
-        c.det_finish_ms.map(|x| crate::secs(x + 10)).unwrap_or("-".into()),
+        c.det_finish_ms.map(crate::secs).unwrap_or("-".into()),
         c.oracle_ms.map(crate::secs).unwrap_or("-".into()),
         c.near_miss_m,
         c.near_miss_gate.map(|g| format!("wp{g}")).unwrap_or("-".into()),

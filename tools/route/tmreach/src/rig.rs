@@ -375,3 +375,21 @@ impl Worker {
         ms - self.label_shift
     }
 }
+
+/// A child that EXITED ended the race inside its last tick: the row at which
+/// the finish plane is crossed is sometimes traced (the engine ran one more
+/// tick) and sometimes not (measured: 3 of 31 finishes had no row past the
+/// plane and the detector missed the finish the oracle credited). Append one
+/// extrapolated row (position + velocity × 10 ms) so the crossing is inside
+/// the trace either way; it is marked by carrying the previous row's wetness
+/// exactly and is never a dataset end state (the run is over).
+pub fn extrapolate_exit(rows: &mut Vec<Row>) {
+    if let Some(last) = rows.last().cloned() {
+        let mut r = last.clone();
+        r.time_ms += 10;
+        r.x += last.vx * 0.01;
+        r.y += last.vy * 0.01;
+        r.z += last.vz * 0.01;
+        rows.push(r);
+    }
+}

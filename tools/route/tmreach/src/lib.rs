@@ -25,3 +25,4 @@ pub mod fanout;
 pub mod macros;
 pub mod tmr;
 pub mod oraclectl;
+pub mod human;

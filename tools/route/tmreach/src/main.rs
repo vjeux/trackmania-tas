@@ -218,13 +218,16 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
         println!("  {k}: n {n}  s mean {mean:+.3} sd {sd:.3} min {mn:+.3} max {mx:+.3}");
     }
     let prov = format!("tmreach gatecal {} {} ghosts on {} ({}), gates {}", tmreach::GIT_HASH, runs.len(), gates.map_uid, hostname(), gates.source);
-    let det = fit(&runs, &gates, &prov);
-    println!("\nFITTED DETECTOR (plane at per-model s_off; lat_half = GEOM half_width + 8, up -6..+8: HYPOTHESES for the oracle control):");
+    let (det, notes) = fit(&runs, &gates, &prov);
+    println!("\nFITTED DETECTOR (plane at per-model s_off from the crediting geometry, credited tick = T-1; lat 10 m road / GEOM item, up -6..+8: see gatecal::fit):");
+    for n in &notes {
+        println!("  {n}");
+    }
     for (m, t) in &det.per_model {
         println!("  {m}: s_off {:+.3} m, depth {:.1}, lat_half {:.1}, up {:+.1}..{:+.1}", t.s_off, t.depth, t.lat_half, t.up_lo, t.up_hi);
     }
     let gr = grade(&runs, &gates, &det);
-    println!("GRADE vs the ghosts' own notices (first row inside vs credited row): {} => {}", gr, if gr.passes() { "PASS (bar: ±2 ticks on ≥95 %, no missed, no extra)" } else { "FAIL" });
+    println!("GRADE vs the ghosts' own notices (first row inside vs the row before the notice, T-1): {} => {}", gr, if gr.passes() { "PASS (bar: ±2 ticks on ≥95 %, no missed, no extra)" } else { "FAIL" });
     std::fs::write(out.join("detector.json"), det.to_json()).map_err(|e| e.to_string())?;
     std::fs::write(out.join("grade.txt"), format!("{}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
     // the human crossing ORDER per ghost, for the coordinator's 44/44 check
@@ -294,6 +297,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let mut log = String::new();
     let mut tot = Stats::default();
     let mut ok = 0;
+    let (mut human_legs, mut human_resp) = (0usize, 0usize);
     for (g, r) in ghosts.iter().zip(results) {
         match r {
             Ok(fo) => {
@@ -301,8 +305,9 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
                 for s in &fo.starts {
                     let st = &s.state;
                     starts.push_str(&format!(
-                        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\thuman\n",
-                        s.start_id, s.ghost_md5, s.tick, st.race_ms, st.pos[0], st.pos[1], st.pos[2], st.vel[0], st.vel[1], st.vel[2], st.quat[0], st.quat[1], st.quat[2], st.quat[3], s.cps_before
+                        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\n",
+                        s.start_id, s.ghost_md5, s.tick, st.race_ms, st.pos[0], st.pos[1], st.pos[2], st.vel[0], st.vel[1], st.vel[2], st.quat[0], st.quat[1], st.quat[2], st.quat[3], s.cps_before,
+                        if fo.records.iter().any(|r| r.start_id == s.start_id && r.macro_id >= tmreach::human::RESPAWN_MACRO) { "human-leg" } else { "human" }
                     ));
                 }
                 for r in &fo.records {
@@ -334,6 +339,8 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
                 tot.reached_other += fo.stats.reached_other;
                 tot.distinct_cells.extend(fo.stats.distinct_cells.iter());
                 tot.switches += fo.stats.switches;
+                human_legs += fo.human_legs;
+                human_resp += fo.human_respawns;
                 tot.rollout_secs += fo.stats.rollout_secs;
             }
             Err(e) => {
@@ -355,14 +362,15 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
         "fanout {} on {} ({}): {}/{} ghosts ok, {} rollouts ({} records) in {:.1} s wall = {:.1} rollouts/s/box with {} workers; per-rollout engine time {:.1} ms mean\n\
          outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; reached the human's next gate {} ({:.1} %), some OTHER gate first {} ({:.2} %); no-op macros {}, out-of-tape {}, errors {}\n\
          identity (macro 0 end state vs the human's trajectory): max {:.4} m, {} fails over {} starts; start-row blend by a macro's first record: max {:.4} m\n\
-         distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n",
+         distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n\
+         human legs (positives) {}, respawn negatives {}\n",
         tmreach::GIT_HASH, gates.map_uid, hostname(), ok, ghosts.len(), tot.rollouts, count, wall, tot.rollouts as f64 / wall, tmreach::pool::cap(pcfg.workers),
         1000.0 * tot.rollout_secs / tot.rollouts.max(1) as f64,
         tot.outcomes[0], tot.outcomes[1], tot.outcomes[2], tot.outcomes[3], tot.outcomes[4],
         tot.reached_next, 100.0 * tot.reached_next as f64 / tot.rollouts.max(1) as f64,
         tot.reached_other, 100.0 * tot.reached_other as f64 / tot.rollouts.max(1) as f64,
         tot.noop, tot.out_of_tape, tot.errors, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
-        lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches
+        lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp
     );
     print!("{summary}");
     log.push_str(&summary);
@@ -431,6 +439,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         every_ms: a.get("every").map(|s| s.parse().unwrap()).unwrap_or(2000),
         horizon: a.get("horizon").map(|s| s.parse().unwrap()).unwrap_or(300),
         macro_ids: macro_ids.clone(),
+        save_rows: a.has("save-rows"),
     });
     let pcfg = pool_cfg(a, &map, "oraclectl");
     println!("oraclectl: {} ghosts (stride {}), macros {:?}, every {}, horizon {} ticks, detector {}", ghosts.len(), stride, macro_ids, tmreach::secs(cfg.every_ms), cfg.horizon, det_path.display());
@@ -450,12 +459,18 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
     adjudicate(&server, &map, &mut cases)?;
     println!("oracle done in {:.1} s", t1.elapsed().as_secs_f64());
     let mut s = String::from(case_tsv_header());
-    let (mut agree, mut disagree, mut unanswered, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, Vec::new());
+    // THE PLAIN ORACLE CANNOT SEE ONE CHECKPOINT: a DNF with exactly one
+    // credited checkpoint reports "wrong simu" like a DNF with none ("reached
+    // SOME checkpoints (k out of N)" appears only for k >= 2; measured on
+    // p00001 with brake-from-tick tapes: 700..1400 -> plain, 1450 -> 2 of 4).
+    // So (det 1, oracle 0) is the oracle's blind class, counted apart.
+    let (mut agree, mut disagree, mut unanswered, mut blind, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, 0, Vec::new());
     for c in &cases {
         s.push_str(&case_tsv_row(c));
         match c.oracle_cps {
             None => unanswered += 1,
             Some(x) if x == c.det_cps => agree += 1,
+            Some(0) if c.det_cps == 1 && !c.det_finished => blind += 1,
             Some(_) => disagree += 1,
         }
         if c.near_miss_m < 40.0 {
@@ -474,12 +489,13 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         *hist.entry((c.det_cps, c.oracle_cps)).or_default() += 1;
     }
     let verdict = format!(
-        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
+        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (det 1 / oracle reports none) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
         cases.len(),
         agree,
         100.0 * agree as f64 / cases.len().max(1) as f64,
         disagree,
         unanswered,
+        blind,
         near,
         fin,
         fin_dt,

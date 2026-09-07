@@ -8,4 +8,5 @@ fn main() {
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=TMREACH_GIT_HASH={h}");
     println!("cargo:rerun-if-changed=../../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../../.git/logs/HEAD");
 }
