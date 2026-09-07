@@ -2,7 +2,7 @@
 //!
 //!   tmr features                         print FEATURES.md (the feature layout, generated)
 //!   tmr frame --starts F.tsv             MEASURE which car axis is forward (quaternion convention control)
-//!   tmr build [--kind gate|local] --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
+//!   tmr build [--kind gate|local] [--fv 1|2] [--max-rows N] --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
 //!                                        TMR0 shards → labelled rows per map (<uid>.rows + manifest.tsv)
 //!   tmr train [--kind gate|local] --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tmr::data::{self, Rows};
 use tmr::features;
+use tmroute::gates::WpKind;
 use tmr::net::Weights;
 use tmr::train::{Set, TrainCfg};
 
@@ -91,7 +92,7 @@ fn main() {
         std::env::set_var("RAYON_NUM_THREADS", (n.saturating_sub(8)).clamp(1, 32).to_string());
     }
     match args.first().map(|s| s.as_str()) {
-        Some("features") => print!("{}", features::describe()),
+        Some("features") => print!("{}", if fv_of(&args) == 2 { tmr::features2::describe2() } else { features::describe() }),
         Some("frame") => cmd_frame(&args),
         Some("build") => cmd_build(&args),
         Some("train") => cmd_train(&args),
@@ -100,6 +101,7 @@ fn main() {
         Some("plan") => cmd_plan(&args),
         Some("legs") => cmd_legs(&args),
         Some("watch") => cmd_watch(&args),
+        Some("probe") => cmd_probe(&args),
         Some("split") => {
             for u in args.iter().skip(1) {
                 println!("{u}\tfnv1a64 % 10 = {}\t{}", data::fnv1a64(u) % 10, if data::held_out(u) { "HELD-OUT" } else { "train" });
@@ -126,6 +128,9 @@ fn cmd_frame(args: &[String]) {
 struct BuildOpts {
     /// "gate" (rows per uncredited gate, the order prior) or "local" (horizon-native rows from every endpoint).
     kind: String,
+    fv: u32,
+    /// Row cap per map (0 = none).
+    max_rows: usize,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -151,39 +156,40 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
         }
     };
     let t0 = std::time::Instant::now();
-    let surf = if o.no_geom {
-        None
+    let geo = if o.no_geom {
+        Geometry::None
     } else {
         let mp = find_map(&uid, &o.maps).ok_or_else(|| format!("{uid}: no .Map.Gbx in {:?} (use --maps or --no-geometry)", o.maps))?;
-        let (s, _nodes) = tmplan::surface::SurfaceModel::build(&mp, &gates, false, false).map_err(|e| format!("{uid}: surface build failed: {e}"))?;
-        Some(s)
+        build_geometry(o.fv, &mp, &gates, false).map_err(|e| format!("{uid}: geometry build failed: {e}"))?
     };
-    let probe = match &surf {
-        Some(s) => features::Probe { idx: Some(&s.full), road: &s.road_materials },
-        None => features::Probe::none(),
-    };
+    let feat = featurizer(&geo);
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &probe, 1, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &probe, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
+    let mut rows = rows;
+    let dropped = if o.max_rows > 0 { rows.subsample(o.max_rows, 7) } else { 0 };
+    if dropped > 0 {
+        log.push(format!("  {uid} [{}]: subsampled to {} rows ({} dropped, seed 7)", o.kind, rows.n, dropped));
+    }
     let f = o.out.join(rows_file_name(&uid, &o.kind));
-    rows.write(&f)?;
+    if o.fv == 2 { rows.write_half(&f)? } else { rows.write(&f)? }
     let held = data::held_out(&uid);
     let line = format!("{}  [{}]  {:.1} s  → {}", log.last().cloned().unwrap_or_default(), if held { "HELD-OUT by fnv1a64(uid) % 10 == 0" } else { "train" }, t0.elapsed().as_secs_f64(), f.display());
-    if let Some(s) = &surf {
+    if let Geometry::V1(s) = &geo {
         for n in &s.notes {
             log.push(format!("    surface note: {n}"));
         }
     }
-    let manifest = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", o.kind, uid, gates.map_name, held as u8, manifest_tail, d.display(), provenance("build"));
+    let manifest = format!("{}\tv{}\t{}\t{}\t{}\t{}\t{}\t{}\n", o.kind, o.fv, uid, gates.map_name, held as u8, manifest_tail, d.display(), provenance("build"));
     Ok((manifest, line))
 }
 
-const MANIFEST_HEADER: &str = "kind\tmap_uid\tmap_name\theld_out\trecords_or_groups\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n";
+const MANIFEST_HEADER: &str = "kind\tfv\tmap_uid\tmap_name\theld_out\trecords_or_groups\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n";
 
 fn build_opts(args: &[String]) -> BuildOpts {
     let out = PathBuf::from(flag(args, "--out").or_else(|| flag(args, "--cache")).unwrap_or_else(|| die("--out CACHE")));
@@ -192,7 +198,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -243,7 +249,7 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<bool>) {
     let mut rows = Vec::new();
     let mut held = Vec::new();
     for f in files {
-        let r = Rows::read(&f).unwrap_or_else(|e| die(&e));
+        let r = Rows::read_any(&f).unwrap_or_else(|e| die(&e));
         if let Some(o) = &only {
             if !o.contains(&r.map_uid) {
                 continue;
@@ -332,7 +338,8 @@ fn cmd_train(args: &[String]) {
     if let Some(a) = flag(args, "--ablation") {
         cfg.ablation = a;
     }
-    let keep = features::ablation_keep(&cfg.ablation).unwrap_or_else(|| die(&format!("--ablation {}: full|no-probes|no-attitude|distance-only", cfg.ablation)));
+    let fv = rows.first().map_or(1, |r| r.fv);
+    let keep = tmr::feat::ablation_keep(fv, &cfg.ablation).unwrap_or_else(|| die(&format!("--ablation {}: unknown for feature version {fv}", cfg.ablation)));
     if let Some(e) = flag(args, "--epochs") {
         cfg.epochs = e.parse().unwrap_or_else(|_| die("--epochs N"));
     }
@@ -384,7 +391,7 @@ fn cmd_train(args: &[String]) {
         "held_out_maps": rows.iter().zip(&held).filter(|(_, h)| **h).map(|(r, _)| r.map_uid.clone()).collect::<Vec<_>>(),
         "train_rows": train_set.n,
         "h_min": h_min, "h_max": h_max,
-        "feature_version": features::FEATURE_VERSION,
+        "feature_version": fv,
     });
     w.meta = meta.to_string();
     w.save(&out).unwrap_or_else(|e| die(&e));
@@ -413,7 +420,7 @@ fn cmd_eval(args: &[String]) {
     let w = Weights::load(&model).unwrap_or_else(|e| die(&e));
     let meta: serde_json::Value = serde_json::from_str(&w.meta).unwrap_or(serde_json::Value::Null);
     let abl = meta.get("ablation").and_then(|a| a.as_str()).unwrap_or("full").to_string();
-    let keep = features::ablation_keep(&abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
+    let keep = tmr::feat::ablation_keep(w.fv, &abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
     let (rows, held) = load_cache(args);
     let names = map_names();
     let dev = candle_core::Device::Cpu;
@@ -447,13 +454,28 @@ fn cmd_selftest(args: &[String]) {
             fails += 1;
         }
     }
-    println!("model {}: dims {:?}, {} params, feature version {}, meta {}", model.display(), w.dims, w.n_params(), features::FEATURE_VERSION, w.meta);
+    println!("model {}: dims {:?}, {} params, feature version {}, meta {}", model.display(), w.dims, w.n_params(), w.fv, w.meta);
     if fails > 0 {
         std::process::exit(1);
     }
 }
 
-fn load_plan_ctx(args: &[String]) -> (tmroute::gates::GatesFile, tmplan::surface::SurfaceModel, tmplan::surface::Nodes, Weights, u16, u16, Vec<&'static str>) {
+struct PlanCtx {
+    gates: tmroute::gates::GatesFile,
+    surf: tmplan::surface::SurfaceModel,
+    nodes: tmplan::surface::Nodes,
+    w: Weights,
+    h_min: u16,
+    h_max: u16,
+    keep: Vec<&'static str>,
+    /// Geometry for the gate model's feature version (the surface model doubles as v1's).
+    geo: Geometry,
+    /// Geometry for the local model (`--local`), when its feature version differs.
+    geo_local: Option<Geometry>,
+    local_w: Option<Weights>,
+}
+
+fn load_plan_ctx(args: &[String]) -> PlanCtx {
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
     let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required"));
     let gates = tmroute::io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
@@ -461,14 +483,38 @@ fn load_plan_ctx(args: &[String]) -> (tmroute::gates::GatesFile, tmplan::surface
     let w = Weights::load(&model).unwrap_or_else(|e| die(&e));
     let meta: serde_json::Value = serde_json::from_str(&w.meta).unwrap_or(serde_json::Value::Null);
     let abl = meta.get("ablation").and_then(|a| a.as_str()).unwrap_or("full").to_string();
-    let keep = features::ablation_keep(&abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
+    let keep = tmr::feat::ablation_keep(w.fv, &abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
     let h_max = meta.get("h_max").and_then(|v| v.as_f64()).unwrap_or(400.0) as u16;
     let h_min = meta.get("h_min").and_then(|v| v.as_f64()).unwrap_or(200.0) as u16;
     let (surf, nodes) = tmplan::surface::SurfaceModel::build(Path::new(&map), &gates, !has(args, "--quiet"), flag(args, "--grid").map_or(false, |g| g == "deco")).unwrap_or_else(|e| die(&e));
     for n in &surf.notes {
         println!("  note: {n}");
     }
-    (gates, surf, nodes, w, h_min, h_max, keep)
+    let quiet = has(args, "--quiet");
+    let geo = if w.fv == 2 { build_geometry(2, Path::new(&map), &gates, !quiet).unwrap_or_else(|e| die(&e)) } else { Geometry::None };
+    let local_w = flag(args, "--local").map(|p| Weights::load(Path::new(&p)).unwrap_or_else(|e| die(&e)));
+    let geo_local = match &local_w {
+        Some(lw) if lw.fv != w.fv => Some(if lw.fv == 2 { build_geometry(2, Path::new(&map), &gates, !quiet).unwrap_or_else(|e| die(&e)) } else { Geometry::None }),
+        _ => None,
+    };
+    PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, geo, geo_local, local_w }
+}
+
+impl PlanCtx {
+    /// The featurizer for the gate model.
+    fn feat(&self) -> tmr::feat::Featurizer<'_> {
+        match &self.geo {
+            Geometry::None => tmr::feat::Featurizer::V1(features::Probe { idx: Some(&self.surf.full), road: &self.surf.road_materials }),
+            g => featurizer(g),
+        }
+    }
+    fn feat_local(&self) -> tmr::feat::Featurizer<'_> {
+        match &self.geo_local {
+            Some(Geometry::None) => tmr::feat::Featurizer::V1(features::Probe { idx: Some(&self.surf.full), road: &self.surf.road_materials }),
+            Some(g) => featurizer(g),
+            None => self.feat(),
+        }
+    }
 }
 
 fn order_str(nodes: &tmplan::surface::Nodes, gates: &tmroute::gates::GatesFile, visit: &[usize]) -> (String, String) {
@@ -479,8 +525,11 @@ fn order_str(nodes: &tmplan::surface::Nodes, gates: &tmroute::gates::GatesFile, 
 
 fn cmd_plan(args: &[String]) {
     use tmplan::estimator::{EdgeEstimator, StateBucket};
-    let (gates, surf, nodes, w, h_min, h_max, keep) = load_plan_ctx(args);
-    let est = tmr::estimator::REstimator { w: &w, gates: &gates, nodes: &nodes, surf: &surf, h_max, h_min, keep, p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
+    let ctx = load_plan_ctx(args);
+    let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, .. } = &ctx;
+    let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
+    let feat = ctx.feat();
+    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep, p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     if has(args, "--matrix") {
@@ -532,13 +581,17 @@ fn cmd_plan(args: &[String]) {
 /// among the uncredited gates at each step.
 fn cmd_legs(args: &[String]) {
     use tmplan::estimator::StateBucket;
-    let (gates, surf, nodes, w, h_min, h_max, keep) = load_plan_ctx(args);
-    let est = tmr::estimator::REstimator { w: &w, gates: &gates, nodes: &nodes, surf: &surf, h_max, h_min, keep, p_floor: 0.0 };
-    let local_w = flag(args, "--local").map(|p| Weights::load(Path::new(&p)).unwrap_or_else(|e| die(&e)));
+    let ctx = load_plan_ctx(args);
+    let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, local_w, .. } = &ctx;
+    let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
+    let feat = ctx.feat();
+    let feat_local = ctx.feat_local();
+    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep, p_floor: 0.0 };
     let chained = local_w.as_ref().map(|lw| {
-        let mut c = tmr::estimator::Chained::new(lw, &gates, &nodes, &surf, features::ablation_keep("full").unwrap());
+        let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
         if let Some(b) = flag(args, "--beam") { c.beam = b.parse().unwrap_or(24); }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
+        if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c
     });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
@@ -591,8 +644,11 @@ fn cmd_legs(args: &[String]) {
                 Some(c) => {
                     let dir = est.heading_public(prev, at);
                     match c.chain(nodes.pos[at], bucket.speed(), dir, to) {
-                        Some((p, ticks, v, steps, _)) => {
+                        Some((p, ticks, v, steps, path)) => {
                             chained_total += ticks * 10;
+                            if has(args, "--trace") {
+                                println!("      chained path: {}", path.iter().map(|q| format!("({:.0},{:.0},{:.0})", q[0], q[1], q[2])).collect::<Vec<_>>().join(" → "));
+                            }
                             format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s)", p, tmr::secs(ticks as i64 * 10), steps, v)
                         }
                         None => {
@@ -615,7 +671,11 @@ fn cmd_legs(args: &[String]) {
                         scored.len(),
                         scored.iter().map(|(c, p, _, _)| format!("{c}:{p:.2}")).collect::<Vec<_>>().join(" ")
                     );
-                    bucket = StateBucket::of_speed(est.query(bucket, prev, at, to).map(|(e, _, _)| e.speed_mu).unwrap_or(0.0).max(0.0));
+                    // the next leg starts at the arrival speed: the chained one when chaining, else the gate head's
+                    bucket = StateBucket::of_speed(match &chained {
+                        Some(c) => c.chain(nodes.pos[at], bucket.speed(), est.heading_public(prev, at), to).map(|(_, _, v, _, _)| v).unwrap_or(0.0),
+                        None => est.query(bucket, prev, at, to).map(|(e, _, _)| e.speed_mu).unwrap_or(0.0).max(0.0),
+                    });
                 }
                 None => println!("  leg {k}: node {at} → {to}: no estimate"),
             }
@@ -677,7 +737,7 @@ fn cmd_watch(args: &[String]) {
             }
             let mut ok = true;
             for kind in ["gate", "local"] {
-                let ok_ = BuildOpts { kind: kind.into(), geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
@@ -736,5 +796,113 @@ fn cmd_watch(args: &[String]) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
+}
+
+/// Geometry for a map at a feature version: v1 = tmplan's SurfaceModel (plumb index), v2 = GEOM's LocalScene.
+enum Geometry {
+    None,
+    V1(tmplan::surface::SurfaceModel),
+    V2 { scene: mapgeom::local::LocalScene, map: tmmaps::map::MapFile, yoff: f32 },
+}
+
+fn open_store() -> Result<mapgeom::store::DataStore, String> {
+    let server = std::env::var("TM_SERVER").map_err(|_| "TM_SERVER not set")?;
+    let mut paths = Vec::new();
+    for name in ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"] {
+        let p = format!("{server}/Packs/{name}");
+        if Path::new(&p).exists() {
+            paths.push(p);
+        }
+    }
+    if paths.is_empty() {
+        return Err(format!("no .pak in {server}/Packs"));
+    }
+    mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY)
+}
+
+fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbose: bool) -> Result<Geometry, String> {
+    match fv {
+        1 => {
+            let (s, _nodes) = tmplan::surface::SurfaceModel::build(map, gates, verbose, false)?;
+            Ok(Geometry::V1(s))
+        }
+        2 => {
+            let mut store = open_store()?;
+            let m = tmmaps::map::MapFile::load(map);
+            let t0 = std::time::Instant::now();
+            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            if verbose {
+                eprintln!("  LocalScene: {} triangles, {} placements, yoff {} in {:.1} s", scene.tris.len(), scene.placements.len(), gates.yoff, t0.elapsed().as_secs_f64());
+            }
+            Ok(Geometry::V2 { scene, map: m, yoff: gates.yoff })
+        }
+        _ => Err(format!("feature version {fv}")),
+    }
+}
+
+fn featurizer<'a>(g: &'a Geometry) -> tmr::feat::Featurizer<'a> {
+    match g {
+        Geometry::None => tmr::feat::Featurizer::V1(features::Probe::none()),
+        Geometry::V1(s) => tmr::feat::Featurizer::V1(features::Probe { idx: Some(&s.full), road: &s.road_materials }),
+        Geometry::V2 { scene, map, yoff } => tmr::feat::Featurizer::V2(tmr::features2::Geo2::new(scene, map, *yoff)),
+    }
+}
+
+fn fv_of(args: &[String]) -> u32 {
+    flag(args, "--fv").and_then(|s| s.parse().ok()).unwrap_or(1)
+}
+
+/// `tmr probe --fv 2 MAP.Map.Gbx --gates gates.json --starts starts.tsv [--n 3]`: print the v2 geometry
+/// blocks for a few real start states — the eyeball control on the featurizer.
+fn cmd_probe(args: &[String]) {
+    use tmr::features2::*;
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gates = tmroute::io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let starts = data::read_starts(Path::new(&flag(args, "--starts").unwrap_or_else(|| die("--starts")))).unwrap_or_else(|e| die(&e));
+    let n: usize = flag(args, "--n").and_then(|s| s.parse().ok()).unwrap_or(3);
+    let geo = build_geometry(2, Path::new(&map), &gates, true).unwrap_or_else(|e| die(&e));
+    let feat = featurizer(&geo);
+    if let Geometry::V2 { scene, .. } = &geo {
+        let g2 = tmr::features2::Geo2::new(scene, match &geo { Geometry::V2 { map, .. } => map, _ => unreachable!() }, gates.yoff);
+        println!("obstacles (collidable items ≤ 60 m radius): {}; block cells: {}", g2.obstacles.len(), g2.cells.len());
+    }
+    let mut ids: Vec<&u32> = starts.keys().collect();
+    ids.sort();
+    let step = (ids.len() / n.max(1)).max(1);
+    let g0 = gates.gates.iter().find(|g| g.kind != WpKind::Start).unwrap();
+    let t = tmr::feat::TargetSpec { centre: g0.centre, normal: g0.normal, half_width: g0.half_width, group_size: 1, kind: TargetKind::Checkpoint, collected_share: 0.0 };
+    let mut x = vec![0f32; feat.dim()];
+    for &id in ids.iter().step_by(step).take(n) {
+        let s = &starts[id];
+        let t0 = std::time::Instant::now();
+        feat.fill(&s.state, &t, 200, &mut x);
+        let us = t0.elapsed().as_micros();
+        println!("start {id} race {} pos ({:.0},{:.1},{:.0}) speed {:.1} m/s — features in {us} µs", tmr::secs(s.race_ms as i64), s.state.pos[0], s.state.pos[1], s.state.pos[2], s.state.speed);
+        // path: centre lateral
+        let mut line = String::from("  path (centre): ");
+        for k in 0..PATH_N {
+            let o = OFF2_PATH + (k * PATH_LAT.len() + 1) * PER_SAMPLE;
+            let hit = x[o + 6] > 0.5;
+            let fam = (0..N_FAM).find(|f| x[o + 7 + N_MAT + f] > 0.5).unwrap_or(7);
+            line.push_str(&format!("[{} h{:+.1} n·y{:.2} fam{}] ", if hit { "hit" } else { "GAP" }, x[o + 3] * 20.0, x[o + 1], fam));
+        }
+        println!("{line}");
+        for (pi, pitch) in RAY_PITCH_DEG.iter().enumerate() {
+            let mut line = format!("  rays pitch {:+3.0}: ", pitch);
+            for yi in 0..RAY_YAWS_DEG.len() {
+                let o = OFF2_RAYS + (yi * RAY_PITCH_DEG.len() + pi) * PER_RAY;
+                if x[o + 1] > 0.5 {
+                    let fam = (0..N_FAM).find(|f| x[o + 3 + N_MAT + f] > 0.5).unwrap_or(7);
+                    line.push_str(&format!("{:>4.0}m/f{fam} ", x[o] * RAY_MAX_M));
+                } else {
+                    line.push_str("   --    ");
+                }
+            }
+            println!("{line}");
+        }
+        let nob = (0..N_OBST).filter(|k| x[OFF2_OBST + k * (4 + N_FAM) + 3] > 0.0).count();
+        let cells_known = (0..(CELLS.0 * CELLS.1 * CELLS.2) as usize).filter(|c| x[OFF2_CELLS + c * N_FAM + 7] < 0.5).count();
+        println!("  obstacles within 80 m: {nob}; cells with a block: {cells_known}/75; target rel ({:.0},{:.0},{:.0}) m", x[OFF2_TARGET] * 100.0, x[OFF2_TARGET + 1] * 100.0, x[OFF2_TARGET + 2] * 100.0);
     }
 }

@@ -87,7 +87,7 @@ impl Trainable {
         }
         let mean = self.mean.flatten_all()?.to_vec1::<f32>()?;
         let std = self.inv_std.flatten_all()?.to_vec1::<f32>()?.iter().map(|v| 1.0 / v).collect();
-        Ok(Weights { dims: self.dims.clone(), mean, std, layers, meta: String::new() })
+        Ok(Weights { fv: 1, dims: self.dims.clone(), mean, std, layers, meta: String::new() })
     }
 
     pub fn n_params(&self) -> usize {
@@ -98,6 +98,8 @@ impl Trainable {
 /// The flat copy. `meta` is a JSON provenance string stored in the .tmw trailer.
 #[derive(Clone, Debug)]
 pub struct Weights {
+    /// Feature layout version the input dimension belongs to (1 or 2).
+    pub fv: u32,
     pub dims: Vec<usize>,
     pub mean: Vec<f32>,
     pub std: Vec<f32>,
@@ -136,7 +138,7 @@ pub fn decode(o: &[f32], dist_m: f32) -> Estimate {
     Estimate {
         p_reach: 1.0 / (1.0 + (-o[O_REACH]).exp()),
         expected_ticks: (100.0 * dist_m.max(0.0) / s.max(0.5)).min(6000.0),
-        speed_mu: o[O_SPEED] * 100.0,
+        speed_mu: (o[O_SPEED] * 100.0).clamp(0.0, 160.0),
         speed_sd: o[O_SPEED + 1].exp() * 100.0,
         dy_mu: o[O_DY] * 10.0,
         dy_sd: o[O_DY + 1].exp() * 10.0,
@@ -212,7 +214,7 @@ impl Weights {
         let mut b = Vec::new();
         b.extend_from_slice(b"TMW0");
         b.extend_from_slice(&R_VERSION.to_le_bytes());
-        b.extend_from_slice(&crate::features::FEATURE_VERSION.to_le_bytes());
+        b.extend_from_slice(&self.fv.to_le_bytes());
         b.extend_from_slice(&(self.dims.len() as u32).to_le_bytes());
         for d in &self.dims {
             b.extend_from_slice(&(*d as u32).to_le_bytes());
@@ -249,8 +251,8 @@ impl Weights {
             return bad(&format!("R_VERSION {ver}, this build reads {R_VERSION}"));
         }
         let fv = u32n(&mut o);
-        if fv != crate::features::FEATURE_VERSION {
-            return bad(&format!("FEATURE_VERSION {fv}, this build computes {}", crate::features::FEATURE_VERSION));
+        if fv != 1 && fv != 2 {
+            return bad(&format!("FEATURE_VERSION {fv}: this build computes 1 and 2"));
         }
         let nd = u32n(&mut o) as usize;
         let mut dims = Vec::with_capacity(nd);
@@ -286,7 +288,10 @@ impl Weights {
             return bad(&format!("trailer says {ml} bytes of meta, {} remain", b.len() - o));
         }
         let meta = String::from_utf8_lossy(&b[o..]).to_string();
-        Ok(Weights { dims, mean, std, layers, meta })
+        if dims[0] != crate::feat::dim_of(fv) {
+            return bad(&format!("input dim {} does not match feature version {fv} (dim {})", dims[0], crate::feat::dim_of(fv)));
+        }
+        Ok(Weights { fv, dims, mean, std, layers, meta })
     }
 }
 
@@ -296,7 +301,7 @@ mod tests {
     #[test]
     fn round_trip_and_agreement() {
         let dev = Device::Cpu;
-        let d = 7;
+        let d = crate::features::DIM;
         let mean = vec![0.1f32; d];
         let std = vec![2.0f32; d];
         let t = Trainable::new(&[d, 16, OUT], &mean, &std, &dev).unwrap();

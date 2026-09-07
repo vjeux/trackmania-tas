@@ -8,7 +8,8 @@
 //! clamped to the horizons seen in training: R has only ever been asked about
 //! h ≤ `h_max`, and an extrapolated h is a number nobody measured.
 
-use crate::features::{self, Probe, Target, DIM};
+use crate::feat::{Featurizer, TargetSpec};
+use crate::features2::TargetKind;
 use crate::frame;
 use crate::net::Weights;
 use tmplan::estimator::{Edge, EdgeEstimator, EdgeKind, Geometric, StateBucket};
@@ -18,6 +19,7 @@ use tmroute::gates::{GatesFile, WpKind};
 
 pub struct REstimator<'a> {
     pub w: &'a Weights,
+    pub feat: &'a Featurizer<'a>,
     pub gates: &'a GatesFile,
     pub nodes: &'a Nodes,
     pub surf: &'a SurfaceModel,
@@ -97,10 +99,11 @@ impl<'a> REstimator<'a> {
         }
     }
 
-    pub fn target_of(&self, to: usize) -> Option<Target> {
+    pub fn target_of(&self, to: usize) -> Option<TargetSpec> {
         let grp = self.nodes.groups[to];
         let (c, n, hw) = self.gates.group_geometry(grp)?;
-        Some(Target { centre: c, normal: n, half_width: hw, group_size: self.gates.gates_of_group(grp).len() as u32 })
+        let rep = self.gates.group_rep(grp)?;
+        Some(TargetSpec { centre: c, normal: n, half_width: hw, group_size: self.gates.gates_of_group(grp).len() as u32, kind: TargetKind::of_wp(rep.kind), collected_share: 0.0 })
     }
 
     pub fn horizon(&self, v_in: f32, length: f32) -> u16 {
@@ -115,10 +118,9 @@ impl<'a> REstimator<'a> {
         let (horiz, dy) = tmplan::estimator::chord(s.pos, t.centre);
         let length = (horiz * horiz + dy * dy).sqrt();
         let h = self.horizon(bucket.speed(), length);
-        let probe = Probe { idx: Some(&self.surf.full), road: &self.surf.road_materials };
-        let mut x = vec![0f32; DIM];
-        features::features(&s, &t, &probe, h, &mut x);
-        features::mask_blocks(&mut x, &self.keep);
+        let mut x = vec![0f32; self.feat.dim()];
+        self.feat.fill(&s, &t, h, &mut x);
+        crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
         Some((self.w.estimate(&x, length), h, length))
     }
 }
@@ -169,6 +171,7 @@ struct ChainState {
 
 pub struct Chained<'a> {
     pub local: &'a Weights,
+    pub feat: &'a Featurizer<'a>,
     pub gates: &'a GatesFile,
     pub nodes: &'a Nodes,
     pub surf: &'a SurfaceModel,
@@ -188,13 +191,29 @@ pub struct Chained<'a> {
 /// current speed in h — the endpoint cloud lives there; a 138 m/s car covers 276 m in 2 s and a fixed
 /// 120 m fan priced it at half speed).
 const FAN_H: &[u16] = &[200, 400];
-const FAN_FRAC: &[f32] = &[0.5, 0.8, 1.0, 1.2];
+const FAN_FRAC: &[f32] = &[0.5, 0.75, 1.0, 1.2, 1.4];
+
+/// Metres a full-throttle Stadium car covers in h from speed v under tmplan's two-phase model
+/// (20 m/s² below 50 m/s, 5 m/s² above, top 140 m/s — Geometric::leg_time_ms's constants).
+pub fn reach_m(v: f32, h: u16) -> f32 {
+    let mut v = v.max(0.0);
+    let mut s = 0.0f32;
+    for _ in 0..h {
+        let a = if v < 50.0 { 20.0 } else { 5.0 };
+        v = (v + a * 0.01).min(140.0);
+        s += v * 0.01;
+    }
+    s
+}
 const FAN_MIN_M: f32 = 25.0;
-const BEARINGS_DEG: &[f32] = &[-60.0, -40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 40.0, 60.0];
+/// Bearings relative to the CAR's heading (the road bends away from the gate direction; on Summer
+/// 2026 - 01 leg 1 a gate-relative ±60° fan missed the road and chained 6 short steps west), plus
+/// the gate direction itself.
+const BEARINGS_DEG: &[f32] = &[-90.0, -60.0, -40.0, -25.0, -12.0, 0.0, 12.0, 25.0, 40.0, 60.0, 90.0];
 
 impl<'a> Chained<'a> {
-    pub fn new(local: &'a Weights, gates: &'a GatesFile, nodes: &'a Nodes, surf: &'a SurfaceModel, keep: Vec<&'static str>) -> Chained<'a> {
-        Chained { local, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: RefCell::new(HashMap::new()), trace: false }
+    pub fn new(local: &'a Weights, feat: &'a Featurizer<'a>, gates: &'a GatesFile, nodes: &'a Nodes, surf: &'a SurfaceModel, keep: Vec<&'static str>) -> Chained<'a> {
+        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: RefCell::new(HashMap::new()), trace: false }
     }
 
     fn state_of(&self, s: &ChainState) -> CarState {
@@ -226,11 +245,10 @@ impl<'a> Chained<'a> {
     pub fn local_query(&self, s: &ChainState, target: [f32; 3], h: u16) -> crate::net::Estimate {
         let cs = self.state_of(s);
         let dir = frame::unit3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = Target { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0 };
-        let probe = Probe { idx: Some(&self.surf.full), road: &self.surf.road_materials };
-        let mut x = vec![0f32; DIM];
-        features::features(&cs, &t, &probe, h, &mut x);
-        features::mask_blocks(&mut x, &self.keep);
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let mut x = vec![0f32; self.feat.dim()];
+        self.feat.fill(&cs, &t, h, &mut x);
+        crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
         let d = frame::norm3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]]);
         self.local.estimate(&x, d)
     }
@@ -274,17 +292,24 @@ impl<'a> Chained<'a> {
                 }
                 // expansion fan
                 for h in FAN_H {
-                    let reach = s.speed.max(20.0) * (*h as f32) / 100.0;
+                    // what the car covers in h: v·t + ½·a·t² with a = 8 m/s² (a Stadium car from rest: ~56 m in 2 s,
+                    // ~144 m in 4 s — the fan must reach the cloud, not stop short of it)
+                    let reach = reach_m(s.speed, *h);
                     for f in FAN_FRAC {
                         let d = &(reach * f).max(FAN_MIN_M).min(crate::data::LOCAL_MAX_M);
                         if *d > dg + ghw + 20.0 {
                             continue; // overshooting the gate
                         }
-                        for b in BEARINGS_DEG {
-                            let a = b.to_radians();
-                            let (ca, sa) = (a.cos(), a.sin());
-                            // rotate gdir by a about the vertical
-                            let tdir = [gdir[0] * ca + gdir[1] * sa, -gdir[0] * sa + gdir[1] * ca];
+                        let mut dirs: Vec<[f32; 2]> = BEARINGS_DEG
+                            .iter()
+                            .map(|b| {
+                                let a = b.to_radians();
+                                let (ca, sa) = (a.cos(), a.sin());
+                                [s.dir[0] * ca + s.dir[1] * sa, -s.dir[0] * sa + s.dir[1] * ca]
+                            })
+                            .collect();
+                        dirs.push(gdir);
+                        for tdir in dirs {
                             let x = s.pos[0] + tdir[0] * d;
                             let z = s.pos[2] + tdir[1] * d;
                             let y = self.ground_y(x, s.pos[1], z);
@@ -324,7 +349,7 @@ impl<'a> Chained<'a> {
 
     fn heading_at(&self, prev: Option<usize>, from: usize) -> [f32; 2] {
         // same rule as REstimator: through the gate at a gate node, the Start normal at the spawn
-        let r = REstimator { w: self.local, gates: self.gates, nodes: self.nodes, surf: self.surf, h_max: 400, h_min: 200, keep: self.keep.clone(), p_floor: 0.0 };
+        let r = REstimator { w: self.local, feat: self.feat, gates: self.gates, nodes: self.nodes, surf: self.surf, h_max: 400, h_min: 200, keep: self.keep.clone(), p_floor: 0.0 };
         r.heading_public(prev, from)
     }
 }

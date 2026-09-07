@@ -3,7 +3,7 @@
 //! never looked at during training — they are the test).
 
 use crate::data::{Rows, L_AANG, L_ADY, L_ASPEED, L_BAND, L_TICKS, L_Y, NLAB};
-use crate::features::{self, DIM};
+use crate::feat;
 use crate::data::L_DIST;
 use crate::net::{Trainable, Weights, MAX_MEAN_SPEED, OUT, O_ANG, O_DY, O_MEANSPEED, O_REACH, O_SPEED};
 use candle_core::{Device, Tensor, D};
@@ -33,6 +33,8 @@ impl Default for TrainCfg {
 
 /// A flat training set: features (possibly ablation-masked) and labels.
 pub struct Set {
+    pub fv: u32,
+    pub dim: usize,
     pub x: Vec<f32>,
     pub lab: Vec<f32>,
     pub n: usize,
@@ -44,43 +46,48 @@ impl Set {
     }
     /// `mirror`: append the left/right mirror of every row (features::mirror) — doubles the set.
     pub fn from_rows_aug(rows: &[&Rows], keep: &[&str], mirror: bool) -> Set {
+        let fv = rows.first().map_or(1, |r| r.fv);
+        let dim = feat::dim_of(fv);
+        assert!(rows.iter().all(|r| r.fv == fv), "rows of mixed feature versions");
+        let mirror = mirror && fv == 1;
         let n: usize = rows.iter().map(|r| r.n).sum::<usize>() * if mirror { 2 } else { 1 };
-        let mut x = Vec::with_capacity(n * DIM);
+        let mut x = Vec::with_capacity(n * dim);
         let mut lab = Vec::with_capacity(n * NLAB);
         for r in rows {
             for i in 0..r.n {
                 let mut f = r.feat(i).to_vec();
-                features::mask_blocks(&mut f, keep);
+                feat::mask_blocks(fv, &mut f, keep);
                 x.extend_from_slice(&f);
                 lab.extend_from_slice(r.lab(i));
                 if mirror {
-                    features::mirror(&mut f);
+                    feat::mirror(fv, &mut f);
                     x.extend_from_slice(&f);
                     lab.extend_from_slice(r.lab(i));
                 }
             }
         }
-        Set { x, lab, n }
+        Set { fv, dim, x, lab, n }
     }
     pub fn feat(&self, i: usize) -> &[f32] {
-        &self.x[i * DIM..(i + 1) * DIM]
+        &self.x[i * self.dim..(i + 1) * self.dim]
     }
     pub fn lab(&self, i: usize) -> &[f32] {
         &self.lab[i * NLAB..(i + 1) * NLAB]
     }
     pub fn subset(&self, idx: &[usize]) -> Set {
-        let mut x = Vec::with_capacity(idx.len() * DIM);
+        let mut x = Vec::with_capacity(idx.len() * self.dim);
         let mut lab = Vec::with_capacity(idx.len() * NLAB);
         for &i in idx {
             x.extend_from_slice(self.feat(i));
             lab.extend_from_slice(self.lab(i));
         }
-        Set { x, lab, n: idx.len() }
+        Set { fv: self.fv, dim: self.dim, x, lab, n: idx.len() }
     }
     /// Per-feature mean / std (std 1 where constant).
     pub fn moments(&self) -> (Vec<f32>, Vec<f32>) {
-        let mut mean = vec![0f64; DIM];
-        let mut sq = vec![0f64; DIM];
+        let dim = self.dim;
+        let mut mean = vec![0f64; dim];
+        let mut sq = vec![0f64; dim];
         for i in 0..self.n {
             for (k, v) in self.feat(i).iter().enumerate() {
                 mean[k] += *v as f64;
@@ -88,9 +95,9 @@ impl Set {
             }
         }
         let n = self.n.max(1) as f64;
-        let mut m = Vec::with_capacity(DIM);
-        let mut s = Vec::with_capacity(DIM);
-        for k in 0..DIM {
+        let mut m = Vec::with_capacity(dim);
+        let mut s = Vec::with_capacity(dim);
+        for k in 0..dim {
             let mu = mean[k] / n;
             let var = (sq[k] / n - mu * mu).max(0.0);
             m.push(mu as f32);
@@ -111,7 +118,8 @@ struct Batch {
 
 fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
     let b = idx.len();
-    let mut x = Vec::with_capacity(b * DIM);
+    let dim = set.dim;
+    let mut x = Vec::with_capacity(b * dim);
     let mut y: Vec<f32> = Vec::with_capacity(b);
     let mut tmask: Vec<f32> = Vec::with_capacity(b);
     let mut lnt: Vec<f32> = Vec::with_capacity(b);
@@ -132,7 +140,7 @@ fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
         band.push(if bok { l[L_AANG] } else { 0.0 });
     }
     Ok(Batch {
-        x: Tensor::from_vec(x, (b, DIM), dev)?,
+        x: Tensor::from_vec(x, (b, dim), dev)?,
         y: Tensor::from_vec(y, b, dev)?,
         tmask: Tensor::from_vec(tmask, b, dev)?,
         lnt: Tensor::from_vec(lnt, b, dev)?,
@@ -199,10 +207,11 @@ pub struct TrainReport {
 /// keep the best validation epoch.
 pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Result<TrainReport, String> {
     let (mean, std) = train_set.moments();
-    let mut dims = vec![DIM];
+    let mut dims = vec![train_set.dim];
     dims.extend(&cfg.hidden);
     dims.push(OUT);
     let t = Trainable::new(&dims, &mean, &std, dev).map_err(|e| e.to_string())?;
+    let fv = train_set.fv;
     let mut opt = candle_nn::AdamW::new(t.varmap.all_vars(), ParamsAdamW { lr: cfg.lr, weight_decay: cfg.weight_decay, ..Default::default() }).map_err(|e| e.to_string())?;
     // fit / val by start id
     let mut fit = Vec::new();
@@ -305,6 +314,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
     let worst = weights.agrees_with(&tb, dev, 64, 1e-4)?;
     log.push(format!("agrees_with: flat vs candle forward, worst |Δ| {worst:.3e} over 64 random inputs (tol 1e-4) → PASS"));
     weights.meta = String::new();
+    weights.fv = fv;
     Ok(TrainReport { weights, epochs_run, best_epoch, best_val, log })
 }
 
@@ -319,7 +329,8 @@ pub fn predict_all_candle(w: &Weights, set: &Set, dev: &Device) -> Result<Vec<Ve
     let mut out = Vec::with_capacity(set.n);
     let idx: Vec<usize> = (0..set.n).collect();
     for chunk in idx.chunks(16384) {
-        let x = Tensor::from_slice(&set.x[chunk[0] * DIM..(chunk[chunk.len() - 1] + 1) * DIM], (chunk.len(), DIM), dev).map_err(|e| e.to_string())?;
+        let d = set.dim;
+        let x = Tensor::from_slice(&set.x[chunk[0] * d..(chunk[chunk.len() - 1] + 1) * d], (chunk.len(), d), dev).map_err(|e| e.to_string())?;
         let o = t.forward(&x).map_err(|e| e.to_string())?;
         let v = o.to_vec2::<f32>().map_err(|e| e.to_string())?;
         out.extend(v);

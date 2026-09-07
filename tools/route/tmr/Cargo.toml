@@ -21,5 +21,6 @@ tmroute = { path = "../tmroute" }
 # the surface model (height probes) and the planner's EdgeEstimator seam
 tmplan = { path = "../tmplan" }
 mapgeom = { path = "../../mapgeom" }
+tmmaps = { path = "../../tmmaps" }
 candle-core = "0.9"
 candle-nn = "0.9"

@@ -9,7 +9,8 @@
 //! DIM, n rows, then `[features DIM f32][labels NLAB f32]` per row) because the
 //! surface probes cost a scene build per map.
 
-use crate::features::{self, Probe, Target, DIM};
+use crate::feat::{Featurizer, TargetSpec};
+use crate::features2::TargetKind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tmreach::tmr::{read_shard, CarState};
@@ -143,6 +144,8 @@ pub struct BuildStats {
 /// One map's rows in memory.
 pub struct Rows {
     pub map_uid: String,
+    pub fv: u32,
+    pub dim: usize,
     pub x: Vec<f32>,
     pub lab: Vec<f32>,
     pub n: usize,
@@ -150,16 +153,17 @@ pub struct Rows {
 
 impl Rows {
     pub fn feat(&self, i: usize) -> &[f32] {
-        &self.x[i * DIM..(i + 1) * DIM]
+        &self.x[i * self.dim..(i + 1) * self.dim]
     }
     pub fn lab(&self, i: usize) -> &[f32] {
         &self.lab[i * NLAB..(i + 1) * NLAB]
     }
     pub fn write(&self, p: &Path) -> Result<(), String> {
         let mut b = Vec::with_capacity(32 + self.x.len() * 4 + self.lab.len() * 4);
+        let _ = self.dim;
         b.extend_from_slice(b"TMRW");
-        b.extend_from_slice(&features::FEATURE_VERSION.to_le_bytes());
-        b.extend_from_slice(&(DIM as u32).to_le_bytes());
+        b.extend_from_slice(&self.fv.to_le_bytes());
+        b.extend_from_slice(&(self.dim as u32).to_le_bytes());
         b.extend_from_slice(&(NLAB as u32).to_le_bytes());
         b.extend_from_slice(&(self.n as u64).to_le_bytes());
         let uid = self.map_uid.as_bytes();
@@ -183,27 +187,27 @@ impl Rows {
         let nlab = u32at(12) as usize;
         let n = u64::from_le_bytes(b[16..24].try_into().unwrap()) as usize;
         let ul = u32at(24) as usize;
-        if fv != features::FEATURE_VERSION || dim != DIM || nlab != NLAB {
-            return Err(format!("{}: feature version {fv}/dim {dim}/nlab {nlab} — rebuild (code has {}/{DIM}/{NLAB})", p.display(), features::FEATURE_VERSION));
+        if !(fv == 1 || fv == 2) || dim != crate::feat::dim_of(fv) || nlab != NLAB {
+            return Err(format!("{}: feature version {fv}/dim {dim}/nlab {nlab} — rebuild (code has dim {} for v{fv}, nlab {NLAB})", p.display(), if fv == 1 || fv == 2 { crate::feat::dim_of(fv) } else { 0 }));
         }
         let uid = String::from_utf8_lossy(&b[28..28 + ul]).to_string();
         let body = &b[28 + ul..];
-        if body.len() != n * (DIM + NLAB) * 4 {
+        if body.len() != n * (dim + NLAB) * 4 {
             return Err(format!("{}: body {} bytes, header says {} rows", p.display(), body.len(), n));
         }
-        let mut x = Vec::with_capacity(n * DIM);
+        let mut x = Vec::with_capacity(n * dim);
         let mut lab = Vec::with_capacity(n * NLAB);
         for i in 0..n {
-            let o = i * (DIM + NLAB) * 4;
-            for k in 0..DIM {
+            let o = i * (dim + NLAB) * 4;
+            for k in 0..dim {
                 x.push(f32::from_le_bytes(body[o + 4 * k..o + 4 * k + 4].try_into().unwrap()));
             }
-            let o2 = o + DIM * 4;
+            let o2 = o + dim * 4;
             for k in 0..NLAB {
                 lab.push(f32::from_le_bytes(body[o2 + 4 * k..o2 + 4 * k + 4].try_into().unwrap()));
             }
         }
-        Ok(Rows { map_uid: uid, x, lab, n })
+        Ok(Rows { map_uid: uid, fv, dim, x, lab, n })
     }
 }
 
@@ -213,7 +217,7 @@ fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// Build the rows of one map. `probe` = the map's geometry (or `Probe::none()`
 /// for the geometry-free ablation build).
-pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &Probe, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
+pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
@@ -227,8 +231,9 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &P
         m
     };
     let mut st = BuildStats { records: shard.records.len(), ..Default::default() };
-    let mut rows = Rows { map_uid: gates.map_uid.clone(), x: Vec::new(), lab: Vec::new(), n: 0 };
-    let mut buf = vec![0f32; DIM];
+    let dim = feat.dim();
+    let mut rows = Rows { map_uid: gates.map_uid.clone(), fv: feat.version(), dim, x: Vec::new(), lab: Vec::new(), n: 0 };
+    let mut buf = vec![0f32; dim];
     let mut cand_total = 0usize;
     let candidates: Vec<&tmroute::gates::GateRec> = gates.gates.iter().filter(|g| g.kind != WpKind::Start).collect();
     for (ri, r) in shard.records.iter().enumerate() {
@@ -285,8 +290,8 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &P
                 }
             }
             cand_total += 1;
-            let t = Target::of_gate(g, *group_size.get(&g.group).unwrap_or(&1));
-            features::features(&s.state, &t, probe, r.horizon_ticks, &mut buf);
+            let t = TargetSpec { centre: g.centre, normal: g.normal, half_width: g.half_width, group_size: *group_size.get(&g.group).unwrap_or(&1), kind: TargetKind::of_wp(g.kind), collected_share: s.cps_before as f32 / n_cp_groups.max(1) as f32 };
+            feat.fill(&s.state, &t, r.horizon_ticks, &mut buf);
             rows.x.extend_from_slice(&buf);
             let mut lab = [0f32; NLAB];
             lab[L_Y] = if reached { 1.0 } else { 0.0 };
@@ -430,14 +435,16 @@ fn unif(s: &mut u64) -> f32 {
 }
 
 /// Build the horizon-native rows of one map.
-pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &Probe, seed: u64, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
+pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, seed: u64, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
     let fallback = fallback_order(&orders);
     let mut st = LocalStats::default();
-    let mut rows = Rows { map_uid: gates.map_uid.clone(), x: Vec::new(), lab: Vec::new(), n: 0 };
-    let mut buf = vec![0f32; DIM];
+    let dim = feat.dim();
+    let n_cp_groups = gates.checkpoint_group_ids().len() as f32;
+    let mut rows = Rows { map_uid: gates.map_uid.clone(), fv: feat.version(), dim, x: Vec::new(), lab: Vec::new(), n: 0 };
+    let mut buf = vec![0f32; dim];
     let mut rng = seed.max(1) ^ 0x5851_f42d_4c95_7f2d;
     // group records by (start_id, h)
     let mut groups: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
@@ -455,8 +462,8 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, pro
     let mut push_row = |rows: &mut Rows, s: &StartInfo, sid: u32, target: [f32; 3], h: u16, y: f32, end: Option<&CarState>, key: f32| {
         let d = dist3(s.state.pos, target);
         let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = Target { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0 };
-        features::features(&s.state, &t, probe, h, &mut buf);
+        let t = TargetSpec { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
+        feat.fill(&s.state, &t, h, &mut buf);
         rows.x.extend_from_slice(&buf);
         let mut lab = [0f32; NLAB];
         lab[L_Y] = y;
@@ -572,4 +579,164 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, pro
         gates.map_name, gates.map_uid, st.groups, rows.n, st.positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
     ));
     Ok((rows, st))
+}
+
+// ───────────────────────── f16 storage + subsampling ─────────────────────────
+
+pub fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let mant = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if mant != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00; // overflow → inf
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = (mant | 0x80_0000) >> (1 - e);
+        // round to nearest even
+        let half = (m >> 13) as u16;
+        let rem = m & 0x1fff;
+        return sign | half + if rem > 0x1000 || (rem == 0x1000 && half & 1 == 1) { 1 } else { 0 };
+    }
+    let half = ((e as u32) << 10 | mant >> 13) as u16;
+    let rem = mant & 0x1fff;
+    sign | half + if rem > 0x1000 || (rem == 0x1000 && half & 1 == 1) { 1 } else { 0 }
+}
+
+pub fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h & 0x8000) as u32) << 16;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let mant = (h & 0x3ff) as u32;
+    let bits = if exp == 0 {
+        if mant == 0 {
+            sign
+        } else {
+            // subnormal
+            let mut e = 127 - 15 + 1;
+            let mut m = mant;
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            sign | ((e as u32) << 23) | ((m & 0x3ff) << 13)
+        }
+    } else if exp == 0x1f {
+        sign | 0x7f80_0000 | (mant << 13)
+    } else {
+        sign | ((exp + 127 - 15) << 23) | (mant << 13)
+    };
+    f32::from_bits(bits)
+}
+
+impl Rows {
+    /// Keep at most `max` rows (uniform, seeded) — the v2 layout is 2,692 f32 wide and a
+    /// map's local rows would otherwise be 3.9 GB.
+    pub fn subsample(&mut self, max: usize, seed: u64) -> usize {
+        if self.n <= max {
+            return 0;
+        }
+        let mut idx: Vec<usize> = (0..self.n).collect();
+        let mut s = seed.max(1) ^ 0x9e37_79b9_7f4a_7c15;
+        for i in (1..idx.len()).rev() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let j = (s % (i as u64 + 1)) as usize;
+            idx.swap(i, j);
+        }
+        idx.truncate(max);
+        idx.sort_unstable();
+        let mut x = Vec::with_capacity(max * self.dim);
+        let mut lab = Vec::with_capacity(max * NLAB);
+        for &i in &idx {
+            x.extend_from_slice(self.feat(i));
+            lab.extend_from_slice(self.lab(i));
+        }
+        let dropped = self.n - max;
+        self.x = x;
+        self.lab = lab;
+        self.n = max;
+        dropped
+    }
+
+    /// Half-precision file (`TMRH`): same header, features as f16, labels as f32.
+    pub fn write_half(&self, p: &Path) -> Result<(), String> {
+        let mut b = Vec::with_capacity(32 + self.x.len() * 2 + self.lab.len() * 4);
+        b.extend_from_slice(b"TMRH");
+        b.extend_from_slice(&self.fv.to_le_bytes());
+        b.extend_from_slice(&(self.dim as u32).to_le_bytes());
+        b.extend_from_slice(&(NLAB as u32).to_le_bytes());
+        b.extend_from_slice(&(self.n as u64).to_le_bytes());
+        let uid = self.map_uid.as_bytes();
+        b.extend_from_slice(&(uid.len() as u32).to_le_bytes());
+        b.extend_from_slice(uid);
+        for i in 0..self.n {
+            for v in self.feat(i) {
+                b.extend_from_slice(&f32_to_f16(*v).to_le_bytes());
+            }
+            for v in self.lab(i) {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        std::fs::write(p, b).map_err(|e| format!("{}: {e}", p.display()))
+    }
+
+    /// Read either format.
+    pub fn read_any(p: &Path) -> Result<Rows, String> {
+        let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        if b.len() >= 4 && &b[0..4] == b"TMRW" {
+            return Rows::read(p);
+        }
+        if b.len() < 28 || &b[0..4] != b"TMRH" {
+            return Err(format!("{}: not a TMRW/TMRH rows file", p.display()));
+        }
+        let u32at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let fv = u32at(4);
+        let dim = u32at(8) as usize;
+        let nlab = u32at(12) as usize;
+        let n = u64::from_le_bytes(b[16..24].try_into().unwrap()) as usize;
+        let ul = u32at(24) as usize;
+        if !(fv == 1 || fv == 2) || dim != crate::feat::dim_of(fv) || nlab != NLAB {
+            return Err(format!("{}: feature version {fv}/dim {dim}/nlab {nlab} — rebuild", p.display()));
+        }
+        let uid = String::from_utf8_lossy(&b[28..28 + ul]).to_string();
+        let body = &b[28 + ul..];
+        let stride = dim * 2 + NLAB * 4;
+        if body.len() != n * stride {
+            return Err(format!("{}: body {} bytes, header says {} rows", p.display(), body.len(), n));
+        }
+        let mut x = Vec::with_capacity(n * dim);
+        let mut lab = Vec::with_capacity(n * NLAB);
+        for i in 0..n {
+            let o = i * stride;
+            for k in 0..dim {
+                x.push(f16_to_f32(u16::from_le_bytes(body[o + 2 * k..o + 2 * k + 2].try_into().unwrap())));
+            }
+            let o2 = o + dim * 2;
+            for k in 0..NLAB {
+                lab.push(f32::from_le_bytes(body[o2 + 4 * k..o2 + 4 * k + 4].try_into().unwrap()));
+            }
+        }
+        Ok(Rows { map_uid: uid, fv, dim, x, lab, n })
+    }
+}
+
+#[cfg(test)]
+mod f16_tests {
+    use super::*;
+    #[test]
+    fn f16_round_trip_is_close() {
+        for x in [0.0f32, 1.0, -1.0, 0.5, 0.001, 123.4, -0.3333, 1e-5, 3.0e4] {
+            let y = f16_to_f32(f32_to_f16(x));
+            let tol = (x.abs() * 1e-3).max(1e-6);
+            assert!((x - y).abs() <= tol, "{x} -> {y}");
+        }
+    }
 }

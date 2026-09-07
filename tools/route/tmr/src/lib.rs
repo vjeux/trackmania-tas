@@ -9,7 +9,9 @@
 pub mod data;
 pub mod estimator;
 pub mod eval;
+pub mod feat;
 pub mod features;
+pub mod features2;
 pub mod frame;
 pub mod net;
 pub mod train;
