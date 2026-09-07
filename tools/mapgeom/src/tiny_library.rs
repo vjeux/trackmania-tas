@@ -218,7 +218,15 @@ fn veget_item(store: &DataStore, collection: u32, model_path: &str, cache: &mut 
         cands.push(no_letter.to_string());
     }
     let found = cands.iter().find(|c| find_item_file(store, c).is_some()).cloned();
-    let out = found.map(|item| veget_substitute(collection, &item).map(|s| s.to_string()).unwrap_or(item));
+    // the smaller species must EXIST in this collection's packs: the generic
+    // ladder's `BushSmall* -> PlantSmallA` is BlueBay's plant, and RedIsland
+    // (FlowerSmall*/Grass* instead) has none — the editor still loaded Summer
+    // 12 with 67 of them, play mode refused the stored map ("Missing Items:
+    // PlantSmallA"). No smaller species in the packs: the species itself stays.
+    let out = found.map(|item| match veget_substitute(collection, &item) {
+        Some(sub) if find_item_file(store, sub).is_some() => sub.to_string(),
+        _ => item,
+    });
     cache.insert(stem.to_string(), out.clone());
     out
 }
@@ -598,7 +606,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     // collection ladder for the item's own name
                     let species = e.split_once("procedural vegetation: ").and_then(|(_, rest)| rest.split(" (").next()).filter(|p| p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).map(|s| s.to_string());
                     let by_species = species.as_deref().and_then(|p| veget_item(store, collection, p, &mut veget_cache));
-                    match by_species.or_else(|| veget_substitute(collection, model).map(|s| s.to_string())) {
+                    let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| s.to_string());
+                    match by_species.or_else(by_name) {
                         Some(sub) => {
                             let how = if species.is_some() { "species of this variant" } else { "the item's own name" };
                             remember(&sub);
@@ -697,6 +706,28 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if let Err(e) = &o.result {
             println!("  FAIL {} {} ({} placements): {}", o.kind, o.source, o.placements, e);
         }
+    }
+    // Every STOCK model name the mapping points at (light substitutes, tree
+    // species, `v@` rows) must be an item of the packs this map is built
+    // with: the editor loads a foreign name from any installed pack, play mode
+    // refuses the stored map ("Error while retrieving map! Missing Items:
+    // PlantSmallA" — Summer 12, a BlueBay plant in a RedIsland map).
+    let mut stock: BTreeMap<String, usize> = BTreeMap::new();
+    for line in mapping.lines() {
+        let mut f = line.split('\t');
+        let (Some(head), Some(model)) = (f.next(), f.next()) else { continue };
+        if head.starts_with('#') || model == "-" || model.ends_with(".Item.Gbx") {
+            continue;
+        }
+        *stock.entry(model.to_string()).or_insert(0) += 1;
+    }
+    let missing: Vec<(String, usize)> = stock.into_iter().filter(|(name, _)| find_item_file(store, name).is_none()).collect();
+    if !missing.is_empty() {
+        println!("  STOCK ITEMS NOT IN THESE PACKS (play mode will refuse the map):");
+        for (k, n) in &missing {
+            println!("    {n:>5} x {k}");
+        }
+        std::process::exit(2);
     }
 }
 
