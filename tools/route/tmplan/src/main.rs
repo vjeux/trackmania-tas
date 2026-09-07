@@ -1,7 +1,7 @@
 //! `tmplan` CLI.
 //!
 //!   tmplan plan MAP.Map.Gbx --gates gates.json [--out-dir DIR] [--top-k 3] [--beam 4000]
-//!                            [--flight none|ballistic|drag] [--grid track|deco] [--time speed|cost] [--source NAME] [--matrix] [--quiet]
+//!                            [--flight none|ballistic|drag] [--grid track|deco] [--time speed|cost] [--drop-penalty X] [--source NAME] [--matrix] [--quiet]
 //!        the geometric planner: top-k `router-plan` routes (HYPOTHESES), the distance matrix on request
 //!   tmplan legs MAP.Map.Gbx --gates gates.json [--flight ballistic] [--step 4] [--reach 40]
 //!        the failed-map characterisation (R4): every leg of the best flight-allowed plan that the
@@ -48,7 +48,7 @@ fn order_str(nodes: &Nodes, gates: &tmroute::gates::GatesFile, visit: &[usize]) 
     (groups.join(","), wps.join(","))
 }
 
-fn load(args: &[String]) -> (String, tmroute::gates::GatesFile, SurfaceModel, Nodes, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(Vec<f32>, Vec<u32>)>>) {
+fn load(args: &[String]) -> (String, tmroute::gates::GatesFile, SurfaceModel, Nodes, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(Vec<f32>, Vec<u32>)>>) {
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
     let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required"));
     let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
@@ -58,8 +58,8 @@ fn load(args: &[String]) -> (String, tmroute::gates::GatesFile, SurfaceModel, No
     for n in &surf.notes {
         println!("  note: {n}");
     }
-    let (d, len, fields) = surf.distance_matrix(&nodes);
-    (map, gates, surf, nodes, d, len, fields)
+    let (d, len, drop, fields) = surf.distance_matrix_full(&nodes);
+    (map, gates, surf, nodes, d, len, drop, fields)
 }
 
 fn print_matrix(nodes: &Nodes, d: &[Vec<f32>], title: &str) {
@@ -80,17 +80,17 @@ fn print_matrix(nodes: &Nodes, d: &[Vec<f32>], title: &str) {
 }
 
 fn cmd_plan(args: &[String]) {
-    let (_map, gates, surf, nodes, d, len, fields) = load(args);
+    let (_map, gates, surf, nodes, d, len, drop, fields) = load(args);
     let dirs = surf.directions(&nodes, &fields);
     if has(args, "--matrix") {
         print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
         print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     }
     let flight = flight_of(flag(args, "--flight"));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs) };
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
-    human_legs(args, &nodes, &gates, &est, &len);
+    human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
     let plans = planner::beam(&nodes, &est, width, top_k, StateBucket::of_speed(0.0));
     if has(args, "--exact") {
         match planner::exact_cost(&nodes, &d) {
@@ -113,7 +113,8 @@ fn cmd_plan(args: &[String]) {
         let (g, w) = order_str(&nodes, &gates, &p.visit);
         let flights = p.edges.iter().filter(|e| e.kind == EdgeKind::Flight).count();
         let len: f32 = p.edges.iter().map(|e| e.length_m).sum();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  flight legs {}  groups [{}]  waypoints [{}]", io::secs(p.total_ms), p.p_reach, len, flights, g, w);
+        let drop: f32 = p.visit.windows(2).map(|w| surf.path_drop(&nodes, &fields, w[0], w[1])).filter(|d| d.is_finite()).sum();
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  drop {:.0} m  flight legs {}  groups [{}]  waypoints [{}]", io::secs(p.total_ms), p.p_reach, len, drop, flights, g, w);
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| "router-plan".into());
             let mut route = tmplan::export::export(&gates, &nodes, &surf, &fields, p, k as u32, &est.name(), &prov);
@@ -135,12 +136,12 @@ fn cmd_plan(args: &[String]) {
 }
 
 fn cmd_legs(args: &[String]) {
-    let (_map, gates, surf, nodes, d, len, fields) = load(args);
+    let (_map, gates, surf, nodes, d, len, drop, fields) = load(args);
     let dirs = surf.directions(&nodes, &fields);
     print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
     print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     let flight = flight_of(flag(args, "--flight").or(Some("ballistic".into())));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs) };
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0) };
     let mut plans = planner::beam(&nodes, &est, 4000, 1, StateBucket::of_speed(0.0));
     if let Some(o) = flag(args, "--order") {
         // characterise a GIVEN group order (e.g. the human modal order) instead of the best tour
@@ -220,7 +221,7 @@ fn main() {
 /// `--human-orders FILE`: evaluate the human modal order through the estimator
 /// and print per-leg length / predicted / human-best — the speed model's
 /// calibration data. Rows with unmatched crossings are skipped.
-fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile, est: &dyn EdgeEstimator, len: &[Vec<f32>]) {
+fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile, est: &dyn EdgeEstimator, len: &[Vec<f32>], surf: Option<&SurfaceModel>, fields: &[Option<(Vec<f32>, Vec<u32>)>]) {
     let Some(f) = flag(args, "--human-orders") else { return };
     let Ok(txt) = std::fs::read_to_string(&f) else { eprintln!("cannot read {f}"); return };
     let mut rows: Vec<(Vec<u32>, Vec<i32>, i32)> = Vec::new();
@@ -242,21 +243,22 @@ fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile,
     for g in &modal { match node_of(*g) { Some(k) => visit.push(k), None => { println!("  human-orders: group {g} not a planner node"); return; } } }
     let best_lap = rows.iter().filter(|r| r.0 == modal).map(|r| r.2).min().unwrap();
     println!("  human modal order (groups [{}], {n}/{} runs, best lap {}): per leg", modal.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","), rows.len(), io::secs(best_lap));
-    println!("    {:>3} {:>8} {:>9} {:>10} {:>10} {:>9} {:>9}", "leg", "to", "length_m", "pred_ms", "human_ms", "v_pred", "v_human");
+    println!("    {:>3} {:>8} {:>9} {:>7} {:>10} {:>10} {:>9} {:>9}", "leg", "to", "length_m", "drop_m", "pred_ms", "human_ms", "v_pred", "v_human");
     let mut bucket = StateBucket::of_speed(0.0);
     let mut tot_pred = 0i32;
-    let mut tsv = vec!["map\tleg\tfrom_group\tto_group\tto_waypoint\tgraph_len_m\tpred_ms\thuman_best_ms\tv_implied\tverdict".to_string()];
+    let mut tsv = vec!["map\tleg\tfrom_group\tto_group\tto_waypoint\tgraph_len_m\tdrop_m\tpred_ms\thuman_best_ms\tv_implied\tverdict".to_string()];
     for li in 0..modal.len() {
         let (a, b) = (visit[li], visit[li + 1]);
         let e = est.estimate(bucket, if li == 0 { None } else { Some(visit[li - 1]) }, a, b);
         let human_ms = rows.iter().filter(|r| r.0 == modal).map(|r| r.1[li] - if li == 0 { 0 } else { r.1[li - 1] }).min().unwrap();
         let l = len[a][b];
+        let drop = surf.map_or(f32::NAN, |s| s.path_drop(nodes, fields, a, b));
         let v_h = 1000.0 * l / human_ms.max(1) as f32;
         // A human leg whose surface-graph path implies > 130 m/s, or has no path at all, was
         // NOT driven along the graph: the humans used a connection the surface reader lacks.
         let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 130.0 { "MISSING-CONNECTION (graph detour)" } else { "surface" };
-        println!("    {:>3} {:>8} {:>9.0} {:>10} {:>10} {:>9.1} {:>9.1}  {}", li, format!("g{}", modal[li]), l, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, v_h, verdict);
-        tsv.push(format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{}\t{}\t{:.1}\t{}", gates.map_name, li, if a == 0 { "spawn".to_string() } else { nodes.groups[a].to_string() }, modal[li], gates.group_rep(modal[li]).map_or(u32::MAX, |g| g.waypoint), l, e.expected_ms, human_ms, v_h, verdict));
+        println!("    {:>3} {:>8} {:>9.0} {:>7.1} {:>10} {:>10} {:>9.1} {:>9.1}  {}", li, format!("g{}", modal[li]), l, drop, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, v_h, verdict);
+        tsv.push(format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.1}\t{}\t{}\t{:.1}\t{}", gates.map_name, li, if a == 0 { "spawn".to_string() } else { nodes.groups[a].to_string() }, modal[li], gates.group_rep(modal[li]).map_or(u32::MAX, |g| g.waypoint), l, drop, e.expected_ms, human_ms, v_h, verdict));
         tot_pred += e.expected_ms.max(0);
         bucket = e.arrival;
     }

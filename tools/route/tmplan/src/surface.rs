@@ -154,6 +154,12 @@ impl SurfaceModel {
     /// model may divide by. The cartographer ordered by cost and reported length;
     /// the two differ by up to 4× on a leg that crosses grass.
     pub fn distance_matrix(&self, nodes: &Nodes) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(Vec<f32>, Vec<u32>)>>) {
+        let (d, len, _drop, fields) = self.distance_matrix_full(nodes);
+        (d, len, fields)
+    }
+
+    /// `(cost, length, drop, fields)` — `drop[i][j]` = metres of step-downs > 1.6 m along the traced path.
+    pub fn distance_matrix_full(&self, nodes: &Nodes) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(Vec<f32>, Vec<u32>)>>) {
         let n = nodes.pos.len();
         let mut fields: Vec<Option<(Vec<f32>, Vec<u32>)>> = Vec::with_capacity(n);
         for i in 0..n {
@@ -161,6 +167,7 @@ impl SurfaceModel {
         }
         let mut d = vec![vec![f32::INFINITY; n]; n];
         let mut len = vec![vec![f32::INFINITY; n]; n];
+        let mut drop = vec![vec![f32::NAN; n]; n];
         for i in 0..n {
             let Some((dist, prev)) = &fields[i] else { continue };
             for j in 0..n {
@@ -169,17 +176,22 @@ impl SurfaceModel {
                     if dist[gj].is_finite() {
                         let path = self.graph.path(prev, gj);
                         let mut l = 0.0f32;
+                        let mut dr = 0.0f32;
                         for w in path.windows(2) {
                             let a = self.graph.world(&self.grid, w[0]);
                             let b = self.graph.world(&self.grid, w[1]);
                             l += ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                            if b[1] - a[1] < -1.6 {
+                                dr += a[1] - b[1];
+                            }
                         }
                         len[i][j] = l;
+                        drop[i][j] = dr;
                     }
                 }
             }
         }
-        (d, len, fields)
+        (d, len, drop, fields)
     }
 
     /// The surface-graph path from node i to node j as world points.
@@ -316,5 +328,22 @@ impl SurfaceModel {
             }
         }
         (out, inn)
+    }
+}
+
+impl SurfaceModel {
+    /// Metres of DROP along the surface path i→j taken through drop edges — steps
+    /// down of more than the climbable 1.6 m (`mapgeom::surf`'s up limit). A route
+    /// with 0 here is driven; one with 30 m of it falls off things.
+    pub fn path_drop(&self, nodes: &Nodes, fields: &[Option<(Vec<f32>, Vec<u32>)>], i: usize, j: usize) -> f32 {
+        let Some(p) = self.path_points(nodes, fields, i, j) else { return f32::NAN };
+        let mut d = 0.0f32;
+        for w in p.windows(2) {
+            let dy = w[1][1] - w[0][1];
+            if dy < -1.6 {
+                d += -dy;
+            }
+        }
+        d
     }
 }

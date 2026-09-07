@@ -349,7 +349,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             // RoadBumpCheckpointSlopeUp/SlopeDown in adjacent cells (32 m apart) and
             // the header counts them as two checkpoints. Rows of one gate are built
             // from items or free blocks, and only those merge by distance.
-            let grid_pair = a.grid && b.grid;
+            // A row of grid FINISH blocks is still one finish line (any finish ends the race;
+            // Summer 2026 - 18 has six `Goal` blocks side by side); only CHECKPOINT grid
+            // blocks are kept apart.
+            let grid_pair = a.grid && b.grid && a.kind != WpKind::Finish;
             let near = same_tag && !grid_pair && dxz <= GROUP_XZ && dy <= GROUP_Y;
             let stacked = same_tag && dxz <= STACK_XZ;
             if linked || near || stacked {

@@ -80,6 +80,10 @@ pub struct Geometric<'a> {
     pub surface: Option<&'a SurfaceModel>,
     /// Path end directions (`SurfaceModel::directions`) for the turn term; None = no turn term.
     pub dirs: Option<&'a (Vec<Vec<[f32; 2]>>, Vec<Vec<[f32; 2]>>)>,
+    /// Metres of step-down > 1.6 m along each path (`distance_matrix_full`), and the cost added per metre of
+    /// it (cost model) — a car that falls off a ledge loses its speed; the graph's drop edges are free.
+    pub drop: Option<&'a [Vec<f32>]>,
+    pub drop_penalty: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -181,6 +185,9 @@ impl<'a> EdgeEstimator for Geometric<'a> {
         };
         if cost.is_finite() {
             if self.time_model == TimeModel::Cost {
+                let dr = self.drop.map_or(0.0, |m| m[from][to]);
+                let dr = if dr.is_finite() { dr } else { 0.0 };
+                let cost = cost + self.drop_penalty * dr;
                 return Edge { p_reach: 1.0, expected_ms: (cost * 10.0).round() as i32, arrival: bucket, length_m: self.len[from][to], kind: EdgeKind::Surface }; // decimetres: keeps near-ties (Summer 2026 - 13: 1614.6 vs 1615.2) honest
             }
             let length = self.len[from][to];
