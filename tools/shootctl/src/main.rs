@@ -1269,6 +1269,14 @@ usage:
         "import" => {
             if args.len() < 2 { 2 } else { stage_and_import(&args[1..]) }
         }
+        // mapsave REL: re-save the map open in the track editor as REL (relative
+        // to the user's Trackmania folder, e.g. Maps/_shoot/x.Map.Gbx) — the
+        // plugin's /mapsave reads the path from arg.txt (MapSave.as)
+        "mapsave" => {
+            if args.len() < 2 { 2 } else {
+                match set_arg(&args[1]).and_then(|_| http_get("/mapsave", 25)) { Ok(b) => { println!("{b}"); 0 } Err(e) => { eprintln!("{e}"); 1 } }
+            }
+        }
         "route" => {
             if args.len() < 4 { 2 } else { add_route(&args[1], &args[2], &args[3]) }
         }

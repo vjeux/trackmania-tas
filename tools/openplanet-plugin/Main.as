@@ -91,6 +91,10 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/saverefresh") return HttpResponse(200, SaveAsRefresh());
     if (r == "/savedlg") return HttpResponse(200, SaveAsState());
     if (r == "/savevalidate") return HttpResponse(200, SaveAsValidate());
+    // MapSave.as: re-save the open map from the track editor (path relative to the user's Trackmania folder)
+    if (r == "/mapsave") return HttpResponse(200, MapSave(PathArg()));
+    if (r == "/mapvalidate") return HttpResponse(200, MapValidate());
+    if (r == "/mapstate") return HttpResponse(200, MapEditorState());
     if (r == "/rmenu") return HttpResponse(200, ReplayMenuState());
     if (r == "/rselall") return HttpResponse(200, ReplaySelectAll());
     if (r == "/rok") return HttpResponse(200, ReplayOk());
