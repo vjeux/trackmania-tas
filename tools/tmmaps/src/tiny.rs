@@ -445,9 +445,17 @@ pub fn cmd(args: &[String]) {
         let stem = zone.trim_end_matches(|c: char| c.is_ascii_digit());
         name.contains(&format!("On{zone}")) || (!stem.is_empty() && name.contains(&format!("On{stem}")))
     };
+    // A GROUND-variant block whose family covers its whole cell with a deck
+    // (platforms, roads, stands, deco platforms) hides the terrain tile under
+    // it as well: Summer 04's PlatformDirtCheckpoint shares its cell with a
+    // Grass tile whose grass-blade shader poked tufts up through the dirt
+    // deck (the 0.2 m terrain drop is 0.1 m at half scale, the blades are
+    // taller). Pillars, DecoTerrainHD detail meshes and wall pillars keep
+    // their tile: they do not cover the cell.
+    let covers_cell = |name: &str, flags: u32| flags & (1 << 12) != 0 && ["Platform", "Road", "OpenTechRoad", "DecoPlatform", "Stand"].iter().any(|p| name.starts_with(p));
     let mut replaced_cells: BTreeSet<[u8; 3]> = BTreeSet::new();
     for b in &source.blocks {
-        if !zones.contains(&b.name) && zones.iter().any(|z| replaces(&b.name, z)) {
+        if !zones.contains(&b.name) && (zones.iter().any(|z| replaces(&b.name, z)) || covers_cell(&b.name, b.flags)) {
             replaced_cells.insert(b.raw_coords);
         }
     }
