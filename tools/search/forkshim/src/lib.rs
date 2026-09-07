@@ -1635,8 +1635,40 @@ unsafe fn arm_probe(base: usize, n: usize, fd: c_int) {
         restorer: 0,
     };
     sigaction(SIGSEGV, &act, std::ptr::null_mut());
-    if hi > lo {
-        mprotect(lo as *mut c_void, hi - lo, PROT_NONE);
+    // PAGE BY PAGE, NOT ONE CALL. One mprotect over [lo, hi) fails as a WHOLE
+    // (ENOMEM) when the range crosses into a hole or a differently-mapped
+    // region -- a 7,196-record array (230 KB) did so on every probe (LEARN:
+    // every step of a 103 s template failed PROBE-EMPTY), and shorter arrays
+    // did so on ~1 in 10 servers -- and then NOTHING was protected: the child
+    // ran the whole race without faulting and exited 0 with an empty reply.
+    // Protecting each page on its own protects every page that can be.
+    let mut failed = 0usize;
+    let mut pages = 0usize;
+    let mut p = lo;
+    while p < hi {
+        pages += 1;
+        if mprotect(p as *mut c_void, ps, PROT_NONE) != 0 {
+            failed += 1;
+        }
+        p += ps;
+    }
+    if failed > 0 {
+        let mut o = Vec::new();
+        o.extend_from_slice(b"FKSHIM probe: mprotect failed on ");
+        utoa(failed as u64, &mut o);
+        o.extend_from_slice(b" of ");
+        utoa(pages as u64, &mut o);
+        o.extend_from_slice(b" pages\n");
+        log(&o);
+        if failed == pages {
+            // nothing protected: say so instead of running the race in silence
+            let mut m = Vec::new();
+            m.extend_from_slice(b"PROBE-MPROTECT-FAILED pages ");
+            utoa(pages as u64, &mut m);
+            m.push(b'\n');
+            write_all(fd, &m);
+            _exit(93);
+        }
     }
 }
 
