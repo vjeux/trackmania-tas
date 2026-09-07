@@ -96,9 +96,9 @@ fn no_worker_ever_edits_below_the_highest_resume_tick() {
         &cfg,
         start.clone(),
         Outcome::fin(20000),
-        move |o, _, _| {
-            sink.lock().unwrap().push(o);
-            Ok(o)
+        move |claims| {
+            let mut b = sink.lock().unwrap();
+            claims.iter().map(|(o, _, _)| { b.push(*o); Ok(*o) }).collect()
         },
         move |wi| {
             Ok(Spy {
@@ -151,7 +151,7 @@ fn a_worker_that_fails_to_start_does_not_wedge_the_others() {
         &cfg,
         start,
         Outcome::fin(20000),
-        |o, _, _| Ok(o),
+        |claims| claims.iter().map(|(o, _, _)| Ok(*o)).collect(),
         move |wi| {
             if wi == 1 {
                 return Err("no fork server on this worker".to_string());
@@ -239,9 +239,9 @@ fn an_objective_the_do_nothing_tape_wins_stops_before_the_first_candidate() {
         &lazy_cfg(n),
         start,
         Outcome::Gate(tmsearch::score::GateState::Missed { miss_m: f64::INFINITY }),
-        move |o, _, _| {
-            sink.lock().unwrap().push(o);
-            Ok(o)
+        move |claims| {
+            let mut b = sink.lock().unwrap();
+            claims.iter().map(|(o, _, _)| { b.push(*o); Ok(*o) }).collect()
         },
         move |_wi| Ok(Lazy { rewards_doing_nothing: true, calls: Arc::clone(&c) }),
     );
@@ -273,9 +273,9 @@ fn an_objective_the_do_nothing_tape_loses_runs_normally() {
         &lazy_cfg(n),
         start,
         Outcome::Gate(tmsearch::score::GateState::Missed { miss_m: f64::INFINITY }),
-        move |o, _, _| {
-            sink.lock().unwrap().push(o);
-            Ok(o)
+        move |claims| {
+            let mut b = sink.lock().unwrap();
+            claims.iter().map(|(o, _, _)| { b.push(*o); Ok(*o) }).collect()
         },
         move |_wi| Ok(Lazy { rewards_doing_nothing: false, calls: Arc::clone(&c) }),
     );

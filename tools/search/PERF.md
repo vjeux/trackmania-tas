@@ -401,3 +401,78 @@ after dedup), three runs each: **64.6 ms → 57.4 ms** (62.7/66.4/64.7 vs
 
 The per-sample `write` is gone from the common path; the pipe remains only as
 the overflow beyond 64 MB of samples, which no caller reaches.
+
+---
+
+## 6. Box saturation: where the knee is, and that pinning does not help
+
+`tmsearch search` on map 2 from tick 171, the shipped three predicates, seed
+42, 2 minutes per point, each point alone on this 96-core box, on the build
+with §1–§5 in it:
+
+| workers | evals | evals/s | per worker |
+|---|---|---|---|
+| 16 | 102,540 | 850 | 53.1 |
+| 32 | 204,480 | 1,695 | 53.0 |
+| 48 | 312,120 | 2,578 | 53.7 |
+| 64 | 412,560 | 3,419 | 53.4 |
+| 80 | 464,850 | 3,839 | 48.0 |
+| 88 | 470,520 | 3,898 | 44.3 |
+
+Linear to two thirds of the cores, +12 % for the next sixth, +1.5 % for the
+sixth after that. A worker is one core simulating plus the standby's fork, the
+dying child's teardown and the driver thread's parse beside it — about 1.3
+cores' worth at full tilt — which puts the knee where it is measured.
+
+**Pinning** (`sched_setaffinity`, one core per worker's server and so for every
+child it forks, round-robin over the box) at 80 workers: **444,120 evals vs
+465,000 unpinned** in the same two minutes, −4.5 %. The kernel places the fork
+and the teardown better than a mask does; the experiment's code was deleted.
+
+**Written into the launcher:** `tmsearch --workers` now defaults to **three
+quarters of the cores** (was: all of them). For the RL env's launcher the same
+number is the recommendation until the ENV arm measures its own curve with
+this branch merged; on the route project's 166-core box the fan-out saturated
+at 32–96 workers on the old fork path, which this branch changes (§3, §5), so
+that curve is worth re-taking too.
+
+---
+
+## 7. Batched certification
+
+### What
+
+The plain oracle's cost is the launch — 2.3 s to boot the engine — and not the
+file (tens of ms), and the search sent every claim to it alone. `Bank::offer`
+is now the one-claim case of `Bank::offer_many`, which writes N tapes and asks
+the oracle about all of them in ONE launch, matching each answer to its file by
+the unique name the file was given. The search's main loop keeps a
+**certification queue**: a claim waits up to `CERT_LATENCY` (2 s) for company,
+or until `CERT_BATCH` (15, the server's own internal batch) are waiting, and
+the batch goes to the bank together; the incumbent moves to the best confirmed.
+Why it matters: a search leaving a weak seed produces claims faster than one
+launch at a time can certify them, and the global incumbent then lags by
+minutes while the workers migrate toward a stale best.
+
+**A finish after the tape's own last record is refused** (SEARCH.md §3, §1 of
+this file): `offer_many` compares the oracle's millisecond with
+`start_offset + 10 × ticks` and keeps such a claim as `PHANTOM_pastend_*`, with
+the oracle's time in the log, rather than bank a number that depends on the
+batch it was measured in. `tmauto verdict` marks the same class `AFTER-TAPE`
+(with the tape's end read from the file itself) and says so in a footnote.
+
+### Proof
+
+* `tmsearch/tests/oracle_e2e.rs::offer_many_gives_every_claim_the_verdict_offer_gives_it_alone`:
+  N mutated tapes (one to three local edits in the last third: finishes, DNFs
+  and past-the-end finishes all occur), claims = the oracle's own time (or a
+  lie of 22.000 on every third tape, so phantoms are in the same batch, or the
+  DNF), certified one at a time and in batches of 15; every verdict — confirmed
+  time, or phantom with the same oracle answer and the same kind — must match.
+  N = 30 on every `cargo test`; the proof run below used `TM_CERT_N=500`.
+* `the_guard_refuses_a_finish_after_the_tapes_own_end`: the template braked
+  over its last 0.3 s finishes after its own end, the oracle prints a time, the
+  guard refuses it as `PHANTOM_pastend_*`.
+* `a_mutated_candidate_is_banked_only_under_the_time_it_actually_does` now
+  states the rule: a mutant inside its tape banks under the oracle's time, one
+  past its end is refused.

@@ -64,7 +64,7 @@ SEARCH
                       that fails one is demoted to a rung of its own, so the
                       ladder is (number of variants passed) and only a run that
                       passes them all is a Finish. Plain oracle only.
-  --workers N         default: all cores
+  --workers N         default: 3/4 of the cores (the measured knee, PERF.md §6)
   --batch N           candidates per oracle call (default 30)
   --nops N            operators per candidate, or --nops-upto N
   --ops SET           local | wide | doublet | retime | scale
@@ -235,7 +235,14 @@ fn parse() -> Args {
         root: None,
         bestdir: "best".into(),
         log: None,
-        workers: std::thread::available_parallelism().map(|v| v.get()).unwrap_or(8),
+        // THREE QUARTERS OF THE CORES (PERF.md §6). Evals/s is linear in
+        // workers to two thirds of the box and flat past five sixths: a
+        // worker is one core simulating plus the standby fork, the teardown
+        // and the driver thread beside it. Measured on 96 cores: 16/32/48/64
+        // workers all 53 evals/s each; 80 gave 48, 88 gave 44. Pinning
+        // (sched_setaffinity, one core per worker) cost 4.5% at 80 -- the
+        // kernel places the fork and the teardown better than a mask does.
+        workers: (std::thread::available_parallelism().map(|v| v.get()).unwrap_or(8) * 3 / 4).max(1),
         batch: 30,
         nops: OpsPerCandidate::Exactly(1),
         ops: OpSet::Local,
