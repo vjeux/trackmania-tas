@@ -1773,42 +1773,57 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     r
 }
 
+/// The variant list of a pack ITEM: its geometry and vegetation externals
+/// (`.Prefab.Gbx` / `.StaticObject.Gbx` / `.VegetTreeModel.Gbx`) in reference
+/// order — the order the placement's variant byte indexes (Summer 11's
+/// `Show` rig: 0 RigStraight2m … 4 RigStraight32m, 23 Light4Spots,
+/// 28 Fogger16M; `PalmForest`: 37 species). Empty for an item whose model is
+/// inline or of another kind.
+pub fn pack_item_variants(store: &mut crate::store::DataStore, item_path: &str) -> R<Vec<String>> {
+    let model = store.load_model(item_path)?;
+    Ok(model
+        .externals
+        .iter()
+        .filter(|(_, p)| {
+            let low = p.to_ascii_lowercase();
+            low.ends_with(".prefab.gbx") || low.ends_with(".staticobject.gbx") || low.ends_with(".vegettreemodel.gbx")
+        })
+        .map(|(_, p)| p.clone())
+        .collect())
+}
+
 /// A pack ITEM (`CGameItemModel` wrapper whose entity model -- a static
 /// object, a prefab, or a variant list of them -- lives in EXTERNAL files):
-/// bake the geometry those externals point at. Variant lists (RoadSignC,
-/// Flag16m...) contribute their FIRST prefab/static-object external only
-/// (the placement's variant index is not consulted). Vegetation
-/// (`.VegetTreeModel.Gbx`) has no mesh and is reported, not baked.
-pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
-    let model = store.load_model(item_path)?;
+/// bake the geometry the placement's `variant` external points at (index
+/// into `pack_item_variants`; out of range -> variant 0, noted). Vegetation
+/// (`.VegetTreeModel.Gbx`) has no mesh and is reported, not baked: the error
+/// names the species file so the caller can substitute the right stock tree.
+pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize) -> R<(Vec<u8>, Merged)> {
+    let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
     m.editors = std::env::var_os("TINY_EDITORS").is_some();
-    let mut geometry_externals: Vec<String> = Vec::new();
-    let mut veget = 0usize;
-    for (_, p) in &model.externals {
-        let low = p.to_ascii_lowercase();
-        if low.ends_with(".prefab.gbx") || low.ends_with(".staticobject.gbx") {
-            geometry_externals.push(p.clone());
-        } else if low.ends_with(".vegettreemodel.gbx") {
-            veget += 1;
-        }
-    }
-    if geometry_externals.is_empty() {
-        if veget > 0 {
-            return Err(format!("procedural vegetation ({veget} VegetTreeModel refs, no mesh)"));
-        }
+    if variants.is_empty() {
+        let model = store.load_model(item_path)?;
         return Err(format!("no prefab/static-object external (externals: {})", model.externals.iter().map(|(_, p)| p.rsplit('\\').next().unwrap_or(p).to_string()).collect::<Vec<_>>().join(", ")));
     }
-    // first geometry external = variant 0 (others are alternative variants,
-    // usually the same block at other sizes/angles)
-    let first = geometry_externals[0].clone();
-    if first.to_ascii_lowercase().ends_with(".prefab.gbx") {
-        add_prefab(store, &first, &IDENTITY, scale, &mut m, 0)?;
-    } else {
-        add_static_object_file(store, &first, &IDENTITY, scale, &mut m)?;
+    let picked = match variants.get(variant) {
+        Some(p) => p.clone(),
+        None => {
+            m.notes.push(format!("variant {variant} of {} is out of range; baked variant 0", variants.len()));
+            variants[0].clone()
+        }
+    };
+    let low = picked.to_ascii_lowercase();
+    if low.ends_with(".vegettreemodel.gbx") {
+        return Err(format!("procedural vegetation: {picked} (variant {variant} of {}, no mesh)", variants.len()));
     }
-    if geometry_externals.len() > 1 {
-        m.notes.push(format!("{} geometry variants; baked the first ({})", geometry_externals.len(), first.rsplit('\\').next().unwrap_or(&first)));
+    if low.ends_with(".prefab.gbx") {
+        add_prefab(store, &picked, &IDENTITY, scale, &mut m, 0)?;
+    } else {
+        add_static_object_file(store, &picked, &IDENTITY, scale, &mut m)?;
+    }
+    if variants.len() > 1 {
+        m.notes.push(format!("variant {variant} of {}: {}", variants.len(), picked.rsplit('\\').next().unwrap_or(&picked)));
     }
     // A vegetation CLUSTER item (Stadium's `Spring` / `SpringCherryTree`:
     // a prefab of tree entities and nothing else) has no mesh to bake; the

@@ -19,6 +19,8 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     let author = flag(rest, "--author").ok_or("--author X")?;
     let scale: f32 = flag(rest, "--scale").unwrap_or_else(|| "1".into()).parse().map_err(|e| format!("--scale: {e}"))?;
     let collection: u32 = flag(rest, "--collection").unwrap_or_else(|| "26".into()).parse().map_err(|e| format!("--collection: {e}"))?;
+    // --variant N: which entry of a pack item's variant list to bake (the placement's variant byte)
+    let variant: usize = flag(rest, "--variant").unwrap_or_else(|| "0".into()).parse().map_err(|e| format!("--variant: {e}"))?;
     let is_file = std::path::Path::new(&src).is_file();
     let (bytes, merged) = if is_file {
         let data = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;
@@ -26,7 +28,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     } else if src.to_ascii_lowercase().ends_with(".item.gbx") {
         // a pack ITEM: baked through its external prefab / static-object files
         let mut store = open();
-        build::static_item_from_pack_item_report(&mut store, &src, &ident, &author, scale, collection)?
+        build::static_item_from_pack_item_report(&mut store, &src, &ident, &author, scale, collection, variant)?
     } else {
         let mut store = open();
         build::static_item_from_prefab_report(&mut store, &src, &ident, &author, scale, collection)?

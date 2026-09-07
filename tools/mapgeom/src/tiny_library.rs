@@ -486,34 +486,62 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Err(e) => outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Err(e) }),
         }
     }
-    // item models
-    let mut item_counts: BTreeMap<String, usize> = BTreeMap::new();
+    // item models — one library entry per (model, VARIANT): the placement's
+    // variant byte picks which external of a variant-list item it shows
+    // (Summer 11's `Show` rigs are 2 m stubs, 32 m beams, spot bars, speakers
+    // and foggers of ONE item; a `PalmForest` placement's variant is its palm
+    // species). Items whose file has no variant list share one entry.
+    let mut item_counts: BTreeMap<(String, u8), usize> = BTreeMap::new();
     for it in &source.items {
-        *item_counts.entry(it.model.clone()).or_insert(0) += 1;
+        *item_counts.entry((it.model.clone(), it.variant())).or_insert(0) += 1;
     }
-    // model -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
-    let mut item_map: BTreeMap<String, String> = BTreeMap::new();
+    // (model, variant) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
+    let mut item_map: BTreeMap<(String, u8), String> = BTreeMap::new();
     // the map's own embedded files (custom items live under Items\…)
     let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = 0usize;
     let lights_mode = std::env::var("TINY_LIGHTS").unwrap_or_else(|_| "stock".into());
-    for (model, n) in &item_counts {
+    // a model without a variant list is built once; later variants reuse it
+    let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
+    for ((model, variant), n) in &item_counts {
         if model.is_empty() || !wanted(model) {
+            continue;
+        }
+        if let Some(target) = single_variant.get(model) {
+            item_map.insert((model.clone(), *variant), target.clone());
             continue;
         }
         let alias = format!("AI{item_alias_n:08}");
         let ident = format!("{alias}.Item.Gbx");
         let local = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file());
+        // how many variants the item's file lists (pack items only)
+        let mut variants: Vec<String> = Vec::new();
         let res = match &local {
             Some(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), &ident, &ident, scale, collection),
             None => match embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
                 // a custom item the MAP embeds (the TME_* nation items)
                 Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, &ident, &ident, scale, collection),
                 None => match find_item_file(store, model) {
-                    Some(logical) => crate::static_item::build::static_item_from_pack_item_report(store, &logical, &ident, &ident, scale, collection),
+                    Some(logical) => {
+                        variants = crate::static_item::build::pack_item_variants(store, &logical).unwrap_or_default();
+                        crate::static_item::build::static_item_from_pack_item_report(store, &logical, &ident, &ident, scale, collection, *variant as usize)
+                    }
                     None => Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()),
                 },
             },
+        };
+        let multi = variants.len() > 1;
+        let source_name = if multi {
+            let picked = variants.get(*variant as usize).or(variants.first()).map(|p| p.rsplit('\\').next().unwrap_or(p).to_string()).unwrap_or_default();
+            format!("{model} v{variant} ({picked})")
+        } else {
+            model.clone()
+        };
+        let key = (model.clone(), *variant);
+        let mut remember = |target: &str| {
+            if !multi {
+                single_variant.insert(model.clone(), target.to_string());
+            }
         };
         match res {
             // A light-carrying item (Solid2 `lights`: Lamp, LightTube*, …)
@@ -523,19 +551,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok((_, m)) if m.lights > 0 && lights_mode != "bake" && light_substitute(model).is_some() => {
                 let sub = light_substitute(model).unwrap_or_else(|| model.clone());
                 if sub != *model && find_item_file(store, &sub).is_none() {
-                    outcomes.push(Outcome { alias: model.clone(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("{} light(s): kept as the stock item (no {sub} in the packs); full size, unscaled", m.lights)) });
-                    item_map.insert(model.clone(), model.clone());
+                    outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("{} light(s): kept as the stock item (no {sub} in the packs); full size, unscaled", m.lights)) });
+                    remember(model);
+                    item_map.insert(key, model.clone());
                 } else {
-                    outcomes.push(Outcome { alias: sub.clone(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("{} light(s): re-pointed at stock {sub} (the static bake has no light; placement scale is ignored)", m.lights)) });
-                    item_map.insert(model.clone(), sub);
+                    outcomes.push(Outcome { alias: sub.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("{} light(s): re-pointed at stock {sub} (the static bake has no light; placement scale is ignored)", m.lights)) });
+                    remember(&sub);
+                    item_map.insert(key, sub);
                 }
             }
             Ok((out, m)) if !m.visuals.is_empty() => {
                 item_alias_n += 1;
                 let summary = format!("{} bytes, {} visuals, {} collision tris{}", out.len(), m.visuals.len(), m.surf_triangles.len(), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
-                item_map.insert(model.clone(), ident.clone());
-                outcomes.push(Outcome { alias: ident, kind: "item", source: model.clone(), placements: *n, result: Ok(summary) });
+                remember(&ident);
+                item_map.insert(key, ident.clone());
+                outcomes.push(Outcome { alias: ident, kind: "item", source: source_name, placements: *n, result: Ok(summary) });
             }
             // A vegetation cluster (a prefab of tree entities, no mesh): the
             // placement is dropped and its trees placed as stock items
@@ -550,25 +581,43 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
                     placed += 1;
                 }
-                item_map.insert(model.clone(), "-".into());
-                outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
+                remember("-");
+                item_map.insert(key, "-".into());
+                outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
             }
-            Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: model.clone(), placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
+            Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
             Err(e) if e.contains("procedural vegetation") => match veget_mode {
-                "substitute" => match veget_substitute(collection, model) {
-                    Some(sub) => {
-                        item_map.insert(model.clone(), sub.to_string());
-                        outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} (placement scale is ignored by the game)")) });
+                "substitute" => {
+                    // the variant names the SPECIES (`…\PalmTreeBigB1.VegetTreeModel.Gbx`):
+                    // the stock item of that species one size down; else the
+                    // collection ladder for the item's own name
+                    let species = e.split_once("procedural vegetation: ").and_then(|(_, rest)| rest.split(" (").next()).filter(|p| p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).map(|s| s.to_string());
+                    let by_species = species.as_deref().and_then(|p| veget_item(store, collection, p, &mut veget_cache));
+                    match by_species.or_else(|| veget_substitute(collection, model).map(|s| s.to_string())) {
+                        Some(sub) => {
+                            let how = if species.is_some() { "species of this variant" } else { "the item's own name" };
+                            remember(&sub);
+                            item_map.insert(key, sub.clone());
+                            outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} by {how} (placement scale is ignored by the game)")) });
+                        }
+                        None => {
+                            remember(model);
+                            item_map.insert(key, model.clone());
+                            outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: already a small species, kept".into()) });
+                        }
                     }
-                    None => outcomes.push(Outcome { alias: model.clone(), kind: "item", source: model.clone(), placements: *n, result: Ok("vegetation: already a small species, kept".into()) }),
-                },
-                "drop" => {
-                    item_map.insert(model.clone(), "-".into());
-                    outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok("vegetation: dropped".into()) });
                 }
-                _ => outcomes.push(Outcome { alias: model.clone(), kind: "item", source: model.clone(), placements: *n, result: Ok("vegetation: kept full size".into()) }),
+                "drop" => {
+                    remember("-");
+                    item_map.insert(key, "-".into());
+                    outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: dropped".into()) });
+                }
+                _ => {
+                    remember(model);
+                    outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: kept full size".into()) });
+                }
             },
-            Err(e) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: model.clone(), placements: *n, result: Err(e) }),
+            Err(e) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) }),
         }
     }
     // every embedded item claims the map's collection (header + body idents)
@@ -593,7 +642,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
     for it in &source.items {
-        match item_map.get(&it.model) {
+        match item_map.get(&(it.model.clone(), it.variant())) {
             Some(target) => {
                 let ms = if target.ends_with(".Item.Gbx") { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));

@@ -175,9 +175,21 @@ pub struct ItemRec {
     /// Entire CGameCtnAnchoredObject record, from class id through FACADE.
     pub record_region: (usize, usize),
     pub waypoint_tag: Option<String>,
+    /// The v8 flags word (at `waypoint_region.1`): bit 2 = the record carries
+    /// a skin PackDesc; the HIGH byte is the item VARIANT index — which
+    /// external of a variant-list item this placement shows (Summer 11's
+    /// `Show` rigs: 4 = RigStraight32m, 23 = Light4Spots, 28 = Fogger16M;
+    /// a `PalmForest` placement's variant is its palm species). Read off the
+    /// placements with `tmmaps region --items --raw`.
+    pub flags: u16,
 }
 
 impl ItemRec {
+    /// The placement's variant index (the high byte of `flags`).
+    pub fn variant(&self) -> u8 {
+        (self.flags >> 8) as u8
+    }
+
     pub fn coords(&self) -> (i32, i32, i32) {
         (
             self.raw_coords[0] as i32,
@@ -1474,6 +1486,7 @@ fn parse_items(
                 waypoint_region,
                 record_region: (record_start, 0),
                 waypoint_tag: tag,
+                flags,
             });
         }
         let mut rec = rec.expect("item without a 0x03101002 chunk");

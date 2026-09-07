@@ -85,7 +85,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             eprintln!("  {l}");
         }
     }
-    if sides.len() < 2 {
+    // One side re-shot (a fix on the tiny side): the other side's frames are
+    // still on the box from the first shoot, so the comparison runs the same
+    // way — it needs the frames, not the shoot. `--no-compare` skips it.
+    let one_side = sides.len() < 2;
+    if one_side && tmmaps::cli::has(args, "--no-compare") {
         eprintln!("one side only — no comparison; frames are in {remote_dir} on the box");
         return Ok(());
     }
@@ -107,6 +111,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     eprintln!("  {jpg}: {e}");
                 }
             }
+        }
+        Err(e) if one_side => {
+            eprintln!("compare on the box failed ({e}) — the other side's frames are probably not in {remote_dir}; shoot both sides once");
+            return Ok(());
         }
         Err(e) => {
             eprintln!("compare on the box failed ({e}); pulling the frames and comparing here");

@@ -269,6 +269,22 @@ pub fn cmd_region(args: &[String]) {
         found.retain(|e| !e.item);
     }
     print_region(&found);
+    // --raw: the v8 tail of every listed ITEM record (flags, pivot, scale,
+    // [skin], the two trailing words) as hex — the bytes an item VARIANT index
+    // would live in, for reading a layout off real placements.
+    if crate::cli::has(args, "--raw") {
+        println!("id\tflags\tvariant\tpivot\tscale\ttail_hex");
+        for e in found.iter().filter(|e| e.item) {
+            let i: usize = e.id[1..].parse().unwrap();
+            let rec = &m.items[i];
+            let tail = &m.gbx.body[rec.waypoint_region.1..rec.record_region.1];
+            let rest: String = tail[2 + 12 + 4..].iter().map(|b| format!("{b:02x}")).collect();
+            println!(
+                "{}\t{:#06x}\t{}\t{:.3},{:.3},{:.3}\t{:.3}\t{}",
+                e.id, rec.flags, rec.variant(), rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, rest
+            );
+        }
+    }
     let cellish = found.iter().filter(|e| e.placement == Placement::Cell).count();
     eprintln!(
         "{} in the box ({} free/exact, {} placed by 32 m cell)",
