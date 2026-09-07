@@ -67,7 +67,8 @@ if [ $step = classify ] || [ $step = all ]; then
 fi
 # plan-r: the MODEL arm's R plugged into the EdgeEstimator seam (`tmr plan`, tools/route/tmr on agentcloud/route-model;
 # binary TMR, models model/watch/r-latest.tmw + rl-latest.tmw). Every map with a human order + the hypothesis maps.
-HYP="3wllzzuIOaf7WnPga5vlnGvu8q7 E3iCwrFqXmr4TbDmkJgQGmNnxhb izk69D9FxOr6GzMU534ykPCeepb sAhLhKUwHH9V95xk3mlm9hAxun4 OPozt3ejdJCjNsvRuhuW2BmBbTe VsTQVXqqByO_qBi1GZtUraFtj35 CEeRuRAw6E4hdRfnZEwn1XMe235"
+# Summer 2026 - 04, 07, 09, 14, Norway 2026, Saudi Arabia 2026, Poland 2026
+HYP="3wllzzuIOaf7WnPga5vlnGvu8q7 E3iCwrFqXmr4TbDmkJgQGmNnxhb meaXfi6lw0X01rzXmkGnbg9hdXg v_2z3U5J1xzvZTnDmnXDvvweon3 OPozt3ejdJCjNsvRuhuW2BmBbTe VsTQVXqqByO_qBi1GZtUraFtj35 CEeRuRAw6E4hdRfnZEwn1XMe235"
 TMR=${TMR:-/tmp/tmp/model-target/release/tmr}
 # floors OFF so a ranking always exists (with the 05:12Z r-latest every leg is below the 0.02/0.05 defaults on
 # Summer 2026 - 01; with them off rank 0 is the human order there). Agreed with the MODEL arm: see plan/plan-r/MODELS.txt.
