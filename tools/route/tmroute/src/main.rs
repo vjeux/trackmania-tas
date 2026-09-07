@@ -325,7 +325,7 @@ fn cmd_human_orders(args: &[String]) {
         human::percentile(&mut dists, 100.0)
     );
     if let Some(out) = flag(args, "--out") {
-        std::fs::write(&out, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+        io::write_atomic(Path::new(&out), (lines.join("\n") + "\n").as_bytes()).unwrap_or_else(|e| die(&e));
         eprintln!("wrote {out}");
     }
 }
@@ -339,7 +339,7 @@ fn cmd_consensus(args: &[String]) {
     if let Some(o) = flag(args, "--orders") {
         let mut lines = vec![human::ORDERS_HEADER.to_string()];
         lines.extend(rows.iter().map(human::order_row));
-        std::fs::write(&o, lines.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+        io::write_atomic(Path::new(&o), (lines.join("\n") + "\n").as_bytes()).unwrap_or_else(|e| die(&e));
     }
     let prov = tmroute::provenance("tmroute consensus");
     let cert = flag(args, "--certified-by");
@@ -546,7 +546,7 @@ pub fn cmd_human_batch(args: &[String]) {
                         io::write_gates(&gp, &g).unwrap_or_else(|e| die(&e));
                         let ctl = if g.control_ok() { "OK" } else { "FAIL" };
                         let line = format!("{}\t{}\tdeclared {}\tcp_groups {}\tfinish_groups {}\tcontrol {}\tyoff {}\tresid {:+.1}\tgates {}\toriented 0\n", g.map_name, g.map_uid, g.declared_checkpoints, g.checkpoint_groups, g.finish_groups, ctl, g.yoff, g.yoff_residual, g.gates.len() - 1);
-                        let _ = std::fs::write(Path::new(&geom).join(&uid).join("gates.txt"), &line);
+                        let _ = io::write_atomic(&Path::new(&geom).join(&uid).join("gates.txt"), line.as_bytes());
                         print!("NEW gates.json: {line}");
                     }
                     Err(e) => eprintln!("{uid}: gates.json build failed: {e}"),
@@ -575,7 +575,7 @@ pub fn cmd_human_batch(args: &[String]) {
             let rows = make_rows(&runs, gates);
             let mut lines = vec![human::ORDERS_HEADER.to_string()];
             lines.extend(rows.iter().map(human::order_row));
-            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), lines.join("\n") + "\n");
+            let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("human-orders{suffix}.tsv")), (lines.join("\n") + "\n").as_bytes());
             let c = human::consensus(gates, &runs, &rows, &prov, if bank_route { Some(oracle_box.as_str()) } else { None });
             let j = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
             let mut out = format!(
@@ -602,7 +602,7 @@ pub fn cmd_human_batch(args: &[String]) {
                     out.push_str(&format!("oriented {n} gate normals from human crossings\n"));
                 }
             }
-            let _ = std::fs::write(Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), &out);
+            let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), out.as_bytes());
             print!("{}", out.lines().next().unwrap_or(""));
             println!("\t[{} ghosts{}]", ghost_paths.len(), suffix);
         };

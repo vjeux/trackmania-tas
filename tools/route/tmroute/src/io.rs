@@ -13,11 +13,20 @@ pub fn read_route(p: &Path) -> Result<TrackGeom, String> {
 }
 
 pub fn write_route(p: &Path, g: &TrackGeom) -> Result<(), String> {
+    let s = serde_json::to_string(g).map_err(|e| e.to_string())?;
+    write_atomic(p, s.as_bytes())
+}
+
+/// Write to `<name>.tmp` then rename: a reader on ANOTHER box (the bank is a network
+/// store that publishes bytes on close) never sees a half-written file — the MODEL
+/// arm read four truncated gates.json while a batch was rewriting them (2026-09-07).
+pub fn write_atomic(p: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    let s = serde_json::to_string(g).map_err(|e| e.to_string())?;
-    std::fs::write(p, s).map_err(|e| format!("{}: {e}", p.display()))
+    let tmp = p.with_extension(format!("{}.tmp", p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, p).map_err(|e| format!("{} → {}: {e}", tmp.display(), p.display()))
 }
 
 pub fn read_gates(p: &Path) -> Result<crate::gates::GatesFile, String> {
@@ -26,11 +35,8 @@ pub fn read_gates(p: &Path) -> Result<crate::gates::GatesFile, String> {
 }
 
 pub fn write_gates(p: &Path, g: &crate::gates::GatesFile) -> Result<(), String> {
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
     let s = serde_json::to_string_pretty(g).map_err(|e| e.to_string())?;
-    std::fs::write(p, s).map_err(|e| format!("{}: {e}", p.display()))
+    write_atomic(p, s.as_bytes())
 }
 
 /// The canonical file name of a route inside `routes/<mapUid>/`.
@@ -98,7 +104,7 @@ pub fn rebuild_index(root: &Path, names: &dyn Fn(&str) -> String) -> Result<(usi
         }
     }
     let out = root.join("routes.tsv");
-    std::fs::write(&out, rows.join("\n") + "\n").map_err(|e| e.to_string())?;
+    write_atomic(&out, (rows.join("\n") + "\n").as_bytes())?;
     Ok((n, out))
 }
 

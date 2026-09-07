@@ -218,6 +218,7 @@ fn main() {
         "legs" => cmd_legs(&args[1..]),
         "classify" => cmd_classify(&args[1..]),
         "local" => cmd_local(&args[1..]),
+        "families" => cmd_families(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -402,5 +403,35 @@ fn cmd_local(args: &[String]) {
         println!("  materials under the car: {}", top(&mats.iter().map(|(k, v)| (k.to_string(), *v)).collect()));
         println!("  block families under the car: {}", top(&fams));
         println!("  placement kinds under the car: {}", top(&kinds));
+    }
+}
+
+/// `tmplan families MAP.Map.Gbx ... --gates-dir GEOM_DIR` — census of placement families over maps
+/// (for the stable family id table in mapgeom::local).
+fn cmd_families(args: &[String]) {
+    let gdir = flag(args, "--gates-dir").unwrap_or_else(|| die("--gates-dir GEOM_DIR"));
+    let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER"));
+    let paths: Vec<String> = ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"].iter().map(|n| format!("{server}/Packs/{n}")).filter(|p| Path::new(p).exists()).collect();
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let mut census: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // family → (placements, triangles)
+    for map in args.iter().filter(|a| a.ends_with(".Map.Gbx")) {
+        let uid = Path::new(map).file_name().unwrap().to_string_lossy().replace(".Map.Gbx", "");
+        let yoff = io::read_gates(&Path::new(&gdir).join(&uid).join("gates.json")).map(|g| g.yoff).unwrap_or(-40.0);
+        let m = tmmaps::map::MapFile::load(Path::new(map));
+        let s = mapgeom::local::LocalScene::build(&mut store, &m, yoff, &mapgeom::local::BuildOpts::default());
+        let mut tri_per: Vec<usize> = vec![0; s.placements.len()];
+        for t in &s.tris { tri_per[t.tag as usize] += 1; }
+        for (i, p) in s.placements.iter().enumerate() {
+            let e = census.entry(p.family.clone()).or_default();
+            e.0 += 1;
+            e.1 += tri_per[i];
+        }
+        eprintln!("{uid}: {} placements", s.placements.len());
+    }
+    let mut v: Vec<(String, usize, usize)> = census.into_iter().map(|(k, (a, b))| (k, a, b)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("family\tplacements\ttriangles\tid");
+    for (f, a, b) in &v {
+        println!("{f}\t{a}\t{b}\t{}", mapgeom::local::family_id(f));
     }
 }

@@ -106,9 +106,16 @@ impl Special {
 pub fn family_of(name: &str) -> String {
     let base = name.trim_end_matches(".Item.Gbx").trim_end_matches(".Block.Gbx");
     let base = base.rsplit(['/', '\\']).next().unwrap_or(base);
-    let words = camel_words(base);
+    // digits are variants (`LandHill2`, `SupportTruss64m`, `Dirt0Dirt4`), never family
+    let strip = |w: String| -> String {
+        // `Truss64m`: a metre suffix after digits goes with the digits
+        let w = if w.ends_with('m') && w.len() >= 2 && w.as_bytes()[w.len() - 2].is_ascii_digit() { w[..w.len() - 1].to_string() } else { w };
+        w.chars().filter(|c| !c.is_ascii_digit()).collect()
+    };
+    let mut words: Vec<String> = camel_words(base).into_iter().map(strip).filter(|w| !w.is_empty()).collect();
+    words.dedup();
     if words.is_empty() {
-        return base.to_string();
+        return base.chars().filter(|c| !c.is_ascii_digit()).collect();
     }
     const SURF: [&str; 12] = ["Tech", "Dirt", "Ice", "Bump", "Grass", "Water", "Sand", "Wood", "Snow", "Plastic", "Rock", "Magnet"];
     let mut out = String::new();
@@ -399,62 +406,7 @@ impl LocalScene {
     /// NotCollidable/OffZone surfaces (the car passes through them).
     pub fn raycast(&self, origin: [f32; 3], dir: [f32; 3], max_m: f32, skip_noncollidable: bool) -> Option<Hit> {
         let d = norm(dir);
-        if d[0].is_nan() {
-            return None;
-        }
-        // enter the grid: clip the ray to the grid box
-        let (mut t_enter, t_exit) = self.clip(origin, d)?;
-        if t_exit < 0.0 || t_enter > max_m {
-            return None;
-        }
-        t_enter = t_enter.max(0.0);
-        let t_end = t_exit.min(max_m);
-        let start = [origin[0] + d[0] * (t_enter + 1e-4), origin[1] + d[1] * (t_enter + 1e-4), origin[2] + d[2] * (t_enter + 1e-4)];
-        let mut c = self.cell_of(start)?;
-        let step: [isize; 3] = [0, 1, 2].map(|k| if d[k] > 0.0 { 1 } else if d[k] < 0.0 { -1 } else { 0 });
-        let mut t_max = [f32::INFINITY; 3];
-        let mut t_delta = [f32::INFINITY; 3];
-        for k in 0..3 {
-            if d[k] != 0.0 {
-                let next = self.origin[k] + (c[k] as f32 + if step[k] > 0 { 1.0 } else { 0.0 }) * self.cell;
-                t_max[k] = t_enter + (next - start[k]) / d[k] + 1e-4;
-                t_delta[k] = self.cell / d[k].abs();
-            }
-        }
-        let mut best: Option<(f32, u32)> = None;
-        loop {
-            // cell exit distance
-            let t_cell_exit = t_max[0].min(t_max[1]).min(t_max[2]);
-            let ci = (c[2] as usize * self.dims[1] + c[1] as usize) * self.dims[0] + c[0] as usize;
-            for k in self.cell_start[ci]..self.cell_start[ci + 1] {
-                let ti = self.cell_tris[k as usize];
-                let t = &self.tris[ti as usize];
-                if skip_noncollidable && !crate::scene::is_collidable(crate::scene::physics_name(t.mat)) {
-                    continue;
-                }
-                if let Some(dist) = ray_tri(origin, d, &t.v) {
-                    if dist >= 0.0 && dist <= t_end && best.map_or(true, |(bd, _)| dist < bd) {
-                        best = Some((dist, ti));
-                    }
-                }
-            }
-            if let Some((bd, _)) = best {
-                if bd <= t_cell_exit {
-                    break;
-                }
-            }
-            if t_cell_exit > t_end {
-                break;
-            }
-            // step
-            let k = if t_max[0] < t_max[1] { if t_max[0] < t_max[2] { 0 } else { 2 } } else if t_max[1] < t_max[2] { 1 } else { 2 };
-            c[k] += step[k];
-            if c[k] < 0 || c[k] >= self.dims[k] as isize {
-                break;
-            }
-            t_max[k] += t_delta[k];
-        }
-        best.map(|(dist, ti)| self.hit_of(ti, dist, origin, d))
+        self.raycast_raw(origin, dir, max_m, skip_noncollidable).map(|(dist, ti)| self.hit_of(ti, dist, origin, d))
     }
 
     /// The nearest surface straight below and straight above `p`, within `reach`.
@@ -673,6 +625,10 @@ mod tests {
         assert_eq!(family_of("GateCheckpointLeft32m"), "GateCheckpoint");
         assert_eq!(family_of("DecoWallSlope2UTop"), "DecoWall");
         assert_eq!(family_of("RoadBumpCheckpointSlopeUp"), "RoadBump");
+        assert_eq!(family_of("LandHill2"), "LandHill");
+        assert_eq!(family_of("Dirt0Dirt4"), "Dirt");
+        assert_eq!(family_of("SupportTruss64m"), "SupportTruss");
+        assert_eq!(family_of("TrackBarrier4m"), "TrackBarrier");
         assert_eq!(Special::of_name("GateGameplayBoost2"), Special::Boost2);
         assert_eq!(Special::of_name("RoadTechSpecialTurbo"), Special::Turbo);
         assert_eq!(Special::of_name("GateGameplayReactorDown"), Special::ReactorDown);
@@ -681,5 +637,123 @@ mod tests {
         assert_eq!(Special::of_name("RoadTechStart"), Special::Start);
         assert_eq!(Special::of_name("RoadTechStraight"), Special::None);
         assert_eq!(Special::of_name("PlatformTechLoopStart"), Special::None);
+    }
+}
+
+/// The STABLE family id table (INTERFACES §4, MODEL arm's ask): the same u8 for a
+/// family on every map, so an embedding index means one thing. Built from the
+/// census over the 25 Summer 2026 maps (`tmplan families`); anything not listed
+/// is `FAMILY_OTHER`. Append only — never renumber.
+pub const FAMILIES: &[&str] = &[
+    "RoadTech", "RoadDirt", "RoadBump", "RoadIce", "RoadWater", "RoadTechSpecial", "OpenTech", "OpenDirt", "OpenIce", "OpenGrass",
+    "PlatformTech", "PlatformDirt", "PlatformGrass", "PlatformIce", "PlatformPlastic", "PlatformWater", "PlatformWood",
+    "GateCheckpoint", "GateFinish", "GateSpecial", "GateExpandable", "GateGameplay", "GateMultilap",
+    "DecoWall", "DecoHill", "DecoCliff", "DecoPlatform", "DecoTerrain", "DecoWater", "DecoTree", "DecoLight", "DecoPillar",
+    "Land", "LandHill", "LandCliff", "LandWater", "Beach", "Sea", "Cliff", "Hill", "Water", "Grass", "Dirt", "Sand", "Rock",
+    "TrackWall", "TrackWallDiag", "StadiumStructure", "Stadium", "Technics", "TechnicsScreen", "Pillar", "Tunnel", "Loop",
+    "Wallride", "Booster", "Turbo", "Reactor", "Sculpture", "Screen", "Advertisement", "Fence", "Rail", "Ramp",
+    // appended from the 25-map census (`tmplan families`, 2026-09-07), placements ≥ 10, in census order
+    "Lake", "ShowLights", "StructurePillar", "ShowSpeakers", "TrackBarrier", "LakeShore", "Flag", "StructureSupport",
+    "SummerPalm", "RoadSign", "SupportTruss", "Summer", "ShowRace", "StructureBase", "Show", "InflatableMat", "SeaCliff",
+    "StandStraight", "TechnicsScreenx", "Lamp", "Sparkler", "StageTechnics", "LightCube", "LampSmall", "ShowScreen",
+    "LightCylinder", "LightTube", "ShowTorch", "ObstaclePillar", "Snow", "StandCorner", "TunnelSupport", "ShowRig",
+    "DecoLake", "SeaLand", "PlatformBase", "CanopyEnd", "DecoTerraforming", "StructureDeadend", "SupportConnector",
+    "SupportTube", "GateSupport", "Screenx", "CanopyCenter", "ObstacleRotor", "StandDiag", "RampMedv", "RampLowv",
+    "Podium", "InflatableBorder", "TMESaudi", "ShowFogger", "ShowLight", "StructureStraight", "TMEJapan", "RallyBarrier",
+    "TMENorway", "ObstaclePusher", "TMEPoland", "RallyCastle", "StageStraight", "TMEArgentina", "Stade", "StadeScreen",
+    "TMEExtras",
+];
+pub const FAMILY_OTHER: u8 = 255;
+
+/// Stable id of a family name (`FAMILY_OTHER` when not in the table).
+pub fn family_id(family: &str) -> u8 {
+    FAMILIES.iter().position(|f| *f == family).map_or(FAMILY_OTHER, |i| i as u8)
+}
+
+impl Hit {
+    /// Stable family id (`family_id`).
+    pub fn family_id(&self) -> u8 {
+        family_id(&self.family)
+    }
+}
+
+impl LocalScene {
+    /// Batched rays from one origin: one `Option<Hit>` per direction, no per-ray
+    /// allocation beyond the output vector. Directions need not be unit.
+    pub fn raycast_many(&self, origin: [f32; 3], dirs: &[[f32; 3]], max_m: f32, skip_noncollidable: bool) -> Vec<Option<Hit>> {
+        dirs.iter().map(|d| self.raycast(origin, *d, max_m, skip_noncollidable)).collect()
+    }
+
+    /// Fill-into-slice form for a hot loop: `out[i] = (dist, material, family_id,
+    /// special as u8)`; a miss is `(max_m, 255, 255, 0)`. No allocation at all.
+    pub fn raycast_fill(&self, origin: [f32; 3], dirs: &[[f32; 3]], max_m: f32, skip_noncollidable: bool, out: &mut [(f32, u8, u8, u8)]) {
+        for (i, d) in dirs.iter().enumerate() {
+            out[i] = match self.raycast_raw(origin, *d, max_m, skip_noncollidable) {
+                Some((dist, ti)) => {
+                    let t = &self.tris[ti as usize];
+                    let p = &self.placements[t.tag as usize];
+                    (dist, t.mat, family_id(&p.family), p.special as u8)
+                }
+                None => (max_m, 255, 255, 0),
+            };
+        }
+    }
+
+    /// The core of `raycast` without building a `Hit`: (distance, triangle index).
+    pub fn raycast_raw(&self, origin: [f32; 3], dir: [f32; 3], max_m: f32, skip_noncollidable: bool) -> Option<(f32, u32)> {
+        let d = norm(dir);
+        if d[0].is_nan() {
+            return None;
+        }
+        let (mut t_enter, t_exit) = self.clip(origin, d)?;
+        if t_exit < 0.0 || t_enter > max_m {
+            return None;
+        }
+        t_enter = t_enter.max(0.0);
+        let t_end = t_exit.min(max_m);
+        let start = [origin[0] + d[0] * (t_enter + 1e-4), origin[1] + d[1] * (t_enter + 1e-4), origin[2] + d[2] * (t_enter + 1e-4)];
+        let mut c = self.cell_of(start)?;
+        let step: [isize; 3] = [0, 1, 2].map(|k| if d[k] > 0.0 { 1 } else if d[k] < 0.0 { -1 } else { 0 });
+        let mut t_max = [f32::INFINITY; 3];
+        let mut t_delta = [f32::INFINITY; 3];
+        for k in 0..3 {
+            if d[k] != 0.0 {
+                let next = self.origin[k] + (c[k] as f32 + if step[k] > 0 { 1.0 } else { 0.0 }) * self.cell;
+                t_max[k] = t_enter + (next - start[k]) / d[k] + 1e-4;
+                t_delta[k] = self.cell / d[k].abs();
+            }
+        }
+        let mut best: Option<(f32, u32)> = None;
+        loop {
+            let t_cell_exit = t_max[0].min(t_max[1]).min(t_max[2]);
+            let ci = (c[2] as usize * self.dims[1] + c[1] as usize) * self.dims[0] + c[0] as usize;
+            for k in self.cell_start[ci]..self.cell_start[ci + 1] {
+                let ti = self.cell_tris[k as usize];
+                let t = &self.tris[ti as usize];
+                if skip_noncollidable && !crate::scene::is_collidable(crate::scene::physics_name(t.mat)) {
+                    continue;
+                }
+                if let Some(dist) = ray_tri(origin, d, &t.v) {
+                    if dist >= 0.0 && dist <= t_end && best.map_or(true, |(bd, _)| dist < bd) {
+                        best = Some((dist, ti));
+                    }
+                }
+            }
+            if let Some((bd, _)) = best {
+                if bd <= t_cell_exit {
+                    break;
+                }
+            }
+            if t_cell_exit > t_end {
+                break;
+            }
+            let k = if t_max[0] < t_max[1] { if t_max[0] < t_max[2] { 0 } else { 2 } } else if t_max[1] < t_max[2] { 1 } else { 2 };
+            c[k] += step[k];
+            if c[k] < 0 || c[k] >= self.dims[k] as isize {
+                break;
+            }
+            t_max[k] += t_delta[k];
+        }
+        best
     }
 }
