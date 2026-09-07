@@ -325,6 +325,18 @@ impl Node {
         self.boundary
     }
 
+    /// The probe found NO unread record: its child ran the race to the end
+    /// (the reply was the validator's result) without touching the input
+    /// array again, because every remaining record was already read into the
+    /// engine's buffer. Such a node owns nothing writable; its boundary is
+    /// set to `tape_len` so `floor` is past the tape and every write is
+    /// refused, while an empty advance (continue the reference) is still
+    /// allowed. Only for a probe that failed THIS way -- the caller checks the
+    /// reply -- never as a fallback for a probe that failed to answer.
+    pub fn assume_exhausted(&mut self, tape_len: usize) {
+        self.boundary = Some(tape_len);
+    }
+
     /// Fork a child that runs the tape to the finish and returns the
     /// validator's JSON. The node itself is untouched and can be forked again.
     pub fn run(&mut self, from: usize, recs: &[Rec]) -> Result<String, String> {

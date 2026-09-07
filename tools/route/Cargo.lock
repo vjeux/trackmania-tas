@@ -9,6 +9,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "branch"
+version = "1.0.0"
+dependencies = [
+ "forkoracle",
+]
+
+[[package]]
+name = "fk"
+version = "1.0.0"
+dependencies = [
+ "branch",
+ "forkoracle",
+ "gbx",
+ "ghost",
+ "tmtraj",
+]
+
+[[package]]
+name = "forkoracle"
+version = "1.0.0"
+
+[[package]]
 name = "gbx"
 version = "1.0.0"
 dependencies = [
@@ -145,6 +167,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmreach"
+version = "1.0.0"
+dependencies = [
+ "branch",
+ "fk",
+ "forkoracle",
+ "gbx",
+ "ghost",
+ "tmmaps",
+]
+
+[[package]]
 name = "tmroute"
 version = "0.1.0"
 dependencies = [
@@ -160,6 +194,14 @@ name = "tmstate"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "tmtraj"
+version = "1.0.0"
+dependencies = [
+ "gbx",
+ "ghost",
 ]
 
 [[package]]
