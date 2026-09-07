@@ -47,13 +47,13 @@ pub const RECORD_BYTES: usize = 4 + 2 + 2 + 1 + 3 + CARSTATE_BYTES + 64 + 4 + 4 
 pub const HEADER_BYTES: usize = 24;
 
 impl CarState {
-    /// From an engine row (pos/vel/quat/race clock); everything the readout
-    /// does not expose is NaN / u8::MAX. `race_ms` is the TRUE race clock
-    /// (engine label + 10, the G1 measurement).
-    pub fn from_row(r: &forkoracle::layout::Row, cps: u8, finished: bool) -> CarState {
+    /// From an engine row (pos/vel/quat); everything the readout does not
+    /// expose is NaN / u8::MAX. `race_ms` is the TRUE race clock: the row's
+    /// label + the worker's measured shift (`Worker::race_of`).
+    pub fn from_row(r: &forkoracle::layout::Row, race_ms: i64, cps: u8, finished: bool) -> CarState {
         let v = [r.vx as f32, r.vy as f32, r.vz as f32];
         CarState {
-            race_ms: (r.time_ms + 10) as i32,
+            race_ms: race_ms as i32,
             pos: [r.x as f32, r.y as f32, r.z as f32],
             vel: v,
             quat: [r.qw as f32, r.qx as f32, r.qy as f32, r.qz as f32],
@@ -267,6 +267,7 @@ mod tests {
     fn record_round_trips() {
         let mut end = CarState::from_row(
             &forkoracle::layout::Row { time_ms: 1230, x: 1.0, y: 2.0, z: 3.0, vx: 4.0, vy: 5.0, vz: 6.0, qx: 0.1, qy: 0.2, qz: 0.3, qw: 0.9, wetness: 0.0 },
+            1240,
             2,
             false,
         );

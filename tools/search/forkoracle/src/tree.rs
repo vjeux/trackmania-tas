@@ -172,19 +172,22 @@ impl Tree {
             }
         };
         stream.set_nonblocking(false).map_err(|e| AcceptErr::Other(e.to_string()))?;
-        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false };
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false, tick_mode: false, sim_ms: 0, race_start: 0 };
         let hello = read_frame(&mut n.sock).ok_or(AcceptErr::Other("a branch node connected and said nothing".into()))?;
         let s = String::from_utf8_lossy(&hello).into_owned();
-        let (base, clock, got) = parse_ready(&s).map_err(AcceptErr::Other)?;
-        let got = got.ok_or_else(|| {
+        let ready = crate::forksrv::parse_ready_full(&s).map_err(AcceptErr::Other)?;
+        n.tick_mode = ready.tick_mode;
+        n.sim_ms = ready.sim_ms;
+        n.race_start = ready.race_start;
+        let got = ready.pid.ok_or_else(|| {
             AcceptErr::Other(format!(
                 "a branch node handshook without naming its pid ({:?}) -- a node the driver \
                  cannot kill is an orphan holding a 150 MB address space",
                 s.trim()
             ))
         })?;
-        n.base = base;
-        n.clock = clock;
+        n.base = ready.base;
+        n.clock = ready.clock;
         n.pid = got;
         self.live.push(got);
         Ok(n)

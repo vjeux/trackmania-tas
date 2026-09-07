@@ -212,7 +212,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 // macro's first record moves that row by 2-13 mm (measured on
                 // 2960 rollouts). A boundary violation would be metres.
                 if start_state.is_none() {
-                    start_state = flat_at(start_label).map(|r| CarState::from_row(r, cps_before, false));
+                    start_state = flat_at(start_label).map(|r| CarState::from_row(r, w.race_of(r), cps_before, false));
                 }
                 if let Some(r) = rolled.rows.iter().find(|r| r.time_ms == start_label) {
                     if let Some(s0) = &start_state {
@@ -283,11 +283,11 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                         out.stats.identity_max_m = out.stats.identity_max_m.max(d);
                         if d > 0.05 {
                             out.stats.identity_fail += 1;
-                            out.log.push(format!("  start {start_id} h {h}: IDENTITY macro 0 end state {d:.4} m off the human's trajectory at {}", crate::secs(end_row.time_ms + 10)));
+                            out.log.push(format!("  start {start_id} h {h}: IDENTITY macro 0 end state {d:.4} m off the human's trajectory at {}", crate::secs(w.race_of(&end_row))));
                         }
                     }
                 }
-                let end = CarState::from_row(&end_row, cps_before + n_new as u8, finished_gate || (rolled.exited && !complete));
+                let end = CarState::from_row(&end_row, w.race_of(&end_row), cps_before + n_new as u8, finished_gate || (rolled.exited && !complete));
                 cells.insert(((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64));
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
                 out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });

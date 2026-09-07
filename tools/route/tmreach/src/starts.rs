@@ -81,16 +81,31 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     let id0 = compare(&flat, tel);
     let (shift, id) = crate::tele::best_shift(&flat, tel);
     println!("IDENTITY control: engine vs telemetry(1 ms Hermite), labels as read: {}", id0);
+    // The label convention: a row's race time is label + shift. Under the tick
+    // hook the root's race time is known from the engine itself, so the two
+    // must agree: the telemetry's origin and the engine's race clock are then
+    // one clock (they were measured to be, root −0.010 s ↔ label −30 ↔ +20).
+    let hook_shift = w.root_race_ms_hook.map(|r| r - w.root_row.time_ms);
     println!(
-        "IDENTITY control: best label shift {:+} ms (engine row t == telemetry t{:+}): {} => {}",
+        "IDENTITY control: best label shift {:+} ms (engine row t == telemetry t{:+}){}: {} => {}",
         shift,
         shift,
+        match hook_shift {
+            Some(h) => format!("; the tick hook's race clock at the root implies {h:+}"),
+            None => String::new(),
+        },
         id,
-        if id.passes() && shift.abs() <= 10 { "PASS" } else { "FAIL" }
+        if id.passes() && shift.abs() <= 30 && hook_shift.map(|h| h == shift).unwrap_or(true) { "PASS" } else { "FAIL" }
     );
-    if shift.abs() > 10 {
+    if shift.abs() > 30 {
         return Err(format!("the engine trajectory matches the telemetry only {shift:+} ms away: not one label convention, a different run"));
     }
+    if let Some(h) = hook_shift {
+        if h != shift {
+            return Err(format!("label shift {shift:+} ms from the telemetry but {h:+} ms from the tick hook's race clock: the telemetry origin and the engine's race clock disagree"));
+        }
+    }
+    w.label_shift = shift;
     // ---- (a) START-POSITION control. Two forms, and the transcript says which:
     //  LIVE  -- the root is pre-race (a countdown tape): the live root state must
     //           be at the map's Spawn, at rest.

@@ -20,9 +20,10 @@ pub struct Crossing {
     pub cp_idx: usize,
     /// The ghost's own notice, telemetry time.
     pub cp_ms: i64,
-    /// Engine clock of the row taken as "the credited tick" (cp_ms − 10, the
-    /// label convention measured in G1).
+    /// Engine label of the row taken as "the credited tick": the first row at
+    /// or after the notice, in labels (notice − the worker's measured shift).
     pub row_ms: i64,
+    pub label_shift: i64,
     pub gate_wp: u32,
     pub d_centre: f64,
     /// Position at the credited row, one before, one after.
@@ -76,7 +77,7 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
         // The notice is sub-tick (7617); in engine labels (telemetry − 10) that
         // is 7607, and the first engine row at or after it is 7610: the tick in
         // which the crossing happened.
-        let row_ms = ((cp_ms - 10) as f64 / 10.0).ceil() as i64 * 10;
+        let row_ms = ((cp_ms - w.label_shift) as f64 / 10.0).ceil() as i64 * 10;
         let idx = rep.flat.iter().position(|r| r.time_ms == row_ms);
         let Some(idx) = idx else {
             eprintln!(
@@ -96,6 +97,7 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
             cp_idx: i,
             cp_ms,
             row_ms,
+            label_shift: w.label_shift,
             gate_wp: g.waypoint,
             d_centre: d,
             p0: pos(r0),
@@ -209,8 +211,8 @@ pub fn grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> Grade {
 }
 
 /// The car centre in the GATE frame (s along the GEOM normal, lateral) at the
-/// NOTICE instant: engine label cp_ms − 10 (engine row t is race t+10, the
-/// G1 identity measurement), interpolated between the row before and the
+/// NOTICE instant: engine label cp_ms − shift (the worker's measured label
+/// convention), interpolated between the row before and the
 /// credited row. Negative s = before the gate centre.
 pub fn s_at_notice(c: &Crossing, g: &Gate) -> Option<(f64, f64)> {
     let pm = c.pm?;
@@ -221,7 +223,7 @@ pub fn s_at_notice(c: &Crossing, g: &Gate) -> Option<(f64, f64)> {
     }
     let dir = [d[0] / n, d[1] / n, d[2] / n];
     // fraction of the tick between the previous row and the credited row
-    let t_engine = (c.cp_ms - 10) as f64;
+    let t_engine = (c.cp_ms - c.label_shift) as f64;
     let f = ((t_engine - (c.row_ms - 10) as f64) / 10.0).clamp(0.0, 1.0);
     let p = [pm[0] + f * d[0], pm[1] + f * d[1], pm[2] + f * d[2]];
     let _ = dir;

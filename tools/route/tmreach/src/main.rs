@@ -131,8 +131,10 @@ fn cmd_starts(a: &Args) -> Result<(), String> {
         None => Worker::start(&server, &map, &shim, &work, &ghost, o.verbose)?,
     };
     println!(
-        "worker up in {:.1} s: tape {} ticks, start_offset {} ms, root probe tick {}, root row race {} ({:.3}, {:.3}, {:.3}) {:.2} m/s",
-        w.startup_s, w.n_ticks(), w.tape.start_offset_ms, w.root_probe, tmreach::secs(w.root_row.time_ms), w.root_row.x, w.root_row.y, w.root_row.z, tmreach::rig::speed(&w.root_row)
+        "worker up in {:.1} s: tape {} ticks, start_offset {} ms, root probe tick {}, root row label {} (tick hook: race {}) at ({:.3}, {:.3}, {:.3}) {:.2} m/s",
+        w.startup_s, w.n_ticks(), w.tape.start_offset_ms, w.root_probe, tmreach::secs(w.root_row.time_ms),
+        w.root_race_ms_hook.map(tmreach::secs).unwrap_or("n/a (lroundf clock)".into()),
+        w.root_row.x, w.root_row.y, w.root_row.z, tmreach::rig::speed(&w.root_row)
     );
     let rep = run_on_worker(&mut w, &tel, &gates, &o)?;
     if !(rep.start_ctrl_pass && rep.identity.passes()) {
@@ -462,7 +464,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         if c.det_finished {
             fin += 1;
             if let (Some(d), Some(o)) = (c.det_finish_ms, c.oracle_ms) {
-                fin_dt.push(o - (d + 10));
+                fin_dt.push(o - d);
             }
         }
     }

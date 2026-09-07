@@ -1,7 +1,7 @@
 //! `tmreach oraclectl` — G2 control (ii): varied rollouts written as full
 //! tapes and re-simulated by the PLAIN oracle (no shim, no fork). The oracle's
 //! checkpoint count for each tape must equal the detector's count over the
-//! same run (human prefix + macro + brake tail). Bar: N/N.
+//! same run (human prefi        c.det_finish_ms.map(crate::secs).unwrap_or("-".into()), + macro + brake tail). Bar: N/N.
 
 use crate::fanout::{credited_before, label_of_tick};
 use crate::gates::{Detector, GateKind, MapGates};
@@ -34,7 +34,7 @@ pub struct Case {
     /// The detector's count over the whole run (prefix + rollout to the end).
     pub det_cps: u32,
     pub det_finished: bool,
-    /// Engine-label time of the detector's finish crossing, if any.
+    /// RACE time (label + shift) of the detector's finish-crossing row, if any.
     pub det_finish_ms: Option<i64>,
     /// Closest approach (m) to any gate the detector did NOT credit in the rollout.
     pub near_miss_m: f64,
@@ -114,7 +114,7 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             for (gi2, t) in first.iter().enumerate() {
                 if *t >= 0 && gates.gates[gi2].kind == GateKind::Finish {
                     det_finished = true;
-                    det_finish_ms = Some(all[*t as usize].time_ms);
+                    det_finish_ms = Some(w.race_of(&all[*t as usize]));
                 }
                 if *t >= 0 && (*t as usize) >= prefix.len() {
                     let r = &all[*t as usize];

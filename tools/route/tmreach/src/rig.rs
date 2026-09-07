@@ -15,7 +15,7 @@ use forkoracle::layout::Row;
 use std::path::{Path, PathBuf};
 
 /// The earliest `lroundf` count the engine can be stopped at with the
-/// validator's ownership chain already built (a7aa56c `control::EARLIEST_CLOCK`).
+/// validator's ownership chain already built (a7aa56c `control::EARLIEST_CLOCK`). LROUNDF CLOCK ONLY.
 pub const EARLIEST_CLOCK: u64 = 11_000;
 
 /// The root for a tape WITHOUT countdown records (`start_offset_ms` near 0).
@@ -51,6 +51,15 @@ pub struct Worker {
     pub car: ValidatorCar,
     /// Wall time to launch the server, resolve the car and probe.
     pub startup_s: f64,
+    /// Race time of a row = its label + this. MEASURED by the identity control
+    /// against the ghost's telemetry (`starts::run_on_worker` sets it; +10 under
+    /// the lroundf clock, +20 under the tick clock, both a labelling convention
+    /// of `forkoracle::layout`, never a shift of the run). Until measured: the
+    /// tick hook's own race clock at the root.
+    pub label_shift: i64,
+    /// The root's race time as the tick hook reports it (sim_ms − race_start), if
+    /// in tick mode.
+    pub root_race_ms_hook: Option<i64>,
 }
 
 /// Race clock of tape tick `t` in ms.
@@ -64,8 +73,13 @@ pub fn tick_of_ms(tape: &Tape, ms: i64) -> usize {
 }
 
 impl Worker {
-    /// Launch a server on `ghost`, stop it at the earliest clock, resolve the car
-    /// and open a forest. `work` must be private to this worker.
+    /// Launch a server on `ghost`, stop it at the earliest tick, resolve the
+    /// car and open a forest. `work` must be private to this worker.
+    ///
+    /// Tick clock (`FK_CLOCK=tick`, the default): the root is race −0.010 s
+    /// (`ckpt_for_race_ms(-10)`), the first tick the engine reads an input
+    /// for, exact in every process. Lroundf clock: the legacy constants below
+    /// and, for an offset-0 tape, the state-checked ladder.
     pub fn start(
         server: &Path,
         map: &Path,
@@ -75,6 +89,31 @@ impl Worker {
         verbose: bool,
     ) -> Result<Worker, String> {
         let tape = Tape::load(&ghost.to_string_lossy())?;
+        if forkoracle::clock::tick_mode() {
+            // Race −0.010 s first. An offset-0 tape can refuse it: during the
+            // countdown the engine READS records it does not apply (the probe
+            // saw 33..96 of them read at race −0.010 on p00003), and
+            // `ForkServer::start` treats hook/probe disagreement as a hard error
+            // (TICKHOOK.md §4). Later roots, inside the race, agree (probe 49
+            // at race 0.500). The ladder is race-time based and the identity
+            // control downstream still judges the run.
+            let mut last = String::new();
+            for ms in [-10i64, 300, 600, 1000, 1500] {
+                match Self::start_at(server, map, shim, work, ghost, verbose, forkoracle::clock::ckpt_for_race_ms(ms)) {
+                    Ok(w) => return Ok(w),
+                    Err(e) => {
+                        if !e.contains("tick hook / probe disagreement") {
+                            return Err(e);
+                        }
+                        if verbose {
+                            eprintln!("  root at race {} refused: {e}; retrying later", crate::secs(ms));
+                        }
+                        last = e;
+                    }
+                }
+            }
+            return Err(format!("no root agreed with the tick hook: {last}"));
+        }
         if tape.start_offset_ms <= -1000 {
             return Self::start_at(server, map, shim, work, ghost, verbose, EARLIEST_CLOCK);
         }
@@ -152,6 +191,7 @@ impl Worker {
         let dir = work.join("traces");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+        let hook = if s.srv.tick_mode { Some(s.srv.sim_ms as i64 - s.srv.race_start as i64) } else { None };
         let Session { srv, .. } = s;
         let mut forest = Forest::new(srv, work, recs, Some(cfg))?;
         let root_probe = forest.probe_root()?;
@@ -169,6 +209,8 @@ impl Worker {
             ghost: ghost.to_path_buf(),
             car,
             startup_s: t0.elapsed().as_secs_f64(),
+            label_shift: 10,
+            root_race_ms_hook: hook,
         })
     }
 
@@ -314,8 +356,22 @@ pub fn pos(r: &Row) -> [f64; 3] {
 /// identical position, and the identity control read it as a 1.21 m error (one
 /// tick at 121 m/s). The row is dropped; the state at T comes from the next
 /// child, whose first sample is a full tick.
+/// Under the TICK clock the pause is at the tick function's entry, the last
+/// sample is a whole tick, and dropping it opened a one-row gap at every seam
+/// (measured: 14950 → 14970); so this is the lroundf clock's fix only.
 pub fn drop_stale_tail(rows: &mut Vec<Row>) {
-    if rows.len() >= 2 {
+    if !forkoracle::clock::tick_mode() && rows.len() >= 2 {
         rows.pop();
+    }
+}
+
+impl Worker {
+    /// TRUE race time of a row (ms): label + the measured shift.
+    pub fn race_of(&self, r: &Row) -> i64 {
+        r.time_ms + self.label_shift
+    }
+    /// The engine label that carries race time `ms`.
+    pub fn label_of_race(&self, ms: i64) -> i64 {
+        ms - self.label_shift
     }
 }
