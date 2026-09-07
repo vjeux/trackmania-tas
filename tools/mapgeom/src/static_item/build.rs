@@ -1686,6 +1686,12 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     let _is_static = r.u32()?;
     let _dynamize = r.u32()?;
     let mesh = super::read_ref(&mut r)?;
+    // the two hulls: the one that moves with the object, the one that stays —
+    // either gives the static copy a collision surface (an item whose surface
+    // is EMPTY is dropped by the game: Summer 15's 14 rotors and 2 tubes were
+    // placed at the right spot and never drawn until the HitShape came along)
+    let dyna_shape = super::read_ref(&mut r).ok();
+    let static_shape = super::read_ref(&mut r).ok();
     let name_in = |tbl: &[(u32, String)], i: i32| tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
     let mp = match mesh.inline.as_deref() {
         Some(_) => return Err(format!("{path}: inline dyna mesh is not handled")),
@@ -1772,8 +1778,46 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             }
         }
     }
-    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2)), is_mesh_collidable: false, shape: super::null_ref() };
+    const SHAPE_OFF: i32 = 200_000;
+    let mut shape_ext: Vec<(u32, String)> = Vec::new();
+    let mut shape_node = super::null_ref();
+    for sref in [static_shape.as_ref(), dyna_shape.as_ref()].into_iter().flatten() {
+        if sref.inline.is_some() || sref.index < 0 {
+            continue;
+        }
+        let Some(sp) = name_in(&model.externals, sref.index) else { continue };
+        if !sp.to_ascii_lowercase().ends_with(".hitshape.gbx") && !sp.to_ascii_lowercase().ends_with(".moveshape.gbx") && !sp.to_ascii_lowercase().ends_with(".shape.gbx") {
+            continue;
+        }
+        let Ok(sm) = store.load_model(&sp) else { continue };
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(sm.external_indices().iter().copied());
+        let mut r = super::Rd::new(&sm.body, 0, lb);
+        match super::surface::CPlugSurface::parse(&mut r) {
+            Ok(mut sf) => {
+                for sm_ in sf.materials.iter_mut() {
+                    if let super::surface::SurfMaterial::Node(nr) = sm_ {
+                        if nr.inline.is_none() && nr.index >= 0 {
+                            nr.index += SHAPE_OFF;
+                        }
+                    }
+                }
+                shape_ext = sm.externals.clone();
+                shape_node = inline(2, Node::Surface(sf));
+                m.notes.push(format!("{}: collision from {}", path.rsplit('\\').next().unwrap_or(path), sp.rsplit('\\').next().unwrap_or(&sp)));
+                break;
+            }
+            Err(e) => m.notes.push(format!("{sp}: {e} (no collision from this hull)")),
+        }
+    }
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2)), is_mesh_collidable: false, shape: shape_node };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        if idx >= SHAPE_OFF {
+            let p = name_in(&shape_ext, idx - SHAPE_OFF)?;
+            let link = material_link(&p);
+            let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
+            return Some((p, link, phys));
+        }
         let p = name_in(&mesh_ext, idx)?;
         if tween(store, &p) {
             tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));

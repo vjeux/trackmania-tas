@@ -1450,7 +1450,19 @@ fn write_scene(scene: &mapgeom::scene::Scene, out: &str) {
 
 fn describe(n: &Node) -> String {
     match n {
-        Node::Prefab(p) => format!("CPlugPrefab, {} entities", p.ents.len()),
+        Node::Prefab(p) => {
+            // entity poses (model ref, position, rotation quaternion) up to 12:
+            // where a prefab puts its parts is what decides how a dyna object
+            // (a rotor wheel, a piston) stands before its animation runs
+            let mut s = format!("CPlugPrefab, {} entities", p.ents.len());
+            for (i, e) in p.ents.iter().take(12).enumerate() {
+                s.push_str(&format!("\n      entity {i}: model node {} pos [{:.3}, {:.3}, {:.3}] rot xyzw [{:.4}, {:.4}, {:.4}, {:.4}]", e.model, e.pos[0], e.pos[1], e.pos[2], e.rot[0], e.rot[1], e.rot[2], e.rot[3]));
+            }
+            if p.ents.len() > 12 {
+                s.push_str(&format!("\n      … {} more", p.ents.len() - 12));
+            }
+            s
+        }
         Node::Dyna(d) => format!(
             "CPlugDynaObjectModel mesh={} moving shape={} static shape={}",
             d.mesh, d.dyna_shape, d.static_shape
