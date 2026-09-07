@@ -89,7 +89,7 @@ pub fn rebuild_index(root: &Path, names: &dyn Fn(&str) -> String) -> Result<(usi
         let mut files: Vec<PathBuf> = std::fs::read_dir(&d)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().map_or(false, |f| f.to_string_lossy().starts_with("route-")) && p.extension().map_or(false, |x| x == "json"))
+            .filter(|p| p.file_name().map_or(false, |f| { let f = f.to_string_lossy(); f.starts_with("route-") && f.ends_with(".json") && !f.ends_with(".specials.json") }))
             .collect();
         files.sort();
         for f in files {
