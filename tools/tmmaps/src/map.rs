@@ -94,6 +94,10 @@ pub struct BlockRec {
     pub coord_off: usize,
     pub flags: u32,
     pub waypoint_tag: Option<String>,
+    /// The waypoint property's `order` word. 0 for ordinary gates; for a
+    /// `LinkedCheckpoint` it is the LINK GROUP: every linked gate sharing an
+    /// order fires the same checkpoint, however far apart they sit.
+    pub waypoint_order: u32,
     /// `prs`: a FREE block ignores its cell bytes entirely. Its position lives
     /// as six f32 (Vec3 position, Vec3 pitch/yaw/roll) in chunk `0x0304305F`,
     /// one entry per free block in block order. `free_off` is the absolute
@@ -159,6 +163,8 @@ pub struct ItemRec {
     /// Entire CGameCtnAnchoredObject record, from class id through FACADE.
     pub record_region: (usize, usize),
     pub waypoint_tag: Option<String>,
+    /// See `BlockRec::waypoint_order`.
+    pub waypoint_order: u32,
 }
 
 impl ItemRec {
@@ -186,11 +192,18 @@ pub struct Waypoint {
     pub index: usize,
     pub name: String,
     pub tag: String,
+    /// Link group (`LinkedCheckpoint`); 0 otherwise.
+    pub order: u32,
     pub coords: (i32, i32, i32),
     pub pos: Option<[f32; 3]>,
     pub yaw: Option<f32>,
     /// Grid-block direction 0..3. `None` for item-carried waypoints.
     pub dir: Option<u8>,
+    /// A FREE block's full (yaw, pitch, roll) from chunk 0x0304305F; `None` for
+    /// grid blocks and items. Its position is the block's ORIGIN CORNER (the same
+    /// corner a grid placement anchors), so the road centre of a 1×1 block is the
+    /// local point (16, 2, 16) through this rotation.
+    pub free_rot: Option<[f32; 3]>,
 }
 
 impl std::fmt::Display for Waypoint {
@@ -206,8 +219,8 @@ impl std::fmt::Display for Waypoint {
         };
         write!(
             f,
-            "<{}#{} {} tag={} cell={:?} pos={} dir={:?}>",
-            k, self.index, self.name, self.tag, self.coords, pos, self.dir
+            "<{}#{} {} tag={} order={} cell={:?} pos={} dir={:?}>",
+            k, self.index, self.name, self.tag, self.order, self.coords, pos, self.dir
         )
     }
 }
@@ -518,7 +531,7 @@ fn read_file_ref(r: &mut Reader) {
 
 /// A node ref written *with* its class id and no index (how the items
 /// sub-archive writes CGameWaypointSpecialProperty). Returns the tag.
-fn read_waypoint_node(r: &mut Reader) -> Option<String> {
+fn read_waypoint_node(r: &mut Reader) -> Option<(String, u32)> {
     let mut tag = None;
     loop {
         let cid = r.u32();
@@ -535,8 +548,11 @@ fn read_waypoint_node(r: &mut Reader) -> Option<String> {
             let version = r.u32();
             if version >= 2 {
                 let n = r.u32() as usize;
-                tag = Some(String::from_utf8_lossy(r.bytes(n)).into_owned());
-                r.u32(); // order (always 0 -- which is why order is measured)
+                let t = String::from_utf8_lossy(r.bytes(n)).into_owned();
+                // `order`: 0 on every plain gate; the link group of a
+                // LinkedCheckpoint (Summer 2026 - 16 has three rows of them).
+                let order = r.u32();
+                tag = Some((t, order));
             } else {
                 r.u32();
                 r.u32();
@@ -672,14 +688,18 @@ impl MapFile {
                 index: b.index,
                 name: b.name.clone(),
                 tag,
+                order: b.waypoint_order,
                 coords: b.coords(),
                 // `prs`: a FREE block's cell bytes are dead; its real position
                 // is the f32 triple in chunk 0x0304305F. Reporting `pos=None`
                 // for one -- as this did -- hides the single fact that decides
                 // how it must be moved.
                 pos: b.free_pos,
-                yaw: Some(yaw),
+                // A FREE block's real yaw is the first f32 of its 0x0304305F rotation
+                // triple; its `dir` byte is as dead as its cell bytes.
+                yaw: Some(b.free_rot.map(|r| r[0]).unwrap_or(yaw)),
                 dir: Some(b.dir),
+                free_rot: b.free_rot,
             });
         }
         for it in &self.items {
@@ -692,10 +712,12 @@ impl MapFile {
                 index: it.index,
                 name: it.model.clone(),
                 tag,
+                order: it.waypoint_order,
                 coords: it.coords(),
                 pos: Some(it.pos),
                 yaw: Some(it.yaw),
                 dir: None,
+                free_rot: None,
             });
         }
         out
@@ -1164,6 +1186,7 @@ fn parse_blocks(
                 coord_off,
                 flags,
                 waypoint_tag: None,
+                waypoint_order: 0,
                 free_off: None,
                 free_pos: None,
                 free_rot: None,
@@ -1186,7 +1209,8 @@ fn parse_blocks(
             raw_coords,
             coord_off,
             flags,
-            waypoint_tag: tag,
+            waypoint_tag: tag.as_ref().map(|t| t.0.clone()),
+            waypoint_order: tag.as_ref().map(|t| t.1).unwrap_or(0),
             free_off: None,
             free_pos: None,
             free_rot: None,
@@ -1251,7 +1275,8 @@ fn parse_baked(
             raw_coords,
             coord_off,
             flags,
-            waypoint_tag: tag,
+            waypoint_tag: tag.as_ref().map(|t| t.0.clone()),
+            waypoint_order: tag.as_ref().map(|t| t.1).unwrap_or(0),
             free_off: None,
             free_pos: None,
             free_rot: None,
@@ -1289,7 +1314,7 @@ fn plausible_blocks(body: &[u8], h: usize) -> bool {
 /// Body-level node ref: u32 index (-1 = null), and the node is written inline
 /// the first time its index appears. Returns the waypoint tag when the node is
 /// a CGameWaypointSpecialProperty.
-fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> Option<String> {
+fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> Option<(String, u32)> {
     let idx = r.u32();
     if idx == 0xFFFF_FFFF {
         return None;
@@ -1457,7 +1482,8 @@ fn parse_items(
                 scale_off,
                 waypoint_region,
                 record_region: (record_start, 0),
-                waypoint_tag: tag,
+                waypoint_tag: tag.as_ref().map(|t| t.0.clone()),
+                waypoint_order: tag.as_ref().map(|t| t.1).unwrap_or(0),
             });
         }
         let mut rec = rec.expect("item without a 0x03101002 chunk");
