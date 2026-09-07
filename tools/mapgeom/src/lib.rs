@@ -37,6 +37,7 @@ pub mod geom;
 pub mod light_skin;
 pub mod lz4dict;
 pub mod md5;
+pub mod etlsum;
 pub mod minidump;
 pub mod keyhunt;
 pub mod names;

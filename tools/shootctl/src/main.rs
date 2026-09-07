@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod host;
 use host::plugin_addrs;
+mod loadprof;
 mod lock;
 mod playshots;
 mod shootset;
@@ -1028,6 +1029,13 @@ usage:
         lock and take N timed screenshots DIR/play-<T>-<k>.png — does a moving
         item's collision move (pushers around the spawn shove the car)?
         --detach as above; DIR/done-play.txt appears when finished.
+  shootctl loadprof --map MAP --outdir /mnt/c/DIR [--tag T] [--how edit|play] [--timeout S]
+                   [--dump-every S] [--wpr light|waits|off|CPU|FILE!Profile] [--settle S]
+                   [--restart] [--back] [--tracerpt] [--detach]
+        PROFILE one map load under the lock: /ctx timeline, per-second typeperf
+        counters (process + every thread + GPU + disk), a WPR sampled-profile trace
+        with stacks around the load (--tracerpt dumps it to CSV for mapgeom etlsum),
+        and a minidump of the game every N s (mapgeom threads). --restart = cold load.
 "#);
         std::process::exit(0);
     }
@@ -1153,6 +1161,7 @@ usage:
         // PLAY-mode timed screenshots under the lock: does a moving item's
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
+        "loadprof" => loadprof::run(&args[1..]),
         "carlog" => playshots::summarize(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");

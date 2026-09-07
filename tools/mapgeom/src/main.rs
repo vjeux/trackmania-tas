@@ -776,6 +776,10 @@ fn main() {
         "crash" => {
             mapgeom::minidump::run(&a.rest).unwrap_or_else(die);
         }
+        // A WPR trace (tracerpt CSV) of the client: where a map load spends its CPU.
+        "etlsum" => {
+            mapgeom::etlsum::run(&a.rest).unwrap_or_else(die);
+        }
         // A full memory dump of the running client: the pack keys it derived.
         "pak-keyhunt" => {
             mapgeom::keyhunt::run(&a.rest).unwrap_or_else(die);
