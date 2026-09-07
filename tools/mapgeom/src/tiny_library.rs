@@ -63,11 +63,17 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
     // Stadium (0x1a) "Japan" set (Summer 05: 384 `Spring` clusters, 69
     // `SpringCherryTree`, 18 CypressTall): SpringTree in Big / Tall / Medium /
     // Small / VerySmall, CherryTreeMedium, CypressTall, SpringPalmTree.
+    // Palms (Summer 15: 1593 `SummerPalmTree` = CactusE static object /
+    // PalmTreeDirtMedium / PalmTreeDirtSmall per variant, 14 `SpringPalmTree`
+    // = PalmTreeMedium / PalmTreeSmall): the pack has Medium and Small of
+    // each family and nothing smaller, so Medium -> Small and Small stays.
     if collection == 0x1a {
         return Some(match model {
             "SpringTreeBig" | "SpringTreeTall" | "SpringTreeMedium" => "SpringTreeSmall",
             "SpringTreeSmall" => "SpringTreeVerySmall",
             "Spring" | "SpringCherryTree" => "CherryTreeMedium",
+            "PalmTreeMedium" => "PalmTreeSmall",
+            "PalmTreeDirtMedium" => "PalmTreeDirtSmall",
             _ => return None,
         });
     }
