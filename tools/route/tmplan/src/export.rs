@@ -50,10 +50,15 @@ pub fn export(
         let grp = nodes.groups[to];
         let (centre, _axis, half) = gates.group_geometry(grp).unwrap();
         let rep = gates.group_rep(grp).unwrap();
-        let kind = match rep.kind {
-            WpKind::Finish => GateKind::Finish,
-            WpKind::Multilap => GateKind::Multilap,
-            _ => GateKind::Checkpoint,
+        // the LAST gate is where the race ends, whatever block it is (a lap line on a lap race)
+        let kind = if li + 1 == plan.visit.len() - 1 {
+            GateKind::Finish
+        } else {
+            match rep.kind {
+                WpKind::Finish => GateKind::Finish,
+                WpKind::Multilap => GateKind::Multilap,
+                _ => GateKind::Checkpoint,
+            }
         };
         tg_gates.push(Gate { kind, centre, normal: heading, half_width: half, s: s_acc, map_waypoint: rep.waypoint });
         let (_, dy) = crate::estimator::chord(nodes.pos[from], nodes.pos[to]);

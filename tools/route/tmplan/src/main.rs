@@ -94,7 +94,10 @@ fn cmd_plan(args: &[String]) {
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
-    let plans = planner::beam(&nodes, &est, width, top_k, StateBucket::of_speed(0.0));
+    let plans = planner::beam_laps(&nodes, &nodes.kinds, gates.laps, &est, width, top_k, StateBucket::of_speed(0.0));
+    if gates.laps > 1 {
+        println!("  lap race: {} laps — checkpoint order planned once from the spawn to the lap line and repeated; last lap ends at {}", gates.laps, if nodes.kinds[nodes.finish_range()].iter().any(|k| *k == tmroute::gates::WpKind::Finish) { "the finish" } else { "the lap line" });
+    }
     if has(args, "--exact") {
         match planner::exact_cost(&nodes, &d) {
             Some((visit, cost)) => {
