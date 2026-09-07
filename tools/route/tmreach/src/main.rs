@@ -866,9 +866,15 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
     // --partition k/n: this process takes the maps at index k mod n of the ordered list (two
     // campaign processes overlap one's oracle phase with the other's fan-out)
     let (pk, pn): (usize, usize) = a.get("partition").map(|s| { let mut p = s.split('/'); (p.next().unwrap().parse().unwrap(), p.next().unwrap().parse().unwrap()) }).unwrap_or((0, 1));
+    let (server_dir, _) = engine_paths(a);
     for (mi, uid) in order.into_iter().enumerate() {
         if mi % pn != pk {
             continue;
+        }
+        // FAIL CLOSED AT THE CAMPAIGN LEVEL: the dedicated server vanished once mid-campaign
+        // (10:39Z: /tmp/tmp/server empty; every map then "failed" in 4 s) -- stop the pass
+        if !server_dir.join("TrackmaniaServer").exists() {
+            return Err(format!("the dedicated server is gone from {} -- the pass stops here (nothing was banked wrongly: a map without a server fails closed)", server_dir.display()));
         }
         let (name, exact, total) = &maps[uid];
         if let Some(fl) = &filter {
