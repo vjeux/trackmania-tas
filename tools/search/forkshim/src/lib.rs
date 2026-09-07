@@ -2485,6 +2485,14 @@ unsafe fn forkserver() {
             }
             // ---- child: becomes a node of the tree
             IS_CHILD.store(1, Ordering::SeqCst);
+            // A REPORT PAGE OF ITS OWN. The timing page is MAP_SHARED and a
+            // fork inherits the mapping, so without this a node's children
+            // would report into the ROOT's page -- and since that page now
+            // carries a finish time and a checkpoint count, a candidate could
+            // read the previous candidate's. Ownership, not zeroing, is the
+            // guard: every node gets a fresh page and its children write there.
+            TIMING.store(0, Ordering::SeqCst);
+            timing_init();
             for i in 0..np {
                 let q = poff + i * 16;
                 let tick = u32::from_le_bytes(payload[q..q + 4].try_into().unwrap()) as usize;
