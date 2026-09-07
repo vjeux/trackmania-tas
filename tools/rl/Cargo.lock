@@ -1069,6 +1069,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tminput"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+]
+
+[[package]]
 name = "tmmaps"
 version = "1.0.0"
 dependencies = [
