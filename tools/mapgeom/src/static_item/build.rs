@@ -384,7 +384,13 @@ fn bbox(points: &[[f32; 3]]) -> [f32; 6] {
     if points.is_empty() {
         return [0.0; 6];
     }
-    [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, (hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0, (hi[2] - lo[2]) / 2.0]
+    // A FLAT visual (the OpenTech road/zone `_FC_Ground` decals: 8 vertices in
+    // one plane, half-height 1e-7) is dropped by the EDITOR on re-save (122
+    // placements of Summer 09 gone after an editor SaveMap, 2026-09-07) while
+    // play mode draws it — a degenerate box reads as an empty item. 2 cm of
+    // half-extent on every axis keeps the box a box.
+    let half = |k: usize| ((hi[k] - lo[k]) / 2.0).max(0.02);
+    [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, half(0), half(1), half(2)]
 }
 
 /// Transform a visual's inline vertex stream in place: positions by `iso`
@@ -2723,7 +2729,7 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
                                     hi[k] = hi[k].max(q[k]);
                                 }
                             }
-                            mn.bounding_box = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, (hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0, (hi[2] - lo[2]) / 2.0];
+                            mn.bounding_box = bbox(p);
                         }
                     }
                 }
@@ -3636,13 +3642,30 @@ pub fn light_skin_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMat
     }
     let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
     let file = skin.file();
+    // TINY_LIGHT_SKIN_GLASS=<Model>[+cst=Name:value;…]: the shading model of the
+    // glass (default TDSNI) and optional material constants (a Cst row: name,
+    // "", the f32 bits). Probed 2026-09-07 on a Red LightTubeBig4m against the
+    // stock skinned tube (whose pack material has SelfIllumScale 1.5 + a
+    // refract layer + a _G glow map): TDSNI and TDSNEM glow red but dimmer,
+    // TDSNE/TDSNI_Night dimmer still, TIAdd invisible, a SelfIllumScale cst
+    // turned the glass BLACK (the row is read, the encoding is not this).
+    let spec = std::env::var("TINY_LIGHT_SKIN_GLASS").unwrap_or_else(|_| "TDSNI".into());
+    let (model, extra) = spec.split_once('+').unwrap_or((spec.as_str(), ""));
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
         main.is_using_game_material = false;
-        main.model = crate::crystal_model::Id::Str("TDSNI".into());
+        main.model = crate::crystal_model::Id::Str(model.to_string());
         main.material_name = crate::crystal_model::Id::Str(format!("{stem}{}", skin.name));
         main.link = crate::crystal_model::Id::Null;
         main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+        if let Some((_, list)) = extra.split_once("cst=") {
+            for kv in list.split(';') {
+                if let Some((name, v)) = kv.split_once(':') {
+                    let f: f32 = v.parse().unwrap_or(1.0);
+                    main.csts.push(crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str(name.to_string()), u02: crate::crystal_model::Id::Null, u03: f.to_bits() as i32 });
+                }
+            }
+        }
     }
     owned
 }

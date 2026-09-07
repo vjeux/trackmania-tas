@@ -1999,7 +1999,9 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
             count: n,
             vertex_streams: vec![NodeRef { index: 0, inline: Some(Box::new(Node::VertexStream(stream))) }],
             skin: None,
-            bounding_box: [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, (hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0, (hi[2] - lo[2]) / 2.0],
+            // half-extents at least 2 cm: a FLAT decal (the `_FC_Ground` road/zone
+            // pieces) is dropped by the editor on re-save with a zero-height box
+            bounding_box: [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, ((hi[0] - lo[0]) / 2.0).max(0.02), ((hi[1] - lo[1]) / 2.0).max(0.02), ((hi[2] - lo[2]) / 2.0).max(0.02)],
             bitmap_elems: Vec::new(),
             uv_groups: Vec::new(),
             u02: 0,
