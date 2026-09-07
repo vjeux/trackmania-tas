@@ -582,6 +582,28 @@ pub fn cmd(args: &[String]) {
     }
     let original_items = specs.len();
     specs.extend(cluster_trees);
+    // The flag cloth (Flag16m / Flag8m re-pointed at our vertex-tween copies)
+    // animates only while a STOCK flag item is loaded in the map: without one
+    // the tween frame index runs unbounded — the cloths are garbage or gone,
+    // alive for one ~45 s window after the editor opens (Summer 15 lineups,
+    // 2026-09-07: 6 and 24 copies alike; 11 copies next to one stock Flag16m
+    // waved for the whole 100 s watched, hidden 50 m underground too). So one
+    // stock flag of each kind the map converts rides along, parked under the
+    // lowest row at the spawn. `TINY_FLAG_DRIVER=0` leaves it out.
+    if std::env::var("TINY_FLAG_DRIVER").map(|v| v != "0").unwrap_or(true) {
+        let converted: BTreeSet<&str> = source
+            .items
+            .iter()
+            .filter(|it| matches!(it.model.as_str(), "Flag16m" | "Flag8m"))
+            .filter(|it| mapping.items_by_index.get(&it.index).map(|m| m.model.ends_with(".Item.Gbx")).unwrap_or(false))
+            .map(|it| it.model.as_str())
+            .collect();
+        for name in converted {
+            let pos = [target_anchor[0], crate::map::ground_y(collection) + 4.0, target_anchor[2]];
+            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: None, scale: 1.0, tag: None, color: 0 });
+            println!("  flag driver: one stock {name} parked at {:.0},{:.0},{:.0} (keeps the tween cloths animating)", pos[0], pos[1], pos[2]);
+        }
+    }
     let mut empty_blocks = 0usize;
     // Zone (terrain) blocks REPLACED by a block designed for that terrain: a
     // `PlatformGrassOnLandHillSlopeBase` / `PlatformGrassBaseOnLandHill2` /
