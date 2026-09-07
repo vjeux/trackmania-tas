@@ -408,6 +408,18 @@ pub const R_NEG: f32 = 14.0;
 pub const LOCAL_MAX_M: f32 = 450.0;
 
 pub const L_WP_LOCAL: f32 = -1.0;
+/// Interior passage points of the straight start → endpoint segment used as positives (f · h ticks).
+pub const PASS_FRACS: [f32; 3] = [0.35, 0.6, 0.8];
+
+/// Distance from point p to the segment a→b.
+pub fn seg_dist(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if l2 < 1e-6 { 0.0 } else { ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2).clamp(0.0, 1.0) };
+    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    dist3(q, p)
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct LocalStats {
@@ -422,6 +434,7 @@ pub struct LocalStats {
     pub skipped_noop: usize,
     pub skipped_human: usize,
     pub cloud_mean_extent_m: f64,
+    pub passage_positives: usize,
 }
 
 fn xorshift(s: &mut u64) -> u64 {
@@ -459,7 +472,12 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     keys.sort();
     let mut extent_sum = 0f64;
     let candidates: Vec<&tmroute::gates::GateRec> = gates.gates.iter().filter(|g| g.kind != WpKind::Start).collect();
-    let mut push_row = |rows: &mut Rows, s: &StartInfo, sid: u32, target: [f32; 3], h: u16, y: f32, end: Option<&CarState>, key: f32| {
+    // PASSAGE labels (coordinator 07:23Z): a target is reached if the path passes within R_LOCAL at ANY tick
+    // ≤ h, the time label = the tick of first passage. Until GEN's intermediate states land the path is
+    // approximated by the STRAIGHT segment start → endpoint: positives at fractions PASS_FRACS of it with
+    // ticks ≈ f·h (the endpoint itself at f = 1 carries the real arrival state; interior points carry none);
+    // a negative must be > R_NEG from EVERY segment of the cloud, not only from the endpoints.
+    let mut push_row = |rows: &mut Rows, s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32| {
         let d = dist3(s.state.pos, target);
         let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
         let t = TargetSpec { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
@@ -467,7 +485,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
         rows.x.extend_from_slice(&buf);
         let mut lab = [0f32; NLAB];
         lab[L_Y] = y;
-        lab[L_TICKS] = if y > 0.5 { h as f32 } else { -1.0 };
+        lab[L_TICKS] = if y > 0.5 { ticks } else { -1.0 };
         if let Some(e) = end {
             lab[L_BAND] = 1.0;
             lab[L_ASPEED] = if e.speed.is_finite() { e.speed } else { crate::frame::norm3(e.vel) };
@@ -514,10 +532,19 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
             }
         }
         extent_sum += ends.iter().map(|e| dist3(c, e.pos) as f64).sum::<f64>() / ends.len() as f64;
-        // positives
+        // positives: the endpoints (real arrival state) and the interior passage points
         for e in &ends {
-            push_row(&mut rows, s, key.0, e.pos, h, 1.0, Some(e), gi as f32);
+            push_row(&mut rows, s, key.0, e.pos, h, h as f32, 1.0, Some(e), gi as f32);
             st.positives += 1;
+            for f in PASS_FRACS {
+                let p = [sp[0] + (e.pos[0] - sp[0]) * f, sp[1] + (e.pos[1] - sp[1]) * f, sp[2] + (e.pos[2] - sp[2]) * f];
+                if dist3(sp, p) < R_LOCAL {
+                    continue; // the start itself is not a target
+                }
+                push_row(&mut rows, s, key.0, p, h, (h as f32 * f).max(1.0), 1.0, None, gi as f32);
+                st.positives += 1;
+                st.passage_positives += 1;
+            }
         }
         // negatives: candidates → keep those > R_NEG from every endpoint and ≤ LOCAL_MAX_M from the start
         let mut cands: Vec<([f32; 3], u8)> = Vec::new();
@@ -559,11 +586,11 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
             if dist3(sp, p) > LOCAL_MAX_M {
                 continue;
             }
-            if ends.iter().any(|e| dist3(e.pos, p) < R_NEG) {
+            if ends.iter().any(|e| seg_dist(sp, e.pos, p) < R_NEG) {
                 st.rejected_near_endpoint += 1;
                 continue;
             }
-            push_row(&mut rows, s, key.0, p, h, 0.0, None, gi as f32);
+            push_row(&mut rows, s, key.0, p, h, -1.0, 0.0, None, gi as f32);
             st.negatives += 1;
             match kind {
                 0 => st.neg_radial += 1,
@@ -575,8 +602,8 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     }
     st.cloud_mean_extent_m = extent_sum / st.groups.max(1) as f64;
     log.push(format!(
-        "{} ({}) LOCAL: {} (start, h) groups → {} rows: {} positives (endpoints), {} negatives (radial {}, lateral {}, disc {}, chord {}); {} candidates rejected within {} m of an endpoint; {} no-op duplicate endpoints, {} human records skipped; cloud mean extent {:.1} m; R_LOCAL {} m",
-        gates.map_name, gates.map_uid, st.groups, rows.n, st.positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
+        "{} ({}) LOCAL: {} (start, h) groups → {} rows: {} positives ({} endpoints + {} straight-segment passage points), {} negatives (radial {}, lateral {}, disc {}, chord {}); {} candidates rejected within {} m of an endpoint; {} no-op duplicate endpoints, {} human records skipped; cloud mean extent {:.1} m; R_LOCAL {} m",
+        gates.map_name, gates.map_uid, st.groups, rows.n, st.positives, st.positives - st.passage_positives, st.passage_positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
     ));
     Ok((rows, st))
 }

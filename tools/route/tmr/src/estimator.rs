@@ -277,9 +277,8 @@ impl<'a> Chained<'a> {
                         }
                         let e = self.local_query(s, goal, *h);
                         if e.p_reach >= self.p_step_floor {
-                            // time to the gate: the car is within R_LOCAL at h; credit the travel at the mean speed, ≤ h
-                            let v_avg = (s.speed + e.speed_mu.max(0.0)).max(10.0) / 2.0;
-                            let t = ((100.0 * dg / v_avg).round() as i32).clamp(20, *h as i32);
+                            // time to the gate = the head's first-passage time (PASSAGE labels), ≤ h
+                            let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
                             let cand = ChainState { pos: goal, speed: e.speed_mu.max(0.0), dir: [gn[0], gn[2]], ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
                             let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
                             if best.as_ref().map_or(true, |(b, _, _)| score < *b) {
@@ -318,7 +317,10 @@ impl<'a> Chained<'a> {
                             if e.p_reach < self.p_step_floor {
                                 continue;
                             }
-                            let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + *h as i32, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
+                            // step time = first-passage time at the target (the head's ticks), not h: a near target is
+                            // passed early, not braked for
+                            let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
+                            let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
                             let mut p = path.clone();
                             p.push(target);
                             let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;

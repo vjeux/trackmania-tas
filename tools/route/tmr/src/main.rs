@@ -5,12 +5,12 @@
 //!   tmr build [--kind gate|local] [--fv 1|2] [--max-rows N] --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
 //!                                        TMR0 shards → labelled rows per map (<uid>.rows + manifest.tsv)
 //!   tmr train [--kind gate|local] --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
-//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
+//!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
 //!   tmr legs MAP.Map.Gbx --gates gates.json --model r.tmw --human-orders F [--local rl.tmw [--beam 24] [--p-step 0.05]]
@@ -358,6 +358,9 @@ fn cmd_train(args: &[String]) {
     if let Some(v) = flag(args, "--noise") {
         cfg.noise = v.parse().unwrap_or_else(|_| die("--noise σ"));
     }
+    if let Some(v) = flag(args, "--geo-dropout") {
+        cfg.geo_drop = v.parse().unwrap_or_else(|_| die("--geo-dropout p"));
+    }
     if let Some(v) = flag(args, "--dropout") {
         cfg.dropout = v.parse().unwrap_or_else(|_| die("--dropout p"));
     }
@@ -389,7 +392,7 @@ fn cmd_train(args: &[String]) {
         "ablation": cfg.ablation,
         "kind": kind_of(args),
         "mirror_augmentation": mirror,
-        "noise": cfg.noise, "dropout": cfg.dropout, "weight_decay": cfg.weight_decay, "lr": cfg.lr, "hidden_cfg": cfg.hidden,
+        "noise": cfg.noise, "dropout": cfg.dropout, "geo_drop": cfg.geo_drop, "weight_decay": cfg.weight_decay, "lr": cfg.lr, "hidden_cfg": cfg.hidden,
         "hidden": cfg.hidden,
         "epochs_run": rep.epochs_run,
         "best_epoch": rep.best_epoch,
@@ -765,11 +768,17 @@ fn cmd_watch(args: &[String]) {
             let stamp = now_utc();
             println!("watch: {} map(s) changed ({}), training v{version} at {stamp}", changed.len(), changed.join(","));
             let mut summary = format!("## {stamp} — tmr watch v{version}: rebuilt {} map(s) [{}]\n", changed.len(), changed.join(", "));
+            // variants: plain, and (when --geo-dropout p is given) the geometry block-dropout A/B
+            let mut variants: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
+            if let Some(p) = flag(args, "--geo-dropout") {
+                variants.push(("-gd".into(), vec!["--geo-dropout".into(), p]));
+            }
             for (kind, prefix) in [("gate", "r"), ("local", "rl")] {
-                let model = bank.join(format!("{prefix}-v{version}.tmw"));
-                let report = bank.join(format!("{prefix}-v{version}.md"));
+            for (suffix, extra) in &variants {
+                let model = bank.join(format!("{prefix}-v{version}{suffix}.tmw"));
+                let report = bank.join(format!("{prefix}-v{version}{suffix}.md"));
                 let mut cmd = std::process::Command::new(&exe);
-                cmd.args(["train", "--kind", kind, "--cache"]).arg(&o.out).arg("--out").arg(&model).arg("--report").arg(&report).args(["--epochs", &epochs, "--threads", &threads]);
+                cmd.args(["train", "--kind", kind, "--cache"]).arg(&o.out).arg("--out").arg(&model).arg("--report").arg(&report).args(["--epochs", &epochs, "--threads", &threads]).args(extra);
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
@@ -779,7 +788,7 @@ fn cmd_watch(args: &[String]) {
                         let s = String::from_utf8_lossy(&out.stdout).to_string();
                         // keep the gate lines for STATUS
                         for line in s.lines().filter(|l| l.contains("two-gate:") || l.starts_with("| ")) {
-                            summary.push_str(&format!("[{kind}] {line}\n"));
+                            summary.push_str(&format!("[{kind}{suffix}] {line}\n"));
                         }
                         if !out.status.success() {
                             summary.push_str(&format!("[{kind}] train FAILED: {}\n", String::from_utf8_lossy(&out.stderr)));
@@ -788,7 +797,8 @@ fn cmd_watch(args: &[String]) {
                     Err(e) => summary.push_str(&format!("[{kind}] train could not start: {e}\n")),
                 }
                 // latest pointer
-                let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest.tmw")));
+                let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest{suffix}.tmw")));
+            }
             }
             print!("{summary}");
             use std::io::Write;

@@ -29,6 +29,8 @@ pub struct Trainable {
     pub dims: Vec<usize>, // [in, h1, .., out]
     pub mean: Tensor,
     pub inv_std: Tensor,
+    /// (1, in) 1.0 on the GEOMETRY columns — the block-dropout target (`forward_reg`).
+    pub geo_flag: Option<Tensor>,
 }
 
 impl Trainable {
@@ -47,6 +49,7 @@ impl Trainable {
             dims: dims.to_vec(),
             mean: Tensor::from_slice(mean, (1, mean.len()), dev)?,
             inv_std: Tensor::from_slice(&inv, (1, inv.len()), dev)?,
+            geo_flag: None,
         })
     }
 
@@ -72,7 +75,22 @@ impl Trainable {
     /// Training-time forward with regularisation: Gaussian `noise` (in normalised units) on the
     /// inputs and `dropout` on every hidden activation. Both 0 = the plain forward (eval).
     pub fn forward_reg(&self, x: &Tensor, noise: f64, dropout: f64) -> CResult<Tensor> {
+        self.forward_reg2(x, noise, dropout, 0.0)
+    }
+
+    /// + `geo_drop`: with this probability a ROW loses its whole geometry (the `geo_flag` columns → 0
+    /// after normalisation) — the model must then answer from state + target alone, which is what
+    /// stops it memorising a map by its geometry.
+    pub fn forward_reg2(&self, x: &Tensor, noise: f64, dropout: f64, geo_drop: f64) -> CResult<Tensor> {
         let mut h = x.broadcast_sub(&self.mean)?.broadcast_mul(&self.inv_std)?;
+        if geo_drop > 0.0 {
+            if let Some(gf) = &self.geo_flag {
+                let b = h.dim(0)?;
+                let drop = Tensor::rand(0f32, 1f32, (b, 1), h.device())?.lt(geo_drop as f32)?.to_dtype(DType::F32)?;
+                let mask = (drop.broadcast_mul(gf)?.neg()? + 1.0)?;
+                h = h.broadcast_mul(&mask)?;
+            }
+        }
         if noise > 0.0 {
             let nz = h.randn_like(0.0, noise)?;
             h = (h + nz)?;

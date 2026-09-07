@@ -26,11 +26,13 @@ pub struct TrainCfg {
     /// Input Gaussian noise (normalised units) and hidden dropout, training only.
     pub noise: f64,
     pub dropout: f64,
+    /// Per-row probability of zeroing every geometry column (block dropout).
+    pub geo_drop: f64,
 }
 
 impl Default for TrainCfg {
     fn default() -> TrainCfg {
-        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0, noise: 0.0, dropout: 0.0 }
+        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0, noise: 0.0, dropout: 0.0, geo_drop: 0.0 }
     }
 }
 
@@ -161,7 +163,7 @@ fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
 
 /// (total, bce, ticks_mse, band_nll) on one batch.
 fn losses(t: &Trainable, bt: &Batch, cfg: &TrainCfg, training: bool) -> candle_core::Result<(Tensor, f32, f32, f32)> {
-    let out = if training { t.forward_reg(&bt.x, cfg.noise, cfg.dropout)? } else { t.forward(&bt.x)? };
+    let out = if training { t.forward_reg2(&bt.x, cfg.noise, cfg.dropout, cfg.geo_drop)? } else { t.forward(&bt.x)? };
     let logit = out.narrow(1, O_REACH, 1)?.squeeze(1)?;
     // numerically stable BCE with logits: max(x,0) − x·y + ln(1 + e^{−|x|})
     // (candle_nn::loss::binary_cross_entropy_with_logit goes through sigmoid→log and
@@ -220,8 +222,17 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
     let mut dims = vec![train_set.dim];
     dims.extend(&cfg.hidden);
     dims.push(OUT);
-    let t = Trainable::new(&dims, &mean, &std, dev).map_err(|e| e.to_string())?;
+    let mut t = Trainable::new(&dims, &mean, &std, dev).map_err(|e| e.to_string())?;
     let fv = train_set.fv;
+    if cfg.geo_drop > 0.0 {
+        let mut flag = vec![0f32; train_set.dim];
+        for (lo, hi) in feat::geometry_ranges(fv) {
+            for v in &mut flag[lo..hi] {
+                *v = 1.0;
+            }
+        }
+        t.geo_flag = Some(Tensor::from_vec(flag, (1, train_set.dim), dev).map_err(|e| e.to_string())?);
+    }
     let mut opt = candle_nn::AdamW::new(t.varmap.all_vars(), ParamsAdamW { lr: cfg.lr, weight_decay: cfg.weight_decay, ..Default::default() }).map_err(|e| e.to_string())?;
     // fit / val by start id
     let mut fit = Vec::new();
@@ -232,7 +243,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         if h % 10 == 0 { val.push(i) } else { fit.push(i) }
     }
     let val_set = train_set.subset(&val);
-    let mut log = vec![format!("train: {} rows fit, {} rows val (by start id), dims {:?}, {} params, ablation {}, batch {}, lr {}, wd {}, w_ticks {}, w_band {}, noise {}, dropout {}", fit.len(), val.len(), dims, t.n_params(), cfg.ablation, cfg.batch, cfg.lr, cfg.weight_decay, cfg.w_ticks, cfg.w_band, cfg.noise, cfg.dropout)];
+    let mut log = vec![format!("train: {} rows fit, {} rows val (by start id), dims {:?}, {} params, ablation {}, batch {}, lr {}, wd {}, w_ticks {}, w_band {}, noise {}, dropout {}, geo_drop {}", fit.len(), val.len(), dims, t.n_params(), cfg.ablation, cfg.batch, cfg.lr, cfg.weight_decay, cfg.w_ticks, cfg.w_band, cfg.noise, cfg.dropout, cfg.geo_drop)];
     if verbose {
         eprintln!("{}", log[0]);
     }

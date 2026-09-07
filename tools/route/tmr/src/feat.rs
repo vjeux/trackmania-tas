@@ -71,3 +71,11 @@ pub fn mirror(fv: u32, x: &mut [f32]) -> bool {
         false
     }
 }
+
+/// Column ranges that are GEOMETRY (the block-dropout target).
+pub fn geometry_ranges(fv: u32) -> Vec<(usize, usize)> {
+    match fv {
+        1 => vec![(features::OFF_PROBES, features::DIM)],
+        _ => vec![(features2::OFF2_PATH, features2::OFF2_TARGET), (features2::OFF2_CHORD, features2::DIM2)],
+    }
+}
