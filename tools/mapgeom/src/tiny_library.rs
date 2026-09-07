@@ -170,6 +170,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         } else {
             let mut m = crate::static_item::build::Merged::default();
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
+            m.modifier = modifier_links(store, &bi.material_modifier);
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;
             // minimal repro var-m1, open bug).
@@ -363,4 +364,27 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             println!("  FAIL {} {} ({} placements): {}", o.kind, o.source, o.placements, e);
         }
     }
+}
+
+/// The material links a block's modifier folder provides: for each
+/// `…\Modifier\X.TerrainModifier.Gbx` among the block info's material
+/// modifier refs, every `…\Modifier\X\S.Material.Gbx` in the packs, as the
+/// link `…\Modifier\X\S`. (The modifier file itself only names that folder.)
+pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in refs {
+        let Some(base) = r.strip_suffix(".TerrainModifier.Gbx") else { continue };
+        let prefix = format!("{base}\\").to_uppercase();
+        for e in store.entries() {
+            let p = e.path();
+            if p.to_uppercase().starts_with(&prefix) {
+                if let Some(link) = p.strip_suffix(".Material.Gbx") {
+                    out.push(link.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }

@@ -68,6 +68,12 @@ pub struct Merged {
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
     pub no_split: bool,
+    /// The block's material modifier (blockinfo `material_modifier` ->
+    /// `X.TerrainModifier.Gbx` -> folder `…\Modifier\X\`): every material
+    /// link `Stadium\Media\Material\S` whose `S.Material.Gbx` exists in the
+    /// folder is taken from there (PlatformDirt: the dirt-brown
+    /// PlatformTech/TrackWall/Deco…; the gate specials likewise). Full links.
+    pub modifier: Vec<String>,
     pub editors: bool,
     /// The crystal bake built `surf_vertices`/`surf_triangles`/`surf_ids`
     /// itself (per-slot entries, trigger synthesis); skip the shared
@@ -166,6 +172,19 @@ pub fn transform_visual(v: &mut CPlugVisualIndexedTriangles, iso: &Xform, scale:
 impl Merged {
     /// Slot of a game material, adding it when new.
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
+        let modified;
+        let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
+            Some(stem) if !self.modifier.is_empty() => match self.modifier.iter().find(|m| m.rsplit('\\').next() == Some(stem)) {
+                Some(m) => {
+                    modified = m.clone();
+                    modified.as_str()
+                }
+                None => link,
+            },
+            _ => link,
+        };
+        // the modifier's own physics when the table knows it (PlatformDirt\PlatformTech = Dirt 6)
+        let physics = if link.contains("\\Modifier\\") { physics_for_link(link).unwrap_or(physics) } else { physics };
         if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link) && m.physics() == physics) {
             return i;
         }
@@ -1383,6 +1402,7 @@ pub const MATERIAL_PHYSICS: &[(&str, u8)] = &[
     ("Stadium\\Media\\Modifier\\PlatformGrass\\OpenTechBorders", 76),
     ("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech", 76),
     ("Stadium\\Media\\Modifier\\PlatformIce\\DecoHill", 21),
+    ("Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech", 6),
     ("Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech", 74),
     ("Stadium\\Media\\Modifier\\Turbo\\Sign", 32),
     ("Stadium\\Media\\Modifier\\Turbo\\SignOff", 32),

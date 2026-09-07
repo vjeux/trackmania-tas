@@ -183,6 +183,34 @@ fn read_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
         if cid == FACADE {
             break;
         }
+        // CPlugSkel (a Solid2's skeleton: Stadium Grass\Base and the
+        // DecoWallToGrass prefabs hang fence pieces from four "Fences_*"
+        // joints). Version 20: version, name Id, u16 joint count, per joint
+        // {name Id, i16 parent, Iso4}; the 33-byte tail (all-zero counts here)
+        // is not decoded — the walk resumes at the node terminator. The
+        // static item drops the skeleton, so its bytes only need skipping.
+        if class_id == 0x090BA000 && cid == 0x090BA000 {
+            let v = r.u32()?;
+            if v != 20 {
+                return Err(format!("CPlugSkel version {v} (only 20 is read)"));
+            }
+            r.id()?;
+            let n = r.u16()? as usize;
+            for _ in 0..n {
+                r.id()?;
+                r.u16()?;
+                r.floats::<12>()?;
+            }
+            let mut i = r.o;
+            while i + 4 <= r.b.len() && u32::from_le_bytes(r.b[i..i + 4].try_into().unwrap()) != FACADE {
+                i += 1;
+            }
+            if i + 4 > r.b.len() {
+                return Err("CPlugSkel: no node terminator after the joints".into());
+            }
+            r.o = i;
+            continue;
+        }
         if is_skippable_here(r) {
             read_skippable_payload(r, cid)?;
         } else {

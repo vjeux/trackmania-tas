@@ -6,9 +6,12 @@
 set -u
 IFS=, read -r ox oy oz <<< "$1"
 D=$2; H=$3; V=$4; NAME=$5
-tx=$(awk -v a=1584 -v p="$ox" 'BEGIN{printf "%.2f", a+(p-a)*0.5}')
-ty=$(awk -v a=16 -v b=11.5 -v p="$oy" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
-tz=$(awk -v a=784 -v p="$oz" 'BEGIN{printf "%.2f", a+(p-a)*0.5}')
+# ANCHOR="sx,sy,sz:tx,ty,tz" = the source spawn -> tiny anchor `tmmaps tiny` printed
+# (default: Summer 01's 1584,16,784 -> 1584,11.5,784)
+IFS=,: read -r ax ay az bx by bz <<< "${ANCHOR:-1584,16,784:1584,11.5,784}"
+tx=$(awk -v a=$ax -v b=$bx -v p="$ox" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
+ty=$(awk -v a=$ay -v b=$by -v p="$oy" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
+tz=$(awk -v a=$az -v b=$bz -v p="$oz" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
 td=$(awk -v d="$D" 'BEGIN{printf "%.2f", d*0.5}')
 T=/home/vjeux/trackmania-tas-tiny/tools/tmmaps/tiny
 ORIG=${ORIG:-/tmp/Summer-2026-01.Map.Gbx}

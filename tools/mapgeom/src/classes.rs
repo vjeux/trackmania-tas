@@ -321,6 +321,29 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
 
+            // ------------------------------------------ CPlugSkel (0x090BA000)
+            // A Solid2's skeleton (Stadium Grass\Base, DecoWallToGrass\*: four
+            // "Fences_*" joints the fence pieces hang from). Version 20:
+            // version, name Id, u16 joint count, per joint {name Id, i16
+            // parent, Iso4}; the 33-byte tail after the joints (counts and
+            // flags, all zero-length here) is not decoded — the walk
+            // recovers to the node terminator, reported. A static item
+            // carries no skeleton, so nothing of it is needed downstream.
+            0x090BA000 => {
+                let v = self.r.u32()?;
+                if v != 20 {
+                    return Err(format!("CPlugSkel version {v} (only 20 is read)"));
+                }
+                self.r.lookback()?; // name
+                let n = self.r.u16()? as usize;
+                for _ in 0..n {
+                    self.r.lookback()?;
+                    self.r.u16()?;
+                    self.r.iso4()?;
+                }
+                self.recover_to_facade("CPlugSkel tail")
+            }
+
             // ------------------------------------------ CPlugSolid2Model
             0x090BB000 => {
                 acc.touched = true;
