@@ -54,7 +54,9 @@ fi
 if [ $step = plan ] || [ $step = all ]; then
   pull_maps; pull tm-route/geom tm-route/routes tm-route/plan
   mkdir -p $P/plan-cost $P/plan-geometric $P/human-legs
+  # incremental: a map with plan-cost output is skipped unless FORCE_PLAN=1 (or its gates.json is newer)
   for u in $(uids); do f=$(mapfile_of $u); [ -n "$f" ] || continue; [ -f $G/$u/gates.json ] || continue
+    if [ -z "${FORCE_PLAN:-}" ] && [ -f $P/plan-cost/$u.txt ] && [ ! $G/$u/gates.json -nt $P/plan-cost/$u.txt ]; then continue; fi
     ho=$G/$u/human-orders.tsv; [ -f $ho ] || ho=$G/$u/human-orders.unverified.tsv; hoarg=""; [ -f $ho ] && hoarg="--human-orders $ho --legs-out $P/human-legs/$u.tsv"
     for grid in track deco; do
       nice $R/tmplan plan $f --gates $G/$u/gates.json --out-dir $RT --top-k 3 --matrix --quiet --time cost --exact --grid $grid --source router-plan-cost $hoarg > $P/plan-cost/$u.txt 2>&1
