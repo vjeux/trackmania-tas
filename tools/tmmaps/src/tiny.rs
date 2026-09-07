@@ -704,6 +704,31 @@ pub fn cmd(args: &[String]) {
     }
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
+    // The engine's START is not the Spawn-tagged placement or the Start-typed
+    // model: it is the LAST non-Goal waypoint placement in item-file order
+    // (the player project's engine readout on the fp1 set, 2026-09-07: on 17
+    // of 21 maps the car spawned at a checkpoint item's SpawnLoc; swapping
+    // the Spawn record behind the checkpoints fixed 02, putting it first
+    // changed nothing — DEFECTS-fp1.md rows m–r). So the Spawn placement
+    // goes LAST: a converted block's spec moves to the end of the appended
+    // list; an original item's slot (the GateStart items of 15/19/20/25) must
+    // keep its record in place for the lookback table, so it is parked
+    // under the map without its tag and a copy carries the start at the end.
+    // `TINY_START_LAST=0` keeps the source order for A/B.
+    if std::env::var("TINY_START_LAST").map(|v| v != "0").unwrap_or(true) {
+        let idx = specs.iter().position(|s| s.tag.as_deref() == Some("Spawn")).unwrap();
+        if idx >= original_items {
+            let s = specs.remove(idx);
+            specs.push(s);
+        } else {
+            let mut copy = specs[idx].clone();
+            copy.model = specs[idx].model.clone();
+            specs[idx].tag = None;
+            specs[idx].pos = [8.0, -900.0, 8.0];
+            copy.tag = Some("Spawn".to_string());
+            specs.push(copy);
+        }
+    }
 
     // THE START IS THE LAST NON-GOAL WAYPOINT RECORD. The dedicated server (and
     // the game) picks the map's start by ITEM-FILE ORDER, not by the waypoint

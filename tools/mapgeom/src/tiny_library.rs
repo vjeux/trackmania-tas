@@ -266,17 +266,63 @@ fn veget_sink(store: &mut DataStore, orig: &str, sub: &str, scale: f32, cache: &
     if std::env::var("TINY_VEGET_SINK").map(|v| v == "0").unwrap_or(false) {
         return 0.0;
     }
+    // the model's own height: a trunk-only mesh (the Stadium palms: radius
+    // under a metre, the crown is procedural) gets a crown allowance on top —
+    // TINY_VEGET_CROWN metres (default 3): the fronds a half tree would
+    // carry are what the roads must clear
+    fn measured(store: &mut DataStore, name: &str) -> Result<f32, String> {
+        let path = find_item_file(store, name).ok_or_else(|| format!("no item file for {name}"))?;
+        let s = crate::veget::tree_model_stats(store, &path)?;
+        let crown: f32 = std::env::var("TINY_VEGET_CROWN").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+        Ok(if s.radius < 1.0 { s.top + crown } else { s.top })
+    }
+    // a species whose model does not read borrows a sibling's height: the
+    // name without its terrain word (PalmTreeDirtSmall -> PalmTreeSmall),
+    // then without its variant letter/digit (PalmTreeSmallB -> PalmTreeSmallA
+    // -> PalmTreeSmall); a species with no sibling either sinks 0 (noted once)
+    fn siblings(name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for word in ["Dirt", "Grass", "Snow", "Sand", "Rock", "Water", "Ice"] {
+            if name.contains(word) {
+                out.push(name.replacen(word, "", 1));
+            }
+        }
+        let no_digits = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        if no_digits != name {
+            out.push(no_digits.to_string());
+        }
+        if let Some(last) = no_digits.chars().last() {
+            if last.is_ascii_uppercase() && no_digits.len() > 1 {
+                let stem = &no_digits[..no_digits.len() - 1];
+                if last != 'A' {
+                    out.push(format!("{stem}A"));
+                }
+                out.push(stem.to_string());
+            }
+        }
+        out
+    }
     let mut top = |name: &str, store: &mut DataStore, cache: &mut BTreeMap<String, Option<f32>>| -> Option<f32> {
         if let Some(t) = cache.get(name) {
             return *t;
         }
-        let t = find_item_file(store, name).and_then(|path| match crate::veget::tree_model_stats(store, &path) {
-            Ok(s) => Some(s.top),
+        let t = match measured(store, name) {
+            Ok(t) => Some(t),
             Err(e) => {
-                eprintln!("  vegetation: {name}: no height ({e}); not sunk");
-                None
+                let mut borrowed = None;
+                for sib in siblings(name) {
+                    if let Ok(t) = measured(store, &sib) {
+                        eprintln!("  vegetation: {name}: no height of its own ({e}); {sib}'s {t:.2} m used");
+                        borrowed = Some(t);
+                        break;
+                    }
+                }
+                if borrowed.is_none() {
+                    eprintln!("  vegetation: {name}: no height ({e}) and no sibling with one; not sunk");
+                }
+                borrowed
             }
-        });
+        };
         cache.insert(name.to_string(), t);
         t
     };

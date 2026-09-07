@@ -658,7 +658,8 @@ fn main() {
             println!("{p}: {} chunks, {} of {} body bytes read", item.chunks.len(), r.o, m.body.len());
             for c in &item.chunks {
                 let s = format!("{c:?}");
-                let s = if s.len() > 400 { format!("{}…", &s[..400]) } else { s };
+                let cap = std::env::var("MAPGEOM_FIELDS_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(400usize);
+                let s = if s.len() > cap { format!("{}…", &s[..cap]) } else { s };
                 println!("  {s}");
             }
             for (i, e) in &m.externals {

@@ -562,7 +562,7 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
     eprintln!("alphabet of {} fold values, sequences up to {max_len}", alphabet.len());
     // MAPGEOM_FOLD_BUDGET: tries per file before the hunt gives up (a species
     // whose folds the alphabet cannot express must not cost every build minutes)
-    let budget: usize = std::env::var("MAPGEOM_FOLD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(300_000);
+    let budget: usize = std::env::var("MAPGEOM_FOLD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
     for _round in 0..256 {
         let (plain, starts, ok, reach0) = decode(&schedule, n);
         if ok {
@@ -609,7 +609,7 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
         pref.extend(schedule.iter().map(|s| s.2));
         pref.sort();
         pref.dedup();
-        let stages: [(&Vec<u32>, usize); 2] = [(&pref, max_len.max(6)), (&alphabet, max_len.max(1))];
+        let stages: [(&Vec<u32>, usize); 2] = [(&pref, max_len.max(10)), (&alphabet, max_len.max(1))];
         'stages: for (alpha, klimit) in stages {
         for k in 1..=klimit {
             let m = alpha.len();
