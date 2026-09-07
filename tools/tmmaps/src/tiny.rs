@@ -1106,21 +1106,39 @@ pub fn catalog_cmd(args: &[String]) {
     println!("wrote {} ({} blocks x [original, item x1, item x{}]); grid {}", out.display(), grid.len(), scale, tsv_path.display());
 }
 
-/// `tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch M]`: the map
-/// unchanged plus a row of STOCK (pack) items by name — vegetation species —
-/// starting at X,Y,Z, `pitch` metres apart along +x, under author Nadeo. A
-/// species survey in one frame (which SpringTree is green, which is pink),
-/// on the real map so the editor renders it (a parked-block catalog map came
-/// out blank in GreenCoast).
+/// `tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch M]
+/// [--items F.Item.Gbx,G.Item.Gbx]`: the map unchanged plus a row of STOCK
+/// (pack) items by name — vegetation species — starting at X,Y,Z, `pitch`
+/// metres apart along +x, under author Nadeo. A species survey in one frame
+/// (which SpringTree is green, which is pink), on the real map so the editor
+/// renders it (a parked-block catalog map came out blank in GreenCoast).
+/// `--items` continues the row with EMBEDDED item files under their own ident
+/// and author (re-stamped to the map's collection): a stock `Lamp` next to
+/// our baked lamp on a night map is the oracle for the lights work.
 pub fn lineup_cmd(args: &[String]) {
     let src = PathBuf::from(&args[2]);
     let out = PathBuf::from(cli::flag(args, "--out").expect("lineup needs --out MAP"));
-    let list = cli::flag(args, "--stock").expect("lineup needs --stock A,B,C");
+    let list = cli::flag(args, "--stock").unwrap_or("");
     let at = vec3(&cli::flag(args, "--at").expect("lineup needs --at X,Y,Z"), "--at");
     let pitch: f32 = cli::flag(args, "--pitch").unwrap_or("16").parse().expect("--pitch metres");
-    let names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    let mut names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    let n_stock = names.len();
+    // embedded item files: (ident, author, bytes)
+    let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
+    if let Some(files) = cli::flag(args, "--items") {
+        for file in files.split(',').filter(|s| !s.is_empty()) {
+            let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("--items {file}: {e}"));
+            let (ident, author) = crate::header::item_ident_author(&bytes).unwrap_or_else(|| panic!("--items {file}: no item header ident"));
+            names.push(ident.clone());
+            embedded.push((ident, author, bytes));
+        }
+    }
+    if names.is_empty() {
+        panic!("lineup needs --stock A,B,C and/or --items F.Item.Gbx");
+    }
     let source = MapFile::load(&src);
     set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
+    let map_collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     let n = source.items.len();
     let tmp0 = out.with_extension("lineup0.Map.Gbx");
     let mut m = MapFile::load(&src);
@@ -1133,20 +1151,30 @@ pub fn lineup_cmd(args: &[String]) {
         let i = n + k;
         let pos = [at[0] + pitch * k as f32, at[1], at[2]];
         m.set_item_model(i, name);
-        m.set_item_author(i, "Nadeo");
+        let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");
+        m.set_item_author(i, author);
         m.move_item(i, pos, 0.0, cell_for(pos));
         m.set_item_scale(i, 1.0);
         m.clear_item_variant(i);
-        m.set_item_color(i, 0);
-        println!("  {name} at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
+        m.set_item_color(i, if k < n_stock { 0 } else { 1 });
+        println!("  {name} ({author}) at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
     }
     let tmp1 = out.with_extension("lineup1.Map.Gbx");
     m.write_to(&tmp1).expect("write models");
     // variable-length splices (the password chunk) only after a write+reload
     let mut m = MapFile::load(&tmp1);
     m.remove_password();
+    if !embedded.is_empty() {
+        let mut zip: Vec<u8> = Vec::new();
+        for (ident, _, bytes) in &embedded {
+            let bytes = crate::header::set_ident_collection(bytes, map_collection);
+            zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes);
+        }
+        let manifest: Vec<(&str, &str)> = embedded.iter().map(|(id, a, _)| (id.as_str(), a.as_str())).collect();
+        m.replace_embedded_objects(&manifest, &zip);
+    }
     m.write_to(&out).expect("write output");
     let _ = std::fs::remove_file(&tmp0);
     let _ = std::fs::remove_file(&tmp1);
-    println!("wrote {} ({} stock items in a row)", out.display(), names.len());
+    println!("wrote {} ({} stock + {} embedded items in a row)", out.display(), n_stock, embedded.len());
 }

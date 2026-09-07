@@ -41,6 +41,18 @@ pub struct MergedVisual {
     pub material: usize,
 }
 
+/// A light of the source model, ready for the item's Solid2 `lights` list.
+#[derive(Clone, Debug)]
+pub struct MergedLight {
+    /// The socket as the pack Solid2 carried it, its iso (`u05`) moved into
+    /// the item's scaled frame; `node` is filled at assembly.
+    pub socket: super::solid2::Light,
+    /// The CPlugLight (GxLight inline, pack references dropped, scaled).
+    pub light: super::light::CPlugLight,
+    /// The `.Light.Gbx` it came from, for the report.
+    pub source: String,
+}
+
 /// The accumulator.
 #[derive(Clone, Debug, Default)]
 pub struct Merged {
@@ -70,8 +82,15 @@ pub struct Merged {
     /// to the block's item (a DecoLake shore carries hundreds of trees).
     pub veget: Vec<(String, Xform)>,
     /// Light sources the source model carries (Solid2 `lights` +
-    /// `light_insts`), which the static item cannot reproduce.
+    /// `light_insts`): how many were found (report).
     pub lights: usize,
+    /// The lights, ready to embed: each pack socket with its iso composed
+    /// into the item's frame (scaled) and the `.Light.Gbx` it named parsed,
+    /// externals dropped, radii scaled.
+    pub lights_out: Vec<MergedLight>,
+    /// Sockets whose light file is still to be read from the store: (path,
+    /// socket with the composed iso, scale). `resolve_pending_lights` drains it.
+    pub pending_lights: Vec<(String, super::solid2::Light, f32)>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
@@ -381,11 +400,41 @@ impl Merged {
     /// by `iso` and scaled.
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
         let s2 = so.solid2().ok_or("static object without an inline CPlugSolid2Model")?;
-        // Light sources (Solid2 `lights`: external CPlugLight refs with an
-        // Iso4 each — Lamp.Mesh.Gbx carries ItemLampSpot.Light.Gbx) are not
-        // baked: the static item has no light. Counted so the library can
-        // keep the item as a stock light instead (Summer 09 is a night map).
+        // Light sources: a Solid2 `lights` socket = a name, an Iso4 in model
+        // space and (in the packs) an EXTERNAL CPlugLight ref — Lamp.Mesh.Gbx
+        // carries `Stadium\Media\Light\ItemLampSpot.Light.Gbx`. The socket's
+        // iso is composed into the item's frame like a visual's vertices
+        // (rotation kept, translation scaled); the light file is read when
+        // the caller has the store (`resolve_pending_lights`), inline lights
+        // are taken as they are.
         self.lights += s2.lights.len() + s2.light_insts.len();
+        for l in &s2.lights {
+            let mut socket = l.clone();
+            let iso = compose(iso, &l.u05);
+            socket.u05 = iso;
+            for k in 9..12 {
+                socket.u05[k] *= scale;
+            }
+            socket.node = super::null_ref();
+            match l.node.inline.as_deref() {
+                Some(super::Node::Light(light)) if l.u02 => {
+                    let mut light = light.clone();
+                    light.drop_external_refs();
+                    if let Some(super::Node::GxLight(g)) = light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
+                        g.scale(scale);
+                    }
+                    self.lights_out.push(MergedLight { socket, light, source: "(inline)".into() });
+                }
+                _ if l.u02 && l.node.index >= 0 => match resolve(l.node.index) {
+                    Some((path, _, _)) => self.pending_lights.push((path, socket, scale)),
+                    None => self.notes.push(format!("light socket {:?}: external node {} unnamed; light dropped", l.u01, l.node.index)),
+                },
+                _ => self.notes.push(format!("light socket {:?} names no light node ({:?}); dropped", l.u01, l.u04)),
+            }
+        }
+        if !s2.light_user_models.is_empty() {
+            self.notes.push(format!("{} light user models / {} light insts not carried over", s2.light_user_models.len(), s2.light_insts.len()));
+        }
         if self.pre_light_gen.is_none() {
             self.pre_light_gen = s2.pre_light_gen.clone();
         }
@@ -1143,6 +1192,25 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(next, Node::Material(inst))) });
         next += 1;
     }
+    // The source model's lights, each socket pointing at an INLINE CPlugLight
+    // whose GxLight rides inline in turn (two node indices). TINY_LIGHTS=drop
+    // leaves them out (the unlit bake of before 2026-09-07).
+    if std::env::var("TINY_LIGHTS").map(|v| v != "drop").unwrap_or(true) {
+        for ml in &m.lights_out {
+            let mut light = ml.light.clone();
+            match light.gx_mut() {
+                Some(gx) if gx.inline.is_some() => gx.index = next + 1,
+                Some(gx) => *gx = super::null_ref(),
+                None => {}
+            }
+            let mut socket = ml.socket.clone();
+            socket.u02 = true;
+            socket.u04.clear();
+            socket.node = inline(next, Node::Light(light));
+            next += 2;
+            s2.lights.push(socket);
+        }
+    }
     s2.pre_light_gen = Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight));
     s2.file_write_time = m.file_write_time;
     let surface = CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0]);
@@ -1298,6 +1366,7 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     Some((p, link, phys))
                 };
                 m.add_static_object(so, &iso, scale, &mut resolve).map_err(|err| format!("{path} entity {i}: {err}"))?;
+                m.resolve_pending_lights(store);
             }
             // NPlugTrigger_SWaypoint: { version, waypoint type, trigger shape ref,
             // u32 } (read off Items\Gate\CheckpointLeft32m: 01 00 00 00 | 02 00 00
@@ -1629,6 +1698,12 @@ pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, a
                 }
             }
         }
+        // the light sockets' `.Light.Gbx` refs live in the mesh's table too
+        for l in s2.lights.iter_mut() {
+            if l.u02 && l.node.inline.is_none() && l.node.index >= 0 {
+                l.node.index += MESH_OFF;
+            }
+        }
         mesh_ext = mm.externals.clone();
         so.mesh.inline = Some(Box::new(Node::Solid2(s2)));
     }
@@ -1662,7 +1737,51 @@ pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, a
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
         Some((p, link, phys))
     };
-    m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))
+    m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
+    m.resolve_pending_lights(store);
+    Ok(())
+}
+
+/// A `.Light.Gbx` of the packs (`CPlugLight`, class 0x0901D000), its GxLight
+/// inline.
+pub fn load_light(store: &mut crate::store::DataStore, path: &str) -> R<super::light::CPlugLight> {
+    let model = store.load_model(path)?;
+    if model.class_id != super::light::C_PLUG_LIGHT {
+        return Err(format!("{path}: class 0x{:08X} is not CPlugLight", model.class_id));
+    }
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(model.external_indices().iter().copied());
+    let mut r = super::Rd::new(&model.body, 0, lb);
+    super::light::CPlugLight::parse(&mut r).map_err(|e| format!("{path}: {e}"))
+}
+
+impl Merged {
+    /// Read every pending socket's `.Light.Gbx` from the store, drop the
+    /// pack references it carries (flare/projector bitmaps, colour table),
+    /// scale its radii, and queue it for the item's `lights` list.
+    pub fn resolve_pending_lights(&mut self, store: &mut crate::store::DataStore) {
+        for (path, socket, scale) in std::mem::take(&mut self.pending_lights) {
+            match load_light(store, &path) {
+                Ok(mut light) => {
+                    light.drop_external_refs();
+                    match light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
+                        Some(super::Node::GxLight(g)) => g.scale(scale),
+                        _ => {
+                            self.notes.push(format!("{path}: no inline GxLight; light dropped"));
+                            continue;
+                        }
+                    }
+                    let (color, intensity, range) = light.gx_light().map(|g| g.summary()).unwrap_or_default();
+                    self.notes.push(format!(
+                        "light {:?} from {path}: colour [{:.2}, {:.2}, {:.2}] intensity {intensity} range {range} at [{:.2}, {:.2}, {:.2}]",
+                        socket.u01, color[0], color[1], color[2], socket.u05[9], socket.u05[10], socket.u05[11]
+                    ));
+                    self.lights_out.push(MergedLight { socket, light, source: path });
+                }
+                Err(e) => self.notes.push(format!("{path}: light not embedded: {e}")),
+            }
+        }
+    }
 }
 
 /// A `.DynaObject.Gbx` pack file (`CPlugDynaObjectModel`, class 0x09144000:
@@ -1828,6 +1947,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
         Some((p, link, phys))
     };
     let r = m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"));
+    m.resolve_pending_lights(store);
     m.notes.extend(tween_notes);
     r
 }

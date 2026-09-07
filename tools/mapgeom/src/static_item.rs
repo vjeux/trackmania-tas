@@ -36,6 +36,7 @@ pub mod prefab;
 pub mod build;
 pub mod bake;
 pub mod check;
+pub mod light;
 pub mod cli;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
@@ -72,6 +73,9 @@ pub enum Node {
     OldCustom(oldmat::OldCustom),
     Surface(surface::CPlugSurface),
     Placement(item::CGameItemPlacementParam),
+    /// A `CPlugLight` (a Solid2 `lights` socket target) and its `GxLight*`.
+    Light(light::CPlugLight),
+    GxLight(light::GxLight),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
 }
@@ -89,6 +93,8 @@ impl Node {
             Node::OldCustom(_) => C_MATERIAL_CUSTOM,
             Node::Surface(_) => C_SURFACE,
             Node::Placement(_) => C_ITEM_PLACEMENT_PARAM,
+            Node::Light(_) => light::C_PLUG_LIGHT,
+            Node::GxLight(g) => g.class_id,
             Node::Opaque(o) => o.class_id,
         }
     }
@@ -107,6 +113,8 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_MATERIAL_CUSTOM => Node::OldCustom(oldmat::OldCustom::parse(r)?),
         C_SURFACE => Node::Surface(surface::CPlugSurface::parse(r)?),
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
+        light::C_PLUG_LIGHT => Node::Light(light::CPlugLight::parse(r)?),
+        c if light::is_gx_light_class(c) => Node::GxLight(light::GxLight::parse(r, c)?),
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
         // (`classes.rs`) does and kept raw so the entity list stays walkable.
@@ -128,6 +136,8 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::OldCustom(x) => x.write(w),
         Node::Surface(x) => x.write(w),
         Node::Placement(x) => x.write(w),
+        Node::Light(x) => x.write(w),
+        Node::GxLight(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
     }
 }
