@@ -2577,7 +2577,11 @@ unsafe fn forkserver() {
         // (the watchdog, the chain, the finish word, a branch's patches ...):
         // the standby forked before it is stale. End it; the next candidate
         // forks synchronously and pre-forks a fresh one behind itself.
-        if payload[0] != b'R' && payload[0] != b'W' {
+        // 'P' is the exception: the probe forks a child that walks into ITS OWN
+        // protected copy of the array and dies; the parent's state is untouched
+        // (the ENV arm confirmed it, PERF.md §11), so a standby forked before a
+        // probe is still an exact copy.
+        if payload[0] != b'R' && payload[0] != b'W' && payload[0] != b'P' {
             standby_kill();
         }
         if payload[0] == b'Y' {
