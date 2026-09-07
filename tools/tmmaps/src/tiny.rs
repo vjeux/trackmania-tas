@@ -1135,6 +1135,20 @@ pub fn lineup_cmd(args: &[String]) {
         names.push(name);
         variants.push(v);
     }
+    // --place "x,y,z,yaw;x,y,z,yaw;…": one pose per item instead of the row
+    // (the play-mode collision test: pushers on four sides of the spawn)
+    let places: Vec<[f32; 4]> = cli::flag(args, "--place")
+        .map(|s| {
+            s.split(';')
+                .filter(|p| !p.is_empty())
+                .map(|p| {
+                    let v: Vec<f32> = p.split(',').map(|x| x.trim().parse().expect("--place x,y,z,yaw")).collect();
+                    assert_eq!(v.len(), 4, "--place wants x,y,z,yaw per item");
+                    [v[0], v[1], v[2], v[3]]
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let n_stock = names.len();
     // embedded item files: (ident, author, bytes)
     let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -1162,7 +1176,10 @@ pub fn lineup_cmd(args: &[String]) {
     m.set_map_uid(&format!("Lin1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000));
     for (k, name) in names.iter().enumerate() {
         let i = n + k;
-        let pos = [at[0] + pitch * k as f32, at[1], at[2]];
+        let (pos, yaw) = match places.get(k) {
+            Some(p) => ([p[0], p[1], p[2]], p[3]),
+            None => ([at[0] + pitch * k as f32, at[1], at[2]], yaw),
+        };
         m.set_item_model(i, name);
         let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");
         m.set_item_author(i, author);
@@ -1178,12 +1195,15 @@ pub fn lineup_cmd(args: &[String]) {
     let mut m = MapFile::load(&tmp1);
     m.remove_password();
     if !embedded.is_empty() {
+        // the same file placed several times is ONE archive entry / manifest row
+        let mut seen: Vec<&str> = Vec::new();
+        let unique: Vec<&(String, String, Vec<u8>)> = embedded.iter().filter(|(id, _, _)| if seen.contains(&id.as_str()) { false } else { seen.push(id.as_str()); true }).collect();
         let mut zip: Vec<u8> = Vec::new();
-        for (ident, _, bytes) in &embedded {
+        for (ident, _, bytes) in &unique {
             let bytes = crate::header::set_ident_collection(bytes, map_collection);
             zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes);
         }
-        let manifest: Vec<(&str, &str)> = embedded.iter().map(|(id, a, _)| (id.as_str(), a.as_str())).collect();
+        let manifest: Vec<(&str, &str)> = unique.iter().map(|(id, a, _)| (id.as_str(), a.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);
     }
     m.write_to(&out).expect("write output");

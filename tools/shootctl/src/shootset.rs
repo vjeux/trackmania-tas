@@ -196,6 +196,13 @@ pub fn run(args: &[String]) -> i32 {
 /// Re-run this very command without `--detach`, its output in the set's log,
 /// in its own process group so the bridge's timeout cannot take it down.
 fn detach(opts: &Opts) -> i32 {
+    detach_as(&opts.outdir.join(format!("shootset-{}.log", opts.side)), &opts.outdir.join(format!("done-{}.txt", opts.side)))
+}
+
+/// Re-run this very command without `--detach`, its output in `log`, in its
+/// own process group so the bridge's timeout cannot take it down; `done` is
+/// the file the detached run writes last (named here for the message only).
+pub fn detach_as(log: &Path, done: &Path) -> i32 {
     use std::os::unix::process::CommandExt;
     let exe = match std::env::current_exe() {
         Ok(e) => e,
@@ -205,8 +212,7 @@ fn detach(opts: &Opts) -> i32 {
         }
     };
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--detach").collect();
-    let log = opts.outdir.join(format!("shootset-{}.log", opts.side));
-    let out = match std::fs::File::create(&log) {
+    let out = match std::fs::File::create(log) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}: {e}", log.display());
@@ -223,7 +229,7 @@ fn detach(opts: &Opts) -> i32 {
         .spawn()
     {
         Ok(child) => {
-            println!("detached pid {} — log {} — done file {}", child.id(), log.display(), opts.outdir.join(format!("done-{}.txt", opts.side)).display());
+            println!("detached pid {} — log {} — done file {}", child.id(), log.display(), done.display());
             0
         }
         Err(e) => {
@@ -378,9 +384,14 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
-struct LockGuard {
+pub struct LockGuard {
     dir: PathBuf,
     owner: String,
+}
+impl LockGuard {
+    pub fn new(dir: PathBuf, owner: String) -> LockGuard {
+        LockGuard { dir, owner }
+    }
 }
 impl Drop for LockGuard {
     fn drop(&mut self) {
@@ -391,7 +402,7 @@ impl Drop for LockGuard {
 /// Copy the map under `Maps/_shoot/` unless it is already there. The copy goes
 /// through a plain write so a OneDrive lock on a chunk file cannot leave a
 /// half-written map behind under a good name.
-fn stage_map(map: &str) -> Result<String, String> {
+pub fn stage_map(map: &str) -> Result<String, String> {
     let wsl = if let Some(rest) = map.strip_prefix("C:/") { format!("/mnt/c/{rest}") } else { map.to_string() };
     if wsl.starts_with(MAPS_SHOOT) {
         return Ok(wsl);
@@ -471,7 +482,7 @@ fn probe(nonce: usize) -> Result<String, String> {
 
 /// One DPI-aware capture of the whole screen into `file` (a WSL path under
 /// /mnt/c, handed to PowerShell as `C:\...`).
-fn screenshot(file: &Path) -> Result<(), String> {
+pub fn screenshot(file: &Path) -> Result<(), String> {
     let win = super::game_path(file.to_str().ok_or("screenshot path is not utf-8")?)?.replace('/', "\\");
     let status = std::process::Command::new(POWERSHELL)
         .args(["-ExecutionPolicy", "Bypass", "-File", SHOTDPI, &win])

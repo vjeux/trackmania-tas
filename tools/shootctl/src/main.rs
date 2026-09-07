@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 mod host;
 use host::plugin_addrs;
 mod lock;
+mod playshots;
 mod shootset;
 
 use std::sync::OnceLock;
@@ -1020,6 +1021,12 @@ usage:
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
         maps the camera through the tiny anchor at half the distance.
         --detach returns at once; DIR/done-<side>.txt appears when finished.
+  shootctl playshots --map MAP --outdir /mnt/c/DIR [--tag T] [--shots 4] [--every-ms 3000]
+                    [--first-ms 4000] [--timeout S] [--detach]
+        open the map in PLAY mode (a playground, the car at the start) under the
+        lock and take N timed screenshots DIR/play-<T>-<k>.png — does a moving
+        item's collision move (pushers around the spawn shove the car)?
+        --detach as above; DIR/done-play.txt appears when finished.
 "#);
         std::process::exit(0);
     }
@@ -1114,6 +1121,9 @@ usage:
         }
         // EVERY COMPARISON VIEW OF ONE MAP FOR ONE EDITOR LOAD. shootset.rs.
         "shootset" => shootset::run(&args[1..]),
+        // PLAY-mode timed screenshots under the lock: does a moving item's
+        // collision move (pushers around the spawn shove the car)? playshots.rs.
+        "playshots" => playshots::run(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
             let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);
