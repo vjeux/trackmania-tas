@@ -1109,6 +1109,11 @@ struct Timing {
     census_minflt: u64,
     census_rss_kb: u64,
     census_pdirty_kb: u64,
+    /// Pages of the heap this child alone maps (written or allocated since the
+    /// fork), and how many distinct 2 MB regions they fall in -- what
+    /// transparent huge pages would copy.
+    census_heap_dirty_pages: u64,
+    census_heap_regions_2m: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -2013,9 +2018,56 @@ unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
 /// has seen the marker sees them.
 pub const EXIT_MARK: &[u8] = b"\nFKEXIT\n";
 
+
+/// Soft-dirty pages of this process's `[heap]` mapping and the number of
+/// distinct 2 MB-aligned regions they fall in. Measurement mode only.
+unsafe fn heap_soft_dirty() -> Option<(u64, u64)> {
+    heap_soft_dirty_of(getpid())
+}
+
+/// The same, for another process this user owns (a live child).
+unsafe fn heap_soft_dirty_of(pid: c_int) -> Option<(u64, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).ok()?;
+    let line = maps.lines().find(|l| l.ends_with("[heap]"))?;
+    let range = line.split_whitespace().next()?;
+    let (lo, hi) = range.split_once('-')?;
+    let lo = usize::from_str_radix(lo, 16).ok()?;
+    let hi = usize::from_str_radix(hi, 16).ok()?;
+    let mut f = std::fs::File::open(format!("/proc/{}/pagemap", pid)).ok()?;
+    let npages = (hi - lo) / 4096;
+    f.seek(SeekFrom::Start((lo / 4096 * 8) as u64)).ok()?;
+    let mut buf = vec![0u8; npages * 8];
+    f.read_exact(&mut buf).ok()?;
+    let mut pages = 0u64;
+    let mut regions = std::collections::BTreeSet::new();
+    for i in 0..npages {
+        let e = u64::from_le_bytes(buf[i * 8..i * 8 + 8].try_into().unwrap());
+        // Bit 56, "exclusively mapped": a page only this process maps -- for
+        // a fork child, one it has written (COW) or allocated since the fork.
+        // (Bit 55, soft-dirty, needs CONFIG_MEM_SOFT_DIRTY, which this kernel
+        // does not have.)
+        if e & (1 << 63) != 0 && e & (1 << 56) != 0 {
+            pages += 1;
+            regions.insert((lo + i * 4096) >> 21);
+        }
+    }
+    Some((pages, regions.len() as u64))
+}
+
 /// `_exit(0)` for a child whose answer is in the shared pages: mark, then go.
 unsafe fn leave(fd: c_int) -> ! {
     if CENSUS.load(Ordering::Relaxed) != 0 {
+        // THE HEAP'S DIRTY PAGES, by 2 MB region: the number THP would have to
+        // copy on write for this candidate. Soft-dirty bits (pagemap bit 55),
+        // cleared at the candidate's start.
+        if let Some((pages, regions)) = heap_soft_dirty() {
+            let t = timing();
+            if !t.is_null() {
+                (*t).census_heap_dirty_pages = pages;
+                (*t).census_heap_regions_2m = regions;
+            }
+        }
         // Measurement mode only: the parent cannot read /proc of a child that
         // is already gone, so the child counts itself before it goes.
         if let Some((m, r, d)) = child_census(getpid()) {
@@ -2078,6 +2130,13 @@ unsafe fn apply_candidate(payload: &[u8], base: usize) {
     let tp = timing();
     if !tp.is_null() {
         (*tp).child_us = now_us();
+    }
+    if CENSUS.load(Ordering::Relaxed) != 0 {
+        // Measurement mode: forget every accessed bit and every soft-dirty
+        // bit, so what is read at `leave` says which pages THIS candidate
+        // touched and wrote.
+        let _ = std::fs::write("/proc/self/clear_refs", b"1");
+        let _ = std::fs::write("/proc/self/clear_refs", b"4");
     }
     let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
     for i in 0..n {
@@ -2175,6 +2234,48 @@ static CENSUS: AtomicUsize = AtomicUsize::new(0);
 /// `None` if the child is already gone.
 unsafe fn child_census(pid: c_int) -> Option<(u64, u64, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    if let Some((pages, regions)) = heap_soft_dirty_of(pid) {
+        let t = timing();
+        if !t.is_null() {
+            (*t).census_heap_dirty_pages = pages;
+            (*t).census_heap_regions_2m = regions;
+        }
+    }
+    // Per mapping, for `fk`: `start-end perms offset dev inode path|size_kb|referenced_kb|private_dirty_kb`.
+    if let Ok(s) = std::fs::read_to_string(format!("/proc/{}/smaps", pid)) {
+        let mut out = String::new();
+        let (mut cur, mut size, mut refd, mut dirty) = (String::new(), 0u64, 0u64, 0u64);
+        let flush = |out: &mut String, cur: &str, size: u64, refd: u64, dirty: u64| {
+            if !cur.is_empty() {
+                out.push_str(&format!("{}|{}|{}|{}\n", cur, size, refd, dirty));
+            }
+        };
+        for line in s.lines() {
+            let b = line.as_bytes();
+            let head = line.split_whitespace().next().unwrap_or("");
+            let is_header = !b.is_empty()
+                && head.contains('-')
+                && head.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+            if is_header {
+                flush(&mut out, &cur, size, refd, dirty);
+                cur = line.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
+                size = 0;
+                refd = 0;
+                dirty = 0;
+            } else {
+                let v = || line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                if line.starts_with("Size:") {
+                    size = v();
+                } else if line.starts_with("Referenced:") {
+                    refd = v();
+                } else if line.starts_with("Private_Dirty:") {
+                    dirty = v();
+                }
+            }
+        }
+        flush(&mut out, &cur, size, refd, dirty);
+        let _ = std::fs::write(format!("/tmp/fkcensus_{}.txt", pid), out);
+    }
     // field 10 (1-based) is minflt; the comm field may contain spaces, so count
     // from the closing parenthesis.
     let after = &stat[stat.rfind(')')? + 2..];
@@ -3671,6 +3772,10 @@ unsafe fn forkserver() {
                 out.extend_from_slice(b" pdirty_kb ");
                 utoa(pdirty_kb, &mut out);
                 if !tp.is_null() {
+                    out.extend_from_slice(b" heap_dirty_pages ");
+                    utoa((*tp).census_heap_dirty_pages, &mut out);
+                    out.extend_from_slice(b" heap_regions_2m ");
+                    utoa((*tp).census_heap_regions_2m, &mut out);
                     out.extend_from_slice(b" gap_big ");
                     utoa((*tp).gap_big, &mut out);
                     out.extend_from_slice(b" gap_excess_us ");

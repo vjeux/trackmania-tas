@@ -296,10 +296,16 @@ which 3.54 ms is the 119 ticks of physics.
   of the 66 ms of ticks, ~1.2 µs of the 29.4 µs/tick. Not a lever.
 * Transparent huge pages (this box: `madvise` mode, so `MADV_HUGEPAGE` +
   `MADV_COLLAPSE` would be allowed) would cut the page-table copy — which the
-  standby has already taken off the critical path — and turn every one of
-  those ≥ 3000 dirtied 4 KB pages into a 2 MB copy-on-write. 11.8 MB dirtied
-  in small pages spread over the heap is tens to hundreds of 2 MB regions;
-  the arithmetic says slower, so it is not tried.
+  standby has already taken off the critical path — and turn every dirtied
+  4 KB page into a 2 MB copy-on-write. MEASURED (pagemap bit 56, "exclusively
+  mapped", per heap page at the child's exit; `FKSHIM_CENSUS=1`, the
+  `heap pages written` line of `fk ladder check`/`watched`): a full
+  candidate through the validator writes 2849 heap pages in **44 distinct
+  2 MB regions** (THP would copy 88 MB instead of 11 MB); a watched candidate
+  from tick 171, physics only, 368 pages in **21.7 regions** (43 MB vs
+  1.4 MB); a 119-tick candidate from tick 2313, 133 pages in **20 regions**
+  (40 MB vs 0.5 MB). Twenty 2 MB copies are ~4 ms against a 1.4 ms fork:
+  THP loses on every shape of candidate, and is not used.
 * `MADV_DONTFORK` on never-touched regions would save page-table copying
   only, which is no longer on the path, at the price of a SIGSEGV the first
   time a candidate touches a region the census never saw. Not tried.
@@ -580,3 +586,15 @@ hello delays the hello by the fork, after the probe it is still in flight when
 the `'B'` arrives. It pays only for pinned nodes and the ladder's rungs, which
 the R/W standby already serves. `'P'` no longer kills a standby (the probe
 child is its own copy; the parent is untouched — the ENV arm confirmed).
+
+**Two more small ones after the table above.** The driver's `Tree::accept`
+slept 200 µs between attempts while waiting for a node's hello; it now `poll`s
+the listener: reply → hello 0.71 → 0.54 ms at k = 10, a k = 10 branch
+**2.11 → 2.0 ms** (fit 1.9 ms + 12–14 µs/tick). And the fork itself, 1.45 ms
+of the 2.0, was costed for huge pages with the heap census of §3.3: a k-tick
+child writes 130–370 heap pages spread over 20–22 distinct 2 MB regions, so
+THP would trade the 1.4 ms fork for ~40 MB of copy-on-write per branch — no.
+`MADV_DONTFORK` on the never-written parts of the heap would save most of the
+fork, at the price of a dead child the first time a map or a tape touches a
+region the census never saw; the census tool is there (`heap pages written`)
+if the ENV arm ever wants to weigh that.

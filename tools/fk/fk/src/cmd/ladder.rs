@@ -121,6 +121,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     let mut root_ms = Vec::with_capacity(o.n);
     let mut root_census = Vec::with_capacity(o.n);
     let mut root_gaps = Vec::with_capacity(o.n);
+    let mut root_heap = Vec::with_capacity(o.n);
     for (_, inp, _) in &cands {
         let t0 = Instant::now();
         let out = s.srv.run(from, &records_from(&inp.steer_u8(), &inp.gas_u8(), &inp.brake_u8(), from));
@@ -128,6 +129,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         root_res.push(parse_result(&out));
         root_census.push(census_of(&out));
         root_gaps.push(gaps_of(&out));
+        root_heap.push(heap_of(&out));
     }
 
     // THE LADDER: the same candidates, in the same order, each from the deepest
@@ -141,6 +143,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     let mut lad_at = Vec::with_capacity(o.n);
     let mut lad_census = Vec::with_capacity(o.n);
     let mut lad_gaps = Vec::with_capacity(o.n);
+    let mut lad_heap = Vec::with_capacity(o.n);
     let mut prep_ms = 0.0f64;
     for (_, inp, first) in &cands {
         let t0 = Instant::now();
@@ -152,6 +155,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         lad_res.push(parse_result(&out));
         lad_census.push(census_of(&out));
         lad_gaps.push(gaps_of(&out));
+        lad_heap.push(heap_of(&out));
         lad_at.push(at);
     }
     let st = ladder.stats();
@@ -279,6 +283,12 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
             r.0, r.1, r.2, l.0, l.1, l.2
         );
     }
+    if let (Some(r), Some(l)) = (census_mean(&root_heap), census_mean(&lad_heap)) {
+        println!(
+            "heap pages written (soft-dirty): a root child {:.0} pages in {:.1} distinct 2 MB regions; a ladder child {:.0} pages in {:.1} regions -- what THP would copy: {:.0} MB vs {:.1} MB",
+            r.0, r.1, l.0, l.1, r.1 * 2.0, r.0 * 4.0 / 1024.0
+        );
+    }
     drop(ladder);
     s.srv.quit();
     Ok(bad == 0 && unstable == 0 && past_end_split == 0)
@@ -388,10 +398,12 @@ pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> R
 
     // Root, watched.
     let mut root: Vec<(Option<i64>, Vec<u8>, f64)> = Vec::with_capacity(o.n);
+    let mut root_heap = Vec::with_capacity(o.n);
     for (inp, _) in &cands {
         let t0 = Instant::now();
         let (j, b) = s.srv.run_watched(from, &records_from(&inp.steer_u8(), &inp.gas_u8(), &inp.brake_u8(), from));
         let dt = t0.elapsed().as_secs_f64() * 1000.0;
+        root_heap.push(heap_of(&j));
         root.push((outcome(&j, &b).time, b, dt));
     }
     // Ladder, watched, warm nodes.
@@ -447,6 +459,12 @@ pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> R
             }
         }
     }
+    if let Some(r) = census_mean(&root_heap) {
+        println!(
+            "heap pages written by a watched root child (physics only, no epilogue): {:.0} pages in {:.1} distinct 2 MB regions -- THP would copy {:.0} MB per candidate instead of {:.1} MB",
+            r.0, r.1, r.1 * 2.0, r.0 * 4.0 / 1024.0
+        );
+    }
     println!(
         "watched equivalence: {}/{} candidates with IDENTICAL time and byte-identical {}-byte summary ({} tripped, {} finished, {} forked deeper than the root), {} DIFFERENT",
         same, o.n, SUMMARY_BYTES, trips, finished, deep, diff
@@ -475,6 +493,16 @@ fn census_of(out: &str) -> Option<(u64, u64, u64)> {
         line[i..].split_whitespace().next()?.parse().ok()
     };
     Some((f(" minflt ")?, f(" rss_kb ")?, f(" pdirty_kb ")?))
+}
+
+/// The heap's soft-dirty pages and their 2 MB regions, beside the census.
+fn heap_of(out: &str) -> Option<(u64, u64, u64)> {
+    let line = out.lines().find(|l| l.contains(" heap_dirty_pages "))?;
+    let f = |k: &str| -> Option<u64> {
+        let i = line.find(k)? + k.len();
+        line[i..].split_whitespace().next()?.parse().ok()
+    };
+    Some((f(" heap_dirty_pages ")?, f(" heap_regions_2m ")?, 0))
 }
 
 /// The inter-tick gap fields beside the census: `(gap_big, gap_excess_us, gap_max_us)`.

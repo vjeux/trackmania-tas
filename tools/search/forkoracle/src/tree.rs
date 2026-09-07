@@ -51,7 +51,15 @@ use std::os::raw::c_int;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
 extern "C" {
+    fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
     fn kill(pid: c_int, sig: c_int) -> c_int;
 }
 const SIGKILL: c_int = 9;
@@ -103,7 +111,8 @@ impl Tree {
             match self.listener.accept() {
                 Ok((s, _)) => break s,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
                         return Err(format!(
                             "no branch node connected within {} ms -- the child either never \
                              reached its stop point or could not reach {}",
@@ -111,7 +120,16 @@ impl Tree {
                             self.path.display()
                         ));
                     }
-                    std::thread::sleep(std::time::Duration::from_micros(200));
+                    // Wait for the connection itself, not for a timer: this used
+                    // to sleep 200 us between attempts, which put up to 200 us
+                    // (and the scheduler's slack) between a node's hello and
+                    // the driver seeing it, on every branch (PERF.md §11).
+                    let left = (deadline - now).as_millis().min(i32::MAX as u128) as i32;
+                    unsafe {
+                        use std::os::fd::AsRawFd;
+                        let mut p = PollFd { fd: self.listener.as_raw_fd(), events: 1, revents: 0 };
+                        poll(&mut p, 1, left.max(1));
+                    }
                 }
                 Err(e) => return Err(format!("accept: {}", e)),
             }
