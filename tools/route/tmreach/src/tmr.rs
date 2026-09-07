@@ -284,7 +284,7 @@ mod tests {
 /// equals the record's `end`), for a chained-step model of intermediate
 /// reachability (coordinator's ask, 2026-09-07 05:41Z). Kept apart so the
 /// TMR0 record layout the MODEL arm reads is untouched.
-///   header: magic `TMP4`, version u32 = 1, count u64, points u8 = 4, point_bytes u8 = 28, pad [u8; 2]
+///   header (24 bytes): magic `TMP4`, version u32 = 1, count u64, points u8 = 4, point_bytes u8 = 28, pad [u8; 6]
 ///   per record: 4 × { race_ms i32, pos [f32; 3], vel [f32; 3] }  (112 bytes)
 /// A record with no rows at a point (human legs: sampled along the leg the
 /// same way) still carries 4 points.
@@ -334,7 +334,7 @@ impl Path4Writer {
         h.extend_from_slice(&0u64.to_le_bytes());
         h.push(TMP4_POINTS as u8);
         h.push(TMP4_POINT_BYTES as u8);
-        h.extend_from_slice(&[0u8; 2]);
+        h.extend_from_slice(&[0u8; 6]);
         std::io::Write::write_all(&mut f, &h).map_err(|e| e.to_string())?;
         Ok(Path4Writer { f, path: path.to_path_buf(), count: 0, buf: Vec::with_capacity(1 << 16) })
     }
