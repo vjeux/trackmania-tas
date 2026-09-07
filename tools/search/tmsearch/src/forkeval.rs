@@ -282,8 +282,31 @@ impl ForkEval {
         // Addresses are re-derived in THIS process, every time: the server is
         // PIE and its heap is bimodal, so five consecutive runs give five
         // different addresses. A failure is an abort, never a guess.
-        let layout = locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
-            .map_err(|e| format!("the car's state was not located: {}", e))?;
+        //
+        // ASK THE ENGINE, do not sweep for it. `locate_fast` reads the car out
+        // of the validator's own object and scans the paused parent for that
+        // exact position -- 0.2 s, where the blind sweep it replaces costs 3.6 s
+        // PER WORKER (37 forks, one per 64 KB window) and can be fooled by a
+        // stationary decoy. The sweep stays as the fallback for a server whose
+        // validator callback was never captured, and it is bounded there by the
+        // reference line as before.
+        // FK_FAST_LOCATE=1 selects `forkoracle::car::locate_fast` -- 0.2 s where
+        // this sweep costs 3.6 s per worker. It is NOT the default, and the
+        // reason is a measurement, not caution: with it the watchdog stopped
+        // tripping (4 of 8 candidates aborted before, 0 after) and the search
+        // ran 5.8x faster with 0 % finishers. The object it picks passes
+        // `fk trace`'s 3 mm control against ghost telemetry, and that trace's
+        // own quaternion and velocity self-checks, so its position, attitude
+        // and velocity are right -- something else the predicates read is not,
+        // and until that is named this path keeps the locator its numbers were
+        // measured with.
+        let layout = if std::env::var("FK_FAST_LOCATE").is_ok() {
+            forkoracle::car::locate_fast(&mut srv, from, &lrecs, false)
+                .map_err(|e| format!("the car's state was not located: {}", e))?
+        } else {
+            locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
+                .map_err(|e| format!("the car's state was not located: {}", e))?
+        };
 
         let ack = srv.arm(&watch.arm_payload(
             layout.clock_bias + s.start_offset_ms as i64,

@@ -467,34 +467,203 @@ pub fn locate_v2(
         }
         return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0 });
     }
-    // THE CAR COMES FROM THE POINTER, not from a sweep.
+    // THE CAR COMES FROM THE POINTER, not from a sweep -- and WHICH pointer is
+    // decided by the validator's own car, not by whichever chain resolves.
     //
-    // This used to call `locate_pos2`, which forked the engine once per memory
-    // window hunting for a self-consistent moving float triple and then took
-    // the fastest one -- a heuristic that picked a decoy on 126859 and needed
-    // the caller's own self-check to catch it. The engine has a pointer to the
-    // car; ask it.
-    let chain = std::env::var("FK_CAR_CHAIN")
-        .unwrap_or_else(|_| crate::ptr::DEFAULT_CHAIN.to_string());
+    // This used to take `DEFAULT_CHAIN` and trust whatever it resolved to. Two
+    // things were wrong with that. `mod+0x1d56e48` holds the address of a STACK
+    // FRAME, so on a map where that frame is gone the walk dereferences null and
+    // every `fk trace` on the map died with "the chain is stale" -- map 2 did,
+    // for months. And a chain that DOES resolve was believed with no test that
+    // it named this run's car: chains are per (binary, map), and the older
+    // `locate_pos2` sweep this replaced had already been caught picking a decoy.
+    //
+    // So: the validator's ownership chain (typed, no search, `VALIDATOR_CAR.md`)
+    // says where the car IS, and every candidate chain is checked against it.
+    // The object stays the VIS STATE -- the one whose +0x50 anchor, +180
+    // wetness and one-tick-later labelling are what the 3.4 mm agreement with
+    // ghost telemetry was measured on -- so this changes which pointer is
+    // trusted, never which object is read.
+    // FK_FAST_LOCATE=1: ask the engine where the car is and scan the paused
+    // parent for the vis state that lags it by a tick -- 0.2 s against this
+    // ladder's 0.6 s and the blind sweep's 3.6 s. Off by default: it picks an
+    // object that passes `fk trace`'s 3 mm control but changes how the
+    // watchdog behaves, and that is not explained yet.
+    if std::env::var("FK_FAST_LOCATE").is_ok() {
+        if let Ok(l) = forkoracle::car::locate_fast(srv, probe, recs, verbose) {
+            return Ok(l);
+        }
+    }
+    let truth_pos = forkoracle::car::validator_chain(srv)
+        .map_err(|e| format!("the validator's own car did not resolve: {}", e))?
+        .pos;
+    let _ = bounds;
     let (m, _) = crate::ptr::module_base(srv.pid())
         .ok_or("no module base for the live server")?;
-    let states = crate::ptr::resolve_pool(srv.pid(), m, &chain)
-        .map_err(|e| format!("the car chain {} did not resolve: {}", chain, e))?;
-    let pos = states
-        .first()
-        .map(|s| s + crate::vislayout::POS_IN_STATE as u64)
-        .ok_or_else(|| format!("the chain {} named no vehicle state", chain))?;
-    if verbose {
-        println!("STATE {:#014x} via {} ({} vehicle state(s))", pos, chain, states.len());
+    let mut tried: Vec<String> = Vec::new();
+    let chains: Vec<String> = match std::env::var("FK_CAR_CHAIN") {
+        Ok(c) => vec![c],
+        Err(_) => std::iter::once(crate::ptr::DEFAULT_CHAIN)
+            .chain(crate::ptr::CAR_CHAINS.iter().copied())
+            .map(|s| s.to_string())
+            .collect(),
+    };
+    for chain in &chains {
+        let states = match crate::ptr::resolve_pool(srv.pid(), m, chain) {
+            Ok(s) => s,
+            Err(e) => {
+                tried.push(format!("{}: {}", chain, e));
+                continue;
+            }
+        };
+        for s in states {
+            let pos = s + crate::vislayout::POS_IN_STATE as u64;
+            match tracks_the_car(srv, probe, recs, pos, truth_pos) {
+                Ok(d) => {
+                    if verbose {
+                        println!(
+                            "STATE {:#014x} via {} (tracks the validator's own car, {:.4} m)",
+                            pos, chain, d
+                        );
+                    }
+                    return Ok(Layout {
+                        pos,
+                        clock: ck.addr,
+                        clock_bias: ck.bias,
+                        rms: d,
+                        max_dev: 0.0,
+                    });
+                }
+                Err(why) => tried.push(format!("{} -> {:#x}: {}", chain, pos, why)),
+            }
+        }
     }
-    let _ = (recs, bounds, max_windows, probe);
+    // Every chain missed: sweep, but bounded by the validator's car rather than
+    // by the map. That is what makes the fallback safe -- the decoys that beat
+    // the old sweep were 1192 m and 1624 m away.
+    let want = read_xyz(srv.pid(), truth_pos).ok_or("the validator's car could not be read")?;
+    if verbose {
+        println!(
+            "no chain tracks this run's car ({} tried); sweeping within {} m of it",
+            tried.len(),
+            CAR_SWEEP_M
+        );
+        for t in tried.iter().take(6) {
+            println!("  {}", t);
+        }
+    }
+    let b = (
+        want.0 - CAR_SWEEP_M,
+        want.0 + CAR_SWEEP_M,
+        want.1 - CAR_SWEEP_M,
+        want.1 + CAR_SWEEP_M,
+        want.2 - CAR_SWEEP_M,
+        want.2 + CAR_SWEEP_M,
+    );
+    let hit = locate_pos2(srv, probe, recs, ck.addr, b, max_windows, verbose)?;
+    let d = tracks_the_car(srv, probe, recs, hit.pos, truth_pos)
+        .map_err(|e| format!("the swept state does not track the validator's own car: {}", e))?;
     Ok(Layout {
-        pos,
+        pos: hit.pos,
         clock: ck.addr,
         clock_bias: ck.bias,
-        rms: 0.0,
+        rms: d,
         max_dev: 0.0,
     })
+}
+
+/// The box the fallback sweep may look in, around the validator's car.
+const CAR_SWEEP_M: f64 = 200.0;
+/// How many ticks a candidate must track the validator's car for.
+const TRACK_TICKS: u32 = 24;
+
+/// Does the state at `pos` HOLD THE CAR — not merely sit where the car is?
+///
+/// A one-instant distance test cannot fail usefully, and this is not
+/// hypothetical: the first version of this check accepted a chain 0.1034 m from
+/// the validator's car on map 2, and the object turned out to be a FROZEN COPY
+/// parked at the checkpoint position. It matched at the instant it was measured
+/// and never moved again — 463 m of median error against the reference, caught
+/// only by the caller's own self-check afterwards.
+///
+/// So the test is over TIME, and against the one object whose identity is not
+/// in question: simulate `TRACK_TICKS` ticks, gathering the candidate and the
+/// validator's own car in the same sample, and require
+///
+/// * the candidate to stay within a tick of travel of the car at every sample
+///   (the vis state and the CGameVehiclePhy are one tick apart, so the bar is
+///   the car's own speed, not a constant), and
+/// * the candidate to travel the same distance the car travels (within 10 %) —
+///   which is what a frozen copy fails, and it fails it by the whole distance.
+fn tracks_the_car(
+    srv: &mut ForkServer,
+    probe: usize,
+    recs: &[Rec],
+    pos: u64,
+    truth: u64,
+) -> Result<f64, String> {
+    let segs = [(pos, 12u32), (truth, 12u32)];
+    let keep = ((TRACK_TICKS as usize) + 8).min(recs.len());
+    let (_j, blob) = srv.run_sampled_segs_ex(
+        probe,
+        &recs[..keep],
+        &segs,
+        1,
+        TRACK_TICKS | EXIT_ON_BUDGET,
+        (0, 24), // dedup on the whole record: one sample per distinct state
+        budget_for(TRACK_TICKS + 4),
+    );
+    let recsz = 8 + 24usize;
+    let n = blob.len() / recsz;
+    if n < 8 {
+        return Err(format!("only {} samples", n));
+    }
+    let xyz = |i: usize, o: usize| -> (f64, f64, f64) {
+        let b = &blob[i * recsz + 8 + o..];
+        let f = |k: usize| f32::from_le_bytes(b[k..k + 4].try_into().unwrap()) as f64;
+        (f(0), f(4), f(8))
+    };
+    let mut worst = 0.0f64;
+    let mut worst_bar = 0.0f64;
+    let (mut cand_travel, mut car_travel) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let (c, t) = (xyz(i, 0), xyz(i, 12));
+        let d = dist(c, t);
+        if i > 0 {
+            let step = dist(xyz(i - 1, 12), t);
+            car_travel += step;
+            cand_travel += dist(xyz(i - 1, 0), c);
+            // one tick of the car's own travel, plus float slack
+            let bar = step + 0.05;
+            if d > bar && d - bar > worst - worst_bar {
+                worst = d;
+                worst_bar = bar;
+            }
+        }
+    }
+    if worst > worst_bar {
+        return Err(format!(
+            "{:.1} m from the car at one sample (a tick of travel is {:.2} m)",
+            worst, worst_bar
+        ));
+    }
+    if car_travel > 1.0 && (cand_travel - car_travel).abs() > 0.1 * car_travel {
+        return Err(format!(
+            "travelled {:.1} m while the car travelled {:.1} m -- not the same object",
+            cand_travel, car_travel
+        ));
+    }
+    Ok(worst)
+}
+
+fn read_xyz(pid: i32, at: u64) -> Option<(f64, f64, f64)> {
+    let b = forkoracle::procmem::read_at(pid, at, 12)?;
+    let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as f64;
+    Some((f(0), f(4), f(8)))
+}
+
+fn dist(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
 }
 
 /// Extract the whole trajectory with a located layout, one row per tick.

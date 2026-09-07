@@ -1077,10 +1077,16 @@ fn the_scanner_finds_a_pointer_this_test_planted() {
 /// round trip through the parser — a mis-parsed stride reads a neighbouring
 /// object and a mis-parsed member offset reads the wrong 864 bytes of the
 /// right one.
+///
+/// The POOL is `LEGACY_CHAIN`; `DEFAULT_CHAIN` is a plain walk and must not
+/// parse as one. This test named `DEFAULT_CHAIN` and went on naming it after
+/// the default moved, so it failed for months saying "the default chain is a
+/// pool spec" -- which had stopped being true and was the only thing it was
+/// really asserting.
 #[test]
 fn a_pool_spec_parses_into_its_four_parts() {
     let (chain, n, stride, members) =
-        fk::ptr::parse_pool(fk::ptr::DEFAULT_CHAIN).expect("the default chain is a pool spec");
+        fk::ptr::parse_pool(fk::ptr::LEGACY_CHAIN).expect("the legacy chain is a pool spec");
     assert_eq!(chain, "mod+0x1e45148:0:+0x148");
     assert_eq!(n, 4);
     assert_eq!(stride, 8);
@@ -1095,6 +1101,10 @@ fn a_pool_spec_parses_into_its_four_parts() {
     assert_eq!(both, vec![0x46c, 0x848]);
     // A plain chain is not a pool, and must not silently read as one.
     assert!(fk::ptr::parse_pool("mod+0x1e45148:0:+0x148:+0x8:+0x848").is_none());
+    assert!(
+        fk::ptr::parse_pool(fk::ptr::DEFAULT_CHAIN).is_none(),
+        "DEFAULT_CHAIN is a plain walk, not a pool"
+    );
 }
 
 /// The document and the constant must name the same chain. A write-up that
