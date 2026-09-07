@@ -274,6 +274,13 @@ pub struct MapHeader {
     pub zip_bytes: usize,
     pub zip_entries: Vec<String>,
     pub thumb_bytes: usize,
+    /// Header chunk 0x03043002 v13 word 13: the number of checkpoint SPLITS the
+    /// map declares -- checkpoints INCLUDING the finish (Summer 2026 - 01: 3
+    /// checkpoints, declares 4). A LinkedCheckpoint group counts once. None
+    /// when the chunk is older than v13.
+    pub nb_checkpoints: Option<u32>,
+    /// Header chunk 0x03043002 v13 word 14: nbLaps.
+    pub nb_laps: Option<u32>,
 }
 
 impl MapHeader {
@@ -291,6 +298,20 @@ pub fn attr_pub(xml: &str, tag: &str, name: &str) -> Option<String> {
     attr(xml, tag, name)
 }
 
+/// `(nbCheckpoints, nbLaps)` out of header chunk 0x03043002, version 13 only.
+/// Layout (GBX.NET `HeaderChunk03043002`): u8 version, then fourteen u32
+/// words: needUnlock, bronze, silver, gold, author, cost, isLapRace,
+/// trackType, u01, authorScore, editorMode, u02, nbCheckpoints, nbLaps.
+/// Measured 2026-09-07 on the 25 Summer 2026 maps: the word equals
+/// checkpoint groups + linked-checkpoint groups + 1 finish on every map.
+pub fn desc_counts(d: &[u8]) -> Option<(u32, u32)> {
+    if d.len() < 57 || d[0] < 13 {
+        return None;
+    }
+    let w = |i: usize| u32::from_le_bytes(d[1 + 4 * i..5 + 4 * i].try_into().unwrap());
+    Some((w(12), w(13)))
+}
+
 pub fn read(path: &str) -> Result<MapHeader, String> {
     let g = Gbx::load(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -303,6 +324,11 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
     models.dedup();
     let (zip_bytes, zip_entries) = embedded_zip(&g.body).unwrap_or((0, Vec::new()));
     let thumb = chunks.iter().find(|c| c.id == 0x0304_3007).map(|c| c.data.len()).unwrap_or(0);
+    let (nb_checkpoints, nb_laps) = chunks
+        .iter()
+        .find(|c| c.id == 0x0304_3002)
+        .and_then(|c| desc_counts(&c.data))
+        .map_or((None, None), |(a, b)| (Some(a), Some(b)));
     let get = |t: &str, a: &str| attr(&xml, t, a).unwrap_or_else(|| "-".into());
     Ok(MapHeader {
         path: path.to_string(),
@@ -347,6 +373,8 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
         zip_bytes,
         zip_entries,
         thumb_bytes: thumb,
+        nb_checkpoints,
+        nb_laps,
     })
 }
 
@@ -476,6 +504,7 @@ pub fn cmd(args: &[String]) {
                 ("validated", &|h: &MapHeader| h.validated.clone()),
                 ("lightmap", &|h: &MapHeader| h.lightmap.clone()),
                 ("ghostblocks", &|h: &MapHeader| h.ghostblocks.clone()),
+                ("nb_checkpoints", &|h: &MapHeader| h.nb_checkpoints.map_or("-".into(), |v| v.to_string())),
                 ("deps", &|h: &MapHeader| h.deps.len().to_string()),
                 ("zip_files", &|h: &MapHeader| h.zip_entries.len().to_string()),
                 ("zip_blocks", &|h: &MapHeader| h.zip_blocks().to_string()),
@@ -512,6 +541,11 @@ pub fn cmd(args: &[String]) {
             crate::secs::secs_str(&h.gold),
             crate::secs::secs_str(&h.silver),
             crate::secs::secs_str(&h.bronze)
+        );
+        println!(
+            "  declared    checkpoints(incl. finish) {}  laps {}",
+            h.nb_checkpoints.map_or("-".to_string(), |v| v.to_string()),
+            h.nb_laps.map_or("-".to_string(), |v| v.to_string())
         );
         println!(
             "  title       {}  exever {}  exebuild {}",

@@ -1,13 +1,24 @@
-# The route project's engine-facing layer: the reachability generator.
+# tools/route — the route-finder project's crates, one workspace (merged by the coordinator).
 #
-#   tmreach   savestates along human runs, the gate-crossing detector and its
-#             oracle control, the macro fan-out, the TMR0 dataset writer.
+#   tmreach  (GEN arm)   savestates along human runs, the oracle-agreeing gate detector,
+#                        the macro fan-out, the TMR0 reachability dataset writer
+#   tmroute  (GEOM arm)  route/gate types (re-exported from tools/rl/tmstate) + I/O + metrics +
+#                        gates/human-orders/consensus
+#   tmplan   (GEOM arm)  beam-search planner over a pluggable EdgeEstimator
 #
-# Its own workspace because it pins -O3 + LTO like fk/search (the rollout loop
-# is on the hot path) and because nothing in tools/ needs to see it.
+# Release profile pins -O3 + LTO like fk/search: tmreach's rollout loop is on the hot path
+# (the planner and the route tools do not mind).
 [workspace]
-members = ["tmreach"]
 resolver = "2"
+members = ["tmreach", "tmroute", "tmplan"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level = 3

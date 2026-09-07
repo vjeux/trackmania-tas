@@ -1881,10 +1881,12 @@ fn discover_layout(
 ///
 /// `FK_STATE_OFF=4879052 fk trace` on 287431 -- the very address this returns:
 ///
-///     10260 ms  y=20.875  vy=-277.794  speed=277.794
-///     10270 ms  y=20.875  vy=-277.794  speed=277.794
-///     ...
-///     12270 ms  y=20.875  vy=-277.794  speed=277.794
+/// ```text
+/// 10260 ms  y=20.875  vy=-277.794  speed=277.794
+/// 10270 ms  y=20.875  vy=-277.794  speed=277.794
+/// ...
+/// 12270 ms  y=20.875  vy=-277.794  speed=277.794
+/// ```
 ///
 /// The position NEVER MOVES while the velocity reads a constant -277.794 m/s
 /// (1000 km/h straight down -- the map's 646 m drop). That is a STALE COPY:
@@ -1903,11 +1905,13 @@ fn discover_layout(
 ///
 /// `validator.rs` walks a route that is fully disassembled on this build:
 ///
-///     controller +0x1a70 -> validation sim
-///     sim        +0x18   -> playground
-///     playground +0x660  -> the sole validation-player vector
-///     participant +0x1110/+0x1118 -> CGameVehiclePhy (class id checked)
-///     vehicle    +0x12f0 -> state: q(wxyz) at pos-16, position, velocity
+/// ```text
+/// controller +0x1a70 -> validation sim
+/// sim        +0x18   -> playground
+/// playground +0x660  -> the sole validation-player vector
+/// participant +0x1110/+0x1118 -> CGameVehiclePhy (class id checked)
+/// vehicle    +0x12f0 -> state: q(wxyz) at pos-16, position, velocity
+/// ```
 ///
 /// Two things make this the right tool for 287431, where the built-in chains
 /// fail. It is the VALIDATOR'S vehicle, not a scene copy -- so it does not

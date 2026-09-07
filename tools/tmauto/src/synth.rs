@@ -1161,20 +1161,24 @@ mod tests {
             index,
             name: "RoadTechStraight".into(),
             tag: tag.into(),
+            order: 0,
             coords: (0, 0, 0),
             pos: None,
             yaw: Some(0.0),
             dir: Some(0),
+            free_rot: None,
         };
         let item = |index: usize, tag: &str, pos: [f32; 3]| Waypoint {
             kind: Kind::Item,
             index,
             name: format!("AC{index:08}.Item.Gbx"),
             tag: tag.into(),
+            order: 0,
             coords: (0, 0, 0),
             pos: Some(pos),
             yaw: Some(0.0),
             dir: None,
+            free_rot: None,
         };
         let wps = vec![
             parked(617, "Checkpoint"),

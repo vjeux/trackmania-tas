@@ -836,15 +836,21 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
     // It is NOT the race clock: it counts from the ROUND start (1200 ms here,
     // 1000 ms before the race). What must hold is that the MEASURED bias turns
     // it into race time exactly -- that is what labels every sample.
+    // WHICH INSTANT the label names: the VIS STATE's, which is one tick behind
+    // the tick the engine has finished (the validator's CGameVehiclePhy holds
+    // that one). So `counter - bias` is `race_ms - 20`, not `race_ms - 10`, and
+    // the number that proves it is not this arithmetic but `fk trace`: 3.1 mm
+    // median against a ghost's own telemetry with this bias, 796 mm -- one tick
+    // of travel -- with the other one.
     let bias = forkoracle::layout::measured_clock_bias(&s.srv, layout.clock)?;
-    let finished = race_ms - 10;
+    let sampled = race_ms - 20;
     check(
-        clk - bias == finished && bias == layout.clock_bias,
+        clk - bias == sampled && bias == layout.clock_bias,
         format!(
-            "counter - bias = {} ms = the race time of the tick the server has FINISHED ({}), \
-             and the locator carries the same bias ({} vs {})",
+            "counter - bias = {} ms = the race time the VIS STATE holds here ({}), and the \
+             locator carries the same bias ({} vs {})",
             clk - bias,
-            finished,
+            sampled,
             layout.clock_bias,
             bias
         ),
@@ -924,4 +930,282 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
     } else {
         Err(format!("{} of the oracle's reads disagree with the engine", fails.len()))
     }
+}
+
+// ---------------------------------------------------------------- fk tickhook cost
+
+/// WHERE A FORK EVALUATION'S TIME ACTUALLY GOES, phase by phase.
+///
+/// Per-candidate cost is `fixed + per_tick * remaining_ticks`, and at a late
+/// checkpoint the fixed part is most of it. This measures the fixed part's
+/// composition against the protocol itself rather than by subtraction:
+///
+/// * `null` — `'N'`: fork the paused engine and reap it. Nothing simulated.
+///   This is the floor: page tables for a ~150 MB address space.
+/// * `k ticks` — `'S'` with a simulated-time budget, which makes the child
+///   `_exit` the moment the budget is spent. Two budgets give the slope
+///   (µs/tick) and, extrapolated back, what a child pays before its first tick.
+/// * `full` — `'R'`: the whole path, which is what a candidate really costs —
+///   every remaining tick, the engine's own run past the finish, the
+///   validator's finish and print path, the JSON down a pipe, and the parent's
+///   parse.
+///
+/// The gap between `full` and `fork + ticks` is the part no candidate needs:
+/// the validator's post-race work and the transport.
+pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, n: usize) -> Result<(), String> {
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
+    let recs = s.tape.tail_records(probe);
+    let tail = recs.len();
+    let seg = [(s.srv.base, 4u32)]; // a 4-byte gather: the transport, not the data
+
+    let time = |f: &mut dyn FnMut()| -> f64 {
+        let t = Instant::now();
+        for _ in 0..n {
+            f();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    };
+
+    let mut srv = &mut s.srv;
+    let null_ms = {
+        let t = Instant::now();
+        for _ in 0..n {
+            srv.null_fork();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    };
+    // SPARSE sampling (one gather every 8 ticks, 4 bytes): the child still exits
+    // the moment its simulated-time budget is spent, but the sampler is not
+    // what is being timed. Gathering every tick down a pipe doubles the
+    // apparent per-tick cost -- measured, and the reason this is not stride 1.
+    let mut sampled = |ticks: u32| -> f64 {
+        // the SAME patch list the full run sends, so the two differ only in what
+        // the child does after its last tick
+        let keep = recs.len();
+        let t = Instant::now();
+        for _ in 0..n {
+            srv.run_sampled_segs_ex(
+                probe,
+                &recs[..keep],
+                &seg,
+                8,
+                // enough samples that the BUDGET is what ends the child, never
+                // the sample count
+                (ticks / 8 + 8) | crate::locate::EXIT_ON_BUDGET,
+                (0, 4),
+                forkoracle::clock::budget_for_ticks(ticks),
+            );
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    };
+    let s8 = sampled(8);
+    let s_tail = sampled(tail as u32);
+    let s208 = sampled(208.min(tail as u32));
+    // The full path, and the child's own timeline out of the shim's shared
+    // timing page -- so every phase below is measured inside the child rather
+    // than inferred by differencing two protocol paths.
+    let mut acc = [0f64; 6];
+    let full_ms = {
+        let t = Instant::now();
+        for _ in 0..n {
+            let out = srv.run(probe, &recs);
+            for (i, k) in ["child_us ", "tick1_us ", "tickN_us ", "ticks ", "first_us ", "fork_us "].iter().enumerate() {
+                if let Some(v) = out.split(*k).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok()) {
+                    acc[i] += v / n as f64;
+                }
+            }
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    };
+    let (child_us, tick1_us, ticknus, ticks) = (acc[0], acc[1], acc[2], acc[3]);
+    // `first_us` is measured from the fork, not from t_start: add the fork.
+    let first_byte_us = acc[4] + acc[5];
+    let _ = time;
+
+    let span = (208.min(tail as u32) as f64 - 8.0).max(1.0);
+    let per_tick_us = (s208 - s8) / span * 1000.0;
+    let child_start = s8 - 8.0 * per_tick_us / 1000.0;
+    let sim_ms = s_tail - child_start;
+    // MEASURED, not extrapolated: the same tail, once with the child exiting at
+    // the last tick and once through the whole validator path.
+    let after = full_ms - s_tail;
+    println!(
+        "checkpoint tick {} -- {} ticks of tail, {} runs of each phase\n\
+         \n\
+         null fork + reap            {:8.2} ms   the paused engine's page tables, nothing simulated\n\
+         child up to its first tick  {:8.2} ms   fork + COW + the shim's entry (extrapolated)\n\
+         per simulated tick          {:8.2} us   from {} vs {} ticks\n\
+         the tail itself             {:8.2} ms   {} ticks (measured: a child that exits at the last one)\n\
+         ---------------------------------------\n\
+         a candidate, end to end     {:8.2} ms\n\
+         of which AFTER the last tick{:8.2} ms   the engine's run past the finish, the validator's\n\
+                                                 finish and print path, the JSON, the pipe, the parse\n",
+        probe, tail, n,
+        null_ms, child_start, per_tick_us, 8, 208, sim_ms, tail, full_ms, after
+    );
+    // THE CHILD'S OWN TIMELINE (µs from the parent's pre-fork instant).
+    if ticks > 0.0 {
+        let sim = (ticknus - tick1_us) / 1000.0;
+        let before = tick1_us / 1000.0;
+        let post = full_ms - ticknus / 1000.0;
+        println!(
+            "measured INSIDE the child ({} ticks simulated):\n\
+             \x20 fork -> child alive      {:8.2} ms\n\
+             \x20 child -> its first tick  {:8.2} ms   COW faults, the shim's entry, the patch\n\
+             \x20 first tick -> last tick  {:8.2} ms   {:.1} us/tick\n\
+             \x20 last tick -> first byte  {:8.2} ms   the engine past the finish, then the\n\
+             \x20                                       validator's finish and print path\n\
+             \x20 first byte -> answer     {:8.2} ms   the JSON down the pipe, the parent's read and\n\
+             \x20                                       scan, the SIGKILL\n\
+             \x20 total                    {:8.2} ms",
+            ticks,
+            child_us / 1000.0,
+            before - child_us / 1000.0,
+            sim,
+            sim * 1000.0 / ticks,
+            (first_byte_us - ticknus) / 1000.0,
+            full_ms - first_byte_us / 1000.0,
+            full_ms
+        );
+        println!(
+            "  => {:.0}% of this candidate is fixed cost: {:.2} ms before the first tick and \
+             {:.2} ms after the last.",
+            100.0 * (before + post) / full_ms,
+            before,
+            post
+        );
+    }
+    let _ = after;
+    s.srv.quit();
+    Ok(())
+}
+
+// -------------------------------------------------------------- fk tickhook finish
+
+/// FIND THE RACE RESULT IN MEMORY, so a child never has to run the validator's
+/// print path to report it.
+///
+/// `fk tickhook cost` measures ~5.8 ms per candidate AFTER its last simulated
+/// tick — constant, and 44 % of a candidate at a late checkpoint. Almost none
+/// of it is simulation (7 ticks, 0.26 ms): it is the validator's finish
+/// handling, the JSON, the pipe and the parse. A child that could read its own
+/// finish time would skip all of it.
+///
+/// So: stop a server a few ticks PAST the finish, scan every writable region
+/// for the finish time the plain oracle reported, and report each hit as an
+/// OFFSET from something a child can resolve for itself — the validator's
+/// participant and vehicle, the playground, the simulation, the input array.
+/// An address is worthless (the heap is bimodal); an offset from a typed object
+/// is not.
+///
+/// Two tapes with DIFFERENT finish times are the control: a slot that holds
+/// each tape's own finish, at the same offset, is the race result. A slot that
+/// holds 22730 in both is a coincidence of one number.
+pub fn finish(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
+    use forkoracle::procmem;
+
+    let mut s = Session::start(engine, tape, at)?;
+    let pid = s.srv.pid();
+    let race_ms = s.srv.sim_ms as i64 - s.srv.race_start as i64;
+    println!(
+        "server {} stopped at race {} ms (sim {}, race start {})",
+        pid, race_ms, s.srv.sim_ms, s.srv.race_start
+    );
+    let declared = s.tape.declared_ms.map(|v| v as i64);
+    let want: Vec<(String, i64)> = declared
+        .into_iter()
+        .flat_map(|d| {
+            vec![
+                (format!("race ms {}", d), d),
+                (format!("sim ms {}", d + s.srv.race_start as i64), d + s.srv.race_start as i64),
+            ]
+        })
+        .collect();
+    if want.is_empty() {
+        return Err("the tape declares no finish time to look for".into());
+    }
+    if race_ms < declared.unwrap_or(0) {
+        return Err(format!(
+            "this checkpoint (race {} ms) is BEFORE the finish ({} ms) -- the result cannot be \
+             in memory yet; use --at tick:N past it",
+            race_ms,
+            declared.unwrap_or(0)
+        ));
+    }
+
+    // The typed objects a child can resolve for itself, to express hits against.
+    // The POINTER WALK ONLY: past the finish the engine reads no more input
+    // records, so neither the page-fault probe nor any check that simulates can
+    // run here -- and neither is needed to say where an object is.
+    let word = |a: u64| -> Option<u64> {
+        procmem::read_at(pid, a, 8).map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+    };
+    let mut anchors: Vec<(&str, u64)> = vec![("input array", s.srv.base)];
+    let (controller, sim) = (s.srv.validator_controller, s.srv.validation_sim);
+    if controller != 0 && sim != 0 {
+        anchors.push(("controller", controller));
+        anchors.push(("sim", sim));
+        if let Some(pg) = word(sim + 0x18).filter(|v| *v != 0) {
+            anchors.push(("playground", pg));
+            let count = procmem::read_at(pid, pg + 0x668, 4)
+                .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
+                .unwrap_or(0);
+            if let (Some(players), 1) = (word(pg + 0x660).filter(|v| *v != 0), count) {
+                if let Some(part) = word(players).filter(|v| *v != 0) {
+                    anchors.push(("participant", part));
+                    if let Some(veh) = word(part + 0x1118).filter(|v| *v != 0) {
+                        anchors.push(("vehicle", veh));
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "anchors: {}",
+        anchors.iter().map(|(n, a)| format!("{} {:#x}", n, a)).collect::<Vec<_>>().join(", ")
+    );
+
+    for (what, v) in &want {
+        let needle = (*v as u32).to_le_bytes();
+        let mut hits: Vec<u64> = Vec::new();
+        for r in procmem::maps(pid) {
+            if !r.perms.starts_with("rw") {
+                continue;
+            }
+            let Some(buf) = procmem::read_at(pid, r.start, (r.end - r.start) as usize) else {
+                continue;
+            };
+            let mut i = 0usize;
+            while i + 4 <= buf.len() {
+                if buf[i..i + 4] == needle {
+                    hits.push(r.start + i as u64);
+                    if hits.len() > 4000 {
+                        break;
+                    }
+                }
+                i += 4;
+            }
+        }
+        println!("\n{} -> {} slot(s) hold it:", what, hits.len());
+        for h in hits.iter().take(40) {
+            let near = anchors
+                .iter()
+                .map(|(n, a)| (*n, *h as i64 - *a as i64))
+                .min_by_key(|(_, d)| d.abs())
+                .map(|(n, d)| format!("{}{:+#x}", n, d))
+                .unwrap_or_default();
+            println!("  {:#014x}  {}", h, near);
+        }
+        if hits.len() > 40 {
+            println!("  ... {} more", hits.len() - 40);
+        }
+    }
+    s.srv.quit();
+    println!(
+        "\nRun this on a second tape with a different finish time and keep the offsets that hold \
+         each tape's OWN result. That offset is what the shim reads to end a candidate at the \
+         finish instead of running the validator's print path."
+    );
+    Ok(())
 }
