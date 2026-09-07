@@ -400,6 +400,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         } else {
             let mut m = crate::static_item::build::Merged::default();
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
+            m.keep_water = crate::static_item::build::keep_water_for(collection);
             m.modifier = modifier_links(store, &bi.material_modifier);
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;

@@ -82,6 +82,18 @@ pub struct Merged {
     /// folder is taken from there (PlatformDirt: the dirt-brown
     /// PlatformTech/TrackWall/Deco…; the gate specials likewise). Full links.
     pub modifier: Vec<String>,
+    /// An ITEM modifier names its materials with a suffix: the obstacle items
+    /// (Summer 15's pushers and rotors) reference
+    /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
+    /// in `…\Modifier\ItemObstacle\<stem>Level1.Material.Gbx` — the base
+    /// `ItemObstaclePusher` is the grey "off" look, `…Level1` the orange
+    /// active one. A material stem S is remapped to the folder entry named
+    /// `S<suffix>`; block modifiers have no suffix.
+    pub modifier_suffix: String,
+    /// Keep `…\Material\Water` visuals (Stadium: the pool blocks draw their
+    /// own water; the terrain collections regenerate theirs from the zone).
+    /// `TINY_WATER=keep|drop` overrides.
+    pub keep_water: bool,
     pub editors: bool,
     /// The crystal bake built `surf_vertices`/`surf_triangles`/`surf_ids`
     /// itself (per-slot entries, trigger synthesis); skip the shared
@@ -229,7 +241,7 @@ impl Merged {
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
-            Some(stem) if !self.modifier.is_empty() => match self.modifier.iter().find(|m| m.rsplit('\\').next() == Some(stem)) {
+            Some(stem) if !self.modifier.is_empty() => match self.modifier.iter().find(|m| m.rsplit('\\').next().map(|t| t.strip_suffix(self.modifier_suffix.as_str())) == Some(Some(stem))) {
                 Some(m) => {
                     modified = m.clone();
                     modified.as_str()
@@ -546,8 +558,11 @@ impl Merged {
             // material — the game's water is a render pass of the Water zone,
             // and as a static visual it came out as a black quad (Summer 02).
             // The regenerated full-size lake is at that very height, so dropping
-            // the quad leaves the real water showing through.
-            if self.materials.get(mat).and_then(|m| m.link()).map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false) {
+            // the quad leaves the real water showing through. Stadium has no
+            // water zone: its pools are the `WaterBase` blocks' own quads
+            // (`Stadium\Media\Material\Water`), so there the quad is kept
+            // (`keep_water`; Summer 15's pools drew as the bare cyan floor).
+            if !self.keep_water && self.materials.get(mat).and_then(|m| m.link()).map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false) {
                 self.notes.push("water surface visual dropped (the zone water draws it)".to_string());
                 continue;
             }
@@ -1792,6 +1807,61 @@ pub fn pack_item_variants(store: &mut crate::store::DataStore, item_path: &str) 
         .collect())
 }
 
+/// The material links of a pack item's modifier, with the name suffix they
+/// carry. An item file may reference `<Env>\Media\Modifier\<X>.Gbx` (the
+/// wrapper of a `GameSkin`, whose slot table has no reader): the pack keeps
+/// the skin's materials in `<Env>\Media\Modifier\<F>\<stem><suffix>.Material.Gbx`
+/// where X = F + suffix — `ItemObstacleLevel1` = folder `ItemObstacle` +
+/// `Level1` (`ItemObstaclePusherLevel1`, `ItemObstacleLevel1`,
+/// `ItemObstacleLightLevel1`, `ScreenPusherLevel1`), `ItemObstacleOff` =
+/// `ItemObstacle` + `Off` (`DecalObstacleOff` only: the base materials ARE
+/// the off look). The longest folder that prefixes X wins
+/// (`ItemObstacleDiscontinuous` does not prefix `ItemObstacleLevel1`).
+pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str) -> Option<(Vec<String>, String)> {
+    let model = store.load_model(item_path).ok()?;
+    let modifier = model.externals.iter().map(|(_, p)| p.as_str()).find(|p| {
+        let low = p.to_ascii_lowercase();
+        low.contains("\\media\\modifier\\") && low.ends_with(".gbx") && !low.ends_with(".material.gbx") && !low.ends_with(".kinematicconstraint.gbx") && low.matches('\\').count() == 3
+    })?;
+    let (dir, file) = modifier.rsplit_once('\\')?;
+    let x = file.strip_suffix(".Gbx").or_else(|| file.strip_suffix(".gbx"))?;
+    let prefix = format!("{dir}\\").to_uppercase();
+    // folders under the modifier dir that prefix X, longest first
+    let mut folders: Vec<String> = Vec::new();
+    for e in store.entries() {
+        let p = e.path();
+        let up = p.to_uppercase();
+        if let Some(rest) = up.strip_prefix(&prefix) {
+            if let Some((folder, _)) = rest.split_once('\\') {
+                if x.to_uppercase().starts_with(folder) && !folders.iter().any(|f| f == folder) {
+                    folders.push(folder.to_string());
+                }
+            }
+        }
+    }
+    folders.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    let folder = folders.first()?.clone();
+    let suffix = x[folder.len()..].to_string();
+    let folder_prefix = format!("{prefix}{folder}\\");
+    let mut links: Vec<String> = Vec::new();
+    for e in store.entries() {
+        let p = e.path();
+        if p.to_uppercase().starts_with(&folder_prefix) {
+            if let Some(link) = p.strip_suffix(".Material.Gbx") {
+                if link.rsplit('\\').next().map(|t| t.ends_with(suffix.as_str())).unwrap_or(false) {
+                    links.push(link.to_string());
+                }
+            }
+        }
+    }
+    links.sort();
+    links.dedup();
+    if links.is_empty() {
+        return None;
+    }
+    Some((links, suffix))
+}
+
 /// A pack ITEM (`CGameItemModel` wrapper whose entity model -- a static
 /// object, a prefab, or a variant list of them -- lives in EXTERNAL files):
 /// bake the geometry the placement's `variant` external points at (index
@@ -1802,9 +1872,18 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
     m.editors = std::env::var_os("TINY_EDITORS").is_some();
+    m.keep_water = keep_water_for(collection);
     if variants.is_empty() {
         let model = store.load_model(item_path)?;
         return Err(format!("no prefab/static-object external (externals: {})", model.externals.iter().map(|(_, p)| p.rsplit('\\').next().unwrap_or(p).to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    // The item's own modifier (`…\Media\Modifier\<X>.Gbx`, a game skin
+    // wrapper): its materials are `…\Modifier\<folder>\<stem><suffix>` where
+    // X = folder + suffix (`ItemObstacleLevel1` = `ItemObstacle` + `Level1`).
+    if let Some((links, suffix)) = item_modifier_links(store, item_path) {
+        m.notes.push(format!("modifier {} ({} materials)", suffix, links.len()));
+        m.modifier = links;
+        m.modifier_suffix = suffix;
     }
     let picked = match variants.get(variant) {
         Some(p) => p.clone(),
@@ -1845,6 +1924,19 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 /// stands drew Stadium's wooden `TrackWallClips` where the original shows
 /// BlueBay's concrete `TrackWallClipsInWorld` (2026-09-06).
 /// `TINY_NO_SKIN=1` disables the remap.
+/// Whether a collection's `Water` visuals stay in the bake: Stadium's pools
+/// are drawn by the `WaterBase` blocks themselves (no water zone to fall back
+/// on); BlueBay / RedIsland / WhiteShore / GreenCoast regenerate their sea or
+/// lake from the genealogy at that very height. `TINY_WATER=keep|drop`
+/// overrides for experiments.
+pub fn keep_water_for(collection: u32) -> bool {
+    match std::env::var("TINY_WATER").as_deref() {
+        Ok("keep") => true,
+        Ok("drop") => false,
+        _ => collection == 0x1a,
+    }
+}
+
 /// The environment folder of a map collection id (the pack's root folder).
 pub fn env_name(collection: u32) -> &'static str {
     match collection {
