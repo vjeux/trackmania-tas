@@ -61,18 +61,29 @@ string CarLog(int ms) {
 // when the car enters a trigger). Same shape as CarLog: one HTTP call, one
 // whole trajectory, a row per frame. A null player (the intro, the loading
 // screen) leaves the car columns empty rather than ending the log.
+//
+// The camera is the viewport's first CHmsCamera (`NextLocation` iso4, `Fov`);
+// there is no `Camera::` namespace in this Openplanet (1.29.14) — a first
+// version referenced Camera::GetCurrentPosition, failed to compile, and took
+// the HTTP server down for every driver on the box for five minutes
+// (2026-09-07 11:41). Members here are all in OpenplanetNext.json, which is
+// what the linter checks.
 string CamLog(int ms) {
     if (ms <= 0) ms = 3000;
     if (ms > 30000) ms = 30000;
     uint t0 = Time::Now;
+    auto app = GetApp();
     string sb = "wall_ms\tt_ms\tpx\tpy\tpz\tcx\tcy\tcz\tfov\n";
     while (int(Time::Now - t0) < ms) {
-        vec3 c = Camera::GetCurrentPosition();
-        auto cam = Camera::GetCurrent();
-        float fov = (cam is null) ? 0.0f : cam.Fov;
+        string cam = "\t\t\t";
+        auto vp = app.Viewport;
+        if (vp !is null && vp.Cameras.Length > 0) {
+            auto c = vp.Cameras[0];
+            if (c !is null) cam = "" + c.NextLocation.tx + "\t" + c.NextLocation.ty + "\t" + c.NextLocation.tz + "\t" + c.Fov;
+        }
         auto p = ScriptPlayer();
         string car = (p is null) ? "\t\t\t" : ("" + p.CurrentRaceTime + "\t" + p.Position.x + "\t" + p.Position.y + "\t" + p.Position.z);
-        sb += "" + Time::Now + "\t" + car + "\t" + c.x + "\t" + c.y + "\t" + c.z + "\t" + fov + "\n";
+        sb += "" + Time::Now + "\t" + car + "\t" + cam + "\n";
         yield();
     }
     return sb;
