@@ -595,14 +595,20 @@ pub fn cmd_human_batch(args: &[String]) {
                     let f = Path::new(&routes).join(&uid).join(io::route_file_name("router-human", 0));
                     io::write_route(&f, route).unwrap_or_else(|e| die(&e));
                     out.push_str(&format!("wrote {}\n", f.display()));
+                }
+                // the SIGN of every gate normal from the humans' travel — verified or not: 19 unanimous runs settle a
+                // sign; the cartographer's tour tangent got it wrong on 6/7 gates of Summer 2026 - 10 (GEN arm,
+                // engine-credited rows). Verified runs override an unverified orientation, never the reverse.
+                let already_human = gates.gates.iter().any(|g| g.normal_source == "human");
+                if c.agree && (bank_route || !already_human) {
                     let mut dirs = BTreeMap::new();
                     for l in route.legs.as_ref().unwrap() {
                         let g = gates.by_waypoint(l.map_waypoint).map(|g| g.group).unwrap();
                         for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
                     }
-                    let n = tmroute::gates::orient(gates, &dirs, "human");
+                    let n = tmroute::gates::orient(gates, &dirs, if bank_route { "human" } else { "human-unverified" });
                     io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
-                    out.push_str(&format!("oriented {n} gate normals from human crossings\n"));
+                    out.push_str(&format!("oriented {n} gate normals from human crossings ({})\n", if bank_route { "verified" } else { "unverified" }));
                 }
             }
             let _ = io::write_atomic(&Path::new(&geom).join(&uid).join(format!("consensus{suffix}.txt")), out.as_bytes());
