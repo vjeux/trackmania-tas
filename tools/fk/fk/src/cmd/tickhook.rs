@@ -1009,6 +1009,18 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, n: usize) -> Result<(),
     let s8 = sampled(8);
     let s_tail = sampled(tail as u32);
     let s208 = sampled(208.min(tail as u32));
+    // FK_COST_DNF=1: measure a candidate that does NOT finish, by steering it
+    // off the road. A finisher and a DNF pay different epilogues and the
+    // difference decides whether the DNF half of the lever is worth building.
+    let recs = if std::env::var("FK_COST_DNF").is_ok() {
+        let mut r = recs.clone();
+        for x in r.iter_mut().take(40) {
+            x.steer = 1.0;
+        }
+        r
+    } else {
+        recs.clone()
+    };
     // The full path, and the child's own timeline out of the shim's shared
     // timing page -- so every phase below is measured inside the child rather
     // than inferred by differencing two protocol paths.
@@ -1640,6 +1652,7 @@ pub fn finishcheck(
         (rng >> 33) as u64
     };
     let (mut agree, mut fast_only, mut slow_only, mut disagree) = (0usize, 0, 0, 0);
+    let (mut cps_ok, mut cps_bad, mut cps_off) = (0usize, 0usize, 0usize);
     let (mut finishers, mut dnfs) = (0usize, 0usize);
     let mut worst: Vec<String> = Vec::new();
     for c in 0..n {
@@ -1672,6 +1685,44 @@ pub fn finishcheck(
                     .and_then(|v| v.trim().trim_end_matches(',').parse::<i64>().ok());
                 in_validated = false;
             }
+        }
+        // the DNF half: the child that ran out of tape reports its checkpoint
+        // count, and the JSON says the same thing in prose
+        let fast_cps = out
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("FKDNF cps "))
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok());
+        let slow_cps = out.lines().find_map(|l| {
+            let t = l.trim();
+            if !t.starts_with("\"Desc\"") {
+                return None;
+            }
+            if let Some(p) = t.find("reached some checkpoints (") {
+                t[p + "reached some checkpoints (".len()..]
+                    .split(' ')
+                    .next()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+            } else if t.contains("wrong simu") {
+                Some(0)
+            } else {
+                None
+            }
+        });
+        // only meaningful when the DNF fast path is armed; otherwise the fast
+        // side reports nothing by design and there is nothing to compare
+        if fast.is_none() && slow.is_none() && fast_cps.is_none() {
+            cps_off += 1;
+        } else if fast.is_none() && slow.is_none() && fast_cps != slow_cps {
+            cps_bad += 1;
+            if worst.len() < 10 {
+                worst.push(format!(
+                    "c{:04}: DNF, fast says {:?} checkpoints and the JSON says {:?}",
+                    c, fast_cps, slow_cps
+                ));
+            }
+        } else if fast.is_none() && slow.is_none() {
+            cps_ok += 1;
         }
         match (fast, slow) {
             (Some(a), Some(b)) if a == b => {
@@ -1706,20 +1757,135 @@ pub fn finishcheck(
          \x20 agree                {}\n\
          \x20 DISAGREE             {}\n\
          \x20 fast answered, JSON did not   {}\n\
-         \x20 JSON answered, fast did not   {}",
-        n, finishers, dnfs, agree, disagree, fast_only, slow_only
+         \x20 JSON answered, fast did not   {}\n\
+         \x20 DNF checkpoint counts agree   {}\n\
+         \x20 DNF checkpoint counts DIFFER  {}\n\
+         \x20 DNF, fast path not armed      {}",
+        n, finishers, dnfs, agree, disagree, fast_only, slow_only, cps_ok, cps_bad, cps_off
     );
     for w in &worst {
         println!("  {}", w);
     }
     s.srv.quit();
-    if disagree + fast_only + slow_only > 0 {
+    if disagree + fast_only + slow_only + cps_bad > 0 {
         return Err(format!(
-            "{} of {} candidates disagree -- the fast finish is NOT the validator's answer",
-            disagree + fast_only + slow_only,
+            "{} of {} candidates disagree -- the fast path is NOT the validator's answer",
+            disagree + fast_only + slow_only + cps_bad,
             n
         ));
     }
     println!("\nPASS: every candidate's fast answer is the validator's own");
+    Ok(())
+}
+
+// -------------------------------------------------------------- fk tickhook dnf
+
+/// WHAT THE ENGINE DOES WHEN A CANDIDATE DOES NOT FINISH.
+///
+/// A DNF pays the same 6.02 ms epilogue as a finisher (`fk tickhook cost
+/// --dnf`), and in a search DNFs are the majority — 307 of 400 candidates at an
+/// early checkpoint. The finish lever cannot help them: their finish word is
+/// never written.
+///
+/// So this asks the same question the finish hunt asked, on a candidate steered
+/// off the road: which word in the participant changes ONCE, near the end, and
+/// what does the checkpoint counter do? The counter's location is known
+/// (`forkoracle::car::CP_COUNT_IN_PARTICIPANT`, verified 200/200 against the
+/// plain oracle by the tm-player project's ENV arm); what is not known is
+/// whether the engine records "this run is over" anywhere a child could read.
+pub fn dnf(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
+    let mut recs = s.tape.tail_records(probe);
+    let tape_ticks = recs.len();
+    // steer it off the road: this candidate will not finish
+    for r in recs.iter_mut().take(40) {
+        r.steer = 1.0;
+    }
+    let chain = forkoracle::car::validator_chain(&s.srv)?;
+    let cp_addr = chain.participant + forkoracle::car::CP_COUNT_IN_PARTICIPANT;
+    println!(
+        "participant {:#x}, cp counter {:#x}; the tape has {} tail ticks from tick {}",
+        chain.participant, cp_addr, tape_ticks, probe
+    );
+
+    let chunk = 512u32;
+    let segs: Vec<(u64, u32)> = (0..8).map(|i| (chain.participant + i * chunk as u64, chunk)).collect();
+    let width = 8 * chunk as usize;
+    let (json, blob) = s.srv.run_sampled_segs_ex(
+        probe,
+        &recs,
+        &segs,
+        1,
+        8192,
+        (0, 0), // no dedup: one sample per tick
+        forkoracle::clock::budget_for_ticks(tape_ticks as u32 + 400),
+    );
+    let recsz = 8 + width;
+    let n = blob.len() / recsz;
+    let clock_of =
+        |i: usize| u64::from_le_bytes(blob[i * recsz..i * recsz + 8].try_into().unwrap()) as i64;
+    let word = |i: usize, o: usize| {
+        u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 8 + o + 4].try_into().unwrap())
+    };
+    if n < 8 {
+        return Err(format!("only {} samples", n));
+    }
+    let last_tape_clock = clock_of(0) + tape_ticks as i64 - 1;
+    println!(
+        "{} samples, clock {} .. {} (the tape's own last tick is {}, so the engine ran {} ticks \
+         past it)",
+        n,
+        clock_of(0),
+        clock_of(n - 1),
+        last_tape_clock,
+        clock_of(n - 1) - last_tape_clock
+    );
+    println!(
+        "the JSON says: {}",
+        json.lines()
+            .find(|l| l.trim().starts_with("\"Desc\""))
+            .unwrap_or("(no Desc line)")
+            .trim()
+    );
+    println!(
+        "the cp counter went {} -> {}",
+        word(0, forkoracle::car::CP_COUNT_IN_PARTICIPANT as usize),
+        word(n - 1, forkoracle::car::CP_COUNT_IN_PARTICIPANT as usize)
+    );
+    // Which words settle once, and when relative to the tape's end?
+    let mut once: Vec<(usize, usize, u32, u32)> = Vec::new();
+    for o in (0..width - 4).step_by(4) {
+        let mut trans = 0usize;
+        let mut at = 0usize;
+        for i in 1..n {
+            if word(i, o) != word(i - 1, o) {
+                trans += 1;
+                at = i;
+                if trans > 2 {
+                    break;
+                }
+            }
+        }
+        if (1..=2).contains(&trans) && clock_of(at) > last_tape_clock - 200 {
+            once.push((at, o, word(at - 1, o), word(at, o)));
+        }
+    }
+    once.sort_by_key(|(at, _, _, _)| *at);
+    println!(
+        "\n{} word(s) in the participant settle in the last 200 ticks:",
+        once.len()
+    );
+    for (at, o, b, a) in once.iter().take(24) {
+        println!(
+            "  participant+{:#06x}  at clock {} ({:+} from the tape's end): {} -> {}",
+            o,
+            clock_of(*at),
+            clock_of(*at) - last_tape_clock,
+            *b as i32,
+            *a as i32
+        );
+    }
+    s.srv.quit();
     Ok(())
 }

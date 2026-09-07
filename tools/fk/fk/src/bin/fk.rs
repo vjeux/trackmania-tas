@@ -218,6 +218,10 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         },
                     )
                 }
+                "dnf" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::dnf(&engine, tape, at)
+                }
                 "finishcheck" => {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::finishcheck(
@@ -245,7 +249,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::reads(&engine, tape, at)
                 }
-                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish|finishfind|finishcheck>".into()),
+                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish|finishfind|finishcheck|dnf>".into()),
             }
         }
         "tree" => {

@@ -40,6 +40,17 @@ use crate::procmem;
 /// points at is what varies, which is why the rest is measured.
 pub const RESULT_PTR_IN_CONTROLLER: u64 = 0x1a88;
 
+/// `participant + this` is 2 while the tape still has records to feed and 0
+/// from one tick after the last one -- on a finisher and on a DNF alike.
+///
+/// Found the same way as the finish word: `fk tickhook dnf` steers a candidate
+/// off the road and asks which words in the participant settle near the end.
+/// Six do, all at the same instant, one tick after the tape's last record;
+/// this is the first. A child that reaches it with no finish recorded knows it
+/// did not finish, and the checkpoint counter says how far it got -- which is
+/// the whole of what the driver reads from the JSON's `Desc` line.
+pub const EXHAUSTED_IN_PARTICIPANT: u64 = 0x188;
+
 /// How much of the block to watch. The record was at +0xa4 on two maps and
 /// past +0x400 on a third; 32 KB covers every one seen and costs nothing,
 /// because the gather is deduplicated and the block barely changes.
@@ -66,22 +77,38 @@ pub fn calibrate(
     let block = procmem::read_at(pid, srv.validator_controller + RESULT_PTR_IN_CONTROLLER, 8)
         .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
         .unwrap_or(0);
-    let bases: [(&str, u64); 5] = [
-        ("the controller's result block", block),
-        ("the participant", chain.participant),
-        ("the vehicle", chain.vehicle),
-        ("the playground", chain.playground),
-        ("the simulation", chain.sim),
+    // EVERY VEHICLE SLOT, not just the live one. The participant holds four
+    // (Stadium, Snow, Rally, Desert) and on 126859 the finish record is in a
+    // slot that is NOT the one being driven -- which only showed up when the
+    // chain started picking the live slot correctly and calibration stopped
+    // finding the word it had found the day before. Searching a 32 KB window of
+    // each costs one fork apiece and removes the guess entirely.
+    let mut bases: Vec<(String, u64)> = vec![
+        ("the controller's result block".into(), block),
+        ("the participant".into(), chain.participant),
     ];
+    for (i, v) in chain.vehicles.iter().enumerate() {
+        bases.push((format!("vehicle slot {}", i), *v));
+    }
+    bases.push(("the playground".into(), chain.playground));
+    bases.push(("the simulation".into(), chain.sim));
     let mut tried: Vec<String> = Vec::new();
     for (what, base) in bases {
+        let what = what.as_str();
         if base < 0x1000 {
             continue;
         }
         match calibrate_in(srv, probe, recs, want, base) {
             Ok(v) => {
                 let (addr, sentinel) = v;
-                let ack = srv.set_finish_word(addr);
+                // and the two words that make a DNF answerable: the one the
+                // engine zeroes when the tape runs out, and the checkpoint
+                // counter (`car::CP_COUNT_IN_PARTICIPANT`).
+                let ack = srv.set_finish_word(
+                    addr,
+                    chain.participant + EXHAUSTED_IN_PARTICIPANT,
+                    chain.participant + crate::car::CP_COUNT_IN_PARTICIPANT,
+                );
                 if !ack.starts_with("FINISH") {
                     return Err(format!("the shim refused the finish word: {}", ack));
                 }

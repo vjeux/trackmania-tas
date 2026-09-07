@@ -44,6 +44,9 @@ pub struct ValidatorChain {
     pub playground: u64,
     pub participant: u64,
     pub vehicle: u64,
+    /// All four slots, live or not: the finish record is in one of them and it
+    /// is not always the live one.
+    pub vehicles: Vec<u64>,
     /// The world position triple inside the `CGameVehiclePhy`.
     pub pos: u64,
 }
@@ -53,7 +56,34 @@ const PLAYGROUND_IN_SIM: u64 = 0x18;
 const PLAYERS_IN_PLAYGROUND: u64 = 0x660;
 const NPLAYERS_IN_PLAYGROUND: u64 = 0x668;
 const CLASS_IN_PARTICIPANT: u64 = 0x1110;
-const VEHICLE_IN_PARTICIPANT: u64 = 0x1118;
+/// The participant holds FOUR vehicle slots -- Stadium, Snow, Rally, Desert --
+/// and only one of them is the car being driven. (From the tm-player project's
+/// INPUT arm, `input/WHEELS.md`.) Reading slot 0 unconditionally is right on an
+/// ordinary map and FREEZES on a transform map, where the live car is in
+/// another slot: the chain then resolves to a parked vehicle that never moves,
+/// which is exactly the failure the tracking test below reports as "travelled
+/// 0.0 m while the car travelled 40 m".
+const VEHICLE_SLOTS: [u64; 4] = [0x1118, 0x1128, 0x1138, 0x1148];
+/// A live vehicle's `phy+0x10` is not `0xffffffff`; a parked slot's is.
+const LIVE_MARK_IN_VEHICLE: u64 = 0x10;
+/// THE CHECKPOINT COUNTER, in the participant: a u32 that increments exactly at
+/// the ghosts' split ticks, the finish included, on every server.
+///
+/// Located behaviourally by the tm-player project's ENV arm and verified
+/// against the plain oracle 200/200 (0/1 x138, 2 x30, 3 x19, finish x13) and
+/// 1288/1289 over 2453 tapes. `+0xc80`, `+0xc90` and `+0xc94` step at the same
+/// instants. This arm's own finish hunt found the same word independently:
+/// `participant+0xc70` goes 2 -> 3 exactly one tick after the finish tick on
+/// three tapes with three different finish times, which is what made the
+/// finish detectable at all.
+pub const CP_COUNT_IN_PARTICIPANT: u64 = 0xc70;
+/// The vis state -- position, velocity, attitude, wheels -- INSIDE the phy
+/// object (tm-player INPUT arm, `input/WHEELS.md`: the binary's own sample
+/// writer on it reproduces the ghosts' 116-byte samples). This is the same
+/// object the pointer chains reach the long way round, one add from a pointer
+/// whose identity is already proven.
+#[allow(dead_code)]
+const VIS_STATE_IN_VEHICLE: u64 = 0x848;
 const CGAME_VEHICLE_PHY: u32 = 0x032e_2000;
 const POS_IN_VEHICLE: u64 = 0x12f0;
 
@@ -100,13 +130,43 @@ pub fn validator_chain(srv: &ForkServer) -> Result<ValidatorChain, String> {
             class, CGAME_VEHICLE_PHY
         ));
     }
-    let vehicle = word(participant + VEHICLE_IN_PARTICIPANT, "participant.vehicle")?;
+    // WHICH OF THE FOUR SLOTS is being driven: the one whose `phy+0x10` is not
+    // the empty marker. Exactly one must qualify -- two would mean this is not
+    // the field that says so.
+    let mut live: Vec<u64> = Vec::new();
+    let mut all: Vec<u64> = Vec::new();
+    for s in VEHICLE_SLOTS {
+        let Ok(v) = word(participant + s, "vehicle slot") else {
+            continue;
+        };
+        all.push(v);
+        let Some(m) = procmem::read_at(pid, v + LIVE_MARK_IN_VEHICLE, 4)
+            .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
+        else {
+            continue;
+        };
+        if m != u32::MAX {
+            live.push(v);
+        }
+    }
+    let vehicle = match live.len() {
+        1 => live[0],
+        0 => return Err("none of the four vehicle slots is live".into()),
+        n => {
+            return Err(format!(
+                "{} of the four vehicle slots look live -- phy+0x10 is not the marker on this \
+                 build",
+                n
+            ))
+        }
+    };
     Ok(ValidatorChain {
         controller,
         sim,
         playground,
         participant,
         vehicle,
+        vehicles: all,
         pos: vehicle + POS_IN_VEHICLE,
     })
 }
@@ -237,6 +297,19 @@ pub fn locate_fast(
             })
             .collect()
     };
+    // THE ENGINE'S OWN POINTERS, IN ORDER, and the first that passes wins.
+    //
+    // Not ranked: ORDERED. `CAR_CHAINS` is shortest-first and that order is
+    // what `fk trace`'s ladder has always used to reach 3 mm; ranking the
+    // passing candidates by any measure of self-consistency instead picks a
+    // different object on 126859 -- one exactly a tick out of phase, which
+    // reads as 21 false positives out of 21 finishers. Two objects can both be
+    // self-consistent; only one is the one every calibration was measured on.
+    //
+    // (`phy+0x848` is the same state by another route -- tm-player's INPUT arm --
+    // but its position is a tick out on map 2 and the quaternion at pos-16 is
+    // not unit there, so its internal layout is not the one these offsets
+    // describe. Left alone rather than guessed at.)
     let mut hits = vet(chain_candidates(srv.pid()));
     let by_chain = hits.len();
     if hits.is_empty() {
@@ -250,7 +323,7 @@ pub fn locate_fast(
             want[1],
             want[2],
             hits.len(),
-            if by_chain > 0 { "from the engine's own pointers" } else { "from a scan" },
+            if by_chain > 0 { "from the validator's own vehicle" } else { "from the chains or a scan" },
             t0.elapsed().as_secs_f64()
         );
     }
@@ -289,7 +362,6 @@ pub fn locate_fast(
             break;
         }
     }
-    passed.sort_by(|a, b| a.1.total_cmp(&b.1));
     if verbose {
         println!(
             "  {} of {} candidates track the car [{:.2}s]",

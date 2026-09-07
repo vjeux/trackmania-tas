@@ -746,3 +746,64 @@ known, for whoever finishes it:
 * candidates must be vetted in the driver before they reach a child. Gathering
   several into one sample is faster and wrong: one bad address takes the child
   down and the failure reads as "nothing tracks the car".
+
+### 10.6 The DNF half: found, measured, and NOT switched on
+
+A DNF pays the same epilogue — **6.02 ms** after its last simulated tick,
+against 5.84 for a finisher (`fk tickhook cost` with the tape steered off the
+road) — and in a search DNFs are the majority: 307 of 400 candidates at an
+early checkpoint. So this is the larger half of the lever, and both pieces it
+needs now exist:
+
+* **the engine says when the tape runs out.** `fk tickhook dnf` steers a
+  candidate off the road and asks which words in the participant settle near
+  the end: six do, all at the same instant, **one tick after the tape's last
+  record** — `participant+0x188` goes `2 -> 0`, on a finisher and on a DNF
+  alike. A child that reaches it with no finish recorded knows it did not
+  finish;
+* **the engine counts checkpoints.** `participant+0xc70` increments exactly at
+  the ghosts' split ticks, the finish included — located behaviourally by the
+  tm-player project's ENV arm and verified 200/200 against the plain oracle
+  (and 1288/1289 over 2453 tapes). This arm's finish hunt had found the same
+  word independently: it is the `2 -> 3` at the finish in §10.2.
+
+It is implemented, and it is **off** (`FKSHIM_DNF_FAST=1`), because the two
+numbers are not the same number:
+
+| | JSON `Desc` | engine's counter |
+|---|---|---|
+| 45 of 79 DNFs | agrees | agrees |
+| **34 of 79 DNFs** | `"wrong simu"` → **0** | **1** |
+
+`parse_result` derives a DNF's checkpoint count from the `Desc` line, and for a
+MUTATED candidate that line is almost always `wrong simu` — the declared result
+in the ghost file no longer matches what was simulated — which the driver maps
+to 0 checkpoints. The engine's counter says the car really did pass one. **Both
+are right about different things**, and the engine's is the more truthful; but
+switching to it changes how every non-finisher in the search is scored. That is
+a decision about the search, not a speedup to slip in behind a 6 ms saving, so
+it ships as a flag with this table attached.
+
+### 10.7 What the finish lever does NOT cover
+
+`fk server check` on **126859 refuses to calibrate** — no word in 32 KB of the
+controller's block, the participant, any of the four vehicle slots, the
+playground or the simulation ends at that race's finish time — and the server
+keeps the JSON path. That is the designed fallback and it is verified, not
+assumed: 100/100 exact on that map with the lever refusing. The map has already
+shown it keeps this record somewhere else (§10.3), and the search window is
+32 KB from each base; widening it is the obvious next step and costs one fork.
+
+### 10.8 The four vehicle slots
+
+Fixed on the way, from the tm-player INPUT arm's finding: the participant holds
+**four** vehicle slots (`+0x1118/+0x1128/+0x1138/+0x1148` = Stadium, Snow,
+Rally, Desert) and only one is being driven — the one whose `phy+0x10` is not
+`0xffffffff`. `validator_chain` read slot 0 unconditionally, which is right on
+an ordinary map and resolves to a **parked** vehicle on a transform map. It now
+picks the live slot and refuses if the count is not exactly one.
+
+(The same arm places the full vis state at `phy+0x848`. Tried: its position is
+exact on 126859 and 145875 and one tick out on map 2, and the quaternion at
+`pos-16` is not a unit quaternion there — so its internal layout is not the one
+`segments()` describes. Left alone rather than guessed at.)

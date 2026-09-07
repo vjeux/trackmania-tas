@@ -997,6 +997,11 @@ struct Timing {
     finish_sim_ms: u64,
     /// The race tick at which the child first saw it.
     finish_clock: u64,
+    /// The checkpoint count of a child that ran out of tape without finishing,
+    /// PLUS ONE (so 0 still means "nothing reported").
+    dnf_cps: u64,
+    /// The race tick at which it gave up.
+    dnf_clock: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -1009,6 +1014,12 @@ static RESULT_WORD: AtomicUsize = AtomicUsize::new(0);
 /// same child produces both numbers and they can be compared (`fk tickhook
 /// finishcheck`).
 static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
+/// The word the engine zeroes when the tape's inputs run out, and the value it
+/// holds while they have not.
+static EXHAUSTED_WORD: AtomicUsize = AtomicUsize::new(0);
+static EXHAUSTED_LIVE: AtomicUsize = AtomicUsize::new(0);
+/// The participant's checkpoint counter.
+static CP_WORD: AtomicUsize = AtomicUsize::new(0);
 /// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
 /// others): the fast path fires when the word stops being this.
 static RESULT_SENTINEL: AtomicUsize = AtomicUsize::new(0);
@@ -1150,6 +1161,26 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                 }
                 if mode == 1 {
                     _exit(0);
+                }
+            } else {
+                // no finish yet -- has the tape run out? then this candidate's
+                // answer is already final: it did not finish, and the only
+                // other thing the driver wants is how far it got.
+                let e = EXHAUSTED_WORD.load(Ordering::Relaxed);
+                if e != 0
+                    && std::ptr::read_volatile(e as *const u32) as usize
+                        != EXHAUSTED_LIVE.load(Ordering::Relaxed)
+                {
+                    let t = timing();
+                    let cw = CP_WORD.load(Ordering::Relaxed);
+                    let cps = if cw != 0 { std::ptr::read_volatile(cw as *const u32) } else { 0 };
+                    if !t.is_null() && (*t).dnf_clock == 0 {
+                        (*t).dnf_cps = cps as u64 + 1; // +1: 0 means "no report"
+                        (*t).dnf_clock = n;
+                    }
+                    if mode == 1 {
+                        _exit(0);
+                    }
                 }
             }
         }
@@ -2072,6 +2103,7 @@ unsafe fn forkserver() {
             // whose finish time it already knows, and it reports the address
             // whose value becomes that time. Children are forked from this
             // process, so an address here is the same address there.
+            // 'Y' u64 finish_word, u64 exhausted_word, u64 cp_word
             let addr = u64::from_le_bytes(payload[1..9].try_into().unwrap());
             if addr < 0x1000 || !readable(addr as usize, 4) {
                 send_frame(res, b"ERR finish word unreadable");
@@ -2080,6 +2112,35 @@ unsafe fn forkserver() {
             let sentinel = *(addr as *const u32);
             RESULT_WORD.store(addr as usize, Ordering::SeqCst);
             RESULT_SENTINEL.store(sentinel as usize, Ordering::SeqCst);
+            // THE DNF HALF. A candidate that does not finish pays the same
+            // 6.02 ms epilogue, and in a search DNFs are the majority (307 of
+            // 400 at an early checkpoint). The engine says "the tape's inputs
+            // are exhausted" by zeroing a word in the participant one tick
+            // after the last record -- on a finisher AND on a DNF -- so a child
+            // that reaches that point with no finish recorded knows its answer
+            // is "did not finish, N checkpoints" and can report it and go.
+            // OFF BY DEFAULT, and not for safety-in-general: the fast DNF answer
+            // and the JSON's answer are NOT THE SAME NUMBER, and the fast one
+            // is the more truthful.
+            //
+            // `parse_result` derives a DNF's checkpoint count from the `Desc`
+            // line, and for a MUTATED candidate that line is almost always
+            // "wrong simu" -- the declared result in the ghost file no longer
+            // matches what was simulated -- which the driver maps to 0. The
+            // engine's own counter says 1 on 34 of 79 DNFs where the JSON says
+            // "wrong simu". Both are right about different things; switching
+            // the search to the engine's number would change how every
+            // non-finisher is scored, and that is a decision about the search,
+            // not a speedup to slip in behind a 6 ms saving.
+            if payload.len() >= 25 && std::env::var("FKSHIM_DNF_FAST").is_ok() {
+                let exh = u64::from_le_bytes(payload[9..17].try_into().unwrap());
+                let cp = u64::from_le_bytes(payload[17..25].try_into().unwrap());
+                if exh >= 0x1000 && readable(exh as usize, 4) && readable(cp as usize, 4) {
+                    EXHAUSTED_WORD.store(exh as usize, Ordering::SeqCst);
+                    EXHAUSTED_LIVE.store(*(exh as *const u32) as usize, Ordering::SeqCst);
+                    CP_WORD.store(cp as usize, Ordering::SeqCst);
+                }
+            }
             EXIT_AT_FINISH.store(
                 if std::env::var("FKSHIM_FINISH_CHECK").is_ok() { 2 } else { 1 },
                 Ordering::SeqCst,
@@ -2828,6 +2889,13 @@ unsafe fn forkserver() {
             {
                 // the child may have left at the finish with the answer
                 let tp = timing();
+                if !tp.is_null() && (*tp).dnf_cps != 0 {
+                    out.extend_from_slice(b"\nFKDNF cps ");
+                    utoa((*tp).dnf_cps - 1, &mut out);
+                    out.extend_from_slice(b" clock ");
+                    utoa((*tp).dnf_clock, &mut out);
+                    out.push(b'\n');
+                }
                 if !tp.is_null() && (*tp).finish_sim_ms != 0 {
                     out.extend_from_slice(b"\nFKFINISH race_ms ");
                     utoa((*tp).finish_sim_ms - RACE_START.load(Ordering::Relaxed), &mut out);
@@ -2944,6 +3012,13 @@ unsafe fn forkserver() {
         // simulation -- the validator's finish and print path, the JSON, the
         // pipe and the parse.
         let tp = timing();
+        if !tp.is_null() && (*tp).dnf_cps != 0 {
+            out.extend_from_slice(b"\nFKDNF cps ");
+            utoa((*tp).dnf_cps - 1, &mut out);
+            out.extend_from_slice(b" clock ");
+            utoa((*tp).dnf_clock, &mut out);
+            out.push(b'\n');
+        }
         if !tp.is_null() && (*tp).finish_sim_ms != 0 {
             // The child read the race result out of the engine and left. Report
             // it in the RACE ms the driver speaks, on its own line, so

@@ -670,10 +670,12 @@ impl ForkServer {
 
     /// Tell the shim which address holds this race's finish time, so children
     /// can stop the moment the engine records one. See `crate::finish`.
-    pub fn set_finish_word(&mut self, addr: u64) -> String {
-        let mut p = Vec::with_capacity(9);
+    pub fn set_finish_word(&mut self, addr: u64, exhausted: u64, cp: u64) -> String {
+        let mut p = Vec::with_capacity(25);
         p.push(b'Y');
         p.extend_from_slice(&addr.to_le_bytes());
+        p.extend_from_slice(&exhausted.to_le_bytes());
+        p.extend_from_slice(&cp.to_le_bytes());
         self.arm(&p)
     }
 
@@ -1017,6 +1019,15 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // A child that ran out of tape without finishing already knows its whole
+    // answer: it did not finish, and it passed this many checkpoints.
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKDNF cps ") {
+            if let Some(v) = rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+                return (None, Some(v));
+            }
+        }
+    }
     // THE CHILD MAY HAVE ANSWERED ALREADY. When the shim exits a child at the
     // finish (`FKSHIM_EXIT_AT_FINISH`), the validator never runs its print path,
     // so there is no `ValidatedResult` to read -- the answer arrives on its own
