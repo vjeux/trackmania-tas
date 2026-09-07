@@ -155,8 +155,10 @@ pub struct DynaPart {
     pub model: super::dyna::CPlugDynaObjectModel,
     pub instance_params_id: i32,
     pub instance_params: Vec<u8>,
-    pub constraint: super::dyna::KinematicConstraint,
-    pub constraint_params: super::dyna::ConstraintParams,
+    /// The constraint that moves it, with its entity params — `None` for a
+    /// part the pack drives without one (the flag cloth: its motion is the
+    /// mesh's own vertex tween, played by the material).
+    pub constraint: Option<(super::dyna::KinematicConstraint, super::dyna::ConstraintParams)>,
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {
@@ -1406,11 +1408,12 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         for (k, part) in m.dyna.iter().enumerate() {
             // Ent2 ranks the dyna objects of the prefab (the k-th
             // CPlugDynaObjectModel entity), whatever sits between them
-            let mut cp = part.constraint_params.clone();
+            let Some((constraint, cparams)) = part.constraint.as_ref() else { continue };
+            let mut cp = cparams.clone();
             cp.ent1 = -1;
             cp.ent2 = k as i32;
             let i = next_index(&mut next);
-            ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(part.constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
+            ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
         }
         let prefab = super::prefab::CPlugPrefab { version: 11, file_write_time: 0, url: String::new(), u01: 0, u02: 0, ents };
         if dyna_form_common() {
@@ -1672,6 +1675,16 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         Some((_, cpath, cparams)) if !dyna_static => {
                             if let Err(err) = add_dyna_part(store, &p, &iso, scale, m, &cpath, cparams, e) {
                                 m.notes.push(format!("{path} entity {i}: moving part {p} failed ({err}); baked at rest"));
+                                if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
+                                    m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
+                                }
+                            }
+                        }
+                        // a self-animating mesh (the flag cloth's vertex tween):
+                        // a dyna entity of its own, no constraint
+                        None if !dyna_static && tween_parts_enabled() && dyna_has_tween_material(store, &p) => {
+                            if let Err(err) = add_dyna_tween_part(store, &p, &iso, scale, m, e) {
+                                m.notes.push(format!("{path} entity {i}: tween part {p} failed ({err}); baked at rest"));
                                 if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
                                     m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
                                 }
@@ -2118,18 +2131,22 @@ fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
     store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
 }
 
-/// TINY_FLAG_TWEEN=1: a vertex-tweened cloth keeps its frames, its frame
-/// table, its tween material and the pack's inline-vertex form (the
-/// 2026-09-07 motion test); unset, it is baked as frame 0 under TrackBorders.
-pub fn keep_tween_frames() -> bool {
-    std::env::var("TINY_FLAG_TWEEN").map(|v| v == "1").unwrap_or(false)
+/// A vertex-tweened cloth (the flag) is kept as a dyna entity of its own with
+/// its frames, frame table, tween material and the pack's inline-vertex form
+/// — the waving, hue-masked flag of 2026-09-07. `TINY_FLAG_TWEEN=0` bakes it
+/// as frame 0 under TrackBorders instead (the still white flag of before).
+pub fn tween_parts_enabled() -> bool {
+    std::env::var("TINY_FLAG_TWEEN").map(|v| v != "0").unwrap_or(true)
 }
 
 fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
     tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone())
 }
 
-pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut Merged) -> R<DynaSource> {
+/// `keep_frames`: leave a tweened visual whole (every frame, the frame table,
+/// the tween material) for a dyna entity; false bakes frame 0 as a static
+/// visual under TrackBorders (a static object with the table crashes at draw).
+pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut Merged, keep_frames: bool) -> R<DynaSource> {
     let model = store.load_model(path)?;
     if model.class_id != crate::node::C_DYNA_OBJECT {
         return Err(format!("{path}: class 0x{:08X} is not CPlugDynaObjectModel", model.class_id));
@@ -2150,11 +2167,6 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
     lb.defined_nodes.extend(mm_.external_indices().iter().copied());
     let mut r = super::Rd::new(&mm_.body, 0, lb);
     let mut s2 = super::solid2::CPlugSolid2Model::parse(&mut r).map_err(|e| format!("{mp}: {e}"))?;
-    // TINY_FLAG_TWEEN=1: keep the cloth as the pack has it — every animation
-    // frame in the vertex array, the frame table, the tween material, the
-    // inline-vertex form — instead of a static frame 0 under TrackBorders
-    // (the 2026-09-07 motion test).
-    let keep_frames = keep_tween_frames();
     for vr in s2.visuals.iter_mut() {
         if let Some(Node::Visual(v)) = vr.inline.as_deref_mut() {
             let count = v.main.as_ref().map(|m| m.count).unwrap_or(0).max(0) as usize;
@@ -2189,14 +2201,14 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
         }
     }
     let mesh_ext = mm_.externals.clone();
-    // A material whose shader tweens between vertex frames runs the
-    // vertex-animation draw path on every visual it dresses — with no frame
-    // table that is a NULL read (SCBufferDraw@NCharAnimSkelV, 2026-09-06, twice).
-    // Such a cloth is drawn as TrackBorders (the road-shoulder material: white
-    // under the map's White colour, and skinned like the roads in BlueBay) with
-    // its uv0 pinned to one texel of the white panel — the flag is a plain
-    // light cloth in the game (its own green `ItemFlag_D` is hue-masked to the
-    // colour); Technics made it a dark grey rag.
+    // STATIC bake of a tweened cloth (`keep_frames` false): a material whose
+    // shader tweens between vertex frames runs the vertex-animation draw path
+    // on every visual it dresses, and a static object's visual has no frame
+    // table at run time — a NULL read (0x140a9c174, 2026-09-06 and -07). So the
+    // still cloth is drawn as TrackBorders with its uv0 mapped into the road
+    // stripe band, the one region of TrackBorders_D whose hue mask is set
+    // (alpha 0xff at texture rows v 0.02..0.11; the game reads v from the
+    // bottom, so uv v 0.90..0.97): a plain cloth in the placement colour.
     let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| is_tween_material(store, &p)).unwrap_or(false)).collect();
     if !keep_frames && tween_mats.iter().any(|t| *t) {
         // TINY_FLAG_BAND=v0,v1: the TrackBorders_D band (v range) the cloth's
@@ -2210,8 +2222,8 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
                 let f: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 (f.len() == 2).then(|| [f[0], f[1]])
             })
-            .unwrap_or([0.755, 0.805]);
-        if band != [0.755, 0.805] {
+            .unwrap_or([0.90, 0.97]);
+        if band != [0.90, 0.97] {
             m.notes.push(format!("TINY_FLAG_BAND={},{}: cloth uv0 mapped into that TrackBorders v band", band[0], band[1]));
         }
         for g in &s2.shaded_geoms {
@@ -2223,10 +2235,10 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
                     for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
                         if d.name() == N_TEXCOORD0 {
                             if let Elem::Float2(uv) = e {
-                                // An affine map into the band the road shoulders use (v 0.75..0.80 of
-                                // TrackBorders_D: mid-grey albedo hue-masked to the placement colour,
-                                // rough, non-metal — the light band at v 0.125..0.5 is smooth METAL in
-                                // TrackBorders_R (r 0x30, b 0xb1) and drew a black chrome flag), NOT a constant:
+                                // An affine map into the band (measured 2026-09-07 with three bands
+                                // on a lineup: uv v 0.755..0.805 = the unmasked white panel, white at
+                                // every colour; 0.90..0.97 = the masked stripe, coloured; 0.03..0.10 =
+                                // dark grey), NOT a constant:
                                 // a constant uv has zero screen derivatives and the
                                 // shader's per-pixel tangent frame divides by them —
                                 // the cloth drew pitch black (flagslow2, 2026-09-06).
@@ -2276,7 +2288,7 @@ fn load_dyna_shape(store: &mut crate::store::DataStore, src: &DynaSource, sref: 
 /// the cloth of `Items\Flag\Flag16m`, a rotor, a light ray): its mesh at REST,
 /// merged as a static object, with one of its hulls as collision.
 pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
-    let src = load_dyna_source(store, path, m)?;
+    let src = load_dyna_source(store, path, m, false)?;
     let mut tween_notes: Vec<String> = Vec::new();
     // the two hulls: the one that moves with the object, the one that stays —
     // either gives the static copy a collision surface (an item whose surface
@@ -2310,8 +2322,8 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             return Some((p, link, phys));
         }
         let p = name_in(&mesh_ext, idx)?;
-        if !keep_tween_frames() && is_tween_material(store, &p) {
-            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
+        if is_tween_material(store, &p) {
+            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 in the hue-masked stripe band)"));
             return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
         }
         let link = material_link(&p);
@@ -2376,7 +2388,7 @@ pub fn modified_constraint_path(store: &mut crate::store::DataStore, m: &Merged,
 /// of the item's prefab.
 #[allow(clippy::too_many_arguments)]
 pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, constraint_path: &str, cparams: super::dyna::ConstraintParams, ent: &super::prefab::Entity) -> R<()> {
-    let src = load_dyna_source(store, path, m)?;
+    let src = load_dyna_source(store, path, m, false)?;
     // TINY_DYNA_CONSTRAINT=<pack path>: every moving part takes this
     // constraint instead (the cross tests of 2026-09-07: a pusher driven by
     // the rotor's rotation, a rotor by the pusher's translation)
@@ -2431,8 +2443,8 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         let p = name_in(&mesh_ext, idx)?;
-        if !keep_tween_frames() && is_tween_material(store, &p) {
-            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
+        if is_tween_material(store, &p) {
+            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 in the hue-masked stripe band)"));
             return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
         }
         let link = material_link(&p);
@@ -2474,7 +2486,11 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         }
         _ => {}
     }
-    let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(ent));
+    // `at` is already the entity's pose in the item frame (add_prefab composes
+    // the parent chain with the entity iso before calling); composing the
+    // entity iso in again doubled the flag cloth's pose (y 11.37 instead of
+    // 5.68, a 180-degree turn) — harmless only for a part sitting at the origin
+    let iso = *at;
     let rot = crate::geom::to_quat(&iso);
     let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
     let hulls = |s: &Option<CPlugSurface>| match s.as_ref() {
@@ -2504,11 +2520,76 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         model: src.model.clone(),
         instance_params_id: ent.params_id,
         instance_params: ent.params.clone(),
-        constraint,
-        constraint_params: cparams,
+        constraint: Some((constraint, cparams)),
     });
     Ok(())
 }
+/// Whether a dyna object's mesh is dressed by a vertex-tween material (the
+/// flag cloth) — the one kind of moving part the pack drives without a
+/// constraint.
+pub fn dyna_has_tween_material(store: &mut crate::store::DataStore, path: &str) -> bool {
+    let Ok(model) = store.load_model(path) else { return false };
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(model.external_indices().iter().copied());
+    let mut r = super::Rd::new(&model.body, 0, lb);
+    let Ok(dyna) = super::dyna::CPlugDynaObjectModel::parse(&mut r) else { return false };
+    let Some(mp) = name_in(&model.externals, dyna.mesh.index) else { return false };
+    let Ok(mm_) = store.load_model(&mp) else { return false };
+    mm_.externals.iter().any(|(_, p)| p.to_ascii_lowercase().ends_with(".material.gbx") && is_tween_material(store, p))
+}
+
+/// A `.DynaObject.Gbx` entity whose mesh ANIMATES BY ITSELF — the flag cloth:
+/// a vertex-tween material over a vertex array holding every frame, with the
+/// frame table (0x09006005) saying where each one starts. Kept as a
+/// `CPlugDynaObjectModel` entity of the item's prefab like the pack keeps it
+/// (no hulls, no constraint, the pack's instance params), its mesh scaled
+/// frame by frame and written in the pack's inline-vertex form. Baked into
+/// the STATIC object instead (2026-09-06 and 2026-09-07, stream and inline
+/// form alike), the client crashed at draw time reading the frame table
+/// through a NULL pointer (0x140a9c174, `mov ecx,[r14+rax*4]` with r14 = 0,
+/// rax = 3 x frame index) — the static-object loader rebuilds its visuals and
+/// keeps no frame table, while the tween material still asks for one.
+pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, ent: &super::prefab::Entity) -> R<()> {
+    let src = load_dyna_source(store, path, m, true)?;
+    if !src.tween_mats.iter().any(|t| *t) {
+        return Err(format!("{path}: no vertex-tween material"));
+    }
+    let mut mesh = Merged::default();
+    mesh.editors = m.editors;
+    mesh.keep_water = m.keep_water;
+    mesh.modifier = m.modifier.clone();
+    mesh.modifier_suffix = m.modifier_suffix.clone();
+    mesh.no_split = true;
+    let mesh_ext = src.mesh_ext.clone();
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
+    let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        let p = name_in(&mesh_ext, idx)?;
+        let link = material_link(&p);
+        let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
+        Some((p, link, phys))
+    };
+    mesh.add_static_object(&so, &IDENTITY, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
+    mesh.resolve_pending_lights(store);
+    if mesh.visuals.is_empty() {
+        return Err(format!("{path}: the tween mesh has no visuals"));
+    }
+    let frames: Vec<String> = mesh.visuals.iter().map(|mv| format!("{} frames x {} vertices", mv.visual.sub_visuals.len(), mv.visual.main.as_ref().map(|mn| mn.count).unwrap_or(0) / mv.visual.sub_visuals.len().max(1) as i32)).collect();
+    // the pack's hulls, when it has any (the flag has none: both refs null)
+    let move_shape = load_dyna_shape(store, &src, &src.model.dyna_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
+    let hit_shape = load_dyna_shape(store, &src, &src.model.static_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
+    // `at` is already the entity's pose in the item frame (add_prefab composes
+    // the parent chain with the entity iso before calling); composing the
+    // entity iso in again doubled the flag cloth's pose (y 11.37 instead of
+    // 5.68, a 180-degree turn) — harmless only for a part sitting at the origin
+    let iso = *at;
+    let rot = crate::geom::to_quat(&iso);
+    let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
+    m.notes.push(format!("{}: TWEEN part, {} visuals [{}], no constraint, params 0x{:X} ({} bytes)", path.rsplit('\\').next().unwrap_or(path), mesh.visuals.len(), frames.join("; "), ent.params_id, ent.params.len()));
+    m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (tween part) {n}")));
+    m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params: ent.params.clone(), constraint: None });
+    Ok(())
+}
+
 /// The variant list of a pack ITEM: its geometry and vegetation externals
 /// (`.Prefab.Gbx` / `.StaticObject.Gbx` / `.VegetTreeModel.Gbx`) in reference
 /// order — the order the placement's variant byte indexes (Summer 11's

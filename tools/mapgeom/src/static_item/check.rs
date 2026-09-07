@@ -34,6 +34,8 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         // The solids to check: a static item's one, or every entity of a
         // moving item's prefab (each dyna part's mesh, the static part's).
         let mut parts: Vec<(String, &super::solid2::CPlugSolid2Model, Option<&super::surface::CPlugSurface>)> = Vec::new();
+        // indices into `parts` whose missing hull is fine (tween parts)
+        let mut hull_optional: Vec<usize> = Vec::new();
         if let Some(so) = f.item.static_object() {
             match so.solid2() {
                 Some(s2) => parts.push((String::new(), s2, so.surface())),
@@ -45,6 +47,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             }
         } else if let Some(p) = f.item.prefab() {
             let mut constraints = 0usize;
+            let mut tween_parts = 0usize;
             for (i, e) in p.ents.iter().enumerate() {
                 match e.model.inline.as_deref() {
                     Some(super::Node::Dyna(d)) => match d.mesh.inline.as_deref() {
@@ -55,7 +58,22 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                                     _ => None,
                                 }
                             }
-                            parts.push((format!("entity {i} (moving): "), s2, hull(&d.static_shape).or_else(|| hull(&d.dyna_shape))));
+                            // A self-animating part (the flag cloth: every visual carries a
+                            // frame table, 0x09006005, for its vertex-tween material) rides
+                            // without a constraint and without a hull, as in the pack
+                            // (Flag.DynaObject.Gbx: both shape refs null; measured drawing and
+                            // waving in a Summer 15 lineup, 2026-09-07).
+                            let is_tween = !s2.visuals.is_empty() && s2.visuals.iter().all(|vr| matches!(vr.inline.as_deref(), Some(super::Node::Visual(v)) if !v.sub_visuals.is_empty()));
+                            if is_tween {
+                                tween_parts += 1;
+                                let hull = hull(&d.static_shape).or_else(|| hull(&d.dyna_shape));
+                                if hull.is_none() {
+                                    hull_optional.push(parts.len());
+                                }
+                                parts.push((format!("entity {i} (tween): "), s2, hull));
+                            } else {
+                                parts.push((format!("entity {i} (moving): "), s2, hull(&d.static_shape).or_else(|| hull(&d.dyna_shape))));
+                            }
                         }
                         _ => problems.push(format!("entity {i}: moving part without an inline mesh")),
                     },
@@ -82,7 +100,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     None => problems.push(format!("entity {i}: external model node {}", e.model.index)),
                 }
             }
-            let moving = p.ents.iter().filter(|e| matches!(e.model.inline.as_deref(), Some(super::Node::Dyna(_)))).count();
+            let moving = p.ents.iter().filter(|e| matches!(e.model.inline.as_deref(), Some(super::Node::Dyna(_)))).count() - tween_parts;
             if constraints != moving {
                 problems.push(format!("{moving} moving parts but {constraints} constraints"));
             }
@@ -99,7 +117,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let nparts = parts.len();
         let mut total_visuals = 0usize;
         let mut total_mats = 0usize;
-        for (label, s2, surface) in parts {
+        for (part_index, (label, s2, surface)) in parts.into_iter().enumerate() {
         let p0 = problems.len();
         total_visuals += s2.visuals.len();
         total_mats += s2.custom_materials.len();
@@ -362,7 +380,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 let (v, t) = sf.surf.counts();
                 println!("{path}: {label}collision surf type {} {v} vertices {t} faces physics {:?}", sf.surf.type_id(), sf.material_ids);
             }
-        } else {
+        } else if !hull_optional.contains(&part_index) {
             problems.push("no collision surface".into());
         }
         for p in problems[p0..].iter_mut() {
