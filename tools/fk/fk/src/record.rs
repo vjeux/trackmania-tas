@@ -715,24 +715,41 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     };
     let mut srv = None;
     let mut used = 0u64;
+    let mut derived: Option<DerivedClock> = None;
     let mut err = String::from("no checkpoint tried");
     for ck in ladder {
         match start_server_on_file(c, &f, &work, ck, std::path::Path::new(&c.template)) {
             Ok(s) => {
-                // NO LIVENESS GATE HERE. One was tried: read the car's position at
-                // this checkpoint and walk to the next rung if it is not
-                // plausible, so that a map whose spawn is a long fall gets a
-                // checkpoint where the vehicle exists. It does not work and it
-                // is expensive. It cannot tell "not allocated yet" from "a
-                // chain that names something else", so it walks the whole
-                // ladder for every candidate -- 52 anchors x 10 rungs is 520
-                // engine starts -- and ends at "ckpt 56000: the car does not
-                // exist yet" having rejected chains that were fine. The
-                // acceptance test downstream reads the WHOLE run and is the
-                // thing that can actually tell.
-                srv = Some(s);
-                used = ck;
-                break;
+                // THE CAR MUST EXIST AT THE HANDOVER. The four vehicle objects
+                // are created two ticks before the race starts (race -20 ms on
+                // map 2: `LOCATE.md` §10); a rung in the countdown has a
+                // participant whose vehicle slots are still null, and nothing
+                // can be derived from -- or located in -- a process where the
+                // object does not exist yet. So the derivation runs here, at
+                // the rung, and a "not yet" walks to the next rung. Any other
+                // failure is an error: the acceptance test downstream reads the
+                // whole run and cannot be fooled by a wrong object, but a
+                // wrong object must not be handed to it either.
+                match derived_clock(&s) {
+                    Ok(d) => {
+                        srv = Some(s);
+                        used = ck;
+                        derived = Some(d);
+                        break;
+                    }
+                    Err(e)
+                        if e.contains("not CGameVehiclePhy")
+                            || e.contains("processes none")
+                            || e.contains("participant.vehicle[k]") =>
+                    {
+                        err = format!("ckpt {}: the car does not exist yet ({})", ck, e);
+                        if verbose {
+                            println!("  {}", err);
+                        }
+                        s.quit();
+                    }
+                    Err(e) => return Err(format!("ckpt {}: {}", ck, e)),
+                }
             }
             Err(e) => {
                 err = format!("ckpt {}: {}", ck, e);
@@ -743,6 +760,40 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         }
     }
     let mut srv = srv.ok_or(err)?;
+    let ck = derived.expect("derived at the handover rung");
+    // NO ANCHOR GIVEN: the derived car IS the anchor, built in this process.
+    // The post-step vis state (`phy+0x848`) is the copy that carries the
+    // wheel, gear and rpm fields the gather wants, with the layout the
+    // engine's reflection names: the 3x3 rotation 36 bytes before the position
+    // triple, `WorldVel` 12 after (VEHICLEVISSTATE.md). Its bias is the race
+    // start: it is refreshed from the body after the copy-out, so it holds the
+    // tick the clock word names. Expressed as `base+N` because it is only
+    // valid in THIS process, which is the only place it is used.
+    let derived_anchor: Anchors;
+    let anchors: Option<&Anchors> = match anchors {
+        Some(a) => Some(a),
+        None => {
+            let vis_pos = ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS;
+            derived_anchor = Anchors {
+                bias: ck.bias_post,
+                chain: format!("base{:+}", vis_pos as i64 - srv.base as i64),
+                member: 0,
+                clock_delta: ck.addr as i64 - srv.base as i64,
+                speed: 0.0,
+                quat_off: -36,
+                quat_kind: 2,
+                vel_off: 12,
+            };
+            if verbose {
+                println!(
+                    "anchor: the derived car's post-step vis state at {:#x} (base{:+}), rot -36 as 3x3, vel +12",
+                    vis_pos,
+                    vis_pos as i64 - srv.base as i64
+                );
+            }
+            Some(&derived_anchor)
+        }
+    };
     // NO POOL IS POSSIBLE HERE, and the reason is in the protocol rather than
     // in this function. The gather ends with `srv.go(...)`, which sends the
     // 'G' command and then calls `self.child.wait()`: 'G' tells the server to
@@ -797,7 +848,6 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // transfer between processes any more than the old scanned one did (on
     // 252289 a transferred clock address read 0 in the clean process and the
     // whole run collapsed to a single deduplicated instant).
-    let ck = derived_clock(&srv)?;
     let mut layout = match anchors {
         // The POSITION comes from the anchor, resolved here; its bias is the
         // anchor's own (a pre-step vis state lags the clock word by a tick).
@@ -813,19 +863,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             rms: 0.0,
             max_dev: 0.0,
         },
-        // No anchor: the post-step vis state of the derived car, which is the
-        // object that carries the wheel, gear and rpm fields the gather wants,
-        // stamped by the clock word it is refreshed under.
-        None => forkoracle::layout::Layout {
-            pos: ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS,
-            quat: 0,
-            vel: 0,
-            wet: 0,
-            clock: ck.addr,
-            clock_bias: ck.bias_post,
-            rms: 0.0,
-            max_dev: 0.0,
-        },
+        None => unreachable!("the derived anchor is always present"),
     };
     if let Some(b) = bias_override {
         layout.clock_bias = b;

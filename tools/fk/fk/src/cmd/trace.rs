@@ -50,7 +50,48 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
         Some(p) => Some(traj::Reference::load(p)?),
         None => None,
     };
-    let mut s = Session::start(engine, tape, at)?;
+    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md): the copy-out of the
+    // dyna body the physics step integrates, stamped with the tick loop's own
+    // clock. There is no candidate to judge, so the old probe ladder -- which
+    // existed because a self-consistency test could refuse a real car at a slow
+    // checkpoint -- is gone, with ONE honest exception: before the car is
+    // spawned (a checkpoint in the countdown) the participant's vehicle slots
+    // are not filled yet and there is nothing to derive. Then, and only then,
+    // the checkpoint moves to shortly after the race start, and the trace says
+    // so. Any other derivation failure is an error.
+    let ladder: Vec<(String, Checkpoint)> = vec![
+        ("the given checkpoint".to_string(), at),
+        (
+            "race +0.2 s (the first checkpoint after the spawn)".to_string(),
+            Checkpoint::Tick((200 - tape.start_offset_ms as i64) / 10),
+        ),
+        ("frac:0.5".to_string(), Checkpoint::Fraction(0.5)),
+    ];
+    let mut s: Option<Session> = None;
+    let mut car = None;
+    let t0 = std::time::Instant::now();
+    for (i, (label, cp)) in ladder.into_iter().enumerate() {
+        let sess = Session::start(engine, tape.clone(), cp)?;
+        match forkoracle::car::locate(&sess.srv) {
+            Ok(c) => {
+                if i > 0 {
+                    println!("locate: the given checkpoint is before the car exists; {} has it", label);
+                }
+                car = Some(c);
+                s = Some(sess);
+                break;
+            }
+            Err(e) if e.contains("not CGameVehiclePhy") || e.contains("processes none") || e.contains("participant.vehicle[k]") => {
+                println!("locate at {}: the car does not exist yet ({})", label, e);
+                sess.srv.quit();
+            }
+            Err(e) => return Err(format!("the car did not derive: {}", e)),
+        }
+    }
+    let (mut s, car) = match (s, car) {
+        (Some(s), Some(c)) => (s, c),
+        _ => return Err("the car does not exist at any checkpoint tried".into()),
+    };
     let probe = s.probe_tick()?;
     println!(
         "checkpoint clock #{} -> probe tick {} (race {}), tape {} ticks",
@@ -59,15 +100,7 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
         crate::secs(s.tape.race_ms(probe)),
         s.tape.n()
     );
-
     let recs = s.tape.tail_records(probe);
-    let t0 = std::time::Instant::now();
-    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md): the copy-out of the
-    // dyna body the physics step integrates, stamped with the tick loop's own
-    // clock. No probe ladder any more -- the old locator judged a candidate by
-    // d(pos)/dt against its stored velocity and could refuse a real car at a
-    // slow checkpoint; the derivation has no candidate to judge.
-    let car = forkoracle::car::locate(&s.srv)?;
     println!("car: {}", car);
     let layout = car.layout();
     println!("locate: {:.4}s", t0.elapsed().as_secs_f64());

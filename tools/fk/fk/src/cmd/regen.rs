@@ -440,7 +440,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // the memory-search fallback below is the last resort -- an
                 // exit at this point killed the run before it could run.
                 match crate::record::car_path_len(&dump, v.reclen, v.pos_off) {
-                    Ok(_) => o = Some(v),
+                    Ok(_) => {
+                        // THE LABEL IS DERIVED WITH THE CAR: the clock word is
+                        // the tick loop's own and its bias is the race start
+                        // the engine set in this process (LOCATE.md §3). It
+                        // is the only bias this process can have.
+                        if bias == 0 {
+                            bias = v.bias;
+                            println!("bias {} (derived: the engine's race start)", bias);
+                        }
+                        o = Some(v)
+                    }
                     Err(e) => println!("in-process locate: REJECTED -- {}", e),
                 }
             }
