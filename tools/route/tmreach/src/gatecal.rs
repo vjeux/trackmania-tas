@@ -87,7 +87,17 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
         // is 7607, and the first engine row at or after it is 7610: the tick in
         // which the crossing happened.
         let row_ms = ((cp_ms - w.label_shift) as f64 / 10.0).ceil() as i64 * 10;
-        let idx = rep.flat.iter().position(|r| r.time_ms == row_ms);
+        let mut idx = rep.flat.iter().position(|r| r.time_ms == row_ms);
+        if idx.is_none() {
+            // the exiting child loses its last samples (0..5): a notice whose row
+            // is up to 3 ticks past the trace end is matched to the last row, so
+            // a finish crossing the detector saw on that row is not "extra"
+            if let Some(last) = rep.flat.last() {
+                if row_ms > last.time_ms && row_ms - last.time_ms <= 30 {
+                    idx = Some(rep.flat.len() - 1);
+                }
+            }
+        }
         let Some(idx) = idx else {
             eprintln!(
                 "  {}: no engine row at {} for notice {} (rows {} .. {})",
@@ -344,6 +354,8 @@ pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f6
         "RoadTechCheckpoint" => 12.5,
         "RoadTechFinish" => 12.5,
         "GateCheckpointLeft32m" => 13.0,
+        // other ROAD blocks: the RoadTech evidence generalised (walls at half_width + 4.75)
+        m if m.starts_with("Road") => geom_half_width + 4.5,
         _ => geom_half_width + 2.0,
     }
 }

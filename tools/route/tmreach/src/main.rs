@@ -98,6 +98,7 @@ fn main() {
         "gateprobe" => cmd_gateprobe(&a),
         "fitbox" => cmd_fitbox(&a),
         "rejudge" => cmd_rejudge(&a),
+        "campaign" => cmd_campaign(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -715,4 +716,200 @@ fn cmd_rejudge(a: &Args) -> Result<(), String> {
     }
     println!("=> {}", if disagree == 0 { "PASS" } else { "FAIL" });
     Ok(())
+}
+
+/// G5: every map that has `resim_verdict == exact` ghosts in the player's
+/// manifest — select the ghosts, fit + control the detector (gatecal), a
+/// small plain-oracle control (oraclectl), the fan-out, verify, bank to
+/// `reach/v0/<mapUid>/` with a CONTROL.md made of the sub-commands' own
+/// summaries. Each stage is this binary run as a child (its stdout is the
+/// record); a failing stage stops that map, never the campaign.
+fn cmd_campaign(a: &Args) -> Result<(), String> {
+    let manifest = PathBuf::from(a.req("manifest"));
+    let ghosts_root = PathBuf::from(a.req("ghosts-root")); // .../data/v0/maps
+    let maps_dir = PathBuf::from(a.req("maps-dir")); // <uid>.Map.Gbx
+    let bank = PathBuf::from(a.req("bank")); // .../reach/v0
+    let scratch = PathBuf::from(a.get("scratch").unwrap_or("/tmp/tmreach/campaign"));
+    let workers = a.get("workers").unwrap_or("64").to_string();
+    let shards = a.get("shards").unwrap_or("3").to_string();
+    let filter = a.get("maps").map(|s| s.split(',').map(|x| x.to_string()).collect::<Vec<_>>());
+    let name_filter = a.get("name-filter").map(|s| s.to_string());
+    let redo = a.has("redo");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // manifest → per map: name, [(rank, declared_ms)] of exact ghosts
+    let txt = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let mut lines = txt.lines();
+    let header: Vec<&str> = lines.next().ok_or("empty manifest")?.split('\t').collect();
+    let col = |n: &str| header.iter().position(|h| *h == n).ok_or(format!("manifest lacks column {n}"));
+    let (c_uid, c_name, c_rank, c_decl, c_verdict, c_kb) = (col("map_uid")?, col("map_name")?, col("rank")?, col("declared_ms")?, col("resim_verdict")?, col("keyboard")?);
+    let mut maps: std::collections::BTreeMap<String, (String, Vec<(String, String, bool)>, usize)> = Default::default();
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() <= c_kb {
+            continue;
+        }
+        let e = maps.entry(f[c_uid].to_string()).or_insert((f[c_name].to_string(), Vec::new(), 0));
+        e.2 += 1;
+        if f[c_verdict] == "exact" {
+            e.1.push((f[c_rank].to_string(), f[c_decl].to_string(), f[c_kb] == "true"));
+        }
+    }
+    let mut report = String::new();
+    for (uid, (name, exact, total)) in &maps {
+        if let Some(fl) = &filter {
+            if !fl.contains(uid) {
+                continue;
+            }
+        }
+        if let Some(nf) = &name_filter {
+            if !name.contains(nf.as_str()) {
+                continue;
+            }
+        }
+        let out_dir = bank.join(uid);
+        if out_dir.join("samples.tmr").exists() && !redo {
+            println!("== {name} ({uid}): already banked, skipping (--redo to rebuild)");
+            continue;
+        }
+        println!("== {name} ({uid}): {} exact of {total} ghosts", exact.len());
+        if exact.is_empty() {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no resim-exact ghost ({total} in the manifest)\n"));
+            continue;
+        }
+        let map = maps_dir.join(format!("{uid}.Map.Gbx"));
+        if !map.exists() {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no map file {}\n", map.display()));
+            continue;
+        }
+        // ghost directory of symlinks: <rank>-<declared>.Ghost.Gbx under the player's maps/<uid>/ghosts
+        let gdir = scratch.join(uid).join("ghosts");
+        let _ = std::fs::remove_dir_all(&gdir);
+        std::fs::create_dir_all(&gdir).map_err(|e| e.to_string())?;
+        let src_dir = ghosts_root.join(uid).join("ghosts");
+        let mut n_linked = 0;
+        let mut n_keyboard = 0;
+        for (rank, decl, kb) in exact {
+            // the player names files <ghost_id?>-<declared>.Ghost.Gbx; match on the declared time
+            let mut found = None;
+            if let Ok(rd) = std::fs::read_dir(&src_dir) {
+                for ent in rd.flatten() {
+                    let fname = ent.file_name().to_string_lossy().into_owned();
+                    if fname.ends_with(".Ghost.Gbx") && fname.trim_end_matches(".Ghost.Gbx").split('-').nth(1) == Some(decl.as_str()) {
+                        found = Some(ent.path());
+                        break;
+                    }
+                }
+            }
+            let Some(src) = found else {
+                report.push_str(&format!("{name}\t{uid}\tghost rank {rank} declared {decl}: file not found under {}\n", src_dir.display()));
+                continue;
+            };
+            let dst = gdir.join(format!("r{:0>3}_{}.Ghost.Gbx", rank, decl));
+            std::os::unix::fs::symlink(&src, &dst).map_err(|e| e.to_string())?;
+            n_linked += 1;
+            if *kb {
+                n_keyboard += 1;
+            }
+        }
+        if n_linked == 0 {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no ghost file linked\n"));
+            continue;
+        }
+        let work = scratch.join(uid).join("work");
+        let stage_dir = scratch.join(uid);
+        let run = |args: &[&str]| -> Result<String, String> {
+            let t = std::time::Instant::now();
+            let o = std::process::Command::new(&exe).args(args).output().map_err(|e| e.to_string())?;
+            let so = String::from_utf8_lossy(&o.stdout).into_owned();
+            let se = String::from_utf8_lossy(&o.stderr).into_owned();
+            let _ = std::fs::write(stage_dir.join(format!("{}.log", args[0])), format!("{so}\n[stderr]\n{se}"));
+            if !o.status.success() {
+                return Err(format!("stage {} failed ({:?}, {:.0} s): {}", args[0], o.status.code(), t.elapsed().as_secs_f64(), se.lines().last().unwrap_or("")));
+            }
+            Ok(so)
+        };
+        let g = gdir.to_string_lossy().into_owned();
+        let m = map.to_string_lossy().into_owned();
+        let w = work.to_string_lossy().into_owned();
+        let gc_out = stage_dir.join("gatecal").to_string_lossy().into_owned();
+        let oc_out = stage_dir.join("oraclectl").to_string_lossy().into_owned();
+        let fo_out = stage_dir.join("fanout").to_string_lossy().into_owned();
+        let det = format!("{gc_out}/detector.json");
+        let stages: Result<(String, String, String, String), String> = (|| {
+            let gc_workers = workers.parse::<usize>().unwrap_or(32).min(n_linked).max(1).to_string();
+            let gc = run(&["gatecal", "--map", &m, "--ghosts", &g, "--workers", &gc_workers, "--out", &gc_out, "--work", &w])?;
+            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", "2500", "--macros", "0,2,9,21,26,29,33,38"])?;
+            let fo = run(&["fanout", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &fo_out, "--work", &w, "--workers", &workers, "--shards", &shards, "--horizons", "200,400"])?;
+            let ve = run(&["verify", "--dir", &fo_out])?;
+            Ok((gc, oc, fo, ve))
+        })();
+        match stages {
+            Err(e) => {
+                println!("   FAILED: {e}");
+                report.push_str(&format!("{name}\t{uid}\tFAILED: {e}\n"));
+                continue;
+            }
+            Ok((gc, oc, fo, ve)) => {
+                let pick = |s: &str, keys: &[&str]| -> String { s.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect() };
+                let gc_pass = gc.contains("=> PASS") && !gc.contains("=> FAIL");
+                let oc_pass = oc.lines().any(|l| l.starts_with("=> PASS"));
+                // the summary line: "identity (macro 0 ...): max X m, N fails over M starts"
+                let id_fails: usize = fo.lines().find(|l| l.starts_with("identity (")).and_then(|l| l.split(", ").nth(1)).and_then(|s| s.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
+                let items_ok = fo.lines().find(|l| l.starts_with("fanout ")).and_then(|l| l.split(": ").nth(1)).and_then(|s| s.split_whitespace().next()).map(|ab| { let mut p = ab.split('/'); p.next().unwrap_or("0") == p.next().unwrap_or("1") }).unwrap_or(false);
+                let fo_fail = fo.contains("FAILED") || id_fails != 0 || !items_ok;
+                let ve_ok = ve.contains("verify OK");
+                let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
+                let ctrl = format!(
+                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard). Verdict: **{verdict}** (bank only on PASS).\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
+                    tmreach::GIT_HASH,
+                    hostname(),
+                    chrono_now(),
+                    pick(&gc, &["ghosts ok", "s_off", "slack", "GRADE", "ENGINE COUNTER", "ORDER"]),
+                    oc.lines().filter(|l| l.starts_with("ORACLE CONTROL") || l.starts_with("(det_cps") || l.starts_with("=> ")).map(|l| format!("{l}\n")).collect::<String>(),
+                    fo.lines().filter(|l| l.starts_with("fanout ") || l.starts_with("outcomes ") || l.starts_with("identity (") || l.starts_with("distinct end") || l.starts_with("human legs") || l.contains("FAILED") || (l.contains("unattributed steps") && !l.contains(" 0 unattributed steps"))).map(|l| format!("{l}\n")).collect::<String>(),
+                    pick(&ve, &["TMR0", "verify"])
+                );
+                std::fs::write(stage_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;
+                if verdict == "PASS" {
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    for f in ["samples.tmr", "starts.tsv", "macros.tsv", "endpoints.tsv", "other-connections.tsv", "detector.json", "FANOUT.log"] {
+                        std::fs::copy(PathBuf::from(&fo_out).join(f), out_dir.join(f)).map_err(|e| format!("bank {f}: {e}"))?;
+                    }
+                    std::fs::write(out_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;
+                    for f in ["crossings.tsv", "grade.txt"] {
+                        let _ = std::fs::copy(PathBuf::from(&gc_out).join(f), out_dir.join(format!("gatecal-{f}")));
+                    }
+                    let _ = std::fs::copy(PathBuf::from(&oc_out).join("cases.tsv"), out_dir.join("oraclectl-cases.tsv"));
+                    println!("   banked -> {}", out_dir.display());
+                } else {
+                    println!("   NOT banked (verdict FAIL); see {}", stage_dir.join("CONTROL.md").display());
+                }
+                let fo_line = fo.lines().find(|l| l.starts_with("fanout ")).unwrap_or("").to_string();
+                report.push_str(&format!("{name}\t{uid}\t{verdict}\t{n_linked} ghosts\t{}\n", fo_line));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    println!("\nCAMPAIGN REPORT\n{report}");
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    std::fs::write(scratch.join("campaign-report.tsv"), &report).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn chrono_now() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // UTC, civil from days (Howard Hinnant's algorithm), no chrono dependency
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", rem / 3600, (rem % 3600) / 60)
 }

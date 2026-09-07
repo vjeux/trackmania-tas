@@ -114,7 +114,8 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             // detector over prefix + rollout
             let mut all = prefix.clone();
             all.extend(rolled.rows.iter().cloned());
-            let first = det.first_crossings(gates, &all, &vec![false; ng]);
+            // ENGINE-credited (Row::cps steps), geometry attributes -- what the dataset records
+            let first = det.credits(gates, &all, &vec![false; ng], 5).gate_row;
             let det_cps = first.iter().filter(|t| **t >= 0).count() as u32;
             let mut det_finished = false;
             let mut det_finish_ms = None;
