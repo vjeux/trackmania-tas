@@ -386,7 +386,16 @@ impl<'a> Walker<'a> {
                         }
                     }
                     r.o = end;
-                    return Ok(Block { index, class, span: (start, end), kind: Kind::Opaque { note: format!("chunk {cid:#010x} not read") } });
+                    // a block read up to here keeps its keys (the edit
+                    // offsets stay valid: the bytes are copied through)
+                    let kind = match kind {
+                        Some(k) => {
+                            self.note(format!("block {index} {} ({class:#010x}): chunk {cid:#010x} after the keys not read, copied through", class_name(class)));
+                            k
+                        }
+                        None => Kind::Opaque { note: format!("chunk {cid:#010x} not read") },
+                    };
+                    return Ok(Block { index, class, span: (start, end), kind });
                 }
             }
         }
