@@ -925,6 +925,34 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
             report.push_str(&format!("{name}\t{uid}\tSKIPPED: no ghost file linked\n"));
             continue;
         }
+        // GATES: generated LOCALLY from the map with tmroute (the same code the GEOM arm runs;
+        // deterministic), because the bank copy on the mount can read as a partial file for
+        // minutes after GEOM's rename (manifoldfs cross-box lag). When the bank copy parses, the
+        // two gate lists are compared and any difference is a control line, never a block.
+        let geom_local = scratch.join("geom");
+        let gates_local = geom_local.join(uid).join("gates.json");
+        std::fs::create_dir_all(gates_local.parent().unwrap()).map_err(|e| e.to_string())?;
+        let tmroute = exe.with_file_name("tmroute");
+        let st = std::process::Command::new(&tmroute).args(["gates", &map.to_string_lossy(), "--out", &gates_local.to_string_lossy()]).output().map_err(|e| format!("tmroute: {e}"))?;
+        if !st.status.success() {
+            report.push_str(&format!("{name}\t{uid}\tFAILED: tmroute gates: {}\n", String::from_utf8_lossy(&st.stderr).lines().last().unwrap_or("")));
+            continue;
+        }
+        let gates_cmp = {
+            let local = MapGates::load(&map, Some(&geom_local));
+            let bank_geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+            let bank = MapGates::load_geom(&bank_geom.join(uid).join("gates.json"));
+            match (local, bank) {
+                (Ok(l), Ok(b)) => {
+                    let key = |g: &MapGates| g.gates.iter().map(|x| format!("wp{} {:?} grp {} c ({:.2},{:.2},{:.2}) |n| ({:.2},{:.2},{:.2}) hw {:.1} {}", x.waypoint, x.kind, x.group, x.centre[0], x.centre[1], x.centre[2], x.normal[0].abs(), x.normal[1].abs(), x.normal[2].abs(), x.half_width, x.model)).collect::<Vec<_>>();
+                    let (kl, kb) = (key(&l), key(&b));
+                    if kl == kb { format!("local tmroute gates == bank gates.json ({} gates; normal signs ignored, the detector measures them)", kl.len()) } else { format!("GATES DIFFER local vs bank: local {:?} bank {:?}", kl, kb) }
+                }
+                (Ok(_), Err(e)) => format!("bank gates.json unreadable ({e}); local tmroute gates used"),
+                (Err(e), _) => format!("LOCAL gates unreadable: {e}"),
+            }
+        };
+        let geom_arg = geom_local.to_string_lossy().into_owned();
         let work = scratch.join(uid).join("work");
         let stage_dir = scratch.join(uid);
         let run = |args: &[&str]| -> Result<String, String> {
@@ -947,9 +975,9 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
         let det = format!("{gc_out}/detector.json");
         let stages: Result<(String, String, String, String), String> = (|| {
             let gc_workers = workers.parse::<usize>().unwrap_or(32).min(n_linked).max(1).to_string();
-            let gc = run(&["gatecal", "--map", &m, "--ghosts", &g, "--workers", &gc_workers, "--out", &gc_out, "--work", &w])?;
-            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", "2500", "--macros", "0,2,9,21,26,29,33,38"])?;
-            let fo = run(&["fanout", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &fo_out, "--work", &w, "--workers", &workers, "--shards", &shards, "--horizons", "200,400"])?;
+            let gc = run(&["gatecal", "--map", &m, "--ghosts", &g, "--workers", &gc_workers, "--out", &gc_out, "--work", &w, "--geom", &geom_arg])?;
+            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", "2500", "--macros", "0,2,9,21,26,29,33,38", "--geom", &geom_arg])?;
+            let fo = run(&["fanout", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &fo_out, "--work", &w, "--workers", &workers, "--shards", &shards, "--horizons", "200,400", "--geom", &geom_arg])?;
             let ve = run(&["verify", "--dir", &fo_out])?;
             Ok((gc, oc, fo, ve))
         })();
@@ -974,11 +1002,12 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 let ve_ok = ve.contains("verify OK");
                 let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
                 let ctrl = format!(
-                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
+                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\nGates: {}\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
                     tmreach::GIT_HASH,
                     hostname(),
                     chrono_now(),
                     if excluded.is_empty() { String::new() } else { format!("; EXCLUDED (startup controls failed, fail closed): {}", excluded.join(", ")) },
+                    gates_cmp,
                     pick(&gc, &["ghosts ok", "slack", "GRADE", "ENGINE COUNTER", "extra detection", "unmatched step", "ORDER", "GATECAL VERDICT"]),
                     oc.lines().filter(|l| l.starts_with("ORACLE CONTROL") || l.starts_with("(det_cps") || l.starts_with("=> ")).map(|l| format!("{l}\n")).collect::<String>(),
                     fo.lines().filter(|l| l.starts_with("fanout ") || l.starts_with("outcomes ") || l.starts_with("identity (") || l.starts_with("distinct end") || l.starts_with("human legs") || l.contains("FAILED") || (l.contains("unattributed steps") && !l.contains(" 0 unattributed steps"))).map(|l| format!("{l}\n")).collect::<String>(),
