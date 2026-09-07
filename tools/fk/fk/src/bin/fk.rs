@@ -29,6 +29,11 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk regen           rewrite a ghost's telemetry from engine state
   fk carrier         name the sample bytes a regenerated ghost inherits, and write them
   fk ptr             the engine's own pointer to the car: find it, check it
+  fk tickhook check  do the tick-hook build constants match this server binary?
+  fk tickhook count  hooked run vs plain run: once per tick, nothing changed  [--gdb]
+  fk tickhook load   N servers at once: one simulation point, probe agreeing   [--n 150]
+  fk tickhook find   a new build: which function is the tick? prints the constants
+  fk tickhook reads  audit every read the oracle makes of engine memory  [THE CONTROL]
 
 Engine flags, accepted by every command:
   --tape FILE        the .Ghost.Gbx / .Replay.Gbx whose inputs the engine runs
@@ -39,8 +44,9 @@ Engine flags, accepted by every command:
   --work DIR         scratch; per-process by default, and never shared
 
 Where to stop the simulation (one of):
-  --at tick:N        tape tick N, via clock = 36141 + 25.483 * race_ms
-  --at clock:N       a raw lroundf call count
+  --at tick:N        tape tick N (exact under the tick hook; the fitted line under
+                     FK_CLOCK=lroundf)
+  --at clock:N       a raw clock value (ticks = sim_ms/10, or lroundf calls)
   --at frac:F        F of the way through the tape       [default frac:0.5]
 
 Run `fk <command> --help` for a command's own flags.
@@ -177,6 +183,48 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     hi: num(rest, "--hi").map(|v| v as usize),
                 },
             )
+        }
+        "tickhook" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let rest = &a[2.min(a.len())..];
+            match verb {
+                "check" => {
+                    let server = flag(rest, "--server")
+                        .map(PathBuf::from)
+                        .or_else(|| std::env::var("TM_SERVER").ok().map(PathBuf::from))
+                        .ok_or("--server DIR (or $TM_SERVER) is required")?;
+                    cmd::tickhook::check(&server)
+                }
+                "count" => {
+                    let (engine, tape, _) = common(rest)?;
+                    cmd::tickhook::count(&engine, tape, cmd::tickhook::CountOpts { gdb: has(rest, "--gdb") })
+                }
+                "load" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::load(
+                        &engine,
+                        tape,
+                        at,
+                        cmd::tickhook::LoadOpts { n: num(rest, "--n").unwrap_or(150) as usize },
+                    )
+                }
+                "find" => {
+                    let (engine, tape, _) = common(rest)?;
+                    cmd::tickhook::find(
+                        &engine,
+                        tape,
+                        cmd::tickhook::FindOpts {
+                            back: num(rest, "--back").unwrap_or(0x1000) as usize,
+                            ahead: num(rest, "--ahead").unwrap_or(0x400) as usize,
+                        },
+                    )
+                }
+                "reads" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::reads(&engine, tape, at)
+                }
+                _ => Err("fk tickhook <check|count|load|find|reads>".into()),
+            }
         }
         "tree" => {
             let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");

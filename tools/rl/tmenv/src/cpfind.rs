@@ -176,10 +176,10 @@ pub fn cpfind(
             probe,
             &drive,
             &[(layout.clock, 4), (*w, len)],
-            every_ticks * branch::LROUNDF_PER_TICK,
+            every_ticks,
             nsnap | EXIT_ON_BUDGET,
             (0, 0),
-            n_ticks.saturating_mul(340).saturating_add(12000),
+            n_ticks + 100,
         );
         if i == 0 || (verbose && blob.is_empty()) {
             println!("  window {:#x} len {}: json {:?}, blob {} bytes = {} records", w, len, _j.trim(), blob.len(), blob.len() / (12 + len as usize));
@@ -224,7 +224,7 @@ pub fn cpfind(
             1,
             (n_ticks + 400) | EXIT_ON_BUDGET,
             (0, 8),
-            n_ticks.saturating_mul(340).saturating_add(12000),
+            n_ticks + 100,
         );
         let recsz = 8 + 8;
         let m = blob.len() / recsz;

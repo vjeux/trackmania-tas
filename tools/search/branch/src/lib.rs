@@ -32,7 +32,7 @@
 //!
 //! Three consequences are baked in here and none of them are negotiable:
 //!
-//! * **Every node probes its own boundary.** The `lroundf` checkpoint is not a
+//! * **Every node probes its own boundary.** The checkpoint is not a
 //!   fixed simulation point — under load it moves in whole ~62-call chunks, and
 //!   a real run had 135 of 150 workers stop past the master's single
 //!   calibration. A boundary inherited from a parent, a sibling or a master is
@@ -40,9 +40,9 @@
 //! * **A failed probe is a hard abort.** [`Forest::advance`] destroys a node
 //!   whose probe fails rather than continuing with an estimate. A fallback here
 //!   is how a plausible number 2–3 ms off gets banked.
-//! * **Calibration may only move the floor LATER.** `max(calibrated, probe + 1)`
-//!   and never `min`; `probe + 1` because tick `p` is the record the engine is
-//!   about to read and is already partly consumed. Getting this backwards made
+//! * **Calibration may only move the floor LATER.** `max(calibrated, probe)`
+//!   and never `min`; the probe names the record the engine is about to read,
+//!   which is the first one it is safe to write. Getting this backwards made
 //!   23 of 100 candidates silently wrong on a re-verification that had passed
 //!   4700/4700 the first time.
 //!
@@ -62,15 +62,6 @@ use forkoracle::tree::{Node, Tree};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// ~`lroundf` calls per simulated 10 ms tick.
-///
-/// Measured at ~255 on this engine and used ONLY to choose how far a branch
-/// child runs before it stops. Nothing is ever labelled from it: where a child
-/// actually stopped is what its own probe says, and the two differ by up to a
-/// tick. This is the same discipline `session::clock_for_race_ms` states for
-/// the fitted clock line — an estimate is allowed to place a checkpoint and is
-/// never allowed to name one.
-pub const LROUNDF_PER_TICK: u64 = 255;
 
 /// A live paused simulation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -110,17 +101,15 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
-/// What [`Forest::calibrate_clock`] measured.
-#[derive(Clone, Copy, Debug)]
-pub struct ClockCal {
-    /// The bias the root's probe implied.
-    pub old_bias: i64,
-    /// The bias an in-race probe implies; what the traces are labelled with now.
-    pub bias: i64,
-    /// The warm node's probed boundary.
-    pub probe: usize,
-    /// The raw clock word at the warm node's pause.
-    pub raw_clock: i64,
+/// What an `advance_or_end` produced.
+pub enum Advanced {
+    /// A new paused node, and the rows on the way to it.
+    Node(StateTrace, Handle),
+    /// The engine ENDED THE RUN inside the macro (the car left the world, the
+    /// validator declared the replay invalid, the declared time was reached):
+    /// the child exited instead of pausing. The rows it traced before that
+    /// are returned; there is no node.
+    RunEnded(StateTrace),
 }
 
 /// How a node writes its state trace, and where the car lives in its memory.
@@ -133,7 +122,7 @@ pub struct TraceCfg {
     /// Where trace files go. One file per branch, named by pid, deleted when
     /// the node is dropped.
     pub dir: PathBuf,
-    /// `lroundf` calls between sample attempts. 1 catches every tick.
+    /// Ticks between sample attempts. 1 catches every tick.
     pub stride: u64,
     /// Cap on samples per branch, so a runaway child cannot fill a disk.
     pub max: u32,
@@ -195,15 +184,15 @@ impl Forest {
 
     /// The first tick it is safe to write at `h`.
     ///
-    /// `max(calibrated, probe + 1)` — calibration may only push it LATER.
+    /// `max(calibrated, probe)` — calibration may only push it LATER.
     pub fn floor(&self, h: Handle, calibrated: Option<usize>) -> Result<usize, String> {
         if h == ROOT {
             let p = self.root_boundary.ok_or(
                 "the root has not probed its own boundary -- call probe_root before writing",
             )?;
             return Ok(match calibrated {
-                Some(c) => c.max(p + 1),
-                None => p + 1,
+                Some(c) => c.max(p),
+                None => p,
             });
         }
         self.held(h)?.node.floor(calibrated)
@@ -220,7 +209,7 @@ impl Forest {
     /// point, with no inputs appended.
     ///
     /// It is `advance` with an empty macro, and it is honest about what that
-    /// means: the new node stops one `lroundf` call later than its parent, not
+    /// means: the new node stops one tick later than its parent, not
     /// at the identical instant, and it probes its own boundary like any other
     /// node. There is no cheaper way to duplicate a paused process, and
     /// pretending the copy is at the same tick is exactly the assumption that
@@ -246,20 +235,26 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
-        self.advance_budget(h, inputs, from, (k_ticks * LROUNDF_PER_TICK).max(1))
+        match self.advance_or_end(h, inputs, from, k_ticks)? {
+            Advanced::Node(t, id) => Ok((t, id)),
+            Advanced::RunEnded(_) => Err(format!(
+                "the branch child exited before reaching its stop point: the engine ended the run \
+                 inside this macro (handle {:?}, from tick {})",
+                h, from
+            )),
+        }
     }
 
-    /// [`Forest::advance`] with the child's stop given as a raw `lroundf`
-    /// budget instead of a tick count -- for a caller that wants to place the
-    /// stop more finely than whole ticks (the env: k ticks plus a fraction, so
-    /// a one-tick step reliably crosses one tick boundary and no more).
-    pub fn advance_budget(
+    /// [`Forest::advance`], reporting a run the ENGINE ended inside the macro as
+    /// [`Advanced::RunEnded`] (with the rows traced up to it) instead of an
+    /// error. `k_ticks` is exact under the tick clock.
+    pub fn advance_or_end(
         &mut self,
         h: Handle,
         inputs: &[Rec],
         from: usize,
-        lroundf_budget: u64,
-    ) -> Result<(StateTrace, Handle), String> {
+        k_ticks: u64,
+    ) -> Result<Advanced, String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -294,9 +289,9 @@ impl Forest {
         let req = BranchReq {
             from,
             recs: inputs,
-            // ~255 calls to the tick. Where the child ACTUALLY stops is what
-            // its probe says; this only decides roughly how far it goes.
-            stop_after_lroundf: lroundf_budget.max(1),
+            // Ticks. Where the child ACTUALLY stops is still what its own probe
+            // says -- that is the control, and it is not optional.
+            stop_after: k_ticks.max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,
@@ -314,7 +309,22 @@ impl Forest {
             _ => self.held_mut(h)?.node.branch(&req)?,
         };
 
-        let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
+        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+            Some(n) => n,
+            None => {
+                // The engine ended the run inside this macro. Whatever the
+                // child traced before it stopped simulating is real state;
+                // the caller decides what an ended run means.
+                let trace = if trace_path.as_os_str().is_empty() {
+                    Vec::new()
+                } else {
+                    let t = self.read_trace(&trace_path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&trace_path);
+                    t
+                };
+                return Ok(Advanced::RunEnded(trace));
+            }
+        };
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -354,7 +364,7 @@ impl Forest {
         };
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok((trace, id))
+        Ok(Advanced::Node(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child
@@ -427,66 +437,6 @@ impl Forest {
         }
     }
 
-    /// Calibrate the race-clock label from a pause INSIDE the race.
-    ///
-    /// # Why the root's probe cannot label the clock
-    ///
-    /// `Layout::clock_bias` is `clock_word - race_ms`, and the only way to
-    /// know `race_ms` at some instant is the boundary probe: the state at a
-    /// pause is the state at the end of tick `probe - 1`. That holds while the
-    /// simulation is consuming the tape. It does NOT hold before the race
-    /// starts: at the same engine instant (raw clock 2170–2190 on Summer
-    /// 2026 - 01, car at rest on the line) the root probe answered 0, 8, 15,
-    /// 70 and 112 on different servers — something reads the first records
-    /// ahead of the simulation there, and how far it got is a property of the
-    /// process, not of the engine's state. Every row labelled from such a
-    /// probe is off by that many ticks, and two runs of the SAME tape then
-    /// disagree by tens of metres "at the same time" while their positions
-    /// agree row for row (measured: 4a noise floor 1.51 m median instead of
-    /// 0.000000 m; CONTROL B 24 m median).
-    ///
-    /// Inside the race the probe is exact: `lroundf` 14000 → probe 10 at raw
-    /// clock 2290, `lroundf` 36000 → probe 93 at raw 3120, both giving bias
-    /// 2200, four servers each, no scatter.
-    ///
-    /// So: advance the root `warm_ticks` with no inputs (into the race), fork
-    /// that node once more so the child's first sampled row is the parent's
-    /// paused state, and set the bias from THAT node's probe. Both throwaway
-    /// nodes are released. Costs two forks at startup, once per server.
-    ///
-    /// Returns the calibration so a caller can report it beside the root's
-    /// label; refuses if the warm node's first row is not past the race start
-    /// (the calibration would be from the same unreliable regime).
-    pub fn calibrate_clock(&mut self, warm_ticks: u64, start_offset_ms: i32) -> Result<ClockCal, String> {
-        let old = self.cfg.as_ref().ok_or("calibrate_clock: no trace configuration")?.layout.clock_bias;
-        let (_rows1, h1) = self.advance(ROOT, &[], 0, warm_ticks)?;
-        let probe1 = self.probed_boundary(h1).ok_or("calibrate_clock: the warm node has no probe")?;
-        let (rows2, h2) = self.advance(h1, &[], 0, 1)?;
-        self.release(h2);
-        self.release(h1);
-        let first = rows2.first().ok_or("calibrate_clock: the warm node's child produced no rows")?;
-        let raw = first.time_ms + old;
-        // The first row a child samples is the state its parent was paused in:
-        // the end of tick `probe1 - 1` (layout::sample_ms's convention).
-        let race = (probe1 as i64 - 1) * 10 + start_offset_ms as i64;
-        let new = raw - race;
-        if probe1 < 3 {
-            return Err(format!(
-                "calibrate_clock: the warm node's probe is {probe1} after {warm_ticks} ticks -- still \
-                 before the race; the calibration would come from the regime it exists to avoid"
-            ));
-        }
-        if let Some(c) = self.cfg.as_mut() {
-            c.layout.clock_bias = new;
-        }
-        Ok(ClockCal { old_bias: old, bias: new, probe: probe1, raw_clock: raw })
-    }
-
-    /// The clock bias the traces are currently labelled with.
-    pub fn clock_bias(&self) -> Option<i64> {
-        self.cfg.as_ref().map(|c| c.layout.clock_bias)
-    }
-
     /// Destroy a node and forget it.
     pub fn release(&mut self, h: Handle) {
         if let Some(mut x) = self.nodes.remove(&h) {
@@ -545,14 +495,4 @@ impl Forest {
 mod tests {
     use super::*;
 
-    /// `LROUNDF_PER_TICK` is a PLACEMENT aid. This test exists to pin the
-    /// comment: if someone ever uses it to label a tick, the arithmetic below
-    /// is what they will be relying on, and it is only good to about a tick.
-    #[test]
-    fn the_tick_estimate_is_only_ever_used_to_place_a_stop() {
-        assert_eq!(LROUNDF_PER_TICK * 10, 2550);
-        // one tick of slop at ten ticks is 10%: too coarse to label with,
-        // fine to stop with.
-        assert!(LROUNDF_PER_TICK >= 200 && LROUNDF_PER_TICK <= 300);
-    }
 }

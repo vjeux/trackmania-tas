@@ -14,7 +14,7 @@
 //!
 //! # The three things that make this safe rather than merely fast
 //!
-//! 1. **Every node probes its own consumed boundary.** The `lroundf` checkpoint
+//! 1. **Every node probes its own consumed boundary.** The checkpoint
 //!    is not a fixed simulation point -- under load it moves in whole chunks of
 //!    ~62 calls -- so where a node stopped is a property of that node and of
 //!    nothing else. A node whose probe fails is destroyed, never used with an
@@ -28,7 +28,7 @@
 //!    is here, at the lowest level that knows the boundary, and it is not
 //!    optional.
 //! 3. **Calibration may only push the boundary LATER, never earlier.** A caller
-//!    that has its own estimate combines it as `max(estimate, probe + 1)`, never
+//!    that has its own estimate combines it as `max(estimate, probe)`, never
 //!    `min`. `Node::floor` does that arithmetic so no caller has to remember it.
 //!
 //! # Why a unix socket
@@ -41,7 +41,7 @@
 //! asked for **by the pid the node names in its own handshake**.
 
 use crate::forksrv::{
-    parse_probe, parse_ready, payload_branch, payload_probe, payload_run, read_frame, write_frame,
+    parse_probe, payload_branch, payload_probe, payload_run, read_frame, write_frame,
     BranchReq, Rec,
 };
 use std::os::raw::c_int;
@@ -113,11 +113,19 @@ impl Tree {
                 Err(e) => return Err(format!("accept: {}", e)),
             }
         };
+        self.handshake(stream)
+    }
+
+    /// The READY handshake of a node that just connected.
+    fn handshake(&mut self, stream: UnixStream) -> Result<Node, String> {
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false };
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false, sim_ms: 0, race_start: 0 };
         let hello = read_frame(&mut n.sock).ok_or("a branch node connected and said nothing")?;
         let s = String::from_utf8_lossy(&hello).into_owned();
-        let (base, clock, pid) = parse_ready(&s)?;
+        let ready = crate::forksrv::parse_ready_full(&s)?;
+        let (base, clock, pid) = (ready.base, ready.clock, ready.pid);
+        n.sim_ms = ready.sim_ms;
+        n.race_start = ready.race_start;
         let pid = pid.ok_or_else(|| {
             format!(
                 "a branch node handshook without naming its pid ({:?}) -- a node the driver \
@@ -130,6 +138,57 @@ impl Tree {
         n.pid = pid;
         self.live.push(pid);
         Ok(n)
+    }
+
+    /// [`Tree::accept`], but give up EARLY if `pid` -- the child that was told
+    /// to connect -- has already exited.
+    ///
+    /// A branch child stops at an `lroundf` count. When the engine ENDS THE
+    /// RUN inside the child's budget (the car fell off the world, the validator
+    /// declared the replay invalid, the declared time was reached) it stops
+    /// calling `lroundf`, finishes the validation and exits -- and the plain
+    /// `accept` waits the whole 120 s watchdog for a node that will never
+    /// come. Measured on Summer 2026 - 01: one such child per ~200 random
+    /// tapes, each a 120 s hang. Distinguishing "exited" from "not yet" turns
+    /// the hang into an episode end.
+    pub fn accept_expecting(&mut self, pid: i32, timeout_ms: i32) -> Result<Option<Node>, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+        let proc_path = format!("/proc/{}", pid);
+        let mut polls = 0u32;
+        let stream = loop {
+            match self.listener.accept() {
+                Ok((s, _)) => break s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "no branch node connected within {} ms -- the child either never \
+                             reached its stop point or could not reach {}",
+                            timeout_ms,
+                            self.path.display()
+                        ));
+                    }
+                    polls += 1;
+                    // /proc/<pid> vanishes when the child is reaped; a zombie
+                    // still has one but reads as State: Z.
+                    if polls % 50 == 0 {
+                        let gone = match std::fs::read_to_string(format!("{}/stat", proc_path)) {
+                            Err(_) => true,
+                            Ok(s) => s.split(')').nth(1).map(|r| r.trim_start().starts_with('Z')).unwrap_or(true),
+                        };
+                        if gone {
+                            // one last look, in case it connected just before exiting
+                            if let Ok((s, _)) = self.listener.accept() {
+                                break s;
+                            }
+                            return Ok(None);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+                Err(e) => return Err(format!("accept: {}", e)),
+            }
+        };
+        self.handshake(stream).map(Some)
     }
 
     /// Forget a node the caller has already destroyed.
@@ -221,13 +280,14 @@ pub struct Node {
     sock: UnixStream,
     /// The decoded input array, at the address every descendant shares.
     pub base: u64,
-    /// The `lroundf` count at which this node stopped. **Not a simulation
-    /// point**: it is where THIS process happened to stop, and it differs
-    /// between nodes of one tree. Never label anything from it.
+    /// The engine's own race tick at which this node stopped; `sim_ms` is its
+    /// simulation time and `race_start` what that is measured from.
     pub clock: u64,
     pub pid: i32,
     boundary: Option<usize>,
     dead: bool,
+    pub sim_ms: u64,
+    pub race_start: u64,
 }
 
 impl Node {
@@ -246,18 +306,18 @@ impl Node {
     /// The first tick it is safe to write, combining the probe with an optional
     /// outside estimate.
     ///
-    /// `max(estimate, probe + 1)` and never `min`: tick `p` is the record the
-    /// engine is about to read and is already partly consumed, and calibration
-    /// may only push the boundary LATER. Getting this backwards is what made
-    /// 23 of 100 candidates silently wrong on a re-verification.
+    /// `max(estimate, probe)` and never `min`: the probe is the record the
+    /// engine is about to read -- the first one it is safe to write -- and
+    /// calibration may only push the boundary LATER. Getting that backwards is
+    /// what made 23 of 100 candidates silently wrong on a re-verification.
     pub fn floor(&self, calibrated: Option<usize>) -> Result<usize, String> {
         let p = self.boundary.ok_or_else(|| {
             "this node has not probed its own boundary -- a node without a probe is not a node"
                 .to_string()
         })?;
         Ok(match calibrated {
-            Some(c) => c.max(p + 1),
-            None => p + 1,
+            Some(c) => c.max(p),
+            None => p,
         })
     }
 
@@ -274,7 +334,7 @@ impl Node {
 
     /// Fork a child that appends and becomes a node of its own.
     ///
-    /// **Refuses any write at or below this node's own probed boundary.** That
+    /// **Refuses any write BELOW this node's own probed boundary.** That
     /// refusal is the whole safety story of the forward-only regime and there
     /// is no flag to turn it off: a caller who needs to rewrite history has to
     /// re-simulate from a node that has not consumed it yet.
@@ -319,11 +379,11 @@ impl Node {
             "refusing to write into a node that has not probed its own consumed boundary"
                 .to_string()
         })?;
-        if from <= p {
+        if from < p {
             return Err(format!(
-                "FORWARD-ONLY VIOLATION: this node has already consumed tick {}, and a write at \
-                 tick {} would be a silent no-op that scores exactly the parent's score. Branch \
-                 from an ancestor that has not consumed it.",
+                "FORWARD-ONLY VIOLATION: this node has already consumed every tick below {}, \
+                 and a write at tick {} would be a silent no-op that scores exactly the \
+                 parent's score. Branch from an ancestor that has not consumed it.",
                 p, from
             ));
         }
@@ -375,17 +435,21 @@ mod tests {
             pid: 1,
             boundary: None,
             dead: false,
+            sim_ms: 0,
+            race_start: 0,
         };
         let e = n.check_forward(500, 1).unwrap_err();
         assert!(e.contains("has not probed"), "{}", e);
         assert!(n.floor(None).is_err(), "a node with no probe has no floor either");
     }
 
-    /// The forward-only refusal fires exactly at the boundary, and the boundary
-    /// tick ITSELF is refused -- the engine is about to read it, so it is
-    /// already partly consumed.
+    /// The forward-only refusal fires exactly BELOW the boundary. The boundary
+    /// tick itself is ALLOWED: the probe names the record the engine is about
+    /// to read, and nothing of it has been consumed. (It was refused until the
+    /// probe stopped reporting one record early -- see
+    /// `forkoracle::forksrv::STRIDE`.)
     #[test]
-    fn the_forward_only_refusal_fires_at_and_below_the_boundary() {
+    fn the_forward_only_refusal_fires_below_the_boundary_and_not_at_it() {
         let n = Node {
             sock: UnixStream::pair().unwrap().0,
             base: 0,
@@ -393,12 +457,14 @@ mod tests {
             pid: 1,
             boundary: Some(171),
             dead: false,
+            sim_ms: 0,
+            race_start: 0,
         };
-        for t in [0usize, 1, 170, 171] {
+        for t in [0usize, 1, 169, 170] {
             let e = n.check_forward(t, 1).unwrap_err();
             assert!(e.contains("FORWARD-ONLY VIOLATION"), "tick {} was allowed: {}", t, e);
         }
-        for t in [172usize, 173, 4000] {
+        for t in [171usize, 172, 4000] {
             assert!(n.check_forward(t, 1).is_ok(), "tick {} was refused and should not be", t);
         }
     }
@@ -434,10 +500,12 @@ mod tests {
             pid: 1,
             boundary: Some(171),
             dead: false,
+            sim_ms: 0,
+            race_start: 0,
         };
-        assert_eq!(n.floor(None).unwrap(), 172);
-        assert_eq!(n.floor(Some(100)).unwrap(), 172, "an EARLIER estimate must be ignored");
-        assert_eq!(n.floor(Some(172)).unwrap(), 172);
+        assert_eq!(n.floor(None).unwrap(), 171);
+        assert_eq!(n.floor(Some(100)).unwrap(), 171, "an EARLIER estimate must be ignored");
+        assert_eq!(n.floor(Some(171)).unwrap(), 171);
         assert_eq!(n.floor(Some(400)).unwrap(), 400, "a LATER estimate must win");
     }
 }

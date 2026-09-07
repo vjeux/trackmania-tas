@@ -222,7 +222,13 @@ pub fn leg_range(g: &TrackGeom, cps: u8) -> (f32, f32) {
     let k = (cps as usize).min(n);
     let lo = if k == 0 { 0.0 } else { g.gates[k - 1].s };
     let hi = if k < n { g.gates[k].s } else { g.length() };
-    ((lo - LEG_MARGIN).max(0.0), (hi + LEG_MARGIN).min(g.length()))
+    // Gate arc lengths are not guaranteed monotone (2 of DATA's 87 maps had a
+    // later gate at a smaller s); a reversed range must not panic in `clamp`
+    // -- it becomes the span between the two.
+    let (lo, hi) = (lo.min(hi), lo.max(hi));
+    let a = (lo - LEG_MARGIN).max(0.0);
+    let b = (hi + LEG_MARGIN).min(g.length()).max(a);
+    (a, b)
 }
 
 /// Nearest point on the polyline's segments within `[lo, hi]`, as arc length.
@@ -510,5 +516,51 @@ mod tests {
         // the negated quaternion is the same rotation
         let w2 = ang_vel_from_quats(prev, [-cur[0], -cur[1], -cur[2], -cur[3]], 0.01);
         assert!((w2[1] - 2.0).abs() < 1e-3, "{:?}", w2);
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use tmstate::Gate;
+
+    /// DATA's report: a later gate at a SMALLER arc length made `leg_range`
+    /// return lo > hi and `f32::clamp` panicked on a stored record.
+    #[test]
+    fn a_non_monotone_gate_order_does_not_panic() {
+        let n = 101;
+        let gate = |s: f32| Gate {
+            kind: GateKind::Checkpoint,
+            centre: [0.0, 10.0, -s],
+            normal: [0.0, 0.0, -1.0],
+            half_width: 8.0,
+            s,
+            map_waypoint: u32::MAX,
+        };
+        let g = TrackGeom {
+            geom_version: 1,
+            map_uid: "t".into(),
+            pts: (0..n).map(|i| [0.0, 10.0, -(2.0 * i as f32)]).collect(),
+            half_width: vec![8.0; n],
+            s: (0..n).map(|i| 2.0 * i as f32).collect(),
+            gates: vec![gate(150.0), gate(40.0), gate(200.0)],
+            spawn: [0.0, 10.0, 0.0],
+            spawn_yaw: 0.0,
+            source: "test".into(),
+            legs: None,
+            route: None,
+        };
+        let mut st = CarState::unknown();
+        st.pos = [0.0, 10.0, -100.0];
+        st.vel = [0.0; 3];
+        st.speed = 0.0;
+        st.quat = [1.0, 0.0, 0.0, 0.0];
+        for cps in 0..=3u8 {
+            st.cps = cps;
+            let (lo, hi) = leg_range(&g, cps);
+            assert!(lo <= hi, "cps {cps}: {lo} > {hi}");
+            let o = observe(&g, &st, &[]);
+            assert!(o.iter().all(|v| v.is_finite()));
+        }
     }
 }
