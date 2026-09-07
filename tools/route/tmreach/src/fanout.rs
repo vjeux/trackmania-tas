@@ -225,7 +225,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 };
                 let t0 = std::time::Instant::now();
                 let ask = (h as f64 * 1.08) as u64 + 12;
-                let rolled = match w.rollout(new_node, &recs, f, ask) {
+                let mut rolled = match w.rollout(new_node, &recs, f, ask) {
                     Ok(r) => r,
                     Err(e) => {
                         out.log.push(format!("  start {start_id} macro {} h {h}: {e}", m.id));
@@ -255,6 +255,11 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                             out.stats.errors += 1;
                         }
                     }
+                }
+                if rolled.exited {
+                    // the last samples of an exiting child are lost: extend at constant velocity so a
+                    // finish crossing at the exit is in the rows (its end row is then ±3 ticks run to run)
+                    crate::rig::extrapolate_exit(&mut rolled.rows);
                 }
                 let win: Vec<Row> = rolled.rows.iter().filter(|r| r.time_ms >= first_label && r.time_ms <= end_label).cloned().collect();
                 let complete = win.last().map(|r| r.time_ms == end_label).unwrap_or(false);
