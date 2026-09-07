@@ -243,6 +243,7 @@ fn main() {
         "local" => cmd_local(&args[1..]),
         "families" => cmd_families(&args[1..]),
         "deck-gates" => cmd_deck_gates(&args[1..]),
+        "leg-scan" => cmd_leg_scan(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -571,4 +572,87 @@ fn cmd_deck_gates(args: &[String]) {
     for l in &lines { println!("{l}"); }
     io::write_gates(Path::new(&out), &gates).unwrap_or_else(|e| die(&e));
     println!("wrote {out} ({moved} gates moved)");
+}
+
+/// `tmplan leg-scan MAP.Map.Gbx --gates gates.json --ghosts DIR [--legs 3-5,5-0]`
+/// What the HUMANS do on each consecutive leg of their order (median over ghosts): chord, height delta, time,
+/// speeds, airborne share (no surface within 1.5 m below the car), largest fall, wallride share (surface below with
+/// |n.y| < 0.5), specials (booster/reactor/turbo…) within 8 m of the trajectory — beside the surface graph's
+/// verdict on the leg (path length or MISSING). For the M2 failure list (coordinator, 2026-09-07 23:33Z).
+fn cmd_leg_scan(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json"));
+    let gdir = flag(args, "--ghosts").unwrap_or_else(|| die("--ghosts DIR"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let (surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    let (d, len, _fields) = surf.distance_matrix(&nodes);
+    let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: true, cell: 4.0 });
+    let specials = tmroute::gates::specials(&m, gates.yoff);
+    // ghosts
+    let mut runs = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&gdir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map_or(false, |x| x == "Gbx") && p.to_string_lossy().ends_with(".Ghost.Gbx") {
+                if let Ok(r) = tmroute::human::load_run(&p) { runs.push(r); }
+            }
+        }
+    }
+    if runs.is_empty() { die("no ghosts"); }
+    let only: Option<Vec<(u32, u32)>> = flag(args, "--legs").map(|s| s.split(',').filter_map(|l| { let mut it = l.split('-'); Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?)) }).collect());
+    // per leg (from group, to group) → per-ghost measurements
+    #[derive(Default)]
+    struct Acc { chord: Vec<f32>, dy: Vec<f32>, ms: Vec<f32>, vmax: Vec<f32>, vmean: Vec<f32>, air: Vec<f32>, fall: Vec<f32>, wall: Vec<f32>, specials: BTreeMap<String, usize>, path: Vec<f32> }
+    let mut legs: BTreeMap<(u32, u32), Acc> = BTreeMap::new();
+    for run in &runs {
+        let cr: Vec<tmroute::human::Crossing> = tmroute::human::crossings(run, &gates, 40.0).into_iter().flatten().collect();
+        // spawn first
+        let mut seq: Vec<(u32, i32, [f32; 3])> = vec![(u32::MAX, 0, gates.spawn.pos)];
+        for c in &cr { seq.push((c.group, c.ms, c.pos)); }
+        for w in seq.windows(2) {
+            let (ga, ta, pa) = w[0];
+            let (gb, tb, pb) = w[1];
+            if let Some(o) = &only { if !o.contains(&(ga, gb)) { continue; } }
+            if tb <= ta { continue; }
+            let a = legs.entry((ga, gb)).or_default();
+            let ch = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2) + (pb[2] - pa[2]).powi(2)).sqrt();
+            a.chord.push(ch);
+            a.dy.push(pb[1] - pa[1]);
+            a.ms.push((tb - ta) as f32);
+            let seg: Vec<&tmroute::human::Sample> = run.samples.iter().filter(|s| s.t_ms >= ta && s.t_ms <= tb).collect();
+            if seg.is_empty() { continue; }
+            let mut vmax = 0.0f32; let mut vsum = 0.0f32; let mut air = 0usize; let mut wall = 0usize; let mut fall = 0.0f32; let mut ymax = f32::NEG_INFINITY; let mut plen = 0.0f32;
+            for (i, s) in seg.iter().enumerate() {
+                vmax = vmax.max(s.speed); vsum += s.speed;
+                if i > 0 { let q = seg[i - 1].pos; plen += ((s.pos[0] - q[0]).powi(2) + (s.pos[1] - q[1]).powi(2) + (s.pos[2] - q[2]).powi(2)).sqrt(); }
+                ymax = ymax.max(s.pos[1]);
+                fall = fall.max(ymax - s.pos[1]);
+                let (below, _) = scene.layers_below_above(s.pos, 60.0, true);
+                match below {
+                    Some(h) if h.dist <= 1.5 => { if h.normal[1].abs() < 0.5 { wall += 1; } }
+                    _ => air += 1,
+                }
+                for sp in &specials {
+                    let dd = ((s.pos[0] - sp.centre[0]).powi(2) + (s.pos[1] - sp.centre[1]).powi(2) + (s.pos[2] - sp.centre[2]).powi(2)).sqrt();
+                    if dd < 8.0 { *a.specials.entry(sp.kind.clone()).or_default() += 1; }
+                }
+            }
+            a.vmax.push(vmax); a.vmean.push(vsum / seg.len() as f32); a.air.push(air as f32 / seg.len() as f32); a.wall.push(wall as f32 / seg.len() as f32); a.fall.push(fall); a.path.push(plen);
+        }
+    }
+    let med = |v: &Vec<f32>| -> f32 { if v.is_empty() { f32::NAN } else { let mut w = v.clone(); tmroute::human::percentile(&mut w, 50.0) } };
+    println!("{}\t{} ghosts\tleg\tn\tchord_m\tdy_m\thuman_s\tv_mean\tv_max\thuman_path_m\tair_share\tmax_fall_m\twall_share\tgraph_path_m\tgraph_cost\tspecials", gates.map_name, runs.len());
+    for ((ga, gb), a) in &legs {
+        let lab = |g: u32| if g == u32::MAX { "spawn".to_string() } else { format!("g{g}") };
+        let (gl, gc) = match (if *ga == u32::MAX { Some(&0usize) } else { node_of_group.get(ga) }, node_of_group.get(gb)) {
+            (Some(&i), Some(&j)) => (len[i][j], d[i][j]),
+            _ => (f32::NAN, f32::NAN),
+        };
+        let sp: Vec<String> = a.specials.iter().map(|(k, n)| format!("{k}×{}", (*n as f32 / a.ms.len().max(1) as f32).round() as usize)).collect();
+        println!("\t\t{}→{}\t{}\t{:.0}\t{:+.0}\t{:.3}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.1}\t{:.2}\t{}\t{}\t{}", lab(*ga), lab(*gb), a.ms.len(), med(&a.chord), med(&a.dy), med(&a.ms) / 1000.0, med(&a.vmean) * 3.6, med(&a.vmax) * 3.6, med(&a.path), med(&a.air), med(&a.fall), med(&a.wall), if gl.is_finite() { format!("{gl:.0}") } else { "MISSING".into() }, if gc.is_finite() { format!("{gc:.0}") } else { "∞".into() }, if sp.is_empty() { "-".into() } else { sp.join(" ") });
+    }
 }

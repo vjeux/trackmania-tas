@@ -660,6 +660,8 @@ pub fn cmd_table_r(args: &[String]) {
     let hyb_src = flag(args, "--hyb").unwrap_or_else(|| "router-plan-hyb".into());
     let (mut hyb_ex, mut n_hyb_plans, mut unseen_hyb_ex, mut hyb_tau, mut n_hyb_tau) = (0usize, 0usize, 0usize, 0.0f64, 0usize);
     let (mut geo_cp, mut r_cp, mut hyb_cp, mut unseen_hyb_cp) = (0usize, 0usize, 0usize, 0usize);
+    let (mut hon_hyb_legs, mut hon_hyb_tau, mut hon_hyb_n, mut hon_hyb_wrong) = ((0usize, 0usize), 0.0f64, 0usize, 0usize);
+    let (mut hon_geo_legs, mut hon_geo_tau, mut hon_geo_n, mut hon_geo_wrong) = ((0usize, 0usize), 0.0f64, 0usize, 0usize);
     let also: Vec<String> = flag(args, "--also").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
     let list = |k: &str| -> Vec<String> { flag(args, k).map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default() };
     let (train, held) = (list("--train"), list("--held-out"));
@@ -700,13 +702,14 @@ pub fn cmd_table_r(args: &[String]) {
         let hyb = load(&hyb_src);
         // full order (checkpoints + the finish line chosen) and the CP ORDER alone (everything but the last group):
         // a map with several finish lines (Summer 2026 - 05) can have the human CP order and another finish
-        let cmp = |a: &Option<Vec<u32>>| -> (String, Option<(bool, f64, bool)>) {
+        let cmp = |a: &Option<Vec<u32>>| -> (String, Option<(bool, f64, bool, usize, usize)>) {
             match (a, &human) {
                 (Some(a), Some(h)) => {
                     let tau = metrics::kendall_tau(a, h);
                     let ex = metrics::exact(a, h);
                     let cp_ex = a.len() == h.len() && a.len() > 1 && a[..a.len() - 1] == h[..h.len() - 1];
-                    (format!("{} τ={:.2}{}", if ex { "EXACT" } else { "differ" }, tau, if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" }), Some((ex, tau, cp_ex)))
+                    let (lm, ln) = metrics::leg_agreement(a, h);
+                    (format!("{} τ={:.2} legs {lm}/{ln}{}", if ex { "EXACT" } else { "differ" }, tau, if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" }), Some((ex, tau, cp_ex, lm, ln)))
                 }
                 _ => ("-".into(), None),
             }
@@ -718,11 +721,11 @@ pub fn cmd_table_r(args: &[String]) {
             n_h += 1;
             if geo.is_some() { n_geo_plans += 1; }
             if r.is_some() { n_r_plans += 1; }
-            if let Some((ex, _, cp)) = gv { if ex { geo_ex += 1; } if cp { geo_cp += 1; } }
-            if let Some((ex, _, cp)) = rv { if ex { r_ex += 1; } if cp { r_cp += 1; } }
+            if let Some((ex, _, cp, _, _)) = gv { if ex { geo_ex += 1; } if cp { geo_cp += 1; } }
+            if let Some((ex, _, cp, _, _)) = rv { if ex { r_ex += 1; } if cp { r_cp += 1; } }
             if hyb.is_some() { n_hyb_plans += 1; }
-            if let Some((ex, t, cp)) = hv { if ex { hyb_ex += 1; } if cp { hyb_cp += 1; } hyb_tau += t; n_hyb_tau += 1; }
-            if let (Some((_, tg, _)), Some((_, tr, _))) = (gv, rv) {
+            if let Some((ex, t, cp, _, _)) = hv { if ex { hyb_ex += 1; } if cp { hyb_cp += 1; } hyb_tau += t; n_hyb_tau += 1; }
+            if let (Some((_, tg, _, _, _)), Some((_, tr, _, _, _))) = (gv, rv) {
                 both_have += 1;
                 geo_tau += tg;
                 r_tau += tr;
@@ -734,10 +737,15 @@ pub fn cmd_table_r(args: &[String]) {
         let seen = if metrics::fnv_held_out(&uid) { "held-out(fnv)" } else if train.contains(&uid) { "train" } else if held.contains(&uid) { "held-out" } else { "unseen" };
         if human.is_some() && seen != "train" {
             unseen_n += 1;
-            if let Some((true, _, _)) = rv { unseen_r_ex += 1; }
-            if let Some((true, _, _)) = gv { unseen_geo_ex += 1; }
-            if let Some((true, _, _)) = hv { unseen_hyb_ex += 1; }
-            if let Some((_, _, true)) = hv { unseen_hyb_cp += 1; }
+            if let Some((true, _, _, _, _)) = rv { unseen_r_ex += 1; }
+            if let Some((true, _, _, _, _)) = gv { unseen_geo_ex += 1; }
+            if let Some((true, _, _, _, _)) = hv { unseen_hyb_ex += 1; }
+            if let Some((_, _, true, _, _)) = hv { unseen_hyb_cp += 1; }
+            // the M2 reading, pooled over the honest rows: legs, τ, exact, τ < 0.4 ("genuinely wrong")
+            if let Some((_, t, _, lm, ln)) = hv { hon_hyb_legs.0 += lm; hon_hyb_legs.1 += ln; hon_hyb_tau += t; hon_hyb_n += 1; if t < 0.4 { hon_hyb_wrong += 1; } }
+            if let Some((_, t, _, lm, ln)) = gv { hon_geo_legs.0 += lm; hon_geo_legs.1 += ln; hon_geo_tau += t; hon_geo_n += 1; if t < 0.4 { hon_geo_wrong += 1; } }
+            // a map with a human order and NO hybrid plan counts as 0 legs matched of its legs
+            if hv.is_none() { if let Some(h) = &human { hon_hyb_legs.1 += h.len().saturating_sub(1); } }
         }
         rows.push((g.map_name.clone(), format!("| {}{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", g.map_name, if hyp { " †" } else { "" }, g.checkpoint_groups, human.as_ref().map_or("—".into(), |v| j(v)), share, geo.as_ref().map_or("— (no plan)".into(), |v| j(v)), gs, r.as_ref().map_or("— (no plan)".into(), |v| j(v)), rs, hyb.as_ref().map_or("— (no plan)".into(), |v| j(v)), hs, seen)));
     }
@@ -752,6 +760,7 @@ pub fn cmd_table_r(args: &[String]) {
     }
     println!();
     println!("maps with a human order: {n_h}; geometric planner has a plan on {n_geo_plans}, == human on {geo_ex}; R planner has a plan on {n_r_plans}, == human on {r_ex}; over the {both_have} maps both planned: mean τ geometric {:.3}, R {:.3}. HYBRID: plan on {n_hyb_plans}, == human on {hyb_ex}, mean τ {:.3}. CP-ORDER agreement (finish-line choice ignored): geometric {geo_cp}, R {r_cp}, hybrid {hyb_cp}. HONEST ROWS (held-out + unseen by R): {unseen_n} maps, R == human on {unseen_r_ex}, geometric == human on {unseen_geo_ex}, hybrid == human on {unseen_hyb_ex} (CP order {unseen_hyb_cp}). † = added without a human order (failed / hypothesis maps). τ = Kendall tau over the checkpoint groups.", if n_tau > 0 { geo_tau / n_tau as f64 } else { f64::NAN }, if n_tau > 0 { r_tau / n_tau as f64 } else { f64::NAN }, if n_hyb_tau > 0 { hyb_tau / n_hyb_tau as f64 } else { f64::NAN });
+    println!("M2 READING over the {unseen_n} honest rows — HYBRID: per-leg agreement {}/{} = {:.1} % (a map with no plan counts all its legs missed), mean τ {:.3} over {hon_hyb_n} planned, exact {unseen_hyb_ex}, τ < 0.4 (genuinely wrong route) {hon_hyb_wrong}; GEOMETRIC: per-leg {}/{} = {:.1} % over its {hon_geo_n} planned maps, mean τ {:.3}, exact {unseen_geo_ex}, τ < 0.4 {hon_geo_wrong}.", hon_hyb_legs.0, hon_hyb_legs.1, if hon_hyb_legs.1 > 0 { 100.0 * hon_hyb_legs.0 as f64 / hon_hyb_legs.1 as f64 } else { f64::NAN }, if hon_hyb_n > 0 { hon_hyb_tau / hon_hyb_n as f64 } else { f64::NAN }, hon_geo_legs.0, hon_geo_legs.1, if hon_geo_legs.1 > 0 { 100.0 * hon_geo_legs.0 as f64 / hon_geo_legs.1 as f64 } else { f64::NAN }, if hon_geo_n > 0 { hon_geo_tau / hon_geo_n as f64 } else { f64::NAN });
 }
 
 /// `tmroute split UID...` — MODEL's fnv1a64 % 10 rule: HELD-OUT (== 0) or train, per uid.
