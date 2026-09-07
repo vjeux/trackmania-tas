@@ -41,9 +41,6 @@ use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
 use tmexplore::outcome::Verdict;
 
-/// `lroundf` calls per simulated 10 ms tick, measured on this engine. Used
-/// ONLY to bound how far a child runs. Nothing is ever labelled from it.
-const LROUNDF_PER_TICK: u64 = 255;
 
 pub struct ForkOpts {
     pub work: PathBuf,
@@ -53,7 +50,7 @@ pub struct ForkOpts {
     /// boundary; nothing about it is a driver.
     pub reference_ghost: PathBuf,
     pub shim: PathBuf,
-    /// The `lroundf` clock the server forks at. Earlier is better for a cold
+    /// The tick the server forks at. Earlier is better for a cold
     /// start: everything below the resulting boundary is fixed.
     pub checkpoint_clock: u64,
     pub start_offset_ms: i32,
@@ -129,7 +126,7 @@ impl ForkBranch {
         // hard abort: a resume cannot be trusted without it, and a fallback
         // here is how the phantom got in.
         let probe = srv.probe_tick()?;
-        let mut from = probe + 1;
+        let mut from = probe;
         if let Some(c) = o.common_from {
             if from > c {
                 return Err(format!(
@@ -227,7 +224,8 @@ impl ForkBranch {
         // Bit 31 of `max` makes the child exit as soon as the sample budget is
         // spent rather than simulating on in silence.
         let samples = (n as u32).saturating_add(4);
-        let budget = ((n as u64 + 4) * LROUNDF_PER_TICK).min(u32::MAX as u64) as u32;
+        // Ticks. Only bounds how far the child runs; nothing is labelled from it.
+        let budget = (n as u64 + 4).min(u32::MAX as u64) as u32;
         let (json, blob) = self.srv.run_sampled_segs_ex(
             self.from,
             &recs,

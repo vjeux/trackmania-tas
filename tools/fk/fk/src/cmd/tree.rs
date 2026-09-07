@@ -311,7 +311,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     let n_ticks = tape.n();
     let mut s = Session::start(engine, tape, at)?;
     println!(
-        "# fk tree cost -- load1 {:.2}, {} cores, tape {} ticks, checkpoint lroundf #{}",
+        "# fk tree cost -- load1 {:.2}, {} cores, tape {} ticks, checkpoint clock #{}",
         load,
         std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0),
         n_ticks,
@@ -938,7 +938,7 @@ pub fn scale(engine: &Engine, tape: Tape, at: Checkpoint, o: ScaleOpts) -> Resul
     // hundred server launches inside a throughput measurement.
     let clock = at.to_clock(engine, &tape)?;
     println!(
-        "# fk tree scale -- {} servers, {} s, k={}, checkpoint lroundf #{}, load1 {:.2}, {} cores",
+        "# fk tree scale -- {} servers, {} s, k={}, checkpoint clock #{}, load1 {:.2}, {} cores",
         o.servers,
         o.secs,
         o.k,

@@ -755,7 +755,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     }
     let probe_ms = forkoracle::layout::sample_ms(probe, 0, f.start_offset_ms);
     if verbose {
-        println!("handover at lroundf {} -> probe tick {} (race {} ms)", used, probe, probe_ms);
+        println!("handover at clock {} -> probe tick {} (race {} ms)", used, probe, probe_ms);
     }
     // NO INPUT PATCH for the locate probes. The staged ghost is the original
     // file, so the child already has the right tape; patching it with the

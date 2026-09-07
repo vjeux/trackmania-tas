@@ -249,24 +249,21 @@ pub fn flat_trace(
     let dir = work.join("flat-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
-    let start_offset = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, reference, Some(cfg))?;
     f.probe_root()?;
-    f.calibrate_clock(crate::forkenv::CLOCK_WARM_TICKS, start_offset)?;
     let (rows, h) = f.advance(ROOT, &[], 0, ticks)?;
     f.release(h);
     forkoracle::layout::check_rows(&rows).map_err(|e| format!("the reconstruction failed its own checks: {e}"))?;
     Ok(rows)
 }
 
-/// The earliest `lroundf` count at which the engine can be stopped and the
-/// validator's ownership chain is already built.
-///
-/// A single constant, not a ladder. The ladder existed because the value-based
-/// locator could not find a car that had barely moved; the resolver does not
-/// look for a moving car, it reads a pointer, so the constraint is gone.
-pub const EARLIEST_CLOCK: u64 = 11_000;
+/// The root checkpoint: the start of the tick at race −10 ms, before its input
+/// record is read -- the first tick the engine reads by INDEX (everything
+/// earlier reads record 0; `forkoracle::clock::record_read_at`). Under the tick
+/// hook this is the same simulation point in every process: the car at rest on
+/// the line with the whole tape still unread.
+pub const EARLIEST_CLOCK: u64 = forkoracle::clock::RACE_CLOCK_BIAS as u64 - 1;
 
 /// Where the validator actually puts the car at the start of the race.
 ///
@@ -287,11 +284,9 @@ pub fn measure_spawn(
     let dir = work.join("spawn-traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4_000 };
-    let start_offset = s.tape.start_offset_ms;
     let fk::session::Session { srv, .. } = s;
     let mut f = Forest::new(srv, work, recs, Some(cfg))?;
     f.probe_root()?;
-    f.calibrate_clock(crate::forkenv::CLOCK_WARM_TICKS, start_offset)?;
     let (rows, h) = f.advance(ROOT, &[], 0, 200)?;
     f.release(h);
     let first = *rows.first().ok_or("no state rows at the start: the spawn is UNMEASURED")?;

@@ -1676,7 +1676,9 @@ fn reset_control(a: &[String]) {
 
     let mut arms: Vec<(&str, Option<u64>)> = vec![("the env's root (ladder)", None)];
     if has(a, "--also-check-old-root") {
-        arms.push(("the OLD root (must FAIL)", Some(36_000)));
+        // race 0.930 s: where agent G's fitted-line root (lroundf 36000) landed;
+        // under the tick clock that is stop 1093.
+        arms.push(("the OLD root (must FAIL)", Some(forkoracle::clock::ckpt_for_race_ms(930))));
     }
 
     let mut ok_new = false;
@@ -2181,14 +2183,14 @@ fn from_template(a: &[String]) {
 fn probe_scan(a: &[String]) {
     let p = paths(a);
     let clocks: Vec<u64> = flag(a, "--clocks")
-        .unwrap_or_else(|| "11000".into())
+        .unwrap_or_else(|| "999".into())
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
     let repeat: usize = num(a, "--repeat", 3);
     let reprobe: usize = num(a, "--reprobe", 3);
     std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
-    println!("# tmenv probe-scan  clocks {:?}  repeat {}  reprobe {}", clocks, repeat, reprobe);
+    println!("# tmenv probe-scan  tick-clock stops {:?}  repeat {}  reprobe {}", clocks, repeat, reprobe);
     println!("clock    run  probes                 raw_clock  race_label  pos                          speed");
     for c in &clocks {
         for r in 0..repeat {
@@ -2204,22 +2206,20 @@ fn probe_scan(a: &[String]) {
             let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)
                 .unwrap_or_else(|e| die(e));
             let bias = car.layout().clock_bias;
-            let start_offset = s.tape.start_offset_ms;
             let dir = work.join("traces");
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
             let cfg = branch::TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 4000 };
             let fk::session::Session { srv, .. } = s;
             let mut f = branch::Forest::new(srv, &work, recs, Some(cfg)).unwrap_or_else(|e| die(e));
             f.probe_root().unwrap_or_else(|e| die(e));
-            let cal = f.calibrate_clock(tmenv::forkenv::CLOCK_WARM_TICKS, start_offset).unwrap_or_else(|e| die(e));
             let (rows, h) = f.advance(branch::ROOT, &[], 0, 2).unwrap_or_else(|e| die(e));
             f.release(h);
             match rows.first() {
                 Some(row) => {
                     let v = (row.vx * row.vx + row.vy * row.vy + row.vz * row.vz).sqrt();
                     println!(
-                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   cal: probe {} raw {} bias {} (root-implied {})",
-                        c, r, format!("{:?}", probes), row.time_ms + cal.bias, row.time_ms, row.x, row.y, row.z, v, cal.probe, cal.raw_clock, cal.bias, bias
+                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   engine bias {}",
+                        c, r, format!("{:?}", probes), row.time_ms + bias, row.time_ms, row.x, row.y, row.z, v, bias
                     );
                 }
                 None => println!("{:6}  {:3}  {:<22} (no rows)", c, r, format!("{:?}", probes)),

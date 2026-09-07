@@ -27,7 +27,7 @@
 use crate::action::{Act, ActionSpace};
 use tmstate::Action;
 use crate::core::{Core, CoreCfg, Done, Info};
-use branch::{ClockCal, Forest, Handle, TraceCfg, ROOT};
+use branch::{Forest, Handle, TraceCfg, ROOT};
 use fk::session::{Checkpoint, Engine, Session};
 use fk::tape::Tape;
 use forkoracle::forksrv::{rec_of, Rec};
@@ -74,8 +74,6 @@ pub struct ForkEnv {
     gap: usize,
     overlap: usize,
     finish_ms: Option<i64>,
-    /// How the race clock was labelled for this server.
-    pub clock_cal: ClockCal,
     /// Reset-anywhere: kept states, and the nodes no step may release.
     snaps: std::collections::HashMap<u64, Snap>,
     pinned: std::collections::HashSet<Handle>,
@@ -107,11 +105,6 @@ struct Snap {
     finish_ms: Option<i64>,
 }
 
-/// Ticks to run past the root before taking the clock calibration probe. The
-/// root sits ~0.03 s before the race starts; 50 ticks lands the calibration
-/// node ~0.45 s into the race, well inside the regime where the probe is exact.
-pub const CLOCK_WARM_TICKS: u64 = 50;
-
 impl ForkEnv {
     /// Build an env on an already-started session.
     ///
@@ -140,9 +133,6 @@ impl ForkEnv {
         let _ = probe;
         let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg)?;
         forest.probe_root()?;
-        // Label the clock from INSIDE the race, not from the root's probe --
-        // see `Forest::calibrate_clock` for the measurement that forced this.
-        let clock_cal = forest.calibrate_clock(CLOCK_WARM_TICKS, tape.start_offset_ms)?;
 
         // The state at the root, captured once: the root never moves, so every
         // reset starts from the same place and there is no reason to pay a fork
@@ -169,7 +159,6 @@ impl ForkEnv {
             gap: 0,
             overlap: 0,
             finish_ms: None,
-            clock_cal,
             snaps: std::collections::HashMap::new(),
             pinned: std::collections::HashSet::new(),
             next_snap: 1,
@@ -305,18 +294,12 @@ impl ForkEnv {
         }
         let k = chunk.len();
         let from = self.forest.floor(self.cur, None)?;
-        // One record more than the chunk, and one tick more of running: the
-        // child pauses on an `lroundf` count, i.e. somewhere INSIDE a tick, so
-        // the last row it traces is that tick's state part-way through its
-        // update. Measured: the final row of an episode 0.538 m from the flat
-        // re-simulation of the same tape while every earlier row agreed to
-        // 0.000000 m (the earlier partials had been superseded by the next
-        // child's completed row). So the last input is held one tick longer,
-        // the child runs ~k+1, and only ticks the clock has moved PAST are
-        // ingested -- a tick is complete once a row with a later clock exists.
-        // The trailing partial is re-traced, completed, by the next step.
-        let held = k + 1;
-        if from + held > self.n_ticks {
+        // Under the tick hook a child stops at the START of tick `from + k`,
+        // before that tick's record is read: exactly k ticks run, every traced
+        // row is a completed tick, and the k records written are exactly the
+        // ones consumed. (Under the lroundf clock this needed a k+1 hold and a
+        // partial-tick trim; both are gone with it.)
+        if from + k > self.n_ticks {
             // Out of tape. Not a crash and not a finish: say which.
             let obs = self.core.observe();
             return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
@@ -327,16 +310,8 @@ impl ForkEnv {
             self.overlap += self.last_end - from;
         }
 
-        let mut recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
-        recs.push(*recs.last().unwrap());
-        // The child's run budget is k ticks (plus a fraction, so a k = 1 step
-        // reliably crosses one tick boundary): the extra RECORD is written so
-        // the trailing partial tick runs under our input, but the budget must
-        // not grow with it or every step advances k+1 ticks (measured 1.92
-        // ticks per k = 1 step before this). `lroundf` counts are ~263 per tick
-        // against the crate's 255 estimate, so ticks/step reads ~0.97 k; the
-        // tick hook (agentcloud/tickhook) makes this exact later.
-        let (all_rows, ended) = match self.forest.advance_budget(self.cur, &recs, from, k as u64 * branch::LROUNDF_PER_TICK + 32)? {
+        let recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
+        let (rows, ended) = match self.forest.advance_or_end(self.cur, &recs, from, k as u64)? {
             branch::Advanced::Node(rows, h) => {
                 self.leave_cur();
                 self.cur = h;
@@ -347,18 +322,9 @@ impl ForkEnv {
             branch::Advanced::RunEnded(rows) => (rows, true),
         };
         for (i, a) in chunk.iter().enumerate() {
-            let k1 = if i + 1 == k { 2 } else { 1 };
-            self.spans.push(Span { from: from + i, k: k1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
+            self.spans.push(Span { from: from + i, k: 1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
         }
-        self.last_end = from + held;
-
-        let last_clock = all_rows.last().map(|r| r.time_ms);
-        // When the run ended the last row is the engine's final state, not a
-        // partial tick: keep it.
-        let rows: Vec<Row> = match last_clock {
-            Some(lc) if all_rows.len() > 1 && !ended => all_rows.iter().filter(|r| r.time_ms < lc).cloned().collect(),
-            _ => all_rows.clone(),
-        };
+        self.last_end = from + k;
 
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
@@ -632,19 +598,13 @@ pub fn build_at_start(
     let dir = work.join("traces");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    // The root's probe is not a tick label (see `Forest::calibrate_clock`),
-    // but it IS the write floor: records below it may already have been read
-    // ahead, so the env never writes them and they stay the reference's. How
-    // many that is varies per server (0 to 113 measured at the same instant
-    // on a synthesized container), so a server whose floor would give the
-    // reference more than `max_root_floor_ms` of the RACE is thrown away and
-    // started again -- cheap, once, at startup -- rather than silently handing
-    // the first second to a tape the policy does not control.
-    //
-    // Judged in race time, not tick index: a game-recorded template is
-    // countdown-prefixed (`start_offset_ms` < 0), its root probe is
-    // legitimately ~156 -- the countdown ticks the engine consumed -- and the
-    // reference then owns nothing of the race at all.
+    // The root's probe is the write floor: the first record the engine has
+    // not read. Under the tick hook it is exact and the same on every server
+    // (the lroundf clock made it a lottery -- 0 to 113 at the same instant --
+    // which this restart rule was written for; it stays as a guard). A
+    // countdown-prefixed template probes ~156 legitimately (the countdown reads
+    // record 0 only), so the floor is judged in RACE time: the reference may
+    // own at most `max_root_floor_ms` of the race.
     let floor_race_ms = |probe: usize, tape: &Tape| probe as i64 * 10 + tape.start_offset_ms as i64;
     let mut s = rig.session_clock(root.clock)?;
     let mut probe = s.probe_tick()?;
@@ -700,17 +660,12 @@ pub fn build_at_start(
         }
     }
     if root.verbose {
-        let c = env.clock_cal;
         eprintln!(
-            "  env root: lroundf {}, root probe {probe} (write floor; {tries} server start{}), car from \
-             validator ownership; clock bias {} from an in-race probe ({} at raw {}; the root's probe \
-             implied {}), root row race {:.3}",
+            "  env root: tick clock {}, root probe {probe} (write floor; {tries} server start{}), car from \
+             validator ownership; race clock labelled from the engine (bias {}), root row race {:.3}",
             root.clock,
             if tries == 1 { "" } else { "s" },
-            c.bias,
-            c.probe,
-            c.raw_clock,
-            c.old_bias,
+            car.layout().clock_bias,
             row.time_ms as f64 / 1000.0
         );
     }

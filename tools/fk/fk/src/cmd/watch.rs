@@ -329,7 +329,7 @@ fn setup(c: &Cfg) -> Setup {
     )
     .unwrap_or_else(|e| panic!("fork server failed: {}", e));
     println!(
-        "fork server up: input array {:#x}, checkpoint at lroundf #{}",
+        "fork server up: input array {:#x}, checkpoint at clock #{}",
         srv.base, srv.clock
     );
     let probe = srv

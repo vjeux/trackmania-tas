@@ -379,14 +379,16 @@ fn trajectory_csv_has_the_columns_the_rest_of_the_project_reads() {
     }
 }
 
-/// The fitted line is `clock = 36141 + 25.483 * race_ms`, and it is only ever
-/// used to CHOOSE a checkpoint — never to label a sample, because the count is
-/// not a fixed simulation point.
+/// The checkpoint clock is EXACT: the engine's own race tick,
+/// `race_ms / 10 + 1000` (the bias keeps countdown ticks positive; the race
+/// START is read out of the engine per process and is not always 2200 -- see
+/// `forkoracle::clock`).
 #[test]
-fn the_checkpoint_line_is_the_fitted_one() {
-    assert_eq!(fk::session::clock_for_race_ms(22730), 615_369);
-    assert_eq!(fk::session::clock_for_race_ms(0), 36_141);
-    assert!(fk::session::clock_for_race_ms(-100_000) >= 1000, "clamped, never negative");
+fn the_checkpoint_clock_is_the_documented_one() {
+    assert_eq!(fk::session::clock_for_race_ms(22730), 3273);
+    assert_eq!(fk::session::clock_for_race_ms(0), 1000);
+    assert_eq!(fk::session::clock_for_race_ms(-1580), 842);
+    assert_eq!(fk::session::clock_for_race_ms(-100_000), 0, "clamped, never negative");
 }
 
 // =========================================================================
