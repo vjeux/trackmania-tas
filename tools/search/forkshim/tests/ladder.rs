@@ -231,3 +231,45 @@ fn the_cap_evicts_the_least_recently_used_node() {
         assert_eq!(verdict(&j), verdict(&h.srv.run(root_tick, &tail(c, root_tick))));
     }
 }
+
+/// THE SAMPLE RING (PERF.md §5): an 'S' child's samples reach the parent
+/// through a shared mapping instead of a `write` per tick, and the blob must
+/// be exactly what the pipe carried -- one `[u64 clock][record]` per sampled
+/// tick, in order, every byte of the record right. shimhost's input array is
+/// the memory sampled here: its records are known, so the content is checked
+/// against the tape and not merely for shape.
+#[test]
+fn sampled_records_arrive_intact_and_in_order_through_the_ring() {
+    let mut h = start("ring", ckpt(300));
+    let root_tick = h.srv.probe_tick().unwrap();
+    let base = h.srv.base;
+    // Sample record 100's 32 bytes at every tick, no dedup, for 500 ticks.
+    let segs = [(base + 100 * 32, 32u32)];
+    let recs = tail(&h.reference, root_tick);
+    let (json, blob) = h.srv.run_sampled_segs_ex(root_tick, &recs, &segs, 1, 500 | 0x8000_0000, (0, 0), 0);
+    assert!(json.contains("FKTIME"), "no FKTIME line: {}", json);
+    assert_eq!(blob.len() % 40, 0, "the blob is not whole 40-byte samples: {} bytes", blob.len());
+    let n = blob.len() / 40;
+    assert!(n >= 400 && n <= 500, "expected ~500 samples, got {}", n);
+    let mut prev_clock = None;
+    for i in 0..n {
+        let s = &blob[i * 40..i * 40 + 40];
+        let clock = u64::from_le_bytes(s[0..8].try_into().unwrap());
+        if let Some(p) = prev_clock {
+            assert_eq!(clock, p + 1, "sample {} is out of order or a tick was lost", i);
+        }
+        prev_clock = Some(clock);
+        // the record: flags 2, steer = tape[100]/127 as f32, gas 1.0, brake 0.0
+        assert_eq!(u32::from_le_bytes(s[8..12].try_into().unwrap()), 2, "sample {} flags", i);
+        let steer = f32::from_le_bytes(s[12..16].try_into().unwrap());
+        let want = (h.reference.steer[100] as f32) / 127.0;
+        assert_eq!(steer.to_bits(), want.to_bits(), "sample {} steer", i);
+        assert_eq!(f32::from_le_bytes(s[16..20].try_into().unwrap()), 1.0, "sample {} gas", i);
+        assert_eq!(f32::from_le_bytes(s[20..24].try_into().unwrap()), 0.0, "sample {} brake", i);
+    }
+    // And again, on the same server: a second run must not see the first's
+    // samples (a fresh ring every time).
+    let (_, blob2) = h.srv.run_sampled_segs_ex(root_tick, &recs, &segs, 1, 100 | 0x8000_0000, (0, 0), 0);
+    assert_eq!(blob2.len() / 40, 100, "the second run's blob has {} samples, wanted 100", blob2.len() / 40);
+    assert_eq!(&blob2[..40], &blob[..40], "the second run's first sample differs from the first run's");
+}

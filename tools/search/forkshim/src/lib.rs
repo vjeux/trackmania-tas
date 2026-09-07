@@ -325,6 +325,49 @@ static GATE_MOD: AtomicU64 = AtomicU64::new(0);
 static GATE_PHASE: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_PREV: AtomicUsize = AtomicUsize::new(0); // *mut u8, len SAMPLE_LEN
 static SAMPLE_BUF: AtomicUsize = AtomicUsize::new(0); // *mut u8, len 8 + SAMPLE_LEN
+/// THE SAMPLE RING (PERF.md §5). An 'S' child used to `write` every sample down
+/// a pipe: one syscall and one wake-up of the polling parent per tick, ~15 us
+/// on top of a 24 us tick. Now the parent maps a MAP_SHARED buffer before the
+/// fork -- `[u64 used][samples...]` -- and the child copies each sample into
+/// it; the parent reads it once, after the child is done. Bytes are identical
+/// to what the pipe carried, in the same order. When the ring is full the
+/// child goes on down the pipe, so the blob is `ring ++ pipe` and no sample is
+/// lost. 0 = no ring (the trace and 'G' paths write to a file and keep it).
+static SAMPLE_RING: AtomicUsize = AtomicUsize::new(0);
+static SAMPLE_RING_CAP: AtomicUsize = AtomicUsize::new(0);
+/// Largest ring the parent will map: samples past it take the pipe.
+const SAMPLE_RING_MAX: usize = 64 << 20;
+
+/// Make sure the process holds a ring of at least `want` bytes (plus the
+/// header), mapping a bigger one if needed, and reset its `used` word. Called
+/// in the PARENT before the fork, so the child inherits the mapping.
+unsafe fn sample_ring_prepare(want: usize) {
+    // A FRESH MAPPING FOR EVERY RUN, never a reused one. A child that has
+    // been told to die may still be on another core for a few microseconds,
+    // and a reused ring whose header the parent has just reset is exactly
+    // where its last sample would land: on top of the next run's first. Each
+    // child gets its own pages and keeps them until it is gone; the parent
+    // unmaps its reference after reading. ~20 us per run.
+    sample_ring_release();
+    let need = (want.min(SAMPLE_RING_MAX) + 8 + 4095) & !4095;
+    let p = mmap(std::ptr::null_mut(), need, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if p as isize == -1 || p.is_null() {
+        return; // no ring: the pipe carries everything, as before
+    }
+    *(p as *mut u64) = 0;
+    SAMPLE_RING.store(p as usize, Ordering::SeqCst);
+    SAMPLE_RING_CAP.store(need, Ordering::SeqCst);
+}
+
+/// Drop the parent's reference to the current ring (the child that used it
+/// keeps its own until it exits).
+unsafe fn sample_ring_release() {
+    let cur = SAMPLE_RING.swap(0, Ordering::SeqCst);
+    let cap = SAMPLE_RING_CAP.swap(0, Ordering::SeqCst);
+    if cur != 0 {
+        munmap(cur as *mut c_void, cap);
+    }
+}
 
 /// Gather the watched segments out, if the key slice changed. Called from the
 /// tick hook in the child only.
@@ -340,7 +383,7 @@ unsafe fn do_sample(clock: u64) {
     // stop this from ever being reached again.
     let dl = SAMPLE_DEADLINE.load(Ordering::Relaxed);
     if dl != 0 && clock > dl {
-        _exit(0)
+        leave(1)
     }
     let stride = SAMPLE_STRIDE.load(Ordering::Relaxed);
     let gm = GATE_MOD.load(Ordering::Relaxed);
@@ -372,7 +415,7 @@ unsafe fn do_sample(clock: u64) {
     let n = SAMPLE_LEFT.load(Ordering::Relaxed);
     if n == 0 {
         if SAMPLE_EXIT.load(Ordering::Relaxed) != 0 {
-            _exit(0)
+            leave(1)
         }
         SAMPLE_STRIDE.store(0, Ordering::Relaxed);
         SAMPLE_NEXT.store(u64::MAX, Ordering::Relaxed);
@@ -456,6 +499,20 @@ unsafe fn do_sample(clock: u64) {
     }
     std::ptr::copy_nonoverlapping(clock.to_le_bytes().as_ptr(), buf, 8);
     SAMPLE_LEFT.store(n - 1, Ordering::Relaxed);
+    // Into the ring while it fits -- no syscall, no wake-up -- then down the
+    // pipe. The parent reads `ring ++ pipe`, so the order is the pipe's.
+    let ring = SAMPLE_RING.load(Ordering::Relaxed);
+    if ring != 0 {
+        let used = *(ring as *const u64) as usize;
+        if 8 + used + 8 + len <= SAMPLE_RING_CAP.load(Ordering::Relaxed) {
+            std::ptr::copy_nonoverlapping(buf, (ring + 8 + used) as *mut u8, 8 + len);
+            *(ring as *mut u64) = (used + 8 + len) as u64;
+            return;
+        }
+        // Full: everything from here on takes the pipe, and never the ring
+        // again, so the two halves stay in order.
+        SAMPLE_RING.store(0, Ordering::Relaxed);
+    }
     write_all(
         SAMPLE_FD.load(Ordering::Relaxed),
         std::slice::from_raw_parts(buf, 8 + len),
@@ -499,6 +556,7 @@ extern "C" {
         fd: c_int,
         off: i64,
     ) -> *mut c_void;
+    fn munmap(addr: *mut c_void, len: usize) -> c_int;
 }
 const PROT_RW: c_int = 3;
 const MAP_SHARED: c_int = 1;
@@ -2852,6 +2910,7 @@ unsafe fn forkserver() {
                 }
                 SAMPLE_FD.store(fd, Ordering::SeqCst);
                 TRACE_FD.store(fd, Ordering::SeqCst);
+                SAMPLE_RING.store(0, Ordering::SeqCst); // a trace goes to its file, never to an inherited ring
                 SAMPLE_LEFT.store(smax, Ordering::SeqCst);
                 SAMPLE_EXIT.store(0, Ordering::SeqCst);
                 SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
@@ -2936,6 +2995,9 @@ unsafe fn forkserver() {
                 }
             };
             fflush(std::ptr::null_mut());
+            // The ring the child will fill: room for every sample it may take,
+            // capped; the pipe takes the overflow.
+            sample_ring_prepare((smax as usize).saturating_mul(8 + slen));
             let t_start = now_us();
             let mut fds = [0i32; 2];
             let mut sfds = [0i32; 2];
@@ -3028,7 +3090,10 @@ unsafe fn forkserver() {
                         revents: 0,
                     },
                 ];
-                if json_done && samples_eof {
+                // Once the child has said it is done, every sample it will ever
+                // produce is in the ring or already in the pipe: do not wait for
+                // EOF, which comes after its teardown.
+                if json_done {
                     break;
                 }
                 let pr = poll(pfds.as_mut_ptr(), 2, 60000);
@@ -3064,14 +3129,15 @@ unsafe fn forkserver() {
                 }
             }
             if !samples_eof {
-                // drain whatever the pipe still holds
+                // drain whatever the pipe already holds -- without waiting: the
+                // child wrote its last sample before it said it was done
                 loop {
                     let mut pfd = PollFd {
                         fd: sfds[0],
                         events: POLLIN,
                         revents: 0,
                     };
-                    if poll(&mut pfd, 1, 200) <= 0 {
+                    if poll(&mut pfd, 1, 0) <= 0 {
                         break;
                     }
                     let r = real_read()(sfds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
@@ -3084,6 +3150,29 @@ unsafe fn forkserver() {
             kill(pid, SIGKILL);
             close(fds[0]);
             close(sfds[0]);
+            // The ring first, then whatever overflowed down the pipe: the order
+            // the child produced them in.
+            let ring = SAMPLE_RING.load(Ordering::Relaxed);
+            if ring != 0 {
+                let used = (*(ring as *const u64) as usize).min(SAMPLE_RING_CAP.load(Ordering::Relaxed) - 8);
+                if CENSUS.load(Ordering::Relaxed) != 0 {
+                    logn(b"FKSHIM ring_used ", used as u64);
+                    logn(b"FKSHIM ring_pipe ", samples.len() as u64);
+                    logn(b"FKSHIM ring_slen ", slen as u64);
+                }
+                let mut all = Vec::with_capacity(used + samples.len());
+                all.extend_from_slice(std::slice::from_raw_parts((ring + 8) as *const u8, used));
+                all.extend_from_slice(&samples);
+                samples = all;
+            }
+            sample_ring_release();
+            if CENSUS.load(Ordering::Relaxed) != 0 {
+                // Measurement mode: what a sampled run cost, and how many ticks it
+                // ran, on the server log.
+                logn(b"FKSHIM S_done_us ", now_us() - t_start);
+                let tp = timing();
+                logn(b"FKSHIM S_ticks ", if tp.is_null() { 0 } else { (*tp).ticks });
+            }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
             out.extend_from_slice(b" first_us ");
@@ -3264,6 +3353,7 @@ unsafe fn forkserver() {
             SAMPLE_STRIDE.store(sstride.max(1), Ordering::SeqCst);
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
             CHAIN_ARMED.store(true, Ordering::SeqCst);
+            SAMPLE_RING.store(0, Ordering::SeqCst); // the clean run writes its file
             send_frame(res, b"GO");
             return;
         }
