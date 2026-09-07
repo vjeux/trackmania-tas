@@ -272,15 +272,74 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     };
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, collection_name);
 
-    // distinct (name, flags) among authored grid blocks AND the generated
-    // (baked) non-Sea blocks -- the FC clip fillers that finish the authored
-    // structures; the Sea itself stays the full-size foundation
-    let mut keys: BTreeMap<(String, u32), usize> = BTreeMap::new();
+    // A generated filler takes the MATERIAL MODIFIER of the authored block it
+    // finishes: the game grows the FC clips of a PlatformDirt platform in the
+    // neighbouring cells and dresses them like the platform (Summer 15: the
+    // `OpenTechZoneFC*` skirts beside the dirt platforms and the fillers
+    // under the `WaterWallDirt` pool walls are sand-orange in the original,
+    // and came out plain blue from the unmodified block infos). Per baked
+    // block: the authored block of its own cell decides (its modifier, or
+    // none); a cell without an authored block asks its four horizontal
+    // neighbours and takes the modifier they agree on most.
+    let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> { bi.material_modifier.iter().filter(|r| r.ends_with(".TerrainModifier.Gbx")).cloned().collect() };
+    let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
+    for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
+        let Some(path) = idx.path_for(&b.name) else { continue };
+        let mods = match idx.load(store, &path) {
+            Ok(bi) => terrain_mods(bi),
+            Err(_) => Vec::new(),
+        };
+        let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
+        // several authored blocks in one cell (a pillar under a deck): a
+        // modifier wins over none
+        let e = cell_mod.entry(c).or_default();
+        if e.is_empty() {
+            *e = mods;
+        }
+    }
+    let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
+        if b.flags & crate::blockmap::FLAG_FREE != 0 {
+            return Vec::new();
+        }
+        let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
+        if let Some(m) = cell_mod.get(&c) {
+            return m.clone();
+        }
+        let mut votes: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let (x, z) = (c.0 as i32 + dx, c.2 as i32 + dz);
+            if !(0..=255).contains(&x) || !(0..=255).contains(&z) {
+                continue;
+            }
+            if let Some(m) = cell_mod.get(&(x as u8, c.1, z as u8)) {
+                if !m.is_empty() {
+                    *votes.entry(m.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        votes.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| m).unwrap_or_default()
+    };
+    let mod_key = |mods: &[String]| -> String { mods.join("|") };
+
+    // distinct (name, flags, inherited modifier) among authored grid blocks AND
+    // the generated (baked) non-Sea blocks -- the FC clip fillers that finish
+    // the authored structures; the Sea itself stays the full-size foundation
+    let mut keys: BTreeMap<(String, u32, String), usize> = BTreeMap::new();
     // Free-placed blocks (flag 0x20000000) are keyed like the rest: their
     // variant bits are the same, `tmmaps tiny` places them from free_pos /
     // free_rot (Summer 11 has 87 of them; skipping them refused the map).
-    for b in source.blocks.iter().chain(source.baked.iter().filter(|b| b.name != "Sea")) {
-        *keys.entry((b.name.clone(), b.flags)).or_insert(0) += 1;
+    for b in source.blocks.iter() {
+        *keys.entry((b.name.clone(), b.flags, String::new())).or_insert(0) += 1;
+    }
+    let mut baked_key: BTreeMap<usize, String> = BTreeMap::new();
+    for b in source.baked.iter().filter(|b| b.name != "Sea") {
+        let mk = mod_key(&inherited_mod(b));
+        baked_key.insert(b.index, mk.clone());
+        *keys.entry((b.name.clone(), b.flags, mk)).or_insert(0) += 1;
+    }
+    let inherited_fillers = baked_key.values().filter(|k| !k.is_empty()).count();
+    if inherited_fillers > 0 {
+        println!("  {inherited_fillers} generated fillers inherit a material modifier from the authored block they finish");
     }
     // Cell rows per key: a shore tile whose every placement sits at the water
     // row gets its sea floor back at source depth (`restore_depth`).
@@ -310,7 +369,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut outcomes: Vec<Outcome> = Vec::new();
     // key -> (alias or "-", footprint sx, sz)
-    let mut block_map: BTreeMap<(String, u32), (String, u32, u32)> = BTreeMap::new();
+    let mut block_map: BTreeMap<(String, u32, String), (String, u32, u32)> = BTreeMap::new();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
     let mut next_alias = 0usize;
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
@@ -318,7 +377,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut veget_rows = String::new();
     let mut veget_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
     let ambient = source.ambient_zone().unwrap_or_default();
-    for ((name, flags), n) in &keys {
+    for ((name, flags, modk), n) in &keys {
         if !wanted(name) {
             continue;
         }
@@ -349,12 +408,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
         // most common genealogy zone — what `tmmaps tiny` fills with.
         if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && *name == ambient {
-            block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
+            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
             continue;
         }
         if collection == 0x1a && name == "Grass" {
-            block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
+            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
             continue;
         }
@@ -374,11 +433,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // modifier folder their materials are taken from (Summer 03: the tech
         // slopes next to the first checkpoint came out grass, keyed to the
         // PlatformGrassSlope2Straight item built first).
-        let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, bi.material_modifier) };
+        // the block's own modifier plus the one a filler inherits from the
+        // authored block it finishes (`modk`, see `inherited_mod`)
+        let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(modk.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
+        let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
         if prefabs.is_empty() && legacy_item.is_none() {
             if solids.is_empty() {
                 // intentionally empty variant (e.g. the hidden pillar)
-                block_map.insert((name.clone(), *flags), ("-".into(), sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz));
                 outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}]", pk.label), placements: *n, result: Ok("no geometry in this variant: intentionally no item".into()) });
             } else {
                 outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X} [{}] solids {:?}", pk.label, solids), placements: *n, result: Err("legacy CPlugSolid model without a converted archive item".into()) });
@@ -386,7 +448,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             continue;
         }
         if let Some(alias) = alias_of_recipe.get(&recipe) {
-            block_map.insert((name.clone(), *flags), (alias.clone(), sx, sz));
+            block_map.insert((name.clone(), *flags, modk.clone()), (alias.clone(), sx, sz));
             continue;
         }
         let alias = format!("AC{next_alias:08}");
@@ -401,7 +463,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             let mut m = crate::static_item::build::Merged::default();
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
             m.keep_water = crate::static_item::build::keep_water_for(collection);
-            m.modifier = modifier_links(store, &bi.material_modifier);
+            m.modifier = modifier_links(store, &effective_mods);
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;
             // minimal repro var-m1, open bug).
@@ -493,13 +555,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), placements: *n, result: Ok(summary) });
                 files.insert(format!("Items/{ident}"), bytes);
                 alias_of_recipe.insert(recipe, alias.clone());
-                block_map.insert((name.clone(), *flags), (alias, sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), (alias, sx, sz));
             }
             // a prefab with no entities at all (Stadium\Structure\PillarToFlat_ACB
             // is one): the game draws nothing there either
             Err(e) if e.starts_with("no visuals: nothing to build") => {
                 next_alias -= 1;
-                block_map.insert((name.clone(), *flags), ("-".into(), sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz));
                 alias_of_recipe.insert(recipe.clone(), "-".into());
                 outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Ok("empty prefab (no entities): intentionally no item".into()) });
             }
@@ -652,7 +714,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| b.name != "Sea").map(|b| ("b@", b))) {
-        match block_map.get(&(b.name.clone(), b.flags)) {
+        let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
+        match block_map.get(&(b.name.clone(), b.flags, modk)) {
             Some((alias, sx, sz)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
                 mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz));
