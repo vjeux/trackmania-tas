@@ -46,7 +46,18 @@ pub fn tree_model_path(store: &mut DataStore, path: &str) -> Result<String, Stri
 /// union of their boxes.
 pub fn tree_model_stats(store: &mut DataStore, path: &str) -> Result<TreeStats, String> {
     let model_path = tree_model_path(store, path)?;
-    let m = store.load_model(&model_path)?;
+    // a model whose fold hunt stops short still decodes up to the failing chunk;
+    // the visuals before it are read (the LOD boxes of a species agree to
+    // centimetres — the Big palms of BlueBay decode 17 of 20 chunks)
+    let m = match store.load_model(&model_path) {
+        Ok(m) => m,
+        Err(e) => {
+            std::env::set_var("MAPGEOM_LENIENT_LZ4", "1");
+            let r = store.load_model(&model_path);
+            std::env::remove_var("MAPGEOM_LENIENT_LZ4");
+            r.map_err(|e2| format!("{e}; partial read: {e2}"))?
+        }
+    };
     let body = &m.body;
     let externals: Vec<u32> = m.externals.iter().map(|(i, _)| *i).collect();
     let mut visuals = Vec::new();

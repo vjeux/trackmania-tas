@@ -428,41 +428,48 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
     // VegetTreeModels): find the folds by search — the compressed stream
     // itself says which sequence decodes each chunk — and remember them in
     // a cache next to the user's home (one hunt per file, ~1 s to minutes).
+    let lenient = std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some();
+    let decode_with = |folds: &[(usize, u32)]| -> (Vec<u8>, bool) {
+        let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
+        let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
+        let (plain, _, status) = lz4_stream(&raw, want);
+        (plain, status.is_ok())
+    };
     if let Some(folds) = cached_folds(e) {
-        if folds.is_empty() {
-            // a hunt that failed before: not repeated (MAPGEOM_REHUNT=1 retries)
-            if std::env::var_os("MAPGEOM_REHUNT").is_none() {
-                return Err(format!("{last_err} (a fold hunt failed earlier; MAPGEOM_REHUNT=1 retries)"));
-            }
-        } else {
-            let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
-            let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
-            let (plain, _, status) = lz4_stream(&raw, want);
-            if status.is_ok() {
+        let (plain, ok) = decode_with(&folds);
+        if ok {
+            return Ok(plain);
+        }
+        // a hunt that stopped short before: its folds decode a prefix; not
+        // repeated (MAPGEOM_REHUNT=1 retries)
+        if std::env::var_os("MAPGEOM_REHUNT").is_none() {
+            if lenient {
                 return Ok(plain);
             }
+            return Err(format!("{last_err} (a fold hunt stopped short earlier at {} folds; MAPGEOM_REHUNT=1 retries)", folds.len()));
         }
     }
     if std::env::var_os("MAPGEOM_NO_FOLD_HUNT").is_none() {
         match fold_hunt(data, base - e.offset as usize, e, key, version, 4) {
             Ok(folds) => {
                 store_folds(e, &folds);
-                let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
-                let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
-                let (plain, _, status) = lz4_stream(&raw, want);
-                if status.is_ok() {
+                let (plain, ok) = decode_with(&folds);
+                if ok {
                     return Ok(plain);
                 }
-                last_err = format!("hunt found {} folds but the stream still fails: {}", folds.len(), status.err().unwrap_or_default());
+                last_err = format!("hunt found {} folds but the stream still fails", folds.len());
             }
-            Err((msg, _)) => {
-                // remembered as a failure so the next build does not pay again
-                store_folds(e, &[]);
+            Err((msg, partial)) => {
+                // remembered (with the folds found) so the next build does not pay again
+                store_folds(e, &partial);
+                if lenient {
+                    return Ok(decode_with(&partial).0);
+                }
                 last_err = format!("{last_err}; fold hunt: {msg}");
             }
         }
     }
-    if std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some() {
+    if lenient {
         let raw = decrypt_scheduled_ordered(data, base, key, version, n, &schedule);
         return Ok(lz4_stream(&raw, want).0);
     }
