@@ -357,6 +357,20 @@ fn cmd_local(args: &[String]) {
             s
         }
     };
+    // --materials: triangle count per (placement kind, material) — the reader check the converter asked for
+    if has(args, "--materials") {
+        let mut hist: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
+        for t in &scene.tris {
+            let k = format!("{:?}", scene.placements[t.tag as usize].kind);
+            *hist.entry((k, mapgeom::scene::physics_name(t.mat))).or_default() += 1;
+        }
+        let mut v: Vec<_> = hist.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("  materials (kind, physics → triangles):");
+        for ((k, m), n) in v.iter().take(30) {
+            println!("    {k:<10} {m:<20} {n}");
+        }
+    }
     // specials census
     let mut specials: BTreeMap<String, usize> = BTreeMap::new();
     for p in &scene.placements {
