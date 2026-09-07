@@ -1121,11 +1121,28 @@ usage:
             0
         }
         "install" => {
-            // the dev loop: lint, reload, prove -- what gsdev used to be
+            // the dev loop: lint, reload, prove -- what gsdev used to be.
+            // `--lock`: under the render lock (a plugin reload restarts the
+            // HTTP server every other driver on this box is talking to; eight
+            // sessions share the game, so wait for the current one to finish)
             let p = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/GhostShooter";
             let g = "/home/vjeux/gs-good";
             let a = "/mnt/c/Users/vjeux/OpenplanetNext/OpenplanetNext.json";
-            install(p, g, a)
+            if args.iter().any(|x| x == "--lock") {
+                let d = lock::lock_dir();
+                let owner = format!("install-{}", std::process::id());
+                if let Err(e) = lock::acquire(&d, &owner, 1500, 0) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+                let rc = install(p, g, a);
+                if let Err(e) = lock::release(&d, &owner) {
+                    eprintln!("{e}");
+                }
+                rc
+            } else {
+                install(p, g, a)
+            }
         }
         "save" => {
             let p = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/GhostShooter";
