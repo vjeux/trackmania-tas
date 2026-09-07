@@ -12,6 +12,7 @@
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
 //!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
+//!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
 //!   tmr legs MAP.Map.Gbx --gates gates.json --model r.tmw --human-orders F [--local rl.tmw [--beam 24] [--p-step 0.05]]
 //!                                        R's estimate of every human leg (order agreement + per-leg p, time)
@@ -102,6 +103,7 @@ fn main() {
         Some("legs") => cmd_legs(&args),
         Some("watch") => cmd_watch(&args),
         Some("probe") => cmd_probe(&args),
+        Some("report") => cmd_report(&args),
         Some("split") => {
             for u in args.iter().skip(1) {
                 println!("{u}\tfnv1a64 % 10 = {}\t{}", data::fnv1a64(u) % 10, if data::held_out(u) { "HELD-OUT" } else { "train" });
@@ -933,5 +935,57 @@ fn cmd_probe(args: &[String]) {
         let nob = (0..N_OBST).filter(|k| x[OFF2_OBST + k * (4 + N_FAM) + 3] > 0.0).count();
         let cells_known = (0..(CELLS.0 * CELLS.1 * CELLS.2) as usize).filter(|c| x[OFF2_CELLS + c * N_FAM + 7] < 0.5).count();
         println!("  obstacles within 80 m: {nob}; cells with a block: {cells_known}/75; target rel ({:.0},{:.0},{:.0}) m", x[OFF2_TARGET] * 100.0, x[OFF2_TARGET + 1] * 100.0, x[OFF2_TARGET + 2] * 100.0);
+    }
+}
+
+/// `tmr report --bank DIR [--bank DIR2 ..] --out REPORT.md`: one table per bank from its r-v*/rl-v* reports —
+/// version, variant, train/held-out map counts, per held-out map (R, distance, margin, informative), the pooled
+/// INFORMATIVE margin, held-out ECE/AUC. The coordinator's view of the watchers.
+fn cmd_report(args: &[String]) {
+    let banks: Vec<PathBuf> = args.iter().enumerate().filter(|(_, a)| *a == "--bank").filter_map(|(i, _)| args.get(i + 1).map(PathBuf::from)).collect();
+    let out = flag(args, "--out");
+    let mut s = format!("# tmr report — {}\n\n", provenance("report"));
+    for bank in banks {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&bank).map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |x| x == "md") && p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("r"))).collect()).unwrap_or_default();
+        files.sort_by_key(|p| {
+            let n = p.file_stem().unwrap().to_string_lossy().to_string();
+            let v: u32 = n.split("-v").nth(1).and_then(|x| x.split('-').next()).and_then(|x| x.parse().ok()).unwrap_or(0);
+            (v, n)
+        });
+        s.push_str(&format!("## {}\n\n| report | train maps | held-out maps | per held-out map (R, distance) margin [informative] | pooled INFORMATIVE (R, distance) margin | held-out ECE / AUC | epochs / wall |\n|---|---|---|---|---|---|---|\n", bank.display()));
+        for f in files {
+            let Ok(t) = std::fs::read_to_string(&f) else { continue };
+            let name = f.file_stem().unwrap().to_string_lossy().to_string();
+            if name == "WATCH" {
+                continue;
+            }
+            let train = t.lines().filter(|l| l.starts_with("| train |")).count();
+            let held: Vec<String> = t
+                .lines()
+                .filter(|l| l.starts_with("| HELD-OUT |"))
+                .map(|l| {
+                    let c: Vec<&str> = l.split('|').map(|x| x.trim()).collect();
+                    // | split | map | pairs | R | dist | margin | informative | ...
+                    let map = c.get(2).map(|m| m.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+                    format!("{}: ({}, {}) {} [{}]", if map.is_empty() { c.get(2).cloned().unwrap_or("?").to_string() } else { map }, c.get(4).unwrap_or(&"?"), c.get(5).unwrap_or(&"?"), c.get(6).unwrap_or(&"?"), c.get(7).map(|x| if x.starts_with("NO") { "uninformative" } else { x }).unwrap_or("?"))
+                })
+                .collect();
+            let pooled = t.lines().find(|l| l.starts_with("[HELD-OUT maps, INFORMATIVE") && l.contains("two-gate")).map(|l| {
+                let a = l.find("(R ").map(|i| &l[i..]).unwrap_or("");
+                a.split(';').next().unwrap_or("").to_string()
+            }).unwrap_or_else(|| if t.contains("[HELD-OUT maps, INFORMATIVE (the gate)] none") { "none".into() } else { "?".into() });
+            let cal = t.lines().find(|l| l.starts_with("[HELD-OUT maps, all] calibration")).map(|l| {
+                let ece = l.split("ECE ").nth(1).and_then(|x| x.split(',').next()).unwrap_or("?");
+                let auc = l.split("AUC ").nth(1).unwrap_or("?");
+                format!("{ece} / {auc}")
+            }).unwrap_or_else(|| "—".into());
+            let ep = t.lines().find(|l| l.starts_with("best epoch")).map(|l| l.replace("best epoch ", "best ").to_string()).unwrap_or_default();
+            s.push_str(&format!("| {name} | {train} | {} | {} | {} | {} | {} |\n", held.len(), if held.is_empty() { "—".to_string() } else { held.join("<br>") }, pooled, cal, ep));
+        }
+        s.push('\n');
+    }
+    print!("{s}");
+    if let Some(o) = out {
+        std::fs::write(&o, &s).unwrap_or_else(|e| die(&e.to_string()));
     }
 }
