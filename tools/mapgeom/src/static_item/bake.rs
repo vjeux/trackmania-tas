@@ -2018,6 +2018,10 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
             v3d_node: super::null_ref(),
             tangents: Some((Vec::new(), Vec::new())),
             index_buffer: Some(IndexBuffer::delta(idx)),
+            inline_form: false,
+            inline_uv_sets: 1,
+            inline_uv_flags: 256,
+            inline_tangents: false,
         });
     }
     out

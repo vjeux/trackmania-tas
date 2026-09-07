@@ -1186,6 +1186,13 @@ pub fn lineup_cmd(args: &[String]) {
                 .collect()
         })
         .unwrap_or_default();
+    // --colors 2,3,5,…: the placement colour byte of each item in row order
+    // (0 Default 1 White 2 Green 3 Blue 4 Red 5 Black); an item past the list
+    // keeps the default (stock 0, embedded 1). A stock flag at Green next to
+    // ours at Green is the hue-mask oracle.
+    let colors: Vec<u8> = cli::flag(args, "--colors")
+        .map(|s| s.split(',').filter(|c| !c.is_empty()).map(|c| c.trim().parse::<u8>().expect("--colors wants bytes 0..5")).collect())
+        .unwrap_or_default();
     let n_stock = names.len();
     // embedded item files: (ident, author, bytes)
     let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -1224,8 +1231,9 @@ pub fn lineup_cmd(args: &[String]) {
         m.move_item(i, pos, yaw, cell_for(pos));
         m.set_item_scale(i, 1.0);
         m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
-        m.set_item_color(i, if k < n_stock { 0 } else { 1 });
-        println!("  {name} ({author}) at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
+        let color = colors.get(k).copied().unwrap_or(if k < n_stock { 0 } else { 1 });
+        m.set_item_color(i, color);
+        println!("  {name} ({author}) at {:.0},{:.0},{:.0} colour {color}", pos[0], pos[1], pos[2]);
     }
     let tmp1 = out.with_extension("lineup1.Map.Gbx");
     m.write_to(&tmp1).expect("write models");

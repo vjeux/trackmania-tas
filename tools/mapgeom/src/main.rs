@@ -628,6 +628,37 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // solid2-roundtrip <pack .Mesh.Gbx | file>: parse a CPlugSolid2Model body
+        // with the item writer's classes and write it back — how faithfully the
+        // writer reproduces a pack mesh (the flag cloth's inline-vertex frames,
+        // 2026-09-07). Prints the two lengths and the first differing offset.
+        "solid2-roundtrip" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let m = load_any(&mut store, &p);
+            let mut lb = mapgeom::static_item::LookbackState::default();
+            lb.defined_nodes.extend(m.external_indices().iter().copied());
+            let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+            let s2 = mapgeom::static_item::solid2::CPlugSolid2Model::parse(&mut r).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let consumed = r.o;
+            let mut out: Vec<u8> = Vec::new();
+            let mut lbw = mapgeom::static_item::LookbackState::default();
+            lbw.defined_nodes.extend(m.external_indices().iter().copied());
+            let mut w = mapgeom::static_item::Wr { w: &mut out, lb: &mut lbw };
+            s2.write(&mut w);
+            let first_diff = m.body.iter().zip(out.iter()).position(|(x, y)| x != y);
+            let same = m.body.len() == out.len() && first_diff.is_none();
+            println!("{p}: body {} bytes ({consumed} consumed by the parser), rewritten {} bytes, {}", m.body.len(), out.len(), if same { "IDENTICAL".to_string() } else { format!("first difference at 0x{:x}", first_diff.unwrap_or(m.body.len().min(out.len()))) });
+            for vr in &s2.visuals {
+                if let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() {
+                    println!("  visual: {} vertices, {} sub-visuals, inline form {}, {} uv sets (flags {}), chunks {:x?}", v.main.as_ref().map(|m| m.count).unwrap_or(0), v.sub_visuals.len(), v.inline_form, v.inline_uv_sets, v.inline_uv_flags, v.chunks);
+                }
+            }
+            if let Some(out_path) = flag(&a.rest, "--out") {
+                std::fs::write(&out_path, &out).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {out_path}");
+            }
+        }
         // item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]: the
         // game's own item file under a new Ident (header chunk 0x2E001003 rebuilt,
         // the body's ident/name strings replaced) so it can be EMBEDDED in a map

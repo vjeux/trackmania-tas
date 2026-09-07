@@ -227,6 +227,20 @@ pub struct CPlugVisualIndexedTriangles {
     pub tangents: Option<(Vec<u8>, Vec<u8>)>,
     /// 0x0906A001
     pub index_buffer: Option<IndexBuffer>,
+    /// Write the vertices INLINE in chunk 0x0902C004 (no `CPlugVertexStream`
+    /// node), the form the pack's Dyna meshes use — `Dyna\Flag\Flag.Mesh.Gbx`
+    /// keeps its 86 cloth frames that way and the vertex-tween draw path
+    /// reads them from there (a stream-form copy with the frame table crashed
+    /// the client in SCBufferDraw@NCharAnimSkelV, 2026-09-06). The stream
+    /// stays the in-memory form; only the writer changes. `inline_uv_sets`
+    /// texcoord sets are emitted (the pack flag has one).
+    pub inline_form: bool,
+    pub inline_uv_sets: usize,
+    /// The texcoord sets' flags word (version-3 sets), as the source had it.
+    pub inline_uv_flags: i32,
+    /// Whether the source carried its two tangent arrays (the pack flag has
+    /// none: two zero counts; the in-memory stream always has a frame).
+    pub inline_tangents: bool,
 }
 
 impl CPlugVisualIndexedTriangles {
@@ -243,6 +257,10 @@ impl CPlugVisualIndexedTriangles {
             v3d_node: super::null_ref(),
             tangents: None,
             index_buffer: None,
+            inline_form: false,
+            inline_uv_sets: 1,
+            inline_uv_flags: 256,
+            inline_tangents: false,
         };
         loop {
             let at = r.o;
@@ -363,6 +381,7 @@ impl CPlugVisualIndexedTriangles {
         };
         let mut tu = read_tangents(r)?;
         let mut tv = read_tangents(r)?;
+        v.inline_tangents = tu.len() == n && tv.len() == n;
         if tu.len() != n || tv.len() != n {
             // no stored frame: any orthonormal frame around the normal
             tu.clear();
@@ -407,10 +426,81 @@ impl CPlugVisualIndexedTriangles {
         elems.push(Elem::Word(tv));
         let stream = CPlugVertexStream { version: 1, count: n as i32, flags: 3, base: super::null_ref(), decls, compress_local3d: Some(true), elems };
         m.vertex_streams = vec![NodeRef { index: 0, inline: Some(Box::new(Node::VertexStream(stream))) }];
+        v.inline_form = true;
+        v.inline_uv_sets = m.tex_coord_sets.len().max(1);
+        v.inline_uv_flags = m.tex_coord_sets.first().and_then(|t| t.flags).unwrap_or(256);
         m.tex_coord_sets.clear();
         m.chunk_flags = 0x38;
         v.tangents = Some((Vec::new(), Vec::new()));
         Ok(())
+    }
+
+    /// The inline-vertex body of chunk 0x0902C004 (the reverse of
+    /// `parse_inline_into_stream`), from the first stream: per vertex the
+    /// position, the normal (a Dec3N word when the chunk-flags word says
+    /// compressed, else three floats), the colour (a word or four floats) when
+    /// the form carries one — opaque white when the stream has none — then
+    /// the two tangent arrays. The branch structure mirrors the reader's.
+    fn write_inline_vertices(&self, w: &mut Wr) {
+        use super::build::dec3n_unpack;
+        use super::vstream::*;
+        let m = self.main.as_ref().expect("chunk 0x0902C004 needs 0x0900600F");
+        let s = self.stream().expect("inline form needs a vertex stream to write from");
+        let f = m.chunk_flags;
+        let (use_normal, use_color, compress3, compress4, bit22) = (f & (1 << 5) != 0, f & (1 << 6) != 0, f & (1 << 7) != 0, f & (1 << 8) != 0, f & (1 << 9) != 0);
+        let has_color = !bit22 || use_color;
+        let n = m.count.max(0) as usize;
+        let find = |name: u32| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+        let pos = match find(N_POSITION) {
+            Some(Elem::Float3(p)) => p.clone(),
+            _ => panic!("inline form: no float3 positions"),
+        };
+        let words = |name: u32| -> Vec<u32> {
+            match find(name) {
+                Some(Elem::Word(v)) => v.clone(),
+                Some(Elem::Float3(p)) => p.iter().map(|q| super::build::dec3n_pack(*q)).collect(),
+                _ => Vec::new(),
+            }
+        };
+        let nrm = words(N_NORMAL);
+        let col = words(N_COLOR0);
+        let (tu, tv) = (words(N_TANGENT_U), words(N_TANGENT_V));
+        let color_floats = |c: u32| -> [f32; 4] { [(c & 0xFF) as f32 / 255.0, ((c >> 8) & 0xFF) as f32 / 255.0, ((c >> 16) & 0xFF) as f32 / 255.0, ((c >> 24) & 0xFF) as f32 / 255.0] };
+        for i in 0..n {
+            w.floats(&pos[i]);
+            let nw = nrm.get(i).copied().unwrap_or_else(|| super::build::dec3n_pack([0.0, 1.0, 0.0]));
+            let cw = col.get(i).copied().unwrap_or(0xFFFF_FFFF);
+            if !bit22 && !compress4 && use_color {
+                w.floats(&dec3n_unpack(nw));
+                w.floats(&color_floats(cw));
+            } else {
+                if !bit22 || use_normal {
+                    if compress3 {
+                        w.u32(nw);
+                    } else {
+                        w.floats(&dec3n_unpack(nw));
+                    }
+                }
+                if has_color {
+                    if compress4 {
+                        w.u32(cw);
+                    } else {
+                        w.floats(&color_floats(cw));
+                    }
+                }
+            }
+        }
+        for t in [&tu, &tv] {
+            let k = if self.inline_tangents && t.len() == n { n } else { 0 };
+            w.u32(k as u32);
+            for x in t.iter().take(k) {
+                if compress3 {
+                    w.u32(*x);
+                } else {
+                    w.floats(&dec3n_unpack(*x));
+                }
+            }
+        }
     }
 
     /// Keep the first `n` vertices of every stream element (a vertex-animated
@@ -511,6 +601,10 @@ impl CPlugVisualIndexedTriangles {
                 }
                 0x0902C002 => write_ref(w, &self.v3d_node),
                 0x0902C004 => {
+                    if self.inline_form {
+                        self.write_inline_vertices(w);
+                        continue;
+                    }
                     let m = self.main.as_ref().expect("chunk 0x0902C004 needs 0x0900600F");
                     let per = (((!(m.flags() >> 17)) & 8) | 4) as usize;
                     let (a, b) = self.tangents.as_ref().expect("chunk 0x0902C004 listed but absent");
@@ -535,14 +629,35 @@ impl CPlugVisualIndexedTriangles {
         let m = self.main.as_ref().expect("chunk 0x0900600F listed but absent");
         w.u32(m.version);
         w.u32(m.chunk_flags);
-        w.u32(m.tex_coord_sets.len() as u32);
-        w.i32(m.count);
-        w.u32(m.vertex_streams.len() as u32);
-        for s in &m.vertex_streams {
-            write_ref(w, s);
-        }
-        for t in &m.tex_coord_sets {
-            t.write(w);
+        if self.inline_form {
+            // no stream node: the texcoord sets ride here (version 3, the form
+            // TM2020 writes), the vertices in chunk 0x0902C004
+            use super::vstream::{Elem, N_TEXCOORD0};
+            let s = self.stream().expect("inline form needs a vertex stream to write from");
+            let n = m.count.max(0) as usize;
+            let uv = |k: u32| -> Vec<[f32; 2]> {
+                match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == N_TEXCOORD0 + k).map(|(_, e)| e) {
+                    Some(Elem::Float2(v)) => v.clone(),
+                    _ => vec![[0.0, 0.0]; n],
+                }
+            };
+            let sets: Vec<TexCoordSet> = (0..self.inline_uv_sets as u32).map(|k| TexCoordSet { version: 3, flags: Some(self.inline_uv_flags), coords: uv(k).into_iter().map(|c| (c, None, None)).collect(), u01: Vec::new() }).collect();
+            w.u32(sets.len() as u32);
+            w.i32(m.count);
+            w.u32(0);
+            for t in &sets {
+                t.write(w);
+            }
+        } else {
+            w.u32(m.tex_coord_sets.len() as u32);
+            w.i32(m.count);
+            w.u32(m.vertex_streams.len() as u32);
+            for s in &m.vertex_streams {
+                write_ref(w, s);
+            }
+            for t in &m.tex_coord_sets {
+                t.write(w);
+            }
         }
         if let Some(s) = &m.skin {
             s.write(w, 2 + m.version);

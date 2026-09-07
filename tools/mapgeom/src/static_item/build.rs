@@ -688,6 +688,13 @@ impl Merged {
                 }
             }
             let mut v = vis.clone();
+            // A visual read in the pack's inline-vertex form is written back
+            // that way only while it keeps its frame table (the flag cloth with
+            // its 86 tween frames); a frame-less copy takes the stream form
+            // every other item visual has.
+            if v.sub_visuals.is_empty() {
+                v.inline_form = false;
+            }
             // TINY_DUMP_DECLS=1: one note per visual with its vertex
             // declarations and the distinct values of every one-word element
             // (colour / int32 ids), for reading a shader's per-vertex inputs.
@@ -2111,6 +2118,13 @@ fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
     store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
 }
 
+/// TINY_FLAG_TWEEN=1: a vertex-tweened cloth keeps its frames, its frame
+/// table, its tween material and the pack's inline-vertex form (the
+/// 2026-09-07 motion test); unset, it is baked as frame 0 under TrackBorders.
+pub fn keep_tween_frames() -> bool {
+    std::env::var("TINY_FLAG_TWEEN").map(|v| v == "1").unwrap_or(false)
+}
+
 fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
     tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone())
 }
@@ -2136,10 +2150,19 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
     lb.defined_nodes.extend(mm_.external_indices().iter().copied());
     let mut r = super::Rd::new(&mm_.body, 0, lb);
     let mut s2 = super::solid2::CPlugSolid2Model::parse(&mut r).map_err(|e| format!("{mp}: {e}"))?;
+    // TINY_FLAG_TWEEN=1: keep the cloth as the pack has it — every animation
+    // frame in the vertex array, the frame table, the tween material, the
+    // inline-vertex form — instead of a static frame 0 under TrackBorders
+    // (the 2026-09-07 motion test).
+    let keep_frames = keep_tween_frames();
     for vr in s2.visuals.iter_mut() {
         if let Some(Node::Visual(v)) = vr.inline.as_deref_mut() {
             let count = v.main.as_ref().map(|m| m.count).unwrap_or(0).max(0) as usize;
             let reach = v.index_buffer.as_ref().and_then(|b| b.indices.iter().max().copied()).map(|x| x as usize + 1).unwrap_or(count);
+            if keep_frames && reach < count {
+                m.notes.push(format!("{mp}: visual keeps its {} frames ({count} vertices, inline form, tween material)", v.sub_visuals.len()));
+                continue;
+            }
             if reach < count {
                 m.notes.push(format!("{mp}: visual keeps frame 0 ({reach} of {count} vertices, {} sub-visual frames dropped)", v.sub_visuals.len()));
                 v.truncate_vertices(reach);
@@ -2175,7 +2198,22 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
     // light cloth in the game (its own green `ItemFlag_D` is hue-masked to the
     // colour); Technics made it a dark grey rag.
     let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| is_tween_material(store, &p)).unwrap_or(false)).collect();
-    if tween_mats.iter().any(|t| *t) {
+    if !keep_frames && tween_mats.iter().any(|t| *t) {
+        // TINY_FLAG_BAND=v0,v1: the TrackBorders_D band (v range) the cloth's
+        // uv0 is mapped into — the 2026-09-07 hue-mask ladder (which band the
+        // placement colour reaches: the mask's alpha is 0xff only at texture
+        // rows v 0.02..0.11, and whether the game reads v from the top or the
+        // bottom of the DDS was still to be measured)
+        let band: [f32; 2] = std::env::var("TINY_FLAG_BAND")
+            .ok()
+            .and_then(|s| {
+                let f: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (f.len() == 2).then(|| [f[0], f[1]])
+            })
+            .unwrap_or([0.755, 0.805]);
+        if band != [0.755, 0.805] {
+            m.notes.push(format!("TINY_FLAG_BAND={},{}: cloth uv0 mapped into that TrackBorders v band", band[0], band[1]));
+        }
         for g in &s2.shaded_geoms {
             if !tween_mats.get(g.material_index.max(0) as usize).copied().unwrap_or(false) {
                 continue;
@@ -2193,7 +2231,7 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
                                 // shader's per-pixel tangent frame divides by them —
                                 // the cloth drew pitch black (flagslow2, 2026-09-06).
                                 for q in uv.iter_mut() {
-                                    *q = [q[0].rem_euclid(1.0), 0.755 + 0.05 * q[1].rem_euclid(1.0)];
+                                    *q = [q[0].rem_euclid(1.0), band[0] + (band[1] - band[0]) * q[1].rem_euclid(1.0)];
                                 }
                             }
                         }
@@ -2272,7 +2310,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             return Some((p, link, phys));
         }
         let p = name_in(&mesh_ext, idx)?;
-        if is_tween_material(store, &p) {
+        if !keep_tween_frames() && is_tween_material(store, &p) {
             tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
             return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
         }
@@ -2393,7 +2431,7 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         let p = name_in(&mesh_ext, idx)?;
-        if is_tween_material(store, &p) {
+        if !keep_tween_frames() && is_tween_material(store, &p) {
             tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
             return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
         }
