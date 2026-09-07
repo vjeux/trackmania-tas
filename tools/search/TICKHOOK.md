@@ -366,6 +366,8 @@ once under each clock, while both still existed:
 | final build (bias fix, calibration off the per-run path, 96-tick clock hunt) | 275 760 | 458 | 8 | **0** | 22.711 |
 | with the exit-at-finish lever live | 278 850 | 463 | 9 | **0** | 22.711 |
 | final build (live vehicle slot, DNF machinery present and off) | 276 120 | 459 | 7 | **0** | 22.713 |
+| engine CP count + past-end guard | 279 390 | 464 | 9 | **0** | 22.711 |
+| finish word armed with no calibration fork | **282 630** | **470** | 10 | **0** | 22.711 |
 
 The third row is the one that matters for the audit: the resume floor moved a
 tick earlier when the probe stopped reporting one record late, so every
