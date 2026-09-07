@@ -406,6 +406,12 @@ fn main() {
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => {
                 boundary = boundary.max(b.from);
+                // A MARGIN above the probed maximum. Servers stop within +-1 tick of
+                // each other, and a worker whose own probe lands ABOVE the fleet's
+                // maximum refuses to start (5 of 80 did on the tiny map, where four
+                // probes said 77 and five workers said 77+1). One tick of fixed
+                // reference input costs nothing a search can notice.
+                boundary += a.num("boundary-margin", 1usize);
                 oracle.set_prefix_ticks(boundary as u64);
                 println!(
                     "\nTICK FRAME  boundary probed 4x, MAX = tick {} (this probe said {}). The search's tick 0\n            is file tick {}. The maximum is used because where a server stops is a property\n            of that server: probes here differ by a tick between runs, and a one-tick shift\n            of a whole tape turned a confirmed cps 3 into cps 0.",
@@ -907,7 +913,9 @@ fn make_template(a: &Args) {
         s.len()
     };
 
-    let mut meta = tmauto::synth::meta_for_map(&map).unwrap_or_else(die);
+    // complete_meta_for_map: the validator start index must be the map's
+    // semantic spawn, not array entry 0 (the wrong-start defect).
+    let mut meta = tmauto::synth::complete_meta_for_map(&map).unwrap_or_else(die);
     let cps: Vec<i32> = (1..=ncp)
         .map(|i| (declare_ms as i32 / (ncp as i32 + 1)) * i as i32)
         .chain(std::iter::once(declare_ms as i32))

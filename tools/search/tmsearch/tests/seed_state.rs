@@ -110,7 +110,7 @@ fn the_minimum_speed_applies_offline_too() {
     };
     let slow = parse_gate(&spec(1.0), "speed").unwrap();
     assert!(seedstate::from_ghost(GHOST, &slow, START_OFFSET_MS).is_ok());
-    let impossible = parse_gate(&spec(s.speed_ms + 50.0), "speed").unwrap();
+    let impossible = parse_gate(&spec(s.speed_ms as f64 + 50.0), "speed").unwrap();
     assert!(seedstate::from_ghost(GHOST, &impossible, START_OFFSET_MS).is_err());
 }
 
