@@ -20,6 +20,9 @@ push() { [ "$MIRROR" = none ] && return 0; for d in "$@"; do rsync -a --info=sta
 # the player corpus: maps only (ghosts are GBs — pulled only by the human step)
 pull_maps() { [ "$MIRROR" = none ] && return 0; mkdir -p $V; rsync -a --info=stats1 --include='*/' --include='map.Map.Gbx' --exclude='*' $REAL/tm-player/data/v0/maps/ $V/ 2>&1 | grep -E "^Number of created" | tr '\n' ' '; echo " ← player maps"; pull tm-autopilot/B-cartographer/bank/maps tm-autopilot/B-cartographer/packs; }
 pull_ghosts() { [ "$MIRROR" = none ] && return 0; rsync -a --info=stats1 $REAL/tm-player/data/v0/maps/ $V/ 2>&1 | grep -E "^Number of created|^Total transferred" | tr '\n' ' '; echo " ← player maps + ghosts"; }
+# NO_PULL=1 / NO_PUSH=1 skip the syncs (the mirror is known fresh, or a dry run)
+if [ -n "${NO_PULL:-}" ]; then pull() { :; }; pull_maps() { :; }; pull_ghosts() { :; }; fi
+if [ -n "${NO_PUSH:-}" ]; then push() { :; }; fi
 G=$BANK/geom; RT=$BANK/routes; P=$BANK/plan
 step=${1:-all}
 
@@ -123,6 +126,7 @@ if [ $step = plan-r ]; then
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT|hybrid pricing" $P/plan-r/$u.hyb.txt | head -3 | cut -c1-160
     timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_R:-1500} s" >> $P/plan-r/$u.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
+  CAP_HYB=${CAP_HYB:-900}; CAP_R=${CAP_R:-1500}; TMR_THREADS=${TMR_THREADS:-24}
   export -f plan_r_one mapfile_of; export TMR TMR_FLAGS TMR_THREADS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R
   cat /tmp/plan-r.uids | xargs -P ${PAR:-2} -n 1 bash -c 'plan_r_one "$0"'
   # no `index` here (a full walk of the bank mount is > 40 min); table-r reads only the exhibit's maps
