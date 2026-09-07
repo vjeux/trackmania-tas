@@ -494,14 +494,25 @@ pub fn cmd(args: &[String]) {
                 prefab_trees += push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index));
             }
             // Re-pointed at an embedded copy whose geometry already carries
-            // the scale: the placement stays where it is at scale 1.
+            // the scale: the placement stays where it is at scale 1. Its PIVOT
+            // is in model metres and must shrink with the model: the game puts
+            // the pivot point at `pos` and rotates about it, so a full-size
+            // pivot on a half-size copy shifts the piece by half the pivot
+            // (Summer 15's inflatable loop — 4 m mats with pivot (-4,0,-4)
+            // rotated by pitch/roll — fell apart into a straight tube).
             Some(map) => {
                 repointed_items += 1;
+                let scaled_copy = map.model.ends_with(".Item.Gbx") && (map.model_scale - 1.0).abs() > 1e-6;
+                let frame = if scaled_copy && it.pivot.iter().any(|v| v.abs() > 1e-6) {
+                    Some(([it.yaw, it.pitch, it.roll], [it.pivot[0] * map.model_scale, it.pivot[1] * map.model_scale, it.pivot[2] * map.model_scale]))
+                } else {
+                    None
+                };
                 specs.push(Spec {
                     model: map.model.clone(),
                     pos: transform(it.pos, source_anchor, target_anchor, scale),
                     yaw: it.yaw,
-                    frame: None,
+                    frame,
                     scale: it.scale * scale / map.model_scale,
                     tag: it.waypoint_tag.clone(),
                     color: colors.item(it.index),
