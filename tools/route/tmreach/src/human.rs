@@ -56,12 +56,12 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     let mut synth_finish = false;
     // A finishing ghost whose finish step is among the samples the exiting
     // child lost (0..5, run to run): the declared time is the finish, so the
-    // finish leg ends at the row of race (declared − 10) — the row whose tick
+    // finish leg ends at the row of race floor10(declared) — the row whose tick
     // the counter credits — synthesised when it is within 0.5 s past the trace.
     if let Some(decl) = w.tape.declared_ms {
         for (gi, g) in gates.gates.iter().enumerate() {
             if g.kind == GateKind::Finish && first[gi] < 0 {
-                let want = decl as i64 - 10;
+                let want = decl as i64 - (decl as i64 % 10); // the row whose tick the counter credits (p00001: notice 19538 → step row race 19.530)
                 if let Some(i) = flat.iter().position(|r| w.race_of(r) == want) {
                     // only when the counter shows every checkpoint credited
                     if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 == ng).unwrap_or(false) {
