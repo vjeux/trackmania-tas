@@ -250,7 +250,29 @@ struct Typeperf {
 }
 impl Typeperf {
     fn start(outdir: &Path, tag: &str, pid: u32) -> Result<Typeperf, String> {
-        let counters = [
+        // PDH's instance wildcard does not reach into a thread instance's
+        // index (`Thread(Trackmania/*)` matched EVERY thread on the box —
+        // 16 000 columns, one sample every two seconds — and
+        // `Thread(Trackmania*)` none), so the game's threads are enumerated
+        // once from `typeperf -qx \Thread` and listed one by one.
+        let mut thread_counters: Vec<String> = Vec::new();
+        if let Ok(out) = std::process::Command::new("/mnt/c/Windows/System32/typeperf.exe").args(["-qx", "\\Thread"]).output() {
+            for l in String::from_utf8_lossy(&out.stdout).lines() {
+                let l = l.trim();
+                if !l.contains("\\Thread(Trackmania/") {
+                    continue;
+                }
+                if l.ends_with("\\% Processor Time") || l.ends_with("\\ID Thread") {
+                    // drop the `\\HOST` prefix typeperf prints
+                    let p = match l.strip_prefix("\\\\") {
+                        Some(rest) => rest.find('\\').map(|i| &rest[i..]).unwrap_or(l),
+                        None => l,
+                    };
+                    thread_counters.push(p.to_string());
+                }
+            }
+        }
+        let mut counters = vec![
             "\\Process(Trackmania)\\% Processor Time".to_string(),
             "\\Process(Trackmania)\\% User Time".into(),
             "\\Process(Trackmania)\\% Privileged Time".into(),
@@ -262,10 +284,6 @@ impl Typeperf {
             "\\Process(Trackmania)\\Private Bytes".into(),
             "\\Process(Trackmania)\\Thread Count".into(),
             "\\Process(Trackmania)\\Page Faults/sec".into(),
-            "\\Thread(Trackmania/*)\\% Processor Time".into(),
-            "\\Thread(Trackmania/*)\\ID Thread".into(),
-            "\\Thread(Trackmania/*)\\Thread State".into(),
-            "\\Thread(Trackmania/*)\\Thread Wait Reason".into(),
             format!("\\GPU Engine(pid_{pid}*)\\Utilization Percentage"),
             "\\GPU Adapter Memory(*)\\Dedicated Usage".into(),
             "\\PhysicalDisk(_Total)\\Disk Read Bytes/sec".into(),
@@ -273,6 +291,7 @@ impl Typeperf {
             "\\Processor(_Total)\\% Processor Time".into(),
             "\\Memory\\Available MBytes".into(),
         ];
+        counters.extend(thread_counters);
         let cf = outdir.join(format!("counters-{tag}.txt"));
         std::fs::write(&cf, counters.join("\r\n") + "\r\n").map_err(|e| format!("{}: {e}", cf.display()))?;
         let csv = outdir.join(format!("perf-{tag}.csv"));
