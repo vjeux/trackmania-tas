@@ -69,6 +69,10 @@ pub fn ground_y(collection: u32) -> f32 {
         // stand at 26/34 (the platform top local +2), the LinkedCheckpoint
         // gates on a DecoWallBasePillar column top (cell 24 floor) at 72.
         0x1d => -120.0,
+        // GreenCoast (0xf), measured on Summer 2026 - 04: 2052 vegetation items
+        // carry cell 5 and stand at y 2 on the regenerated Grass (cell 5, plane
+        // local +2: 40 - 40 + 2); Lake/LakeShore at cell 4, Grass at 6/7/9.
+        0xf => -40.0,
         _ => -62.0,
     }
 }
@@ -2098,6 +2102,30 @@ pub fn genealogy_records(payload: &[u8]) -> Result<Vec<(usize, usize, String)>, 
 }
 
 impl MapFile {
+    /// The current zone of every genealogy record (chunk 0x03043043), in
+    /// chunk order — the terrain block names the game regenerates from
+    /// (Land, LandHill2, Water, Lake, LakeShore, GrassCliff2…). Empty when the
+    /// map has no genealogy chunk.
+    pub fn genealogy_zones(&self) -> Vec<String> {
+        crate::gbx::all_skip_chunks(&self.gbx.body)
+            .iter()
+            .find(|(cid, ..)| *cid == 0x0304_3043)
+            .and_then(|&(_, _, payload, size)| genealogy_records(&self.gbx.body[payload..payload + size]).ok())
+            .map(|recs| recs.into_iter().map(|r| r.2).collect())
+            .unwrap_or_default()
+    }
+
+    /// The map's most common genealogy zone — the ambient terrain the island
+    /// sits in (RedIsland/WhiteShore `Water`, GreenCoast `Lake`), which is
+    /// what `fill_genealogy_file` spreads over every cell.
+    pub fn ambient_zone(&self) -> Option<String> {
+        let mut hist: std::collections::BTreeMap<String, usize> = Default::default();
+        for z in self.genealogy_zones() {
+            *hist.entry(z).or_default() += 1;
+        }
+        hist.into_iter().max_by_key(|(_, c)| *c).map(|(z, _)| z)
+    }
+
     /// Fill chunk 0x03043043 with ONE zone everywhere: every cell gets a copy
     /// of the map's first genealogy record (RedIsland: `Water`, the lake the
     /// island sits in — a zone BLOCK there, not decoration like BlueBay's

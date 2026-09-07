@@ -409,12 +409,7 @@ pub fn cmd(args: &[String]) {
     // through the deck — a snow blob in the grass. Zone names come from the
     // genealogy chunk; a replacement block names its zone after "On", with or
     // without the zone's trailing digit (OnLandHill covers LandHill1/2).
-    let zones: BTreeSet<String> = crate::gbx::all_skip_chunks(&source.gbx.body)
-        .iter()
-        .find(|(cid, ..)| *cid == 0x0304_3043)
-        .and_then(|&(_, _, payload, size)| crate::map::genealogy_records(&source.gbx.body[payload..payload + size]).ok())
-        .map(|recs| recs.into_iter().map(|r| r.2).collect())
-        .unwrap_or_default();
+    let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
     let replaces = |name: &str, zone: &str| {
         let stem = zone.trim_end_matches(|c: char| c.is_ascii_digit());
         name.contains(&format!("On{zone}")) || (!stem.is_empty() && name.contains(&format!("On{stem}")))
@@ -658,7 +653,8 @@ pub fn cmd(args: &[String]) {
             // island, whose water items sit on the same surface (-0.5).
             // WhiteShore likewise: Water is a zone block (3148 of the 4096
             // cells of Summer 03), the sea the island sits in, surface -1.
-            0x10 | 0x1d => {
+            // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
+            0x10 | 0x1d | 0xf => {
                 let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
                 println!("  genealogy chunk filled: {n} cells of {zone}");
             }

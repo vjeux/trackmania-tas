@@ -145,6 +145,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut block_map: BTreeMap<(String, u32), (String, u32, u32)> = BTreeMap::new();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
     let mut next_alias = 0usize;
+    let ambient = source.ambient_zone().unwrap_or_default();
     for ((name, flags), n) in &keys {
         if !wanted(name) {
             continue;
@@ -172,10 +173,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // and around the tiny map — its surface (-0.5) is the tiny map's
         // fixed plane, so a half-scale copy would only z-fight it.
         // WhiteShore's Water is the sea around its island, the same way
-        // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane).
-        if (collection == 0x10 || collection == 0x1d) && name == "Water" {
+        // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane), and
+        // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
+        // most common genealogy zone — what `tmmaps tiny` fills with.
+        if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && *name == ambient {
             block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
-            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} water: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
+            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
             continue;
         }
         if collection == 0x1a && name == "Grass" {
