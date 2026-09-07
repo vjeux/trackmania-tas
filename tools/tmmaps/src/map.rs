@@ -209,6 +209,9 @@ pub struct Waypoint {
     /// corner a grid placement anchors), so the road centre of a 1×1 block is the
     /// local point (16, 2, 16) through this rotation.
     pub free_rot: Option<[f32; 3]>,
+    /// An ITEM's full (yaw, pitch, roll); `None` for blocks. Fall 2025 - 12 has 32 m gate items pitched 66–83°
+    /// (on a wall section): their trigger plane is NOT vertical (GEN arm, engine-credited rows).
+    pub item_rot: Option<[f32; 3]>,
 }
 
 impl std::fmt::Display for Waypoint {
@@ -705,6 +708,7 @@ impl MapFile {
                 yaw: Some(b.free_rot.map(|r| r[0]).unwrap_or(yaw)),
                 dir: Some(b.dir),
                 free_rot: b.free_rot,
+                item_rot: None,
             });
         }
         for it in &self.items {
@@ -723,6 +727,7 @@ impl MapFile {
                 yaw: Some(it.yaw),
                 dir: None,
                 free_rot: None,
+                item_rot: Some([it.yaw, it.pitch, it.roll]),
             });
         }
         out
