@@ -28,6 +28,23 @@
 //!
 //! Scaling a constraint = scaling its translation range; angles and durations
 //! stay (a half-size rotor still turns once per period).
+//!
+//! What the game accepts, measured on Summer 15 lineups (2026-09-07):
+//!
+//! * the prefab sits DIRECTLY under `CGameItemModel` (the pack's layout);
+//!   wrapped in a `CGameCommonItemEntityModel` the item is dropped silently;
+//! * everything inline — the game resolves no pack reference from an
+//!   embedded item (the pack item re-embedded under a new ident is dropped);
+//! * a dyna object with a NULL DynaShape crashes the client at load
+//!   (Trackmania.exe+0xb7088c reading NULL+0x38); a mesh, a convex polyhedron
+//!   or a compound all serve;
+//! * `NPlugDyna_SPrefabConstraintParams.Ent2` is the RANK of the dyna object
+//!   among the prefab's dyna entities (the pack's ObstacleRotor24mWing90X2
+//!   lists the constraint first and still says Ent2 = 0), Ent1 = -1 the world;
+//! * translations and rotations both animate in the editor, at scale 1 and
+//!   0.5, with the translation range scaled and the periods kept; a pusher's
+//!   piston pushed by the rotor's constraint swings about the item origin,
+//!   so the pivot is the entity origin, not the hull's centre.
 
 use super::{read_ref, write_ref, Rd, Ref, Wr, R};
 
