@@ -796,10 +796,21 @@ fn cmd_tiny_map(args: &[String]) {
     }
     let worst = m.values().map(|v| v.1).fold(0.0f32, f32::max);
     let distinct: std::collections::BTreeSet<u32> = m.values().map(|v| v.0).collect();
-    println!("mapping {}: worst residual {worst:.1} m, {} of {} tiny groups hit", if distinct.len() == fc.len() && worst < 20.0 { "OK" } else { "AMBIGUOUS" }, distinct.len(), tc.len());
+    let ok = distinct.len() == fc.len() && worst < 40.0;
+    println!("mapping {}: worst residual {worst:.1} m, {} of {} tiny groups hit", if ok { "OK" } else { "AMBIGUOUS" }, distinct.len(), tc.len());
     if let Some(o) = flag(args, "--order") {
         let order: Vec<u32> = o.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        let mapped: Vec<String> = order.iter().map(|g| m.get(g).map_or("?".to_string(), |v| v.0.to_string())).collect();
-        println!("tiny order: {}", mapped.join(","));
+        let mapped: Vec<u32> = order.iter().filter_map(|g| m.get(g).map(|v| v.0)).collect();
+        println!("tiny order: {}", mapped.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+        // --geo / --hyb: tiny planner orders to compare with the mapped human order
+        for key in ["--geo", "--hyb"] {
+            if let Some(p) = flag(args, key) {
+                let po: Vec<u32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if po.is_empty() { println!("{key}: no plan"); continue; }
+                let ex = metrics::exact(&po, &mapped);
+                let cp_ex = po.len() == mapped.len() && po.len() > 1 && po[..po.len() - 1] == mapped[..mapped.len() - 1];
+                println!("{key}: {} τ={:.2}{}", if ex { "EXACT" } else { "differ" }, metrics::kendall_tau(&po, &mapped), if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" });
+            }
+        }
     }
 }

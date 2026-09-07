@@ -295,6 +295,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         axis3: Option<[f32; 3]>,
         /// The placement's local UP in world (unit) when pitched/rolled; the arch centre is hh along it.
         up3: Option<[f32; 3]>,
+        /// A wall-mounted item (|pitch| ≈ 90°): its plane convention is unsolved (normal_source "unknown-wall").
+        wall: bool,
         model: String,
         from_item: bool,
         // a grid-placed block (cell coordinates, no free position)
@@ -316,6 +318,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // road axis is local +Z through the same rotation (tilted pieces included).
         let mut free_axis: Option<[f32; 3]> = None;
         let mut free_up: Option<[f32; 3]> = None;
+        let mut wall_item = false;
         // A road/platform piece's crossing point is its road centre (16, 2, 16); a gate
         // structure's is mid-arch (16, 8, 16) — Poland 2026's finish is a GateFinish rolled
         // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
@@ -339,7 +342,13 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 // an ITEM: its trigger plane turns with the item's full (yaw, pitch, roll) — Fall 2025 - 12's
                 // 32 m gates are pitched 66–83° on a wall section (GEN arm, engine-credited rows)
                 if let Some(rot) = w.item_rot {
-                    if rot[1].abs() > 0.05 || rot[2].abs() > 0.05 {
+                    // a WALL placement (|pitch| ≈ 90°, Spring 2025 - 24 wp14) does not follow this composition — the
+                    // engine-credited rows put its plane on the travel axis, not on the turned local +Z. Keep the
+                    // horizontal yaw normal and flag it (normal_source "unknown-wall" set below) until the
+                    // convention is solved from more wall cases.
+                    let wall = (rot[1].abs() - std::f32::consts::FRAC_PI_2).abs() < 0.05;
+                    wall_item = wall;
+                    if !wall && (rot[1].abs() > 0.05 || rot[2].abs() > 0.05) {
                         let m = turned(p, rot);
                         let a = apply(&m, [0.0, 0.0, 1.0]);
                         free_axis = Some([a[0] - p[0], a[1] - p[1], a[2] - p[2]]);
@@ -365,6 +374,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             yaw: match free_axis { Some(a) if (a[0] * a[0] + a[2] * a[2]).sqrt() > 0.3 => a[0].atan2(a[2]), Some(_) => w.yaw.unwrap_or(0.0), None => w.yaw.unwrap_or(0.0) },
             axis3: free_axis.filter(|a| a[1].abs() > 0.05),
             up3: free_up,
+            wall: wall_item,
             model: w.name.clone(),
             from_item,
             grid: w.pos.is_none(),
@@ -468,7 +478,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 centre: match r.up3 { Some(u) => [r.centre[0] + hh * u[0], r.centre[1] + hh * u[1], r.centre[2] + hh * u[2]], None => [r.centre[0], r.centre[1] + hh, r.centre[2]] },
                 // a pitched/rolled placement keeps its 3-D axis (unit); the sign is oriented later
                 normal: match r.axis3 { Some(a) => { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); [a[0] / l, a[1] / l, a[2] / l] } None => [sy, 0.0, cy] },
-                normal_source: "placement".into(),
+                normal_source: if r.wall { "unknown-wall".into() } else { "placement".into() },
                 half_width: hw,
                 half_height: hh,
                 model: r.model.clone(),
