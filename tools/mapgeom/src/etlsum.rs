@@ -135,14 +135,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (mut ft_min, mut ft_max) = (u64::MAX, 0u64);
     let mut other_pid_samples = 0u64;
 
-    // resolve the process from the image list when --pid was not given
-    let want_pid = |pid: &Option<u64>, all: &[(u64, Image)]| -> Option<u64> {
-        if pid.is_some() {
-            return *pid;
-        }
-        all.iter().find(|(_, im)| im.name.to_lowercase().ends_with("trackmania.exe")).map(|(p, _)| *p)
-    };
-
     let record = |threads: &mut BTreeMap<u64, Thread>, tid: u64, p: Pending, frames: &[u64], images: &[Image], exe_base: Option<(u64, u64)>, pe: &Option<Pe>, ref_ms: i64| {
         if let Some(t) = only_tid {
             if t != tid {
@@ -288,10 +280,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 n_samples += 1;
                 ft_min = ft_min.min(ft);
                 ft_max = ft_max.max(ft);
-                let chosen = want_pid(&pid, &all_images);
                 // a sample still pending for this thread never got its stack
                 if let Some(prev) = pending.insert(tid, Pending { ft, ip }) {
-                    match (chosen, tid_pid.get(&tid)) {
+                    match (pid, tid_pid.get(&tid)) {
                         (Some(c), Some(&tp)) if tp == c => record(&mut threads, tid, prev, &[], &images, exe_base, &pe, t0.unwrap_or_else(|| ft_to_unix_ms(ft_min))),
                         _ => other_pid_samples += 1,
                     }
@@ -306,9 +297,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let Some(tid) = field(&f, 21).parse::<u64>().ok() else { continue };
                 tid_pid.insert(tid, sp);
                 n_stacks += 1;
-                let chosen = want_pid(&pid, &all_images);
                 let Some(p) = pending.remove(&tid) else { continue };
-                if Some(sp) != chosen {
+                if Some(sp) != pid {
                     other_pid_samples += 1;
                     continue;
                 }
@@ -327,10 +317,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let (Some(base), Some(size), Some(ipid)) = (hex(field(&f, 19)), hex(field(&f, 20)), field(&f, 21).parse::<u64>().ok()) else { continue };
                 let name = f.last().map(|s| s.trim().trim_matches('"')).unwrap_or("").to_string();
                 let short = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string();
+                let is_exe = short.to_lowercase().ends_with("trackmania.exe");
                 let im = Image { base, size, name: short };
-                let chosen = want_pid(&pid, &all_images);
-                if Some(ipid) == chosen || (pid.is_none() && im.name.to_lowercase().ends_with("trackmania.exe")) {
-                    if im.name.to_lowercase().ends_with("trackmania.exe") {
+                if pid.is_none() && is_exe {
+                    // the process is known from here on: adopt what was seen before
+                    pid = Some(ipid);
+                    for (p, im) in all_images.drain(..) {
+                        if p == ipid && !images.iter().any(|x| x.base == im.base) {
+                            images.push(im);
+                        }
+                    }
+                }
+                if Some(ipid) == pid {
+                    if is_exe {
                         exe_base = Some((base, size));
                     }
                     if !images.iter().any(|x| x.base == base) {
@@ -342,23 +341,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             _ => {}
         }
-        // late resolution of the pid: adopt the images seen before
-        if pid.is_none() {
-            if let Some(c) = want_pid(&pid, &all_images) {
-                pid = Some(c);
-                for (p, im) in all_images.drain(..) {
-                    if p == c && !images.iter().any(|x| x.base == im.base) {
-                        if im.name.to_lowercase().ends_with("trackmania.exe") {
-                            exe_base = Some((im.base, im.size));
-                        }
-                        images.push(im);
-                    }
-                }
-            }
-        }
     }
     // flush the samples still waiting for a stack
-    let chosen = want_pid(&pid, &all_images);
+    let chosen = pid;
     for (tid, p) in pending.drain() {
         match (chosen, tid_pid.get(&tid)) {
             (Some(c), Some(&tp)) if tp == c => record(&mut threads, tid, p, &[], &images, exe_base, &pe, t0.unwrap_or_else(|| ft_to_unix_ms(ft_min))),
