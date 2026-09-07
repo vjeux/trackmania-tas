@@ -17,6 +17,7 @@
 
 mod boxbuild;
 mod camcheck;
+mod build;
 mod compare;
 mod play;
 mod png;
@@ -35,6 +36,9 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         collection, ground row (table vs measured), fixed plane, anchor,
         genealogy zones + policy, zone-block census, waypoints, models;
         with --paks a dry library build listing the models the packs lack
+  tinyctl build NN… [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto] [--recipe /tmp/tiny3/recipe.env] [--env K=V …]
+        the tiny build of campaign maps end to end (packs by collection, recipe env,
+        mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48]
         start / every checkpoint / finish looked at along the gate, the
         whole map from above and its four quadrants; the anchor as a comment
@@ -88,6 +92,7 @@ fn main() {
     let rest = &args[1..];
     let r = match cmd.as_str() {
         "probe" => probe::cmd(rest),
+        "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
         "compare" => compare::cmd(rest),
