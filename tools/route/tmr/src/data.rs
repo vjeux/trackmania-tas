@@ -383,3 +383,193 @@ pub fn shard_map_uid(dir: &Path) -> Option<String> {
     }
     None
 }
+
+// ───────────────────────── horizon-native rows (LOCAL targets) ─────────────────────────
+//
+// Design decision (coordinator, 2026-09-07 05:40Z, from vjeux): the fan-out measures the
+// car's 2–4 s REACHABLE SET; labelling one bit per rollout (gate credited or not) threw
+// most of it away and asked R to extrapolate 5–20 s legs from 2–4 s rollouts. The
+// horizon-native rows use EVERY endpoint: for a (start, h) the positives are the
+// endpoint cloud itself (target = the endpoint, reached within R_LOCAL by definition)
+// and the negatives are local targets no macro came within R_NEG of, sampled beyond
+// and beside the cloud, at random in the reachable disc, and along the chords to the
+// uncredited gates. Gate rows stay as the ORDER PRIOR.
+
+/// A local target counts as reached when the car is within this of it at h.
+pub const R_LOCAL: f32 = 8.0;
+/// A sampled target is a negative only if no endpoint of the (start, h) cloud is within this.
+pub const R_NEG: f32 = 14.0;
+/// Local targets beyond this from the start are not sampled (the head is LOCAL).
+pub const LOCAL_MAX_M: f32 = 450.0;
+
+pub const L_WP_LOCAL: f32 = -1.0;
+
+#[derive(Default, Debug, Clone)]
+pub struct LocalStats {
+    pub groups: usize,
+    pub positives: usize,
+    pub negatives: usize,
+    pub neg_radial: usize,
+    pub neg_lateral: usize,
+    pub neg_disc: usize,
+    pub neg_chord: usize,
+    pub rejected_near_endpoint: usize,
+    pub skipped_noop: usize,
+    pub skipped_human: usize,
+    pub cloud_mean_extent_m: f64,
+}
+
+fn xorshift(s: &mut u64) -> u64 {
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
+}
+fn unif(s: &mut u64) -> f32 {
+    (xorshift(s) >> 11) as f32 / (1u64 << 53) as f32
+}
+
+/// Build the horizon-native rows of one map.
+pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, probe: &Probe, seed: u64, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
+    let shard = read_shard(&reach_dir.join("samples.tmr"))?;
+    let starts = read_starts(&reach_dir.join("starts.tsv"))?;
+    let orders = read_orders(geom_dir);
+    let fallback = fallback_order(&orders);
+    let mut st = LocalStats::default();
+    let mut rows = Rows { map_uid: gates.map_uid.clone(), x: Vec::new(), lab: Vec::new(), n: 0 };
+    let mut buf = vec![0f32; DIM];
+    let mut rng = seed.max(1) ^ 0x5851_f42d_4c95_7f2d;
+    // group records by (start_id, h)
+    let mut groups: HashMap<(u32, u16), Vec<usize>> = HashMap::new();
+    for (ri, r) in shard.records.iter().enumerate() {
+        if r.macro_id >= tmreach::human::RESPAWN_MACRO {
+            st.skipped_human += 1;
+            continue;
+        }
+        groups.entry((r.start_id, r.horizon_ticks)).or_default().push(ri);
+    }
+    let mut keys: Vec<(u32, u16)> = groups.keys().cloned().collect();
+    keys.sort();
+    let mut extent_sum = 0f64;
+    let candidates: Vec<&tmroute::gates::GateRec> = gates.gates.iter().filter(|g| g.kind != WpKind::Start).collect();
+    let mut push_row = |rows: &mut Rows, s: &StartInfo, sid: u32, target: [f32; 3], h: u16, y: f32, end: Option<&CarState>, key: f32| {
+        let d = dist3(s.state.pos, target);
+        let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
+        let t = Target { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0 };
+        features::features(&s.state, &t, probe, h, &mut buf);
+        rows.x.extend_from_slice(&buf);
+        let mut lab = [0f32; NLAB];
+        lab[L_Y] = y;
+        lab[L_TICKS] = if y > 0.5 { h as f32 } else { -1.0 };
+        if let Some(e) = end {
+            lab[L_BAND] = 1.0;
+            lab[L_ASPEED] = if e.speed.is_finite() { e.speed } else { crate::frame::norm3(e.vel) };
+            lab[L_ADY] = 0.0;
+            lab[L_AANG] = match crate::frame::unit3(e.vel) {
+                Some(u) => (u[0] * dir[0] + u[1] * dir[1] + u[2] * dir[2]).clamp(-1.0, 1.0).acos(),
+                None => 0.0,
+            };
+        }
+        lab[L_DIST] = d;
+        lab[L_REC] = key;
+        lab[L_WP] = L_WP_LOCAL;
+        lab[L_HUMAN] = 0.0;
+        lab[L_START] = sid as f32;
+        lab[L_H] = h as f32;
+        rows.lab.extend_from_slice(&lab);
+        rows.n += 1;
+    };
+    for (gi, key) in keys.iter().enumerate() {
+        let recs = &groups[key];
+        let Some(s) = starts.get(&key.0) else { continue };
+        let h = key.1;
+        // endpoint cloud (drop no-op duplicates: endpoints within 0.5 m of an earlier one)
+        let mut ends: Vec<&CarState> = Vec::new();
+        for &ri in recs {
+            let e = &shard.records[ri].end;
+            if ends.iter().any(|q| dist3(q.pos, e.pos) < 0.5) {
+                st.skipped_noop += 1;
+                continue;
+            }
+            ends.push(e);
+        }
+        if ends.len() < 4 {
+            continue;
+        }
+        st.groups += 1;
+        let sp = s.state.pos;
+        let max_d = ends.iter().map(|e| dist3(sp, e.pos)).fold(0f32, f32::max).max(5.0);
+        // cloud extent: mean pairwise distance to the cloud centroid
+        let mut c = [0f32; 3];
+        for e in &ends {
+            for a in 0..3 {
+                c[a] += e.pos[a] / ends.len() as f32;
+            }
+        }
+        extent_sum += ends.iter().map(|e| dist3(c, e.pos) as f64).sum::<f64>() / ends.len() as f64;
+        // positives
+        for e in &ends {
+            push_row(&mut rows, s, key.0, e.pos, h, 1.0, Some(e), gi as f32);
+            st.positives += 1;
+        }
+        // negatives: candidates → keep those > R_NEG from every endpoint and ≤ LOCAL_MAX_M from the start
+        let mut cands: Vec<([f32; 3], u8)> = Vec::new();
+        for e in &ends {
+            // (a) radially beyond the cloud
+            let u = 1.25 + 0.6 * unif(&mut rng);
+            cands.push(([sp[0] + (e.pos[0] - sp[0]) * u, e.pos[1], sp[2] + (e.pos[2] - sp[2]) * u], 0));
+            // (b) beside the cloud: perpendicular (in XZ) to the start→endpoint direction
+            let dx = e.pos[0] - sp[0];
+            let dz = e.pos[2] - sp[2];
+            let l = (dx * dx + dz * dz).sqrt().max(1e-3);
+            let side = if unif(&mut rng) < 0.5 { -1.0 } else { 1.0 };
+            let off = (R_NEG + 2.0 + 30.0 * unif(&mut rng)) * side;
+            cands.push(([e.pos[0] - dz / l * off, e.pos[1], e.pos[2] + dx / l * off], 1));
+        }
+        // (c) random in the disc of radius 1.3 × max_d, at the start's height
+        for _ in 0..ends.len() / 2 {
+            let r = 1.3 * max_d * unif(&mut rng).sqrt();
+            let a = 2.0 * std::f32::consts::PI * unif(&mut rng);
+            cands.push(([sp[0] + r * a.cos(), sp[1], sp[2] + r * a.sin()], 2));
+        }
+        // (d) along the chords to the uncredited gates within reach
+        let order = orders.get(&s.ghost_md5).cloned().or_else(|| fallback.clone()).unwrap_or_default();
+        let credited: Vec<u32> = order.iter().take(s.cps_before as usize).cloned().collect();
+        for g in &candidates {
+            if credited.contains(&g.waypoint) {
+                continue;
+            }
+            let dg = dist3(sp, g.centre);
+            if dg > 1.5 * max_d + 50.0 {
+                continue;
+            }
+            for k in 1..=4 {
+                let t = k as f32 / 4.0 * (LOCAL_MAX_M.min(dg) / dg);
+                cands.push(([sp[0] + (g.centre[0] - sp[0]) * t, sp[1] + (g.centre[1] - sp[1]) * t, sp[2] + (g.centre[2] - sp[2]) * t], 3));
+            }
+        }
+        for (p, kind) in cands {
+            if dist3(sp, p) > LOCAL_MAX_M {
+                continue;
+            }
+            if ends.iter().any(|e| dist3(e.pos, p) < R_NEG) {
+                st.rejected_near_endpoint += 1;
+                continue;
+            }
+            push_row(&mut rows, s, key.0, p, h, 0.0, None, gi as f32);
+            st.negatives += 1;
+            match kind {
+                0 => st.neg_radial += 1,
+                1 => st.neg_lateral += 1,
+                2 => st.neg_disc += 1,
+                _ => st.neg_chord += 1,
+            }
+        }
+    }
+    st.cloud_mean_extent_m = extent_sum / st.groups.max(1) as f64;
+    log.push(format!(
+        "{} ({}) LOCAL: {} (start, h) groups → {} rows: {} positives (endpoints), {} negatives (radial {}, lateral {}, disc {}, chord {}); {} candidates rejected within {} m of an endpoint; {} no-op duplicate endpoints, {} human records skipped; cloud mean extent {:.1} m; R_LOCAL {} m",
+        gates.map_name, gates.map_uid, st.groups, rows.n, st.positives, st.negatives, st.neg_radial, st.neg_lateral, st.neg_disc, st.neg_chord, st.rejected_near_endpoint, R_NEG, st.skipped_noop, st.skipped_human, st.cloud_mean_extent_m, R_LOCAL
+    ));
+    Ok((rows, st))
+}

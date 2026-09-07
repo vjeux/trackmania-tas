@@ -20,6 +20,17 @@ pub struct TwoGate {
     pub hard_pairs: usize,
     pub hard_model_correct: usize,
     pub hard_baseline_correct: usize,
+    /// DISTANCE-WRONG pairs: every (positive, negative) pair of a record in which the negative is
+    /// NEARER than (or as near as) the reached gate — the population the router exists for.
+    pub dw_pairs: usize,
+    pub dw_model_correct: usize,
+    /// all (positive, negative) pairs, for the share the distance-wrong ones are
+    pub all_pairs: usize,
+    /// MATCHED-DISTANCE pairs: the negative of the same group whose distance is within ±10 % of the
+    /// positive's (the nearest such) — distance carries no information here by construction.
+    pub md_pairs: usize,
+    pub md_model_correct: usize,
+    pub md_baseline_correct: usize,
 }
 
 impl TwoGate {
@@ -34,6 +45,22 @@ impl TwoGate {
     }
     pub fn hard_baseline_pct(&self) -> f64 {
         100.0 * self.hard_baseline_correct as f64 / self.hard_pairs.max(1) as f64
+    }
+    pub fn md_model_pct(&self) -> f64 {
+        100.0 * self.md_model_correct as f64 / self.md_pairs.max(1) as f64
+    }
+    pub fn md_baseline_pct(&self) -> f64 {
+        100.0 * self.md_baseline_correct as f64 / self.md_pairs.max(1) as f64
+    }
+    pub fn dw_model_pct(&self) -> f64 {
+        100.0 * self.dw_model_correct as f64 / self.dw_pairs.max(1) as f64
+    }
+    pub fn margin(&self) -> f64 {
+        self.model_pct() - self.baseline_pct()
+    }
+    /// A held-out map where the ruler is ≥ 99 % right cannot separate R from the ruler.
+    pub fn informative(&self) -> bool {
+        self.pairs > 0 && self.baseline_pct() < 99.0
     }
 }
 
@@ -102,6 +129,28 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
             tg.hard_pairs += 1;
             if sp > pred[n2][O_REACH] { tg.hard_model_correct += 1 }
             if dp < set.lab(n2)[L_DIST] { tg.hard_baseline_correct += 1 }
+            // matched-distance pair
+            let mut best: Option<(f32, usize)> = None;
+            for &m in &neg {
+                let dm = set.lab(m)[L_DIST];
+                let rel = (dm - dp).abs() / dp.max(1.0);
+                if rel <= 0.10 && best.map_or(true, |(b, _)| rel < b) {
+                    best = Some((rel, m));
+                }
+            }
+            if let Some((_, m)) = best {
+                tg.md_pairs += 1;
+                if sp > pred[m][O_REACH] { tg.md_model_correct += 1 }
+                if dp < set.lab(m)[L_DIST] { tg.md_baseline_correct += 1 }
+            }
+            // distance-wrong pairs: every negative at least as near as the positive
+            for &m in &neg {
+                tg.all_pairs += 1;
+                if set.lab(m)[L_DIST] <= dp {
+                    tg.dw_pairs += 1;
+                    if sp > pred[m][O_REACH] { tg.dw_model_correct += 1 }
+                }
+            }
         }
     }
     // calibration + AUC + Brier
@@ -178,8 +227,8 @@ pub fn render(name: &str, r: &Report) -> String {
     let mut s = String::new();
     let tg = &r.two_gate;
     s.push_str(&format!(
-        "[{name}] two-gate: {} pairs from {} records — R {:.1} % ({} correct, {} ties) vs distance baseline {:.1} % ({} correct, {} ties); margin {:+.1} pts. Hardest pairing (positive vs the NEAREST negative): R {:.1} % vs baseline {:.1} % over {} pairs\n",
-        tg.pairs, tg.records, tg.model_pct(), tg.model_correct, tg.model_ties, tg.baseline_pct(), tg.baseline_correct, tg.baseline_ties, tg.model_pct() - tg.baseline_pct(), tg.hard_model_pct(), tg.hard_baseline_pct(), tg.hard_pairs
+        "[{name}] two-gate: {} pairs from {} records — (R {:.1} %, distance {:.1} %) margin {:+.1} pts [{}]; ties R {} / distance {}. Nearest-negative pairing: R {:.1} % vs distance {:.1} % over {} pairs. DISTANCE-WRONG pairs (negative at least as near as the reached gate): {} of {} pos×neg pairs ({:.1} %), R correct on {:.1} %. MATCHED-DISTANCE pairs (negative within ±10 % of the positive's distance): {} pairs, R {:.1} % vs distance {:.1} %\n",
+        tg.pairs, tg.records, tg.model_pct(), tg.baseline_pct(), tg.margin(), if tg.informative() { "informative" } else { "UNINFORMATIVE: distance ≥ 99 %" }, tg.model_ties, tg.baseline_ties, tg.hard_model_pct(), tg.hard_baseline_pct(), tg.hard_pairs, tg.dw_pairs, tg.all_pairs, 100.0 * tg.dw_pairs as f64 / tg.all_pairs.max(1) as f64, tg.dw_model_pct(), tg.md_pairs, tg.md_model_pct(), tg.md_baseline_pct()
     ));
     let c = &r.calib;
     s.push_str(&format!("[{name}] calibration over {} rows (positive rate {:.3}): ECE {:.4}, Brier {:.4}, AUC {:.4}\n", c.n, c.pos_rate, c.ece, c.brier, c.auc));

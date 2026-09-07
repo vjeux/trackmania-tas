@@ -2,16 +2,18 @@
 //!
 //!   tmr features                         print FEATURES.md (the feature layout, generated)
 //!   tmr frame --starts F.tsv             MEASURE which car axis is forward (quaternion convention control)
-//!   tmr build --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
+//!   tmr build [--kind gate|local] --reach DIR [--reach DIR2 ..] [--geom G] [--maps M] --out CACHE [--no-geometry]
 //!                                        TMR0 shards → labelled rows per map (<uid>.rows + manifest.tsv)
-//!   tmr train --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
+//!   tmr train [--kind gate|local] --cache DIR --out r.tmw [--ablation full|no-probes|no-attitude|distance-only]
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
-//!   tmr eval --model r.tmw --cache DIR [--held-out uid,..] [--report F]
+//!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--interval S] [--once] [--epochs N] [--threads T]
+//!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
-//!   tmr legs MAP.Map.Gbx --gates gates.json --model r.tmw --human-orders F
+//!   tmr legs MAP.Map.Gbx --gates gates.json --model r.tmw --human-orders F [--local rl.tmw [--beam 24] [--p-step 0.05]]
 //!                                        R's estimate of every human leg (order agreement + per-leg p, time)
 //! Times print as seconds with a decimal.
 
@@ -97,6 +99,7 @@ fn main() {
         Some("selftest") => cmd_selftest(&args),
         Some("plan") => cmd_plan(&args),
         Some("legs") => cmd_legs(&args),
+        Some("watch") => cmd_watch(&args),
         Some("split") => {
             for u in args.iter().skip(1) {
                 println!("{u}\tfnv1a64 % 10 = {}\t{}", data::fnv1a64(u) % 10, if data::held_out(u) { "HELD-OUT" } else { "train" });
@@ -120,93 +123,121 @@ fn cmd_frame(args: &[String]) {
     println!("forward axis: {}{} (|mean dot| {:.3}) — the code assumes +Z: {}", if *best >= 0.0 { "+" } else { "-" }, name, best.abs(), if ax == 2 && *best > 0.9 { "PASS" } else { "FAIL — fix frame.rs before training" });
 }
 
-fn cmd_build(args: &[String]) {
-    let reaches: Vec<PathBuf> = args.iter().enumerate().filter(|(_, a)| *a == "--reach").filter_map(|(i, _)| args.get(i + 1).map(PathBuf::from)).collect();
-    if reaches.is_empty() {
-        die("--reach DIR (repeatable: a reach root of <uid>/ dirs, or one shard dir)");
+struct BuildOpts {
+    /// "gate" (rows per uncredited gate, the order prior) or "local" (horizon-native rows from every endpoint).
+    kind: String,
+    geom: PathBuf,
+    maps: Vec<PathBuf>,
+    no_geom: bool,
+    out: PathBuf,
+}
+
+/// Build one shard dir's rows into `<out>/<uid>.rows`; returns the manifest line and the log line.
+fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, String), String> {
+    let uid = data::shard_map_uid(d).ok_or_else(|| format!("{}: cannot tell its map uid (dir name or FANOUT.log)", d.display()))?;
+    let gdir = o.geom.join(&uid);
+    // the bank is an object store another box writes into: a gates.json mid-rewrite reads truncated.
+    // Keep the last good copy in the cache and fall back to it, saying so.
+    let cached = o.out.join(format!("{uid}.gates.json"));
+    let gates = match tmroute::io::read_gates(&gdir.join("gates.json")) {
+        Ok(g) => {
+            let _ = std::fs::copy(gdir.join("gates.json"), &cached);
+            g
+        }
+        Err(e) => {
+            let g = tmroute::io::read_gates(&cached).map_err(|e2| format!("{e} (and no usable cached copy: {e2})"))?;
+            log.push(format!("  {uid}: gates.json in the bank is unreadable ({e}); using the cached copy {}", cached.display()));
+            g
+        }
+    };
+    let t0 = std::time::Instant::now();
+    let surf = if o.no_geom {
+        None
+    } else {
+        let mp = find_map(&uid, &o.maps).ok_or_else(|| format!("{uid}: no .Map.Gbx in {:?} (use --maps or --no-geometry)", o.maps))?;
+        let (s, _nodes) = tmplan::surface::SurfaceModel::build(&mp, &gates, false, false).map_err(|e| format!("{uid}: surface build failed: {e}"))?;
+        Some(s)
+    };
+    let probe = match &surf {
+        Some(s) => features::Probe { idx: Some(&s.full), road: &s.road_materials },
+        None => features::Probe::none(),
+    };
+    let (rows, manifest_tail) = if o.kind == "local" {
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &probe, 1, log)?;
+        let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
+        (rows, m)
+    } else {
+        let (rows, st) = data::build_map(d, &gates, &gdir, &probe, log)?;
+        (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
+    };
+    let f = o.out.join(rows_file_name(&uid, &o.kind));
+    rows.write(&f)?;
+    let held = data::held_out(&uid);
+    let line = format!("{}  [{}]  {:.1} s  → {}", log.last().cloned().unwrap_or_default(), if held { "HELD-OUT by fnv1a64(uid) % 10 == 0" } else { "train" }, t0.elapsed().as_secs_f64(), f.display());
+    if let Some(s) = &surf {
+        for n in &s.notes {
+            log.push(format!("    surface note: {n}"));
+        }
     }
-    let out = PathBuf::from(flag(args, "--out").unwrap_or_else(|| die("--out CACHE")));
+    let manifest = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", o.kind, uid, gates.map_name, held as u8, manifest_tail, d.display(), provenance("build"));
+    Ok((manifest, line))
+}
+
+const MANIFEST_HEADER: &str = "kind\tmap_uid\tmap_name\theld_out\trecords_or_groups\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n";
+
+fn build_opts(args: &[String]) -> BuildOpts {
+    let out = PathBuf::from(flag(args, "--out").or_else(|| flag(args, "--cache")).unwrap_or_else(|| die("--out CACHE")));
     std::fs::create_dir_all(&out).unwrap_or_else(|e| die(&e.to_string()));
-    let geom = flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom);
     let mut maps = default_maps();
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    let no_geom = has(args, "--no-geometry");
-    let dirs: Vec<PathBuf> = reaches.iter().flat_map(|r| data::shard_dirs(r)).collect();
-    if dirs.is_empty() {
-        die(&format!("no samples.tmr under {:?}", reaches));
+    BuildOpts { kind: kind_of(args), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+}
+
+fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
+    let reaches: Vec<PathBuf> = args.iter().enumerate().filter(|(_, a)| *a == "--reach").filter_map(|(i, _)| args.get(i + 1).map(PathBuf::from)).collect();
+    if reaches.is_empty() {
+        die("--reach DIR (repeatable: a reach root of <uid>/ dirs, or one shard dir)");
     }
-    let mut manifest = String::from("map_uid\tmap_name\theld_out\trecords\trows\tpositives\tpos_rate\thuman_rows\thuman_pos\tband_rows\tfinish_candidates\tpos_beyond_400\tpos_outside_radius\tunknown_ghost_starts\tshard\tprovenance\n");
+    reaches.iter().flat_map(|r| data::shard_dirs(r)).collect()
+}
+
+fn cmd_build(args: &[String]) {
+    let o = build_opts(args);
+    let dirs = reach_dirs(args);
+    if dirs.is_empty() {
+        die("no samples.tmr under the --reach dirs");
+    }
+    let mut manifest = String::from(MANIFEST_HEADER);
     let mut log = Vec::new();
     for d in dirs {
-        let Some(uid) = data::shard_map_uid(&d) else {
-            eprintln!("  {}: cannot tell its map uid (dir name or FANOUT.log) — skipped", d.display());
-            continue;
-        };
-        let gdir = geom.join(&uid);
-        let gates = match tmroute::io::read_gates(&gdir.join("gates.json")) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("  {uid}: {e} — skipped");
-                continue;
+        match build_one(&d, &o, &mut log) {
+            Ok((m, line)) => {
+                println!("{line}");
+                manifest.push_str(&m);
             }
-        };
-        let t0 = std::time::Instant::now();
-        let surf = if no_geom {
-            None
-        } else {
-            let Some(mp) = find_map(&uid, &maps) else {
-                eprintln!("  {uid}: no .Map.Gbx in {:?} — skipped (use --maps or --no-geometry)", maps);
-                continue;
-            };
-            match tmplan::surface::SurfaceModel::build(&mp, &gates, false, false) {
-                Ok((s, _nodes)) => Some(s),
-                Err(e) => {
-                    eprintln!("  {uid}: surface build failed: {e} — skipped");
-                    continue;
-                }
-            }
-        };
-        let probe = match &surf {
-            Some(s) => features::Probe { idx: Some(&s.full), road: &s.road_materials },
-            None => features::Probe::none(),
-        };
-        let (rows, st) = match data::build_map(&d, &gates, &gdir, &probe, &mut log) {
-            Ok(x) => x,
-            Err(e) => {
-                eprintln!("  {uid}: {e} — skipped");
-                continue;
-            }
-        };
-        let f = out.join(format!("{uid}.rows"));
-        rows.write(&f).unwrap_or_else(|e| die(&e));
-        let held = data::held_out(&uid);
-        println!("{}  [{}]  {:.1} s  → {}", log.last().unwrap(), if held { "HELD-OUT by fnv1a64(uid) % 10 == 0" } else { "train" }, t0.elapsed().as_secs_f64(), f.display());
-        if let Some(s) = &surf {
-            for n in &s.notes {
-                println!("    surface note: {n}");
-            }
+            Err(e) => eprintln!("  {e} — skipped"),
         }
-        manifest.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            uid, gates.map_name, held as u8, st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts, d.display(), provenance("build")
-        ));
     }
-    std::fs::write(out.join("manifest.tsv"), &manifest).unwrap_or_else(|e| die(&e.to_string()));
-    std::fs::write(out.join("BUILD.log"), log.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
-    println!("wrote {}/{{<uid>.rows, manifest.tsv, BUILD.log}}", out.display());
+    std::fs::write(o.out.join(format!("manifest-{}.tsv", o.kind)), &manifest).unwrap_or_else(|e| die(&e.to_string()));
+    std::fs::write(o.out.join(format!("BUILD-{}.log", o.kind)), log.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
+    println!("wrote {}/{{<uid>.rows, manifest.tsv, BUILD.log}}", o.out.display());
 }
 
 /// Load every `<uid>.rows` in the cache, split by the map rule (+ overrides).
 fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<bool>) {
+    let kind = kind_of(args);
     let cache = PathBuf::from(flag(args, "--cache").unwrap_or_else(|| die("--cache DIR")));
     let force: Vec<String> = flag(args, "--held-out").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
     let only: Option<Vec<String>> = flag(args, "--maps-only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
     let mut files: Vec<PathBuf> = std::fs::read_dir(&cache)
         .unwrap_or_else(|e| die(&format!("{}: {e}", cache.display())))
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map_or(false, |x| x == "rows"))
+        .filter(|p| {
+            let n = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            n.ends_with(".rows") && (n.ends_with(".local.rows") == (kind == "local"))
+        })
         .collect();
     files.sort();
     let mut rows = Vec::new();
@@ -249,27 +280,48 @@ fn split_summary(rows: &[Rows], held: &[bool], names: &HashMap<String, String>) 
     s
 }
 
-fn eval_sets(w: &Weights, rows: &[Rows], held: &[bool], keep: &[&str], dev: &candle_core::Device, out: &mut String) {
+/// Per-map two-gate lines, then the pooled numbers: TRAIN maps, ALL held-out
+/// maps, and INFORMATIVE held-out maps (distance-only < 99 %) — the gate.
+fn eval_sets(w: &Weights, rows: &[Rows], held: &[bool], keep: &[&str], dev: &candle_core::Device, names: &HashMap<String, String>, out: &mut String) {
+    let per_map = |r: &Rows| -> tmr::eval::Report {
+        let s1 = Set::from_rows(&[r], keep);
+        let p1 = tmr::train::predict_all_candle(w, &s1, dev).unwrap_or_else(|e| die(&e));
+        tmr::eval::evaluate(&s1, &p1, 7)
+    };
+    out.push_str("### Per map (two-gate pairs: one random negative per positive; DW = distance-wrong pairs)\n");
+    out.push_str("| split | map | pairs | R % | distance % | margin | informative | nearest-neg R/dist | DW pairs (share) | R on DW % | ECE | AUC | human-leg MAE |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    let mut informative_held: Vec<&Rows> = Vec::new();
+    for (r, h) in rows.iter().zip(held) {
+        let rep = per_map(r);
+        let tg = &rep.two_gate;
+        if *h && tg.informative() {
+            informative_held.push(r);
+        }
+        out.push_str(&format!(
+            "| {} | {} {} | {} | {:.1} | {:.1} | {:+.1} | {} | {:.1}/{:.1} | {} ({:.1} %) | {:.1} | {:.4} | {:.3} | {:.3} s ({} legs) |\n",
+            if *h { "HELD-OUT" } else { "train" },
+            r.map_uid,
+            names.get(&r.map_uid).cloned().unwrap_or_default(),
+            tg.pairs, tg.model_pct(), tg.baseline_pct(), tg.margin(),
+            if !*h { "—" } else if tg.informative() { "yes" } else { "NO (distance ≥ 99 %)" },
+            tg.hard_model_pct(), tg.hard_baseline_pct(),
+            tg.dw_pairs, 100.0 * tg.dw_pairs as f64 / tg.all_pairs.max(1) as f64, tg.dw_model_pct(),
+            rep.calib.ece, rep.calib.auc, rep.time_human.mae_s, rep.time_human.n
+        ));
+    }
+    out.push('\n');
     let train_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| !**h).map(|(r, _)| r).collect();
     let held_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h).map(|(r, _)| r).collect();
-    for (name, set_rows) in [("TRAIN maps", train_rows), ("HELD-OUT maps", held_rows)] {
+    for (name, set_rows) in [("TRAIN maps", train_rows), ("HELD-OUT maps, all", held_rows), ("HELD-OUT maps, INFORMATIVE (the gate)", informative_held)] {
         if set_rows.is_empty() {
-            out.push_str(&format!("[{name}] none — the two-gate test on held-out maps needs ≥ 1 held-out map (the fnv1a64 rule or --held-out)\n"));
+            out.push_str(&format!("[{name}] none\n"));
             continue;
         }
         let set = Set::from_rows(&set_rows, keep);
         let pred = tmr::train::predict_all_candle(w, &set, dev).unwrap_or_else(|e| die(&e));
         let rep = tmr::eval::evaluate(&set, &pred, 7);
+        out.push_str(&format!("[{name}] {} maps\n", set_rows.len()));
         out.push_str(&tmr::eval::render(name, &rep));
-        // per map inside the set
-        if set_rows.len() > 1 {
-            for r in &set_rows {
-                let s1 = Set::from_rows(&[r], keep);
-                let p1 = tmr::train::predict_all_candle(w, &s1, dev).unwrap_or_else(|e| die(&e));
-                let r1 = tmr::eval::evaluate(&s1, &p1, 7);
-                out.push_str(&format!("[{name}]   {}: two-gate R {:.1} % vs baseline {:.1} % ({} pairs); hard R {:.1} % vs {:.1} %; ECE {:.4} AUC {:.4}; human-leg MAE {:.3} s ({} legs)\n", r.map_uid, r1.two_gate.model_pct(), r1.two_gate.baseline_pct(), r1.two_gate.pairs, r1.two_gate.hard_model_pct(), r1.two_gate.hard_baseline_pct(), r1.calib.ece, r1.calib.auc, r1.time_human.mae_s, r1.time_human.n));
-            }
-        }
     }
 }
 
@@ -322,6 +374,7 @@ fn cmd_train(args: &[String]) {
     let meta = serde_json::json!({
         "produced_by": provenance("train"),
         "ablation": cfg.ablation,
+        "kind": kind_of(args),
         "mirror_augmentation": mirror,
         "hidden": cfg.hidden,
         "epochs_run": rep.epochs_run,
@@ -345,7 +398,7 @@ fn cmd_train(args: &[String]) {
     };
     report.push_str(&format!("agrees_with negative half (first bias +1e-3): {neg}\n\n## Evaluation\n"));
     let mut ev = String::new();
-    eval_sets(&w, &rows, &held, &keep, &dev, &mut ev);
+    eval_sets(&w, &rows, &held, &keep, &dev, &names, &mut ev);
     print!("{ev}");
     report.push_str(&ev);
     println!("wrote {} ({} params, {} bytes of meta)", out.display(), w.n_params(), w.meta.len());
@@ -365,7 +418,7 @@ fn cmd_eval(args: &[String]) {
     let names = map_names();
     let dev = candle_core::Device::Cpu;
     let mut report = format!("# tmr eval — {} — model {} ({}), ablation {}\n\n## Split\n{}\n", provenance("eval"), model.display(), meta.get("produced_by").and_then(|p| p.as_str()).unwrap_or("?"), abl, split_summary(&rows, &held, &names));
-    eval_sets(&w, &rows, &held, &keep, &dev, &mut report);
+    eval_sets(&w, &rows, &held, &keep, &dev, &names, &mut report);
     print!("{report}");
     if let Some(r) = flag(args, "--report") {
         std::fs::write(&r, &report).unwrap_or_else(|e| die(&e.to_string()));
@@ -481,6 +534,13 @@ fn cmd_legs(args: &[String]) {
     use tmplan::estimator::StateBucket;
     let (gates, surf, nodes, w, h_min, h_max, keep) = load_plan_ctx(args);
     let est = tmr::estimator::REstimator { w: &w, gates: &gates, nodes: &nodes, surf: &surf, h_max, h_min, keep, p_floor: 0.0 };
+    let local_w = flag(args, "--local").map(|p| Weights::load(Path::new(&p)).unwrap_or_else(|e| die(&e)));
+    let chained = local_w.as_ref().map(|lw| {
+        let mut c = tmr::estimator::Chained::new(lw, &gates, &nodes, &surf, features::ablation_keep("full").unwrap());
+        if let Some(b) = flag(args, "--beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
+        c
+    });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
     let s = std::fs::read_to_string(&ho).unwrap_or_else(|e| die(&e.to_string()));
     // group → node index
@@ -510,6 +570,7 @@ fn cmd_legs(args: &[String]) {
         let mut visited: Vec<usize> = vec![0];
         let mut ranked_first = 0;
         let mut total_ms = 0i32;
+        let (mut chained_total, mut chained_fail) = (0i32, 0usize);
         for (k, g) in groups.iter().enumerate() {
             let Some(&to) = node_of_group.get(g) else {
                 println!("  leg {k}: group {g} is not a planner node");
@@ -526,11 +587,27 @@ fn cmd_legs(args: &[String]) {
             }
             let mine = scored.iter().find(|x| x.0 == to);
             let human_leg = if k == 0 { cp_ms.get(0).cloned() } else { cp_ms.get(k).zip(cp_ms.get(k - 1)).map(|(a, b)| a - b) };
+            let chained_line = match &chained {
+                Some(c) => {
+                    let dir = est.heading_public(prev, at);
+                    match c.chain(nodes.pos[at], bucket.speed(), dir, to) {
+                        Some((p, ticks, v, steps, _)) => {
+                            chained_total += ticks * 10;
+                            format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s)", p, tmr::secs(ticks as i64 * 10), steps, v)
+                        }
+                        None => {
+                            chained_fail += 1;
+                            "; CHAINED: no path above p_step floor".to_string()
+                        }
+                    }
+                }
+                None => String::new(),
+            };
             match mine {
                 Some((_, p, t, h)) => {
                     total_ms += (*t * 10.0) as i32;
                     println!(
-                        "  leg {k}: node {at} → {to} (group {g}): p_reach {:.3}, expected {}, h {}; human {}; R ranks it #{rank} of {} [{}]",
+                        "  leg {k}: node {at} → {to} (group {g}): p_reach {:.3}, expected {}, h {}; human {}; R ranks it #{rank} of {} [{}]{chained_line}",
                         p,
                         tmr::secs((*t * 10.0) as i64),
                         h,
@@ -546,6 +623,118 @@ fn cmd_legs(args: &[String]) {
             at = to;
             visited.push(to);
         }
-        println!("  R ranks the human's next gate first on {}/{} legs; Σ expected {} vs human {}", ranked_first, groups.len(), tmr::secs(total_ms as i64), cp_ms.last().map(|m| tmr::secs(*m as i64)).unwrap_or("?".into()));
+        println!("  R ranks the human's next gate first on {}/{} legs; Σ expected (single lookup) {} vs human {}{}", ranked_first, groups.len(), tmr::secs(total_ms as i64), cp_ms.last().map(|m| tmr::secs(*m as i64)).unwrap_or("?".into()), if chained.is_some() { format!("; Σ CHAINED {} ({} legs without a path)", tmr::secs(chained_total as i64), chained_fail) } else { String::new() });
+    }
+}
+
+fn kind_of(args: &[String]) -> String {
+    match flag(args, "--kind").as_deref() {
+        None | Some("gate") => "gate".into(),
+        Some("local") => "local".into(),
+        Some(x) => die(&format!("--kind {x}: gate|local")),
+    }
+}
+
+fn rows_file_name(uid: &str, kind: &str) -> String {
+    if kind == "local" { format!("{uid}.local.rows") } else { format!("{uid}.rows") }
+}
+
+/// `tmr watch --reach DIR [--reach ..] --cache DIR --bank DIR [--interval S] [--once] [--epochs N] [--threads T]`
+///
+/// Every interval: find shard dirs whose samples.tmr is closed (header count == body) and
+/// newer than the cached rows; rebuild their rows (gate + local); when anything changed,
+/// retrain both heads, evaluate, and publish `bank/r-v<N>.tmw`, `bank/rl-v<N>.tmw`,
+/// `bank/r-v<N>.md` (per-map table) and append a STATUS line. Never stops at a finished step.
+fn cmd_watch(args: &[String]) {
+    let o = build_opts(args);
+    let bank = PathBuf::from(flag(args, "--bank").unwrap_or_else(|| die("--bank DIR")));
+    std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(&e.to_string()));
+    let interval: u64 = flag(args, "--interval").and_then(|s| s.parse().ok()).unwrap_or(600);
+    let once = has(args, "--once");
+    let epochs = flag(args, "--epochs").unwrap_or_else(|| "30".into());
+    let threads = flag(args, "--threads").unwrap_or_else(|| "32".into());
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tmr"));
+    let mut version: u32 = std::fs::read_dir(&bank)
+        .map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().to_string_lossy().strip_prefix("r-v").and_then(|s| s.split('.').next().and_then(|n| n.parse::<u32>().ok()))).max().unwrap_or(0))
+        .unwrap_or(0);
+    loop {
+        let mut changed = Vec::new();
+        let mut log = Vec::new();
+        for d in reach_dirs(args) {
+            let Some(uid) = data::shard_map_uid(&d) else { continue };
+            let shard = d.join("samples.tmr");
+            let Ok(meta) = std::fs::metadata(&shard) else { continue };
+            let rows_f = o.out.join(rows_file_name(&uid, "gate"));
+            let rows_l = o.out.join(rows_file_name(&uid, "local"));
+            let fresh = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().zip(meta.modified().ok()).map_or(false, |(a, b)| a > b);
+            if fresh(&rows_f) && fresh(&rows_l) {
+                continue;
+            }
+            // closed shard? (header count == body length)
+            if let Err(e) = tmreach::tmr::read_shard(&shard) {
+                log.push(format!("  {uid}: {e} — not closed yet, waiting"));
+                continue;
+            }
+            let mut ok = true;
+            for kind in ["gate", "local"] {
+                let ok_ = BuildOpts { kind: kind.into(), geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                match build_one(&d, &ok_, &mut log) {
+                    Ok((_, line)) => println!("{line}"),
+                    Err(e) => {
+                        println!("  {uid} [{kind}]: {e} — will retry next interval");
+                        ok = false;
+                    }
+                }
+            }
+            if ok {
+                changed.push(uid);
+            }
+        }
+        for l in &log {
+            println!("{l}");
+        }
+        if !changed.is_empty() {
+            version += 1;
+            let stamp = now_utc();
+            println!("watch: {} map(s) changed ({}), training v{version} at {stamp}", changed.len(), changed.join(","));
+            let mut summary = format!("## {stamp} — tmr watch v{version}: rebuilt {} map(s) [{}]\n", changed.len(), changed.join(", "));
+            for (kind, prefix) in [("gate", "r"), ("local", "rl")] {
+                let model = bank.join(format!("{prefix}-v{version}.tmw"));
+                let report = bank.join(format!("{prefix}-v{version}.md"));
+                let mut cmd = std::process::Command::new(&exe);
+                cmd.args(["train", "--kind", kind, "--cache"]).arg(&o.out).arg("--out").arg(&model).arg("--report").arg(&report).args(["--epochs", &epochs, "--threads", &threads]);
+                if let Some(h) = flag(args, "--held-out") {
+                    cmd.args(["--held-out", &h]);
+                }
+                let out = cmd.output();
+                match out {
+                    Ok(out) => {
+                        let s = String::from_utf8_lossy(&out.stdout).to_string();
+                        // keep the gate lines for STATUS
+                        for line in s.lines().filter(|l| l.contains("two-gate:") || l.starts_with("| ")) {
+                            summary.push_str(&format!("[{kind}] {line}\n"));
+                        }
+                        if !out.status.success() {
+                            summary.push_str(&format!("[{kind}] train FAILED: {}\n", String::from_utf8_lossy(&out.stderr)));
+                        }
+                    }
+                    Err(e) => summary.push_str(&format!("[{kind}] train could not start: {e}\n")),
+                }
+                // latest pointer
+                let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest.tmw")));
+            }
+            print!("{summary}");
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(bank.join("WATCH.md")) {
+                let _ = f.write_all(summary.as_bytes());
+                let _ = f.write_all(b"\n");
+            }
+        } else {
+            println!("watch: nothing new at {}", now_utc());
+        }
+        if once {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval));
     }
 }
