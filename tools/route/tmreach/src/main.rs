@@ -1036,7 +1036,7 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 let ve_ok = ve.contains("verify OK");
                 let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
                 let ctrl = format!(
-                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\nGates: {}\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout\n{}\n## verify\n{}",
+                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\nGates: {}\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout ({workers} workers; production fan-outs stay at <= 40 workers per process — the byte-identical regime: at 96/128 workers 2–4 of 176 k end states differed in quaternion/rpm bytes only, a body-vs-copy-out sampling instant, with the perf arm)\n{}\n## verify\n{}",
                     tmreach::GIT_HASH,
                     hostname(),
                     chrono_now(),
