@@ -682,6 +682,28 @@ fn cmd_plan(args: &[String]) {
     if let Some(h) = &hybrid {
         let (ng, nr) = h.counts.get();
         println!("  hybrid pricing: {ng} edge queries geometric, {nr} learned");
+        // --diag: where geometry and R DISAGREE by > 2× on a leg (from rest), with the surface path behind it
+        if has(args, "--diag") {
+            println!("  disagreement (from rest; geo = cost-mode s, R = chained s/p; path len / chord / cost-speed):");
+            let n = nodes.pos.len();
+            for from in 0..n {
+                for to in 0..n {
+                    if from == to || (to == 0) { continue; }
+                    let b = StateBucket::of_speed(0.0);
+                    let g = h.geo.estimate(b, None, from, to);
+                    let r = h.learned.estimate(b, None, from, to);
+                    let len = len_m[from][to];
+                    let p = nodes.pos[from]; let q = nodes.pos[to];
+                    let chord = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                    let gs = g.expected_ms as f32 / 1000.0; let rs = r.expected_ms as f32 / 1000.0;
+                    let ratio = if gs > 0.0 && rs > 0.0 { (gs / rs).max(rs / gs) } else { f32::INFINITY };
+                    if ratio > 2.0 || len.is_infinite() {
+                        let (gn, tn) = (order_str(nodes, gates, &[from]).0, order_str(nodes, gates, &[to]).0);
+                        println!("    {gn:>2} → {tn:<2}  geo {} {:?}  R {} p {:.2}  ratio {:.1}  path {:.0} m  chord {:.0} m  cost-speed {:.0}", if gs > 0.0 { format!("{gs:.3}") } else { "none".into() }, g.kind, if rs > 0.0 { format!("{rs:.3}") } else { "none".into() }, r.p_reach, ratio, len, chord, if gs > 0.0 { len / gs } else { f32::NAN });
+                    }
+                }
+            }
+        }
     }
     for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
         println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());

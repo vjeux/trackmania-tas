@@ -77,6 +77,10 @@ if [ $step = plan-r ]; then
   SNAP=/tmp/tmr-models-$(date -u +%Y%m%dT%H%MZ); mkdir -p $SNAP
   # copy, then prove the copy LOADS (a stale FUSE read gave a 700776-byte rl.tmw whose trailer said otherwise, 14:54Z)
   snap_model() { local src=$1 dst=$2 i; for i in 1 2 3 4 5; do cp $src $dst && $TMR selftest --model $dst > $dst.selftest.txt 2>&1 && return 0; echo "  snapshot of $src did not load (try $i): $(tail -1 $dst.selftest.txt | cut -c1-100)"; sleep 20; done; return 1; }
+  # copy the VERSIONED file LATEST.txt names (r-vN-gd.tmw never changes once written) rather than the moving pointer:
+  # the mount served a pointer whose size was v7's and whose bytes were v8's (16:49Z)
+  resolve_ptr() { local ptr=$1 dir=$(dirname $1) base=$(basename $1) v; v=$(grep -E "^$base = " $dir/LATEST.txt 2>/dev/null | awk '{print $3}'); if [ -n "$v" ] && [ -f $dir/$v ]; then echo $dir/$v; else echo $ptr; fi; }
+  MODEL_R=$(resolve_ptr $MODEL_R); MODEL_RL=$(resolve_ptr $MODEL_RL); echo "models resolved: $MODEL_R $MODEL_RL"
   snap_model $MODEL_R $SNAP/r.tmw || { echo "gate model never loaded whole"; exit 1; }
   snap_model $MODEL_RL $SNAP/rl.tmw || { echo "local model never loaded whole"; exit 1; }
   W=$(dirname $MODEL_R); MODEL_R_PTR=$MODEL_R; MODEL_R=$SNAP/r.tmw; MODEL_RL=$SNAP/rl.tmw
