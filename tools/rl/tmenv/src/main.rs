@@ -93,6 +93,7 @@ fn main() {
         Some("from-template") => from_template(&a),
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
+        Some("cpfind") => cpfind_cmd(&a),
         Some("bench-sweep") => bench_sweep(&a),
         Some("reset-anywhere-control") => reset_anywhere_control(&a),
         _ => {
@@ -2552,5 +2553,48 @@ fn bench_sweep(a: &[String]) {
         }
         drop(envs);
         std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+// ------------------------------------------------------------------ cpfind
+
+/// G1 stage 1+2: locate the engine's checkpoint counter from a real ghost's
+/// splits. See `tmenv::cpfind`.
+fn cpfind_cmd(a: &[String]) {
+    let p = paths(a);
+    let ghosts: Vec<PathBuf> = flag(a, "--ghost")
+        .unwrap_or_else(|| die("--ghost FILE[,FILE...] is required".into()))
+        .split(',')
+        .map(PathBuf::from)
+        .collect();
+    let every: u64 = num(a, "--every-ticks", 40);
+    let tol: i64 = num(a, "--tol-ms", 20);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv cpfind -- the engine's checkpoint counter, located from a ghost's own splits");
+    let mut per_ghost: Vec<Vec<(tmenv::cpfind::Candidate, Vec<i64>)>> = Vec::new();
+    for (i, g) in ghosts.iter().enumerate() {
+        println!();
+        println!("=== ghost {} of {}", i + 1, ghosts.len());
+        let (_all, surv) = tmenv::cpfind::cpfind(
+            &p.server, &p.map, &p.shim, &p.work.join(format!("g{i}")), g, every, tol, !has(a, "--quiet"),
+        )
+        .unwrap_or_else(|e| die(e));
+        per_ghost.push(surv);
+    }
+    if ghosts.len() > 1 {
+        println!();
+        println!("=== across ghosts: offsets from the ownership chain that survive on EVERY ghost");
+        let first = &per_ghost[0];
+        let mut n = 0;
+        for (c, _) in first {
+            for (name, off) in &c.rel {
+                let everywhere = per_ghost.iter().all(|s| s.iter().any(|(d, _)| d.rel.iter().any(|(m, o)| m == name && o == off && d.width == c.width)));
+                if everywhere {
+                    println!("  {name} {off:+#x} ({off:+})  width {}", c.width);
+                    n += 1;
+                }
+            }
+        }
+        println!("{} stable (object, offset) pair(s)", n);
     }
 }

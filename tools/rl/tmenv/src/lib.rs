@@ -42,6 +42,7 @@
 pub mod action;
 pub mod archive;
 pub mod control;
+pub mod cpfind;
 pub mod core;
 pub mod forkenv;
 pub mod geom;

@@ -45,6 +45,13 @@ const BUILD_128182: Offsets = Offsets {
 /// Registered at 0xc3b62f as `CGameVehiclePhy`.
 pub const CGAME_VEHICLE_PHY: u32 = 0x032e_2000;
 
+/// The checkpoint counter's offset from the validator's participant object,
+/// build 128182. Measured, not fitted: see `ValidatorCar::resolve`.
+pub const CP_COUNTER_OFF: u64 = 0xc70;
+/// Three more slots that step with it on every server measured; read at the
+/// root as a cross-check that the offsets hold on this process.
+pub const CP_COUNTER_CHECKS: [u64; 3] = [0xc80, 0xc90, 0xc94];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatorCarProvenance {
     pub controller: u64,
@@ -122,6 +129,52 @@ impl ValidatorCar {
                 hit.qerr
             );
         }
+        // THE ENGINE'S OWN CHECKPOINT COUNTER, from the participant.
+        //
+        // Located behaviourally (tmenv cpfind, 2026-09-06): every writable
+        // window of three servers running three different game-recorded
+        // Summer 2026 - 01 ghosts was snapshotted 52 times over the run; the
+        // 4-byte slots equal to "splits credited so far" at every snapshot
+        // were traced per tick, and each stepped at exactly the tick of the
+        // ghost's own split times (finish included). Four survive on every
+        // server at fixed offsets from the participant: +0xc70, +0xc80, +0xc90
+        // and +0xc94. The first is the one read; the other three are its
+        // cross-checks at startup. At the root nothing is credited, so the
+        // word must read 0 there -- a non-zero reading means the offset does
+        // not hold on this build/map and the layout carries NO counter rather
+        // than a wrong one.
+        let cps_addr = provenance.participant.wrapping_add(CP_COUNTER_OFF);
+        let cps = match procmem::read_at(srv.pid(), cps_addr, 4) {
+            Some(b) if b.len() == 4 && u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == 0 => {
+                let agree = CP_COUNTER_CHECKS.iter().all(|o| {
+                    procmem::read_at(srv.pid(), provenance.participant.wrapping_add(*o), 4)
+                        .map(|c| c.len() == 4 && u32::from_le_bytes([c[0], c[1], c[2], c[3]]) == 0)
+                        .unwrap_or(false)
+                });
+                if agree {
+                    cps_addr
+                } else {
+                    if verbose {
+                        println!("CP COUNTER: the cross-check slots do not read 0 at the root; not resolving it");
+                    }
+                    0
+                }
+            }
+            Some(b) if b.len() == 4 => {
+                if verbose {
+                    println!(
+                        "CP COUNTER: participant{:+#x} reads {} at the root, not 0; not resolving it",
+                        CP_COUNTER_OFF,
+                        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+                    );
+                }
+                0
+            }
+            _ => 0,
+        };
+        if verbose && cps != 0 {
+            println!("CP COUNTER participant{:+#x} = {:#x}, reads 0 at the root, 3 cross-check slots agree", CP_COUNTER_OFF, cps);
+        }
         Ok(Self {
             layout: Layout {
                 pos: provenance.state_pos,
@@ -129,6 +182,7 @@ impl ValidatorCar {
                 clock_bias: clock.bias,
                 rms: hit.verr,
                 max_dev: hit.qerr,
+                cps,
             },
             provenance,
         })

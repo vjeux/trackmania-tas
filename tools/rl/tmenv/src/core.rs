@@ -264,8 +264,47 @@ impl Core {
         self.cur
     }
 
+    /// Checkpoints credited so far.
+    ///
+    /// **The engine's own counter when the row carries it** (`Row::cps`,
+    /// resolved from the validator's participant — gap G1), else the geometric
+    /// tracker. The finish increments the counter too, so on a map with n
+    /// gates `finished` is `cps >= n`.
     pub fn gates_hit(&self) -> usize {
+        if self.cur.cps != u32::MAX {
+            self.cur.cps as usize
+        } else {
+            self.gates.hit()
+        }
+    }
+
+    /// Whether the row carries the engine's counter at all.
+    pub fn engine_cps(&self) -> bool {
+        self.cur.cps != u32::MAX
+    }
+
+    /// The geometric detector's own count, kept as the cross-check it is.
+    pub fn geometric_gates_hit(&self) -> usize {
         self.gates.hit()
+    }
+
+    fn is_finished(&self) -> bool {
+        if self.cur.cps != u32::MAX {
+            self.track.n_gates() > 0 && self.cur.cps as usize >= self.track.n_gates()
+        } else {
+            self.gates.finished(&self.track)
+        }
+    }
+
+    /// The arc length progress may not exceed: the first gate still owed,
+    /// by the engine's count when it has one.
+    fn progress_cap(&self) -> f32 {
+        if self.cur.cps != u32::MAX {
+            let k = self.cur.cps as usize;
+            if k < self.track.n_gates() { self.track.gate_s[k] } else { self.track.length() }
+        } else {
+            self.gates.cap(&self.track)
+        }
     }
 
     /// Start an episode from the state the engine is in at `row0`.
@@ -286,7 +325,7 @@ impl Core {
         let pr = self.track.probe_near(p, Some(0.0));
         self.cur_s = pr.s;
         self.gates.observe(&self.track, p, pr.s);
-        self.best_s = if self.cfg.gate_cap { pr.s.min(self.gates.cap(&self.track)) } else { pr.s };
+        self.best_s = if self.cfg.gate_cap { pr.s.min(self.progress_cap()) } else { pr.s };
         self.observe()
     }
 
@@ -336,7 +375,7 @@ impl Core {
             // Saturating progress, and only ever the NEW maximum: a car that
             // drives back and forth over the same stretch is not paid twice,
             // so there is no reward to farm short of the finish.
-            let cap = if self.cfg.gate_cap { self.gates.cap(&self.track) } else { self.track.length() };
+            let cap = if self.cfg.gate_cap { self.progress_cap() } else { self.track.length() };
             let s_eff = pr.s.min(cap);
             if s_eff > self.best_s {
                 info.dprog += s_eff - self.best_s;
@@ -357,7 +396,7 @@ impl Core {
                 info.air_guarded = true;
             }
 
-            if self.gates.finished(&self.track) {
+            if self.is_finished() {
                 self.done = Some(Done::Finished);
             } else if self.off_run >= self.cfg.offroute_ticks {
                 self.done = Some(Done::OffRoute);
@@ -387,7 +426,7 @@ impl Core {
         info.state = self.state();
         info.race_s = self.cur.time_ms as f32 / 1000.0;
         info.best_s = self.best_s;
-        info.gates = self.gates.hit();
+        info.gates = self.gates_hit();
         info.speed = norm(self.vel());
         (self.observe(), reward, self.done, info)
     }
@@ -422,8 +461,8 @@ impl Core {
             ),
             None => [f32::NAN; 3],
         };
-        st.cps = self.gates.hit().min(u8::MAX as usize) as u8;
-        st.finished = self.gates.finished(&self.track);
+        st.cps = self.gates_hit().min(u8::MAX as usize) as u8;
+        st.finished = self.is_finished();
         st
     }
 
@@ -470,6 +509,7 @@ pub fn zero_row() -> Row {
         qz: 0.0,
         qw: 1.0,
         wetness: 0.0,
+        cps: u32::MAX,
     }
 }
 
@@ -505,7 +545,7 @@ mod tests {
     }
 
     fn row(t: i64, z: f64, vz: f64) -> Row {
-        Row { time_ms: t, x: 0.3, y: 10.0, z, vx: 0.0, vy: 0.0, vz, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0, wetness: 0.0 }
+        Row { time_ms: t, x: 0.3, y: 10.0, z, vx: 0.0, vy: 0.0, vz, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0, wetness: 0.0, cps: u32::MAX }
     }
 
     /// THE identity the interface promises: the env's live observation IS

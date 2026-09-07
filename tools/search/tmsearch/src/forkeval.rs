@@ -253,6 +253,7 @@ impl ForkEval {
                 qz: 0.0,
                 qw: 0.0,
                 wetness: 0.0,
+                cps: u32::MAX,
             })
             .collect();
         let bounds = bounds_from(&rows, 200.0);
