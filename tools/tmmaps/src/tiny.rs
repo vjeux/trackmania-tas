@@ -1333,6 +1333,11 @@ pub fn lineup_cmd(args: &[String]) {
         let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");
         m.set_item_author(i, author);
         m.move_item(i, pos, yaw, cell_for(pos));
+        // the appended record is a byte copy of a donor item: its pivot (and
+        // pitch/roll) come along, and the game puts the PIVOT at `pos` —
+        // a donor pivot of a few metres turned every yawed pusher of the
+        // play-mode tests 3-4 m sideways of the car (2026-09-07)
+        m.set_item_frame(i, [yaw, 0.0, 0.0], [0.0; 3]);
         m.set_item_scale(i, 1.0);
         m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
         let color = colors.get(k).copied().unwrap_or(if k < n_stock { 0 } else { 1 });
