@@ -891,9 +891,28 @@ pub fn cmd(args: &[String]) {
     // pixel-identical to the deleted builds. Every map published before this
     // (parked, lightmap kept) has that defect in play. In the editor the
     // stale map showed "VALIDATED" and the original's shading on 05's deck.
-    if std::env::var("TINY_LIGHTMAP").map(|v| v != "keep").unwrap_or(true) {
+    //
+    // BUT with the blocks DELETED (the default since 4081dde) the lightmap
+    // STAYS: the game rejects a stale lightmap whose block count is 0 on its
+    // own (delete-blocks thread: deleted builds render the same with or
+    // without it, in play AND in the editor — verified on 09's start deck and
+    // cp5 tunnel, 2026-09-07 14:11), while a 0-block map WITHOUT a lightmap
+    // makes the EDITOR crash with a STACK_OVERFLOW during or right after the
+    // load (3 of 4 opens of the tiny 09; Trackmania.exe+0x96d7e0 recursing
+    // under an Openplanet frame — the editor's automatic lightmap pass over a
+    // map with no blocks, presumably), which kills every shootset comparison.
+    // The parked build (blocks kept) still needs the strip. TINY_LIGHTMAP=
+    // keep|strip forces either way.
+    let strip = match std::env::var("TINY_LIGHTMAP").as_deref() {
+        Ok("keep") => false,
+        Ok("strip") => true,
+        _ => park,
+    };
+    if strip {
         let n = m.strip_lightmap();
         println!("  stored lightmap stripped ({n} bytes)");
+    } else {
+        println!("  stored lightmap kept (0 blocks: the game rejects it; without one the editor crashes)");
     }
     // The MediaTracker (chunk 0x03043049, `mediatracker.rs`): the intro, the
     // in-game and the end-race clips fly cameras over FULL-SIZE coordinates
