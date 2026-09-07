@@ -555,23 +555,30 @@ pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, Str
     let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
         .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
     let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
-    // THE LABEL IS THE TAPE'S CLOCK, NOT THE TELEMETRY'S. A row labelled race T is
-    // the physics state at time T: the state BEFORE input record
-    // (T - start_offset) / 10 is read, i.e. after the tick whose record is
-    // (T - 10 - start_offset) / 10. The stopped parent sits at the start of the
-    // tick at race `sim_ms - race_start`; the state present there is at that
-    // time, and the counter -- the FINISHED tick's round time -- reads 10 less.
-    //
-    // Measured three ways against the TAPE (2026-09-06, ENV + LEARN + INPUT):
-    // with -10 a ghost's own inputs fed at record (T - offset) / 10 reproduce
-    // its run to the millisecond (19.812, 19.556, 22.718) and `fk trace
-    // --reference` agrees to mm; with -20 (55a1598) the same feed is one record
-    // early (0.078 m at 0.5 s, off the road by 9-13 s) and fk trace reads
-    // 0.99 m. The -20 came from comparing rows to the ghost's TELEMETRY
-    // samples, which are written from the vis state -- the PREVIOUS tick's car
-    // -- so sample t holds the physics of label t + 10: that lag belongs to the
-    // sample stream (DATA labels telemetry with it; `tmenv wheels-control`
-    // measures it per map), not to the race clock.
-    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 10;
+    // THE BIAS BELONGS TO THE OBJECT (tickhook arm + ENV arm, 2026-09-06). This
+    // is the bias for a row read from the VIS STATE (the object the pointer
+    // chains end at, `+0x4e8`, the one `fk trace`/`fk tickhook reads` gather): a
+    // vis row labelled race T holds the car at T, and against the ghost's own
+    // telemetry that reads 3.5 mm median. The validator's PHYSICS object
+    // (`ValidatorCar.pos`, phy+0x12f0) holds the same instant one tick LATER --
+    // measured 0.8360 m apart at 83.58 m/s, 1.00 tick of travel -- so a physics
+    // row's label is T+10: use `physics_bias` for a Layout whose `pos` is the
+    // physics object (tmenv does; its tape replay is exact with it and one
+    // record early without). Carrying a bias across objects is a one-tick error.
+    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 20;
     Ok(counter - sampled_state_race_ms)
+}
+
+/// The clock bias for a Layout whose `pos` is the validator's PHYSICS object
+/// (`CGameVehiclePhy` + 0x12f0), given the vis-object bias
+/// [`measured_clock_bias`] returns: the physics object holds the same instant
+/// one tick later, so its row is labelled 10 ms later. Measured three ways
+/// against the TAPE (ENV/LEARN/INPUT, 2026-09-06): with this bias a ghost's own
+/// inputs fed at record (T - start_offset)/10 reproduce its run to the ms
+/// (19.812, 19.556, 22.718) and `fk trace --reference` agrees to mm; with the
+/// vis bias the feed is one record early (0.078 m at 0.5 s, off the road by
+/// 9-13 s). And `tmenv wheels-control` then reads the telemetry sample stamped T
+/// as exactly the vis fields gathered in the physics row T (phase 0 ms).
+pub fn physics_bias(vis_bias: i64) -> i64 {
+    vis_bias - 10
 }

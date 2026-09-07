@@ -51,6 +51,10 @@ pub const CGAME_VEHICLE_PHY: u32 = 0x032e_2000;
 /// position triple is at +0x50, i.e. phy+0x898 = ValidatorCar.pos - 2728).
 pub const VIS_IN_VEHICLE: u64 = 0x848;
 
+/// The simulation time word inside the validation sim object (ms, +10 per tick,
+/// car-independent) -- WHEELS.md §6.
+pub const SIM_TIME_OFF: u64 = 0x48;
+
 pub const CP_COUNTER_OFF: u64 = 0xc70;
 /// Three more slots that step with it on every server measured; read at the
 /// root as a cross-check that the offsets hold on this process.
@@ -94,9 +98,38 @@ impl ValidatorCar {
         bias_max: i64,
         verbose: bool,
     ) -> Result<Self, String> {
-        let clock =
-            crate::locate::find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?;
+        // THE CLOCK: the simulation's own time word at `sim + 0x48`, which is
+        // car-independent. The race counter `find_clock2` locates sits beside
+        // the ROOT car's vis state and FREEZES when a car-switch block re-binds
+        // the participant's vehicle (INPUT arm, WHEELS.md §6: every later tick
+        // then dedups into one row). The sim word must read within a tick of the
+        // handshake's own sim time, or the scan is used as before.
+        let clock = match Self::sim_clock(srv, verbose) {
+            Some(c) => c,
+            None => crate::locate::find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?,
+        };
         Self::resolve(srv, probe, recs, clock, bounds, verbose)
+    }
+
+    /// `sim + 0x48` as the race clock, labelled by `measured_clock_bias`, if it
+    /// reads like the simulation time the handshake reported.
+    pub fn sim_clock(srv: &mut ForkServer, verbose: bool) -> Option<ClockHit> {
+        if srv.validation_sim < 0x1000 || srv.sim_ms == 0 {
+            return None;
+        }
+        let addr = srv.validation_sim + SIM_TIME_OFF;
+        let v = procmem::read_at(srv.pid(), addr, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))? as i64;
+        if (v - srv.sim_ms as i64).abs() > 20 {
+            if verbose {
+                println!("CLOCK sim+{:#x} reads {} but the handshake says sim {} -- not using it", SIM_TIME_OFF, v, srv.sim_ms);
+            }
+            return None;
+        }
+        let bias = forkoracle::layout::measured_clock_bias(srv, addr).ok()?;
+        if verbose {
+            println!("CLOCK sim+{:#x} = {:#x} reads {} (handshake sim {}), bias {:+} -- car-independent", SIM_TIME_OFF, addr, v, srv.sim_ms, bias);
+        }
+        Some(ClockHit { addr, bias })
     }
 
     /// Resolve and behaviorally validate the one controlled vehicle. Every hop
@@ -187,7 +220,9 @@ impl ValidatorCar {
             layout: Layout {
                 pos: provenance.state_pos,
                 clock: clock.addr,
-                clock_bias: clock.bias,
+                // ValidatorCar.pos is the PHYSICS object: its label is the vis
+                // label + 10 (forkoracle::layout::physics_bias).
+                clock_bias: forkoracle::layout::physics_bias(clock.bias),
                 rms: hit.verr,
                 max_dev: hit.qerr,
                 cps,
