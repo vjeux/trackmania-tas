@@ -2575,7 +2575,17 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         }
         _ => {}
     }
-    // `at` is already the entity's pose in the item frame (add_prefab composes
+    // A moving part without a hull CRASHES THE CLIENT at map load (a null
+    // DynaShape: Trackmania.exe+0xb7088c reading NULL+0x38, Mov2 2026-09-07).
+    // No hull → no moving part: the error sends add_prefab down its static
+    // bake, which draws the part where it stands.
+    if move_shape.is_none() || hit_shape.is_none() {
+        return Err(format!(
+            "{}: no {} shape for the moving part — baked static instead",
+            path.rsplit('\\').next().unwrap_or(path),
+            if move_shape.is_none() { "move" } else { "hit" }
+        ));
+    }
     // the parent chain with the entity iso before calling); composing the
     // entity iso in again doubled the flag cloth's pose (y 11.37 instead of
     // 5.68, a 180-degree turn) — harmless only for a part sitting at the origin
