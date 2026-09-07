@@ -16,6 +16,17 @@ pub struct Blowfish {
 }
 
 impl Blowfish {
+    /// A schedule taken from memory rather than computed: `p` as the game
+    /// holds it (the key hunt tries both orders), `n` rounds.
+    pub fn from_raw(p: [u32; 18], s: [[u32; 256]; 4], n: usize) -> Blowfish {
+        Blowfish { p, s, n }
+    }
+    pub fn p(&self) -> &[u32; 18] {
+        &self.p
+    }
+    pub fn s(&self) -> &[[u32; 256]; 4] {
+        &self.s
+    }
     pub fn new(key: &[u8], trick: Trick) -> Blowfish {
         let n = if trick == Trick::LittleEndianPak18 { 8 } else { 16 };
         let mut bf = Blowfish { p: P_INIT, s: S_INIT, n };

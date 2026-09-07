@@ -18,6 +18,10 @@ struct Target {
     version: i32,
     enc_start: usize,
     sha: [u8; 32],
+    /// (slot offset, expected first plaintext bytes) of the first encrypted
+    /// entry, when the key is known (`FILE:KEYHEX` argument): a control for
+    /// the schedule scan.
+    first_encrypted: Option<(usize, Vec<u8>)>,
 }
 
 fn plausible(t: &Target, key: &[u8; 16]) -> bool {
@@ -89,11 +93,14 @@ fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
 }
 
 pub fn run(rest: &[String]) -> Result<(), String> {
-    let dump_path = rest.get(1).ok_or("pak-keyhunt DUMP PAK... [--window BYTES] [--full]")?;
+    let dump_path = rest.get(1).ok_or("pak-keyhunt DUMP PAK... [--window BYTES] [--full [--align N] [--threads N]]")?;
     let window: usize = rest.iter().position(|a| a == "--window").and_then(|i| rest.get(i + 1)).and_then(|w| w.parse().ok()).unwrap_or(65536);
     let full = rest.iter().any(|a| a == "--full");
     let mut targets = Vec::new();
-    for p in rest.iter().skip(2).filter(|a| !a.starts_with("--") && a.ends_with(".pak")) {
+    let mut known: Vec<Option<[u8; 16]>> = Vec::new();
+    for arg in rest.iter().skip(2).filter(|a| !a.starts_with("--") && (a.ends_with(".pak") || a.contains(".pak:"))) {
+        let (p, key) = match arg.split_once(".pak:") { Some((a, k)) => (format!("{a}.pak"), Some(k.to_string())), None => (arg.clone(), None) };
+        let p = &p;
         let data = std::fs::read(p).map_err(|e| format!("{p}: {e}"))?;
         if data.len() < 0x95 || &data[0..8] != b"NadeoPak" {
             return Err(format!("{p}: not a NadeoPak"));
@@ -103,7 +110,27 @@ pub fn run(rest: &[String]) -> Result<(), String> {
         let mut sha = [0u8; 32];
         sha.copy_from_slice(&data[12..44]);
         println!("{p}: version {version}, private header at {enc_start:#x}, sha256 {}", hex(&sha));
-        targets.push(Target { name: p.clone(), data, version, enc_start, sha });
+        let mut t = Target { name: p.clone(), data, version, enc_start, sha, first_encrypted: None };
+        let mut kb: Option<[u8; 16]> = None;
+        if let Some(k) = key {
+            let bytes: Vec<u8> = (0..k.len()).step_by(2).filter_map(|i| u8::from_str_radix(&k[i..i + 2], 16).ok()).collect();
+            if bytes.len() == 16 {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes);
+                let pak = read_pak(&t.data, t.enc_start, t.version, &arr);
+                let hmax = u32::from_le_bytes(t.data[0x30..0x34].try_into().unwrap()) as usize;
+                if let Some(e) = pak.entries.iter().find(|e| e.is_encrypted()) {
+                    let base = hmax + e.offset as usize;
+                    let mut r = CipherReader::new(&t.data, base, &arr, t.version);
+                    let plain = r.take(32);
+                    println!("  {p}: control entry {} at {base:#x}, plaintext {:02x?}", e.path(), &plain[..8]);
+                    t.first_encrypted = Some((base, plain));
+                }
+                kb = Some(arr);
+            }
+        }
+        known.push(kb);
+        targets.push(t);
     }
     if targets.is_empty() {
         return Err("no .pak given".into());
@@ -180,10 +207,16 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             println!("  no key found for {}", t.name);
         }
     }
+    if rest.iter().any(|a| a == "--schedule") {
+        let threads = rest.iter().position(|a| a == "--threads").and_then(|i| rest.get(i + 1)).and_then(|w| w.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        println!("schedule scan with {threads} threads...");
+        schedule_scan(&mut f, total, &targets, &known, threads);
+    }
     if full && found.iter().any(|f| f.is_none()) {
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        println!("full scan of the dump with {threads} threads...");
-        full_scan(&mut f, total, &targets, &mut found, threads);
+        let threads = rest.iter().position(|a| a == "--threads").and_then(|i| rest.get(i + 1)).and_then(|w| w.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        let align: usize = rest.iter().position(|a| a == "--align").and_then(|i| rest.get(i + 1)).and_then(|w| w.parse().ok()).unwrap_or(16);
+        println!("full scan of the dump with {threads} threads at {align}-byte alignment...");
+        full_scan(&mut f, total, &targets, &mut found, threads, align);
     }
     println!();
     for (t, k) in targets.iter().zip(found.iter()) {
@@ -200,7 +233,7 @@ pub fn run(rest: &[String]) -> Result<(), String> {
 /// key XOR HEADER_KEY, the same for every pack), cloned per target. A cheap
 /// entropy filter first: an MD5-shaped key has no byte value four times and
 /// at most two zero bytes; pointers, floats and text fail that.
-fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mut [Option<[u8; 16]>], threads: usize) {
+fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mut [Option<[u8; 16]>], threads: usize, align: usize) {
     use std::io::{Read, Seek, SeekFrom};
     const CHUNK: usize = 256 << 20;
     let trick = crate::blowfish::PakCipher::trick_for(targets[0].version);
@@ -215,7 +248,7 @@ fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mu
             match f.read(&mut buf[got..want]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
         }
         let chunk = &buf[..got];
-        let per = (got / threads + 15) & !15;
+        let per = (got / threads + align - 1) / align * align;
         let hits: Vec<(usize, [u8; 16], usize)> = std::thread::scope(|s| {
             let mut hs = Vec::new();
             for ti in 0..threads {
@@ -228,7 +261,7 @@ fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mu
                     let mut off = lo;
                     while off + 16 <= hi {
                         let k: [u8; 16] = chunk[off..off + 16].try_into().unwrap();
-                        off += 16;
+                        off += align;
                         let mut counts = [0u8; 256];
                         let mut bad = false;
                         for b in k { counts[b as usize] += 1; if counts[b as usize] >= 4 { bad = true; break; } }
@@ -242,7 +275,7 @@ fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mu
                                 if found_now[i] { continue; }
                                 if plausible_bf(t, bf.clone()) {
                                     let key = if form == 0 { k } else { let mut x = k; for j in 0..16 { x[j] ^= HEADER_KEY[j]; } x };
-                                    out.push((i, key, off - 16));
+                                    out.push((i, key, off - align));
                                 }
                             }
                         }
@@ -263,5 +296,109 @@ fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mu
         pos += got;
         println!("  scanned {} MiB in {:.0} s", pos >> 20, t0.elapsed().as_secs_f32());
         if got == 0 { break; }
+    }
+}
+
+/// Whole-dump scan for a live Blowfish SCHEDULE (the game keeps one per
+/// pack for the files; maybe one for the header). Every 4-byte-aligned
+/// offset is read as P words followed by the four S boxes (and S boxes
+/// followed by P), P as stored and reversed, with 10 or 18 P words. A
+/// candidate is tested by decrypting each pack's private header with it
+/// (`plausible_bf`) and, for a target with a known key, by decrypting the
+/// first bytes of its first encrypted entry. Cheap per candidate (no key
+/// schedule to run), so the S-box randomness filter is the only gate.
+fn schedule_scan(f: &mut std::fs::File, total: usize, targets: &[Target], known: &[Option<[u8; 16]>], threads: usize) {
+    use std::io::{Read, Seek, SeekFrom};
+    const CHUNK: usize = 256 << 20;
+    const OVERLAP: usize = 4200;
+    let trick = crate::blowfish::PakCipher::trick_for(targets[0].version);
+    let n = if trick == crate::blowfish::Trick::LittleEndianPak18 { 8 } else { 16 };
+    // reference schedules for the known keys: what the layouts should look like
+    for (t, k) in targets.iter().zip(known.iter()) {
+        if let Some(k) = k {
+            let bf = crate::blowfish::Blowfish::new(k, trick);
+            let mut kh = *k;
+            for i in 0..16 {
+                kh[i] ^= HEADER_KEY[i];
+            }
+            let bh = crate::blowfish::Blowfish::new(&kh, trick);
+            println!("  {}: file schedule P[0..4] {:08x} {:08x} {:08x} {:08x}, S0[0..2] {:08x} {:08x}; header schedule P[0..2] {:08x} {:08x}", t.name, bf.p()[0], bf.p()[1], bf.p()[2], bf.p()[3], bf.s()[0][0], bf.s()[0][1], bh.p()[0], bh.p()[1]);
+        }
+    }
+    let mut pos = 0usize;
+    let mut buf = vec![0u8; CHUNK + OVERLAP];
+    let t0 = std::time::Instant::now();
+    let mut hits_total = 0usize;
+    while pos < total {
+        let want = (CHUNK + OVERLAP).min(total - pos);
+        if f.seek(SeekFrom::Start(pos as u64)).is_err() { break; }
+        let mut got = 0;
+        while got < want {
+            match f.read(&mut buf[got..want]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
+        }
+        let chunk = &buf[..got];
+        let limit = if pos + CHUNK >= total { got } else { CHUNK.min(got) };
+        let per = (limit / threads + 3) & !3;
+        let hits: Vec<String> = std::thread::scope(|s| {
+            let mut hs = Vec::new();
+            for ti in 0..threads {
+                let lo = ti * per;
+                let hi = ((ti + 1) * per).min(limit);
+                if lo >= hi { continue; }
+                hs.push(s.spawn(move || {
+                    let mut out = Vec::new();
+                    let word = |o: usize| u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap());
+                    let mut off = lo;
+                    while off + 4200 <= chunk.len() && off < hi {
+                        // S-box randomness gate on the words that would be S[0][0..8] in the P-first layouts
+                        let mut distinct = [false; 256];
+                        let mut nd = 0;
+                        for b in &chunk[off + 40..off + 40 + 64] {
+                            if !distinct[*b as usize] { distinct[*b as usize] = true; nd += 1; }
+                        }
+                        if nd < 44 {
+                            off += 4;
+                            continue;
+                        }
+                        for (plen, s_first) in [(10usize, false), (18, false), (10, true), (18, true)] {
+                            let (p_off, s_off) = if s_first { (off + 4096, off) } else { (off, off + plen * 4) };
+                            if s_off + 4096 > chunk.len() || p_off + plen * 4 > chunk.len() { continue; }
+                            let mut p = [0u32; 18];
+                            for i in 0..plen { p[i] = word(p_off + i * 4); }
+                            let mut sb = [[0u32; 256]; 4];
+                            for i in 0..4 { for j in 0..256 { sb[i][j] = word(s_off + (i * 256 + j) * 4); } }
+                            for rev in [false, true] {
+                                let mut pp = p;
+                                if rev { pp[0..n + 2].reverse(); }
+                                let bf = crate::blowfish::Blowfish::from_raw(pp, sb, n);
+                                for (i, t) in targets.iter().enumerate() {
+                                    if plausible_bf(t, bf.clone()) {
+                                        out.push(format!("HEADER schedule for {} at {:#x} (P{} {} rev {})", t.name, off, plen, if s_first { "after S" } else { "first" }, rev));
+                                    }
+                                    if let Some(exp) = &t.first_encrypted {
+                                        let mut r = CipherReader::with_blowfish(&t.data, exp.0, bf.clone(), t.version);
+                                        let got = r.take(exp.1.len());
+                                        if got == exp.1 {
+                                            out.push(format!("FILE schedule for {} at {:#x} (P{} {} rev {})", t.name, off, plen, if s_first { "after S" } else { "first" }, rev));
+                                        }
+                                    }
+                                    let _ = i;
+                                }
+                            }
+                        }
+                        off += 4;
+                    }
+                    out
+                }));
+            }
+            hs.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        });
+        for h in hits {
+            hits_total += 1;
+            println!("  {h} (dump offset {:#x} + chunk)", pos);
+        }
+        pos += limit;
+        println!("  schedule scan: {} MiB in {:.0} s, {hits_total} hit(s)", pos >> 20, t0.elapsed().as_secs_f32());
+        if got == 0 || limit == 0 { break; }
     }
 }
