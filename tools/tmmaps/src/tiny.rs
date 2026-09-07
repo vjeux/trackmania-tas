@@ -1157,6 +1157,7 @@ pub fn lineup_cmd(args: &[String]) {
     let list = cli::flag(args, "--stock").unwrap_or("");
     let at = vec3(&cli::flag(args, "--at").expect("lineup needs --at X,Y,Z"), "--at");
     let pitch: f32 = cli::flag(args, "--pitch").unwrap_or("16").parse().expect("--pitch metres");
+    let step: [f32; 3] = cli::flag(args, "--step").map(|s| vec3(s, "--step")).unwrap_or([pitch, 0.0, 0.0]);
     // --yaw R turns every item of the row (radians): a pusher's piston runs
     // along its local z, so pi/2 makes it run along the row, visible from the north
     let yaw: f32 = cli::flag(args, "--yaw").unwrap_or("0").parse().expect("--yaw radians");
@@ -1212,9 +1213,10 @@ pub fn lineup_cmd(args: &[String]) {
     m.set_map_uid(&format!("Lin1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000));
     for (k, name) in names.iter().enumerate() {
         let i = n + k;
+        // --step X,Y,Z: the offset between two items (default pitch along +x)
         let (pos, yaw) = match places.get(k) {
             Some(p) => ([p[0], p[1], p[2]], p[3]),
-            None => ([at[0] + pitch * k as f32, at[1], at[2]], yaw),
+            None => ([at[0] + step[0] * k as f32, at[1] + step[1] * k as f32, at[2] + step[2] * k as f32], yaw),
         };
         m.set_item_model(i, name);
         let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");

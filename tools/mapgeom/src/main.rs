@@ -1216,6 +1216,21 @@ fn main() {
                 println!("wrote {}", out);
             }
         }
+        // `mapgeom embedded MAP --out DIR`: the map's embedded files (custom
+        // items under Items\…) written out, one per file, for `dump`.
+        "embedded" => {
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("embedded MAP --out DIR".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out DIR".into()));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+            for (name, bytes) in &files {
+                let path = std::path::Path::new(&out).join(name.replace('\\', "/"));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, bytes).unwrap_or_else(|e| die(e.to_string()));
+                println!("{}\t{} bytes", path.display(), bytes.len());
+            }
+            eprintln!("{} files", files.len());
+        }
         "where" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();

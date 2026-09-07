@@ -210,7 +210,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -1094,6 +1094,23 @@ fn main() {
             }
         }
         "origin" => controls::cmd_origin(&args),
+        // `tmmaps setuid MAP --out F [--uid U]`: the map with a fresh (or the
+        // given) UID. The game caches a map's computed lightmap and its
+        // embedded items by UID: a rebuilt test copy under the published UID
+        // plays with the OLD build's baked light (Summer 09's start deck read
+        // dark in play mode until this, 2026-09-07).
+        "setuid" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("setuid needs --out MAP"));
+            let uid = tmmaps::cli::flag(&args, "--uid").map(String::from).unwrap_or_else(|| {
+                let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+                format!("Tst1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000)
+            });
+            let mut m = tmmaps::map::MapFile::load(&src);
+            m.set_map_uid(&uid);
+            m.write_to(&out).expect("write output");
+            println!("wrote {} with uid {uid}", out.display());
+        }
         "census" => census::cmd_census(&args),
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
