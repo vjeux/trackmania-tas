@@ -122,13 +122,13 @@ if [ $step = plan-r ]; then
   # per map: the HYBRID first (geometric on roads, R where the graph has nothing — fast), then pure R; each under a
   # wall-clock cap (the chained estimator costs ~5 s per edge evaluation: Poland 2026 ran > 90 min un-capped)
   plan_r_one() { u=$1; f=$(mapfile_of $u); [ -n "$f" ] || return 0; [ -f $G/$u/gates.json ] || return 0
-    timeout ${CAP_HYB:-900} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator hybrid $TMR_FLAGS --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-hyb > $P/plan-r/$u.hyb.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_HYB:-900} s" >> $P/plan-r/$u.hyb.txt
+    timeout ${CAP_HYB:-900} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator hybrid $TMR_FLAGS ${HYB_FLAGS:-} --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-hyb > $P/plan-r/$u.hyb.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_HYB:-900} s" >> $P/plan-r/$u.hyb.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT|hybrid pricing" $P/plan-r/$u.hyb.txt | head -3 | cut -c1-160
     [ -n "${SKIP_R:-}" ] && return 0
     timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_R:-1500} s" >> $P/plan-r/$u.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
   CAP_HYB=${CAP_HYB:-900}; CAP_R=${CAP_R:-1500}; TMR_THREADS=${TMR_THREADS:-24}
-  export -f plan_r_one mapfile_of; SKIP_R=${SKIP_R:-}; export TMR TMR_FLAGS TMR_THREADS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R SKIP_R
+  export -f plan_r_one mapfile_of; SKIP_R=${SKIP_R:-}; HYB_FLAGS=${HYB_FLAGS:-}; export HYB_FLAGS TMR TMR_FLAGS TMR_THREADS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R SKIP_R
   cat /tmp/plan-r.uids | xargs -P ${PAR:-2} -n 1 bash -c 'plan_r_one "$0"'
   # no `index` here (a full walk of the bank mount is > 40 min); table-r reads only the exhibit's maps
   $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --uids $(cat /tmp/plan-r.uids | tr "\n" ",") --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
