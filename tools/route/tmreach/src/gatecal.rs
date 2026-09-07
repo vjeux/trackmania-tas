@@ -415,7 +415,10 @@ impl std::fmt::Display for CounterGrade {
 
 impl CounterGrade {
     pub fn passes(&self) -> bool {
-        self.steps > 0 && self.unmatched_steps == 0 && self.extra_detections == 0 && self.off_by.keys().all(|k| k.abs() <= 2)
+        // the brief's bar: within ±2 ticks on ≥ 95 %, none missed, none extra (the dataset's
+        // gate ticks are the counter's own rows; the geometry only attributes)
+        let within2: usize = self.off_by.iter().filter(|(k, _)| k.abs() <= 2).map(|(_, n)| *n).sum();
+        self.steps > 0 && self.unmatched_steps == 0 && self.extra_detections == 0 && within2 * 20 >= self.steps * 19
     }
 }
 

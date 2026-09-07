@@ -100,6 +100,7 @@ fn main() {
         "rejudge" => cmd_rejudge(&a),
         "campaign" => cmd_campaign(&a),
         "explore" => cmd_explore(&a),
+        "replay" => cmd_replay(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -987,11 +988,81 @@ fn cmd_explore(a: &Args) -> Result<(), String> {
             Err(e) => println!("{}: FAILED: {e}", g.display()),
         }
     }
+    // the plain oracle on every connection tape (visible only when the credited count
+    // reaches floor(N/2); the engine counter is what found them)
+    let mut conn = conn;
+    if nconn > 0 && !a.has("no-oracle") {
+        let (server, _) = engine_paths(a);
+        let tapes: Vec<PathBuf> = conn.lines().skip(1).filter_map(|l| l.split('\t').last()).map(PathBuf::from).collect();
+        let refs: Vec<&std::path::Path> = tapes.iter().map(|p| p.as_path()).collect();
+        match ghost::oracle::validate_many(&server, &refs, ghost::oracle::MapsMode::One(&map), "tmreach-explore") {
+            Ok(res) => {
+                let mut s = String::new();
+                for (i, l) in conn.lines().enumerate() {
+                    if i == 0 {
+                        s.push_str(l.trim_end());
+                        s.push_str("\toracle\n");
+                        continue;
+                    }
+                    let fname = tapes[i - 1].file_name().unwrap().to_string_lossy().into_owned();
+                    let r = res.iter().find(|r| r.file == fname || r.file.ends_with(&fname));
+                    let o = r.map(|r| format!("cps {:?} time {:?} {}", r.cps, r.time_ms, r.desc.trim().replace('\n', " "))).unwrap_or("-".into());
+                    s.push_str(&format!("{l}\t{o}\n"));
+                }
+                conn = s;
+            }
+            Err(e) => println!("oracle on the connection tapes failed: {e}"),
+        }
+    }
     std::fs::write(out.join("connections.tsv"), &conn).map_err(|e| e.to_string())?;
     let wall = t0.elapsed().as_secs_f64();
     println!(
         "explore {} on {} ({}): {}/{} ghosts ok, {} rollouts in {:.1} s wall ({:.1}/s), {} explore steps, {} archive cells, {} other-gate connections -> {}",
         tmreach::GIT_HASH, cfg.gates.map_uid, hostname(), ok, ghosts.len(), rollouts, wall, rollouts as f64 / wall.max(1e-9), steps, cells, nconn, out.join("connections.tsv").display()
     );
+    Ok(())
+}
+
+/// Diagnostic: replay a macro chain from a human savestate and print the rows (with the engine counter).
+fn cmd_replay(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let f: usize = a.req("f").parse().map_err(|_| "--f tick")?;
+    let h: usize = a.get("h").unwrap_or("200").parse().map_err(|_| "--h")?;
+    let chain: Vec<u16> = a.req("chain").split(',').map(|s| s.parse().unwrap()).collect();
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/replay-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
+    let n = w.n_ticks();
+    let macros = tmreach::explore::default_macros();
+    let recs = w.reference_recs(w.root_probe, f - w.root_probe);
+    let (rows0, nf) = w.rollout_keep(branch::ROOT, &recs, w.root_probe, (f - w.root_probe) as u64)?;
+    let last0 = rows0.last().unwrap();
+    println!("prefix to f {f}: floor {} last row label {} race {} cps {} at ({:.2}, {:.2}, {:.2})", w.floor(nf)?, last0.time_ms, tmreach::secs(w.race_of(last0)), last0.cps, last0.x, last0.y, last0.z);
+    let mut t = f;
+    let mut all: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for mid in &chain {
+        let mm = macros.iter().find(|x| x.id == *mid).ok_or("no such macro")?;
+        let b: Vec<(u8, u8, u8)> = (t..t + h).map(|k| (w.tape.steer[k.min(n - 1)], w.tape.accel[k.min(n - 1)], w.tape.brake[k.min(n - 1)])).collect();
+        match tmreach::macros::build(mm, &b, false) {
+            tmreach::macros::Built::Recs(r) => all.extend(r),
+            tmreach::macros::Built::NoOp => all.extend(b.iter().map(|&(s, g, br)| forkoracle::forksrv::rec_of(s, g, br))),
+        }
+        t += h;
+    }
+    let rolled = w.rollout(nf, &all, f, all.len() as u64)?;
+    println!("chain {:?} from f {f}: {} rows, exited {}", chain, rolled.rows.len(), rolled.exited);
+    let every: usize = a.get("every").unwrap_or("10").parse().unwrap_or(10);
+    let mut prev = u32::MAX;
+    for (i, r) in rolled.rows.iter().enumerate() {
+        let step = r.cps != u32::MAX && prev != u32::MAX && r.cps != prev;
+        if i % every == 0 || step {
+            println!("  {} race {} cps {} pos ({:.2}, {:.2}, {:.2}) v {:.1}{}", r.time_ms, tmreach::secs(w.race_of(r)), r.cps, r.x, r.y, r.z, tmreach::rig::speed(r), if step { "   <-- COUNTER STEP" } else { "" });
+        }
+        prev = r.cps;
+    }
+    if let Some(out) = a.get("out") {
+        tmreach::starts::write_trace(&PathBuf::from(out), &rolled.rows)?;
+    }
     Ok(())
 }

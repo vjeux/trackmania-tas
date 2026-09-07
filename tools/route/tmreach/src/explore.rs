@@ -141,7 +141,8 @@ pub fn explore_ghost(w: &mut Worker, tel: &Telemetry, cfg: &ExploreCfg) -> Resul
         let cps = flat_at(label).map(|r| if r.cps == u32::MAX { 0 } else { r.cps as u8 }).unwrap_or(0);
         // human_first are row indices into flat; flat rows are 10 ms apart from label0? no: from the first flat row
         let first_label = flat.first().map(|r| r.time_ms).unwrap_or(label0);
-        let credited: Vec<bool> = (0..ng).map(|gi| human_first[gi] >= 0 && first_label + human_first[gi] as i64 * 10 <= label).collect();
+        let _ = first_label;
+        let credited: Vec<bool> = (0..ng).map(|gi| human_first[gi] >= 0 && flat[human_first[gi] as usize].time_ms <= label).collect();
         (credited, cps)
     };
     // one exploration step: from node `node` (state after tick `from`-1, i.e. floor = from), fan out all macros
