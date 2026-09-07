@@ -415,6 +415,11 @@ impl<'a> Assembler<'a> {
 /// `CGameCtnChallenge`'s header chunks: the id has a shape nothing else in the
 /// header shares, and a wrong match fails loudly (no such decoration file)
 /// rather than quietly placing a stadium that is not this map's.
+/// `decoration_id`, for `local::LocalScene` (which assembles the decoration itself, tagged).
+pub fn decoration_id_pub(m: &MapFile) -> Option<String> {
+    decoration_id(m)
+}
+
 fn decoration_id(m: &MapFile) -> Option<String> {
     let head = String::from_utf8_lossy(&m.gbx.user_data);
     let bytes = head.as_bytes();
