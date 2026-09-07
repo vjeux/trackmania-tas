@@ -119,11 +119,13 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     // THE ROOT FORK: every candidate from the checkpoint, as the search did.
     let mut root_res = Vec::with_capacity(o.n);
     let mut root_ms = Vec::with_capacity(o.n);
+    let mut root_census = Vec::with_capacity(o.n);
     for (_, inp, _) in &cands {
         let t0 = Instant::now();
         let out = s.srv.run(from, &records_from(&inp.steer_u8(), &inp.gas_u8(), &inp.brake_u8(), from));
         root_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
         root_res.push(parse_result(&out));
+        root_census.push(census_of(&out));
     }
 
     // THE LADDER: the same candidates, in the same order, each from the deepest
@@ -135,6 +137,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
     let mut lad_res = Vec::with_capacity(o.n);
     let mut lad_ms = Vec::with_capacity(o.n);
     let mut lad_at = Vec::with_capacity(o.n);
+    let mut lad_census = Vec::with_capacity(o.n);
     let mut prep_ms = 0.0f64;
     for (_, inp, first) in &cands {
         let t0 = Instant::now();
@@ -144,6 +147,7 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         let (out, at) = ladder.run(&mut s.srv, inp);
         lad_ms.push(t1.elapsed().as_secs_f64() * 1000.0);
         lad_res.push(parse_result(&out));
+        lad_census.push(census_of(&out));
         lad_at.push(at);
     }
     let st = ladder.stats();
@@ -223,6 +227,12 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         root_total / (lad_total + prep_ms).max(1e-9)
     );
     println!("ladder: {}; {} nodes live at the end at ticks {:?}", st, ladder.live(), ladder.rung_ticks());
+    if let (Some(r), Some(l)) = (census_mean(&root_census), census_mean(&lad_census)) {
+        println!(
+            "census (FKSHIM_CENSUS): a root child faulted {:.0} pages, resident {:.1} MB, dirtied {:.1} MB; a ladder child faulted {:.0} pages, resident {:.1} MB, dirtied {:.1} MB",
+            r.0, r.1 / 1024.0, r.2 / 1024.0, l.0, l.1 / 1024.0, l.2 / 1024.0
+        );
+    }
     drop(ladder);
     s.srv.quit();
     Ok(bad == 0 && unstable == 0)
@@ -423,4 +433,29 @@ pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> R
     drop(ladder);
     s.srv.quit();
     Ok(diff == 0)
+}
+
+/// The census fields the shim appends to FKTIME under `FKSHIM_CENSUS=1`:
+/// `(minflt, rss_kb, private_dirty_kb)`.
+fn census_of(out: &str) -> Option<(u64, u64, u64)> {
+    let line = out.lines().find(|l| l.contains(" minflt "))?;
+    let f = |k: &str| -> Option<u64> {
+        let i = line.find(k)? + k.len();
+        line[i..].split_whitespace().next()?.parse().ok()
+    };
+    Some((f(" minflt ")?, f(" rss_kb ")?, f(" pdirty_kb ")?))
+}
+
+/// Mean of the census over a set of replies, when every reply carried one.
+fn census_mean(rows: &[Option<(u64, u64, u64)>]) -> Option<(f64, f64, f64)> {
+    let v: Vec<(u64, u64, u64)> = rows.iter().filter_map(|r| *r).collect();
+    if v.is_empty() {
+        return None;
+    }
+    let n = v.len() as f64;
+    Some((
+        v.iter().map(|x| x.0 as f64).sum::<f64>() / n,
+        v.iter().map(|x| x.1 as f64).sum::<f64>() / n,
+        v.iter().map(|x| x.2 as f64).sum::<f64>() / n,
+    ))
 }

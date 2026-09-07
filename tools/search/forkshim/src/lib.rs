@@ -2027,6 +2027,33 @@ unsafe fn standby_fork(base: usize) -> Launched {
     Launched::Parent(pid, -1)
 }
 
+/// `FKSHIM_CENSUS=1`: append the child's page-fault count and its resident and
+/// dirtied memory to every FKTIME line. Read at the first entry of the fork
+/// server so the hot path pays one relaxed load.
+static CENSUS: AtomicUsize = AtomicUsize::new(0);
+
+/// `(minflt, rss_kb, private_dirty_kb)` of a live child, from `/proc`.
+/// `None` if the child is already gone.
+unsafe fn child_census(pid: c_int) -> Option<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    // field 10 (1-based) is minflt; the comm field may contain spaces, so count
+    // from the closing parenthesis.
+    let after = &stat[stat.rfind(')')? + 2..];
+    let minflt: u64 = after.split_whitespace().nth(7)?.parse().ok()?;
+    let roll = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", pid)).ok()?;
+    let mut rss = 0u64;
+    let mut pdirty = 0u64;
+    for line in roll.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("Rss:") => rss = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            Some("Private_Dirty:") => pdirty = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+    Some((minflt, rss, pdirty))
+}
+
 /// End the standby, if there is one. Called before any command whose effect a
 /// child must inherit, and at 'Q'.
 unsafe fn standby_kill() {
@@ -2275,6 +2302,9 @@ unsafe fn forkserver() {
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
+    if !branch && env_str(b"FKSHIM_CENSUS\0").is_some() {
+        CENSUS.store(1, Ordering::SeqCst);
+    }
     // A warm branch stops watching here -- a paused node runs no ticks -- and
     // keeps what the watchdog saw: every `'W'` child of this node continues
     // from it.
@@ -3320,6 +3350,12 @@ unsafe fn forkserver() {
             // SIGKILL and walk away: tearing down a 150 MB address space costs
             // milliseconds, and SIGCHLD=SIG_IGN makes the kernel reap for us, so
             // the next candidate does not have to wait for it.
+            //
+            // THE CENSUS, first, while the child is still there: how many pages
+            // did this candidate fault in, and how many did it dirty? Behind an
+            // env var because it is two /proc reads per candidate, and it is
+            // what says whether huge pages or MADV_DONTFORK could pay.
+            let census = if CENSUS.load(Ordering::Relaxed) != 0 { child_census(pid) } else { None };
             kill(pid, SIGKILL);
             close(rfd);
             let tp = timing();
@@ -3371,6 +3407,14 @@ unsafe fn forkserver() {
                 utoa((*tp).last_tick_us.saturating_sub(t_start), &mut out);
                 out.extend_from_slice(b" ticks ");
                 utoa((*tp).ticks, &mut out);
+            }
+            if let Some((minflt, rss_kb, pdirty_kb)) = census {
+                out.extend_from_slice(b" minflt ");
+                utoa(minflt, &mut out);
+                out.extend_from_slice(b" rss_kb ");
+                utoa(rss_kb, &mut out);
+                out.extend_from_slice(b" pdirty_kb ");
+                utoa(pdirty_kb, &mut out);
             }
             out.push(b'\n');
             send_frame(res, &out);
