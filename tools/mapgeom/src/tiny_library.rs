@@ -653,12 +653,16 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // (Summer 11's `Show` rigs are 2 m stubs, 32 m beams, spot bars, speakers
     // and foggers of ONE item; a `PalmForest` placement's variant is its palm
     // species). Items whose file has no variant list share one entry.
-    let mut item_counts: BTreeMap<(String, u8), usize> = BTreeMap::new();
+    // …and per LIGHT COLOUR SKIN (light_skin.rs): a placement whose skin is
+    // `Skins\Stadium\LightColors\Coral.dds` gets its own copy with coral
+    // lights and glass (Summer 17: 108 Orange lamps; 20: 115 Green tubes).
+    let light_skin_of = |it: &tmmaps::map::ItemRec| -> Option<String> { it.skin(&source.gbx.body).and_then(|f| crate::light_skin::skin_name(&f.path)) };
+    let mut item_counts: BTreeMap<(String, u8, Option<String>), usize> = BTreeMap::new();
     for it in &source.items {
-        *item_counts.entry((it.model.clone(), it.variant())).or_insert(0) += 1;
+        *item_counts.entry((it.model.clone(), it.variant(), light_skin_of(it))).or_insert(0) += 1;
     }
-    // (model, variant) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
-    let mut item_map: BTreeMap<(String, u8), String> = BTreeMap::new();
+    // (model, variant, light skin) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
+    let mut item_map: BTreeMap<(String, u8, Option<String>), String> = BTreeMap::new();
     // the map's own embedded files (custom items live under Items\…)
     let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = 0usize;
@@ -667,14 +671,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // stock half-size variants used as targets: their mapping rows carry
     // model_scale = scale like an embedded half-size copy
     let mut half_stock: std::collections::BTreeSet<String> = Default::default();
-    for ((model, variant), n) in &item_counts {
+    for ((model, variant, lskin), n) in &item_counts {
         if model.is_empty() || !wanted(model) {
             continue;
         }
-        if let Some(target) = single_variant.get(model) {
-            item_map.insert((model.clone(), *variant), target.clone());
-            continue;
+        if lskin.is_none() {
+            if let Some(target) = single_variant.get(model) {
+                item_map.insert((model.clone(), *variant, None), target.clone());
+                continue;
+            }
         }
+        let light_skin = match lskin {
+            Some(name) => match crate::light_skin::lookup(name) {
+                Some(s) => Some(s),
+                None => {
+                    outcomes.push(Outcome { alias: String::new(), kind: "item", source: format!("{model} skin {name}"), placements: *n, result: Err(format!("light skin {name}: not one of the game's LightColors swatches")) });
+                    continue;
+                }
+            },
+            None => None,
+        };
         // Stock HALF-SIZE variants (2026-09-07): Nadeo ships every screen in a
         // `Small` version that is exactly half in both dimensions
         // (RaceScreen6x1 24×4 m → RaceScreen6x1Small 12×2 m; Screen2x3Big →
@@ -688,7 +704,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // same 11 m posts, so twice the tiny height — a visible mismatch).
         if let Some(small) = stock_half_variant(model) {
             if find_item_file(store, small).is_some() {
-                let key = (model.clone(), *variant);
+                let key = (model.clone(), *variant, lskin.clone());
                 single_variant.insert(model.clone(), small.to_string());
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
@@ -709,22 +725,25 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 None => match find_item_file(store, model) {
                     Some(logical) => {
                         variants = crate::static_item::build::pack_item_variants(store, &logical).unwrap_or_default();
-                        crate::static_item::build::static_item_from_pack_item_report(store, &logical, &ident, &ident, scale, collection, *variant as usize)
+                        crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone())
                     }
                     None => Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()),
                 },
             },
         };
         let multi = variants.len() > 1;
-        let source_name = if multi {
+        let mut source_name = if multi {
             let picked = variants.get(*variant as usize).or(variants.first()).map(|p| p.rsplit('\\').next().unwrap_or(p).to_string()).unwrap_or_default();
             format!("{model} v{variant} ({picked})")
         } else {
             model.clone()
         };
-        let key = (model.clone(), *variant);
+        if let Some(name) = lskin {
+            source_name.push_str(&format!(" skin {name}"));
+        }
+        let key = (model.clone(), *variant, lskin.clone());
         let mut remember = |target: &str| {
-            if !multi {
+            if !multi && lskin.is_none() {
                 single_variant.insert(model.clone(), target.to_string());
             }
         };
@@ -843,7 +862,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
     for it in &source.items {
-        match item_map.get(&(it.model.clone(), it.variant())) {
+        match item_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))) {
             Some(target) => {
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));

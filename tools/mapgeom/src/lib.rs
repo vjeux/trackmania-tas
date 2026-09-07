@@ -33,6 +33,7 @@ pub mod corpus;
 pub mod coverage;
 pub mod embedded;
 pub mod geom;
+pub mod light_skin;
 pub mod lz4dict;
 pub mod md5;
 pub mod minidump;

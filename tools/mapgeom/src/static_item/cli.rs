@@ -21,6 +21,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     let collection: u32 = flag(rest, "--collection").unwrap_or_else(|| "26".into()).parse().map_err(|e| format!("--collection: {e}"))?;
     // --variant N: which entry of a pack item's variant list to bake (the placement's variant byte)
     let variant: usize = flag(rest, "--variant").unwrap_or_else(|| "0".into()).parse().map_err(|e| format!("--variant: {e}"))?;
+    // --light-skin NAME: bake the placement's light colour skin (Coral, Off, …) into the lights and the glass
+    let light_skin = match flag(rest, "--light-skin") {
+        Some(name) => Some(crate::light_skin::lookup(&name).ok_or_else(|| format!("--light-skin {name}: not one of the game's LightColors swatches"))?),
+        None => None,
+    };
     let is_file = std::path::Path::new(&src).is_file();
     let (bytes, merged) = if is_file {
         let data = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;
@@ -28,12 +33,19 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     } else if src.to_ascii_lowercase().ends_with(".item.gbx") {
         // a pack ITEM: baked through its external prefab / static-object files
         let mut store = open();
-        build::static_item_from_pack_item_report(&mut store, &src, &ident, &author, scale, collection, variant)?
+        build::static_item_from_pack_item_report_skin(&mut store, &src, &ident, &author, scale, collection, variant, light_skin)?
     } else {
         let mut store = open();
         build::static_item_from_prefab_report(&mut store, &src, &ident, &author, scale, collection)?
     };
     std::fs::write(&out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+    // the side files the item names (its `.Light.Gbx` copies, sign logos):
+    // next to the output, as they ride next to the item in a library archive
+    for (name, data) in &merged.pictures {
+        let p = std::path::Path::new(&out).with_file_name(name);
+        std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("  side file {} ({} bytes)", p.display(), data.len());
+    }
     for n in &merged.notes {
         println!("  note: {n}");
     }

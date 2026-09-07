@@ -469,7 +469,31 @@ impl GxLight {
                     }
                 }
                 GxChunk::BallFloat { id: 0x04002009, value } => *value *= s,
+                // the light sprite (GxLight flag 32): its size and its offset
+                // along the beam are metres too — unscaled, the half Lamp's glow
+                // filled a frame the stock one lit a quarter of
+                GxChunk::Point { flare_size, flare_bias_z, .. } => {
+                    *flare_size *= s;
+                    if let Some(b) = flare_bias_z {
+                        *b *= s;
+                    }
+                }
                 GxChunk::Frustum06 { aligned_box, .. } => aligned_box.iter_mut().for_each(|x| *x *= s),
+                _ => {}
+            }
+        }
+    }
+
+    /// Multiply the light's colour (every GxLight chunk form) by `rgb`: a
+    /// placement's light colour skin (light_skin.rs).
+    pub fn tint(&mut self, rgb: [f32; 3]) {
+        for c in self.chunks.iter_mut() {
+            match c {
+                GxChunk::Light08 { color, .. } | GxChunk::Light09 { color, .. } | GxChunk::Light0A { color, .. } => {
+                    for k in 0..3 {
+                        color[k] *= rgb[k];
+                    }
+                }
                 _ => {}
             }
         }
@@ -595,4 +619,116 @@ impl CPlugLightUserModel {
         }
         m
     }
+}
+
+impl CPlugLight {
+    /// The external files this light's references name, as (path, slot) with
+    /// slot 0 = flare bitmap, 1 = projector bitmap, 2 = colour table, 3 =
+    /// animation image — looked up in the file's reference table `externals`
+    /// (node index -> path).
+    pub fn external_slots(&self, externals: &[(u32, String)]) -> Vec<(String, u8)> {
+        let name = |r: &Ref| -> Option<String> {
+            if r.inline.is_some() || r.index < 0 {
+                return None;
+            }
+            externals.iter().find(|(i, _)| *i as i32 == r.index).map(|(_, p)| p.clone())
+        };
+        let mut out = Vec::new();
+        for c in &self.chunks {
+            match c {
+                LightChunk::Base { refs, .. } => {
+                    if let Some(p) = name(&refs[2]) {
+                        out.push((p, 0));
+                    }
+                    if let Some(p) = name(&refs[3]) {
+                        out.push((p, 1));
+                    }
+                }
+                LightChunk::Model { bitmap_flare, bitmap_projector, color_table, .. } => {
+                    if let Some(p) = name(bitmap_flare) {
+                        out.push((p, 0));
+                    }
+                    if let Some(p) = name(bitmap_projector) {
+                        out.push((p, 1));
+                    }
+                    if let Some(p) = name(color_table) {
+                        out.push((p, 2));
+                    }
+                }
+                LightChunk::Anim { image_anim, .. } => {
+                    if let Some(p) = name(image_anim) {
+                        out.push((p, 3));
+                    }
+                }
+                LightChunk::Raw(_) => {}
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Point the slot's reference (see `external_slots`) at `r`.
+    pub fn set_bitmap(&mut self, slot: u8, r: Ref) {
+        for c in self.chunks.iter_mut() {
+            match c {
+                LightChunk::Base { refs, .. } => match slot {
+                    0 => refs[2] = r.clone(),
+                    1 => refs[3] = r.clone(),
+                    _ => {}
+                },
+                LightChunk::Model { bitmap_flare, bitmap_projector, color_table, .. } => match slot {
+                    0 => *bitmap_flare = r.clone(),
+                    1 => *bitmap_projector = r.clone(),
+                    2 => *color_table = r.clone(),
+                    _ => {}
+                },
+                LightChunk::Anim { image_anim, .. } => {
+                    if slot == 3 {
+                        *image_anim = r.clone();
+                    }
+                }
+                LightChunk::Raw(_) => {}
+            }
+        }
+    }
+}
+
+/// A standalone `.Light.Gbx` (class 0x0901D000, GBX version 6, uncompressed)
+/// holding `light` with its GxLight inline as node 1 and `externals` as the
+/// reference table (node index, path) — the file the production bake puts
+/// NEXT TO THE ITEM (`Items/<stem>_L<k>.Light.Gbx`) and points the socket at:
+/// an embedded item resolves a level-0 reference-table path both against its
+/// own archive folder and against the game's packs (probe of 2026-09-07: a
+/// socket naming `Stadium\Media\Light\ItemLampSpot.Light.Gbx` lit the grass
+/// exactly like the stock Lamp; an INLINE CPlugLight rendered no sprite and
+/// could not reach its projector texture).
+pub fn light_file(light: &CPlugLight, externals: &[(u32, String)]) -> Vec<u8> {
+    let mut light = light.clone();
+    if let Some(gx) = light.gx_mut() {
+        if gx.inline.is_some() {
+            gx.index = 1;
+        }
+    }
+    let mut body = Vec::new();
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(externals.iter().map(|(i, _)| *i));
+    {
+        let mut w = Wr { w: &mut body, lb: &mut lb };
+        light.write(&mut w);
+    }
+    let num_nodes = externals.iter().map(|(i, _)| *i + 1).max().unwrap_or(2).max(2);
+    let mut out = Vec::with_capacity(body.len() + 256);
+    out.extend_from_slice(b"GBX");
+    out.extend_from_slice(&6u16.to_le_bytes());
+    out.push(b'B');
+    out.push(b'U');
+    out.push(b'U');
+    out.push(b'R');
+    out.extend_from_slice(&C_PLUG_LIGHT.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // no header chunks
+    out.extend_from_slice(&num_nodes.to_le_bytes());
+    out.extend_from_slice(&super::file::ref_table(0, externals));
+    out.extend_from_slice(&body);
+    out
 }

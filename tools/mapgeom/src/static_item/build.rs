@@ -196,6 +196,9 @@ pub struct MergedLight {
     pub light: super::light::CPlugLight,
     /// The `.Light.Gbx` it came from, for the report.
     pub source: String,
+    /// The pack files its dropped references named: (path, slot) with slot
+    /// 0 = flare bitmap, 1 = projector bitmap, 2 = colour table, 3 = anim image.
+    pub bitmaps: Vec<(String, u8)>,
 }
 
 /// The accumulator.
@@ -242,6 +245,13 @@ pub struct Merged {
     /// Picture files the item's custom-texture materials name, to ride in
     /// the library archive next to the item: (file name, DDS bytes).
     pub pictures: Vec<(String, Vec<u8>)>,
+    /// The placement's light colour skin (light_skin.rs): multiplies every
+    /// embedded light's colour, and re-dresses the `_I`-textured materials
+    /// (`illum_links`) as swatch-lit custom materials.
+    pub light_skin: Option<crate::light_skin::LightSkin>,
+    /// Material links whose pack material carries a self-illumination
+    /// (`*_I.Texture.gbx`) texture — the glass of a light item.
+    pub illum_links: Vec<String>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
@@ -697,7 +707,7 @@ impl Merged {
                     if let Some(super::Node::GxLight(g)) = light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
                         g.scale(scale);
                     }
-                    self.lights_out.push(MergedLight { socket, light, source: "(inline)".into() });
+                    self.lights_out.push(MergedLight { socket, light, source: "(inline)".into(), bitmaps: Vec::new() });
                 }
                 _ if l.u02 && l.node.index >= 0 => match resolve(l.node.index) {
                     Some((path, _, _)) => self.pending_lights.push((path, socket, scale)),
@@ -1474,6 +1484,16 @@ pub fn placement_param(sclass_index: i32) -> super::item::CGameItemPlacementPara
 
 /// The merged visuals + materials as one `CPlugSolid2Model`, node indices
 /// taken from `next` (visual, its stream, then the materials).
+/// External files the solid names (node index, pack path) — the item's reference
+/// table (`TINY_LIGHT_FORM=extern|socket-tex`, a probe of whether an embedded
+/// item can reach the packs by path). Empty in the production forms.
+thread_local! {
+    pub static EXTERNALS: std::cell::RefCell<Vec<(u32, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The `.Light.Gbx` files the `file` light form writes next to the item:
+    /// (file name, bytes), drained by the caller into the library archive.
+    pub static LIGHT_FILES: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSolid2Model> {
     if m.visuals.is_empty() {
         return Err("no visuals: nothing to build".into());
@@ -1605,6 +1625,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         let inst = skinned_material(inst, opts.collection);
         let inst = custom_texture_material(&inst, &opts.ident);
         let inst = sign_logo_material(&inst, m);
+        let inst = light_skin_material(&inst, m);
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
@@ -1631,7 +1652,47 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         let form = std::env::var("TINY_LIGHT_FORM").unwrap_or_else(|_| "socket".into());
         for (k, ml) in m.lights_out.iter().enumerate() {
             let mut socket = ml.socket.clone();
-            if form == "socket" || form == "both" {
+            // ⚠ `extern`, `file` and `socket-tex` are PROBES THAT FAILED (2026-09-07):
+            // an embedded item's reference table resolves NOTHING — neither a
+            // pack path (`Stadium\Media\Light\ItemLampSpot.Light.Gbx`, ancestor
+            // levels 0-3) nor a file placed next to the item in the archive
+            // (use-file 0/1, with or without `Items\`); every such light was
+            // dark on Summer 09's grass 60 m from any stock lamp. (Two earlier
+            // "successes" were the stock Lamp's 50 m pool spilling onto a probe
+            // placed 22 m from it.) So the projector cookie and the light sprite
+            // (both texture fids) cannot be had; the inline `socket` form is what
+            // works, and the material system's by-name texture lookup is the only
+            // file an embedded item reaches.
+            if form == "extern" {
+                // probe: the socket names the PACK's `.Light.Gbx` as an EXTERNAL
+                // node (reference table) — unscaled, untinted
+                socket.u02 = true;
+                socket.u04.clear();
+                socket.node = super::NodeRef { index: *next, inline: None };
+                EXTERNALS.with(|e| e.borrow_mut().push((*next as u32, ml.source.clone())));
+                *next += 1;
+            } else if form == "file" {
+                // PRODUCTION: our scaled, tinted copy of the light as its own
+                // `.Light.Gbx` next to the item, its projector/flare textures
+                // referenced in the packs; the socket names that file
+                let stem = opts.ident.trim_end_matches(".Item.Gbx");
+                let file = format!("{stem}_L{k}.Light.Gbx");
+                // TINY_LIGHT_EXT_PREFIX=Items\: how the socket spells the file's folder (probe)
+                let spelled = format!("{}{file}", std::env::var("TINY_LIGHT_EXT_PREFIX").unwrap_or_default());
+                let mut light = ml.light.clone();
+                let mut ext: Vec<(u32, String)> = Vec::new();
+                for (path, slot) in ml.bitmaps.iter().cloned() {
+                    let idx = 2 + ext.len() as u32;
+                    light.set_bitmap(slot, super::NodeRef { index: idx as i32, inline: None });
+                    ext.push((idx, path));
+                }
+                LIGHT_FILES.with(|f| f.borrow_mut().push((file.clone(), super::light::light_file(&light, &ext))));
+                socket.u02 = true;
+                socket.u04.clear();
+                socket.node = super::NodeRef { index: *next, inline: None };
+                EXTERNALS.with(|e| e.borrow_mut().push((*next as u32, spelled)));
+                *next += 1;
+            } else if form == "socket" || form == "both" || form == "socket-tex" {
                 let mut light = ml.light.clone();
                 match light.gx_mut() {
                     Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
@@ -1640,8 +1701,18 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
                 }
                 socket.u02 = true;
                 socket.u04.clear();
+                let mut used = 2;
+                if form == "socket-tex" {
+                    // the projector / flare bitmaps as EXTERNAL nodes again
+                    for (path, slot) in ml.bitmaps.iter().cloned() {
+                        let idx = *next + used;
+                        light.set_bitmap(slot, super::NodeRef { index: idx, inline: None });
+                        EXTERNALS.with(|e| e.borrow_mut().push((idx as u32, path)));
+                        used += 1;
+                    }
+                }
                 socket.node = inline(*next, Node::Light(light));
-                *next += 2;
+                *next += used;
             } else {
                 socket.u02 = false;
                 socket.u04 = format!("Light{k}");
@@ -1824,7 +1895,14 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         class_id: super::C_ITEM_MODEL,
         header_chunks: header_chunks(opts),
         num_nodes: next as u32,
-        ref_table: 0u32.to_le_bytes().to_vec(),
+        // the reference table: the pack files the `extern` light probes name,
+        // relative to the item's own folder after TINY_LIGHT_EXT_UP steps up
+        // (default 0: the paths as the packs spell them)
+        ref_table: {
+            let ext = EXTERNALS.with(|e| std::mem::take(&mut *e.borrow_mut()));
+            let up: u32 = std::env::var("TINY_LIGHT_EXT_UP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            super::file::ref_table(up, &ext)
+        },
         item: CGameItemModel { chunks },
     })
 }
@@ -2079,6 +2157,7 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
@@ -2140,6 +2219,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     m.skin = skin;
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
@@ -2473,6 +2553,8 @@ impl Merged {
         for (path, socket, scale) in std::mem::take(&mut self.pending_lights) {
             match load_light(store, &path) {
                 Ok(mut light) => {
+                    // the pack files the light names (for the `extern` probes)
+                    let bitmaps: Vec<(String, u8)> = store.load_model(&path).map(|mm| light.external_slots(&mm.externals)).unwrap_or_default();
                     // A light driven by an animation image (the checkpoint
                     // gates' blue speedometer LEDs: `SpeedometerCP.Light.Gbx`
                     // with `Anims\Speedometer.tga`; the TurboRoulette colour
@@ -2498,7 +2580,19 @@ impl Merged {
                     }
                     light.drop_external_refs();
                     match light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
-                        Some(super::Node::GxLight(g)) => g.scale(scale),
+                        Some(super::Node::GxLight(g)) => {
+                            g.scale(scale);
+                            // the placement's light colour skin: the swatch
+                            // multiplies the light (the stock item's projector
+                            // and glow textures are replaced by it)
+                            if let Some(skin) = &self.light_skin {
+                                if skin.is_off() {
+                                    self.notes.push(format!("{path}: light skin {} is OFF; light dropped", skin.name));
+                                    continue;
+                                }
+                                g.tint(skin.linear);
+                            }
+                        }
                         _ => {
                             self.notes.push(format!("{path}: no inline GxLight; light dropped"));
                             continue;
@@ -2511,7 +2605,7 @@ impl Merged {
                         socket.u05[0], socket.u05[1], socket.u05[2], socket.u05[3], socket.u05[4], socket.u05[5], socket.u05[6], socket.u05[7], socket.u05[8],
                         socket.ints, socket.u15, socket.u16
                     ));
-                    self.lights_out.push(MergedLight { socket, light, source: path });
+                    self.lights_out.push(MergedLight { socket, light, source: path, bitmaps });
                 }
                 Err(e) => self.notes.push(format!("{path}: light not embedded: {e}")),
             }
@@ -3045,8 +3139,17 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
 /// (`.VegetTreeModel.Gbx`) has no mesh and is reported, not baked: the error
 /// names the species file so the caller can substitute the right stock tree.
 pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize) -> R<(Vec<u8>, Merged)> {
+    static_item_from_pack_item_report_skin(store, item_path, ident, author, scale, collection, variant, None)
+}
+
+/// Same, for a placement with a light colour skin (light_skin.rs): the lights
+/// take the swatch colour (an `Off` swatch drops them) and the glass
+/// materials glow in it.
+#[allow(clippy::too_many_arguments)]
+pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<(Vec<u8>, Merged)> {
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
+    m.light_skin = light_skin;
     m.editors = std::env::var_os("TINY_EDITORS").is_some();
     m.keep_water = keep_water_for(collection);
     if variants.is_empty() {
@@ -3120,8 +3223,27 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
             }
         }
     }
+    // A light colour skin: which of the item's materials are the glass (their
+    // pack material has a self-illumination `_I` texture) — those get the
+    // swatch as a self-lit custom material at assembly; the swatch file rides
+    // next to the item.
+    if let Some(skin) = m.light_skin.clone() {
+        let links: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().map(|s| s.to_string())).collect();
+        for link in links {
+            let path = format!("{link}.Material.Gbx");
+            let illum = store.load_model(&path).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().ends_with("_i.texture.gbx"))).unwrap_or(false);
+            if illum && !m.illum_links.contains(&link) {
+                m.illum_links.push(link);
+            }
+        }
+        m.notes.push(format!("light skin {} (srgb {:?}): {} lit material(s) re-dressed, {} light(s){}", skin.name, skin.srgb, m.illum_links.len(), m.lights_out.len(), if skin.is_off() { " OFF" } else { "" }));
+        if !m.pictures.iter().any(|(f, _)| *f == skin.file()) {
+            m.pictures.push((skin.file(), skin.dds.to_vec()));
+        }
+    }
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
@@ -3439,4 +3561,32 @@ mod lod_tests {
         cap_lod_ladder(&mut s, 3);
         assert_eq!(s, vec![32.0, 64.0]);
     }
+}
+
+/// The glass of a light item under a light colour skin (light_skin.rs): a
+/// material whose pack file carries a self-illumination texture becomes a
+/// self-lit custom-texture material with the swatch as diffuse AND
+/// illumination (`Items/LightColor_<Name>.dds`), the way the skin replaces the
+/// stock item's `_I` textures. `Off` glows black. `TINY_LIGHT_SKIN_GLASS=off`
+/// keeps the game material (white glow).
+pub fn light_skin_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
+    let Some(skin) = m.light_skin.as_ref() else { return inst.clone() };
+    if std::env::var("TINY_LIGHT_SKIN_GLASS").map(|v| v == "off").unwrap_or(false) {
+        return inst.clone();
+    }
+    let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
+    if !m.illum_links.iter().any(|l| *l == link) {
+        return inst.clone();
+    }
+    let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
+    let file = skin.file();
+    let mut owned = inst.clone();
+    if let Some(main) = owned.main.as_mut() {
+        main.is_using_game_material = false;
+        main.model = crate::crystal_model::Id::Str("TDSNI".into());
+        main.material_name = crate::crystal_model::Id::Str(format!("{stem}{}", skin.name));
+        main.link = crate::crystal_model::Id::Null;
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+    }
+    owned
 }

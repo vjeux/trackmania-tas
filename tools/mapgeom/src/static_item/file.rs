@@ -77,7 +77,7 @@ pub fn parse_file(data: &[u8]) -> R<StaticItemFile> {
     }
     let g = tmmaps::gbx::Gbx::parse(data);
     let header_chunks = parse_header_chunks(&g.user_data)?;
-    let item = parse_body(&g.body)?;
+    let item = parse_body_with(&g.body, &ref_table_nodes(&g.ref_table))?;
     Ok(StaticItemFile {
         version: g.version,
         format: g.format,
@@ -94,7 +94,15 @@ pub fn parse_file(data: &[u8]) -> R<StaticItemFile> {
 
 /// Parse an item body (the decompressed bytes after the reference table).
 pub fn parse_body(body: &[u8]) -> R<CGameItemModel> {
-    let mut r = Rd::new(body, 0, LookbackState::default());
+    parse_body_with(body, &[])
+}
+
+/// Same, with the node indices the reference table defines (external files:
+/// a reference to one carries no inline body).
+pub fn parse_body_with(body: &[u8], externals: &[u32]) -> R<CGameItemModel> {
+    let mut lb = LookbackState::default();
+    lb.defined_nodes.extend(externals.iter().copied());
+    let mut r = Rd::new(body, 0, lb);
     let item = CGameItemModel::parse(&mut r)?;
     if r.o != body.len() {
         return Err(format!("item body: {} trailing bytes after FACADE at 0x{:x}", body.len() - r.o, r.o));
@@ -137,6 +145,106 @@ pub fn write_file(f: &StaticItemFile) -> Vec<u8> {
         out.extend_from_slice(&stream);
     } else {
         out.extend_from_slice(&body);
+    }
+    out
+}
+
+/// A Gbx reference table naming external files: `(node index, path)` where
+/// the path is relative to the file's own folder after `ancestor_level` steps
+/// up (`Media\Texture\ItemLamp_I.Texture.gbx` from `Stadium\Items\` with
+/// level 1 = `Stadium\Media\Texture\...`). Folders are numbered depth-first
+/// from 1 (0 = the ancestor directory itself), each external carries flags 1,
+/// its file name, node index, use-file 0 and its folder index — the layout
+/// the pack's own files carry (`ItemLampSpot.Light.Gbx`: level 1, folders
+/// `Light`, `Texture`, one external in folder 2).
+pub fn ref_table(ancestor_level: u32, externals: &[(u32, String)]) -> Vec<u8> {
+    // TINY_LIGHT_EXT_USEFILE=1: the entries' use-file word (probe: does it make
+    // the game look the name up on disk / in the archive rather than the packs?)
+    let use_file: u32 = std::env::var("TINY_LIGHT_EXT_USEFILE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut out = Vec::new();
+    out.extend_from_slice(&(externals.len() as u32).to_le_bytes());
+    if externals.is_empty() {
+        return out;
+    }
+    out.extend_from_slice(&ancestor_level.to_le_bytes());
+    // one flat folder per distinct directory (no nesting: every directory
+    // path becomes ONE root folder whose name carries the backslashes — the
+    // game joins names with `\`, so `Media\Texture` as one name is the same
+    // path as the nested pair)
+    let mut dirs: Vec<String> = Vec::new();
+    let mut entries: Vec<(u32, String, u32)> = Vec::new();
+    for (node, path) in externals {
+        let (dir, name) = match path.rfind('\\') {
+            Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
+            None => (String::new(), path.clone()),
+        };
+        let folder = if dir.is_empty() {
+            0
+        } else {
+            match dirs.iter().position(|d| *d == dir) {
+                Some(p) => p as u32 + 1,
+                None => {
+                    dirs.push(dir);
+                    dirs.len() as u32
+                }
+            }
+        };
+        entries.push((*node, name, folder));
+    }
+    out.extend_from_slice(&(dirs.len() as u32).to_le_bytes());
+    for d in &dirs {
+        out.extend_from_slice(&(d.len() as u32).to_le_bytes());
+        out.extend_from_slice(d.as_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // no subfolders
+    }
+    for (node, name, folder) in &entries {
+        out.extend_from_slice(&1u32.to_le_bytes()); // flags: a file name follows
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&node.to_le_bytes());
+        out.extend_from_slice(&use_file.to_le_bytes()); // use file
+        out.extend_from_slice(&folder.to_le_bytes());
+    }
+    out
+}
+
+/// The node indices a raw reference table (as `ref_table` builds it, or as a
+/// version-6 file carries it) defines as external files.
+pub fn ref_table_nodes(raw: &[u8]) -> Vec<u32> {
+    let mut r = crate::reader::Reader::new(raw);
+    let mut out = Vec::new();
+    let Ok(n) = r.u32() else { return out };
+    if n == 0 {
+        return out;
+    }
+    let _ancestor = r.u32();
+    fn skip_folders(r: &mut crate::reader::Reader, count: u32) -> Option<()> {
+        for _ in 0..count {
+            r.string().ok()?;
+            let sub = r.u32().ok()?;
+            skip_folders(r, sub)?;
+        }
+        Some(())
+    }
+    let Ok(roots) = r.u32() else { return out };
+    if skip_folders(&mut r, roots).is_none() {
+        return out;
+    }
+    for _ in 0..n {
+        let Ok(flags) = r.u32() else { break };
+        if flags & 4 == 0 {
+            if r.string().is_err() {
+                break;
+            }
+        } else if r.u32().is_err() {
+            break;
+        }
+        let Ok(node) = r.u32() else { break };
+        out.push(node);
+        let _use = r.u32();
+        if flags & 4 == 0 {
+            let _folder = r.u32();
+        }
     }
     out
 }
