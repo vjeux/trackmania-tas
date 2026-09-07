@@ -214,9 +214,16 @@ pub fn run(rest: &[String]) -> Result<(), String> {
     for path in paths {
         let m = tmmaps::map::MapFile::load(std::path::Path::new(path));
 
-        // --- 1. placements
+        // --- 1. placements. The loop is SEQUENTIAL over the map's record
+        // order, and FNV is order-sensitive, so a reordering of identical
+        // placements changes this hash — which is required, because record
+        // ORDER is physics-bearing: the dedicated server takes as the start
+        // the LAST non-Goal waypoint placement in file order, whatever its
+        // model, tag, cell or position (measured by the player project on a
+        // scratch copy of Summer 02, 2026-09-07).
         let mut ph = Fnv::default();
-        for it in &m.items {
+        let mut predicted_start: Option<(usize, String, [f32; 3], String)> = None;
+        for (i, it) in m.items.iter().enumerate() {
             ph.str(&it.model);
             ph.f32q(it.pos[0], POS_Q);
             ph.f32q(it.pos[1], POS_Q);
@@ -228,7 +235,11 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             ph.f32q(it.pivot[1], POS_Q);
             ph.f32q(it.pivot[2], POS_Q);
             ph.f32q(it.scale, 1.0e-6);
-            ph.str(it.waypoint_tag.as_deref().unwrap_or(""));
+            let tag = it.waypoint_tag.as_deref().unwrap_or("");
+            ph.str(tag);
+            if !tag.is_empty() && tag != "Goal" {
+                predicted_start = Some((i, it.model.clone(), it.pos, tag.to_string()));
+            }
         }
 
         // --- 2. blocks (a parked block is still collision AND a waypoint)
@@ -291,6 +302,29 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             ih.hex(),
             per_item.len()
         );
+        // The engine's start, predicted from the rule above, and whether it is
+        // the placement tagged Spawn. A map where these disagree spawns the car
+        // on a checkpoint — the defect that made 19 of 20 published maps
+        // unplayable. This is an ORDER check: the model's own waypoint type
+        // does not decide it.
+        match &predicted_start {
+            Some((i, model, pos, tag)) => {
+                let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn"));
+                let verdict = match spawn {
+                    None => "NO SPAWN PLACEMENT".to_string(),
+                    Some(s) => {
+                        let d = ((s.pos[0] - pos[0]).powi(2) + (s.pos[1] - pos[1]).powi(2) + (s.pos[2] - pos[2]).powi(2)).sqrt();
+                        if d < 0.01 {
+                            "ok (the Spawn placement is last)".to_string()
+                        } else {
+                            format!("WRONG: {d:.1} m from the Spawn placement at [{:.1}, {:.1}, {:.1}] — emit the start AFTER every checkpoint", s.pos[0], s.pos[1], s.pos[2])
+                        }
+                    }
+                };
+                println!("  engine start: record {i} {model} {tag} at [{:.1}, {:.1}, {:.1}] — {verdict}", pos[0], pos[1], pos[2]);
+            }
+            None => println!("  engine start: NO waypoint placement in this map"),
+        }
         if parts_wanted {
             for (name, hex) in &per_item {
                 println!("  {hex}  {name}");
