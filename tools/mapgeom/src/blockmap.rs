@@ -103,6 +103,16 @@ impl BlockInfoIndex {
             let stem = file.split('.').next().unwrap_or(file).to_uppercase();
             by_stem.entry(stem).or_default().push(p.to_string());
         }
+        if std::env::var_os("TINY_DEBUG_LOOKUP").is_some() {
+            let n: usize = by_stem.values().map(|v| v.len()).sum();
+            let ri = store.entries().filter(|e| e.path().to_uppercase().starts_with("REDISLAND\\")).count();
+            eprintln!("  block info index: {} files under {} stems (store {} entries, {} under RedIsland\\); DECOTERRAINHD -> {:?}", n, by_stem.len(), store.entries().count(), ri, by_stem.get("DECOTERRAINHD"));
+            for e in store.entries().filter(|e| e.path().to_uppercase().contains("DECOTERRAINHD")).take(4) {
+                eprintln!("    entry {:?}", e.path());
+            }
+            let roots: std::collections::BTreeSet<String> = store.entries().map(|e| e.path().split('\\').next().unwrap_or("").to_string()).collect();
+            eprintln!("    roots {:?}", roots);
+        }
         BlockInfoIndex { by_stem, cache: HashMap::new(), collection: collection.to_uppercase() }
     }
 
@@ -147,6 +157,11 @@ impl BlockInfoIndex {
 
     pub fn path_for(&self, name: &str) -> Option<String> {
         self.paths_for(name).into_iter().next()
+    }
+
+    /// How many distinct file stems the index knows (debugging).
+    pub fn stem_count(&self) -> usize {
+        self.by_stem.len()
     }
 
     pub fn load(&mut self, store: &mut DataStore, path: &str) -> Result<&BlockInfo, String> {

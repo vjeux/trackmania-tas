@@ -420,6 +420,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let vindex = (flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
         let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
         let Some(path) = idx.path_for(name) else {
+            if std::env::var_os("TINY_DEBUG_LOOKUP").is_some() {
+                eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+            }
             outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("no block info file with this name".into()) });
             continue;
         };
