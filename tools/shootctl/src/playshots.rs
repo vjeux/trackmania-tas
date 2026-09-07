@@ -169,3 +169,51 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let _ = super::to_menu();
     Ok(lines)
 }
+
+/// `shootctl carlog FILE`: what a `car-<tag>.tsv` says in five lines — rows
+/// and wall span, where the car started and ended, how far it got from the
+/// start, its top speed, and the first moment it had left the spawn by more
+/// than half a metre (a shove) — instead of reading 3000 rows by eye.
+pub fn summarize(args: &[String]) -> i32 {
+    let Some(file) = args.first() else {
+        eprintln!("usage: shootctl carlog FILE.tsv");
+        return 2;
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{file}: {e}");
+            return 2;
+        }
+    };
+    let mut rows: Vec<(u64, [f64; 3], f64)> = Vec::new(); // wall_ms, pos, speed
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 9 || line.starts_with('#') {
+            continue;
+        }
+        let num = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
+        let pos = [num(2), num(3), num(4)];
+        if pos == [0.0; 3] {
+            continue; // the frame before the player exists
+        }
+        rows.push((num(0) as u64, pos, num(8)));
+    }
+    let Some(first) = rows.first().copied() else {
+        println!("{file}: no car rows");
+        return 1;
+    };
+    let last = *rows.last().unwrap();
+    let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let far = rows.iter().map(|r| dist(r.1, first.1)).fold(0.0, f64::max);
+    let top = rows.iter().map(|r| r.2).fold(0.0, f64::max);
+    let shove = rows.iter().find(|r| dist(r.1, first.1) > 0.5);
+    println!("{}: {} rows over {:.1} s", file, rows.len(), (last.0 - first.0) as f64 / 1000.0);
+    println!("  start ({:.2}, {:.2}, {:.2})  end ({:.2}, {:.2}, {:.2})", first.1[0], first.1[1], first.1[2], last.1[0], last.1[1], last.1[2]);
+    println!("  farthest from the start {far:.2} m, top speed {top:.1}");
+    match shove {
+        Some(r) => println!("  left the spawn (> 0.5 m) at +{:.1} s: ({:.2}, {:.2}, {:.2})", (r.0 - first.0) as f64 / 1000.0, r.1[0], r.1[1], r.1[2]),
+        None => println!("  never left the spawn"),
+    }
+    0
+}

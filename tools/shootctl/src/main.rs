@@ -1124,6 +1124,7 @@ usage:
         // PLAY-mode timed screenshots under the lock: does a moving item's
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
+        "carlog" => playshots::summarize(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
             let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);
