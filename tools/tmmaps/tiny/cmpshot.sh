@@ -13,7 +13,7 @@ tx=$(awk -v a=$ax -v b=$bx -v p="$ox" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
 ty=$(awk -v a=$ay -v b=$by -v p="$oy" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
 tz=$(awk -v a=$az -v b=$bz -v p="$oz" 'BEGIN{printf "%.2f", b+(p-a)*0.5}')
 td=$(awk -v d="$D" 'BEGIN{printf "%.2f", d*0.5}')
-T=/home/vjeux/trackmania-tas-tiny/tools/tmmaps/tiny
+T=$(cd "$(dirname "$0")" && pwd)
 ORIG=${ORIG:-/tmp/Summer-2026-01.Map.Gbx}
 TINY=${TINY:-/tmp/tiny3/Summer-01-Tiny.Map.Gbx}
 ${SHOOT:-$T/shootmap.sh} "$ORIG" /tmp/tiny3/cmp-$NAME-o.png "$ox,$oy,$oz,$D,$H,$V" Orig01 2>&1 | grep "DIALOG\|not responding" | head -2

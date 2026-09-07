@@ -1,6 +1,6 @@
 #!/bin/bash
 # usage: overlay-run.sh TAG BLOCKNAME YAWOFF [SWAP]  -> prints yellow% in a 110 m top-down shot centred on the block
-cd /home/vjeux/trackmania-tas-tiny/tools
+cd "$(dirname "$0")/../.." || exit 1
 TAG=$1; NAME=$2; OFF=$3; SWAP=$4
 B="target/release/mapgeom tiny-assets /tmp/Summer-2026-01.Map.Gbx --catalog tmmaps/tiny/summer-2026-resolved.tsv --footprints tmmaps/tiny/summer-2026-footprints.tsv --nadeo-zip /tmp/Nadeo.zip --empty-template tmmaps/tiny/empty.Item.Gbx --blue-pak /tmp/BlueBay.pak --stadium-pak /tmp/current-Stadium.pak"
 if [ -n "$SWAP" ]; then TINY_SWAP_XZ=1 $B --scale 1 --out /tmp/OvFull.Map.Gbx --library-out /tmp/OvLib.zip >/dev/null 2>&1; else $B --scale 1 --out /tmp/OvFull.Map.Gbx --library-out /tmp/OvLib.zip >/dev/null 2>&1; fi

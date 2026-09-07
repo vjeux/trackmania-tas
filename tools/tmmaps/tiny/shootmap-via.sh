@@ -9,7 +9,7 @@ set -u
 MAP=$1; OUT=$2; CAM=$3; NAME=${4:-Shot}
 VIA=${SHOOT_VIA:-devvm64230.cln0.facebook.com}
 SSH="ssh -q -o BatchMode=yes -o StrictHostKeyChecking=no"
-T=/home/vjeux/trackmania-tas-tiny/tools/tmmaps/tiny
+T=$(cd "$(dirname "$0")" && pwd)
 $SSH "$VIA" "mkdir -p /tmp/tiny3 $T" || { echo "cannot reach $VIA"; exit 2; }
 scp -q -o BatchMode=yes -o StrictHostKeyChecking=no "$T/shootmap.sh" "$VIA:$T/shootmap.sh"
 scp -q -o BatchMode=yes -o StrictHostKeyChecking=no "$MAP" "$VIA:/tmp/tiny3/via-$NAME.Map.Gbx" || { echo "scp of $MAP failed"; exit 2; }

@@ -5,7 +5,7 @@
 # and pulls a screenshot to /tmp/itemtest.png. ~60 s.
 set -u
 ITEM=$1; IDENT=$2; AUTHOR=$3; SCALE=$4; MODE=${5:-local}
-T=/home/vjeux/trackmania-tas-tiny/tools
+T=$(cd "$(dirname "$0")/../.." && pwd)
 W='/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania'
 if [ "$MODE" = embed ]; then
   $T/target/release/examples/single_item_map ${HOST:-/tmp/Stadium-Host.Map.Gbx} /tmp/One.Map.Gbx "$IDENT" "$AUTHOR" "$SCALE" "$ITEM" | tail -1
