@@ -58,6 +58,11 @@ pub enum Special {
     Start = 16,
     Multilap = 17,
     Bumper = 18,
+    /// Car-change gates (`GateExpandableGameplaySnow`, `GateGameplaySnow24m`, `SnowGateGameplay`).
+    TransformStadium = 19,
+    TransformSnow = 20,
+    TransformRally = 21,
+    TransformDesert = 22,
 }
 
 impl Special {
@@ -66,13 +71,22 @@ impl Special {
         match v {
             1 => Boost, 2 => Boost2, 3 => Turbo, 4 => Turbo2, 5 => Reactor, 6 => ReactorDown, 7 => SlowMotion,
             8 => Reset, 9 => NoEngine, 10 => Cruise, 11 => NoBrake, 12 => NoSteer, 13 => Fragile,
-            14 => Checkpoint, 15 => Finish, 16 => Start, 17 => Multilap, 18 => Bumper, _ => None,
+            14 => Checkpoint, 15 => Finish, 16 => Start, 17 => Multilap, 18 => Bumper,
+            19 => TransformStadium, 20 => TransformSnow, 21 => TransformRally, 22 => TransformDesert, _ => None,
         }
     }
     /// Model name → special. Order matters: "Boost2" before "Boost", "ReactorDown" before "Reactor".
     pub fn of_name(name: &str) -> Special {
         let n = name;
         let has = |s: &str| n.contains(s);
+        // car-change gates: "Gameplay" + the car. `GateExpandableGameplayVFC/FCT/InPillarFCB` are
+        // structural pieces of the same gate and carry no car → None.
+        if has("Gameplay") {
+            if has("Snow") { return Special::TransformSnow; }
+            if has("Rally") { return Special::TransformRally; }
+            if has("Desert") { return Special::TransformDesert; }
+            if has("Stadium") { return Special::TransformStadium; }
+        }
         if has("Boost2") { return Special::Boost2; }
         if has("Boost") { return Special::Boost; }
         if has("Turbo2") { return Special::Turbo2; }
@@ -637,6 +651,12 @@ mod tests {
         assert_eq!(Special::of_name("RoadTechStart"), Special::Start);
         assert_eq!(Special::of_name("RoadTechStraight"), Special::None);
         assert_eq!(Special::of_name("PlatformTechLoopStart"), Special::None);
+        assert_eq!(Special::of_name("GateExpandableGameplaySnow"), Special::TransformSnow);
+        assert_eq!(Special::of_name("GateGameplayStadium24m"), Special::TransformStadium);
+        assert_eq!(Special::of_name("RallyGateGameplay"), Special::TransformRally);
+        assert_eq!(Special::of_name("GateExpandableGameplayVFC"), Special::None);
+        assert_eq!(Special::of_name("GateExpandableSpecialReset"), Special::Reset);
+        assert_eq!(Special::of_name("PlatformSpecialFCLeft"), Special::None);
     }
 }
 
@@ -945,5 +965,28 @@ mod item_tests {
         assert!(near[0].dist < near[1].dist);
         assert_eq!(near[1].family, "TrackBarrier");
         assert_eq!(idx.nearest(&s, [10.0, 1.0, 50.0], 5.0, 2).len(), 0);
+    }
+}
+
+impl Special {
+    /// The car a transformation gate hands the driver, if this is one.
+    pub fn car(&self) -> Option<&'static str> {
+        match self {
+            Special::TransformStadium => Some("Stadium"),
+            Special::TransformSnow => Some("Snow"),
+            Special::TransformRally => Some("Rally"),
+            Special::TransformDesert => Some("Desert"),
+            _ => None,
+        }
+    }
+    /// A gameplay block that changes the CAR'S STATE (not a waypoint, not a transformation).
+    pub fn is_physics(&self) -> bool {
+        matches!(self, Special::Boost | Special::Boost2 | Special::Turbo | Special::Turbo2 | Special::Reactor | Special::ReactorDown | Special::SlowMotion | Special::Reset | Special::NoEngine | Special::Cruise | Special::NoBrake | Special::NoSteer | Special::Fragile | Special::Bumper)
+    }
+    pub fn is_waypoint(&self) -> bool {
+        matches!(self, Special::Checkpoint | Special::Finish | Special::Start | Special::Multilap)
+    }
+    pub fn name(&self) -> String {
+        format!("{:?}", self)
     }
 }

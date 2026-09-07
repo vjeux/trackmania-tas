@@ -107,6 +107,9 @@ pub struct GatesFile {
     pub yoff_residual: f32,
     pub spawn: Spawn,
     pub gates: Vec<GateRec>,
+    /// Transformation gates and car-state blocks (boosters, reactors, …) with geometry.
+    #[serde(default)]
+    pub specials: Vec<SpecialRec>,
     pub produced_by: String,
 }
 
@@ -209,6 +212,9 @@ pub fn gate_dims(model: &str) -> (f32, f32) {
     let m = model;
     if m.contains("32m") {
         return (16.0, 4.0); // GateCheckpointLeft32m: pieces 20 m from the 8 m centre piece → 16
+    }
+    if m.contains("24m") {
+        return (12.0, 4.0);
     }
     if m.contains("16m") {
         return (8.0, 4.0); // Right16m sits 24 m from Left32m: 16 + 8
@@ -449,6 +455,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         yoff_residual: resid,
         spawn,
         gates,
+        specials: specials(&m, yoff),
         produced_by: format!("{produced_by}; parked block waypoints skipped: {parked}"),
     })
 }
@@ -551,4 +558,157 @@ pub fn turned(pos: [f32; 3], rot: [f32; 3]) -> Xform {
     let (sr, cr) = rot[2].sin_cos();
     let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
     compose(&compose(&m, &pitch), &roll)
+}
+
+// ---------------------------------------------------------------------------
+// specials: transformation gates and car-state blocks (coordinator, 2026-09-07)
+// ---------------------------------------------------------------------------
+
+/// A gameplay placement the planner must see: a TRANSFORMATION gate (`car` set:
+/// the leg after it is driven by that car) or a physics block (booster, turbo,
+/// reactor, slow-motion, reset, no-engine, no-brake, no-steer, fragile, cruise,
+/// bumper). Not a waypoint; nothing forces the route through it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpecialRec {
+    /// `mapgeom::local::Special` name: "TransformSnow", "Boost2", "Turbo", "Reset", …
+    pub kind: String,
+    /// "Stadium" | "Snow" | "Rally" | "Desert" for a transformation gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub car: Option<String>,
+    pub model: String,
+    pub centre: [f32; 3],
+    /// Unit axis through the gate / along the pad (sign unknown), XZ.
+    pub axis: [f32; 3],
+    pub half_width: f32,
+    pub half_height: f32,
+    pub from_item: bool,
+    /// block index / item index in the map (see `tmmaps census`).
+    pub index: u32,
+}
+
+/// Every gameplay placement of the map with its geometry. Grid blocks at their
+/// cell centre (`y = 8·cy + yoff + 2`), free blocks through their placement
+/// rotation, items at their position. A `GateExpandable*` structure is several
+/// records (the pieces) — they are grouped by 34 m / 6 m into one record here,
+/// like gate rows.
+pub fn specials(m: &tmmaps::map::MapFile, yoff: f32) -> Vec<SpecialRec> {
+    use mapgeom::local::Special;
+    struct P {
+        kind: Special,
+        model: String,
+        centre: [f32; 3],
+        yaw: f32,
+        from_item: bool,
+        index: u32,
+        hw: f32,
+    }
+    let mut ps: Vec<P> = Vec::new();
+    let mut push = |kind: Special, model: &str, centre: [f32; 3], yaw: f32, from_item: bool, index: u32| {
+        if kind == Special::None || kind.is_waypoint() {
+            return;
+        }
+        let (hw, _) = gate_dims(model);
+        ps.push(P { kind, model: model.to_string(), centre, yaw, from_item, index, hw });
+    };
+    for (baked, list) in [(false, &m.blocks), (true, &m.baked)] {
+        for b in list.iter() {
+            let kind = Special::of_name(&b.name);
+            if kind == Special::None || kind.is_waypoint() {
+                continue;
+            }
+            let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+            let (centre, yaw) = if free {
+                match b.free_pos {
+                    Some(p) => {
+                        let rot = b.free_rot.unwrap_or([0.0; 3]);
+                        let mm = turned(p, rot);
+                        let c = apply(&mm, [16.0, ROAD_ABOVE_BASE, 16.0]);
+                        let c2 = apply(&mm, [16.0, ROAD_ABOVE_BASE, 17.0]);
+                        (c, (c2[0] - c[0]).atan2(c2[2] - c[2]))
+                    }
+                    None => continue,
+                }
+            } else {
+                let (cx, cy, cz) = b.coords();
+                ([32.0 * cx as f32 + 16.0, 8.0 * cy as f32 + yoff + ROAD_ABOVE_BASE, 32.0 * cz as f32 + 16.0], if b.dir & 1 == 0 { 0.0 } else { std::f32::consts::FRAC_PI_2 })
+            };
+            let _ = baked;
+            push(kind, &b.name, centre, yaw, false, b.index as u32);
+        }
+    }
+    for it in &m.items {
+        let kind = Special::of_name(&it.model);
+        push(kind, &it.model, it.pos, it.yaw, true, it.index as u32);
+    }
+    // group pieces of one structure: same kind within 34 m XZ / 6 m Y
+    let n = ps.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut Vec<usize>, mut a: usize) -> usize {
+        while p[a] != a {
+            p[a] = p[p[a]];
+            a = p[a];
+        }
+        a
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if ps[i].kind != ps[j].kind {
+                continue;
+            }
+            let dx = ps[i].centre[0] - ps[j].centre[0];
+            let dz = ps[i].centre[2] - ps[j].centre[2];
+            let dxz = (dx * dx + dz * dz).sqrt();
+            let dy = (ps[i].centre[1] - ps[j].centre[1]).abs();
+            // a row (34 m / 6 m) or a vertical STACK of expandable pieces (same XZ, 8 m steps)
+            if (dxz <= GROUP_XZ && dy <= GROUP_Y) || dxz <= STACK_XZ {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    groups
+        .into_values()
+        .map(|members| {
+            let k = members.len() as f32;
+            let mut c = [0.0f32; 3];
+            let mut y_min = f32::INFINITY;
+            for &i in &members {
+                for a in 0..3 {
+                    c[a] += ps[i].centre[a] / k;
+                }
+                y_min = y_min.min(ps[i].centre[1]);
+            }
+            // a vertical stack of pieces is driven through at its BOTTOM row
+            c[1] = y_min;
+            let first = &ps[members[0]];
+            let (sy, cy) = first.yaw.sin_cos();
+            let axis = [sy, 0.0, cy];
+            // extent along the row
+            let row = [-axis[2], 0.0, axis[0]];
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for &i in &members {
+                let d = (ps[i].centre[0] - c[0]) * row[0] + (ps[i].centre[2] - c[2]) * row[2];
+                lo = lo.min(d - ps[i].hw);
+                hi = hi.max(d + ps[i].hw);
+            }
+            SpecialRec {
+                kind: first.kind.name(),
+                car: first.kind.car().map(|s| s.to_string()),
+                model: first.model.clone(),
+                centre: [c[0], c[1] + 4.0, c[2]],
+                axis,
+                half_width: if members.len() == 1 { first.hw } else { ((hi - lo) / 2.0).max(first.hw) },
+                half_height: 4.0,
+                from_item: first.from_item,
+                index: first.index,
+            }
+        })
+        .collect()
 }

@@ -212,6 +212,9 @@ fn cmd_gates(args: &[String]) {
             r.normal_source
         );
     }
+    for s in &g.specials {
+        println!("  special {:<16} {:<36} c {} axis {} hw {:>4.1} {}{}", s.kind, s.model, f3(s.centre), f3(s.axis), s.half_width, if s.from_item { "item" } else { "block" }, s.car.as_ref().map_or(String::new(), |c| format!(" → car {c}")));
+    }
     if let Some(out) = flag(args, "--out") {
         io::write_gates(Path::new(&out), &g).unwrap_or_else(|e| die(&e));
         println!("wrote {out}");

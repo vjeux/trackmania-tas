@@ -183,6 +183,7 @@ name = "tmroute"
 version = "0.1.0"
 dependencies = [
  "gbx",
+ "mapgeom",
  "serde",
  "serde_json",
  "tmmaps",
