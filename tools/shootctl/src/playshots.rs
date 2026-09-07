@@ -389,15 +389,16 @@ fn surface_name(id: i64) -> String {
     }
 }
 
-/// `shootctl wheels FILE.tsv [--from-gas]`: a wheel log read as the surface
+/// `shootctl wheels FILE.tsv [--step MS]`: a wheel log read as the surface
 /// census it is — per wheel, how many frames on which material (ground-contact
 /// frames only) — and the acceleration trace from the first frame the gas
 /// pedal is down: speed and distance at 0.5 s steps, with the surface under
 /// the wheels at each step. Two such tables, original and tiny, side by side,
 /// ARE the physics comparison.
 pub fn summarize_wheels(args: &[String]) -> i32 {
-    let Some(file) = args.first() else {
-        eprintln!("usage: shootctl wheels FILE.tsv");
+    let step: u64 = args.iter().position(|a| a == "--step").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(500);
+    let Some(file) = args.iter().find(|a| !a.starts_with("--") && a.ends_with(".tsv")) else {
+        eprintln!("usage: shootctl wheels FILE.tsv [--step MS]");
         return 2;
     };
     let text = match std::fs::read_to_string(file) {
@@ -460,27 +461,40 @@ pub fn summarize_wheels(args: &[String]) -> i32 {
         let desc: Vec<String> = v.iter().map(|(id, c)| format!("{} {c} ({:.0}%)", surface_name(*id), 100.0 * *c as f64 / n.max(1) as f64)).collect();
         println!("  {name}: {} ground frames: {}", n, desc.join(", "));
     }
-    // the acceleration trace from the first gas frame
+    // the acceleration trace from the first gas frame, stepped on RACE time
+    // when the log has it (the game's clock: two logs of two loads align
+    // exactly), else on the wall clock
     let Some(g0) = rows.iter().position(|r| r.gas > 0.5) else {
         println!("  no frame with the gas pedal down");
         return 0;
     };
-    let t0 = rows[g0].wall;
+    // (CurrentRaceTime stays 0 in a /playmap playground — measured 2026-09-07 — so the clock must be seen to advance)
+    let use_race = rows[g0].race != i64::MIN && rows[g0].race >= 0 && rows.last().map(|r| r.race > rows[g0].race + 1000).unwrap_or(false);
+    let clock = |r: &Row| -> i64 { if use_race { r.race } else { r.wall as i64 } };
+    let t0 = clock(&rows[g0]);
     let p0 = rows[g0].pos;
-    println!("  gas from wall {t0} (race time {}), at ({:.2}, {:.2}, {:.2}); speed and distance every 0.5 s:", if rows[g0].race == i64::MIN { "-".to_string() } else { rows[g0].race.to_string() }, p0[0], p0[1], p0[2]);
+    println!(
+        "  gas from wall {} (race time {}), at ({:.2}, {:.2}, {:.2}); speed and distance every {step} ms of {} time:",
+        rows[g0].wall,
+        if rows[g0].race == i64::MIN { "-".to_string() } else { rows[g0].race.to_string() },
+        p0[0],
+        p0[1],
+        p0[2],
+        if use_race { "RACE" } else { "wall" }
+    );
     println!("    t(s)   speed   dist(m)   wheels");
-    let mut next = 0u64;
+    let mut next = 0i64;
     let mut last_gas = t0;
     for r in rows[g0..].iter() {
         if r.gas > 0.5 {
-            last_gas = r.wall;
+            last_gas = clock(r);
         }
-        let dt = r.wall - t0;
+        let dt = clock(r) - t0;
         if dt >= next {
             let d = ((r.pos[0] - p0[0]).powi(2) + (r.pos[1] - p0[1]).powi(2) + (r.pos[2] - p0[2]).powi(2)).sqrt();
             let mats: Vec<String> = r.mats.iter().map(|m| surface_name(*m)).collect();
-            println!("    {:5.1}  {:6.1}  {:8.2}   {}{}", dt as f64 / 1000.0, r.speed, d, mats.join("/"), if r.ground { "" } else { " (airborne)" });
-            next += 500;
+            println!("    {:5.2}  {:6.1}  {:8.2}   {}{}", dt as f64 / 1000.0, r.speed, d, mats.join("/"), if r.ground { "" } else { " (airborne)" });
+            next += step as i64;
         }
         if dt > 30_000 {
             break;

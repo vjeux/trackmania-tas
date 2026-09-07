@@ -1758,7 +1758,9 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
         let form = std::env::var("TINY_EMPTY_SURFACE").unwrap_or_else(|_| "tri".into());
         if form == "tri" {
             let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
-            let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 0, u03: 0, surface_index: 0 }];
+            // byte and table both NotCollidable (28): the one place the two
+            // disagreed in a whole library (surfhist, 2026-09-07)
+            let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, u03: 0, surface_index: 0 }];
             return CPlugSurface::mesh(v, t, vec![28], [0.0, 0.0, 1.0]);
         }
     }

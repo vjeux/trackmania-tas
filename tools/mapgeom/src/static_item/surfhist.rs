@@ -32,9 +32,18 @@ struct Row {
     up_area: f64,
 }
 
+/// Per physics id: triangles, up-facing triangles, area, up-facing area.
+#[derive(Clone, Copy, Default)]
+pub struct Tot {
+    pub count: usize,
+    pub up: usize,
+    pub area: f64,
+    pub up_area: f64,
+}
+
 /// One surface's census, printed under `label`; `mat_name` names an external
-/// material node of the surface. Returns per-physics (count, up count).
-pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name: &dyn Fn(i32) -> Option<String>) -> BTreeMap<u8, (usize, usize)> {
+/// material node of the surface. Returns the per-physics totals.
+pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name: &dyn Fn(i32) -> Option<String>) -> BTreeMap<u8, Tot> {
     let mats: Vec<String> = sf
         .materials
         .iter()
@@ -46,7 +55,7 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
             SurfMaterial::Id(i) => format!("id {i}"),
         })
         .collect();
-    let mut totals: BTreeMap<u8, (usize, usize)> = BTreeMap::new();
+    let mut totals: BTreeMap<u8, Tot> = BTreeMap::new();
     let Some((verts, tris)) = sf.surf.triangulate() else {
         println!("{label}: surf type {} (not meshable) materials [{}] ids {:?}", sf.surf.type_id(), mats.join(", "), sf.material_ids);
         return totals;
@@ -76,10 +85,12 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
             row.ymin = row.ymin.min(p[1]);
             row.ymax = row.ymax.max(p[1]);
         }
-        let tot = totals.entry(t.material_id).or_insert((0, 0));
-        tot.0 += 1;
+        let tot = totals.entry(t.material_id).or_default();
+        tot.count += 1;
+        tot.area += area;
         if ny > up_cos {
-            tot.1 += 1;
+            tot.up += 1;
+            tot.up_area += area;
         }
     }
     for ((phys, gp, si), r) in &rows {
@@ -110,17 +121,26 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
     totals
 }
 
-fn add_totals(into: &mut BTreeMap<u8, (usize, usize)>, from: BTreeMap<u8, (usize, usize)>) {
-    for (k, (c, u)) in from {
-        let e = into.entry(k).or_insert((0, 0));
-        e.0 += c;
-        e.1 += u;
+fn add_totals(into: &mut BTreeMap<u8, Tot>, from: BTreeMap<u8, Tot>) {
+    for (k, t) in from {
+        let e = into.entry(k).or_default();
+        e.count += t.count;
+        e.up += t.up;
+        e.area += t.area;
+        e.up_area += t.up_area;
     }
+}
+
+/// The totals line: per physics, triangles (up-facing), area (up-facing area).
+fn totals_line(totals: &BTreeMap<u8, Tot>) -> String {
+    let mut v: Vec<(&u8, &Tot)> = totals.iter().collect();
+    v.sort_by(|a, b| b.1.up_area.partial_cmp(&a.1.up_area).unwrap_or(std::cmp::Ordering::Equal));
+    v.iter().map(|(p, t)| format!("{} {p}: {} tris ({} up), {:.0} m2 ({:.0} m2 up)", crate::scene::physics_name(**p), t.count, t.up, t.area, t.up_area)).collect::<Vec<_>>().join(", ")
 }
 
 /// A pack static object file: its surface (inline, or the external shape
 /// file), placed by `at`.
-fn static_object_file(store: &mut DataStore, path: &str, at: &Xform, up_cos: f32, label: &str, totals: &mut BTreeMap<u8, (usize, usize)>) -> Result<(), String> {
+fn static_object_file(store: &mut DataStore, path: &str, at: &Xform, up_cos: f32, label: &str, totals: &mut BTreeMap<u8, Tot>) -> Result<(), String> {
     let model = store.load_model(path)?;
     if model.class_id != super::C_STATIC_OBJECT_MODEL {
         return Err(format!("{path}: class 0x{:08X} is not CPlugStaticObjectModel", model.class_id));
@@ -151,7 +171,7 @@ fn static_object_file(store: &mut DataStore, path: &str, at: &Xform, up_cos: f32
 }
 
 /// A pack prefab: every entity, sub-prefabs recursively, in `at`'s frame.
-fn prefab(store: &mut DataStore, path: &str, at: &Xform, depth: usize, max_depth: usize, up_cos: f32, totals: &mut BTreeMap<u8, (usize, usize)>) -> Result<(), String> {
+fn prefab(store: &mut DataStore, path: &str, at: &Xform, depth: usize, max_depth: usize, up_cos: f32, totals: &mut BTreeMap<u8, Tot>) -> Result<(), String> {
     if depth > max_depth {
         println!("{path}: deeper than --depth {max_depth}, not walked");
         return Ok(());
@@ -217,8 +237,9 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         return Err("surfhist <pack prefab | pack .StaticObject.Gbx | local .Item.Gbx>... [--depth N] [--up 0.7]".into());
     }
     let mut store: Option<DataStore> = None;
+    let mut grand: BTreeMap<u8, Tot> = BTreeMap::new();
     for path in &paths {
-        let mut totals: BTreeMap<u8, (usize, usize)> = BTreeMap::new();
+        let mut totals: BTreeMap<u8, Tot> = BTreeMap::new();
         if std::path::Path::new(path).is_file() {
             let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
             let f = super::parse_file(&data).map_err(|e| format!("{path}: {e}"))?;
@@ -258,11 +279,13 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 prefab(st, path, &IDENTITY, 0, max_depth, up_cos, &mut totals)?;
             }
         }
-        let total: usize = totals.values().map(|(c, _)| *c).sum();
-        println!(
-            "{path}: TOTAL {total} triangles: {}",
-            totals.iter().map(|(p, (c, u))| format!("{} {p}: {c} ({u} up)", crate::scene::physics_name(*p))).collect::<Vec<_>>().join(", ")
-        );
+        let total: usize = totals.values().map(|t| t.count).sum();
+        println!("{path}: TOTAL {total} triangles: {}", totals_line(&totals));
+        add_totals(&mut grand, totals);
+    }
+    if paths.len() > 1 {
+        let total: usize = grand.values().map(|t| t.count).sum();
+        println!("ALL {} files: TOTAL {total} triangles: {}", paths.len(), totals_line(&grand));
     }
     Ok(())
 }
