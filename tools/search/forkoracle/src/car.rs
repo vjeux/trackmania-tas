@@ -323,9 +323,9 @@ pub fn tracks_the_car_batch_over(
     truth: u64,
     track_ticks: u32,
 ) -> Result<Vec<(u64, f64)>, String> {
-    let mut segs: Vec<(u64, u32)> = cands.iter().map(|a| (*a, 12u32)).collect();
+    let mut segs: Vec<(u64, u32)> = cands.iter().map(|a| (*a - 16, 40u32)).collect();
     segs.push((truth, 12u32));
-    let reclen = 12 * segs.len();
+    let reclen = 40 * cands.len() + 12;
     let keep = ((track_ticks as usize) + 8).min(recs.len());
     let (_j, blob) = srv.run_sampled_segs_ex(
         probe,
@@ -342,40 +342,84 @@ pub fn tracks_the_car_batch_over(
         return Err(format!("only {} samples for {} candidates", n, cands.len()));
     }
     let xyz = |i: usize, k: usize| -> [f32; 3] {
-        let b = &blob[i * recsz + 8 + k * 12..];
+        // candidate k's record is 40 bytes at (pos-16): q(16) pos(12) vel(12)
+        let b = &blob[i * recsz + 8 + k * 40 + 16..];
         let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
         [f(0), f(4), f(8)]
     };
-    let truth_k = cands.len();
+    let vel = |i: usize, k: usize| -> [f32; 3] {
+        let b = &blob[i * recsz + 8 + k * 40 + 28..];
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        [f(0), f(4), f(8)]
+    };
+    let quat = |i: usize, k: usize| -> [f32; 4] {
+        let b = &blob[i * recsz + 8 + k * 40..];
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        [f(0), f(4), f(8), f(12)]
+    };
+    let truth_xyz = |i: usize| -> [f32; 3] {
+        let b = &blob[i * recsz + 8 + cands.len() * 40..];
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        [f(0), f(4), f(8)]
+    };
     let mut ok: Vec<(u64, f64)> = Vec::new();
     let mut why = String::new();
     for (k, addr) in cands.iter().enumerate() {
         let (mut worst, mut worst_bar) = (0.0f64, 0.0f64);
         let (mut cand, mut car) = (0.0f64, 0.0f64);
         // WHICH COPY: the vis state LAGS the validator's CGameVehiclePhy by one
-        // tick, and the engine also keeps mirrors that hold the physics state
-        // itself. Both track the car; only one is the object every consumer's
-        // offsets (quaternion at -16, velocity at +12, wetness at +180) and the
-        // clock bias were calibrated on, and picking the other shifts every
-        // label by a tick -- which is 0.8 m at racing speed and is exactly the
-        // error `fk trace` measures against a ghost's own telemetry.
+        // tick, and the engine also keeps copies that hold the position and
+        // NOTHING ELSE. Both track the car. Only one is the object every
+        // consumer's offsets are calibrated on -- and taking the other is not a
+        // near miss, it is a silent disaster: the render copy carries velocity
+        // ZERO and a quaternion that is not one, so a speed predicate can never
+        // fire and a search runs 5.8x faster finding nothing. (Measured, on
+        // this build, at map 2 tick 171: 4 of 8 candidates tripped with the
+        // real state, 0 of 8 with the copy.)
         //
-        // So compare each candidate against the car NOW and against the car ONE
-        // SAMPLE AGO: the vis state matches the older one.
+        // So the test is the whole state, not the position: it must track the
+        // car, lag it by a tick, carry a UNIT QUATERNION at -16, and carry a
+        // velocity at +12 that is the derivative of its own position. A
+        // position-only copy fails the last two by construction.
         let (mut d_now, mut d_prev) = (0.0f64, 0.0f64);
+        let (mut verr, mut qerr) = (0.0f64, 0.0f64);
         for i in 1..n {
-            let step = dist(xyz(i - 1, truth_k), xyz(i, truth_k));
+            let step = dist(truth_xyz(i - 1), truth_xyz(i));
             car += step;
             cand += dist(xyz(i - 1, k), xyz(i, k));
-            let d = dist(xyz(i, k), xyz(i, truth_k));
+            let d = dist(xyz(i, k), truth_xyz(i));
             d_now += d;
-            d_prev += dist(xyz(i, k), xyz(i - 1, truth_k));
+            d_prev += dist(xyz(i, k), truth_xyz(i - 1));
             let bar = step + 0.05;
             if d > bar && d - bar > worst - worst_bar {
                 worst = d;
                 worst_bar = bar;
             }
+            // the velocity must BE the derivative of the position it sits next
+            // to: 100 m/s of travel in 10 ms is 1 m, so the residual is in m/s
+            let v = vel(i, k);
+            let dp = [
+                (xyz(i, k)[0] - xyz(i - 1, k)[0]) as f64 * 100.0,
+                (xyz(i, k)[1] - xyz(i - 1, k)[1]) as f64 * 100.0,
+                (xyz(i, k)[2] - xyz(i - 1, k)[2]) as f64 * 100.0,
+            ];
+            verr += ((dp[0] - v[0] as f64).powi(2)
+                + (dp[1] - v[1] as f64).powi(2)
+                + (dp[2] - v[2] as f64).powi(2))
+            .sqrt();
+            let q = quat(i, k);
+            let norm = ((q[0] as f64).powi(2)
+                + (q[1] as f64).powi(2)
+                + (q[2] as f64).powi(2)
+                + (q[3] as f64).powi(2))
+            .sqrt();
+            // the WORST sample, not the average: a real attitude is unit to
+            // float precision on every tick (measured |q|-1 p99.5 = 1.3e-7),
+            // so an object that is unit on average and 0.14 off at the tail is
+            // not an attitude, it is four floats that happen to sit there
+            qerr = qerr.max((norm - 1.0).abs());
         }
+        let m = (n - 1) as f64;
         if worst > worst_bar {
             why = format!("{:#x}: {:.1} m off at one sample", addr, worst);
             continue;
@@ -392,17 +436,32 @@ pub fn tracks_the_car_batch_over(
             );
             continue;
         }
+        if qerr > 1e-3 {
+            why = format!("{:#x}: worst |q|-1 is {:.3e} -- no attitude here", addr, qerr);
+            continue;
+        }
+        if verr / m > 2.0 {
+            why = format!(
+                "{:#x}: velocity at +12 is not d(pos)/dt ({:.1} m/s residual) -- a position-only \
+                 copy, not the vis state",
+                addr,
+                verr / m
+            );
+            continue;
+        }
         if d_prev >= d_now {
             why = format!(
                 "{:#x}: holds the physics state, not the vis state ({:.2} m from the car now vs \
                  {:.2} m from where it was a tick ago)",
                 addr,
-                d_now / (n - 1) as f64,
-                d_prev / (n - 1) as f64
+                d_now / m,
+                d_prev / m
             );
             continue;
         }
-        ok.push((*addr, worst));
+        // rank by how well the velocity matches its own derivative: among
+        // objects that pass every test, that is the live state
+        ok.push((*addr, verr / m));
     }
     if ok.is_empty() {
         return Err(why);

@@ -220,9 +220,58 @@ impl Session {
             &engine.shim,
             clock,
         )?;
-        let s = Session { srv, tape, checkpoint_clock: clock };
+        let mut s = Session { srv, tape, checkpoint_clock: clock };
         s.assert_running_our_tape()?;
+        // Every session gets the fast finish; it costs one fork and saves 5.8 ms
+        // on every candidate that finishes.
+        if std::env::var("FK_NO_FAST_FINISH").is_err() {
+            s.arm_fast_finish(false)?;
+        }
         Ok(s)
+    }
+
+    /// ARM THE EXIT-AT-FINISH LEVER on this server, if this tape can pay for
+    /// the calibration.
+    ///
+    /// A candidate spends 5.8 ms after its last simulated tick on the
+    /// validator's finish-and-print path, for an answer the engine wrote
+    /// several milliseconds earlier (`forkoracle::finish`). One calibration
+    /// fork finds the word that holds it; every child after that leaves the
+    /// moment it is written.
+    ///
+    /// It needs a tape whose finish time is already known -- which the
+    /// incumbent's is -- so a tape that does not finish simply keeps the old
+    /// path. That is not a silent fallback to a different ANSWER: both paths
+    /// report the validator's own number and they were checked against each
+    /// other on 1100 candidates across three maps. It is a fallback to the
+    /// slower way of getting the same one, and it says so.
+    pub fn arm_fast_finish(&mut self, verbose: bool) -> Result<bool, String> {
+        let Some(d) = self.tape.declared_ms else {
+            if verbose {
+                println!("exit-at-finish: this tape declares no finish time; not armed");
+            }
+            return Ok(false);
+        };
+        let probe = self.probe_tick()?;
+        let recs = self.tape.tail_records(probe);
+        match forkoracle::finish::calibrate(&mut self.srv, probe, &recs, d as i64) {
+            Ok((addr, sentinel)) => {
+                if verbose {
+                    println!(
+                        "exit-at-finish armed: the engine writes this race's result at {:#x} \
+                         (holds {} until then)",
+                        addr, sentinel as i32
+                    );
+                }
+                Ok(true)
+            }
+            Err(e) => {
+                if verbose {
+                    println!("exit-at-finish: not armed ({})", e);
+                }
+                Ok(false)
+            }
+        }
     }
 
     /// THE IDENTITY CONTROL. See [`forkoracle::layout::verify_tape`].

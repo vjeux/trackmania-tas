@@ -103,3 +103,49 @@ mod tests {
         assert_eq!(tick_hook_signatures_match(&bad), Err("tick loop clock write"));
     }
 }
+
+// ---------------------------------------------------------------- the finish
+//
+// WHERE THE ENGINE PUTS THE RACE RESULT, and how it was found.
+//
+// A candidate costs 5.8 ms after its last simulated tick and before its first
+// byte of output (`fk tickhook cost`) -- the validator's finish-and-print path,
+// run for an answer that is one integer. A child that could read that integer
+// could report it and `_exit` instead.
+//
+// The printer's own struct is no use: it is built at print time, out of a
+// vector the engine hangs at `+0x4870`, so reaching it means paying for the
+// thing we are trying to skip. (The printer is at `0x113b020`; its fields are
+// read straight off the disassembly -- `Time` at struct+0x8, `Score` +0xc,
+// `NbRespawns` +0x10, `NbCheckpoints` +0x20, each beside its own name string.)
+//
+// The RESULT BLOCK is different: the engine fills it AT THE FINISH. It was
+// found by a backward pointer scan (`fk tickhook finish --chain`) -- snapshot
+// the writable memory, take the words holding the finish time, find every
+// pointer into their blocks, and keep the hops that land in an object the shim
+// can already resolve. Of the sixteen candidates, exactly two survived three
+// tapes with three different finish times, and this is the shorter.
+//
+//     [[controller + 0x1a88] + 0xa4]   the finish time, in SIMULATION ms
+//                            + 0xbc    the race state: 2 racing, 3 finished
+//
+// The word is `0xffffffff` for the whole race and takes its value ONE TICK
+// after the tick that detects the finish. It is exact, sub-tick included:
+// rank00100 finishes at race 22884 ms -- not a multiple of 10, so the engine
+// interpolates the crossing within the tick -- and this word reads sim 25084,
+// which is 22884 to the millisecond.
+//
+// There is no code signature to check here (it is data, not instructions), so
+// the shim checks it the only honest way: the word must read `NO_TIME` while
+// the race is running. A build that moved the field fails that at once.
+
+/// `controller + this` -> the block the engine fills at the finish.
+pub const RESULT_PTR_IN_CONTROLLER: u64 = 0x1a88;
+/// `result_block + this` -> the finish time in SIMULATION ms, or `NO_TIME`.
+pub const FINISH_SIM_MS_IN_RESULT: u64 = 0xa4;
+/// `result_block + this` -> 2 while racing, 3 once finished.
+pub const RACE_STATE_IN_RESULT: u64 = 0xbc;
+/// What the finish word holds until the race ends.
+pub const NO_TIME: u32 = 0xffff_ffff;
+/// What the race-state word holds once the player has finished.
+pub const RACE_STATE_FINISHED: u32 = 3;

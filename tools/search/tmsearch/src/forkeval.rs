@@ -308,8 +308,25 @@ impl ForkEval {
                 .map_err(|e| format!("the car's state was not located: {}", e))?
         };
 
-        let ack = srv.arm(&watch.arm_payload(
-            layout.clock_bias + s.start_offset_ms as i64,
+        // EXIT AT THE FINISH. A candidate that finishes spends 5.8 ms after its
+        // last simulated tick on the validator's finish-and-print path, for a
+        // number the engine wrote milliseconds earlier. One calibration fork
+        // (of a tape that is about to be simulated thousands of times anyway)
+        // finds the word that holds it, and every candidate after that leaves
+        // as soon as it is written. See `forkoracle::finish` for why the word
+        // is measured per server rather than hardcoded.
+        //
+        // It needs the incumbent's own millisecond, which the master measured
+        // with the PLAIN oracle. Without it, or if the word cannot be found,
+        // the server keeps the JSON path -- the same answer, more slowly.
+        if let Some(ms) = s.incumbent_ms {
+            match forkoracle::finish::calibrate(&mut srv, from, &lrecs, ms) {
+                Ok((addr, _)) => eprintln!("fork: exit-at-finish armed on {:#x}", addr),
+                Err(e) => eprintln!("fork: exit-at-finish not armed ({})", e),
+            }
+        }
+
+        let ack = srv.arm(&watch.arm_payload(            layout.clock_bias + s.start_offset_ms as i64,
             R_CLOCK as u32,
             R_QUAT as u32,
             R_POS as u32,

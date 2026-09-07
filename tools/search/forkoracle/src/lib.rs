@@ -19,6 +19,7 @@
 pub mod pred_core;
 pub mod car;
 pub mod clock;
+pub mod finish;
 pub mod tickhook_sig;
 pub mod forksrv;
 pub mod tree;

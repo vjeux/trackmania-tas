@@ -360,6 +360,16 @@ fn setup(c: &Cfg) -> Setup {
     // So it is a control, not a step: `fk server check` still runs it
     // unconditionally (that is the acceptance test), and `--calibrate` brings
     // it back here.
+    // exit-at-finish: one calibration fork, then every candidate that finishes
+    // leaves as soon as the engine records its time
+    if let Ok(d) = std::env::var("FK_NO_FAST_FINISH") {
+        let _ = d;
+    } else if let Some(ms) = f.declared_ms {
+        match forkoracle::finish::calibrate(&mut srv, probe, &tail_recs(&f.steer, &f.accel, &f.brake, probe), ms as i64) {
+            Ok((addr, _)) => println!("exit-at-finish armed on {:#x}", addr),
+            Err(e) => println!("exit-at-finish not armed ({})", e),
+        }
+    }
     let boundary = if crate::has_flag("--calibrate") {
         crate::cmd::server::calibrate_boundary(&mut srv, &f, &engine, probe)
             .unwrap_or_else(|e| crate::abort(e))

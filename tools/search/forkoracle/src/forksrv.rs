@@ -668,6 +668,15 @@ impl ForkServer {
         self.run_sampled_segs(from, recs, &[(addr, len)], stride, max, key)
     }
 
+    /// Tell the shim which address holds this race's finish time, so children
+    /// can stop the moment the engine records one. See `crate::finish`.
+    pub fn set_finish_word(&mut self, addr: u64) -> String {
+        let mut p = Vec::with_capacity(9);
+        p.push(b'Y');
+        p.extend_from_slice(&addr.to_le_bytes());
+        self.arm(&p)
+    }
+
     /// Arm the watchdog: predicates, the reference line and the memory
     /// segments to watch, sent ONCE. Every later fork inherits them.
     pub fn arm(&mut self, payload: &[u8]) -> String {
@@ -1008,6 +1017,22 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // THE CHILD MAY HAVE ANSWERED ALREADY. When the shim exits a child at the
+    // finish (`FKSHIM_EXIT_AT_FINISH`), the validator never runs its print path,
+    // so there is no `ValidatedResult` to read -- the answer arrives on its own
+    // line instead, in the same race ms the JSON would have carried. It is not
+    // an estimate: it is the engine's own result word, sub-tick interpolation
+    // included (`tickhook_sig`).
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKFINISH race_ms ") {
+            if let Some(ms) = rest.split_whitespace().next().and_then(|s| s.parse::<i64>().ok())
+            {
+                if (0..=BAD_TIME_MS).contains(&ms) {
+                    return (Some(ms), None);
+                }
+            }
+        }
+    }
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with("\"ValidatedResult\"") {

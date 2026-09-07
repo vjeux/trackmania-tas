@@ -218,6 +218,21 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         },
                     )
                 }
+                "finishcheck" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::tickhook::finishcheck(
+                        &engine,
+                        tape,
+                        at,
+                        num(rest, "--n").unwrap_or(200) as usize,
+                        num(rest, "--seed").unwrap_or(1) as u64,
+                    )
+                }
+                "finishfind" => {
+                    let (engine, tape, at) = common(rest)?;
+                    let obj = flag(rest, "--object").unwrap_or("participant").to_string();
+                    cmd::tickhook::finishfind(&engine, tape, at, &obj)
+                }
                 "finish" => {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::finish(&engine, tape, at)
@@ -230,7 +245,7 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     let (engine, tape, at) = common(rest)?;
                     cmd::tickhook::reads(&engine, tape, at)
                 }
-                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish>".into()),
+                _ => Err("fk tickhook <check|count|load|find|reads|cost|finish|finishfind|finishcheck>".into()),
             }
         }
         "tree" => {

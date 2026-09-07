@@ -992,8 +992,105 @@ struct Timing {
     first_tick_us: u64,
     last_tick_us: u64,
     ticks: u64,
+    /// The finish time in SIMULATION ms, straight out of the engine's result
+    /// block, or 0 if this child never finished. See `tickhook_sig`.
+    finish_sim_ms: u64,
+    /// The race tick at which the child first saw it.
+    finish_clock: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
+
+/// The address of the engine's finish word, resolved once in the fork-server
+/// parent so every child inherits it (0 = not resolved, and then the fast path
+/// is simply not taken).
+static RESULT_WORD: AtomicUsize = AtomicUsize::new(0);
+/// 1 = a child exits the moment the engine records a finish, instead of running
+/// the validator's finish-and-print path. 2 = record it but DO NOT exit, so the
+/// same child produces both numbers and they can be compared (`fk tickhook
+/// finishcheck`).
+static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
+/// Why the resolve refused: 1 no controller, 2 pointer slot unmapped, 3 null
+/// block, 4 word unmapped, 5 the word was not NO_TIME. 0 = it resolved.
+static RESULT_WHY: AtomicUsize = AtomicUsize::new(0);
+/// What the word actually held when the resolve looked.
+static RESULT_SEEN: AtomicUsize = AtomicUsize::new(0);
+/// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
+/// others): the fast path fires when the word stops being this.
+static RESULT_SENTINEL: AtomicUsize = AtomicUsize::new(0);
+/// The race-state word beside it: 2 racing, 3 finished.
+static RESULT_STATE: AtomicUsize = AtomicUsize::new(0);
+
+/// Resolve `[[controller + 0x1a88] + 0xa4]` and CHECK it: while the race is
+/// running that word must read `NO_TIME`. A build that moved the field, or a
+/// chain that resolved to something else, fails here and the fast path stays
+/// off -- it never silently reports a wrong number.
+unsafe fn resolve_result_word() {
+    if RESULT_WORD.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let c = VALIDATOR_CONTROLLER.load(Ordering::Relaxed);
+    if c == 0 {
+        RESULT_WHY.store(1, Ordering::Relaxed);
+        return;
+    }
+    let bp = (c as u64 + tickhook_sig::RESULT_PTR_IN_CONTROLLER) as *const u64;
+    if !readable(bp as usize, 8) {
+        RESULT_WHY.store(2, Ordering::Relaxed);
+        return;
+    }
+    let block = *bp;
+    if block < 0x1000 {
+        RESULT_WHY.store(3, Ordering::Relaxed);
+        return;
+    }
+    let w = block + tickhook_sig::FINISH_SIM_MS_IN_RESULT;
+    if !readable(w as usize, 4) {
+        RESULT_WHY.store(4, Ordering::Relaxed);
+        return;
+    }
+    RESULT_SEEN.store(*(w as *const u32) as usize, Ordering::Relaxed);
+    // THE EVENT IS THE RACE STATE, THE PAYLOAD IS THE TIME.
+    //
+    // The "no time yet" sentinel is not the same on every map -- map 2 holds
+    // 0xffffffff while racing and 126859 holds 0 -- so keying the check on one
+    // of them silently disabled the whole lever on the other. What IS the same
+    // is the race-state word beside it: 2 while racing, 3 once finished. So
+    // verify the block by THAT, and remember whatever this race's sentinel is.
+    let st = block + tickhook_sig::RACE_STATE_IN_RESULT;
+    if !readable(st as usize, 4) {
+        RESULT_WHY.store(6, Ordering::Relaxed);
+        return;
+    }
+    // NOT FINISHED, rather than exactly 2: the state is 1 in the moments after
+    // the start (a resolve at tick 171 sees 1, one at tick 2313 sees 2), and
+    // refusing that quietly disabled the lever at every early checkpoint --
+    // which is where the search actually runs.
+    if *(st as *const u32) == tickhook_sig::RACE_STATE_FINISHED {
+        RESULT_WHY.store(5, Ordering::Relaxed);
+        return;
+    }
+    // and the time word must be one of the two "nothing yet" markers this
+    // engine uses (0xffffffff on some maps, 0 on others), never a live number
+    let sent = *(w as *const u32);
+    if sent != tickhook_sig::NO_TIME && sent != 0 {
+        RESULT_WHY.store(7, Ordering::Relaxed);
+        return;
+    }
+    RESULT_SENTINEL.store(*(w as *const u32) as usize, Ordering::SeqCst);
+    RESULT_STATE.store(st as usize, Ordering::SeqCst);
+    RESULT_WORD.store(w as usize, Ordering::SeqCst);
+}
+
+/// Is this range mapped? One `msync` on the page, no signal handler games.
+unsafe fn readable(addr: usize, len: usize) -> bool {
+    extern "C" {
+        fn msync(addr: *mut c_void, len: usize, flags: c_int) -> c_int;
+    }
+    let page = 4096usize;
+    let start = addr & !(page - 1);
+    let end = (addr + len + page - 1) & !(page - 1);
+    msync(start as *mut c_void, end - start, 4 /* MS_ASYNC */) == 0
+}
 
 unsafe fn timing() -> *mut Timing {
     TIMING.load(Ordering::Relaxed) as *mut Timing
@@ -1090,7 +1187,41 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
     }
     let n = ((new as i64 - rs as i64).div_euclid(10) + RACE_CLOCK_BIAS_TICKS as i64) as u64;
     TICK_CLOCK.store(n, Ordering::Relaxed);
+    // THE WATCHDOG AND THE SAMPLER FIRST, then the finish.
+    //
+    // `on_clock` is what feeds the predicates and writes the candidate's
+    // summary into the shared page. Leaving before it would silently drop the
+    // last tick from every finisher's progress -- a behaviour change disguised
+    // as a speedup -- so the tick is evaluated in full and only then does the
+    // child go. (`on_clock` may itself end the child, which is a trip and is
+    // exactly as it was.)
     on_clock(n);
+
+    // THE FINISH, read from the engine rather than waited for.
+    //
+    // One load and one compare per tick, in a child whose driver calibrated the
+    // word (see `forkoracle::finish`). When the engine records a finish, the
+    // answer this candidate exists to produce is already known -- so take it
+    // and go, instead of paying 5.8 ms for the validator to format it as JSON.
+    // Mode 2 records it and stays, so the same child also prints the JSON and
+    // the two numbers can be compared.
+    let mode = EXIT_AT_FINISH.load(Ordering::Relaxed);
+    if mode != 0 && IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let w = RESULT_WORD.load(Ordering::Relaxed);
+        if w != 0 {
+            let v = std::ptr::read_volatile(w as *const u32);
+            if v as usize != RESULT_SENTINEL.load(Ordering::Relaxed) {
+                let t = timing();
+                if !t.is_null() && (*t).finish_sim_ms == 0 {
+                    (*t).finish_sim_ms = v as u64;
+                    (*t).finish_clock = n;
+                }
+                if mode == 1 {
+                    _exit(0);
+                }
+            }
+        }
+    }
 }
 
 /// Build the trampoline and patch the entry. Any failure is fatal (exit 92):
@@ -1825,6 +1956,10 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
 
 unsafe fn forkserver() {
     timing_init();
+    // Resolve the engine's finish word once, here in the parent, while the race
+    // is still running -- which is exactly when the check it performs (the word
+    // must read NO_TIME) has meaning. Every child inherits the address.
+
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
@@ -1991,6 +2126,39 @@ unsafe fn forkserver() {
         }
         if len == 0 || payload[0] == b'Q' {
             _exit(0);
+        }
+        if payload[0] == b'Y' {
+            // 'Y' u64 addr -- THE FINISH WORD, calibrated by the driver.
+            //
+            // Where the engine records this race's result is not a constant:
+            // the record sits at +0xa4 of the controller's block on two maps
+            // and somewhere else on a third, and the "nothing yet" marker is
+            // 0xffffffff on one map and 0 on another. Hardcoding either turned
+            // the lever silently off (126859) or made it never fire (145875).
+            //
+            // So the driver CALIBRATES it -- one fork of the incumbent tape,
+            // whose finish time it already knows, and it reports the address
+            // whose value becomes that time. Children are forked from this
+            // process, so an address here is the same address there.
+            let addr = u64::from_le_bytes(payload[1..9].try_into().unwrap());
+            if addr < 0x1000 || !readable(addr as usize, 4) {
+                send_frame(res, b"ERR finish word unreadable");
+                continue;
+            }
+            let sentinel = *(addr as *const u32);
+            RESULT_WORD.store(addr as usize, Ordering::SeqCst);
+            RESULT_SENTINEL.store(sentinel as usize, Ordering::SeqCst);
+            EXIT_AT_FINISH.store(
+                if std::env::var("FKSHIM_FINISH_CHECK").is_ok() { 2 } else { 1 },
+                Ordering::SeqCst,
+            );
+            let mut ack = Vec::new();
+            ack.extend_from_slice(b"FINISH ");
+            utoa(addr, &mut ack);
+            ack.extend_from_slice(b" sentinel ");
+            utoa(sentinel as u64, &mut ack);
+            send_frame(res, &ack);
+            continue;
         }
         if payload[0] == b'N' {
             // null fork: how much of the per-candidate cost is fork + child
@@ -2641,8 +2809,16 @@ unsafe fn forkserver() {
                 continue;
             }
             // clear the shared report before the fork, so a child that dies
-            // without writing cannot be mistaken for one that reported
+            // without writing cannot be mistaken for one that reported -- and
+            // the timing page with it, or this candidate inherits the previous
+            // one's finish time
             std::ptr::write_bytes(cfg.out, 0, SUMMARY_BYTES);
+            {
+                let tp = timing();
+                if !tp.is_null() {
+                    std::ptr::write_bytes(tp as *mut u8, 0, std::mem::size_of::<Timing>());
+                }
+            }
             fflush(std::ptr::null_mut());
             let t_start = now_us();
             let mut fds = [0i32; 2];
@@ -2717,6 +2893,17 @@ unsafe fn forkserver() {
             }
             kill(pid, SIGKILL);
             close(fds[0]);
+            {
+                // the child may have left at the finish with the answer
+                let tp = timing();
+                if !tp.is_null() && (*tp).finish_sim_ms != 0 {
+                    out.extend_from_slice(b"\nFKFINISH race_ms ");
+                    utoa((*tp).finish_sim_ms - RACE_START.load(Ordering::Relaxed), &mut out);
+                    out.extend_from_slice(b" clock ");
+                    utoa((*tp).finish_clock, &mut out);
+                    out.push(b'\n');
+                }
+            }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
             out.extend_from_slice(b" first_us ");
@@ -2825,6 +3012,18 @@ unsafe fn forkserver() {
         // simulation -- the validator's finish and print path, the JSON, the
         // pipe and the parse.
         let tp = timing();
+        if !tp.is_null() && (*tp).finish_sim_ms != 0 {
+            // The child read the race result out of the engine and left. Report
+            // it in the RACE ms the driver speaks, on its own line, so
+            // `parse_result` never has to guess whether a truncated JSON was a
+            // DNF or a child that knew the answer.
+            let rs = RACE_START.load(Ordering::Relaxed);
+            out.extend_from_slice(b"\nFKFINISH race_ms ");
+            utoa((*tp).finish_sim_ms - rs, &mut out);
+            out.extend_from_slice(b" clock ");
+            utoa((*tp).finish_clock, &mut out);
+            out.push(b'\n');
+        }
         if !tp.is_null() {
             out.extend_from_slice(b" child_us ");
             utoa((*tp).child_us.saturating_sub(t_start), &mut out);

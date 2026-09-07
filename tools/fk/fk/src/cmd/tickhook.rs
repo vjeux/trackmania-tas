@@ -957,6 +957,13 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, n: usize) -> Result<(),
     let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
     let recs = s.tape.tail_records(probe);
     let tail = recs.len();
+    // FK_FINISH_FAST=1 calibrates the engine's finish word and lets children
+    // leave the moment it is written, so the same measurement prices the lever.
+    if std::env::var("FK_FINISH_FAST").is_ok() {
+        let d = s.tape.declared_ms.ok_or("the tape declares no finish time")? as i64;
+        let (addr, _) = forkoracle::finish::calibrate(&mut s.srv, probe, &recs, d)?;
+        println!("exit-at-finish armed on {:#x}", addr);
+    }
     let seg = [(s.srv.base, 4u32)]; // a 4-byte gather: the transport, not the data
 
     let time = |f: &mut dyn FnMut()| -> f64 {
@@ -1166,6 +1173,18 @@ pub fn finish(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String>
         anchors.iter().map(|(n, a)| format!("{} {:#x}", n, a)).collect::<Vec<_>>().join(", ")
     );
 
+    println!("\nstructural probe of the printer's result vector:");
+    probe_result_vector(pid, &anchors, declared.unwrap_or(0));
+
+    if std::env::var("FK_CHAIN").is_ok() {
+        println!("\nbackward pointer scan from the value to a typed object:");
+        let d = declared.unwrap_or(0);
+        match chain_to_value(pid, &anchors, &[d, d + s.srv.race_start as i64], 3) {
+            Some(c) => println!("  CHAIN: {}", c),
+            None => println!("  no chain within 3 hops of any object the shim can resolve"),
+        }
+    }
+
     for (what, v) in &want {
         let needle = (*v as u32).to_le_bytes();
         let mut hits: Vec<u64> = Vec::new();
@@ -1207,5 +1226,494 @@ pub fn finish(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String>
          each tape's OWN result. That offset is what the shim reads to end a candidate at the \
          finish instead of running the validator's print path."
     );
+    Ok(())
+}
+
+/// THE RESULT VECTOR, probed structurally.
+///
+/// The JSON printer at `0x113b020` walks a vector the engine hangs off one
+/// object at `+0x4870`: the first dword is the count, and each element carries
+/// `IsValid` at +0x00, **`Time` at +0x08**, `Score` at +0x0c, `NbRespawns` at
+/// +0x10 and `NbCheckpoints` at +0x20 (read straight off the `mov r8d,[rbx+..]`
+/// beside each field-name string in the disassembly). This asks every typed
+/// object the shim can resolve whether it is that object -- and, failing that,
+/// every pointer those objects hold, one level deep.
+fn probe_result_vector(pid: i32, anchors: &[(&str, u64)], want_time: i64) {
+    use forkoracle::procmem::read_at;
+    let w32 = |a: u64| read_at(pid, a, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()));
+    let w64 = |a: u64| read_at(pid, a, 8).map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()));
+    for (name, a) in anchors {
+        for off in [0x4870u64, 0x4878] {
+            let Some(vec_ptr) = w64(a + off) else { continue };
+            if vec_ptr < 0x1000 {
+                continue;
+            }
+            let Some(count) = w32(vec_ptr) else { continue };
+            if count == 0 || count > 64 {
+                continue;
+            }
+            println!("  {}+{:#x} -> {:#x}, count {}", name, off, vec_ptr, count);
+        }
+    }
+    // Every pointer the anchors hold, one level deep, asked the same question:
+    // does the thing it points at carry this run's Time at +8?
+    for (name, a) in anchors {
+        for off in (0..0x5000u64).step_by(8) {
+            let Some(p) = w64(a + off) else { continue };
+            if p < 0x1000 {
+                continue;
+            }
+            let Some(t) = w32(p + 8) else { continue };
+            if t as i32 as i64 == want_time {
+                if let (Some(cp), Some(valid)) = (w32(p + 0x20), w32(p)) {
+                    println!(
+                        "  [{}+{:#x}] -> {:#x}: Time {} NbCheckpoints {} first-word {}",
+                        name,
+                        off,
+                        p,
+                        t as i32,
+                        cp,
+                        valid
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------- fk tickhook finishfind
+
+/// FIND THE ENGINE'S OWN "THE RACE IS OVER" WORD, by watching it happen.
+///
+/// A candidate costs 5.8 ms after its last simulated tick (`fk tickhook cost`)
+/// and none of that is transport: it is the validator's finish-and-print path,
+/// run for an answer that is one integer. A child that knew the race was over
+/// -- the tick it happened -- could report it through the timing page and
+/// `_exit`, skipping all of it.
+///
+/// The result STRUCT is not reachable from any object the shim holds (probed:
+/// no pointer within 0x5000 of the controller, simulation, playground,
+/// participant or vehicle points at it, and the Time word itself lands in
+/// per-run heap blocks at no fixed offset). But the engine must also record, in
+/// its own state, THAT the player finished -- and that word is what this looks
+/// for.
+///
+/// The method is a differential, not a guess: gather a window of the
+/// participant (or vehicle, or playground) every tick across the finish, and
+/// keep the words that are constant before, constant after, and change EXACTLY
+/// at the finish tick. Run it on two tapes with different finish times and only
+/// the words that flip at each tape's own finish survive.
+pub fn finishfind(engine: &Engine, tape: Tape, at: Checkpoint, what: &str) -> Result<(), String> {
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
+    let recs = s.tape.tail_records(probe);
+    let chain = forkoracle::car::validator_chain(&s.srv)?;
+    let (name, base) = match what {
+        "participant" => ("participant", chain.participant),
+        "vehicle" => ("vehicle", chain.vehicle),
+        "playground" => ("playground", chain.playground),
+        "sim" => ("sim", chain.sim),
+        // the RESULT BLOCK: the printer's own struct is built too late to help a
+        // child, but the engine records the race's outcome in a block the
+        // validation controller holds at +0x1a88 -- the backward pointer scan
+        // named it, and it is the same offset with the value at the same +0xa4
+        // on three tapes with three different finish times.
+        "result" => {
+            let p = forkoracle::procmem::read_at(s.srv.pid(), chain.controller + 0x1a88, 8)
+                .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+                .unwrap_or(0);
+            if p < 0x1000 {
+                return Err(format!("controller+0x1a88 is {:#x} -- no result block here", p));
+            }
+            ("result", p)
+        }
+        _ => return Err("--object participant|vehicle|playground|sim".into()),
+    };
+    let declared = s
+        .tape
+        .declared_ms
+        .ok_or("the tape declares no finish time")? as i64;
+    let finish_tick = forkoracle::clock::ckpt_for_race_ms(declared) as i64;
+    let start_clock = s.srv.clock as i64;
+    println!(
+        "{} at {:#x}; the tape finishes at race {} ms = clock {}; server is at clock {}",
+        name, base, declared, finish_tick, start_clock
+    );
+
+    // 8 KB of the object, in the shim's 8 segments, every tick.
+    let chunk: u32 = std::env::var("FK_FF_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+    let from: u64 = std::env::var("FK_FF_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let segs: Vec<(u64, u32)> = (0..8).map(|i| (base + from + i * chunk as u64, chunk)).collect();
+    let width = 8 * chunk as usize;
+    let want_from = finish_tick - 12;
+    let ticks = (finish_tick + 8 - start_clock).max(16) as u32;
+    let (_j, blob) = s.srv.run_sampled_segs_ex(
+        probe,
+        &recs,
+        &segs,
+        1,
+        (ticks + 4) | crate::locate::EXIT_ON_BUDGET,
+        // NO DEDUP (klen 0): one sample per tick, even when nothing changes --
+        // which is the whole point when watching for the one tick where
+        // something does.
+        (0, 0),
+        forkoracle::clock::budget_for_ticks(ticks + 8),
+    );
+    let recsz = 8 + width;
+    let n = blob.len() / recsz;
+    println!("{} samples of {} bytes", n, width);
+    if n < 8 {
+        return Err("too few samples".into());
+    }
+    let clock_of = |i: usize| u64::from_le_bytes(blob[i * recsz..i * recsz + 8].try_into().unwrap()) as i64;
+    let word = |i: usize, o: usize| {
+        u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 8 + o + 4].try_into().unwrap())
+    };
+    // index of the first sample at or after the finish tick
+    let Some(fi) = (0..n).find(|&i| clock_of(i) >= finish_tick) else {
+        return Err(format!(
+            "the run never reached the finish tick (last clock {})",
+            clock_of(n - 1)
+        ));
+    };
+    println!(
+        "the finish tick is sample {} of {} (clock {} .. {})",
+        fi,
+        n,
+        clock_of(0),
+        clock_of(n - 1)
+    );
+    // ONE TRANSITION IN THE WHOLE WINDOW, and where. Requiring the change to
+    // land exactly on the finish tick found nothing on either object -- so ask
+    // the looser question and read the answer: a word that settles once, near
+    // the finish, is the candidate; a word that changes every tick is physics.
+    let lo = (0..n).find(|&i| clock_of(i) >= want_from).unwrap_or(0);
+    let mut once: Vec<(usize, usize, u32, u32)> = Vec::new();
+    for o in (0..width - 4).step_by(4) {
+        let mut trans = 0usize;
+        let mut at = 0usize;
+        for i in lo + 1..n {
+            if word(i, o) != word(i - 1, o) {
+                trans += 1;
+                at = i;
+                if trans > 1 {
+                    break;
+                }
+            }
+        }
+        if trans == 1 {
+            once.push((at, o, word(at - 1, o), word(at, o)));
+        }
+    }
+    once.sort_by_key(|(at, _, _, _)| (*at as i64 - fi as i64).abs());
+    println!(
+        "{} word(s) change exactly ONCE in the window [{}..{}]; nearest the finish first:",
+        once.len(),
+        clock_of(lo),
+        clock_of(n - 1)
+    );
+    for (at, o, b, a) in once.iter().take(12) {
+        println!(
+            "  {}+{:#06x}  at clock {} ({:+} from the finish): {} -> {}   (i32 {} -> {}; f32 {:.4} -> {:.4})",
+            name,
+            o,
+            clock_of(*at),
+            clock_of(*at) - finish_tick,
+            b,
+            a,
+            *b as i32,
+            *a as i32,
+            f32::from_bits(*b),
+            f32::from_bits(*a)
+        );
+    }
+
+    // THE TIME ITSELF. The finish is NOT a tick boundary -- rank00100 finishes
+    // at 22884 ms, and the tick that detects it is 22880 -- so the engine
+    // interpolates the crossing within the tick and stores the answer
+    // somewhere. Any word whose value lands within one tick of the declared
+    // time (as race ms, or as sim ms) is a candidate for where.
+    println!("\nwords holding something within a tick of the declared finish:");
+    let mut near = 0;
+    for o in (0..width - 4).step_by(4) {
+        let v = word(n - 1, o) as i64;
+        let as_race = (v - declared).abs();
+        let as_sim = (v - declared - s.srv.race_start as i64).abs();
+        if (as_race <= 10 || as_sim <= 10) && near < 20 {
+            near += 1;
+            println!(
+                "  {}+{:#06x} = {} (declared {} race, {} sim; first at sample {})",
+                name,
+                from as usize + o,
+                v,
+                declared,
+                declared + s.srv.race_start as i64,
+                (0..n).find(|&i| word(i, o) as i64 == v).unwrap_or(0)
+            );
+        }
+    }
+    if near == 0 {
+        println!("  (none in this window)");
+    }
+
+    // AND THE COUNTERS: a word that only ever goes up, in steps of one, ending
+    // small. That is what a checkpoint count looks like, and a DNF needs it --
+    // a child that exits early still has to say how far it got.
+    println!("\nmonotone small counters over the same window:");
+    let mut shown = 0;
+    for o in (0..width - 4).step_by(4) {
+        let last = word(n - 1, o);
+        if last == 0 || last > 32 {
+            continue;
+        }
+        let mut up = 0usize;
+        let mut ok = true;
+        for i in lo + 1..n {
+            let (p, c) = (word(i - 1, o), word(i, o));
+            if c == p {
+                continue;
+            }
+            if c != p + 1 {
+                ok = false;
+                break;
+            }
+            up += 1;
+        }
+        if ok && up >= 1 && shown < 12 {
+            shown += 1;
+            println!(
+                "  {}+{:#06x}: {} -> {} in {} step(s) of one",
+                name,
+                o,
+                word(lo, o),
+                last,
+                up
+            );
+        }
+    }
+    s.srv.quit();
+    Ok(())
+}
+
+/// FIND THE POINTER CHAIN from a typed object to the finish time, backwards.
+///
+/// The time is in memory two ticks after the finish and long before anything is
+/// printed -- 18 to 21 copies of it -- but at no fixed offset from anything:
+/// two runs of the SAME tape put it 0x50 apart. So it lives in a per-run
+/// allocation, and the only durable way to it is a POINTER some typed object
+/// holds.
+///
+/// Searching forwards is hopeless (a pointer graph of a 150 MB heap); searching
+/// backwards is not. Snapshot the writable memory once, take the addresses that
+/// hold the value, find every word that points INTO the block containing one of
+/// them, then repeat -- and stop the moment a hop lands inside an object the
+/// shim can already resolve. What comes back is a chain of offsets a child can
+/// walk in nanoseconds.
+fn chain_to_value(
+    pid: i32,
+    anchors: &[(&str, u64)],
+    values: &[i64],
+    depth: usize,
+) -> Option<String> {
+    use forkoracle::procmem;
+    let mut mem: Vec<(u64, Vec<u8>)> = Vec::new();
+    for r in procmem::maps(pid) {
+        if !r.perms.starts_with("rw") || r.path == "[vvar]" || r.path == "[vsyscall]" {
+            continue;
+        }
+        if let Some(b) = procmem::read_at(pid, r.start, (r.end - r.start) as usize) {
+            mem.push((r.start, b));
+        }
+    }
+    let total: usize = mem.iter().map(|(_, b)| b.len()).sum();
+    println!("  snapshot: {} regions, {:.1} MB", mem.len(), total as f64 / 1e6);
+
+    // every word that points into [target - SLACK, target]
+    const SLACK: u64 = 0x1000;
+    let mut level: Vec<u64> = Vec::new();
+    for (start, buf) in &mem {
+        let mut o = 0usize;
+        while o + 4 <= buf.len() {
+            let v = i32::from_le_bytes(buf[o..o + 4].try_into().unwrap()) as i64;
+            if values.contains(&v) {
+                level.push(start + o as u64);
+            }
+            o += 4;
+        }
+    }
+    println!("  {} word(s) hold the value", level.len());
+    let mut edges: Vec<(u64, u64)> = Vec::new();
+    for d in 1..=depth {
+        let mut next: Vec<u64> = Vec::new();
+        for (start, buf) in &mem {
+            let mut o = 0usize;
+            while o + 8 <= buf.len() {
+                let p = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+                if p >= 0x1000 {
+                    if let Some(t) = level.iter().find(|t| **t >= p && **t - p <= SLACK) {
+                        let here = start + o as u64;
+                        next.push(here);
+                        edges.push((here, *t));
+                    }
+                }
+                o += 8;
+            }
+        }
+        next.sort_unstable();
+        next.dedup();
+        println!("  depth {}: {} pointer(s) into those blocks", d, next.len());
+        // did any of them land inside an object we can already name?
+        let mut found: Vec<String> = Vec::new();
+        for (name, a) in anchors {
+            if *name == "input array" {
+                // the tape's own allocation: a hit just past its end is heap
+                // adjacency (the array is 32 bytes x records), not structure
+                continue;
+            }
+            for p in &next {
+                if *p >= *a && *p - *a < 0x20_000 {
+                    let t = edges.iter().find(|(f, _)| f == p).map(|(_, t)| *t).unwrap_or(0);
+                    let base = u64::from_le_bytes(
+                        procmem::read_at(pid, *p, 8).unwrap()[..8].try_into().unwrap(),
+                    );
+                    found.push(format!(
+                        "{}+{:#x} -> {:#x}, value at +{:#x} (depth {})",
+                        name,
+                        p - a,
+                        base,
+                        t - base,
+                        d
+                    ));
+                }
+            }
+        }
+        if !found.is_empty() {
+            for f in found.iter().take(20) {
+                println!("    {}", f);
+            }
+            return Some(format!("{} candidate chain(s) at depth {}", found.len(), d));
+        }
+        if next.is_empty() || next.len() > 200_000 {
+            break;
+        }
+        level = next;
+    }
+    None
+}
+
+// ------------------------------------------------------ fk tickhook finishcheck
+
+/// THE CONTROL ON THE EXIT-AT-FINISH LEVER: both numbers, from the same child.
+///
+/// `FKSHIM_EXIT_AT_FINISH=check` makes a child record the engine's result word
+/// and then carry on and print the JSON anyway, so one run produces the fast
+/// answer and the slow one for the same simulation. They must be equal on every
+/// candidate -- finishers and DNFs alike, where a DNF must produce no fast
+/// answer at all rather than a wrong one.
+pub fn finishcheck(
+    engine: &Engine,
+    tape: Tape,
+    at: Checkpoint,
+    n: usize,
+    seed: u64,
+) -> Result<(), String> {
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
+    let recs = s.tape.tail_records(probe);
+    let tail = recs.len();
+    let declared = s.tape.declared_ms.ok_or("the tape declares no finish time")? as i64;
+    let (addr, sentinel) = forkoracle::finish::calibrate(&mut s.srv, probe, &recs, declared)?;
+    println!(
+        "checkpoint tick {}, {} tail ticks, {} candidates, seed {}\n\
+         the finish word is {:#x} (holds {} until the race ends)",
+        probe, tail, n, seed, addr, sentinel as i32
+    );
+    let mut rng = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    let mut next = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng >> 33) as u64
+    };
+    let (mut agree, mut fast_only, mut slow_only, mut disagree) = (0usize, 0, 0, 0);
+    let (mut finishers, mut dnfs) = (0usize, 0usize);
+    let mut worst: Vec<String> = Vec::new();
+    for c in 0..n {
+        let mut r = recs.clone();
+        // a handful of steer nudges in the tail: enough to make some candidates
+        // finish with a different time and some not finish at all
+        let k = 1 + (next() % 4) as usize;
+        for _ in 0..k {
+            let i = (next() as usize) % r.len();
+            let d = ((next() % 2001) as f32 - 1000.0) / 1000.0;
+            r[i].steer = (r[i].steer + d).clamp(-1.0, 1.0);
+        }
+        let out = s.srv.run(probe, &r);
+        let fast = out
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("FKFINISH race_ms "))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|v| v.parse::<i64>().ok());
+        // the JSON's own answer, read the way the driver reads it
+        let mut slow = None;
+        let mut in_validated = false;
+        for line in out.lines() {
+            let t = line.trim();
+            if t.starts_with("\"ValidatedResult\"") {
+                in_validated = !t.contains("null");
+            } else if in_validated && t.starts_with("\"Time\"") {
+                slow = t
+                    .split(':')
+                    .nth(1)
+                    .and_then(|v| v.trim().trim_end_matches(',').parse::<i64>().ok());
+                in_validated = false;
+            }
+        }
+        match (fast, slow) {
+            (Some(a), Some(b)) if a == b => {
+                agree += 1;
+                finishers += 1;
+            }
+            (Some(a), Some(b)) => {
+                disagree += 1;
+                finishers += 1;
+                if worst.len() < 10 {
+                    worst.push(format!("c{:04}: fast {} vs JSON {}", c, a, b));
+                }
+            }
+            (Some(a), None) => {
+                fast_only += 1;
+                if worst.len() < 10 {
+                    worst.push(format!("c{:04}: fast {} but the JSON reported no time", c, a));
+                }
+            }
+            (None, Some(b)) => {
+                slow_only += 1;
+                finishers += 1;
+                if worst.len() < 10 {
+                    worst.push(format!("c{:04}: the JSON says {} and the fast path saw nothing", c, b));
+                }
+            }
+            (None, None) => dnfs += 1,
+        }
+    }
+    println!(
+        "\n{} candidates: {} finished, {} did not\n\
+         \x20 agree                {}\n\
+         \x20 DISAGREE             {}\n\
+         \x20 fast answered, JSON did not   {}\n\
+         \x20 JSON answered, fast did not   {}",
+        n, finishers, dnfs, agree, disagree, fast_only, slow_only
+    );
+    for w in &worst {
+        println!("  {}", w);
+    }
+    s.srv.quit();
+    if disagree + fast_only + slow_only > 0 {
+        return Err(format!(
+            "{} of {} candidates disagree -- the fast finish is NOT the validator's answer",
+            disagree + fast_only + slow_only,
+            n
+        ));
+    }
+    println!("\nPASS: every candidate's fast answer is the validator's own");
     Ok(())
 }
