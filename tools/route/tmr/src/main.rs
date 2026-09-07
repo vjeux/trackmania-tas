@@ -11,7 +11,7 @@
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--wide HIDDEN] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -957,6 +957,11 @@ fn cmd_watch(args: &[String]) {
             let mut variants: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
             if let Some(p) = flag(args, "--geo-dropout") {
                 variants.push(("-gd".into(), vec!["--geo-dropout".into(), p]));
+            }
+            // --wide N: a capacity variant (hidden N) — the multi-map LOCAL head prices Summer 01's legs 2× worse
+            // than a single-map model with the same architecture (23:51Z), capacity is the first suspect
+            if let Some(h) = flag(args, "--wide") {
+                variants.push((format!("-w{h}"), vec!["--hidden".into(), h]));
             }
             // the variants of a kind run CONCURRENTLY (a candle CPU training uses ~4 cores whatever the thread
             // count: the matmuls parallelise, the rest does not), the kinds one after the other (RAM).
