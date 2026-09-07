@@ -845,7 +845,22 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
         let gdir = scratch.join(uid).join("ghosts");
         let _ = std::fs::remove_dir_all(&gdir);
         std::fs::create_dir_all(&gdir).map_err(|e| e.to_string())?;
-        let src_dir = ghosts_root.join(uid).join("ghosts");
+        // the player's durable copy is ghosts.tar (its ghosts/ directory on the mount is
+        // sometimes empty or partial): extract it into scratch and link from there
+        let tar = ghosts_root.join(uid).join("ghosts.tar");
+        let src_dir = if tar.exists() {
+            let tdir = scratch.join(uid).join("tar");
+            let _ = std::fs::remove_dir_all(&tdir);
+            std::fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
+            let st = std::process::Command::new("tar").args(["xf", &tar.to_string_lossy(), "-C", &tdir.to_string_lossy()]).status().map_err(|e| e.to_string())?;
+            if !st.success() {
+                report.push_str(&format!("{name}\t{uid}\tSKIPPED: ghosts.tar did not extract\n"));
+                continue;
+            }
+            tdir.join("ghosts")
+        } else {
+            ghosts_root.join(uid).join("ghosts")
+        };
         let mut n_linked = 0;
         let mut n_keyboard = 0;
         for (rank, decl, kb) in exact {
