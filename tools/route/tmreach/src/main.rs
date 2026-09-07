@@ -1131,7 +1131,9 @@ fn cmd_explore(a: &Args) -> Result<(), String> {
     if nconn > 0 && !a.has("no-oracle") {
         let (server, _) = engine_paths(a);
         let tapes: Vec<PathBuf> = conn.lines().skip(1).filter_map(|l| l.split('\t').last()).map(PathBuf::from).collect();
-        let refs: Vec<&std::path::Path> = tapes.iter().map(|p| p.as_path()).collect();
+        // at most --oracle-max tapes (default 200): a multi-finish map yields thousands of connections
+        let omax: usize = a.get("oracle-max").unwrap_or("200").parse().unwrap_or(200);
+        let refs: Vec<&std::path::Path> = tapes.iter().take(omax).map(|p| p.as_path()).collect();
         match ghost::oracle::validate_many(&server, &refs, ghost::oracle::MapsMode::One(&map), "tmreach-explore") {
             Ok(res) => {
                 let mut s = String::new();
@@ -1152,6 +1154,30 @@ fn cmd_explore(a: &Args) -> Result<(), String> {
         }
     }
     std::fs::write(out.join("connections.tsv"), &conn).map_err(|e| e.to_string())?;
+    // SUMMARY: distinct (credited-before set -> gate) pairs, with counts and the earliest crossing
+    {
+        let mut pairs: std::collections::BTreeMap<(String, String), (usize, String, String)> = Default::default();
+        for l in conn.lines().skip(1) {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() < 8 {
+                continue;
+            }
+            let e = pairs.entry((f[3].to_string(), f[4].to_string())).or_insert((0, f[7].to_string(), f[5].to_string()));
+            e.0 += 1;
+            if f[7] < e.1.as_str() {
+                e.1 = f[7].to_string();
+            }
+        }
+        let mut s = String::from("credited_before\tgate\thuman_next\tcount\tearliest_cross_race\n");
+        for ((before, gate), (n, t, next)) in &pairs {
+            s.push_str(&format!("{before}\t{gate}\t{next}\t{n}\t{t}\n"));
+        }
+        std::fs::write(out.join("connections-summary.tsv"), &s).map_err(|e| e.to_string())?;
+        println!("connection pairs (credited-before set -> gate): {}", pairs.len());
+        for ((before, gate), (n, t, next)) in pairs.iter().take(30) {
+            println!("  [{before}] -> {gate} (human next {next}): {n} rollouts, earliest at race {t}");
+        }
+    }
     let wall = t0.elapsed().as_secs_f64();
     println!(
         "explore {} on {} ({}): {}/{} ghosts ok, {} rollouts in {:.1} s wall ({:.1}/s), {} explore steps, {} archive cells, {} other-gate connections -> {}",
