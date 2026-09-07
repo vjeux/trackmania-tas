@@ -368,6 +368,7 @@ once under each clock, while both still existed:
 | final build (live vehicle slot, DNF machinery present and off) | 276 120 | 459 | 7 | **0** | 22.713 |
 | engine CP count + past-end guard | 279 390 | 464 | 9 | **0** | 22.711 |
 | finish word armed with no calibration fork | **282 630** | **470** | 10 | **0** | 22.711 |
+| past-the-end guard fixed (arithmetic, flag not verdict) | 275 400 | 458 | 8 | **0** | 22.712 |
 
 The third row is the one that matters for the audit: the resume floor moved a
 tick earlier when the probe stopped reporting one record late, so every
