@@ -757,3 +757,193 @@ impl LocalScene {
         best
     }
 }
+
+// ---------------------------------------------------------------- items index
+/// A placement's bounding sphere — for `nearest_items`: thin things (poles,
+/// barriers, signs, gate pillars) that a ray fan undersamples.
+#[derive(Clone, Copy, Debug)]
+pub struct Bound {
+    pub centre: [f32; 3],
+    pub radius: f32,
+    pub tri_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct NearItem {
+    pub placement: u32,
+    /// Vector from the query point to the placement's bounding centre (world frame).
+    pub rel: [f32; 3],
+    pub dist: f32,
+    pub radius: f32,
+    pub family: String,
+    pub family_id: u8,
+    pub kind: PlacementKind,
+    pub special: Special,
+}
+
+impl LocalScene {
+    /// Bounding sphere of every placement (centre of its triangles' AABB, radius
+    /// to the farthest vertex). `None` for a placement without triangles.
+    pub fn bounds(&self) -> Vec<Option<Bound>> {
+        let n = self.placements.len();
+        let mut lo = vec![[f32::INFINITY; 3]; n];
+        let mut hi = vec![[f32::NEG_INFINITY; 3]; n];
+        let mut cnt = vec![0u32; n];
+        for t in &self.tris {
+            let k = t.tag as usize;
+            cnt[k] += 1;
+            for v in &t.v {
+                for a in 0..3 {
+                    lo[k][a] = lo[k][a].min(v[a]);
+                    hi[k][a] = hi[k][a].max(v[a]);
+                }
+            }
+        }
+        (0..n)
+            .map(|k| {
+                if cnt[k] == 0 {
+                    return None;
+                }
+                let c = [(lo[k][0] + hi[k][0]) / 2.0, (lo[k][1] + hi[k][1]) / 2.0, (lo[k][2] + hi[k][2]) / 2.0];
+                let r = ((hi[k][0] - c[0]).powi(2) + (hi[k][1] - c[1]).powi(2) + (hi[k][2] - c[2]).powi(2)).sqrt();
+                Some(Bound { centre: c, radius: r, tri_count: cnt[k] })
+            })
+            .collect()
+    }
+}
+
+/// The k-nearest-items index over a scene's ITEM placements (and free blocks —
+/// both are "things placed on the track"; grid blocks, baked terrain and the
+/// decoration are excluded, the rays see those). Built once per scene.
+pub struct ItemIndex {
+    pub bounds: Vec<(u32, Bound)>,
+    cell: f32,
+    origin: [f32; 2],
+    nx: usize,
+    nz: usize,
+    cell_start: Vec<u32>,
+    cell_items: Vec<u32>,
+}
+
+impl ItemIndex {
+    /// `max_radius`: placements with a larger bounding radius are not "items" (a
+    /// 200 m stand is not a pole); 40 m keeps gates, barriers, signs, tubes.
+    pub fn build(scene: &LocalScene, max_radius: f32) -> ItemIndex {
+        let all = scene.bounds();
+        let mut bounds: Vec<(u32, Bound)> = Vec::new();
+        for (k, b) in all.iter().enumerate() {
+            let p = &scene.placements[k];
+            if !matches!(p.kind, PlacementKind::Item | PlacementKind::FreeBlock) {
+                continue;
+            }
+            if let Some(b) = b {
+                if b.radius <= max_radius {
+                    bounds.push((k as u32, *b));
+                }
+            }
+        }
+        let cell = 16.0f32;
+        let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        for (_, b) in &bounds {
+            lo[0] = lo[0].min(b.centre[0]);
+            lo[1] = lo[1].min(b.centre[2]);
+            hi[0] = hi[0].max(b.centre[0]);
+            hi[1] = hi[1].max(b.centre[2]);
+        }
+        if bounds.is_empty() {
+            lo = [0.0, 0.0];
+            hi = [1.0, 1.0];
+        }
+        let origin = [lo[0] - 1.0, lo[1] - 1.0];
+        let nx = (((hi[0] + 1.0 - origin[0]) / cell).ceil() as usize).max(1);
+        let nz = (((hi[1] + 1.0 - origin[1]) / cell).ceil() as usize).max(1);
+        let mut count = vec![0u32; nx * nz + 1];
+        let cell_of = |b: &Bound| -> usize {
+            let x = (((b.centre[0] - origin[0]) / cell) as usize).min(nx - 1);
+            let z = (((b.centre[2] - origin[1]) / cell) as usize).min(nz - 1);
+            z * nx + x
+        };
+        for (_, b) in &bounds {
+            count[cell_of(b) + 1] += 1;
+        }
+        for i in 0..nx * nz {
+            count[i + 1] += count[i];
+        }
+        let mut fill = count.clone();
+        let mut cell_items = vec![0u32; bounds.len()];
+        for (i, (_, b)) in bounds.iter().enumerate() {
+            let c = cell_of(b);
+            cell_items[fill[c] as usize] = i as u32;
+            fill[c] += 1;
+        }
+        ItemIndex { bounds, cell, origin, nx, nz, cell_start: count, cell_items }
+    }
+
+    /// The k nearest items (by distance from `p` to the bounding sphere's SURFACE,
+    /// i.e. centre distance minus radius, floored at 0) within `r` metres.
+    pub fn nearest(&self, scene: &LocalScene, p: [f32; 3], r: f32, k: usize) -> Vec<NearItem> {
+        let mut out: Vec<NearItem> = Vec::new();
+        let cx = ((p[0] - self.origin[0]) / self.cell).floor() as isize;
+        let cz = ((p[2] - self.origin[1]) / self.cell).floor() as isize;
+        let ring = (r / self.cell).ceil() as isize + 1;
+        for dz in -ring..=ring {
+            for dx in -ring..=ring {
+                let (x, z) = (cx + dx, cz + dz);
+                if x < 0 || z < 0 || x >= self.nx as isize || z >= self.nz as isize {
+                    continue;
+                }
+                let c = z as usize * self.nx + x as usize;
+                for i in self.cell_start[c]..self.cell_start[c + 1] {
+                    let (pl, b) = self.bounds[self.cell_items[i as usize] as usize];
+                    let rel = [b.centre[0] - p[0], b.centre[1] - p[1], b.centre[2] - p[2]];
+                    let dc = (rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]).sqrt();
+                    let dist = (dc - b.radius).max(0.0);
+                    if dist > r {
+                        continue;
+                    }
+                    let pm = &scene.placements[pl as usize];
+                    out.push(NearItem { placement: pl, rel, dist, radius: b.radius, family: pm.family.clone(), family_id: family_id(&pm.family), kind: pm.kind, special: pm.special });
+                }
+            }
+        }
+        out.sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap());
+        out.truncate(k);
+        out
+    }
+}
+
+impl LocalScene {
+    /// Convenience: build an `ItemIndex` (40 m bounding cap) and query it once. For
+    /// many queries build the index once with `ItemIndex::build`.
+    pub fn nearest_items(&self, point: [f32; 3], r: f32, k: usize) -> Vec<NearItem> {
+        ItemIndex::build(self, 40.0).nearest(self, point, r, k)
+    }
+}
+
+#[cfg(test)]
+mod item_tests {
+    use super::*;
+    #[test]
+    fn nearest_items_finds_the_pole() {
+        // a floor (grid block) and two thin poles (items) at x = 20 and x = 60
+        let mut tris = vec![
+            Tri { v: [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, 100.0]], mat: 16, tag: 0 },
+        ];
+        for (tag, x) in [(1u32, 20.0f32), (2, 60.0)] {
+            tris.push(Tri { v: [[x, 0.0, 50.0], [x + 0.5, 0.0, 50.0], [x, 10.0, 50.0]], mat: 4, tag });
+        }
+        let pl = vec![
+            Placement { name: "PlatformTechBase".into(), family: "PlatformTech".into(), kind: PlacementKind::Block, special: Special::None, index: 0 },
+            Placement { name: "Pole".into(), family: "Pole".into(), kind: PlacementKind::Item, special: Special::None, index: 0 },
+            Placement { name: "TrackBarrier4m".into(), family: "TrackBarrier".into(), kind: PlacementKind::Item, special: Special::None, index: 1 },
+        ];
+        let s = LocalScene::index(tris, pl, 4.0);
+        let idx = ItemIndex::build(&s, 40.0);
+        let near = idx.nearest(&s, [10.0, 1.0, 50.0], 100.0, 2);
+        assert_eq!(near.len(), 2);
+        assert_eq!(near[0].placement, 1);
+        assert!(near[0].dist < near[1].dist);
+        assert_eq!(near[1].family, "TrackBarrier");
+        assert_eq!(idx.nearest(&s, [10.0, 1.0, 50.0], 5.0, 2).len(), 0);
+    }
+}

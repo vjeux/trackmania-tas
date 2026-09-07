@@ -346,6 +346,18 @@ fn cmd_local(args: &[String]) {
     if !specials.is_empty() {
         println!("  gameplay placements: {}", specials.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(", "));
     }
+    // nearest items
+    if let Some(spec) = flag(args, "--near") {
+        let v: Vec<f32> = spec.split(',').filter_map(|x| x.parse().ok()).collect();
+        if v.len() != 3 { die("--near x,y,z") }
+        let t1 = std::time::Instant::now();
+        let idx = mapgeom::local::ItemIndex::build(&scene, 40.0);
+        println!("  item index: {} items in {:.2} s", idx.bounds.len(), t1.elapsed().as_secs_f32());
+        for n in idx.nearest(&scene, [v[0], v[1], v[2]], 60.0, 8) {
+            let p = &scene.placements[n.placement as usize];
+            println!("    {:>6.1} m  rel ({:+.1}, {:+.1}, {:+.1})  r {:.1}  {} [{}] {:?} {:?}", n.dist, n.rel[0], n.rel[1], n.rel[2], n.radius, p.name, n.family_id, n.kind, n.special);
+        }
+    }
     // rays
     let mut i = 0;
     while i < args.len() {
