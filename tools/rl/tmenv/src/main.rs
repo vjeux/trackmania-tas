@@ -28,8 +28,11 @@ fn has(a: &[String], k: &str) -> bool {
     a.iter().any(|x| x == k)
 }
 
+#[derive(Clone)]
 struct Paths {
     server: PathBuf,
+    /// `--refuse-car-switch`: do not run on a transform map at all.
+    refuse_car_switch: bool,
     map: PathBuf,
     shim: PathBuf,
     work: PathBuf,
@@ -59,6 +62,7 @@ fn paths(a: &[String]) -> Paths {
         work,
         reference: PathBuf::from(flag(a, "--ref").unwrap_or_default()),
         geom: flag(a, "--geom").map(PathBuf::from),
+        refuse_car_switch: a.iter().any(|x| x == "--refuse-car-switch"),
     }
 }
 
@@ -94,6 +98,10 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("wheels-control") => wheels_control(&a),
+        Some("run-end") => run_end_cmd(&a),
+        Some("tape-diff") => tape_diff(&a),
+        Some("open-loop-control") => open_loop_control(&a),
         Some("oracle-cut") => oracle_cut(&a),
         Some("cp-oracle-control") => cp_oracle_control(&a),
         Some("bench-sweep") => bench_sweep(&a),
@@ -262,6 +270,27 @@ fn drive(env: &mut ForkEnv, actions: &dyn Fn(usize) -> usize, max_steps: usize) 
 /// order and the wrong first gate -- all of it silently, because the geometry is
 /// self-consistent either way and only the reward is nonsense.
 fn measured_track(p: &Paths) -> Result<tmenv::Track, String> {
+    // REFUSE car-switch maps (see `tmenv::track::car_switch_blocks`) unless
+    // told otherwise: the validator car freezes at the switch and every row
+    // after it would be a stale copy.
+    // Car-switch maps RUN (the readout follows the participant's live vehicle
+    // slot before every fork and the clock is the car-independent sim time;
+    // Spring 2026 - 12 open-loop: 37.072 exact, 8/8 gates, slots 0-2-0-2-0-2),
+    // with one known limit said out loud: a switch INSIDE a k-tick step leaves
+    // up to k rows on the old (frozen) car before the follow -- 27 of 3708 rows
+    // over 5 switches at k = 10 -- and `Info.car_switched` marks the step.
+    // `--refuse-car-switch` restores the refusal for a caller that wants none.
+    let sw = tmenv::track::car_switch_blocks(&p.map);
+    if !sw.is_empty() {
+        if p.refuse_car_switch {
+            return Err(format!("this map has car-switch blocks ({}) -- refused on request", sw.join(", ")));
+        }
+        eprintln!(
+            "tmenv: car-switch map ({}) -- the readout follows the live vehicle per step; a switch inside a step \
+             leaves up to k stale rows (Info.car_switched)",
+            sw.join(", ")
+        );
+    }
     // `--geom geom.json` (the DATA arm's TrackGeom: field-median line, WR line,
     // router output) takes precedence over the cartographer's pack/route, which
     // on Summer 2026 - 01 runs on another road for its first ~150 m
@@ -302,6 +331,7 @@ fn build_env_shared(
     let cfg = CoreCfg {
         k_ticks: num(a, "--k", 10),
         max_ticks: num(a, "--max-ticks", 3000),
+        obs_version: num(a, "--obs-version", 1),
         ..Default::default()
     };
     let mut root = tmenv::forkenv::RootCfg { verbose: !has(a, "--quiet"), ..Default::default() };
@@ -312,7 +342,7 @@ fn build_env_shared(
     if !has(a, "--no-require-start") && flag(a, "--root-clock").is_none() {
         match tmenv::measured_spawn(&p.server, &p.map, &p.shim, &work.join("spawnfix"), &p.reference) {
             Ok(s) => root.require_start = Some((s, num(a, "--tol", 6.0f32), num(a, "--vmax", 4.0f64))),
-            Err(e) => die(format!("the start is UNMEASURED, so the env cannot be certified: {e}")),
+            Err(e) => die(format!("the start is UNMEASURED, so the env cannot be certified: {e} (reference {}, work {})", p.reference.display(), work.display())),
         }
     }
     if let Some(c) = flag(a, "--root-clock").and_then(|s| s.parse::<u64>().ok()) {
@@ -2290,6 +2320,8 @@ fn reset_anywhere_control(a: &[String]) {
     }
     println!("# tmenv reset-anywhere-control  states {n_states}  tail {tail_steps} steps  seed {seed}");
     let (mut env, _rig, _tape) = build_env(&p, a, &p.work.join("ra"));
+    env.set_pin_budget(num(a, "--pin-budget", 64));
+    println!("pin budget {} live nodes; states past it are re-materialised by replaying their prefix", num::<usize>(a, "--pin-budget", 64));
     let n_act = env.n_actions();
     let mut rng = Sm(seed);
 
@@ -2328,7 +2360,7 @@ fn reset_anywhere_control(a: &[String]) {
             }
         }
     }
-    println!("kept {} states over {} episodes; {} live snapshots", kept.len(), episodes, env.snapshots());
+    println!("kept {} states over {} episodes; {} snapshots, {} live pinned nodes", kept.len(), episodes, env.snapshots(), env.live_pinned());
 
     // ---- for each: resume + tail (A), replay from root (B), a different tail (C)
     let mut agree = 0usize;
@@ -2631,6 +2663,28 @@ fn cp_oracle_control(a: &[String]) {
             .unwrap_or_default(),
     );
     println!("donors     {} ghost tape(s) for the prefixes", donors.len());
+    // ONE REFERENCE PER DONOR: each donor ghost is wrapped as a template
+    // carrying OUR inputs (Template::write_with_inputs), so a worker replaying
+    // that donor's prefix runs in the donor's own container -- its per-packet
+    // state words included (the keyboard action-key flags the env's Action
+    // cannot express). Without this a prefix from another ghost diverges
+    // before CP2 and the oracle's counts never leave {0, 1}.
+    let donor_paths: Vec<String> = flag(a, "--ghosts")
+        .map(|s| s.split(',').map(|g| g.trim().to_string()).collect())
+        .unwrap_or_default();
+    let refs: Vec<PathBuf> = donor_paths
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let tpl = tmenv::template::Template::load(Path::new(g)).unwrap_or_else(|e| die(e));
+            let n = tpl.facts().ticks;
+            let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
+            let out = p.work.join(format!("ref-donor{i}.Ghost.Gbx"));
+            std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+            tpl.write_with_inputs(&s, &vec![1u8; n], &vec![0u8; n], &out).unwrap_or_else(|e| die(e));
+            out
+        })
+        .collect();
 
     struct Out {
         i: usize,
@@ -2639,6 +2693,8 @@ fn cp_oracle_control(a: &[String]) {
         geom_cps: usize,
         ticks: usize,
         path: PathBuf,
+        done: String,
+        cps_steps: Vec<i64>,
     }
     let t0 = Instant::now();
     let mut outs: Vec<Out> = std::thread::scope(|sc| {
@@ -2649,8 +2705,18 @@ fn cp_oracle_control(a: &[String]) {
                 let track = track.clone();
                 let bank = bank.clone();
                 let donors = donors.clone();
+                let refs = refs.clone();
                 sc.spawn(move || {
                     let work = p.work.join(format!("cpo-w{w}"));
+                    // this worker's donor (tapes i with i % donors == w % donors) and its container
+                    let mut pw = p.clone();
+                    if !refs.is_empty() {
+                        pw.reference = refs[w % refs.len()].clone();
+                    }
+                    let p = &pw;
+                    if std::env::var("TMENV_STAGGER_MS").is_ok() {
+                        std::thread::sleep(std::time::Duration::from_millis(w as u64 * std::env::var("TMENV_STAGGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0)));
+                    }
                     let (mut env, _rig, tape) = build_env_shared(p, &a, &work, track);
                     env.allow_after_done = true;
                     let n_act = env.n_actions();
@@ -2675,12 +2741,12 @@ fn cp_oracle_control(a: &[String]) {
                         let cut = if donors.is_empty() {
                             0
                         } else {
-                            let d = &donors[i % donors.len()];
+                            let d = &donors[w % donors.len()];
                             // align by RACE time: donor tick k <-> env tick t when
                             // k*10 + donor_offset == t*10 + template_offset
                             let shift: i64 = (tape.start_offset_ms as i64 - d.3 as i64) / 10;
                             let cut = 200 + rng.below(d.0.len().saturating_sub(300));
-                            let mut t = env.core.tick().max(0);
+                            let mut t = env.next_tick().unwrap_or_else(|e| die(e));
                             let mut stop = false;
                             while t + 10 <= cut && !stop {
                                 let chunk: Vec<tmstate::Action> = (t..t + 10)
@@ -2691,7 +2757,7 @@ fn cp_oracle_control(a: &[String]) {
                                     .collect();
                                 let (_o, _r, dn, _i) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
                                 stop = matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded));
-                                t = env.core.tick();
+                                t = env.next_tick().unwrap_or(t + 10);
                             }
                             cut
                         };
@@ -2724,15 +2790,50 @@ fn cp_oracle_control(a: &[String]) {
                                 || d == Some(Done::Finished)
                                 || d == Some(Done::RunEnded)
                                 || d == Some(Done::RunEnded)
-                                || env.core.tick() + 30 >= tape.n()
                                 || stalled >= 3
                             {
                                 break;
                             }
                         }
+                        // THE SAME TAIL THE FILE GETS. `banked_tape` brakes from
+                        // the last written tick to the tape's end, so the env
+                        // drives that brake tail too (through step_ticks, so it
+                        // is written and traced), then watches the engine's
+                        // default-record stretch past the tape -- the plain
+                        // validator runs to declared + ~3 s or the finish, and a
+                        // rolling car crosses gates there.
+                        if !matches!(env.core.done(), Some(Done::RunEnded) | Some(Done::Finished)) {
+                            let brake = tmstate::Action { steer: 0, gas: false, brake: true };
+                            for _ in 0..60 {
+                                match env.step_ticks(&[brake; 50]) {
+                                    Ok((_o, _r, Some(Done::TickCap), _)) => break,
+                                    Ok((_o, _r, Some(Done::RunEnded), _)) => break,
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                            if !env.run_ended() {
+                                for _ in 0..40 {
+                                    let (_rows, ended) = env.coast(50).unwrap_or_else(|e| die(e));
+                                    if ended {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         let _ = cut;
                         let rec = env.rollout_record();
                         let engine_cps = rec.trace.last().and_then(|r| if r.cps == u32::MAX { None } else { Some(r.cps) });
+                        // the race clocks at which the counter stepped
+                        let mut cps_steps = Vec::new();
+                        let mut lastc = 0u32;
+                        for r in &rec.trace {
+                            if r.cps != u32::MAX && r.cps > lastc {
+                                cps_steps.push(r.time_ms);
+                                lastc = r.cps;
+                            }
+                        }
+                        let done = format!("{:?}", env.core.done());
                         let path = bank.join(format!("tape-{i:03}.Ghost.Gbx"));
                         // the driven prefix, then brake: the oracle judges THIS file
                         let (s, g, b) = env.banked_tape(&tape);
@@ -2744,6 +2845,8 @@ fn cp_oracle_control(a: &[String]) {
                             geom_cps: env.core.geometric_gates_hit(),
                             ticks: rec.trace.len(),
                             path,
+                            done,
+                            cps_steps,
                         });
                         i += workers;
                     }
@@ -2764,7 +2867,7 @@ fn cp_oracle_control(a: &[String]) {
     let _ = std::fs::write(bank.join("oracle-stderr.txt"), &batch.err);
     if batch.answers.len() != files.len() {
         die(format!(
-            "the oracle answered {} of {} files -- answers are matched by ORDER and the count must agree",
+            "the oracle answered {} of {} files",
             batch.answers.len(),
             files.len()
         ));
@@ -2779,7 +2882,17 @@ fn cp_oracle_control(a: &[String]) {
     let mut unreported = 0usize;
     let mut by_count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
     let mut lines = String::from("tape\tpolicy\toracle\toracle_cps\tengine_cps\tgeom_cps\tticks\n");
-    for (o, ans) in outs.iter().zip(batch.answers.iter()) {
+    // MATCHED BY FILE NAME, never by position: with several donor containers
+    // in one batch the server answers in an order that is NOT the filename
+    // order (measured: 86 of 200 "disagreements", spread evenly over every
+    // donor and worker, all of them a permutation; 0 of 120 with one donor).
+    let by_name: std::collections::HashMap<String, &tmauto::oracle::Answer> =
+        batch.answers.iter().map(|x| (x.file.clone(), x)).collect();
+    for o in outs.iter() {
+        let name = o.path.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(ans) = by_name.get(&name) else {
+            die(format!("the oracle has no answer named {name}"));
+        };
         let ov = ans.verdict();
         let oracle_cps: Option<u32> = match ov {
             Some(tmauto::Verdict::Dnf { cps }) => Some(cps),
@@ -2813,8 +2926,10 @@ fn cp_oracle_control(a: &[String]) {
         } else {
             disagree += 1;
             println!(
-                "  tape {:03} [{}]: oracle {:?} -> {:?}, engine cps {:?}, geometric {}  DISAGREE",
-                o.i, o.policy, ov, oracle_cps, o.engine_cps, o.geom_cps
+                "  tape {:03} [{}]: oracle {:?} -> {:?}, engine cps {:?} (steps at {}), geometric {}, done {}, {} rows  DISAGREE",
+                o.i, o.policy, ov, oracle_cps, o.engine_cps,
+                o.cps_steps.iter().map(|t| format!("{:.3}", *t as f64 / 1000.0)).collect::<Vec<_>>().join(" "),
+                o.geom_cps, o.done, o.ticks
             );
         }
         if oracle_cps == Some(o.geom_cps as u32) {
@@ -2885,4 +3000,415 @@ fn oracle_cut(a: &[String]) {
     }
     let _ = std::fs::write(p.work.join("oracle-cut-transcript.json"), &batch.raw);
     println!("transcript {}", p.work.join("oracle-cut-transcript.json").display());
+}
+
+// -------------------------------------------------------- open-loop-control
+
+/// THE TICK-CONVENTION CONTROL (LEARN's standing test): a game-recorded
+/// ghost's own inputs, fed through `step_ticks` at offset 0 (aligned by RACE
+/// time between the ghost's `start_offset_ms` and the template's), must
+/// reproduce the ghost's run -- the plain oracle on the banked tape reports the
+/// ghost's own time, and the env's counter reaches every gate at the ghost's
+/// split tick. Any label/index shift between the env and the tape shows up
+/// here as a car that leaves the road within seconds.
+fn open_loop_control(a: &[String]) {
+    let p = paths(a);
+    let ghosts: Vec<String> = flag(a, "--ghosts")
+        .unwrap_or_else(|| die("--ghosts FILE[,FILE...] is required".into()))
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    let bank = PathBuf::from(flag(a, "--bank").unwrap_or_else(|| p.work.join("olc").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv open-loop-control  {} ghost(s)", ghosts.len());
+    let (mut env, _rig, tape) = build_env(&p, a, &p.work.join("olc-env"));
+    env.allow_after_done = true;
+    let n_gates = env.core.track.n_gates();
+    let mut files = Vec::new();
+    let mut expect: Vec<(String, i32, Vec<i32>, Option<i64>, usize)> = Vec::new();
+    for (gi, g) in ghosts.iter().enumerate() {
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let splits = tmenv::cpfind::ghost_splits(Path::new(g)).unwrap_or_else(|e| die(e));
+        let declared = *splits.last().unwrap();
+        let shift: i64 = (tape.start_offset_ms as i64 - d.start_offset_ms as i64) / 10 + num::<i64>(a, "--shift-adjust", 0);
+        println!("  {g}: donor offset {} ms, template {} ms -> donor index = env tick {shift:+}", d.start_offset_ms, tape.start_offset_ms);
+        env.reset().unwrap_or_else(|e| die(e));
+        let mut t = env.next_tick().unwrap_or_else(|e| die(e));
+        let mut finish_tick: Option<i64> = None;
+        let mut drift = 0usize;
+        let mut gate_ticks: Vec<i64> = Vec::new();
+        let mut last_cps = 0usize;
+        loop {
+            if t >= tape.n() {
+                break;
+            }
+            let k = 10.min(tape.n() - t);
+            let chunk: Vec<tmstate::Action> = (t..t + k)
+                .map(|k| {
+                    let j = ((k as i64 + shift).max(0) as usize).min(d.n() - 1);
+                    tmstate::Action { steer: d.steer[j] as i8, gas: d.accel[j] != 0, brake: d.brake[j] != 0 }
+                })
+                .collect();
+            let (_o, _r, dn, info) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
+            if info.car_switched {
+                println!("  car switch followed at env tick {t}: now car slot {} (race {:.3})", info.state.car, info.state.race_ms as f64 / 1000.0);
+            }
+            let nt = env.next_tick().unwrap_or(t + k);
+            if nt != t + k {
+                drift += 1;
+            }
+            t = nt;
+            // every gate the counter credited inside this chunk, at its row's clock
+            let rec = env.rollout_record();
+            for r in rec.trace.iter().rev().take(10).collect::<Vec<_>>().into_iter().rev() {
+                if r.cps != u32::MAX && r.cps as usize > last_cps {
+                    for _ in last_cps..r.cps as usize {
+                        gate_ticks.push(r.time_ms);
+                    }
+                    last_cps = r.cps as usize;
+                }
+            }
+            if info.state.finished && finish_tick.is_none() {
+                finish_tick = Some(info.state.race_ms as i64);
+            }
+            if matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
+                break;
+            }
+        }
+        // trace continuity: the largest per-tick position jump and the ticks where
+        // the position froze while the car was moving (a car switch not followed)
+        {
+            let rec = env.rollout_record();
+            let mut max_jump = 0.0f64;
+            let mut frozen = 0usize;
+            let mut cars: Vec<u8> = Vec::new();
+            for w in rec.trace.windows(2) {
+                let d = ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2)).sqrt();
+                let v = (w[1].vx.powi(2) + w[1].vy.powi(2) + w[1].vz.powi(2)).sqrt();
+                if d > max_jump {
+                    max_jump = d;
+                }
+                if d == 0.0 && v > 1.0 {
+                    frozen += 1;
+                }
+                if w[1].vis.known && cars.last() != Some(&w[1].vis.car) {
+                    cars.push(w[1].vis.car);
+                }
+            }
+            println!(
+                "  trace: {} rows, max per-tick jump {:.3} m, frozen-while-moving ticks {}, car slots in order {:?}",
+                rec.trace.len(),
+                max_jump,
+                frozen,
+                cars
+            );
+        }
+        let path = bank.join(format!("olc-{gi:02}.Ghost.Gbx"));
+        let (s, ga, b) = env.banked_tape(&tape);
+        tape.write_candidate(&s, &ga, &b, &path).unwrap_or_else(|e| die(e));
+        files.push(path);
+        if drift > 0 {
+            println!("  NOTE: the probe landed off from+10 on {drift} step(s) for {g}");
+        }
+        expect.push((g.clone(), declared, splits, finish_tick, last_cps));
+    }
+    let batch = tmauto::oracle::validate_raw(&p.server, &files, tmauto::oracle::Maps::One(&p.map), "olc")
+        .unwrap_or_else(|e| die(e));
+    let _ = std::fs::write(bank.join("oracle-transcript.json"), &batch.raw);
+    if batch.answers.len() != files.len() {
+        die(format!("the oracle answered {} of {} files", batch.answers.len(), files.len()));
+    }
+    // The bar is the ORACLE: the env's tape must validate to the ghost's own
+    // time. That can only hold for a ghost whose per-packet STATE WORDS match
+    // the template's (the keyboard action-key flags at engine record +0x18 --
+    // the INPUT arm's finding; they scale the applied steer and the env's
+    // Action does not carry them). Ghosts that differ in a state word during
+    // the race are reported, not judged: their run is not expressible through
+    // steer/gas/brake alone, whatever the tick convention.
+    let tpl_words = state_words(&p.reference.to_string_lossy());
+    let mut pass = true;
+    let mut judged = 0usize;
+    let by_name: std::collections::HashMap<String, &tmauto::oracle::Answer> =
+        batch.answers.iter().map(|x| (x.file.clone(), x)).collect();
+    for ((g, declared, splits, finish_tick, cps), f) in expect.iter().zip(files.iter()) {
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(ans) = by_name.get(&name) else {
+            die(format!("the oracle has no answer named {name}"));
+        };
+        let ov = ans.verdict();
+        let gw = state_words(g);
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let shift: i64 = (tape.start_offset_ms as i64 - d.start_offset_ms as i64) / 10;
+        // state words compared at the same RACE time, race 0 onwards
+        let first_race_tick = ((-d.start_offset_ms as i64) / 10).max(0) as usize;
+        let mut state_diff = 0usize;
+        for j in first_race_tick..gw.len() {
+            let t = j as i64 - shift;
+            if t < 0 || t as usize >= tpl_words.len() {
+                continue;
+            }
+            if gw[j] != tpl_words[t as usize] {
+                state_diff += 1;
+            }
+        }
+        let ok_oracle = matches!(ov, Some(tmauto::Verdict::Finish { ms }) if ms as i32 == *declared);
+        println!(
+            "{}\n  declared {:.3}  splits {}  state words differing from the template during the race: {}\n  oracle on the env's tape: {:?}  {}\n  env counter: {} of {} gates, finish seen at env race {:?}",
+            g,
+            *declared as f64 / 1000.0,
+            splits.iter().map(|s| format!("{:.3}", *s as f64 / 1000.0)).collect::<Vec<_>>().join(" "),
+            state_diff,
+            ov,
+            if state_diff > 0 {
+                "(NOT JUDGED: the ghost's state words are not expressible through steer/gas/brake)"
+            } else if ok_oracle {
+                "== the ghost's own time  PASS"
+            } else {
+                "!= the ghost's time  FAIL"
+            },
+            cps,
+            n_gates,
+            finish_tick.map(|f| format!("{:.3}", f as f64 / 1000.0)),
+        );
+        if state_diff == 0 {
+            judged += 1;
+            pass &= ok_oracle;
+        }
+    }
+    if judged == 0 {
+        pass = false;
+        println!("no ghost was judgeable (every one differs from the template in its state words)");
+    }
+    println!(
+        "OPEN-LOOP  {}  ({judged} ghost(s) judged)",
+        if pass { "PASS -- the env's tick is the tape's tick" } else { "FAIL" }
+    );
+    if !pass {
+        std::process::exit(1);
+    }
+}
+
+/// The per-packet STATE words of a tape (word0, flags), for `tape-diff`.
+fn state_words(path: &str) -> Vec<(u32, u32)> {
+    match gbx::tape::Tape::from_file(path) {
+        Ok(t) => t.archives.first().map(|a| a.packets.iter().map(|p| (p.word0, p.flags)).collect()).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+// --------------------------------------------------------------- tape-diff
+
+/// Where two containers' input tapes differ, tick by tick, inputs and state
+/// words.
+fn tape_diff(a: &[String]) {
+    let x = fk::tape::Tape::load(&a[1]).unwrap_or_else(|e| die(e));
+    let y = fk::tape::Tape::load(&a[2]).unwrap_or_else(|e| die(e));
+    // `--shift S`: compare x[t] with y[t + S] (S negative = y lags), so two tapes
+    // with different countdown lengths can be compared at the same race time.
+    let shift: i64 = num(a, "--shift", 0);
+    println!("{}: {} ticks, offset {} ms, declared {:?}", a[1], x.n(), x.start_offset_ms, x.declared_ms);
+    println!("{}: {} ticks, offset {} ms, declared {:?}", a[2], y.n(), y.start_offset_ms, y.declared_ms);
+    let n = x.n().min(y.n());
+    let mut diffs = 0usize;
+    let mut first = None;
+    for t in 0..n {
+        let u = t as i64 + shift;
+        if u < 0 || u as usize >= y.n() {
+            continue;
+        }
+        let u = u as usize;
+        if x.steer[t] != y.steer[u] || x.accel[t] != y.accel[u] || x.brake[t] != y.brake[u] {
+            diffs += 1;
+            if first.is_none() {
+                first = Some(t);
+            }
+            if diffs <= 400 {
+                println!(
+                    "  tick {t:5} (race {:.3}): steer {:4} vs {:4}  gas {} vs {}  brake {} vs {}",
+                    x.race_ms(t) as f64 / 1000.0,
+                    x.steer[t] as i8,
+                    y.steer[u] as i8,
+                    x.accel[t],
+                    y.accel[u],
+                    x.brake[t],
+                    y.brake[u]
+                );
+            }
+        }
+    }
+    println!("{diffs} of {n} ticks differ (first at {:?})", first);
+    let (wx, wy) = (state_words(&a[1]), state_words(&a[2]));
+    let mut sd = 0usize;
+    let mut hist: std::collections::BTreeMap<(u32, u32), usize> = std::collections::BTreeMap::new();
+    for t in 0..wx.len().min(wy.len()) {
+        *hist.entry(wx[t]).or_default() += 1;
+        if wx[t] != wy[t] {
+            sd += 1;
+            if sd <= 6 {
+                println!("  state tick {t:5}: word0/flags {:#x}/{:#x} vs {:#x}/{:#x}", wx[t].0, wx[t].1, wy[t].0, wy[t].1);
+            }
+        }
+    }
+    println!("{sd} ticks differ in the STATE word; {} distinct (word0, flags) in the first: {:?}", hist.len(), hist);
+}
+
+/// Where does the engine END a run? One flat fork of FILE for --ticks ticks.
+fn run_end_cmd(a: &[String]) {
+    let p = paths(a);
+    let ticks: u64 = num(a, "--ticks", 2600);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let (rows, ended) = tmenv::control::flat_trace_or_end(&p.server, &p.map, &p.shim, &p.work, &p.reference, ticks)
+        .unwrap_or_else(|e| die(e));
+    let last = rows.last();
+    let mut steps = Vec::new();
+    let mut c = 0u32;
+    for r in &rows {
+        if r.cps != u32::MAX && r.cps > c {
+            steps.push(format!("{:.3}", r.time_ms as f64 / 1000.0));
+            c = r.cps;
+        }
+    }
+    println!(
+        "{} rows, first race {:?}, last race {:?}, run ended {ended}, counter {} (steps at {})",
+        rows.len(),
+        rows.first().map(|r| r.time_ms as f64 / 1000.0),
+        last.map(|r| r.time_ms as f64 / 1000.0),
+        last.map(|r| r.cps).unwrap_or(0),
+        steps.join(" ")
+    );
+    if let Some(r) = last {
+        println!("last row vis: {:?}", r.vis);
+    }
+    // a few mid-run rows, to see the fields move
+    for r in rows.iter().skip(300).step_by(400).take(4) {
+        let v = &r.vis;
+        println!(
+            "  race {:.3}: car {} gear {} rpm {:.0} steer_applied {:+.3} gas {:.1} brake {} turbo {:.2} ground {} contact {:?} material {:?} slip {:?} wet {:.3} front {:.1} lat {:.1}",
+            r.time_ms as f64 / 1000.0, v.car, v.gear, v.rpm, v.steer_applied, v.gas, v.braking, v.turbo_time, v.ground_contact, v.wheel_contact, v.wheel_material,
+            v.wheel_slip.iter().map(|x| format!("{x:.2}")).collect::<Vec<_>>(), v.wetness, v.front_speed, v.lateral_speed
+        );
+    }
+}
+
+// ----------------------------------------------------------- wheels-control
+
+/// THE G3 KNOWN-ANSWER: the live vis state, packed by the game's own 116-byte
+/// sample writer (`fk::vislayout::pack`), against the template ghost's raw
+/// 50 ms samples -- byte for byte, at several shifts, so the PHASE between the
+/// vis state and the sample clock is MEASURED for this map (the coordinator's
+/// rule: it lags a tick on some maps and none on others; never hard-code it).
+/// A frozen copy scores 50-58 % on this test (INPUT arm); the live car ~96 %
+/// over the predicted bytes with gear/rpm/steer/contact at 100 %.
+fn wheels_control(a: &[String]) {
+    use fk::vislayout::{State, STATE_SIZE};
+    let p = paths(a);
+    let ghosts: Vec<String> = flag(a, "--ghosts")
+        .map(|s| s.split(',').map(|g| g.trim().to_string()).collect())
+        .unwrap_or_else(|| vec![p.reference.to_string_lossy().into_owned()]);
+    let shifts: Vec<i64> = vec![-20, -10, 0, 10, 20];
+    struct Win<'a> {
+        b: &'a [u8],
+    }
+    impl State for Win<'_> {
+        fn f32(&self, off: usize) -> f32 {
+            self.b.get(off..off + 4).map(|x| f32::from_le_bytes(x.try_into().unwrap())).unwrap_or(0.0)
+        }
+        fn u32(&self, off: usize) -> u32 {
+            self.b.get(off..off + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap())).unwrap_or(0)
+        }
+        fn u8(&self, off: usize) -> u8 {
+            self.b.get(off).copied().unwrap_or(0)
+        }
+        fn covers_state(&self) -> bool {
+            self.b.len() >= STATE_SIZE as usize
+        }
+    }
+    // the sample bytes the bar is read from (WHEELS.md §3)
+    let groups: &[(&str, &[usize])] = &[
+        ("gear b91", &[91]),
+        ("rpm b16-17", &[16, 17]),
+        ("applied steer b14", &[14]),
+        ("dampers b23", &[23]),
+        ("materials b24/26/28/30", &[24, 26, 28, 30]),
+        ("contact/turbo b31", &[31]),
+        ("wheel rot b25/27/29 (u16 lo)", &[25, 27, 29]),
+    ];
+    println!("# tmenv wheels-control  {} ghost(s)  shifts {:?} ms", ghosts.len(), shifts);
+    let mut all_pass = true;
+    let mut phases: Vec<i64> = Vec::new();
+    for (gi, g) in ghosts.iter().enumerate() {
+        let work = p.work.join(format!("wheels-{gi}"));
+        std::fs::create_dir_all(&work).unwrap_or_else(|e| die(e.to_string()));
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let ticks = (d.n() + 100) as u32;
+        let (rows, bias, car) =
+            tmenv::control::gather_vis(&p.server, &p.map, &p.shim, &work, Path::new(g), ticks).unwrap_or_else(|e| die(e));
+        let dec = gbx::record::decode_ghost(g).unwrap_or_else(|e| die(e.to_string()));
+        let mut key: std::collections::BTreeMap<i64, Vec<u8>> = std::collections::BTreeMap::new();
+        for (i, smp) in dec.samples.iter().enumerate() {
+            if let Some(raw) = dec.raw_sample(i) {
+                key.insert(smp.time_ms as i64, raw.to_vec());
+            }
+        }
+        println!("{g}\n  car slot {car}, {} ticks gathered, {} raw samples of {} B", rows.len(), key.len(), dec.sample_size);
+        let mut best: Option<(f64, i64, Vec<(usize, usize)>, usize)> = None;
+        for shift in &shifts {
+            let mut agree = vec![(0usize, 0usize); 116];
+            let mut paired = 0usize;
+            for t in &rows {
+                let race = t.clock as i64 - bias + shift;
+                let Some(want) = key.get(&race) else { continue };
+                paired += 1;
+                let pk = fk::vislayout::pack(&Win { b: &t.vis });
+                for b in 0..116.min(want.len()) {
+                    agree[b].1 += 1;
+                    if pk[b] == want[b] {
+                        agree[b].0 += 1;
+                    }
+                }
+            }
+            let (mut sum, mut n) = (0.0, 0);
+            for b in (0..116usize).filter(|b| !gbx::sample::UNPREDICTED.contains(b) && !gbx::sample::DEAD_IN_SERVER.contains(b)) {
+                if agree[b].1 > 0 {
+                    sum += agree[b].0 as f64 / agree[b].1 as f64;
+                    n += 1;
+                }
+            }
+            let score = if n > 0 { sum / n as f64 } else { 0.0 };
+            println!("  shift {:+3} ms: mean exact {:.2} % over {} paired instants", shift, 100.0 * score, paired);
+            if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
+                best = Some((score, *shift, agree, paired));
+            }
+        }
+        let Some((score, shift, agree, paired)) = best else {
+            die("no paired instants".into());
+        };
+        phases.push(shift);
+        let mut pass = paired >= 50;
+        println!("  PHASE for this map: sample t = vis state at race t {:+} ms  (mean exact {:.2} %)", shift, 100.0 * score);
+        for (name, bytes) in groups {
+            let (mut ok, mut n) = (0usize, 0usize);
+            for b in *bytes {
+                ok += agree[*b].0;
+                n += agree[*b].1;
+            }
+            let rate = if n > 0 { ok as f64 / n as f64 } else { 0.0 };
+            let bar = match *name {
+                "gear b91" | "rpm b16-17" | "applied steer b14" | "contact/turbo b31" => 0.99,
+                _ => 0.95,
+            };
+            let verdict = if rate >= bar { "PASS" } else { "FAIL" };
+            pass &= rate >= bar;
+            println!("    {:<30} {:6.2} %  (bar {:.0} %)  {}", name, 100.0 * rate, 100.0 * bar, verdict);
+        }
+        all_pass &= pass;
+    }
+    println!(
+        "WHEELS  {}  (phases {:?} ms)",
+        if all_pass { "PASS -- the live vis state IS the ghost's own sample source" } else { "FAIL" },
+        phases
+    );
+    if !all_pass {
+        std::process::exit(1);
+    }
 }

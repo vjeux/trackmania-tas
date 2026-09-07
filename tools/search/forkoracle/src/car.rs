@@ -290,7 +290,7 @@ pub fn locate_fast(
                 t0.elapsed().as_secs_f64()
             );
         }
-        return Ok(Layout { pos: *pos, clock, clock_bias: bias, rms: *d, max_dev: 0.0, cps: 0 });
+        return Ok(Layout { pos: *pos, clock, clock_bias: bias, rms: *d, max_dev: 0.0, cps: 0, vis: 0, car: 0 });
     }
     Err(format!(
         "{} copies track the car and none has a race counter beside it",

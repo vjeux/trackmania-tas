@@ -65,8 +65,15 @@ pub struct ForkEnv {
     pub core: Core,
     forest: Forest,
     cur: Handle,
+    /// The validator's participant object (same address in every fork), for
+    /// following the LIVE vehicle slot across a car switch; 0 = unknown.
+    participant: u64,
+    /// Set by `follow_live_car` when the slot changed before a fork.
+    car_switched: bool,
     reference: Vec<Rec>,
     n_ticks: usize,
+    /// Race time of the tick after the tape's last record: `n * 10 + start_offset`.
+    tape_end_ms: i64,
     spans: Vec<Span>,
     trace: Vec<Row>,
     root_row: Row,
@@ -77,6 +84,8 @@ pub struct ForkEnv {
     /// Reset-anywhere: kept states, and the nodes no step may release.
     snaps: std::collections::HashMap<u64, Snap>,
     pinned: std::collections::HashSet<Handle>,
+    pin_lru: std::collections::VecDeque<Handle>,
+    pin_budget: usize,
     next_snap: u64,
     /// Keep stepping (and tracing) after the core says the episode is over.
     /// For controls that must run a WHOLE tape so the oracle and the env are
@@ -95,7 +104,11 @@ pub struct StateId(pub u64);
 pub const MAX_CHUNK: usize = 50;
 
 struct Snap {
-    node: Handle,
+    /// The live paused node, while it is pinned; `None` once evicted (the
+    /// prefix re-materialises it).
+    node: Option<Handle>,
+    /// Every per-tick action from the root to this state.
+    prefix: Vec<Action>,
     core: Core,
     spans: Vec<Span>,
     trace: Vec<Row>,
@@ -150,8 +163,11 @@ impl ForkEnv {
             core,
             forest,
             cur: ROOT,
+            participant: 0,
+            car_switched: false,
             reference,
             n_ticks,
+            tape_end_ms: n_ticks as i64 * 10 + tape.start_offset_ms as i64,
             spans: Vec::new(),
             trace: Vec::new(),
             root_row,
@@ -161,6 +177,8 @@ impl ForkEnv {
             finish_ms: None,
             snaps: std::collections::HashMap::new(),
             pinned: std::collections::HashSet::new(),
+            pin_lru: std::collections::VecDeque::new(),
+            pin_budget: 64,
             next_snap: 1,
             allow_after_done: false,
             run_ended: false,
@@ -199,21 +217,35 @@ impl ForkEnv {
 
     /// **Reset-anywhere, half one: keep THIS state.**
     ///
-    /// The current node -- a live paused engine -- is pinned so no later step
-    /// releases it, and everything the core and the bookkeeping know about the
-    /// episode so far is copied beside it. Costs nothing now (the node already
-    /// exists) and one paused process for as long as the snapshot is held;
-    /// `drop_snapshot` frees it. Snapshotting at the root is allowed and cheap.
+    /// What is kept is the ACTION PREFIX from the root (per tick) plus the
+    /// core's bookkeeping; the paused node itself is kept too, as a cache, up
+    /// to `pin_budget` live nodes (each is a paused engine, ~50 MB). Past the
+    /// budget the least recently used pinned node is released and its state
+    /// is re-materialised on demand by replaying the prefix from the root
+    /// (k-tick chunks: ~0.4 s for a 20 s prefix) -- so the archive's memory
+    /// is bounded by config, not by how many states it holds (LEARN's 1,200
+    /// snapshots would have been 60 GB of live processes).
     pub fn snapshot(&mut self) -> StateId {
         let id = StateId(self.next_snap);
         self.next_snap += 1;
-        if self.cur != ROOT {
+        let prefix: Vec<Action> = self
+            .spans
+            .iter()
+            .map(|s| Action { steer: s.act.steer as i8, gas: s.act.gas != 0, brake: s.act.brake != 0 })
+            .collect();
+        let node = if self.cur != ROOT {
             self.pinned.insert(self.cur);
-        }
+            self.pin_lru.retain(|x| *x != self.cur);
+            self.pin_lru.push_back(self.cur);
+            Some(self.cur)
+        } else {
+            None
+        };
         self.snaps.insert(
             id.0,
             Snap {
-                node: self.cur,
+                node,
+                prefix,
                 core: self.core.clone(),
                 spans: self.spans.clone(),
                 trace: self.trace.clone(),
@@ -223,23 +255,94 @@ impl ForkEnv {
                 finish_ms: self.finish_ms,
             },
         );
+        self.enforce_pin_budget();
         id
+    }
+
+    /// Release the least recently used pinned nodes past `pin_budget`. A node
+    /// the episode currently stands on is never released here.
+    fn enforce_pin_budget(&mut self) {
+        while self.pin_lru.len() > self.pin_budget {
+            let Some(victim) = self.pin_lru.iter().position(|h| *h != self.cur) else { break };
+            let h = self.pin_lru.remove(victim).unwrap();
+            self.pinned.remove(&h);
+            for s in self.snaps.values_mut() {
+                if s.node == Some(h) {
+                    s.node = None;
+                }
+            }
+            self.forest.release(h);
+        }
+    }
+
+    /// The pinned-node budget (default 64). Lowering it releases nodes now.
+    pub fn set_pin_budget(&mut self, n: usize) {
+        self.pin_budget = n.max(1);
+        self.enforce_pin_budget();
+    }
+
+    /// Has the engine ended this episode's run (no further step is possible)?
+    pub fn run_ended(&self) -> bool {
+        self.run_ended
+    }
+
+    pub fn live_pinned(&self) -> usize {
+        self.pin_lru.len()
     }
 
     /// **Reset-anywhere, half two: continue from a kept state.**
     ///
-    /// The episode resumes from the snapshot's node -- forking it, so the
-    /// snapshot itself survives and can be reset to again -- with the core and
-    /// the tape bookkeeping exactly as they were. The next `step` writes from
-    /// that node's own probed floor, like any other step.
+    /// From the snapshot's live node when it is still pinned (one fork), else
+    /// by replaying its prefix from the root and pinning the node that
+    /// produces -- WITH THE CONTROL that the replayed core equals the kept
+    /// one bit for bit (position, velocity, orientation, clock, gates): a
+    /// re-materialisation that lands elsewhere is refused, not returned.
     pub fn reset_to(&mut self, id: &StateId) -> Result<Vec<f32>, String> {
         if !self.snaps.contains_key(&id.0) {
             return Err(format!("no such snapshot: {:?}", id));
         }
-        self.leave_cur();
-        let s = &self.snaps[&id.0];
-        self.cur = s.node;
+        let node = self.snaps[&id.0].node;
+        match node {
+            Some(h) => {
+                self.leave_cur();
+                self.cur = h;
+                self.pin_lru.retain(|x| *x != h);
+                self.pin_lru.push_back(h);
+            }
+            None => {
+                // re-materialise: replay the prefix from the root
+                let prefix = self.snaps[&id.0].prefix.clone();
+                let kept = self.snaps[&id.0].core.state();
+                self.reset()?;
+                let saved = self.allow_after_done;
+                self.allow_after_done = true;
+                for chunk in prefix.chunks(MAX_CHUNK) {
+                    let (_o, _r, d, _i) = self.step_ticks(chunk)?;
+                    if d == Some(Done::RunEnded) || d == Some(Done::TickCap) {
+                        break;
+                    }
+                }
+                self.allow_after_done = saved;
+                let got = self.core.state();
+                if format!("{:?}", got) != format!("{:?}", kept) {
+                    return Err(format!(
+                        "re-materialising snapshot {:?} landed on a different state:\n  kept {:?}\n  got  {:?}",
+                        id, kept, got
+                    ));
+                }
+                if self.cur != ROOT {
+                    self.pinned.insert(self.cur);
+                    self.pin_lru.push_back(self.cur);
+                    let h = self.cur;
+                    if let Some(s) = self.snaps.get_mut(&id.0) {
+                        s.node = Some(h);
+                    }
+                    self.enforce_pin_budget();
+                }
+            }
+        }
         self.run_ended = false;
+        let s = &self.snaps[&id.0];
         self.core = s.core.clone();
         self.spans = s.spans.clone();
         self.trace = s.trace.clone();
@@ -251,24 +354,32 @@ impl ForkEnv {
     }
 
     /// Forget a snapshot and, unless another snapshot or the episode still
-    /// stands on it, kill its node.
+    /// stands on its node, kill the node.
     pub fn drop_snapshot(&mut self, id: &StateId) {
         if let Some(s) = self.snaps.remove(&id.0) {
-            let still_used = s.node == ROOT
-                || s.node == self.cur
-                || self.snaps.values().any(|o| o.node == s.node);
-            if !still_used {
-                self.pinned.remove(&s.node);
-                self.forest.release(s.node);
-            } else if !self.snaps.values().any(|o| o.node == s.node) {
-                // the episode stands on it: unpin, so leaving it releases it
-                self.pinned.remove(&s.node);
+            if let Some(h) = s.node {
+                let still_used = h == ROOT || h == self.cur || self.snaps.values().any(|o| o.node == Some(h));
+                if !still_used {
+                    self.pinned.remove(&h);
+                    self.pin_lru.retain(|x| *x != h);
+                    self.forest.release(h);
+                } else if !self.snaps.values().any(|o| o.node == Some(h)) {
+                    self.pinned.remove(&h);
+                    self.pin_lru.retain(|x| *x != h);
+                }
             }
         }
     }
 
     pub fn snapshots(&self) -> usize {
         self.snaps.len()
+    }
+
+    /// The tape tick the next `step` writes from: the current node's own probed
+    /// boundary. THIS is the index to align an external tape against -- the
+    /// core's tick counter counts ingested rows and can drift from it.
+    pub fn next_tick(&self) -> Result<usize, String> {
+        self.forest.floor(self.cur, None)
     }
 
     /// One macro of the discrete action table, held for `cfg.k_ticks` ticks.
@@ -294,6 +405,19 @@ impl ForkEnv {
         }
         let k = chunk.len();
         let from = self.forest.floor(self.cur, None)?;
+        // Past the tape's last record the engine reads a default record and
+        // the boundary probe no longer names a tape tick (measured: it answers
+        // 1 once the run has outlived its tape, and a caller stepping on it
+        // rewrites records 1..k -- the countdown -- forever). The race clock
+        // says whether the tape is spent.
+        if self.core.last_row().time_ms + 10 >= self.tape_end_ms
+            || from >= self.n_ticks
+            || self.last_end >= self.n_ticks
+            || from + 2 * MAX_CHUNK < self.last_end
+        {
+            let obs = self.core.observe();
+            return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
+        }
         // Under the tick hook a child stops at the START of tick `from + k`,
         // before that tick's record is read: exactly k ticks run, every traced
         // row is a completed tick, and the k records written are exactly the
@@ -310,6 +434,8 @@ impl ForkEnv {
             self.overlap += self.last_end - from;
         }
 
+        self.car_switched = false;
+        let _ = self.follow_live_car()?;
         let recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
         let (rows, ended) = match self.forest.advance_or_end(self.cur, &recs, from, k as u64)? {
             branch::Advanced::Node(rows, h) => {
@@ -321,6 +447,15 @@ impl ForkEnv {
             // stands on the parent it was forked from, and it is over.
             branch::Advanced::RunEnded(rows) => (rows, true),
         };
+        if std::env::var("TMENV_DEBUG").is_ok() {
+            eprintln!(
+                "  step: from {from} k {k} -> {} rows, clocks {:?}..{:?}, ended {ended}, next floor {:?}",
+                rows.len(),
+                rows.first().map(|r| r.time_ms),
+                rows.last().map(|r| r.time_ms),
+                self.forest.floor(self.cur, None).ok()
+            );
+        }
         for (i, a) in chunk.iter().enumerate() {
             self.spans.push(Span { from: from + i, k: 1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
         }
@@ -329,6 +464,7 @@ impl ForkEnv {
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
         let mut out = self.core.ingest(chunk, &rows);
+        out.3.car_switched = self.car_switched;
         if ended {
             // Reported whatever the core had already decided: there is no
             // engine left to step, and a caller that keeps stepping (as a
@@ -344,6 +480,96 @@ impl ForkEnv {
             self.finish_ms = rows.last().map(|r| r.time_ms);
         }
         Ok(out)
+    }
+
+    /// Tell the env where the validator's participant lives, so every fork
+    /// first checks which vehicle slot is LIVE (`fk::validator::live_vehicle`)
+    /// and re-points the sampled car block + vis state at it. Without this a
+    /// car-switch block leaves the readout on a frozen car (measured on Spring
+    /// 2026 - 12: the trace has no rows for 3.72–9.30 s and 17.49–21.57 s -- the
+    /// sampler deduplicates a state that no longer changes).
+    pub fn set_participant(&mut self, participant: u64) {
+        self.participant = participant;
+    }
+
+    /// Before a fork from `cur`: is the live vehicle still the one the layout
+    /// points at? If not, move the layout (car block, vis; clock/counter stay).
+    /// Returns whether it moved. Cheap: 8 small reads of the paused process.
+    fn follow_live_car(&mut self) -> Result<bool, String> {
+        if self.participant == 0 {
+            return Ok(false);
+        }
+        let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
+        let pid = self.forest.pid_of(self.cur)?;
+        let Some((slot, phy)) = fk::validator::live_vehicle(pid, self.participant) else {
+            return Ok(false);
+        };
+        let pos = phy + fk::validator::STATE_POS_IN_VEHICLE;
+        if pos == cur.pos {
+            return Ok(false);
+        }
+        // the whole-state check the tick-hook session insists on: a unit
+        // quaternion and finite position/velocity at the new address, else it
+        // is not a vehicle state and we keep what we had
+        let Some(b) = forkoracle::procmem::read_at(pid, pos - 16, 40) else { return Ok(false) };
+        let f = |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        if !(0..10).all(|i| f(i * 4).is_finite()) {
+            return Ok(false);
+        }
+        let qn = (f(0).powi(2) + f(4).powi(2) + f(8).powi(2) + f(12).powi(2)).sqrt();
+        if (qn - 1.0).abs() > 1e-3 {
+            return Ok(false);
+        }
+        let mut l = cur;
+        l.pos = pos;
+        l.vis = phy + fk::validator::VIS_IN_VEHICLE;
+        l.car = slot;
+        self.forest.set_layout(l)?;
+        self.car_switched = true;
+        Ok(true)
+    }
+
+    /// Run `k` more ticks WITHOUT writing any input: past the tape's last
+    /// record the engine reads its default record, and the validator keeps
+    /// simulating until the finish or its own cut-off -- a car that was still
+    /// rolling can cross gates the tape never drove it to (measured: a tape
+    /// whose records end at race 19.82 s finished at 21.57 s). A control that
+    /// compares the env's counter with the oracle's count on the same file
+    /// must watch that stretch too. Returns the rows and whether the run
+    /// ended; the core scores nothing here.
+    pub fn coast(&mut self, k: usize) -> Result<(Vec<Row>, bool), String> {
+        if self.run_ended {
+            return Ok((Vec::new(), true));
+        }
+        let _ = self.follow_live_car()?;
+        let (rows, ended) = match self.forest.advance_or_end(self.cur, &[], 0, k.clamp(1, MAX_CHUNK) as u64)? {
+            branch::Advanced::Node(rows, h) => {
+                self.leave_cur();
+                self.cur = h;
+                (rows, false)
+            }
+            branch::Advanced::RunEnded(rows) => (rows, true),
+        };
+        if std::env::var("TMENV_DEBUG").is_ok() {
+            eprintln!(
+                "  coast: k {k} -> {} rows, clocks {:?}..{:?}, ended {ended}, cur {:?}",
+                rows.len(),
+                rows.first().map(|r| r.time_ms),
+                rows.last().map(|r| r.time_ms),
+                self.cur
+            );
+        }
+        self.trace.extend(rows.iter().cloned());
+        // keep the core's row current so `state()` (and the counter) follow
+        let saved = self.core.done();
+        let _ = self.core.ingest(&[], &rows);
+        if ended {
+            self.core.end(Done::RunEnded);
+            self.run_ended = true;
+        } else if let Some(d) = saved {
+            self.core.end(d);
+        }
+        Ok((rows, ended))
     }
 
     /// The episode as it happened, with the trace DEDUPED BY TICK, keeping the
@@ -486,6 +712,11 @@ impl Rig {
     pub fn session_clock(&self, clock: u64) -> Result<Session, String> {
         Session::start(&self.engine, self.tape.clone(), Checkpoint::Clock(clock))
     }
+
+    /// A session paused at this tape's ROOT (`control::root_clock_for`).
+    pub fn session_root(&self) -> Result<Session, String> {
+        self.session_clock(crate::control::root_clock_for(self.tape.start_offset_ms))
+    }
 }
 
 /// How to pick the root, and how hard to look for the car.
@@ -606,7 +837,15 @@ pub fn build_at_start(
     // record 0 only), so the floor is judged in RACE time: the reference may
     // own at most `max_root_floor_ms` of the race.
     let floor_race_ms = |probe: usize, tape: &Tape| probe as i64 * 10 + tape.start_offset_ms as i64;
-    let mut s = rig.session_clock(root.clock)?;
+    // The default root follows the tape (`control::root_clock_for`): race -10
+    // with a countdown prefix, race 0 for a tape whose record 0 is race 0. An
+    // explicit `RootCfg.clock` other than the default is honoured as given.
+    let root_clock = if root.clock == crate::control::EARLIEST_CLOCK {
+        crate::control::root_clock_for(rig.tape.start_offset_ms)
+    } else {
+        root.clock
+    };
+    let mut s = rig.session_clock(root_clock)?;
     let mut probe = s.probe_tick()?;
     let mut tries = 1usize;
     while floor_race_ms(probe, &s.tape) > root.max_root_floor_ms && tries < root.max_root_tries {
@@ -619,7 +858,7 @@ pub fn build_at_start(
             );
         }
         drop(s);
-        s = rig.session_clock(root.clock)?;
+        s = rig.session_clock(root_clock)?;
         probe = s.probe_tick()?;
         tries += 1;
     }
@@ -641,6 +880,7 @@ pub fn build_at_start(
     )?;
     let tcfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 200_000 };
     let mut env = ForkEnv::new(s, &rig.engine, track, acts, cfg, Some(tcfg))?;
+    env.set_participant(car.provenance().participant);
     let row = {
         env.reset()?;
         env.core.last_row()
@@ -663,7 +903,7 @@ pub fn build_at_start(
         eprintln!(
             "  env root: tick clock {}, root probe {probe} (write floor; {tries} server start{}), car from \
              validator ownership; race clock labelled from the engine (bias {}), root row race {:.3}",
-            root.clock,
+            root_clock,
             if tries == 1 { "" } else { "s" },
             car.layout().clock_bias,
             row.time_ms as f64 / 1000.0
