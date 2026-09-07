@@ -312,8 +312,7 @@ pub struct WatchedOpts {
 /// and the 148-byte summaries (trip, tick, value, progress, travelled, speeds,
 /// gate, event, plane crossing) must be IDENTICAL, as must the time.
 pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> Result<bool, String> {
-    use forkoracle::blind::{bounds_from, locate_blind};
-    use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
+    use forkoracle::layout::{segments, tail_recs, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
     use forkoracle::pred::{outcome, parse_spec, RefLineData, Watch};
     use forkoracle::pred_core::SUMMARY_BYTES;
 
@@ -337,26 +336,12 @@ pub fn watched(engine: &Engine, tape: Tape, at: Checkpoint, o: WatchedOpts) -> R
     // The reference line, the car, the watchdog: armed exactly as the search
     // arms them (`tmsearch::forkeval::ForkEval::start`).
     let refline = RefLineData::from_csv(&o.refcsv, start_offset_ms, n)?;
-    let rows: Vec<Row> = (0..refline.n)
-        .map(|i| Row {
-            time_ms: 0,
-            x: refline.xyz[3 * i] as f64,
-            y: refline.xyz[3 * i + 1] as f64,
-            z: refline.xyz[3 * i + 2] as f64,
-            vx: 0.0,
-            vy: 0.0,
-            vz: 0.0,
-            qx: 0.0,
-            qy: 0.0,
-            qz: 0.0,
-            qw: 0.0,
-            wetness: 0.0,
-        })
-        .collect();
-    let bounds = bounds_from(&rows, 200.0);
+    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md) -- exactly as the search
+    // finds it in `ForkEval::start`.
     let lrecs = tail_recs(&s.tape.steer, &s.tape.accel, &s.tape.brake, from);
-    let layout = locate_blind(&mut s.srv, from, &lrecs, start_offset_ms, 1, bounds, false)
-        .map_err(|e| format!("the car's state was not located: {}", e))?;
+    let layout = forkoracle::car::locate(&s.srv)
+        .map_err(|e| format!("the car's state was not located: {}", e))?
+        .layout();
     if let Some(ms) = ref_time {
         match forkoracle::finish::calibrate(&mut s.srv, from, &lrecs, ms) {
             Ok((addr, _)) => println!("exit-at-finish armed on {:#x}", addr),
