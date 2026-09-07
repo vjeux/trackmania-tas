@@ -96,7 +96,7 @@ const NAMED: &[(&str, &[usize])] = &[
     ("rl_dampen b29", &[29]),
     ("rl material b30", &[30]),
     ("is_turbo/contact bits b31", &[31]),
-    ("wheel slip/skid b32..35", &[32, 33, 34, 35]),
+    ("wheel slip/flag bits b32,33", &[32, 33]),
     ("icing b81..84", &[81, 82, 83, 84]),
     ("reactor/gear word b89..91", &[89, 90, 91]),
     ("gear (b91)", &[91]),
