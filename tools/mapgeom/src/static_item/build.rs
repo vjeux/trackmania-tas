@@ -299,13 +299,22 @@ impl Merged {
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
-            Some(stem) if !self.modifier.is_empty() => match self.modifier.iter().find(|m| m.rsplit('\\').next().map(|t| t.strip_suffix(self.modifier_suffix.as_str())) == Some(Some(stem))) {
-                Some(m) => {
-                    modified = m.clone();
-                    modified.as_str()
+            Some(stem) if !self.modifier.is_empty() => {
+                let by_stem = |want: &str| self.modifier.iter().find(|m| m.rsplit('\\').next().map(|t| t.strip_suffix(self.modifier_suffix.as_str())) == Some(Some(want))).cloned();
+                // The gameplay-gate prefabs (Special8m/16m/24m/32m) are
+                // authored in their Turbo dress; a gate item's
+                // `<Kind>.TerrainModifier.Gbx` folder names the same pieces
+                // without the kind (`Modifier\Boost\{Sign,SignOff,SpecialFX,
+                // TriggerFX,Decal…}`) — the editor's own bake resolves
+                // `SpecialSignTurbo` to `Modifier\Turbo\Sign` (MATERIAL_LINK_RESOLVE).
+                match by_stem(stem).or_else(|| gate_special_stem(stem).and_then(|s| by_stem(s))) {
+                    Some(m) => {
+                        modified = m;
+                        modified.as_str()
+                    }
+                    None => link,
                 }
-                None => link,
-            },
+            }
             _ => link,
         };
         // the modifier's own physics when the table knows it (PlatformDirt\PlatformTech = Dirt 6)
@@ -1818,6 +1827,23 @@ pub const MATERIAL_PHYSICS: &[(&str, u8)] = &[
 /// Physics for a material link: the table, then the rules the table shows
 /// (`Decal*`/`SpecialFX*`/`Turbo\Decal` -> NotCollidable 28, `ChronoFinish-*`
 /// -> 32), else `None`.
+/// The kind-less name a gameplay-gate material has inside a
+/// `Modifier\<Kind>\` folder: the prefab's `SpecialSignTurbo` is the folder's
+/// `Sign`, `SpecialSignOff` → `SignOff`, `SpecialFXTurbo` → `SpecialFX`,
+/// `TriggerFXTurbo` → `TriggerFX`, `DecalSpecialTurbo` → `Decal` (the base
+/// prefab wears the Turbo dress; the pak's `Modifier\Turbo\` holds exactly
+/// these files for it). Anything else: `None`.
+pub fn gate_special_stem(stem: &str) -> Option<&'static str> {
+    Some(match stem {
+        "SpecialSignTurbo" => "Sign",
+        "SpecialSignOff" => "SignOff",
+        "SpecialFXTurbo" => "SpecialFX",
+        "TriggerFXTurbo" => "TriggerFX",
+        "DecalSpecialTurbo" => "Decal",
+        _ => return None,
+    })
+}
+
 pub fn physics_for_link(link: &str) -> Option<u8> {
     let l = link.to_ascii_lowercase();
     if let Some((_, p)) = MATERIAL_PHYSICS.iter().find(|(k, _)| k.to_ascii_lowercase() == l) {
@@ -1828,6 +1854,10 @@ pub fn physics_for_link(link: &str) -> Option<u8> {
         return Some(28);
     }
     if base.starts_with("chronofinish") {
+        return Some(32);
+    }
+    // every gameplay kind's `Modifier\<Kind>\Sign|SignOff` is the Turbo one's (32)
+    if l.contains("\\modifier\\") && (base == "sign" || base == "signoff") {
         return Some(32);
     }
     None
@@ -2466,6 +2496,11 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
     })?;
     let (dir, file) = modifier.rsplit_once('\\')?;
     let x = file.strip_suffix(".Gbx").or_else(|| file.strip_suffix(".gbx"))?;
+    // A gameplay gate's `<Kind>.TerrainModifier.Gbx` (GateSpecial24mTurbo2 →
+    // `Turbo2.TerrainModifier.Gbx`) is the block-style form: folder = the
+    // kind, no name suffix — its files are the kind-less gate pieces that
+    // `gate_special_stem` maps the prefab's Turbo dress onto.
+    let x = x.strip_suffix(".TerrainModifier").unwrap_or(x);
     let prefix = format!("{dir}\\").to_uppercase();
     // folders under the modifier dir that prefix X, longest first
     let mut folders: Vec<String> = Vec::new();
