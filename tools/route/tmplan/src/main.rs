@@ -12,6 +12,7 @@ use tmplan::estimator::{EdgeEstimator, EdgeKind, FlightModel, Geometric, StateBu
 use tmplan::planner;
 use tmplan::surface::{Nodes, SurfaceModel};
 use tmroute::io;
+use tmroute::types::TrackGeomExt;
 
 fn die(msg: &str) -> ! {
     eprintln!("tmplan: {msg}");
@@ -214,6 +215,7 @@ fn main() {
     match cmd.as_str() {
         "plan" => cmd_plan(&args[1..]),
         "legs" => cmd_legs(&args[1..]),
+        "classify" => cmd_classify(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -266,4 +268,35 @@ fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile,
     if let Some(out) = flag(args, "--legs-out") {
         std::fs::write(&out, tsv.join("\n") + "\n").unwrap_or_else(|e| die(&e.to_string()));
     }
+}
+
+/// `tmplan classify ROUTE.json MAP.Map.Gbx --gates gates.json [--grid deco]`
+/// Fill each leg's `connection` of a human route from the surface graph: Road when the graph path between
+/// the two gates could be driven in the humans' best leg time (≤ 130 m/s), else Jump / Drop (Δy < −8 m) —
+/// a connection the surface graph lacks (F8). Writes the route back in place.
+fn cmd_classify(args: &[String]) {
+    let route_path = args.iter().find(|a| a.ends_with(".json") && !a.ends_with("gates.json")).cloned().unwrap_or_else(|| die("classify ROUTE.json MAP.Map.Gbx --gates gates.json"));
+    let mut route = io::read_route(Path::new(&route_path)).unwrap_or_else(|e| die(&e));
+    let (_map, gates, surf, nodes, _d, len, _drop, _fields) = load(args);
+    let node_of_wp = |wp: u32| -> Option<usize> {
+        let g = gates.by_waypoint(wp)?.group;
+        nodes.groups.iter().position(|x| *x == g)
+    };
+    let Some(legs) = route.legs.as_mut() else { die("route has no legs") };
+    let mut prev = 0usize;
+    let mut changed = 0;
+    for l in legs.iter_mut() {
+        let Some(to) = node_of_wp(l.map_waypoint) else { println!("  leg {}: waypoint {} not a planner node", l.gate_idx, l.map_waypoint); continue };
+        let best_ms = match &l.evidence { tmroute::LegEvidence::Human { best_ms, .. } => *best_ms, tmroute::LegEvidence::Driven { ms, .. } => *ms, _ => -1 };
+        let lg = len[prev][to];
+        let (_, dy) = tmplan::estimator::chord(nodes.pos[prev], nodes.pos[to]);
+        let v = if best_ms > 0 { 1000.0 * lg / best_ms as f32 } else { f32::NAN };
+        let conn = if lg.is_finite() && (v.is_nan() || v <= 130.0) { tmroute::ConnectionClass::Road } else if dy < -8.0 { tmroute::ConnectionClass::Drop } else { tmroute::ConnectionClass::Jump };
+        if l.connection != conn { changed += 1; }
+        println!("  leg {} → wp {}: graph {} m, human best {}, implied {:.0} m/s, Δy {:+.0} → {:?}", l.gate_idx, l.map_waypoint, if lg.is_finite() { format!("{lg:.0}") } else { "none".into() }, io::secs(best_ms), v, dy, conn);
+        l.connection = conn;
+        prev = to;
+    }
+    io::write_route(Path::new(&route_path), &route).unwrap_or_else(|e| die(&e));
+    println!("{}: {} leg connections changed, written", route_path, changed);
 }

@@ -57,10 +57,5 @@ pub mod tables;
 pub mod tiny_assets;
 pub mod tiny_library;
 pub mod static_item;
-// The cartographer (B arm, 2026-08-24 bundle): MapPack + Route from the map and the pak, no ghost.
-pub mod pack;
-pub mod packrun;
-pub mod surf;
-pub mod yoff;
 
 pub use store::{DataStore, Model};

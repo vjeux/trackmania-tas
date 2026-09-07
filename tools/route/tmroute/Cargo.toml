@@ -18,3 +18,5 @@ serde_json = { workspace = true }
 # path crates of the main tools workspace; this workspace compiles its own copy.
 tmmaps = { path = "../../tmmaps" }
 gbx = { path = "../../gbx" }
+# The route types: the player's shared data crate (coord/INTERFACES.md §tmstate + the route additions).
+tmstate = { path = "../../rl/tmstate" }

@@ -152,6 +152,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tmmaps",
+ "tmstate",
+]
+
+[[package]]
+name = "tmstate"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

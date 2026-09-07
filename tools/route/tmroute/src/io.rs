@@ -4,7 +4,7 @@
 //! `routes/routes.tsv`: `map_uid  map_name  source  rank  status  predicted_ms
 //! certified_ms  gate_order(comma-sep waypoints)  file`.
 
-use crate::types::{RouteStatus, TrackGeom};
+use crate::types::{RouteStatus, TrackGeom, TrackGeomExt};
 use std::path::{Path, PathBuf};
 
 pub fn read_route(p: &Path) -> Result<TrackGeom, String> {
