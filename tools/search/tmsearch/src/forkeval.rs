@@ -1,9 +1,12 @@
-//! The fork evaluator: a paused simulator per worker, forked once per
-//! candidate, with a per-tick watchdog that stops paying for a candidate the
-//! moment it is clearly dead.
+//! The fork evaluator: a paused simulator per worker plus a ladder of savestate
+//! nodes along the tape it is editing; each candidate is forked from the
+//! deepest node that agrees with it (`forkoracle::ladder`, PERF.md §1), with a
+//! per-tick watchdog that stops paying for a candidate the moment it is clearly
+//! dead.
 //!
-//! Six to nine times faster than a full re-simulation, and **a gradient, not a
-//! result**. Two facts govern every use of it:
+//! Six to nine times faster than a full re-simulation from the root alone, and
+//! about twice that again with the ladder; **a gradient, not a result**. Two
+//! facts govern every use of it:
 //!
 //! * **It is only trustworthy near the reference it checkpointed on.** The
 //!   4700/4700 exactness evidence covers tapes that perturb a reference by a

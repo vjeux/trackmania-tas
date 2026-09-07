@@ -73,7 +73,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--lo --hi --window --stride` | which ticks may be edited, and the sliding window over them |
 | `--temp SECONDS --migrate P` | Metropolis temperature and island migration |
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
-| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
+| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog. Every candidate is forked from the deepest savestate node that agrees with it, not from the checkpoint (PERF.md §1) |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
 | `--fire --fire-at --fire-need --fire-where --after-key --after-ticks --after-from` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 

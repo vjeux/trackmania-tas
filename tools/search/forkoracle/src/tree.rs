@@ -2,10 +2,13 @@
 //!
 //! # What a tree node is
 //!
-//! The classic fork server has one fork point. Every candidate is a child that
+//! The root fork server has one fork point. Every candidate is a child that
 //! rewrites the tail of the input array, runs to the finish, prints a time and
 //! dies. Anything the child learned on the way is lost, so reaching a state
 //! 2000 ticks in costs a full re-simulation of those 2000 ticks, every time.
+//! (The tape search no longer pays that: `crate::ladder` keeps nodes along the
+//! tape being edited and forks each candidate from the deepest one that agrees
+//! with it — PERF.md §1.)
 //!
 //! A **node** is a fork child that stops after a few ticks and re-enters the
 //! fork server itself, on a socket of its own. It is a savestate: a paused
