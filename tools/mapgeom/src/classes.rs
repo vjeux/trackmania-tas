@@ -1164,6 +1164,28 @@ impl<'a> Graph<'a> {
             // The wrapper a Solid2 `lights` socket names (`.Light.Gbx`):
             // its GxLight, an optional animation, and (0x002) the NightOnly /
             // ReflectByGround flags. Layouts: GBX.NET CPlugLight.chunkl.
+            // CPlugLightUserModel (0x090F9000): the item editor's light —
+            // version, kind, colour, intensity, distance, point emission
+            // radius/length, spot inner/outer angle, spot emission size x/y,
+            // v1+ NightOnly (GBX.NET CPlugLightUserModel.chunkl).
+            0x090F9000 => {
+                let v = self.r.u32()?;
+                let l = acc.light_mut();
+                let _kind = self.r.i32()?;
+                l.color = self.r.vec3()?;
+                l.intensity = self.r.f32()?;
+                l.radius = self.r.f32()?;
+                l.emitting_radius = self.r.f32()?;
+                l.emitting_cylinder_len_z = self.r.f32()?;
+                l.angle_inner = self.r.f32()?;
+                l.angle_outer = self.r.f32()?;
+                self.r.f32()?;
+                self.r.f32()?;
+                if v >= 1 {
+                    l.flags = if self.r.bool32()? { 1 } else { 0 };
+                }
+                Ok(())
+            }
             0x0901D000 | 0x0901D002 => {
                 let gx = self.noderef()?;
                 let _func_light = self.noderef()?;
@@ -1893,11 +1915,12 @@ impl<'a> Graph<'a> {
         }
         let n = self.r.u32()? as usize;
         for _ in 0..n {
-            self.noderef()?;
+            let node = self.noderef()?;
+            out.light_user_models.push(node);
         }
-        self.r.array(|r| {
-            r.u32()?;
-            r.u32()
+        out.light_insts = self.r.array(|r| {
+            let model = r.u32()?;
+            Ok((model, r.u32()?))
         })?;
         if version < 11 {
             return Ok(());
@@ -2245,7 +2268,8 @@ fn compose(outer: &[f32; 12], inner: &[f32; 12]) -> [f32; 12] {
 fn known(_class_id: u32, cid: u32) -> bool {
     crate::blockinfo::known(cid) || matches!(
         cid,
-        0x0901D000
+        0x090F9000
+            | 0x0901D000
             | 0x0901D002
             | 0x0901D003
             | 0x0901D004

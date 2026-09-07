@@ -1274,7 +1274,10 @@ pub fn lineup_cmd(args: &[String]) {
         // the same file placed several times is ONE archive entry / manifest row
         let mut seen: Vec<&str> = Vec::new();
         let unique: Vec<&(String, String, Vec<u8>)> = embedded.iter().filter(|(id, _, _)| if seen.contains(&id.as_str()) { false } else { seen.push(id.as_str()); true }).collect();
-        let mut zip: Vec<u8> = Vec::new();
+        // a map that already embeds items (a TINY map) keeps them: its archive is
+        // the base the new items are added to, its entries stay in the manifest
+        // (their author is their ident, as tiny-library writes them)
+        let (mut zip, existing): (Vec<u8>, Vec<String>) = crate::header::embedded_zip_bytes(&m.gbx.body).unwrap_or_default();
         for (ident, _, bytes) in &unique {
             let bytes = crate::header::set_ident_collection(bytes, map_collection);
             zip = crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes);
@@ -1291,7 +1294,12 @@ pub fn lineup_cmd(args: &[String]) {
                 println!("  archive file {name} ({} bytes)", bytes.len());
             }
         }
-        let manifest: Vec<(&str, &str)> = unique.iter().map(|(id, a, _)| (id.as_str(), a.as_str())).collect();
+        let kept: Vec<String> = existing.iter().filter(|n| n.to_ascii_lowercase().ends_with(".item.gbx")).map(|n| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string()).collect();
+        let mut manifest: Vec<(&str, &str)> = kept.iter().map(|n| (n.as_str(), n.as_str())).collect();
+        manifest.extend(unique.iter().map(|(id, a, _)| (id.as_str(), a.as_str())));
+        if !kept.is_empty() {
+            println!("  kept {} embedded items of the source map", kept.len());
+        }
         m.replace_embedded_objects(&manifest, &zip);
     }
     m.write_to(&out).expect("write output");

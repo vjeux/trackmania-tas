@@ -79,6 +79,7 @@ pub enum Node {
     /// A `CPlugLight` (a Solid2 `lights` socket target) and its `GxLight*`.
     Light(light::CPlugLight),
     GxLight(light::GxLight),
+    LightUserModel(light::CPlugLightUserModel),
     /// A prefab of entities (the entity model of a moving item: static parts,
     /// `CPlugDynaObjectModel`s and their kinematic constraints).
     Prefab(prefab::CPlugPrefab),
@@ -103,6 +104,7 @@ impl Node {
             Node::Placement(_) => C_ITEM_PLACEMENT_PARAM,
             Node::Light(_) => light::C_PLUG_LIGHT,
             Node::GxLight(g) => g.class_id,
+            Node::LightUserModel(_) => light::C_LIGHT_USER_MODEL,
             Node::Prefab(_) => C_PREFAB,
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
@@ -126,6 +128,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
         light::C_PLUG_LIGHT => Node::Light(light::CPlugLight::parse(r)?),
         c if light::is_gx_light_class(c) => Node::GxLight(light::GxLight::parse(r, c)?),
+        light::C_LIGHT_USER_MODEL => Node::LightUserModel(light::CPlugLightUserModel::parse(r)?),
         C_PREFAB => Node::Prefab(prefab::CPlugPrefab::parse_in(r)?),
         dyna::C_DYNA_OBJECT_MODEL => Node::Dyna(dyna::CPlugDynaObjectModel::parse(r)?),
         dyna::C_KINEMATIC_CONSTRAINT => Node::Kinematic(dyna::KinematicConstraint::parse(r)?),
@@ -152,6 +155,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::Placement(x) => x.write(w),
         Node::Light(x) => x.write(w),
         Node::GxLight(x) => x.write(w),
+        Node::LightUserModel(x) => x.write(w),
         Node::Prefab(x) => x.write_in(w),
         Node::Dyna(x) => x.write(w),
         Node::Kinematic(x) => x.write(w),

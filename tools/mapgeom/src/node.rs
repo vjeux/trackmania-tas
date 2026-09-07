@@ -169,6 +169,10 @@ pub struct Solid2 {
     pub material_nodes: Vec<i32>,
     /// The light sockets: (name, CPlugLight node or -1, Iso4 in model space).
     pub lights: Vec<(String, i32, [f32; 12])>,
+    /// Item-editor lights: the `light_user_models` nodes and the
+    /// `light_insts` (model index, socket index) pairs.
+    pub light_user_models: Vec<i32>,
+    pub light_insts: Vec<(u32, u32)>,
 }
 
 /// A `CPlugLight` (0x0901D000) — the wrapper a Solid2's `lights` socket names

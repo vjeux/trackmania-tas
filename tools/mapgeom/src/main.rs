@@ -1718,6 +1718,9 @@ fn describe(n: &Node) -> String {
                     iso[9], iso[10], iso[11], iso[0], iso[1], iso[2], iso[3], iso[4], iso[5], iso[6], iso[7], iso[8]
                 ));
             }
+            if !s.light_user_models.is_empty() || !s.light_insts.is_empty() {
+                d.push_str(&format!("\n      light user models {:?} insts {:?}", s.light_user_models, s.light_insts));
+            }
             d
         }
         Node::Visual(v) => format!(
@@ -1784,6 +1787,7 @@ fn describe(n: &Node) -> String {
             } else {
                 let kind = match *c {
                     0x0400B000 => "GxLightSpot",
+                    0x090F9000 => "CPlugLightUserModel",
                     0x04002000 => "GxLightBall",
                     0x0400A000 => "GxLightFrustum",
                     0x04007000 => "GxLightDirectional",

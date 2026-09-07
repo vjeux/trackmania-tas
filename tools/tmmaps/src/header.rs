@@ -942,3 +942,20 @@ impl FileRef {
         b
     }
 }
+
+/// The embedded-objects zip itself (bytes) and its entry names, for a map that
+/// is to be given MORE embedded items (`tmmaps lineup` on a tiny map: the
+/// library must survive).
+pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
+    let (_, _, payload, size) = crate::gbx::all_skip_chunks(body)
+        .into_iter()
+        .find(|(cid, _, _, _)| *cid == 0x0304_3054)?;
+    let seg = &body[payload..(payload + size).min(body.len())];
+    let z = seg.windows(4).position(|w| w == b"PK\x03\x04")?;
+    // the zip runs to the end of the inner block: 4 bytes of trailer follow
+    // (the chunk's own tail); zip_add re-parses local headers, so a few
+    // trailing bytes are harmless
+    let zip = seg[z..].to_vec();
+    let names = zip_names(&zip);
+    Some((zip, names))
+}

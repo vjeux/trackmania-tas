@@ -493,3 +493,106 @@ impl GxLight {
         (color, intensity, range)
     }
 }
+
+/// `CPlugLightUserModel` (0x090F9000): the light the ITEM EDITOR / NadeoImporter
+/// writes for a custom item (`MeshParams.xml` `<Light Type="Spot|Point" …/>`),
+/// listed in a Solid2's `light_user_models` and placed on a `lights` socket
+/// through `light_insts` (model index, socket index). Layout: GBX.NET
+/// `CPlugLightUserModel.chunkl` (version, int, Color, Intensity, Distance,
+/// PointEmissionRadius, PointEmissionLength, SpotInnerAngle, SpotOuterAngle,
+/// SpotEmissionSizeX, SpotEmissionSizeY, v1+ NightOnly); the exe's reflection
+/// lists the same members. The unnamed int is read as the light KIND
+/// (0 point, 1 spot — a guess to be verified in-game, 2026-09-07).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CPlugLightUserModel {
+    pub version: u32,
+    pub kind: i32,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub distance: f32,
+    pub point_emission_radius: f32,
+    pub point_emission_length: f32,
+    pub spot_inner_angle: f32,
+    pub spot_outer_angle: f32,
+    pub spot_emission_size_x: f32,
+    pub spot_emission_size_y: f32,
+    pub night_only: Option<bool>,
+    pub raw: Vec<super::RawChunk>,
+}
+
+pub const C_LIGHT_USER_MODEL: u32 = 0x090F9000;
+
+impl CPlugLightUserModel {
+    pub fn parse(r: &mut Rd) -> R<CPlugLightUserModel> {
+        let mut m = CPlugLightUserModel { version: 1, kind: 0, color: [1.0; 3], intensity: 1.0, distance: 10.0, point_emission_radius: 0.0, point_emission_length: 0.0, spot_inner_angle: 0.0, spot_outer_angle: 0.0, spot_emission_size_x: 0.0, spot_emission_size_y: 0.0, night_only: None, raw: Vec::new() };
+        loop {
+            let at = r.o;
+            let cid = r.u32()?;
+            if cid == FACADE {
+                break;
+            }
+            match cid {
+                0x090F9000 => {
+                    m.version = r.u32()?;
+                    m.kind = r.i32()?;
+                    m.color = r.vec3()?;
+                    m.intensity = r.f32()?;
+                    m.distance = r.f32()?;
+                    m.point_emission_radius = r.f32()?;
+                    m.point_emission_length = r.f32()?;
+                    m.spot_inner_angle = r.f32()?;
+                    m.spot_outer_angle = r.f32()?;
+                    m.spot_emission_size_x = r.f32()?;
+                    m.spot_emission_size_y = r.f32()?;
+                    m.night_only = if m.version >= 1 { Some(r.bool32()?) } else { None };
+                }
+                c if super::is_skippable_here(r) => m.raw.push(super::RawChunk { id: c, payload: super::read_skippable_payload(r, c)? }),
+                c => return Err(format!("CPlugLightUserModel chunk 0x{c:08X} at 0x{at:x} has no reader")),
+            }
+        }
+        Ok(m)
+    }
+
+    pub fn write(&self, w: &mut Wr) {
+        w.u32(0x090F9000);
+        w.u32(self.version);
+        w.i32(self.kind);
+        w.floats(&self.color);
+        w.floats(&[self.intensity, self.distance, self.point_emission_radius, self.point_emission_length, self.spot_inner_angle, self.spot_outer_angle, self.spot_emission_size_x, self.spot_emission_size_y]);
+        if self.version >= 1 {
+            w.bool32(self.night_only.unwrap_or(false));
+        }
+        for rc in &self.raw {
+            super::write_skippable(w, rc.id, &rc.payload);
+        }
+        w.u32(FACADE);
+    }
+
+    /// The item-editor form of a pack light: colour and intensity as they
+    /// are, the ball radius as the distance, the emitting radius/cylinder as
+    /// the point emission, the spot angles when the GxLight is a spot.
+    pub fn from_gx(g: &GxLight) -> CPlugLightUserModel {
+        let (color, intensity, range) = g.summary();
+        let mut m = CPlugLightUserModel { version: 1, kind: 0, color, intensity, distance: range, point_emission_radius: 0.0, point_emission_length: 0.0, spot_inner_angle: 0.0, spot_outer_angle: 0.0, spot_emission_size_x: 0.0, spot_emission_size_y: 0.0, night_only: Some(false), raw: Vec::new() };
+        for c in &g.chunks {
+            match c {
+                GxChunk::Ball02 { emitting_radius, .. } | GxChunk::Ball06 { emitting_radius, .. } => m.point_emission_radius = *emitting_radius,
+                GxChunk::Ball08 { emitting_radius, emitting_cylinder_len_z, .. } => {
+                    m.point_emission_radius = *emitting_radius;
+                    m.point_emission_length = *emitting_cylinder_len_z;
+                }
+                GxChunk::Spot01 { angle_inner, angle_outer, .. } | GxChunk::Spot { angle_inner, angle_outer, .. } => {
+                    m.spot_inner_angle = *angle_inner;
+                    m.spot_outer_angle = *angle_outer;
+                }
+                _ => {}
+            }
+        }
+        if g.class_id == 0x0400B000 {
+            m.kind = std::env::var("TINY_LIGHT_SPOT_KIND").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            m.spot_emission_size_x = m.point_emission_radius;
+            m.spot_emission_size_y = m.point_emission_radius;
+        }
+        m
+    }
+}

@@ -1305,22 +1305,53 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
-    // The source model's lights, each socket pointing at an INLINE CPlugLight
-    // whose GxLight rides inline in turn (two node indices). TINY_LIGHTS=drop
-    // leaves them out (the unlit bake of before 2026-09-07).
+    // The source model's lights. Two forms (TINY_LIGHT_FORM):
+    //  * `socket`: each socket points at an INLINE CPlugLight whose GxLight
+    //    rides inline in turn (two node indices) — the pack's own form; the
+    //    EDITOR renders these, PLAY mode did not (Summer 09's start deck dark,
+    //    2026-09-07);
+    //  * `user`: the item editor's form — a CPlugLightUserModel per light in
+    //    `light_user_models`, the socket carrying no node (u02 false, name
+    //    string), `light_insts` tying model k to socket k;
+    //  * `both`: the socket carries the CPlugLight AND a user model instance
+    //    points at it.
+    // ⚠ `user` and `both` CRASHED the client at map load (Trackmania.exe+0x4c9062:
+    // the light-inst loop reads [r14+0x78] = NULL; 2026-09-07, two dumps) — the
+    // CPlugLightUserModel layout or the inst semantics are still guesses (no
+    // reference item with editor lights was found: none of 95 TME items or the
+    // ItemExchange "light" items carries one). They stay as experiment knobs.
+    // The default `socket` form renders in the editor AND in play once the
+    // source map's stale lightmap is stripped (`tmmaps tiny` does since 1b7adc5;
+    // with it kept every converted-block item was BLACK in play, lights or not).
+    // TINY_LIGHTS=drop leaves them out (the unlit bake of before 2026-09-07).
     if std::env::var("TINY_LIGHTS").map(|v| v != "drop").unwrap_or(true) {
-        for ml in &m.lights_out {
-            let mut light = ml.light.clone();
-            match light.gx_mut() {
-                Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
-                Some(gx) => *gx = super::null_ref(),
-                None => {}
-            }
+        let form = std::env::var("TINY_LIGHT_FORM").unwrap_or_else(|_| "socket".into());
+        for (k, ml) in m.lights_out.iter().enumerate() {
             let mut socket = ml.socket.clone();
-            socket.u02 = true;
-            socket.u04.clear();
-            socket.node = inline(*next, Node::Light(light));
-            *next += 2;
+            if form == "socket" || form == "both" {
+                let mut light = ml.light.clone();
+                match light.gx_mut() {
+                    Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
+                    Some(gx) => *gx = super::null_ref(),
+                    None => {}
+                }
+                socket.u02 = true;
+                socket.u04.clear();
+                socket.node = inline(*next, Node::Light(light));
+                *next += 2;
+            } else {
+                socket.u02 = false;
+                socket.u04 = format!("Light{k}");
+                socket.node = super::null_ref();
+            }
+            if form == "user" || form == "both" {
+                if let Some(g) = ml.light.gx_light() {
+                    let um = super::light::CPlugLightUserModel::from_gx(g);
+                    s2.light_user_models.push(inline(*next, Node::LightUserModel(um)));
+                    *next += 1;
+                    s2.light_insts.push((s2.light_user_models.len() as i32 - 1, s2.lights.len() as i32));
+                }
+            }
             s2.lights.push(socket);
         }
     }
@@ -2152,9 +2183,10 @@ impl Merged {
                     }
                     let (color, intensity, range) = light.gx_light().map(|g| g.summary()).unwrap_or_default();
                     self.notes.push(format!(
-                        "light {:?} from {path}: colour [{:.2}, {:.2}, {:.2}] intensity {intensity} range {range} at [{:.2}, {:.2}, {:.2}] rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}]",
+                        "light {:?} from {path}: colour [{:.2}, {:.2}, {:.2}] intensity {intensity} range {range} at [{:.2}, {:.2}, {:.2}] rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}] ints {:?} u15 {} {:?}",
                         socket.u01, color[0], color[1], color[2], socket.u05[9], socket.u05[10], socket.u05[11],
-                        socket.u05[0], socket.u05[1], socket.u05[2], socket.u05[3], socket.u05[4], socket.u05[5], socket.u05[6], socket.u05[7], socket.u05[8]
+                        socket.u05[0], socket.u05[1], socket.u05[2], socket.u05[3], socket.u05[4], socket.u05[5], socket.u05[6], socket.u05[7], socket.u05[8],
+                        socket.ints, socket.u15, socket.u16
                     ));
                     self.lights_out.push(MergedLight { socket, light, source: path });
                 }
