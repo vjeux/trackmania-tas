@@ -25,6 +25,7 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug)]
 struct Row {
     wall: f64,
+    #[allow(dead_code)]
     race: Option<f64>,
     car: Option<[f64; 3]>,
     cam: Option<[f64; 3]>,
@@ -45,8 +46,9 @@ fn parse_log(path: &PathBuf) -> Result<Vec<Row>, String> {
         let num = |s: &str| s.trim().parse::<f64>().ok();
         let wall = num(f[0]).ok_or_else(|| format!("{}:{}: bad wall_ms", path.display(), i + 1))?;
         let race = num(f[1]);
+        // a player without a vehicle yet reads (0,0,0): no car
         let car = match (num(f[2]), num(f[3]), num(f[4])) {
-            (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+            (Some(x), Some(y), Some(z)) if [x, y, z] != [0.0; 3] => Some([x, y, z]),
             _ => None,
         };
         let cam = match (num(f[5]), num(f[6]), num(f[7])) {
@@ -155,18 +157,34 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let (lo, hi) = tb.split_once(':').ok_or("--trigger wants x0,y0,z0:x1,y1,z1")?;
         let (lo, hi) = (v3(lo)?, v3(hi)?);
         let inside = |p: [f64; 3]| (0..3).all(|k| p[k] >= lo[k].min(hi[k]) && p[k] <= lo[k].max(hi[k]));
-        let entered = tiny.iter().find(|r| r.car.map(inside).unwrap_or(false));
-        // the chase camera sits behind the car: a camera-to-car distance under ~25 m;
-        // a MediaTracker camera is wherever the clip put it
-        let racing: Vec<&Row> = tiny.iter().filter(|r| r.race.map(|t| t > 0.0).unwrap_or(false) && r.car.is_some() && r.cam.is_some()).collect();
-        let jump = racing.windows(2).find(|w| dist(w[0].cam.unwrap(), w[1].cam.unwrap()) > 8.0);
-        match entered {
-            Some(r) => println!("tiny car entered the trigger box at race {:.3} s (car {:.1},{:.1},{:.1})", r.race.unwrap_or(0.0) / 1000.0, r.car.unwrap()[0], r.car.unwrap()[1], r.car.unwrap()[2]),
+        let t0 = tiny[0].wall;
+        let secs = |w: f64| (w - t0) / 1000.0;
+        // The car: its first position is the spawn; "racing" = it has moved a
+        // metre from there (the race clock column reads 0 in this build of the
+        // readout, so it is not used).
+        let spawn = tiny.iter().find_map(|r| r.car);
+        match spawn {
+            Some(sp) => println!("tiny car spawned at {:.1},{:.1},{:.1}", sp[0], sp[1], sp[2]),
+            None => println!("tiny car NEVER appeared (no vehicle position in {} rows): the map has no working start", tiny.len()),
+        }
+        let moving: Vec<&Row> = match spawn {
+            Some(sp) => tiny.iter().filter(|r| r.car.map(|c| dist(c, sp) > 1.0).unwrap_or(false) && r.cam.is_some()).collect(),
+            None => Vec::new(),
+        };
+        match moving.first() {
+            Some(r) => println!("tiny car rolling from {:.3} s into the log", secs(r.wall)),
+            None => println!("tiny car never moved"),
+        }
+        match tiny.iter().find(|r| r.car.map(inside).unwrap_or(false)) {
+            Some(r) => println!("tiny car entered the trigger box at {:.3} s (car {:.1},{:.1},{:.1})", secs(r.wall), r.car.unwrap()[0], r.car.unwrap()[1], r.car.unwrap()[2]),
             None => println!("tiny car never entered the trigger box {lo:?}..{hi:?}"),
         }
-        match jump {
-            Some(w) => println!("tiny camera jumped at race {:.3} s: {:.1},{:.1},{:.1} -> {:.1},{:.1},{:.1}", w[1].race.unwrap_or(0.0) / 1000.0, w[0].cam.unwrap()[0], w[0].cam.unwrap()[1], w[0].cam.unwrap()[2], w[1].cam.unwrap()[0], w[1].cam.unwrap()[1], w[1].cam.unwrap()[2]),
-            None => println!("tiny camera never jumped during the race (no in-game clip fired)"),
+        // the chase camera follows the car a few metres behind; a MediaTracker
+        // camera is wherever the clip put it — a jump of more than 8 m between
+        // frames while the car rolls is the clip firing
+        match moving.windows(2).find(|w| dist(w[0].cam.unwrap(), w[1].cam.unwrap()) > 8.0) {
+            Some(w) => println!("tiny camera jumped at {:.3} s: {:.1},{:.1},{:.1} -> {:.1},{:.1},{:.1} fov {:?} (the in-game clip fired)", secs(w[1].wall), w[0].cam.unwrap()[0], w[0].cam.unwrap()[1], w[0].cam.unwrap()[2], w[1].cam.unwrap()[0], w[1].cam.unwrap()[1], w[1].cam.unwrap()[2], w[1].fov),
+            None => println!("tiny camera never jumped while the car rolled (no in-game clip fired)"),
         }
     }
     Ok(())

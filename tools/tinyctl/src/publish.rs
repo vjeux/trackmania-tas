@@ -318,12 +318,41 @@ fn playcheck(o: &PublishOpts, auth_core: &str, file_url: &str, uid: &str) -> Res
         return Err(format!("playcheck: no playground after {:.0}s; playmap said `{pm}`; ctx {ctx}", t0.elapsed().as_secs_f64()));
     }
     std::thread::sleep(Duration::from_secs(8));
+    // THE CAR. A playground that opens is not a map that plays: the tiny 15
+    // opened fine for a day with NO vehicle (the baked start gate had no spawn,
+    // 2026-09-07) and the playcheck said OK. The player's position over a
+    // second of frames (`/carlog`, Car.as) must be somewhere — (0,0,0) is the
+    // vehicle-less player. The intro (10 s) is still running at this point, but
+    // the car exists during it (the original's stands at its spawn from 0.9 s).
+    // A readout that fails to answer is reported, not fatal: the gate is the
+    // car's absence, not the plugin's.
+    let car = get("/carlog?ms=1200");
+    let positions: Vec<[f64; 3]> = car
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() < 5 {
+                return None;
+            }
+            Some([f[2].trim().parse().ok()?, f[3].trim().parse().ok()?, f[4].trim().parse().ok()?])
+        })
+        .collect();
+    let car_note = if positions.is_empty() {
+        format!("car readout empty (`{}`)", car.lines().next().unwrap_or("").chars().take(60).collect::<String>())
+    } else if positions.iter().all(|p| *p == [0.0; 3]) {
+        get("/back");
+        return Err(format!("playcheck: NO CAR — the player had no vehicle in {} frames (position 0,0,0): the map has no working start", positions.len()));
+    } else {
+        let p = positions.iter().find(|p| **p != [0.0; 3]).unwrap();
+        format!("car at {:.1},{:.1},{:.1}", p[0], p[1], p[2])
+    };
     let shot = o.outdir.join(format!("playcheck-{uid}.png"));
     let win = crate::wsx::to_win(shot.to_str().unwrap()).replace('/', "\\");
     let st = Command::new(POWERSHELL).args(["-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\shotdpi.ps1", &win]).output().map_err(|e| format!("powershell: {e}"))?;
     let size = std::fs::metadata(&shot).map(|m| m.len()).unwrap_or(0);
     get("/back");
-    Ok(format!("playcheck\tplayground after {:.0}s\tscreenshot {} ({size} B, powershell {})", t0.elapsed().as_secs_f64(), shot.display(), st.status))
+    Ok(format!("playcheck\tplayground after {:.0}s\t{car_note}\tscreenshot {} ({size} B, powershell {})", t0.elapsed().as_secs_f64(), shot.display(), st.status))
 }
 
 // ---------------------------------------------------------------- devserver
