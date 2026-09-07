@@ -1361,7 +1361,6 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
                 ents.push(static_entity(&mut next, so));
             }
         }
-        let mut dyna_indices: Vec<i32> = Vec::new();
         for part in &m.dyna {
             let mesh_index = next_index(&mut next);
             let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
@@ -1382,16 +1381,17 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
                 None => super::null_ref(),
             };
             let i = next_index(&mut next);
-            dyna_indices.push(ents.len() as i32);
             ents.push(super::prefab::Entity { model: inline(i, Node::Dyna(model)), rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
         }
         if let Some(so) = static_object {
             ents.push(static_entity(&mut next, so));
         }
         for (k, part) in m.dyna.iter().enumerate() {
+            // Ent2 ranks the dyna objects of the prefab (the k-th
+            // CPlugDynaObjectModel entity), whatever sits between them
             let mut cp = part.constraint_params.clone();
             cp.ent1 = -1;
-            cp.ent2 = dyna_indices[k];
+            cp.ent2 = k as i32;
             let i = next_index(&mut next);
             ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(part.constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
         }
@@ -1546,11 +1546,20 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
     let externals = model.externals.clone();
     let ext_name = |i: i32| externals.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
     // The kinematic constraints of this prefab: which entity each one moves
-    // (its params name the dyna entity; -1 is the world), and the constraint
-    // file — through the item's Level modifier when it has one (the game skin
-    // swaps `KinematicConstraints\ObstacleX` for `Modifier\ItemObstacle\
-    // AnimX<Level>`, whose ranges are the real ones; the prefab's own file has
-    // a zero range).
+    // (its params name the dyna object by its rank among the prefab's dyna
+    // entities — Ent2 = 0 is the FIRST CPlugDynaObjectModel entity, not
+    // entity 0: ObstacleRotor24mWing90X2 lists the constraint first; -1 is
+    // the world), and the constraint file — through the item's Level modifier
+    // when it has one (the game skin swaps `KinematicConstraints\ObstacleX`
+    // for `Modifier\ItemObstacle\AnimX<Level>`, whose ranges are the real
+    // ones; the prefab's own file has a zero range).
+    let dyna_entities: Vec<i32> = prefab
+        .ents
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.model.inline.is_none() && e.model.index >= 0 && ext_name(e.model.index).map(|p| p.to_ascii_lowercase().ends_with(".dynaobject.gbx")).unwrap_or(false))
+        .map(|(i, _)| i as i32)
+        .collect();
     let mut constraints: Vec<(i32, String, super::dyna::ConstraintParams)> = Vec::new();
     for e in &prefab.ents {
         if e.params_id != super::dyna::P_CONSTRAINT || e.model.inline.is_some() || e.model.index < 0 {
@@ -1561,7 +1570,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
             m.notes.push(format!("{path}: constraint {cp} with {}-byte params skipped", e.params.len()));
             continue;
         };
-        let target = if params.ent2 >= 0 { params.ent2 } else { params.ent1 };
+        let rank = if params.ent2 >= 0 { params.ent2 } else { params.ent1 };
+        let Some(target) = dyna_entities.get(rank.max(0) as usize).copied().filter(|_| rank >= 0) else {
+            m.notes.push(format!("{path}: constraint {cp} binds dyna object {rank}, which the prefab does not have ({} dyna entities)", dyna_entities.len()));
+            continue;
+        };
         constraints.push((target, modified_constraint_path(store, m, &cp), params));
     }
     let dyna_static = std::env::var("TINY_DYNA").map(|v| v == "static").unwrap_or(false);
