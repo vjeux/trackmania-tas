@@ -52,7 +52,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     // the flat run exits at the finish; the crossing row may be missing
     crate::rig::extrapolate_exit(&mut flat);
     let ng = gates.gates.len();
-    let first = det.first_crossings(gates, &flat, &vec![false; ng]);
+    let first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
     let mut events: Vec<(usize, usize)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(gi, t)| (*t as usize, gi)).collect();
     events.sort();
     let respawns = respawn_ticks(&w.ghost);

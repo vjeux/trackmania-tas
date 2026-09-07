@@ -237,8 +237,22 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
     }
     let gr = grade(&runs, &gates, &det);
     println!("GRADE vs the ghosts' own notices (first row inside vs the row before the notice, T-1): {} => {}", gr, if gr.passes() { "PASS (bar: ±2 ticks on ≥95 %, no missed, no extra)" } else { "FAIL" });
+    if a.has("point-probe") {
+        println!("\nWHICH POINT OF THE CAR: plane slack per model for the centre shifted l m along a body axis / the velocity");
+        for l in probe_point_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+        for l in probe_box_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+        for l in probe_rotation_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+    }
+    let cg = counter_grade(&runs, &gates, &det);
+    println!("ENGINE COUNTER control (Row::cps steps vs detector rows, finish included): {} => {}", cg, if cg.passes() { "PASS" } else { "FAIL" });
     std::fs::write(out.join("detector.json"), det.to_json()).map_err(|e| e.to_string())?;
-    std::fs::write(out.join("grade.txt"), format!("{}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("grade.txt"), format!("notices: {}\n{}\nengine counter: {}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" }, cg, if cg.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
     // the human crossing ORDER per ghost, for the coordinator's 44/44 check
     let mut orders: std::collections::BTreeMap<String, usize> = Default::default();
     for run in &runs {
@@ -647,7 +661,7 @@ fn cmd_rejudge(a: &Args) -> Result<(), String> {
                     if c.len() < 12 {
                         return None;
                     }
-                    Some(forkoracle::layout::Row { time_ms: c[0] as i64, x: c[1], y: c[2], z: c[3], vx: c[4], vy: c[5], vz: c[6], qw: c[7], qx: c[8], qy: c[9], qz: c[10], wetness: c[11] })
+                    Some(forkoracle::layout::Row { time_ms: c[0] as i64, x: c[1], y: c[2], z: c[3], vx: c[4], vy: c[5], vz: c[6], qw: c[7], qx: c[8], qy: c[9], qz: c[10], wetness: c[11], cps: u32::MAX })
                 })
                 .collect();
             if exited {

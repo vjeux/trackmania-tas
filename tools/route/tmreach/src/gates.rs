@@ -311,3 +311,108 @@ fn trig_json(t: &Trigger) -> String {
         t.s_off, t.depth, t.lat_half, t.up_lo, t.up_hi
     )
 }
+
+/// Where the engine's own counter (Row::cps) steps within `rows`: row indices.
+pub fn counter_steps(rows: &[forkoracle::layout::Row]) -> Option<Vec<usize>> {
+    if rows.iter().all(|r| r.cps == u32::MAX) {
+        return None;
+    }
+    let mut v = Vec::new();
+    for i in 1..rows.len() {
+        let (a, b) = (rows[i - 1].cps, rows[i].cps);
+        if a != u32::MAX && b != u32::MAX && b > a {
+            for _ in a..b {
+                v.push(i);
+            }
+        }
+    }
+    Some(v)
+}
+
+/// What the attribution produced for one rollout.
+#[derive(Clone, Debug, Default)]
+pub struct Credits {
+    /// Per gate: the row index of its credit (engine tick), or -1.
+    pub gate_row: Vec<i32>,
+    /// Counter steps that no gate's trigger explains (row indices).
+    pub unattributed: Vec<usize>,
+    /// Geometric crossings the counter did not step for (gate indices).
+    pub geometric_only: Vec<usize>,
+    /// Whether the engine counter was available.
+    pub engine: bool,
+}
+
+impl Detector {
+    /// ENGINE-AUTHORITATIVE crediting, GEOMETRIC attribution: every step of the
+    /// engine's checkpoint counter is a credit; the gate it belongs to is the
+    /// uncredited gate whose trigger the car is inside within ±`win` rows of
+    /// the step (nearest crossing wins), else the nearest uncredited gate
+    /// centre within 40 m, else the step is UNATTRIBUTED (reported, never
+    /// dropped). Without a counter the geometry alone credits (flagged).
+    pub fn credits(&self, gates: &MapGates, rows: &[forkoracle::layout::Row], already: &[bool], win: usize) -> Credits {
+        let geo = self.first_crossings(gates, rows, already);
+        let Some(steps) = counter_steps(rows) else {
+            return Credits { gate_row: geo, unattributed: Vec::new(), geometric_only: Vec::new(), engine: false };
+        };
+        let ng = gates.gates.len();
+        let mut gate_row = vec![-1i32; ng];
+        let mut taken = already.to_vec();
+        let mut unattributed = Vec::new();
+        for s in steps {
+            // candidates: uncredited gates with a geometric crossing near the step
+            let mut best: Option<(usize, i64)> = None;
+            for gi in 0..ng {
+                if taken[gi] {
+                    continue;
+                }
+                if geo[gi] >= 0 {
+                    let d = (geo[gi] as i64 - s as i64).abs();
+                    if d as usize <= win && best.map(|(_, b)| d < b).unwrap_or(true) {
+                        best = Some((gi, d));
+                    }
+                }
+            }
+            if best.is_none() {
+                // any uncredited gate whose trigger contains a row near the step
+                for gi in 0..ng {
+                    if taken[gi] {
+                        continue;
+                    }
+                    let t = self.trigger_for(&gates.gates[gi]);
+                    let lo = s.saturating_sub(win);
+                    let hi = (s + win).min(rows.len() - 1);
+                    if let Some(i) = (lo..=hi).find(|&i| t.inside(&gates.gates[gi], [rows[i].x, rows[i].y, rows[i].z])) {
+                        let d = (i as i64 - s as i64).abs();
+                        if best.map(|(_, b)| d < b).unwrap_or(true) {
+                            best = Some((gi, d));
+                        }
+                    }
+                }
+            }
+            if best.is_none() {
+                // nearest uncredited gate centre within 40 m at the step row
+                let p = [rows[s].x, rows[s].y, rows[s].z];
+                let mut nd = 40.0;
+                for gi in 0..ng {
+                    if taken[gi] {
+                        continue;
+                    }
+                    let d = crate::rig::dist(p, gates.gates[gi].centre);
+                    if d < nd {
+                        nd = d;
+                        best = Some((gi, 0));
+                    }
+                }
+            }
+            match best {
+                Some((gi, _)) => {
+                    gate_row[gi] = s as i32;
+                    taken[gi] = true;
+                }
+                None => unattributed.push(s),
+            }
+        }
+        let geometric_only = (0..ng).filter(|&gi| geo[gi] >= 0 && gate_row[gi] < 0 && !already[gi]).collect();
+        Credits { gate_row, unattributed, geometric_only, engine: true }
+    }
+}

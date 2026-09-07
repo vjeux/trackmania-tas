@@ -59,7 +59,7 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     // ---- flat run of the whole tape, one child
     let n = w.n_ticks();
     // Run the whole tape, off its end: the last chunk exits with the race
-    // (Advanced::Exited), so the finish crossing is in the rows.
+    // (Advanced::RunEnded), so the finish crossing is in the rows.
     let ticks = n.saturating_sub(w.root_probe) as u64;
     let t0 = std::time::Instant::now();
     let flat = w.flat(ticks)?;
@@ -172,11 +172,11 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
 }
 
 pub fn write_trace(p: &Path, rows: &[Row]) -> Result<(), String> {
-    let mut s = String::from("time_ms\tx\ty\tz\tvx\tvy\tvz\tqw\tqx\tqy\tqz\twet\n");
+    let mut s = String::from("time_ms\tx\ty\tz\tvx\tvy\tvz\tqw\tqx\tqy\tqz\twet\tcps\n");
     for r in rows {
         s.push_str(&format!(
-            "{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}\n",
-            r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.qw, r.qx, r.qy, r.qz, r.wetness
+            "{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}\t{}\n",
+            r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.qw, r.qx, r.qy, r.qz, r.wetness, r.cps
         ));
     }
     std::fs::write(p, s).map_err(|e| format!("{}: {}", p.display(), e))

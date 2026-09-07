@@ -172,7 +172,7 @@ impl Worker {
         // overshot into the finish); walk in chained chunks that each ask for
         // 90 % of what is left, so the target is approached from below. A
         // target at or past the tape's end is reached by running OFF the end
-        // (`Advanced::Exited`), which is how the finish crossing is traced.
+        // (`Advanced::RunEnded`), which is how the finish crossing is traced.
         let to_end = self.root_probe + ticks as usize + 5 >= self.tape.n();
         let target = (self.root_probe + ticks as usize).min(self.tape.n());
         let mut all: Vec<Row> = Vec::new();
@@ -187,15 +187,15 @@ impl Worker {
             } else {
                 ((left as f64 * 0.9) as u64).clamp(1, 1500)
             };
-            let (rows, c) = match self.forest.advance_ex(h, &[], from, ask)? {
-                Advanced::Paused(mut rows, c) => {
+            let (rows, c) = match self.forest.advance_or_end(h, &[], from, ask)? {
+                Advanced::Node(mut rows, c) => {
                     drop_stale_tail(&mut rows);
                     if std::env::var("TMREACH_SEAMS").is_ok() {
                         eprintln!("seam: chunk rows {} .. {}", rows.first().map(|r| r.time_ms).unwrap_or(0), rows.last().map(|r| r.time_ms).unwrap_or(0));
                     }
                     (rows, c)
                 }
-                Advanced::Exited(rows) => {
+                Advanced::RunEnded(rows) => {
                     all.extend(rows);
                     h = ROOT;
                     break;
@@ -243,13 +243,13 @@ impl Worker {
     /// destroy the child. One rollout. `exited` = the child ran the race to its
     /// end (finish, or out of tape) instead of pausing.
     pub fn rollout(&mut self, h: Handle, recs: &[Rec], from: usize, k: u64) -> Result<Rolled, String> {
-        match self.forest.advance_ex(h, recs, from, k)? {
-            Advanced::Paused(mut rows, c) => {
+        match self.forest.advance_or_end(h, recs, from, k)? {
+            Advanced::Node(mut rows, c) => {
                 self.forest.release(c);
                 drop_stale_tail(&mut rows);
                 Ok(Rolled { rows, exited: false })
             }
-            Advanced::Exited(rows) => Ok(Rolled { rows, exited: true }),
+            Advanced::RunEnded(rows) => Ok(Rolled { rows, exited: true }),
         }
     }
 

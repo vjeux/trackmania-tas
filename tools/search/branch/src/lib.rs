@@ -101,13 +101,15 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
-/// What `Forest::advance_ex` came back with.
+/// What an `advance_or_end` produced.
 pub enum Advanced {
-    /// The child paused at its stop point and is a new fork point.
-    Paused(StateTrace, Handle),
-    /// The child ran to the end of its simulation (the race finished or the
-    /// tape ran out) and exited; this is everything it traced.
-    Exited(StateTrace),
+    /// A new paused node, and the rows on the way to it.
+    Node(StateTrace, Handle),
+    /// The engine ENDED THE RUN inside the macro (the car left the world, the
+    /// validator declared the replay invalid, the declared time was reached):
+    /// the child exited instead of pausing. The rows it traced before that
+    /// are returned; there is no node.
+    RunEnded(StateTrace),
 }
 
 /// How a node writes its state trace, and where the car lives in its memory.
@@ -233,6 +235,26 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
+        match self.advance_or_end(h, inputs, from, k_ticks)? {
+            Advanced::Node(t, id) => Ok((t, id)),
+            Advanced::RunEnded(_) => Err(format!(
+                "the branch child exited before reaching its stop point: the engine ended the run \
+                 inside this macro (handle {:?}, from tick {})",
+                h, from
+            )),
+        }
+    }
+
+    /// [`Forest::advance`], reporting a run the ENGINE ended inside the macro as
+    /// [`Advanced::RunEnded`] (with the rows traced up to it) instead of an
+    /// error. `k_ticks` is exact under the tick clock.
+    pub fn advance_or_end(
+        &mut self,
+        h: Handle,
+        inputs: &[Rec],
+        from: usize,
+        k_ticks: u64,
+    ) -> Result<Advanced, String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -287,7 +309,22 @@ impl Forest {
             _ => self.held_mut(h)?.node.branch(&req)?,
         };
 
-        let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
+        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+            Some(n) => n,
+            None => {
+                // The engine ended the run inside this macro. Whatever the
+                // child traced before it stopped simulating is real state;
+                // the caller decides what an ended run means.
+                let trace = if trace_path.as_os_str().is_empty() {
+                    Vec::new()
+                } else {
+                    let t = self.read_trace(&trace_path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&trace_path);
+                    t
+                };
+                return Ok(Advanced::RunEnded(trace));
+            }
+        };
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -302,10 +339,20 @@ impl Forest {
         // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
         // abort. Not "fall back to the parent's" -- that is the defect.
         if let Err(e) = node.probe() {
-            let pid = node.pid;
-            node.destroy();
-            self.tree.reaped(pid);
-            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+            if e.contains("ValidatedResult") {
+                // The probe child ran to the END without another input read:
+                // every remaining record is already in the engine's buffer.
+                // The node is alive and can continue the reference, but owns
+                // no writable tick (measured by the route GEN arm: paused at
+                // 19.670 of a 19.798 run, 13 records left, probe reply = the
+                // validator's result).
+                node.assume_exhausted(self.reference.len());
+            } else {
+                let pid = node.pid;
+                node.destroy();
+                self.tree.reaped(pid);
+                return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+            }
         }
 
         let mut written = match h {
@@ -327,105 +374,7 @@ impl Forest {
         };
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok((trace, id))
-    }
-
-    /// `advance`, for a macro that may run the race to its END.
-    ///
-    /// A child that crosses the finish never reaches its stop point: the
-    /// validator ends, the process exits, and `advance` would sit out the whole
-    /// frame timeout and then fail. Here the exit is detected through the pid
-    /// and the child's trace -- everything it drove up to the end -- is
-    /// returned as [`Advanced::Exited`]. The trace still has to be
-    /// tick-continuous; a trace with a gap is refused like any other.
-    pub fn advance_ex(
-        &mut self,
-        h: Handle,
-        inputs: &[Rec],
-        from: usize,
-        k_ticks: u64,
-    ) -> Result<Advanced, String> {
-        if !inputs.is_empty() {
-            let floor = self.floor(h, None)?;
-            if from < floor {
-                return Err(format!(
-                    "FORWARD-ONLY VIOLATION: handle {:?} has consumed through tick {}, so the \
-                     first tick it may be given is {}; you asked to write from {}.",
-                    h,
-                    floor - 1,
-                    floor,
-                    from
-                ));
-            }
-        }
-        let id = Handle(self.next);
-        self.next += 1;
-        let sock = self.tree.sock_path();
-        let (trace_path, segs, stride, max) = match &self.cfg {
-            Some(c) => (
-                c.dir.join(format!("trace-{}.bin", id.0)),
-                forkoracle::layout::segments(&c.layout),
-                c.stride,
-                c.max,
-            ),
-            None => (PathBuf::new(), Vec::new(), 0, 0),
-        };
-        let tp = trace_path.to_string_lossy().into_owned();
-        let req = BranchReq {
-            from,
-            recs: inputs,
-            stop_after: k_ticks.max(1),
-            sock: &sock,
-            trace_path: &tp,
-            segs: &segs,
-            sample_stride: stride.max(1),
-            sample_max: max,
-            key: (0, (segs.iter().map(|s| s.1).sum::<u32>()).max(1)),
-        };
-        let pid = match h {
-            ROOT => self.root.branch(&req)?,
-            _ => self.held_mut(h)?.node.branch(&req)?,
-        };
-        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms()) {
-            Ok(n) => n,
-            Err(forkoracle::tree::AcceptErr::ChildExited(_)) => {
-                // Give the trace file's last write a moment to land.
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                let trace = if trace_path.as_os_str().is_empty() { Vec::new() } else { self.read_trace(&trace_path)? };
-                let _ = std::fs::remove_file(&trace_path);
-                return Ok(Advanced::Exited(trace));
-            }
-            Err(e) => return Err(e.to_string()),
-        };
-        if node.pid != pid {
-            node.destroy();
-            return Err(format!("branch mismatch: asked for pid {} and pid {} arrived on the socket", pid, node.pid));
-        }
-        if let Err(e) = node.probe() {
-            if e.contains("ValidatedResult") {
-                // The probe child ran to the END without another input read:
-                // every remaining record is already in the engine's buffer.
-                // The node is alive and can continue the reference, but owns
-                // no writable tick (measured: paused at 19.670 of a 19.798 run,
-                // 13 records left, probe reply = the validator's result).
-                node.assume_exhausted(self.reference.len());
-            } else {
-                let pid = node.pid;
-                node.destroy();
-                self.tree.reaped(pid);
-                return Err(format!("node {} could not probe its own boundary: {}", pid, e));
-            }
-        }
-        let mut written = match h {
-            ROOT => Vec::new(),
-            _ => self.held(h)?.written.clone(),
-        };
-        written.extend((from..from + inputs.len()).filter(|t| {
-            inputs.get(t - from).zip(self.reference.get(*t)).map(|(a, b)| a != b).unwrap_or(true)
-        }));
-        let trace = if trace_path.as_os_str().is_empty() { Vec::new() } else { self.read_trace(&trace_path)? };
-        self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok(Advanced::Paused(trace, id))
+        Ok(Advanced::Node(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child
@@ -477,6 +426,25 @@ impl Forest {
             ticks_differing: diff.len(),
             raw,
         })
+    }
+
+    /// Re-run a node's own boundary probe, and time it.
+    ///
+    /// [`Forest::advance`] already probes every node it creates, so this is not
+    /// needed for correctness — it exists so the rig can MEASURE what the probe
+    /// costs. The first version of that measurement timed [`Forest::floor`]
+    /// instead, which only reads the cached boundary: the column read 0.000 ms
+    /// for every row, which is a number reported for something the instrument
+    /// was not measuring.
+    pub fn reprobe(&mut self, h: Handle) -> Result<usize, String> {
+        match h {
+            ROOT => {
+                let t = self.root.probe_tick()?;
+                self.root_boundary = Some(t);
+                Ok(t)
+            }
+            _ => self.held_mut(h)?.node.probe(),
+        }
     }
 
     /// Destroy a node and forget it.

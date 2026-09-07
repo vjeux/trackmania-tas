@@ -67,6 +67,11 @@ COMMANDS
                                 every stretch of the run the model has no
                                 surface under, and how far the nearest
                                 triangle is -- absent, or merely too narrow
+  pack <file.Map.Gbx> --out DIR [--no-deco] [--gates]
+                                MapPack + Route as JSON, with the
+                                station-has-surface control
+  yoff <file.Map.Gbx>           the map height, from the map itself: two
+                                independent estimators that must agree
   plumb <file.Map.Gbx> --at X,Z... [--yoff N]
                                 every surface in one vertical column
 
@@ -1106,6 +1111,162 @@ fn main() {
                     "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3} pivot {:?} scale {}  {} triangles",
                     it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pivot, it.scale, tris
                 );
+            }
+        }
+        "pack" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            if p.is_empty() {
+                die::<()>("pack needs a .Map.Gbx".into());
+            }
+            let outdir = flag(&a.rest, "--out").unwrap_or_else(|| ".".to_string());
+            let uid = flag(&a.rest, "--uid").unwrap_or_else(|| {
+                std::path::Path::new(&p)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().replace(".Map.Gbx", ""))
+                    .unwrap_or_default()
+            });
+            let hdr = tmmaps::header::read(&p).ok();
+            let name = flag(&a.rest, "--name")
+                .or_else(|| hdr.as_ref().map(|h| h.name.clone()))
+                .unwrap_or_else(|| uid.clone());
+            let author_ms = tmmaps::header::times(&p).ok().and_then(|t| t.author_ms);
+            let o = mapgeom::packrun::Opts {
+                with_deco: !a.rest.iter().any(|x| x == "--no-deco"),
+                verbose: true,
+                step: flag(&a.rest, "--step").and_then(|s| s.parse().ok()).unwrap_or(mapgeom::surf::STEP),
+                spawn_override: flag(&a.rest, "--spawn").map(|s| {
+                    let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if v.len() != 3 { die::<()>("--spawn wants x,y,z".into()); }
+                    [v[0], v[1], v[2]]
+                }),
+            };
+            println!("{}  [{}]", name, uid);
+            if a.rest.iter().any(|x| x == "--gates") {
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+                let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+                let _ = asm.with_embedded(&m);
+                let (gs, _) = asm.map_split(&m);
+                let y = mapgeom::yoff::measure(&m, &gs).value().unwrap_or(0.0);
+                for g in mapgeom::pack::gates(&m, y) {
+                    println!(
+                        "  {:<12} {:<32} ({:8.1},{:7.1},{:8.1}) cell {:?} item={}",
+                        g.tag, g.name, g.pos[0], g.pos[1], g.pos[2], g.cell, g.from_item
+                    );
+                }
+                return;
+            }
+            match mapgeom::packrun::build(&mut store, &p, &uid, &name, author_ms, &o) {
+                Err(e) => {
+                    println!("  FAILED: {}", e);
+                    std::process::exit(1);
+                }
+                Ok(b) => {
+                    let _ = std::fs::create_dir_all(&outdir);
+                    let pf = format!("{}/{}.pack.json", outdir, uid);
+                    let rf = format!("{}/{}.route.json", outdir, uid);
+                    let _ = std::fs::write(&pf, mapgeom::packrun::pack_json(&b));
+                    let _ = std::fs::write(&rf, mapgeom::packrun::route_json(&b));
+                    println!(
+                        "  author {}  yoff {}  {} checkpoints, {} finish group(s)",
+                        b.pack
+                            .author_ms
+                            .map(|v| tmmaps::secs::ms(v))
+                            .unwrap_or_else(|| "unknown".into()),
+                        b.pack.yoff,
+                        b.pack.checkpoints.len(),
+                        b.pack.finish.len()
+                    );
+                    for (tag, recs, grps) in &b.pack.group_control {
+                        println!("  gate grouping  {:<12} {} records -> {} checkpoint(s)", tag, recs, grps);
+                    }
+                    println!(
+                        "  route {:.1} m, {} vertices, {} stations, order {}exact: {:?}",
+                        b.route.length,
+                        b.route.verts.len(),
+                        b.route.stations.len(),
+                        if b.route.order_exact { "" } else { "NOT " },
+                        b.route.order
+                    );
+                    println!(
+                        "  CONTROL station has surface beneath it: {}/{} = {:.1} %   \
+                         (offside +{} m: {:.1} %)",
+                        b.coverage.with_surface,
+                        b.coverage.stations,
+                        100.0 * b.coverage.frac(),
+                        mapgeom::packrun::OFFSIDE,
+                        100.0 * b.coverage.offside_frac()
+                    );
+                    println!(
+                        "  CONTROL station has ROAD beneath it:    {}/{} = {:.1} %   \
+                         (offside +{} m: {:.1} %  <- the negative half)",
+                        b.coverage.with_road,
+                        b.coverage.stations,
+                        100.0 * b.coverage.road_frac(),
+                        mapgeom::packrun::OFFSIDE,
+                        100.0 * b.coverage.offside_road_frac()
+                    );
+                    for (l, len, chord) in &b.legs {
+                        println!("  leg {:<18} {:8.1} m   chord {:8.1} m   ratio {:.2}", l, len, chord, len / chord.max(1.0));
+                    }
+                    if let Some(v) = b.implied_speed {
+                        println!("  CONTROL route length / author time = {:.1} m/s   {}", v,
+                            if v > 95.0 { "SUSPECT -- no Stadium car averages this; the route is going somewhere the drive does not" } else { "physical" });
+                    }
+                    let ms: Vec<String> = b
+                        .coverage
+                        .materials
+                        .iter()
+                        .take(6)
+                        .map(|(m, n)| format!("{} {}", m, n))
+                        .collect();
+                    println!("  under the route: {}", ms.join(", "));
+                    for n in &b.notes {
+                        println!("  note: {}", n);
+                    }
+                    if let Some(png) = flag(&a.rest, "--png") {
+                        let mut sc = b.scene;
+                        sc.add_line("route", b.route.verts.iter().map(|v| v.pos).collect(), [1.0, 0.0, 0.0, 1.0]);
+                        let mark = |sc: &mut mapgeom::scene::Scene, p: [f32;3], c: [f32;4], n: &str, r: f32| {
+                            sc.add_line(n, vec![[p[0]-r,p[1]+2.0,p[2]], [p[0]+r,p[1]+2.0,p[2]]], c);
+                            sc.add_line(n, vec![[p[0],p[1]+2.0,p[2]-r], [p[0],p[1]+2.0,p[2]+r]], c);
+                        };
+                        mark(&mut sc, b.pack.spawn, [0.0,1.0,0.0,1.0], "spawn", 26.0);
+                        for (i, c) in b.pack.checkpoints.iter().enumerate() { mark(&mut sc, c.pos, [1.0,1.0,0.0,1.0], &format!("cp{}", i), 20.0); }
+                        for c in &b.pack.finish { mark(&mut sc, c.pos, [0.0,0.6,1.0,1.0], "finish", 24.0); }
+                        let clip = b.route.verts.iter().map(|v| v.pos[1]).fold(f32::NEG_INFINITY, f32::max) + 12.0;
+                        let img = mapgeom::render::top_down(&sc, 1.0, 3000, clip);
+                        let _ = std::fs::write(&png, mapgeom::render::png(&img));
+                        println!("  wrote {} ({} x {} px)", png, img.w, img.h);
+                    }
+                    println!("  wrote {} and {}", pf, rf);
+                }
+            }
+        }
+        "yoff" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            if p.is_empty() {
+                die::<()>("yoff needs a .Map.Gbx".into());
+            }
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            let _ = asm.with_embedded(&m);
+            let (grid, _free) = asm.map_split(&m);
+            let r = mapgeom::yoff::measure(&m, &grid);
+            println!("{}\n{}", p, r.line());
+            if a.rest.iter().any(|x| x == "--hist") {
+                println!("  cellmode histogram (offset: items)");
+                for (k, n) in mapgeom::yoff::cellmode_hist(&m).iter().take(12) {
+                    println!("    {:>6}  {}", k, n);
+                }
+                println!("  rest histogram (offset: items)");
+                for (k, n) in mapgeom::yoff::rest_hist(&m, &grid).iter().take(12) {
+                    println!("    {:>6}  {}", k, n);
+                }
+            }
+            if let mapgeom::yoff::Verdict::Unmeasured(_) = r.verdict {
+                std::process::exit(1);
             }
         }
         "plumb" => {

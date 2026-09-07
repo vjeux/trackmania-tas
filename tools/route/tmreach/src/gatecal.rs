@@ -31,6 +31,13 @@ pub struct Crossing {
     pub pm: Option<[f64; 3]>,
     /// Two rows before the credited row.
     pub pmm: Option<[f64; 3]>,
+    /// The flat-row index at which the engine's counter stepped for this crossing.
+    pub step_row: Option<usize>,
+    pub p_step: Option<[f64; 3]>,
+    pub p_step_prev: Option<[f64; 3]>,
+    /// The full rows at the step and the row before (for heading-based probes).
+    pub row_step: Option<Row>,
+    pub row_step_prev: Option<Row>,
     pub pp: Option<[f64; 3]>,
     pub speed: f64,
 }
@@ -94,6 +101,12 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
         };
         let r0 = &rep.flat[idx];
         let (g, d) = nearest_gate(gates, pos(r0));
+        // THE ENGINE'S COUNTER: the row at which Row::cps steps nearest this
+        // notice (within 3 rows) is the credited tick; its position is the
+        // inside point of the fit and the row before it the outside point.
+        let step_row = (idx.saturating_sub(3)..(idx + 3).min(rep.flat.len()))
+            .filter(|&j| j > 0 && rep.flat[j].cps != u32::MAX && rep.flat[j - 1].cps != u32::MAX && rep.flat[j].cps > rep.flat[j - 1].cps)
+            .min_by_key(|j| (*j as i64 - idx as i64).abs());
         crossings.push(Crossing {
             ghost: name.clone(),
             cp_idx: i,
@@ -107,6 +120,11 @@ pub fn ghost_run(w: &mut Worker, tel: &Telemetry, gates: &MapGates) -> Result<Gh
             pmm: idx.checked_sub(2).map(|j| pos(&rep.flat[j])),
             pp: rep.flat.get(idx + 1).map(pos),
             speed: crate::rig::speed(r0),
+            step_row,
+            p_step: step_row.map(|j| pos(&rep.flat[j])),
+            row_step: step_row.map(|j| rep.flat[j].clone()),
+            row_step_prev: step_row.map(|j| rep.flat[j - 1].clone()),
+            p_step_prev: step_row.map(|j| pos(&rep.flat[j - 1])),
         });
     }
     Ok(GhostRun {
@@ -280,10 +298,16 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
     for run in runs {
         for c in &run.crossings {
             let g = gates.gate(c.gate_wp).unwrap();
-            if let (Some(pm), Some(pmm)) = (c.pm, c.pmm) {
-                let s1 = g.local(pm).0;
-                let s2 = g.local(pmm).0;
-                let e = by.entry(g.model.clone()).or_insert((Vec::new(), g.half_width, g.from_item));
+            // the engine's counter step row when present, else T-1/T-2 from the notice
+            let pair = match (c.p_step, c.p_step_prev) {
+                (Some(a), Some(b)) => Some((a, b)),
+                _ => c.pm.zip(c.pmm),
+            };
+            if let Some((pin, pout)) = pair {
+                let s1 = g.local(pin).0;
+                let s2 = g.local(pout).0;
+                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
+                let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item));
                 e.0.push((s2, s1));
             }
         }
@@ -334,4 +358,214 @@ pub fn oracle_refused_max_s(model: &str) -> f64 {
         "GateCheckpointLeft32m" => -2.150,
         _ => f64::NEG_INFINITY,
     }
+}
+
+/// THE ENGINE'S OWN CHECKPOINT COUNTER (Row::cps, resolved by the validator
+/// car resolver, `fk::validator::CP_COUNTER_OFF`) vs the detector: for every
+/// run, the rows at which the counter steps must be exactly the detector's
+/// crossing rows, one for one, finish included. This is the tick-level
+/// control the notices could not give (a notice is sub-tick and the oracle is
+/// blind to a lone checkpoint).
+#[derive(Default, Debug, Clone)]
+pub struct CounterGrade {
+    pub steps: usize,
+    pub exact: usize,
+    pub off_by: std::collections::BTreeMap<i64, usize>,
+    pub unmatched_steps: usize,
+    pub extra_detections: usize,
+    pub runs_without_counter: usize,
+}
+
+impl std::fmt::Display for CounterGrade {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} counter steps: {} matched by a detector crossing on the same row, off-by hist {:?}, {} steps with no detection within 5 rows, {} detections with no step; {} runs had no counter",
+            self.steps, self.exact, self.off_by, self.unmatched_steps, self.extra_detections, self.runs_without_counter
+        )
+    }
+}
+
+impl CounterGrade {
+    pub fn passes(&self) -> bool {
+        self.steps > 0 && self.unmatched_steps == 0 && self.extra_detections == 0 && self.off_by.keys().all(|k| k.abs() <= 2)
+    }
+}
+
+pub fn counter_grade(runs: &[GhostRun], gates: &MapGates, det: &Detector) -> CounterGrade {
+    let mut g = CounterGrade::default();
+    for run in runs {
+        if run.flat.iter().all(|r| r.cps == u32::MAX) {
+            g.runs_without_counter += 1;
+            continue;
+        }
+        let mut steps: Vec<usize> = Vec::new();
+        for i in 1..run.flat.len() {
+            let (a, b) = (run.flat[i - 1].cps, run.flat[i].cps);
+            if a != u32::MAX && b != u32::MAX && b > a {
+                steps.push(i);
+            }
+        }
+        let first = det.first_crossings(gates, &run.flat, &vec![false; gates.gates.len()]);
+        let mut dets: Vec<usize> = first.iter().filter(|t| **t >= 0).map(|t| *t as usize).collect();
+        dets.sort();
+        let mut used = vec![false; dets.len()];
+        for s in &steps {
+            g.steps += 1;
+            let mut best: Option<(usize, i64)> = None;
+            for (j, d) in dets.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+                let dt = *d as i64 - *s as i64;
+                if dt.abs() <= 5 && best.map(|(_, b)| dt.abs() < b.abs()).unwrap_or(true) {
+                    best = Some((j, dt));
+                }
+            }
+            match best {
+                Some((j, dt)) => {
+                    used[j] = true;
+                    if dt == 0 {
+                        g.exact += 1;
+                    }
+                    *g.off_by.entry(dt).or_default() += 1;
+                }
+                None => g.unmatched_steps += 1,
+            }
+        }
+        g.extra_detections += used.iter().filter(|u| !**u).count();
+    }
+    g
+}
+
+/// Rotate the car-frame vector `v` into the world by the row's quaternion (w, x, y, z).
+pub fn rotate(r: &Row, v: [f64; 3]) -> [f64; 3] {
+    let (w, x, y, z) = (r.qw, r.qx, r.qy, r.qz);
+    // q v q*
+    let (vx, vy, vz) = (v[0], v[1], v[2]);
+    let tx = 2.0 * (y * vz - z * vy);
+    let ty = 2.0 * (z * vx - x * vz);
+    let tz = 2.0 * (x * vy - y * vx);
+    [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+}
+
+/// Which POINT of the car does the engine test? Slack of a single plane per
+/// model when the tested point is the centre shifted by `l` metres along a
+/// body axis (from the quaternion) or along the velocity. Positive slack =
+/// a plane exists that reproduces every counter step for that model.
+pub fn probe_point_hypotheses(runs: &[GhostRun], gates: &MapGates) -> Vec<String> {
+    let axes: [(&str, Box<dyn Fn(&Row) -> [f64; 3]>); 4] = [
+        ("body +z", Box::new(|r: &Row| rotate(r, [0.0, 0.0, 1.0]))),
+        ("body -z", Box::new(|r: &Row| rotate(r, [0.0, 0.0, -1.0]))),
+        ("body +x", Box::new(|r: &Row| rotate(r, [1.0, 0.0, 0.0]))),
+        ("velocity", Box::new(|r: &Row| {
+            let n = crate::rig::speed(r).max(1e-6);
+            [r.vx / n, r.vy / n, r.vz / n]
+        })),
+    ];
+    let mut out = Vec::new();
+    for (name, axis) in axes.iter() {
+        for l10 in [-30i32, -20, -10, 0, 5, 10, 15, 20, 25, 30, 40] {
+            let l = l10 as f64 / 10.0;
+            let mut by: std::collections::BTreeMap<String, (f64, f64, usize)> = Default::default();
+            for run in runs {
+                for c in &run.crossings {
+                    let (Some(a), Some(b)) = (&c.row_step, &c.row_step_prev) else { continue };
+                    let g = gates.gate(c.gate_wp).unwrap();
+                    let pt = |r: &Row| {
+                        let d = axis(r);
+                        [r.x + l * d[0], r.y + l * d[1], r.z + l * d[2]]
+                    };
+                    let s_in = g.local(pt(a)).0;
+                    let s_out = g.local(pt(b)).0;
+                    let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
+                    let e = by.entry(key).or_insert((f64::NEG_INFINITY, f64::INFINITY, 0));
+                    e.0 = e.0.max(s_out);
+                    e.1 = e.1.min(s_in);
+                    e.2 += 1;
+                }
+            }
+            let mut line = format!("{name:>9} l {l:+.1}:");
+            for (m, (lo, hi, n)) in &by {
+                line.push_str(&format!("  {m} n{n} plane in ({lo:+.3},{hi:+.3}] slack {:+.3}", hi - lo));
+            }
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// Oriented-box hypothesis: the engine tests the car's BODY (half-length `l`
+/// forward/back along body ±z, half-width `w` along body ±x): credited when
+/// the leading corner passes the plane. `s_test` = max over the 4 corners.
+pub fn probe_box_hypotheses(runs: &[GhostRun], gates: &MapGates) -> Vec<String> {
+    let mut out = Vec::new();
+    for l10 in [0i32, 10, 15, 18, 20, 22, 25, 30] {
+        for w10 in [0i32, 5, 8, 10, 12, 15] {
+            let (l, w) = (l10 as f64 / 10.0, w10 as f64 / 10.0);
+            let mut by: std::collections::BTreeMap<String, (f64, f64, usize)> = Default::default();
+            for run in runs {
+                for c in &run.crossings {
+                    let (Some(a), Some(b)) = (&c.row_step, &c.row_step_prev) else { continue };
+                    let g = gates.gate(c.gate_wp).unwrap();
+                    let lead = |r: &Row| {
+                        let f = rotate(r, [0.0, 0.0, 1.0]);
+                        let x = rotate(r, [1.0, 0.0, 0.0]);
+                        let mut best = f64::NEG_INFINITY;
+                        for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+                            let p = [r.x + sa * l * f[0] + sb * w * x[0], r.y + sa * l * f[1] + sb * w * x[1], r.z + sa * l * f[2] + sb * w * x[2]];
+                            best = best.max(g.local(p).0);
+                        }
+                        best
+                    };
+                    let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
+                    let e = by.entry(key).or_insert((f64::NEG_INFINITY, f64::INFINITY, 0));
+                    e.0 = e.0.max(lead(b));
+                    e.1 = e.1.min(lead(a));
+                    e.2 += 1;
+                }
+            }
+            let mut line = format!("box l {l:.1} w {w:.1}:");
+            for (m, (lo, hi, n)) in &by {
+                line.push_str(&format!("  {m} n{n} plane in ({lo:+.3},{hi:+.3}] slack {:+.3}", hi - lo));
+            }
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// Rotated-plane hypothesis: the trigger plane's normal is the GEOM normal
+/// turned by φ about the vertical (s' = s·cos φ + lat·sin φ).
+pub fn probe_rotation_hypotheses(runs: &[GhostRun], gates: &MapGates) -> Vec<String> {
+    let mut out = Vec::new();
+    for d10 in (-40i32..=40).step_by(5) {
+        let phi = (d10 as f64 / 10.0).to_radians();
+        let mut by: std::collections::BTreeMap<String, (f64, f64, usize)> = Default::default();
+        for run in runs {
+            for c in &run.crossings {
+                let (Some(a), Some(b)) = (&c.row_step, &c.row_step_prev) else { continue };
+                let g = gates.gate(c.gate_wp).unwrap();
+                let sp = |r: &Row| {
+                    let (s, lat, _) = g.local(pos(r));
+                    s * phi.cos() + lat * phi.sin()
+                };
+                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
+                let e = by.entry(key).or_insert((f64::NEG_INFINITY, f64::INFINITY, 0));
+                e.0 = e.0.max(sp(b));
+                e.1 = e.1.min(sp(a));
+                e.2 += 1;
+            }
+        }
+        let mut line = format!("rot {:+.1} deg:", d10 as f64 / 10.0);
+        for (m, (lo, hi, n)) in &by {
+            line.push_str(&format!("  {m} n{n} plane in ({lo:+.3},{hi:+.3}] slack {:+.3}", hi - lo));
+        }
+        out.push(line);
+    }
+    out
 }

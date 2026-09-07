@@ -50,6 +50,12 @@ pub struct Stats {
     pub reached_next: usize,
     /// Rollouts that crossed some OTHER uncredited gate first.
     pub reached_other: usize,
+    /// Rollouts whose rows carried no engine counter (geometry-only credits).
+    pub no_counter: usize,
+    /// Engine counter steps no gate trigger explained.
+    pub unattributed: usize,
+    /// Geometric crossings the engine did not credit.
+    pub geometric_only: usize,
     pub distinct_cells: Vec<usize>,
     pub switches: usize,
     pub rollout_secs: f64,
@@ -76,7 +82,7 @@ pub fn label_of_tick(w: &Worker, k: usize) -> i64 {
 pub fn credited_before(det: &Detector, gates: &MapGates, flat: &[Row], w: &Worker, k: usize) -> Vec<bool> {
     let lim = label_of_tick(w, k);
     let rows: Vec<Row> = flat.iter().filter(|r| r.time_ms < lim).cloned().collect();
-    let first = det.first_crossings(gates, &rows, &vec![false; gates.gates.len()]);
+    let first = det.credits(gates, &rows, &vec![false; gates.gates.len()], 5).gate_row;
     first.iter().map(|t| *t >= 0).collect()
 }
 
@@ -128,7 +134,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     let det = &cfg.det;
     let ng = gates.gates.len();
     let human_order: Vec<u32> = {
-        let first = det.first_crossings(gates, &flat, &vec![false; ng]);
+        let first = det.credits(gates, &flat, &vec![false; ng], 5).gate_row;
         let mut v: Vec<(i32, u32)> = first.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(i, t)| (*t, gates.gates[i].waypoint)).collect();
         v.sort();
         v.into_iter().map(|(_, wp)| wp).collect()
@@ -237,8 +243,18 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 }
                 let win: Vec<Row> = rolled.rows.iter().filter(|r| r.time_ms >= first_label && r.time_ms <= end_label).cloned().collect();
                 let complete = win.last().map(|r| r.time_ms == end_label).unwrap_or(false);
-                // gates crossed in the window, tick index relative to f
-                let first = det.first_crossings(gates, &win, &credited);
+                // credits: the ENGINE counter says how many and when, the geometry says which
+                let cr = det.credits(gates, &win, &credited, 5);
+                let first = cr.gate_row.clone();
+                if !cr.engine {
+                    out.stats.no_counter += 1;
+                }
+                out.stats.unattributed += cr.unattributed.len();
+                out.stats.geometric_only += cr.geometric_only.len();
+                if !cr.unattributed.is_empty() {
+                    out.log.push(format!("  start {start_id} macro {} h {h}: {} counter step(s) no gate explains at rows {:?}", m.id, cr.unattributed.len(), cr.unattributed));
+                }
+
                 let mut gate_tick = [-1i16; 32];
                 let mut finished_gate = false;
                 let mut n_new = 0;
@@ -334,7 +350,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     }
     }
     out.log.push(format!(
-        "{}: {} starts, {} rollouts in {:.1} s wall ({:.1}/s), outcomes ok/crash/off/fin/abort {:?}, identity max {:.4} m ({} fails), start-row blend max {:.4} m, noop {}, errors {}",
+        "{}: {} starts, {} rollouts in {:.1} s wall ({:.1}/s), outcomes ok/crash/off/fin/abort {:?}, identity max {:.4} m ({} fails), start-row blend max {:.4} m, noop {}, errors {}; engine counter: {} rollouts without, {} unattributed steps, {} geometric-only crossings",
         w.ghost.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         out.starts.len(),
         out.stats.rollouts,
@@ -345,7 +361,10 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         out.stats.identity_fail,
         out.stats.start_blend_max_m,
         out.stats.noop,
-        out.stats.errors
+        out.stats.errors,
+        out.stats.no_counter,
+        out.stats.unattributed,
+        out.stats.geometric_only
     ));
     Ok(out)
 }
