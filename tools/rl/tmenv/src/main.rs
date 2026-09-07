@@ -2252,6 +2252,15 @@ fn probe_scan(a: &[String]) {
             let recs = s.tape.tail_records(0);
             let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)
                 .unwrap_or_else(|e| die(e));
+            if has(a, "--slots") {
+                let prov = car.provenance();
+                println!(
+                    "  slots at stop {c}: chosen {} vis {:#x}; {:?}",
+                    prov.car,
+                    prov.vis,
+                    fk::validator::slot_flags(s.srv.pid(), prov.participant).iter().map(|(k, p, f)| format!("slot {k} phy {p:#x} +0x10={f:#x}")).collect::<Vec<_>>()
+                );
+            }
             let bias = car.layout().clock_bias;
             let dir = work.join("traces");
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));

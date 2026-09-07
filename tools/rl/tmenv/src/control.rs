@@ -290,8 +290,21 @@ pub fn measure_spawn(
     let (rows, h) = f.advance(ROOT, &[], 0, 200)?;
     f.release(h);
     let first = *rows.first().ok_or("no state rows at the start: the spawn is UNMEASURED")?;
-    forkoracle::layout::check_rows(&rows)
-        .map_err(|e| format!("the resolved readout failed its own checks ({e}); UNMEASURED"))?;
+    if let Err(e) = forkoracle::layout::check_rows(&rows) {
+        // A map that SWITCHES CAR AT THE START LINE (Fall 2024 - 14: a
+        // GateGameplayDesert4m on the start block; 8 of 407 pool maps): at the
+        // root the participant's live slot is still the Stadium car (+0x10 = 0)
+        // and by race 0.5 s it reads -1 while the Desert slot reads 1 -- so a
+        // flat 200-tick trace of the ROOT car is a car that stops moving at the
+        // switch. Its position at the root is still the spawn, which is what
+        // this measures; the env follows the live slot per step from there.
+        let never_moves = e.contains("never moves");
+        if never_moves && !crate::track::car_switch_blocks(map).is_empty() {
+            eprintln!("tmenv: measure_spawn: the root car stops moving on a car-switch map ({e}); taking the root position as the spawn");
+        } else {
+            return Err(format!("the resolved readout failed its own checks ({e}); UNMEASURED"));
+        }
+    }
     let speed = (first.vx * first.vx + first.vy * first.vy + first.vz * first.vz).sqrt();
     Ok((
         SpawnFix {

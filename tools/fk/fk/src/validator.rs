@@ -502,3 +502,28 @@ pub fn live_vehicle(pid: i32, participant: u64) -> Option<(u8, u64)> {
 
 /// Where a `CGameVehiclePhy`'s physics position sits (ValidatorCar.pos).
 pub const STATE_POS_IN_VEHICLE: u64 = 0x12f0;
+
+/// The four vehicle slots as the participant holds them right now: (slot, phy,
+/// the u32 at phy+0x10), for diagnostics.
+pub fn slot_flags(pid: i32, participant: u64) -> Vec<(u8, u64, u32)> {
+    let o = BUILD_128182;
+    let mut out = Vec::new();
+    for k in 0..4u64 {
+        let class = procmem::read_at(pid, participant + o.participant_vehicle_class + 0x10 * k, 4)
+            .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))
+            .unwrap_or(0);
+        if class != CGAME_VEHICLE_PHY {
+            continue;
+        }
+        let phy = procmem::read_at(pid, participant + o.participant_vehicle + 0x10 * k, 8)
+            .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
+            .unwrap_or(0);
+        let flag = if phy != 0 {
+            procmem::read_at(pid, phy + 0x10, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap())).unwrap_or(0)
+        } else {
+            0
+        };
+        out.push((k as u8, phy, flag));
+    }
+    out
+}
