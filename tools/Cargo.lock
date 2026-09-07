@@ -110,6 +110,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyctl"
+version = "1.0.0"
+dependencies = [
+ "mapgeom",
+ "miniz_oxide",
+ "tmmaps",
+]
+
+[[package]]
 name = "tmauto"
 version = "1.0.0"
 dependencies = [

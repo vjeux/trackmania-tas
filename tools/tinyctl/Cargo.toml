@@ -1,0 +1,17 @@
+[package]
+name = "tinyctl"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "tinyctl"
+path = "src/main.rs"
+
+# The tiny-campaign operations: derive the comparison cameras from a map,
+# probe an environment, shoot both sides through the render box, diff the
+# shots, publish. `tmmaps` reads the map, `mapgeom` bakes the library the probe
+# measures against; the PNG codec is miniz_oxide (already in the workspace).
+[dependencies]
+tmmaps = { path = "../tmmaps" }
+mapgeom = { path = "../mapgeom" }
+miniz_oxide = "0.9.1"

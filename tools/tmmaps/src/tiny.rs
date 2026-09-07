@@ -139,7 +139,7 @@ fn read_mapping(path: &Path) -> Mappings {
 /// BlueBay sea surface (7: the land plane, block top y 10, halves to 8.5
 /// above it — the verified Summer 01 mapping, spawn 16 -> 11.5); the Stadium
 /// grass (10: the full-size floor the genealogy regenerates stays the floor).
-fn fixed_plane(collection: u32) -> f32 {
+pub fn fixed_plane(collection: u32) -> f32 {
     match collection {
         0x1c => 7.0,
         0x10 => -0.5, // RedIsland lake surface (Water prefab local +7.5 at cell 14)

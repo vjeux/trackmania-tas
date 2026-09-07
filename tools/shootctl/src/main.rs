@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 mod host;
 use host::plugin_addrs;
 mod lock;
+mod shootset;
 
 use std::sync::OnceLock;
 static ADDR: OnceLock<String> = OnceLock::new();
@@ -1012,6 +1013,13 @@ usage:
   shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]
              
         one game, one driver -- take this before setup/shoot
+  shootctl shootset --map MAP --views VIEWS.tsv --side o|t --outdir /mnt/c/DIR
+                    [--tag T] [--anchor sx,sy,sz:tx,ty,tz] [--scale 0.5]
+                    [--load-timeout S] [--settle-ms MS] [--no-lock] [--detach]
+        open the map ONCE and screenshot every view row (NAME<TAB>x,y,z<TAB>
+        DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
+        maps the camera through the tiny anchor at half the distance.
+        --detach returns at once; DIR/done-<side>.txt appears when finished.
 "#);
         std::process::exit(0);
     }
@@ -1104,6 +1112,8 @@ usage:
             let p = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/GhostShooter";
             save_good(p, "/home/vjeux/gs-good")
         }
+        // EVERY COMPARISON VIEW OF ONE MAP FOR ONE EDITOR LOAD. shootset.rs.
+        "shootset" => shootset::run(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
             let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);
