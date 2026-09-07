@@ -364,6 +364,8 @@ once under each clock, while both still existed:
 | lroundf clock | 236 130 | 391 | 9 | **0** | 22.711 |
 | tick clock, after the read audit (`from = probe`, one tick earlier) | 274 590 | 456 | 9 | **0** | 22.711 |
 | final build (bias fix, calibration off the per-run path, 96-tick clock hunt) | 275 760 | 458 | 8 | **0** | 22.711 |
+| with the exit-at-finish lever live | 278 850 | 463 | 9 | **0** | 22.711 |
+| final build (live vehicle slot, DNF machinery present and off) | 276 120 | 459 | 7 | **0** | 22.713 |
 
 The third row is the one that matters for the audit: the resume floor moved a
 tick earlier when the probe stopped reporting one record late, so every
