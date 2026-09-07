@@ -713,9 +713,30 @@ impl Rig {
         Session::start(&self.engine, self.tape.clone(), Checkpoint::Clock(clock))
     }
 
-    /// A session paused at this tape's ROOT (`control::root_clock_for`).
+    /// A session paused at this tape's ROOT (`control::root_clock_for`), whose
+    /// boundary probe has answered. A server whose probe child exits without
+    /// faulting (`PROBE-EMPTY`, exit 0 -- ~1 in 10 when several distinct
+    /// references start at once; cause open) is thrown away and started again,
+    /// up to three times: a fresh process has never shown it twice in a row.
     pub fn session_root(&self) -> Result<Session, String> {
-        self.session_clock(crate::control::root_clock_for(self.tape.start_offset_ms))
+        self.session_probed(crate::control::root_clock_for(self.tape.start_offset_ms))
+    }
+
+    /// [`Rig::session_clock`] with the PROBE-EMPTY restart rule.
+    pub fn session_probed(&self, clock: u64) -> Result<Session, String> {
+        let mut last = String::new();
+        for _ in 0..3 {
+            let mut s = self.session_clock(clock)?;
+            match s.probe_tick() {
+                Ok(_) => return Ok(s),
+                Err(e) if e.contains("PROBE-EMPTY") => {
+                    eprintln!("tmenv: a server's first probe came back empty ({e}); starting another");
+                    last = e;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(format!("three servers in a row answered the boundary probe with nothing: {last}"))
     }
 }
 
@@ -858,7 +879,7 @@ pub fn build_at_start(
             );
         }
         drop(s);
-        s = rig.session_clock(root_clock)?;
+        s = rig.session_probed(root_clock)?;
         probe = s.probe_tick()?;
         tries += 1;
     }

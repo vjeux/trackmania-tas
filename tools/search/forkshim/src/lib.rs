@@ -1355,14 +1355,28 @@ unsafe fn read_key(path: &str) -> Option<Key> {
 }
 
 /// Scan our own address space for the decoded input array.
+/// The first copy of the input array (`locate_all`'s head).
 unsafe fn locate(key: &Key) -> Option<usize> {
-    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    locate_all(key).into_iter().next()
+}
+
+/// EVERY copy of the record array that matches the key, in /proc/self/maps
+/// order. The engine can hold more than one (the ghost object's decoded list and
+/// the validator's working copy, at least); only one of them is READ during the
+/// race, and which comes first in the maps varies per process. A probe that
+/// faults on nothing (empty reply, exit 0: the child ran the whole race off the
+/// other copy) is how a wrong pick shows -- measured on ~1 in 10 servers when
+/// several references start at once -- and the 'P' handler then moves to the
+/// next candidate.
+unsafe fn locate_all(key: &Key) -> Vec<usize> {
+    let mut found: Vec<usize> = Vec::new();
+    let Some(maps) = std::fs::read_to_string("/proc/self/maps").ok() else { return found };
     let want: Vec<[u8; 4]> = key.steer.iter().map(|v| v.to_le_bytes()).collect();
     let hs = Horspool::new(want[key.t0]);
     let n = key.steer.len();
     for line in maps.lines() {
         let mut it = line.split_whitespace();
-        let range = it.next()?;
+        let Some(range) = it.next() else { continue };
         let perms = it.next().unwrap_or("");
         if !perms.starts_with("rw") {
             continue;
@@ -1372,9 +1386,8 @@ unsafe fn locate(key: &Key) -> Option<usize> {
         {
             continue;
         }
-        let (a, b) = range.split_once('-')?;
-        let start = usize::from_str_radix(a, 16).ok()?;
-        let end = usize::from_str_radix(b, 16).ok()?;
+        let Some((a, b)) = range.split_once('-') else { continue };
+        let (Ok(start), Ok(end)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16)) else { continue };
         let hay = std::slice::from_raw_parts(start as *const u8, end - start);
         let mut i = 0usize;
         while let Some(p) = hs.find_from(hay, i) {
@@ -1406,11 +1419,12 @@ unsafe fn locate(key: &Key) -> Option<usize> {
                 // patch, the shadow, the probe's protection range and its
                 // arithmetic, and the `base` on the wire -- is record-aligned
                 // because of this line.
-                return Some(start + base - REC_STEER);
+                found.push(start + base - REC_STEER);
+                i = p + (n - 1) * STRIDE;
             }
         }
     }
-    None
+    found
 }
 
 /// The steer value we believe each record holds, tick for tick.
@@ -1904,7 +1918,8 @@ unsafe fn forkserver() {
         }
     };
 
-    let base = if branch {
+    let mut candidates: Vec<usize> = Vec::new();
+    let mut base = if branch {
         let b = CACHED_BASE.load(Ordering::SeqCst);
         // HARD ABORT, never a rescan. See `base_still_holds`.
         if b == 0 {
@@ -1931,7 +1946,11 @@ unsafe fn forkserver() {
         }
         b
     } else {
-        match locate(key) {
+        candidates = locate_all(key);
+        if candidates.len() > 1 {
+            logn(b"FKSHIM input array copies ", candidates.len() as u64);
+        }
+        match candidates.first().copied() {
             Some(b) => {
                 CACHED_BASE.store(b, Ordering::SeqCst);
                 // The shadow starts as the key: at first entry nothing has been
@@ -1980,15 +1999,28 @@ unsafe fn forkserver() {
     utoa(RACE_START.load(Ordering::Relaxed), &mut hello);
     send_frame(res, &hello);
 
+    // set by the 'P' handler when the probe must be re-run on another copy of
+    // the input array; the next iteration then re-executes a 'P' without reading
+    // a frame
+    let mut pending_probe = false;
     loop {
-        let mut lenb = [0u8; 4];
-        if !read_exact(cmd, &mut lenb) {
-            _exit(0);
-        }
-        let len = u32::from_le_bytes(lenb) as usize;
-        let mut payload = vec![0u8; len];
-        if len > 0 && !read_exact(cmd, &mut payload) {
-            _exit(0);
+        let payload: Vec<u8>;
+        let len: usize;
+        if pending_probe {
+            pending_probe = false;
+            payload = vec![b'P'];
+            len = 1;
+        } else {
+            let mut lenb = [0u8; 4];
+            if !read_exact(cmd, &mut lenb) {
+                _exit(0);
+            }
+            len = u32::from_le_bytes(lenb) as usize;
+            let mut pl = vec![0u8; len];
+            if len > 0 && !read_exact(cmd, &mut pl) {
+                _exit(0);
+            }
+            payload = pl;
         }
         if len == 0 || payload[0] == b'Q' {
             _exit(0);
@@ -2093,6 +2125,23 @@ unsafe fn forkserver() {
             let mut st = 0i32;
             waitpid(pid, &mut st, 0);
             close(fds[0]);
+            if out.is_empty() && st == 0 && !branch {
+                // THE CHILD RAN THE RACE WITHOUT TOUCHING THIS ARRAY and exited
+                // normally: `base` is a copy the engine never reads. Move to the
+                // next candidate copy and probe again -- the driver sees only the
+                // probe that faulted. (Only at the root: a branch inherits a base
+                // that has already proven itself.)
+                if let Some(i) = candidates.iter().position(|c| *c == base) {
+                    if i + 1 < candidates.len() {
+                        base = candidates[i + 1];
+                        CACHED_BASE.store(base, Ordering::SeqCst);
+                        logn(b"FKSHIM input array: probe faulted on nothing, moving to copy ", (i + 1) as u64);
+                        // re-issue this same 'P' to ourselves
+                        pending_probe = true;
+                        continue;
+                    }
+                }
+            }
             if out.is_empty() {
                 // The probe child wrote NOTHING: it died before it faulted on the
                 // array. Say how, so the driver can tell a dead child from a
