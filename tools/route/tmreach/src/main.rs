@@ -554,12 +554,19 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         .unwrap_or_else(|| gates.gates.iter().filter(|g| g.kind != tmreach::gates::GateKind::Finish && g.kind != tmreach::gates::GateKind::Start).map(|g| g.group).collect::<std::collections::BTreeSet<_>>().len() as u32 + 1);
     let blind_below = (n_total / 2).max(2);
     let (mut agree, mut disagree, mut unanswered, mut blind, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, 0, Vec::new());
+    let mut tail = 0;
+    let finished_case = |c: &tmreach::oraclectl::Case| c.oracle_ms.is_some() || c.det_finished;
     for c in &cases {
         s.push_str(&case_tsv_row(c));
         match c.oracle_cps {
             None => unanswered += 1,
             Some(x) if x == c.det_cps => agree += 1,
             Some(0) if c.det_cps >= 1 && c.det_cps < blind_below && !c.det_finished => blind += 1,
+            // the oracle credited MORE than the engine did inside the assumed window and the
+            // child traced rows past that window: the extra credit fell in the tail whose
+            // adjudication end is not pinned (declared + 2.5 s holds on Summer 2026 - 01;
+            // Summer 2026 - 11 credited a checkpoint later than that) -- counted apart
+            Some(x) if x > c.det_cps && c.rows_past_cut > 0 && !finished_case(c) => tail += 1,
             Some(_) => disagree += 1,
         }
         if c.near_miss_m < 40.0 {
@@ -578,7 +585,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         *hist.entry((c.det_cps, c.oracle_cps)).or_default() += 1;
     }
     let verdict = format!(
-        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
+        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}, tail-window ambiguities (oracle credited more, after declared + grace) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
         cases.len(),
         agree,
         100.0 * agree as f64 / cases.len().max(1) as f64,
@@ -587,6 +594,7 @@ fn cmd_oraclectl(a: &Args) -> Result<(), String> {
         blind_below,
         n_total,
         blind,
+        tail,
         near,
         fin,
         fin_dt,

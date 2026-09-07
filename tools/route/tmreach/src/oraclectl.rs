@@ -43,6 +43,8 @@ pub struct Case {
     pub near_miss_gate: Option<u32>,
     pub rows: usize,
     pub exited: bool,
+    /// Rows the child traced past the assumed adjudication window (declared + grace).
+    pub rows_past_cut: usize,
     pub oracle_cps: Option<u32>,
     pub oracle_ms: Option<i64>,
     pub oracle_desc: String,
@@ -110,6 +112,7 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
             }
             // the oracle adjudicates nothing later than the grace after the DECLARED time
             let cut = w.label_of_race(w.tape.declared_ms.unwrap_or(u32::MAX / 2) as i64 + ADJUDICATION_GRACE_MS);
+            let rows_past_cut = rolled.rows.iter().filter(|r| r.time_ms > cut).count();
             rolled.rows.retain(|r| r.time_ms <= cut);
             // detector over prefix + rollout
             let mut all = prefix.clone();
@@ -175,6 +178,7 @@ pub fn cases_for_ghost(w: &mut Worker, tel: &Telemetry, cfg: &CtlCfg, gi: usize)
                 near_miss_gate: near_gate,
                 rows: rolled.rows.len(),
                 exited: rolled.exited,
+                rows_past_cut,
                 oracle_cps: None,
                 oracle_ms: None,
                 oracle_desc: String::new(),
