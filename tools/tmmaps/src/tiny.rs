@@ -20,6 +20,11 @@ struct Mapping {
     /// geometry is authored from the block's local corner, so a rotated block
     /// must be shifted by its footprint to stay on its own cells.
     footprint: Option<(u32, u32)>,
+    /// The unit cells of the block's selected variant, in the block's own
+    /// frame (offsets from its cell; the mapping row's 6th field). A ground
+    /// deck hides the terrain tile under EVERY one of them, not just under
+    /// its origin cell (`replaced_cells`).
+    units: Vec<[i32; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,8 +109,8 @@ fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         assert!(
-            (2..=5).contains(&fields.len()) && fields.len() != 4,
-            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ]]",
+            (2..=6).contains(&fields.len()) && fields.len() != 4,
+            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ[<TAB>UNITS]]]",
             path.display(),
             line_no + 1
         );
@@ -113,7 +118,7 @@ fn read_mapping(path: &Path) -> Mappings {
             .get(2)
             .map_or(1.0, |s| s.parse::<f32>().expect("MODEL_SCALE number"));
         assert!(model_scale.is_finite() && model_scale > 0.0);
-        let footprint = if fields.len() == 5 {
+        let footprint = if fields.len() >= 5 {
             let sx: u32 = fields[3].parse().expect("SX cells");
             let sz: u32 = fields[4].parse().expect("SZ cells");
             assert!(sx >= 1 && sz >= 1, "footprint must be at least 1x1");
@@ -121,10 +126,23 @@ fn read_mapping(path: &Path) -> Mappings {
         } else {
             None
         };
+        // 6th field: the variant's unit cells `x,y,z;x,y,z;…` (empty = the origin cell alone)
+        let units: Vec<[i32; 3]> = match fields.get(5) {
+            Some(s) if !s.trim().is_empty() => s
+                .split(';')
+                .map(|c| {
+                    let v: Vec<i32> = c.split(',').map(|x| x.trim().parse::<i32>().unwrap_or_else(|_| panic!("{}:{}: unit cell x,y,z expected, got {c:?}", path.display(), line_no + 1))).collect();
+                    assert!(v.len() == 3, "{}:{}: unit cell x,y,z expected, got {c:?}", path.display(), line_no + 1);
+                    [v[0], v[1], v[2]]
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let mapping = Mapping {
             model: fields[1].to_string(),
             model_scale,
             footprint,
+            units,
         };
         let prev = if let Some(index) = fields[0].strip_prefix("i@") {
             out.items_by_index
@@ -176,9 +194,41 @@ pub fn stands_in_for_tile(name: &str, flags: u32, zones: &BTreeSet<String>) -> b
 }
 
 /// The cells whose terrain tile is hidden by a stand-in block (see
-/// `stands_in_for_tile`), keyed by the raw file cell.
-pub fn replaced_cells(source: &MapFile, zones: &BTreeSet<String>) -> BTreeSet<[u8; 3]> {
-    source.blocks.iter().filter(|b| stands_in_for_tile(&b.name, b.flags, zones)).map(|b| b.raw_coords).collect()
+/// `stands_in_for_tile`), keyed by the raw file cell: every unit cell of the
+/// block's variant (`units`, in the block's frame, turned by its direction
+/// the way `block_origin` turns footprints — dir 1 = yaw −π/2 maps local +x
+/// onto world +z and local +z onto world −x), or the origin cell alone when
+/// the mapping carries no units. The game replaces the terrain under EVERY
+/// unit of a ground deck; hiding only the origin cell's tile left a Curve5's
+/// twelve other Grass tiles at deck height — the wheels read Grass on the
+/// road and the car was capped at grass speed (Summer 01, 2026-09-07).
+pub fn replaced_cells(source: &MapFile, zones: &BTreeSet<String>, units_of: &dyn Fn(&BlockRec) -> Vec<[i32; 3]>) -> BTreeSet<[u8; 3]> {
+    let mut out = BTreeSet::new();
+    for b in source.blocks.iter().filter(|b| stands_in_for_tile(&b.name, b.flags, zones)) {
+        out.insert(b.raw_coords);
+        if b.free_pos.is_some() {
+            continue; // a free block has no cell footprint to turn
+        }
+        let units = units_of(b);
+        if units.len() <= 1 {
+            continue;
+        }
+        let (sx, sz) = units.iter().fold((1i32, 1i32), |(sx, sz), u| (sx.max(u[0] + 1), sz.max(u[2] + 1)));
+        let [cx, cy, cz] = b.raw_coords.map(|c| c as i32);
+        for u in &units {
+            let (x, z) = match b.dir & 3 {
+                0 => (cx + u[0], cz + u[2]),
+                1 => (cx + sz - 1 - u[2], cz + u[0]),
+                2 => (cx + sx - 1 - u[0], cz + sz - 1 - u[2]),
+                _ => (cx + u[2], cz + sx - 1 - u[0]),
+            };
+            let y = cy + u[1];
+            if (0..=255).contains(&x) && (0..=255).contains(&y) && (0..=255).contains(&z) {
+                out.insert([x as u8, y as u8, z as u8]);
+            }
+        }
+    }
+    out
 }
 
 /// `tmmaps shared-cells MAP [--all]`: every cell where a terrain tile shares
@@ -192,7 +242,10 @@ pub fn shared_cells_cmd(args: &[String]) {
     let source = MapFile::load(Path::new(&args[2]));
     let all = args.iter().any(|a| a == "--all");
     let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-    let replaced = replaced_cells(&source, &zones);
+    // `--mapping placements.tsv`: the units per block, so multi-cell decks hide every cell they cover
+    let mapping = crate::cli::flag(args, "--mapping").map(|p| read_mapping(Path::new(p)));
+    let units_of = |b: &BlockRec| -> Vec<[i32; 3]> { mapping.as_ref().and_then(|m| m.by_index.get(&b.index).or_else(|| m.by_name.get(&b.name))).map(|m| m.units.clone()).unwrap_or_default() };
+    let replaced = replaced_cells(&source, &zones, &units_of);
     let mut by_cell: BTreeMap<[u8; 3], (Vec<&BlockRec>, Vec<&BlockRec>)> = BTreeMap::new();
     for b in &source.blocks {
         let e = by_cell.entry(b.raw_coords).or_default();
@@ -637,7 +690,8 @@ pub fn cmd(args: &[String]) {
     // genealogy chunk; a replacement block names its zone after "On", with or
     // without the zone's trailing digit (OnLandHill covers LandHill1/2).
     let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-    let replaced_cells = replaced_cells(&source, &zones);
+    let units_of = |b: &BlockRec| -> Vec<[i32; 3]> { mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)).map(|m| m.units.clone()).unwrap_or_default() };
+    let replaced_cells = replaced_cells(&source, &zones, &units_of);
     let mut replaced_terrain = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {

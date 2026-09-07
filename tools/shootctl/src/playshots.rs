@@ -503,3 +503,55 @@ pub fn summarize_wheels(args: &[String]) -> i32 {
     println!("  gas pedal last down at +{:.1} s", (last_gas - t0) as f64 / 1000.0);
     0
 }
+
+/// Tap one virtual key in the game window (foregrounded first, the same
+/// dance as `hold_accelerator`): `shootctl key ESC|ENTER|UP|... [--hold-ms N]`.
+/// The menu-level popups the title raises (a PASSWORD prompt sat on the main
+/// menu for an hour on 2026-09-07, `IsReady` false, every driver on the box
+/// waiting on `ready`, `/dismiss` blind to it — it is not a CGameDialogs
+/// frame) go away with Escape, and nothing else in the pipeline can press it.
+pub fn tap_key(name: &str, hold_ms: u64) -> Result<String, String> {
+    let (vk, scan, ext): (u8, u8, bool) = match name.to_ascii_uppercase().as_str() {
+        "ESC" | "ESCAPE" => (0x1B, 0x01, false),
+        "ENTER" | "RETURN" => (0x0D, 0x1C, false),
+        "SPACE" => (0x20, 0x39, false),
+        "TAB" => (0x09, 0x0F, false),
+        "UP" => (0x26, 0x48, true),
+        "DOWN" => (0x28, 0x50, true),
+        "LEFT" => (0x25, 0x4B, true),
+        "RIGHT" => (0x27, 0x4D, true),
+        "DELETE" | "DEL" => (0x2E, 0x53, true),
+        "BACKSPACE" => (0x08, 0x0E, false),
+        other => {
+            let s = other.strip_prefix("VK").or_else(|| other.strip_prefix("0X")).ok_or_else(|| format!("key {other}: not a known name (ESC ENTER SPACE TAB UP DOWN LEFT RIGHT DEL BACKSPACE, or VK<hex>)"))?;
+            (u8::from_str_radix(s, 16).map_err(|e| format!("key {other}: {e}"))?, 0, false)
+        }
+    };
+    let (down, up) = if ext { (1u32, 3u32) } else { (0u32, 2u32) };
+    let script = format!(
+        "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); \
+         [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); \
+         [DllImport(\"user32.dll\")] public static extern void SwitchToThisWindow(System.IntPtr hWnd, bool fAltTab); \
+         [DllImport(\"user32.dll\")] public static extern System.IntPtr GetForegroundWindow(); \
+         [DllImport(\"user32.dll\")] public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int count);'; \
+         $k = Add-Type -MemberDefinition $sig -Name Keys2 -Namespace Drive -PassThru; \
+         $p = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First 1; \
+         if (-not $p) {{ 'no Trackmania process'; exit 1 }}; \
+         $h = $p.MainWindowHandle; \
+         $k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 200; \
+         if ($k::GetForegroundWindow() -ne $h) {{ $k::SwitchToThisWindow($h, $true); Start-Sleep -Milliseconds 300 }}; \
+         $sb = New-Object System.Text.StringBuilder 256; [void]$k::GetWindowText($k::GetForegroundWindow(), $sb, 256); \
+         $k::keybd_event({vk}, {scan}, {down}, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {hold_ms}; $k::keybd_event({vk}, {scan}, {up}, [System.UIntPtr]::Zero); \
+         'tapped fg=[' + $sb.ToString() + ']'"
+    );
+    let out = std::process::Command::new(super::shootset::POWERSHELL)
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("powershell: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || !text.contains("tapped") {
+        return Err(format!("keybd_event script: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(text)
+}

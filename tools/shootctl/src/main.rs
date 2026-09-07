@@ -1172,6 +1172,18 @@ usage:
         "carlog" => playshots::summarize(&args[1..]),
         // a wheel log (playshots --wheels-ms): per-wheel surface census + acceleration trace
         "wheels" => playshots::summarize_wheels(&args[1..]),
+        // key NAME [--hold-ms N]: tap one key in the game window (a menu popup no route can dismiss)
+        "key" => {
+            let Some(name) = args.get(1) else {
+                eprintln!("usage: shootctl key ESC|ENTER|UP|... [--hold-ms N]");
+                std::process::exit(2);
+            };
+            let hold = args.iter().position(|a| a == "--hold-ms").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(60);
+            match playshots::tap_key(name, hold) {
+                Ok(t) => { println!("{t}"); 0 }
+                Err(e) => { eprintln!("{e}"); 1 }
+            }
+        }
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
             let to = args.iter().skip(1).find_map(|a| a.parse::<u64>().ok()).unwrap_or(180);

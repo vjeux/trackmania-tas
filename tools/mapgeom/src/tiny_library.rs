@@ -498,8 +498,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // picture files (gate sign logos) the items name: added after the ident pass below (they are not GBX)
     let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut outcomes: Vec<Outcome> = Vec::new();
-    // key -> (alias or "-", footprint sx, sz)
-    let mut block_map: BTreeMap<(String, u32, String), (String, u32, u32)> = BTreeMap::new();
+    // key -> (alias or "-", footprint sx, sz, the variant's unit cells in the block's frame)
+    let mut block_map: BTreeMap<(String, u32, String), (String, u32, u32, Vec<[i32; 3]>)> = BTreeMap::new();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
     let mut next_alias = 0usize;
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
@@ -545,12 +545,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
         // most common genealogy zone — what `tmmaps tiny` fills with.
         if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && *name == ambient {
-            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
+            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1, Vec::new()));
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
             continue;
         }
         if collection == 0x1a && name == "Grass" {
-            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
+            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1, Vec::new()));
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
             continue;
         }
@@ -559,7 +559,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // draw — Summer 15's `*Inside*` water-wall fillers).
         if let Ok(list) = std::env::var("TINY_DROP_BLOCKS") {
             if list.split(',').any(|s| !s.is_empty() && name.contains(s)) {
-                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1, Vec::new()));
                 outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("dropped by TINY_DROP_BLOCKS".into()) });
                 continue;
             }
@@ -587,7 +587,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if prefabs.is_empty() && legacy_item.is_none() {
             if solids.is_empty() {
                 // intentionally empty variant (e.g. the hidden pillar)
-                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz, units.clone()));
                 outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}]", pk.label), placements: *n, result: Ok("no geometry in this variant: intentionally no item".into()) });
             } else {
                 outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X} [{}] solids {:?}", pk.label, solids), placements: *n, result: Err("legacy CPlugSolid model without a converted archive item".into()) });
@@ -595,7 +595,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             continue;
         }
         if let Some(alias) = alias_of_recipe.get(&recipe) {
-            block_map.insert((name.clone(), *flags, modk.clone()), (alias.clone(), sx, sz));
+            block_map.insert((name.clone(), *flags, modk.clone()), (alias.clone(), sx, sz, units.clone()));
             continue;
         }
         let alias = format!("AC{next_alias:08}");
@@ -738,13 +738,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), placements: *n, result: Ok(summary) });
                 files.insert(format!("Items/{ident}"), bytes);
                 alias_of_recipe.insert(recipe, alias.clone());
-                block_map.insert((name.clone(), *flags, modk.clone()), (alias, sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), (alias, sx, sz, units.clone()));
             }
             // a prefab with no entities at all (Stadium\Structure\PillarToFlat_ACB
             // is one): the game draws nothing there either
             Err(e) if e.starts_with("no visuals: nothing to build") => {
                 next_alias -= 1;
-                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz));
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz, units.clone()));
                 alias_of_recipe.insert(recipe.clone(), "-".into());
                 outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Ok("empty prefab (no entities): intentionally no item".into()) });
             }
@@ -979,7 +979,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let archive = crate::tiny_assets::zip(&files);
     std::fs::write(out_zip, &archive).unwrap();
     // mapping: @index rows for blocks (alias or "-" = intentionally nothing), i@ rows for items
-    let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz ; i@item_index<TAB>ITEM|stock model|-\n");
+    let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz<TAB>units(x,y,z;...) ; i@item_index<TAB>ITEM|stock model|-\n");
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
     // Generated fillers the game does not draw but the tiny did: the Deco
@@ -1024,9 +1024,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
         match block_map.get(&(b.name.clone(), b.flags, modk)) {
-            Some((alias, sx, sz)) => {
+            Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
-                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz));
+                // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
+                // cell a ground deck covers (a Curve5 kept the Grass tiles of its 12
+                // other cells at deck height: the physics read Grass on the road, 2026-09-07)
+                let cells = units.iter().map(|u| format!("{},{},{}", u[0], u[1], u[2])).collect::<Vec<_>>().join(";");
+                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz, cells));
                 rows += 1;
             }
             None => *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1,

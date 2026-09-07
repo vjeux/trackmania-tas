@@ -1549,7 +1549,7 @@ TINY MAPS (half-scale campaign: every authored block/item -> an embedded static 
         the map plus a row of stock (pack) items by name — a vegetation species survey;
         --items continues the row with embedded item files (a test item next to its stock oracle);
         --colors gives each item of the row its placement colour byte (a stock flag at Green next to ours)
-  tmmaps shared-cells MAP [--all]
+  tmmaps shared-cells MAP [--all] [--mapping placements.tsv]
         cells where a terrain tile shares its cell with another block, and whether the
         tile is hidden by that block in the tiny map (kept = a coplanar pair to watch)
   tmmaps tiny-catalog MAP --mapping T --library Z --out F [--only NAME] [--lineup A,B]
