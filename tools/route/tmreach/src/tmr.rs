@@ -43,7 +43,7 @@ impl FromRow for CarState {
     /// label + the worker's measured shift (`Worker::race_of`).
     fn from_row(r: &forkoracle::layout::Row, race_ms: i64, cps: u8, finished: bool) -> CarState {
         let v = [r.vx as f32, r.vy as f32, r.vz as f32];
-        CarState {
+        let mut st = CarState {
             race_ms: race_ms as i32,
             pos: [r.x as f32, r.y as f32, r.z as f32],
             vel: v,
@@ -58,7 +58,26 @@ impl FromRow for CarState {
             turbo: f32::NAN,
             cps,
             finished,
+            car: u8::MAX,
+        };
+        // v2: the live vis state (gear, rpm, wheels, turbo, car kind) from the merged
+        // forkoracle::layout::Vis readout, exactly as the player's tmenv fills it (wheel
+        // order remapped from the engine's FL, FR, RR, RL to tmstate's FL, FR, RL, RR);
+        // `Vis::UNKNOWN` (known == false) leaves every field NaN / u8::MAX.
+        let vis = &r.vis;
+        if vis.known {
+            const ENGINE_TO_TMSTATE: [usize; 4] = [0, 1, 3, 2];
+            st.gear = vis.gear;
+            st.rpm = vis.rpm;
+            for (i, k) in ENGINE_TO_TMSTATE.iter().enumerate() {
+                st.wheel_contact[i] = vis.wheel_contact[*k] as u8;
+                st.wheel_material[i] = vis.wheel_material[*k];
+                st.wheel_slip[i] = vis.wheel_slip[*k];
+            }
+            st.turbo = vis.turbo_time;
+            st.car = vis.car;
         }
+        st
     }
 
     fn write(&self, o: &mut Vec<u8>) {
@@ -79,7 +98,8 @@ impl FromRow for CarState {
         o.extend_from_slice(&self.turbo.to_le_bytes());
         o.push(self.cps);
         o.push(self.finished as u8);
-        o.extend_from_slice(&[0u8; 2]); // struct tail pad
+        o.push(self.car); // v2: byte 98, the former padding
+        o.push(0); // struct tail pad
         debug_assert_eq!(o.len() - start, CARSTATE_BYTES);
     }
 
@@ -100,6 +120,7 @@ impl FromRow for CarState {
             turbo: f(92),
             cps: b[96],
             finished: b[97] != 0,
+            car: b[98],
         }
     }
 }
