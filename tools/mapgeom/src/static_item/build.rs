@@ -1263,7 +1263,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
-        let inst = custom_texture_material(&inst);
+        let inst = custom_texture_material(&inst, &opts.ident);
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
@@ -2656,7 +2656,47 @@ pub fn env_name(collection: u32) -> &'static str {
 /// Modes: `base` (Model TDSN, BaseTexture = path), `basefile` (same with the
 /// file name), `user` (UserTextures slot 0 = path, Model TDSN), `linkuser`
 /// (game link kept, UserTextures slot 0 = path). Experiments only.
-pub fn custom_texture_material(inst: &CPlugMaterialUserInst) -> CPlugMaterialUserInst {
+pub fn custom_texture_material(inst: &CPlugMaterialUserInst, ident: &str) -> CPlugMaterialUserInst {
+    // TINY_PICTURES=DIR: the production form. A material whose link stem has a
+    // `<stem>.dds` in DIR draws that picture — a custom-texture material with
+    // the texture named by file name, which the game resolves in the item's
+    // own archive folder (tiny-library puts every DIR/*.dds into the library
+    // zip as Items/<stem>.dds). Several pictures per stem (`<stem>.dds`,
+    // `<stem>.2.dds`, …) are spread over the models by ident hash — every
+    // placement of one model shows the same one. TINY_PICTURES_MODEL=TDSN|TDSNI
+    // (default TDSNI: slot 0 diffuse + slot 5 self-illumination, the lit-screen
+    // look).
+    if let Some(dir) = std::env::var_os("TINY_PICTURES") {
+        if let Some(link) = inst.link().map(|s| s.to_string()) {
+            let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
+            let mut choices: Vec<String> = std::fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .filter(|n| n.to_ascii_lowercase().ends_with(".dds") && (n == &format!("{stem}.dds") || n.starts_with(&format!("{stem}."))))
+                        .collect()
+                })
+                .unwrap_or_default();
+            choices.sort();
+            if !choices.is_empty() {
+                let h: usize = ident.bytes().fold(5381usize, |h, b| h.wrapping_mul(33).wrapping_add(b as usize));
+                let file = choices[h % choices.len()].clone();
+                let model = std::env::var("TINY_PICTURES_MODEL").unwrap_or_else(|_| "TDSNI".into());
+                let mut owned = inst.clone();
+                if let Some(main) = owned.main.as_mut() {
+                    main.is_using_game_material = false;
+                    main.model = crate::crystal_model::Id::Str(model.clone());
+                    main.material_name = crate::crystal_model::Id::Str(stem.clone());
+                    main.link = crate::crystal_model::Id::Null;
+                    main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }];
+                    if model == "TDSNI" {
+                        main.user_textures.push(crate::crystal_model::UserTexture { u01: 5, texture: file.clone() });
+                    }
+                }
+                return owned;
+            }
+        }
+    }
     let Ok(list) = std::env::var("TINY_MAT_CUSTOM") else { return inst.clone() };
     let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
     let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();

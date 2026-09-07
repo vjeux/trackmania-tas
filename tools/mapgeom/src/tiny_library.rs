@@ -698,6 +698,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for bytes in files.values_mut() {
         *bytes = crate::tiny_assets::set_ident_collection(bytes, collection);
     }
+    // TINY_PICTURES=DIR: the pictures the screen/gate materials were re-pointed
+    // at (`custom_texture_material`) ride in the archive NEXT TO THE ITEMS —
+    // the one place the game resolves an item's texture file name from.
+    if let Some(dir) = std::env::var_os("TINY_PICTURES") {
+        let mut n = 0;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map(|x| x.eq_ignore_ascii_case("dds")).unwrap_or(false)).collect();
+            names.sort();
+            for p in names {
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                files.insert(format!("Items/{name}"), std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())));
+                n += 1;
+            }
+        }
+        println!("  pictures: {n} DDS from {} into Items/", std::path::Path::new(&dir).display());
+    }
     let archive = crate::tiny_assets::zip(&files);
     std::fs::write(out_zip, &archive).unwrap();
     // mapping: @index rows for blocks (alias or "-" = intentionally nothing), i@ rows for items
