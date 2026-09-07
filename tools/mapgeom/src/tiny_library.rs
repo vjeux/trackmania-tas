@@ -283,6 +283,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // neighbours and takes the modifier they agree on most.
     let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> { bi.material_modifier.iter().filter(|r| r.ends_with(".TerrainModifier.Gbx")).cloned().collect() };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
+    // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below
+    let mut columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
         let Some(path) = idx.path_for(&b.name) else { continue };
         let mods = match idx.load(store, &path) {
@@ -290,6 +292,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Err(_) => Vec::new(),
         };
         let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
+        let pillar = b.flags & crate::blockmap::FLAG_PILLAR != 0;
+        columns.entry((c.0, c.2)).or_default().push((c.1, pillar, mods.clone()));
         // several authored blocks in one cell (a pillar under a deck): a
         // modifier wins over none
         let e = cell_mod.entry(c).or_default();
@@ -297,27 +301,58 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             *e = mods;
         }
     }
+    // A generated PILLAR (flag 0x4000, usually with 0x8000 "skinnable") under
+    // a block is dressed like the block it supports: the DecoWallBasePillar
+    // stacks under Summer 15's dirt hill draw the sand cliff texture down to
+    // the grass, while their block infos carry no modifier of their own. A
+    // pillar cell without a modifier takes the modifier of the nearest
+    // non-pillar authored block above it in its column.
+    for ((x, z), col) in &columns {
+        for (y, pillar, mods) in col {
+            if !*pillar || !mods.is_empty() {
+                continue;
+            }
+            let above = col.iter().filter(|(yy, p, m)| !*p && *yy > *y && !m.is_empty()).min_by_key(|(yy, _, _)| *yy);
+            if let Some((_, _, m)) = above {
+                let e = cell_mod.entry((*x, *y, *z)).or_default();
+                if e.is_empty() {
+                    *e = m.clone();
+                }
+            }
+        }
+    }
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
         if b.flags & crate::blockmap::FLAG_FREE != 0 {
             return Vec::new();
         }
         let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
-        if let Some(m) = cell_mod.get(&c) {
+        // the cell's own authored block, when it has a modifier
+        if let Some(m) = cell_mod.get(&c).filter(|m| !m.is_empty()) {
             return m.clone();
         }
-        let mut votes: BTreeMap<Vec<String>, usize> = BTreeMap::new();
-        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
-            let (x, z) = (c.0 as i32 + dx, c.2 as i32 + dz);
-            if !(0..=255).contains(&x) || !(0..=255).contains(&z) {
-                continue;
-            }
-            if let Some(m) = cell_mod.get(&(x as u8, c.1, z as u8)) {
-                if !m.is_empty() {
-                    *votes.entry(m.clone()).or_insert(0) += 1;
+        // else the neighbours: the vertical pair first (a VFC filler sits at
+        // the interface of two stacked blocks and is recorded in the cell of
+        // the plain one — Summer 15's dirt hill faces), then the horizontal four
+        let vote = |offsets: &[(i32, i32, i32)]| -> Vec<String> {
+            let mut votes: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+            for (dx, dy, dz) in offsets {
+                let (x, y, z) = (c.0 as i32 + dx, c.1 as i32 + dy, c.2 as i32 + dz);
+                if !(0..=255).contains(&x) || !(0..=255).contains(&y) || !(0..=255).contains(&z) {
+                    continue;
+                }
+                if let Some(m) = cell_mod.get(&(x as u8, y as u8, z as u8)) {
+                    if !m.is_empty() {
+                        *votes.entry(m.clone()).or_insert(0) += 1;
+                    }
                 }
             }
+            votes.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| m).unwrap_or_default()
+        };
+        let v = vote(&[(0, 1, 0), (0, -1, 0)]);
+        if !v.is_empty() {
+            return v;
         }
-        votes.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| m).unwrap_or_default()
+        vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])
     };
     let mod_key = |mods: &[String]| -> String { mods.join("|") };
 
