@@ -532,6 +532,7 @@ pub fn locate_v2(
                         clock_bias: ck.bias,
                         rms: d,
                         max_dev: 0.0,
+                        cps: 0,
                     });
                 }
                 Err(why) => tried.push(format!("{} -> {:#x}: {}", chain, pos, why)),
