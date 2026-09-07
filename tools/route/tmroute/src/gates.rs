@@ -378,7 +378,11 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             // grid block 32 m from a gate item is a second checkpoint; the header says so).
             let both_placed = !a.grid && !b.grid;
             let is_finish = matches!(a.kind, WpKind::Finish | WpKind::Multilap);
-            let near = same_tag && (both_placed || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
+            // a ROW is pieces of one kind (item–item or free–free) with parallel axes; Summer 2024 - 23 has a
+            // free `GateCheckpoint` 22 m from an item `GateCheckpointLeft32m`, at right angles: two checkpoints
+            let same_regime = a.from_item == b.from_item;
+            let parallel = ((a.yaw - b.yaw).cos()).abs() > 0.9;
+            let near = same_tag && ((both_placed && same_regime && parallel) || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
             // two touching pieces are one gate whatever their tags (Fall 2024 - 24 has a
             // LinkedCheckpoint piece 2 m from a plain Checkpoint piece of the same row)
             let stacked = dxz <= STACK_XZ && dy <= GROUP_Y * 3.0;
