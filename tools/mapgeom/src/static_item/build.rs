@@ -1283,6 +1283,26 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
     let prefab = super::prefab::CPlugPrefab::from_model(&model)?;
     let externals = model.externals.clone();
     let ext_name = |i: i32| externals.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
+    // The kinematic constraints of this prefab: which entity each one moves
+    // (its params name the dyna entity; -1 is the world), and the constraint
+    // file — through the item's Level modifier when it has one (the game skin
+    // swaps `KinematicConstraints\ObstacleX` for `Modifier\ItemObstacle\
+    // AnimX<Level>`, whose ranges are the real ones; the prefab's own file has
+    // a zero range).
+    let mut constraints: Vec<(i32, String, super::dyna::ConstraintParams)> = Vec::new();
+    for e in &prefab.ents {
+        if e.params_id != super::dyna::P_CONSTRAINT || e.model.inline.is_some() || e.model.index < 0 {
+            continue;
+        }
+        let Some(cp) = ext_name(e.model.index).filter(|p| p.to_ascii_lowercase().ends_with(".kinematicconstraint.gbx")) else { continue };
+        let Some(params) = super::dyna::ConstraintParams::parse(&e.params) else {
+            m.notes.push(format!("{path}: constraint {cp} with {}-byte params skipped", e.params.len()));
+            continue;
+        };
+        let target = if params.ent2 >= 0 { params.ent2 } else { params.ent1 };
+        constraints.push((target, modified_constraint_path(store, m, &cp), params));
+    }
+    let dyna_static = std::env::var("TINY_DYNA").map(|v| v == "static").unwrap_or(false);
     for (i, e) in prefab.ents.iter().enumerate() {
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {

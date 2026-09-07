@@ -1116,6 +1116,12 @@ pub struct Variant {
     pub manual_symmetry: [bool; 4],
     pub helper_solid: Option<String>,
     pub waypoint_trigger_solid: Option<String>,
+    /// The variant's waypoint trigger SHAPES (chunk 0x0315B006 v11+, two
+    /// refs: `Checkpoint_Trigger.Shape.Gbx` and a second slot, usually
+    /// empty): the volume the game tests the car against — for the road
+    /// checkpoints a 0.1 m plane across the middle of the block, deck to
+    /// ~8 m up, NOT the block's unit volume.
+    pub trigger_shapes: Vec<String>,
     pub gate: Option<String>,
     pub water_volumes: usize,
     pub placed_pillars: Vec<(Option<String>, [i32; 4])>,
@@ -1381,6 +1387,7 @@ impl BlockInfo {
                 manual_symmetry: v.manual_symmetry,
                 helper_solid: ext(v.helper_solid),
                 waypoint_trigger_solid: ext(v.waypoint_trigger_solid),
+                trigger_shapes: v.trigger_shapes.iter().filter_map(|i| ext(*i)).collect(),
                 gate: ext(v.gate),
                 water_volumes: v.water_volumes,
                 placed_pillars: v.placed_pillars.iter().map(|(n, p)| (ext(*n), *p)).collect(),
@@ -1545,8 +1552,8 @@ impl BlockInfo {
                 v.no_pillar_below_index, multi_dir_name(v.multi_dir), v.block_units.len(), v.mobils.len()
             ));
             p(&mut s, format!("    spawn {:?}  manual symmetry {:?}", v.spawn_loc, v.manual_symmetry));
-            if v.helper_solid.is_some() || v.waypoint_trigger_solid.is_some() || v.gate.is_some() {
-                p(&mut s, format!("    helper solid {:?}  waypoint trigger {:?}  gate {:?}", v.helper_solid, v.waypoint_trigger_solid, v.gate));
+            if v.helper_solid.is_some() || v.waypoint_trigger_solid.is_some() || v.gate.is_some() || !v.trigger_shapes.is_empty() {
+                p(&mut s, format!("    helper solid {:?}  waypoint trigger {:?}  trigger shapes {:?}  gate {:?}", v.helper_solid, v.waypoint_trigger_solid, v.trigger_shapes, v.gate));
             }
             if v.water_volumes > 0 {
                 p(&mut s, format!("    water volumes {}", v.water_volumes));
