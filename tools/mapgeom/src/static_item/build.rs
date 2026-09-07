@@ -1741,15 +1741,6 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             let i = next_index(next);
             super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() }
         };
-        // TINY_DYNA_NO_STATIC=1 leaves the static part out; TINY_DYNA_STATIC_FIRST=1
-        // lists it before the moving parts (does a moving part need a static
-        // sibling, and does the order matter? the 2026-09-07 cross tests)
-        let mut static_object = static_object.filter(|_| std::env::var_os("TINY_DYNA_NO_STATIC").is_none());
-        if std::env::var_os("TINY_DYNA_STATIC_FIRST").is_some() {
-            if let Some(so) = static_object.take() {
-                ents.push(static_entity(&mut next, so));
-            }
-        }
         for part in &m.dyna {
             let mesh_index = next_index(&mut next);
             let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
@@ -2821,49 +2812,9 @@ pub fn modified_constraint_path(store: &mut crate::store::DataStore, m: &Merged,
 #[allow(clippy::too_many_arguments)]
 pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, constraint_path: &str, cparams: super::dyna::ConstraintParams, ent: &super::prefab::Entity) -> R<()> {
     let src = load_dyna_source(store, path, m, false)?;
-    // TINY_DYNA_CONSTRAINT=<pack path>: every moving part takes this
-    // constraint instead (the cross tests of 2026-09-07: a pusher driven by
-    // the rotor's rotation, a rotor by the pusher's translation)
-    let constraint_path: &str = match std::env::var("TINY_DYNA_CONSTRAINT") {
-        Ok(p) if !p.is_empty() => {
-            m.notes.push(format!("{}: constraint overridden by TINY_DYNA_CONSTRAINT={p}", path.rsplit('\\').next().unwrap_or(path)));
-            &*Box::leak(p.into_boxed_str())
-        }
-        _ => constraint_path,
-    };
     let kmodel = store.load_model(constraint_path)?;
     let mut constraint = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{constraint_path}: {e}"))?;
     constraint.scale(scale);
-    // TINY_DYNA_KC_ROT=axis,min,max[,ms] / TINY_DYNA_KC_TRANS=axis,min,max[,ms]:
-    // override a range (and its single-step period) — the 2026-09-07 cross
-    // tests of a pusher that should also turn
-    for (var, is_rot) in [("TINY_DYNA_KC_ROT", true), ("TINY_DYNA_KC_TRANS", false)] {
-        if let Ok(v) = std::env::var(var) {
-            let f: Vec<&str> = v.split(',').collect();
-            if f.len() >= 3 {
-                let axis: u8 = f[0].parse().unwrap_or(2);
-                let lo: f32 = f[1].parse().unwrap_or(0.0);
-                let hi: f32 = f[2].parse().unwrap_or(0.0);
-                let ms: Option<u32> = f.get(3).and_then(|s| s.parse().ok());
-                if is_rot {
-                    constraint.rot_axis = axis;
-                    constraint.angle_min_deg = lo;
-                    constraint.angle_max_deg = hi;
-                    if let Some(ms) = ms {
-                        constraint.rot = super::dyna::AnimFunc { u01: 1, subs: vec![super::dyna::AnimSubFunc { ease: 1, reverse: 1, duration_ms: ms }] };
-                    }
-                } else {
-                    constraint.trans_axis = axis;
-                    constraint.trans_min = lo;
-                    constraint.trans_max = hi;
-                    if let Some(ms) = ms {
-                        constraint.trans = super::dyna::AnimFunc { u01: 1, subs: vec![super::dyna::AnimSubFunc { ease: 1, reverse: 1, duration_ms: ms }] };
-                    }
-                }
-                m.notes.push(format!("{var}={v}: constraint now [{}]", constraint.summary()));
-            }
-        }
-    }
     let mut mesh = Merged::default();
     mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
@@ -2890,34 +2841,8 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     if mesh.visuals.is_empty() {
         return Err(format!("{path}: the moving mesh has no visuals"));
     }
-    let mut move_shape = load_dyna_shape(store, &src, &src.model.dyna_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
+    let move_shape = load_dyna_shape(store, &src, &src.model.dyna_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
     let hit_shape = load_dyna_shape(store, &src, &src.model.static_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
-    // TINY_DYNA_MOVESHAPE=none|hit|ids: what the moving hull is (bisecting a
-    // part the game draws but does not move — the Mov1 rotor, 2026-09-07):
-    // no hull, the hit mesh again, or the pack hull with its material nodes
-    // turned into physics-id entries
-    match std::env::var("TINY_DYNA_MOVESHAPE").as_deref() {
-        Ok("none") => move_shape = None,
-        Ok("hit") => move_shape = hit_shape.clone(),
-        Ok("ids") => {
-            if let Some(s) = move_shape.as_mut() {
-                s.materials = s.material_ids.iter().map(|id| super::surface::SurfMaterial::Id(*id as i16)).collect();
-                s.u05 = Some(0);
-            }
-        }
-        // file:<pack path>: another pack hull (the pusher's single polyhedron on the rotor)
-        Ok(f) if f.starts_with("file:") => {
-            let p = &f[5..];
-            let sm = store.load_model(p)?;
-            let mut lb = super::LookbackState::default();
-            lb.defined_nodes.extend(sm.external_indices().iter().copied());
-            let mut r = super::Rd::new(&sm.body, 0, lb);
-            let sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{p}: {e}"))?;
-            move_shape = canonical_surface(&sf, scale);
-            m.notes.push(format!("move shape taken from {p}"));
-        }
-        _ => {}
-    }
     // A moving part without a hull CRASHES THE CLIENT at map load (a null
     // DynaShape: Trackmania.exe+0xb7088c reading NULL+0x38, Mov2 2026-09-07).
     // No hull → no moving part: the error sends add_prefab down its static
@@ -3173,19 +3098,6 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
         add_prefab(store, &picked, &IDENTITY, scale, &mut m, 0)?;
     } else {
         add_static_object_file(store, &picked, &IDENTITY, scale, &mut m)?;
-    }
-    // TINY_DYNA_EXTRA_STATIC=<pack prefab>: an extra static part merged in
-    // (the pusher's box next to a rotor: does a moving part need a static
-    // sibling? the 2026-09-07 cross test)
-    if let Ok(extra) = std::env::var("TINY_DYNA_EXTRA_STATIC") {
-        if !extra.is_empty() {
-            if extra.to_ascii_lowercase().ends_with(".staticobject.gbx") {
-                add_static_object_file(store, &extra, &IDENTITY, scale, &mut m)?;
-            } else {
-                add_prefab(store, &extra, &IDENTITY, scale, &mut m, 0)?;
-            }
-            m.notes.push(format!("extra static part {extra}"));
-        }
     }
     if variants.len() > 1 {
         m.notes.push(format!("variant {variant} of {}: {}", variants.len(), picked.rsplit('\\').next().unwrap_or(&picked)));
