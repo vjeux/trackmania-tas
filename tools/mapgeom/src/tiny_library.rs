@@ -452,6 +452,16 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
             continue;
         }
+        // TINY_DROP_BLOCKS=sub,sub: block models whose name contains a substring
+        // get no item (experiments: which generated fillers the game does not
+        // draw — Summer 15's `*Inside*` water-wall fillers).
+        if let Ok(list) = std::env::var("TINY_DROP_BLOCKS") {
+            if list.split(',').any(|s| !s.is_empty() && name.contains(s)) {
+                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1));
+                outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("dropped by TINY_DROP_BLOCKS".into()) });
+                continue;
+            }
+        }
         let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
         let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) else {
             outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("block info has no variant with units or mobils".into()) });
