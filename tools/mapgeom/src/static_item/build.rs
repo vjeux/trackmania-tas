@@ -2683,6 +2683,9 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
         low.contains("\\media\\modifier\\") && low.ends_with(".gbx") && !low.ends_with(".material.gbx") && !low.ends_with(".kinematicconstraint.gbx") && low.matches('\\').count() == 3
     })?;
     let (dir, file) = modifier.rsplit_once('\\')?;
+    // `Reset.TerrainModifier .Gbx` — the pack's own GateSpecial24mReset item
+    // spells its modifier with a space before the extension
+    let file = file.replace(' ', "");
     let x = file.strip_suffix(".Gbx").or_else(|| file.strip_suffix(".gbx"))?;
     // A gameplay gate's `<Kind>.TerrainModifier.Gbx` (GateSpecial24mTurbo2 →
     // `Turbo2.TerrainModifier.Gbx`) is the block-style form: folder = the
