@@ -131,6 +131,9 @@ fn fixed_plane(collection: u32) -> f32 {
     match collection {
         0x1c => 7.0,
         0x10 => -0.5, // RedIsland lake surface (Water prefab local +7.5 at cell 14)
+        // WhiteShore sea surface: `Zone\Water\Base.Prefab` water quad at local
+        // +7 (its bottom at +2), the Water zone at cell 14 -> 14*8 - 120 + 7
+        0x1d => -1.0,
         _ => 10.0,
     }
 }
@@ -623,7 +626,9 @@ pub fn cmd(args: &[String]) {
             // the 4096 cells of Summer 02); every cell gets it, so the game
             // regenerates the lake full size around and under the tiny
             // island, whose water items sit on the same surface (-0.5).
-            0x10 => {
+            // WhiteShore likewise: Water is a zone block (3148 of the 4096
+            // cells of Summer 03), the sea the island sits in, surface -1.
+            0x10 | 0x1d => {
                 let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
                 println!("  genealogy chunk filled: {n} cells of {zone}");
             }

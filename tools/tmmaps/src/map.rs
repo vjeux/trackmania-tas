@@ -63,6 +63,12 @@ pub fn ground_y(collection: u32) -> f32 {
         // cell 15 carries Bush items at y 2 (120 - 120 + 2). Lake water
         // (Water at cell 14, surface local +7.5) is at y -0.5.
         0x10 => -120.0,
+        // WhiteShore (0x1d), measured on Summer 2026 - 03: two RoadSignC items
+        // at y 72.0 and 72.05 carry cells 23 and 24, so the cell 24 floor is
+        // exactly 72 (24*8 - 120); trees on DecoPlatformBase at cells 18/19
+        // stand at 26/34 (the platform top local +2), the LinkedCheckpoint
+        // gates on a DecoWallBasePillar column top (cell 24 floor) at 72.
+        0x1d => -120.0,
         _ => -62.0,
     }
 }

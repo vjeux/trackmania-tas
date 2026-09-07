@@ -46,7 +46,26 @@ const LEGACY: &[(&str, &str)] = &[];
 /// Smaller stock species for the procedural vegetation the map places (the
 /// game ignores placement scale for VegetTreeModel items, measured
 /// 2026-09-06: PalmTreeBigB3 at 1.0/0.5/0.25 rendered one size).
-fn veget_substitute(model: &str) -> Option<&'static str> {
+fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
+    // WhiteShore (0x1d) ships its own ladder of species (Summer 03: 244
+    // Forest + 351 Grove procedural patches, 34 TreeFirBig, 28 Medium,
+    // 6 Small, 18 BushMediumA, 15 BushSmallB, 1 TreePineDeadMediumA):
+    // firs come in Big / Medium / Small / VerySmall, bushes in Bush /
+    // MediumA / SmallA / SmallB, dead pines in Big / Medium / Small /
+    // VerySmall — no Plant* or Palm* here, so the generic ladder below
+    // would point at species the pack does not have.
+    if collection == 0x1d {
+        return Some(match model {
+            "Forest" | "Grove" => "TreeFirSmall",
+            m if m.starts_with("TreeFirBig") || m.starts_with("TreeFirMedium") => "TreeFirSmall",
+            m if m.starts_with("TreeFirSmall") => "TreeFirVerySmall",
+            m if m.starts_with("TreePineDeadBig") || m.starts_with("TreePineDeadMedium") => "TreePineDeadSmallA",
+            m if m.starts_with("TreePineDeadSmall") => "TreePineDeadVerySmallA",
+            "Bush" => "BushMediumA",
+            m if m.starts_with("BushMedium") => "BushSmallA",
+            _ => return None,
+        });
+    }
     Some(match model {
         "PalmForest" | "PalmGrove" | "PalmEcotone" => "PalmTreeSmallA",
         m if m.starts_with("PalmTreeBig") => "PalmTreeSmallB",
@@ -152,9 +171,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // the genealogy with it, so the game regenerates it full size under
         // and around the tiny map — its surface (-0.5) is the tiny map's
         // fixed plane, so a half-scale copy would only z-fight it.
-        if collection == 0x10 && name == "Water" {
+        // WhiteShore's Water is the sea around its island, the same way
+        // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane).
+        if (collection == 0x10 || collection == 0x1d) && name == "Water" {
             block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
-            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("RedIsland lake: regenerated full size by the genealogy, no item".into()) });
+            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} water: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
             continue;
         }
         if collection == 0x1a && name == "Grass" {
@@ -314,7 +335,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
             Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: model.clone(), placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
             Err(e) if e.contains("procedural vegetation") => match veget_mode {
-                "substitute" => match veget_substitute(model) {
+                "substitute" => match veget_substitute(collection, model) {
                     Some(sub) => {
                         item_map.insert(model.clone(), sub.to_string());
                         outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} (placement scale is ignored by the game)")) });
