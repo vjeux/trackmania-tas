@@ -21,6 +21,7 @@ mod png;
 mod probe;
 mod publish;
 mod shoot;
+mod upload;
 mod views;
 mod wsx;
 
@@ -49,6 +50,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         playlist, stored-bytes md5 readback, optional play + screenshot
   tinyctl box-build [--crates shootctl,tinyctl,mapgeom,tmmaps] [--bootstrap]
         git pull + cargo build on the render box, polled to completion
+  tinyctl upload FILE… [--record uploads.txt] [--meta BIN]
+        JPG/PNG sheets into the agentcloud attachment store (intern GraphQL
+        xfb_metamate_nest_bulk_file_upload through `meta`); prints NAME<TAB>ID,
+        embed as ![..](/api/attachments/view?file_id=ID); --record appends the rows
 
   box-side halves: tinyctl publish-here …   tinyctl selfbuild …
   every bridge command takes --wsx PATH (default ~/bin/wsx)
@@ -77,6 +82,7 @@ fn main() {
         "compare" => compare::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
+        "upload" => upload::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {
